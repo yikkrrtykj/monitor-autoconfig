@@ -1,0 +1,352 @@
+services:
+  mysql:
+    image: mariadb:10.5
+    container_name: mysql
+    restart: unless-stopped
+    command:
+      - "mysqld"
+      - "--innodb-file-per-table=1"
+      - "--lower-case-table-names=0"
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+      - "--log-bin-trust-function-creators=1"
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: root
+    volumes:
+      - ./mysql-data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 60s
+
+  init-permissions:
+    image: alpine:latest
+    container_name: init-permissions
+    volumes:
+      - ./mysql-data:/mysql-data
+      - ./zabbix-server-data:/zabbix-server-data
+      - ./grafana-data:/grafana-data
+      - ./prometheus-data:/prometheus-data
+
+    command: |
+      sh -c '
+        echo "Setting up directory permissions..."
+        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data
+        chown -R 999:999 /mysql-data
+        chown -R 1997:1997 /zabbix-server-data
+        chown -R 472:472 /grafana-data
+        chown -R 65534:65534 /prometheus-data
+
+
+
+        chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data
+        echo "Permissions set successfully"
+      '
+    networks:
+      - monitor
+    restart: "no"
+
+  zabbix-server:
+    image: zabbix/zabbix-server-mysql:7.0-ubuntu-latest
+    container_name: zabbix-server
+    hostname: zabbix-server
+    restart: unless-stopped
+    user: root
+    environment:
+      DB_SERVER_HOST: mysql
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: root
+      ZBX_ENABLE_SNMP_TRAPS: "true"
+      ZBX_STARTPOLLERS: 5
+      ZBX_STARTPOLLERSUNREACHABLE: 1
+      ZBX_STARTTRAPPERS: 5
+      ZBX_STARTPINGERS: 1
+      ZBX_STARTDISCOVERERS: 1
+      ZBX_STARTHTTPPOLLERS: 1
+      ZBX_TIMEOUT: 30
+      ZBX_UNREACHABLEPERIOD: 45
+      ZBX_UNAVAILABLEDELAY: 60
+    command: >
+      /bin/sh -c '
+        apt-get update &&
+        apt-get install -y python3 python3-requests &&
+        /usr/bin/docker-entrypoint.sh /usr/sbin/zabbix_server --foreground -c /etc/zabbix/zabbix_server.conf
+      '
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+    ports:
+      - "${ZABBIX_SERVER_PORT:-10051}:10051"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./zabbix-server-data:/var/lib/zabbix
+      - ./feishu-robot.py:/usr/lib/zabbix/alertscripts/feishu-robot.py
+      - ./watchguard-firewall-zabbix7.0-template.yaml:/watchguard-firewall-zabbix7.0-template.yaml:ro
+      - ./hillstone-zabbix7.0-UnofficialV1.1.yaml:/hillstone-zabbix7.0-UnofficialV1.1.yaml:ro
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep '[z]abbix_server' | grep -v grep || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-mysql:7.0-ubuntu-latest
+    container_name: zabbix-web
+    restart: unless-stopped
+    environment:
+      DB_SERVER_HOST: mysql
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: root
+      PHP_TZ: Asia/Shanghai
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_PORT: 10051
+      ZBX_POSTMAXSIZE: 64M
+      ZBX_UPLOADMAXFILESIZE: 2M
+      ZBX_MAXEXECUTIONTIME: 600
+      ZBX_DEFAULT_LANG: zh_CN
+    depends_on:
+      zabbix-server:
+        condition: service_healthy
+    ports:
+      - "${ZABBIX_WEB_PORT:-8001}:8080"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - monitor
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent:7.0-ubuntu-latest
+    container_name: zabbix-agent
+    hostname: zabbix-agent
+    restart: unless-stopped
+    environment:
+      ZBX_HOSTNAME: "Zabbix server"
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_PORT: 10051
+      ZBX_PASSIVE_ALLOW: "true"
+      ZBX_ACTIVE_ALLOW: "true"
+      ZBX_METADATA: "Linux"
+      ZBX_SERVER: zabbix-server
+      ZBX_SERVERACTIVE: zabbix-server:10051
+      ZBX_HOSTNAMEITEM: system.hostname
+      ZBX_TIMEOUT: 30
+      ZBX_LISTENPORT: 10050
+      ZBX_LISTENIP: "0.0.0.0"
+    depends_on:
+      zabbix-server:
+        condition: service_healthy
+    ports:
+      - "${ZABBIX_AGENT_PORT:-10050}:10050"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep '[z]abbix_agentd' | wc -l | grep -q '^[1-9]' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  zabbix-config:
+    image: alpine:latest
+    container_name: zabbix-config
+    depends_on:
+      zabbix-web:
+        condition: service_started
+      zabbix-server:
+        condition: service_healthy
+      zabbix-agent:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ./zabbix-auto-config.sh:/zabbix-auto-config.sh:ro
+      - ./feishu-robot.py:/feishu-robot.py:ro
+      - ./hillstone-zabbix7.0-UnofficialV1.1.yaml:/hillstone-zabbix7.0-UnofficialV1.1.yaml:ro
+      - ./watchguard-firewall-zabbix7.0-template.yaml:/watchguard-firewall-zabbix7.0-template.yaml:ro
+    networks:
+      - monitor
+    restart: "no"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache curl jq bash python3 py3-requests
+        echo "Waiting for Zabbix services to be fully ready..."
+        sleep 60
+        echo "Starting Zabbix configuration..."
+        bash /zabbix-auto-config.sh
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - prometheus-data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /etc/localtime:/etc/localtime:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=30d'
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "${NODE_EXPORTER_PORT:-9100}:9100"
+    networks:
+      - monitor
+
+  snmp-exporter:
+    image: prom/snmp-exporter:latest
+    container_name: snmp-exporter
+    restart: unless-stopped
+    ports:
+      - "${SNMP_EXPORTER_PORT:-9116}:9116"
+    networks:
+      - monitor
+    volumes:
+      - './snmp.yml:/etc/snmp_exporter/snmp.yml'
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    ports:
+      - "${BLACKBOX_EXPORTER_PORT:-9115}:9115"
+    networks:
+      - monitor
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cat > /etc/blackbox_exporter/config.yml << 'EOF'
+        modules:
+          icmp:
+            prober: icmp
+            timeout: 5s
+            icmp:
+              preferred_ip_protocol: ip4
+          http_2xx:
+            prober: http
+            timeout: 5s
+            http:
+              valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+              valid_status_codes: []
+              method: GET
+              preferred_ip_protocol: ip4
+        EOF
+        exec /bin/blackbox_exporter --config.file=/etc/blackbox_exporter/config.yml
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: root
+      GF_INSTALL_PLUGINS: alexanderzobnin-zabbix-app
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: alexanderzobnin-zabbix-datasource
+      GF_SERVER_HTTP_PORT: 3000
+      GF_SERVER_PROTOCOL: http
+      GF_DEFAULT_LOCALE: zh-Hans
+      GF_DEFAULT_TIMEZONE: Asia/Shanghai
+      TZ: Asia/Shanghai
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-provisioning:/etc/grafana/provisioning
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - monitor
+
+  grafana-setup:
+    image: alpine:latest
+    container_name: grafana-setup
+    depends_on:
+      grafana:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      zabbix-web:
+        condition: service_started
+      zabbix-server:
+        condition: service_healthy
+    networks:
+      - monitor
+    restart: "no"
+    volumes:
+      - ./snmp-exporter-dashboard.json:/snmp-exporter.json:ro
+      - ./snmp-stats-dashboard.json:/snmp-stats.json:ro
+      - ./blackbox-icmp-dashboard.json:/blackbox-icmp.json:ro
+      - ./grafana-setup.sh:/grafana-setup.sh:ro
+    command: ["/bin/sh", "-c", "sleep 30 && /bin/sh /grafana-setup.sh"]
+
+
+
+networks:
+  monitor:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  mysql-data:
+  zabbix-server-data:
