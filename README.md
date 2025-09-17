@@ -1,4 +1,5 @@
 ## monitor-autoconfig
+安装后修改Prometheus.yml的外网IP
 
 # Ubuntu安装
 
