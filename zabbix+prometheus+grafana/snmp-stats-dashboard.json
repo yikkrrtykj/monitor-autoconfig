@@ -677,7 +677,12 @@
         },
         "frameIndex": 4,
         "showHeader": true,
-        "sortBy": []
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Out"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -745,7 +750,7 @@
         "type": "prometheus",
         "uid": "PROMETHEUS_UID_PLACEHOLDER"
       },
-      "description": "Max: 10MB  \nRed Status: 9MB",
+      "description": "Max: 20MB  \nRed Status: 16MB",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -753,7 +758,7 @@
           },
           "decimals": 2,
           "mappings": [],
-          "max": 10000000,
+          "max": 20000000,
           "min": 0,
           "thresholds": {
             "mode": "absolute",
@@ -764,7 +769,7 @@
               },
               {
                 "color": "red",
-                "value": 9000000
+                "value": 16000000
               }
             ]
           },
@@ -801,6 +806,8 @@
         },
         "showUnfilled": true,
         "sizing": "auto",
+        "sortBy": "value",
+        "sortDesc": true,
         "valueMode": "color"
       },
       "pluginVersion": "12.1.1",
@@ -824,7 +831,7 @@
         "type": "prometheus",
         "uid": "PROMETHEUS_UID_PLACEHOLDER"
       },
-      "description": "Max: 10MB  \nRed Status: 9MB",
+      "description": "Max: 20MB  \nRed Status: 16MB",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -832,7 +839,7 @@
           },
           "decimals": 2,
           "mappings": [],
-          "max": 10000000,
+          "max": 20000000,
           "min": 0,
           "thresholds": {
             "mode": "absolute",
@@ -843,7 +850,7 @@
               },
               {
                 "color": "red",
-                "value": 9000000
+                "value": 16000000
               }
             ]
           },
@@ -880,6 +887,8 @@
         },
         "showUnfilled": true,
         "sizing": "auto",
+        "sortBy": "value",
+        "sortDesc": true,
         "valueMode": "color"
       },
       "pluginVersion": "12.1.1",
@@ -889,7 +898,7 @@
             "type": "prometheus",
             "uid": "PROMETHEUS_UID_PLACEHOLDER"
           },
-          "expr": "irate(ifHCOutOctets{job=\"$Job\"}[5m])",
+          "expr": "irate(ifHCInOctets{job=\"$Job\"}[5m])",
           "intervalFactor": 1,
           "legendFormat": "{{ifName}} ({{ifAlias}})",
           "refId": "B"
@@ -1048,7 +1057,7 @@
           "text": "core",
           "value": "core"
         },
-        "datasource": "eey1x6vd6yz28c",
+        "datasource": "PROMETHEUS_UID_PLACEHOLDER",
         "definition": "label_values(ifHCInOctets,  job)",
         "includeAll": false,
         "name": "Job",
@@ -1060,7 +1069,7 @@
       },
       {
         "baseFilters": [],
-        "datasource": "Prometheus",
+        "datasource": "PROMETHEUS_UID_PLACEHOLDER",
         "filters": [],
         "name": "Filters",
         "type": "adhoc"

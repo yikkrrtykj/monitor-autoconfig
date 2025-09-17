@@ -818,6 +818,9 @@ if [ -n "$EXISTING_ALERT_ACTION_ID" ]; then
   echo "Deleted existing alert action"
 fi
 
+# Debug: Print variable values
+echo "Debug: MEDIATYPE_ID=$MEDIATYPE_ID, ADMIN_GROUP_ID=$ADMIN_GROUP_ID"
+
 alert_action_response=$(api_call "action.create" "{
   \"name\": \"Feishu Alert Action\",
   \"eventsource\": 0,
@@ -860,8 +863,21 @@ alert_action_response=$(api_call "action.create" "{
   ]
 }" "$AUTH_TOKEN")
 
-ALERT_ACTION_ID=$(echo "$alert_action_response" | jq -r '.result.actionids[0]')
-echo "Created Feishu Alert Action with ID: $ALERT_ACTION_ID"
+echo "Debug: Alert action response: $alert_action_response"
+
+# Check if the response contains an error
+if echo "$alert_action_response" | jq -e '.error' > /dev/null; then
+  echo "Error creating alert action: $(echo "$alert_action_response" | jq -r '.error.message')"
+  echo "Error data: $(echo "$alert_action_response" | jq -r '.error.data')"
+else
+  ALERT_ACTION_ID=$(echo "$alert_action_response" | jq -r '.result.actionids[0]')
+  if [ "$ALERT_ACTION_ID" = "null" ] || [ -z "$ALERT_ACTION_ID" ]; then
+    echo "Warning: Failed to get valid action ID from response"
+    echo "Response: $alert_action_response"
+  else
+    echo "Created Feishu Alert Action with ID: $ALERT_ACTION_ID"
+  fi
+fi
 
 # Fix potential scriptid errors by ensuring proper operation configuration
 echo "Fixing potential scriptid errors in alert action operations..."
@@ -988,3 +1004,38 @@ else
 fi
 
 echo "Zabbix server host configuration completed!"
+
+# Force refresh host interface to ensure DNS resolution works
+echo "Forcing host interface refresh..."
+refresh_interface_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{
+  \"jsonrpc\": \"2.0\",
+  \"method\": \"hostinterface.update\",
+  \"params\": {
+    \"interfaceid\": \"1\",
+    \"dns\": \"zabbix-agent\",
+    \"useip\": 0,
+    \"ip\": \"\",
+    \"port\": \"10050\"
+  },
+  \"auth\": \"$AUTH_TOKEN\",
+  \"id\": 1
+}" "$ZABBIX_URL/api_jsonrpc.php")
+
+echo "Interface refresh response: $refresh_interface_response"
+
+# Wait a moment and test the connection
+sleep 10
+echo "Testing Agent connection after interface refresh..."
+test_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{
+  \"jsonrpc\": \"2.0\",
+  \"method\": \"host.get\",
+  \"params\": {
+    \"output\": [\"hostid\", \"host\", \"available\"],
+    \"selectInterfaces\": [\"available\", \"error\"],
+    \"filter\": {\"host\": [\"Zabbix server\"]}
+  },
+  \"auth\": \"$AUTH_TOKEN\",
+  \"id\": 1
+}" "$ZABBIX_URL/api_jsonrpc.php")
+
+echo "Host status after refresh: $test_response"
