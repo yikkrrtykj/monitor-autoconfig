@@ -793,6 +793,12 @@ api_call "user.update" "{
   ]
 }" "$AUTH_TOKEN"
 
+echo "Setting Admin user language to Chinese..."
+api_call "user.update" "{
+  \"userid\": \"$ADMIN_USER_ID\",
+  \"lang\": \"zh_CN\"
+}" "$AUTH_TOKEN"
+
 # Get Zabbix administrators group ID
 echo "Getting Zabbix administrators group ID..."
 ADMIN_GROUP_ID=$(api_call "usergroup.get" "{
