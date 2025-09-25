@@ -788,7 +788,7 @@ api_call "user.update" "{
       \"sendto\": \"all\",
       \"active\": 0,
       \"severity\": 60,
-      \"period\": \"1-7,17:00-24:00\"
+      \"period\": \"1-7,16:00-24:00\"
     }
   ]
 }" "$AUTH_TOKEN"
