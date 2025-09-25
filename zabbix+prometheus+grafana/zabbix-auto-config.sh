@@ -796,7 +796,7 @@ api_call "user.update" "{
 echo "Setting Admin user language to Chinese..."
 api_call "user.update" "{
   \"userid\": \"$ADMIN_USER_ID\",
-  \"lang\": \"zh_CN\"
+  \"Language\": \"zh_CN\"
 }" "$AUTH_TOKEN"
 
 # Get Zabbix administrators group ID
