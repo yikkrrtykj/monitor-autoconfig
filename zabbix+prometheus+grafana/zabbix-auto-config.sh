@@ -22,7 +22,73 @@ until curl -s "$ZABBIX_URL/api_jsonrpc.php" > /dev/null 2>&1; do
   sleep 10
 done
 
-echo "Zabbix Web interface is ready. Configuring auto-discovery..."
+echo "Zabbix Web interface is ready. Fixing database charset first..."
+
+# Fix database charset and collation for Zabbix 7.0 compatibility
+echo "Checking and fixing database charset/collation..."
+fix_database_charset() {
+  echo "Connecting to MySQL to fix charset issues..."
+  
+  # Wait for MySQL to be fully ready
+  until docker exec mysql mysqladmin ping -h localhost -u root -proot --silent; do
+    echo "Waiting for MySQL to be ready..."
+    sleep 5
+  done
+  
+  echo "Fixing database charset and collation..."
+  docker exec mysql mysql -uroot -proot -e "
+    -- Fix database charset
+    ALTER DATABASE zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+    
+    -- Disable foreign key checks temporarily
+    SET FOREIGN_KEY_CHECKS = 0;
+    
+    -- Get all tables and convert them
+    SELECT CONCAT('ALTER TABLE ', table_name, ' CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;') 
+    FROM information_schema.tables 
+    WHERE table_schema = 'zabbix' AND table_type = 'BASE TABLE'
+    INTO OUTFILE '/tmp/convert_tables.sql';
+    
+    -- Execute the conversion
+    SOURCE /tmp/convert_tables.sql;
+    
+    -- Re-enable foreign key checks
+    SET FOREIGN_KEY_CHECKS = 1;
+    
+    -- Verify the fix
+    SELECT 'Database charset fixed:' as status, @@character_set_database, @@collation_database;
+  " 2>/dev/null || {
+    echo "Direct conversion failed, trying alternative method..."
+    
+    # Alternative method: convert tables one by one
+    docker exec mysql mysql -uroot -proot zabbix -e "
+      SET FOREIGN_KEY_CHECKS = 0;
+      ALTER DATABASE zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+    "
+    
+    # Get list of tables and convert them
+    tables=$(docker exec mysql mysql -uroot -proot zabbix -sN -e "
+      SELECT table_name FROM information_schema.tables 
+      WHERE table_schema = 'zabbix' AND table_type = 'BASE TABLE'
+    ")
+    
+    for table in $tables; do
+      echo "Converting table: $table"
+      docker exec mysql mysql -uroot -proot zabbix -e "
+        ALTER TABLE $table CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+      " 2>/dev/null || echo "Warning: Failed to convert table $table"
+    done
+    
+    docker exec mysql mysql -uroot -proot zabbix -e "SET FOREIGN_KEY_CHECKS = 1;"
+  }
+  
+  echo "Database charset fix completed."
+}
+
+# Execute the charset fix
+fix_database_charset
+
+echo "Configuring auto-discovery..."
 
 # Function to make API calls
 api_call() {
