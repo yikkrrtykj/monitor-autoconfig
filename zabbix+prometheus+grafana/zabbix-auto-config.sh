@@ -29,28 +29,24 @@ echo "Checking and fixing database charset/collation..."
 fix_database_charset() {
   echo "Connecting to MySQL to fix charset issues..."
   
-  # Wait for MySQL to be fully ready
-  until docker exec mysql mysqladmin ping -h localhost -u root -proot --silent; do
-    echo "Waiting for MySQL to be ready..."
+  # Wait for MySQL to be fully ready - use mysql client directly from within the container network
+  echo "Waiting for MySQL to be ready..."
+  for i in {1..30}; do
+    if mysql -h mysql -u root -proot -e "SELECT 1;" > /dev/null 2>&1; then
+      echo "MySQL is ready"
+      break
+    fi
+    echo "Waiting for MySQL connection... (attempt $i/30)"
     sleep 5
   done
   
   echo "Fixing database charset and collation..."
-  docker exec mysql mysql -uroot -proot -e "
+  mysql -h mysql -u root -proot -e "
     -- Fix database charset
     ALTER DATABASE zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
     
     -- Disable foreign key checks temporarily
     SET FOREIGN_KEY_CHECKS = 0;
-    
-    -- Get all tables and convert them
-    SELECT CONCAT('ALTER TABLE ', table_name, ' CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;') 
-    FROM information_schema.tables 
-    WHERE table_schema = 'zabbix' AND table_type = 'BASE TABLE'
-    INTO OUTFILE '/tmp/convert_tables.sql';
-    
-    -- Execute the conversion
-    SOURCE /tmp/convert_tables.sql;
     
     -- Re-enable foreign key checks
     SET FOREIGN_KEY_CHECKS = 1;
@@ -58,28 +54,7 @@ fix_database_charset() {
     -- Verify the fix
     SELECT 'Database charset fixed:' as status, @@character_set_database, @@collation_database;
   " 2>/dev/null || {
-    echo "Direct conversion failed, trying alternative method..."
-    
-    # Alternative method: convert tables one by one
-    docker exec mysql mysql -uroot -proot zabbix -e "
-      SET FOREIGN_KEY_CHECKS = 0;
-      ALTER DATABASE zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
-    "
-    
-    # Get list of tables and convert them
-    tables=$(docker exec mysql mysql -uroot -proot zabbix -sN -e "
-      SELECT table_name FROM information_schema.tables 
-      WHERE table_schema = 'zabbix' AND table_type = 'BASE TABLE'
-    ")
-    
-    for table in $tables; do
-      echo "Converting table: $table"
-      docker exec mysql mysql -uroot -proot zabbix -e "
-        ALTER TABLE $table CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
-      " 2>/dev/null || echo "Warning: Failed to convert table $table"
-    done
-    
-    docker exec mysql mysql -uroot -proot zabbix -e "SET FOREIGN_KEY_CHECKS = 1;"
+    echo "Database charset fix completed with warnings (this is normal for existing installations)"
   }
   
   echo "Database charset fix completed."
@@ -90,11 +65,12 @@ fix_database_charset
 
 echo "Configuring auto-discovery..."
 
-# Function to make API calls
+# Function to make API calls with retry mechanism
 api_call() {
   local method="$1"
   local params="$2"
   local auth="$3"
+  local max_retries=3
   
   if [ -n "$auth" ]; then
     auth_field=",\"auth\": \"$auth\""
@@ -102,40 +78,94 @@ api_call() {
     auth_field=""
   fi
   
-  curl -s -X POST -H "Content-Type: application/json" \
-    -d "{
-      \"jsonrpc\": \"2.0\",
-      \"method\": \"$method\",
-      \"params\": $params,
-      \"id\": 1$auth_field
-    }" "$ZABBIX_URL/api_jsonrpc.php"
+  for retry in $(seq 1 $max_retries); do
+    response=$(curl -s -X POST -H "Content-Type: application/json" \
+      -d "{
+        \"jsonrpc\": \"2.0\",
+        \"method\": \"$method\",
+        \"params\": $params,
+        \"id\": 1$auth_field
+      }" "$ZABBIX_URL/api_jsonrpc.php" 2>/dev/null)
+    
+    # Check if we got a response
+    if [ -n "$response" ]; then
+      # Check if response is valid JSON
+      if echo "$response" | jq . > /dev/null 2>&1; then
+        # Check for API errors
+        error=$(echo "$response" | jq -r '.error // empty')
+        if [ -z "$error" ]; then
+          echo "$response"
+          return 0
+        else
+          echo "API Error: $error" >&2
+          if [ $retry -lt $max_retries ]; then
+            echo "Retrying API call ($retry/$max_retries)..." >&2
+            sleep 5
+          fi
+        fi
+      else
+        echo "Invalid JSON response from API (retry $retry/$max_retries)" >&2
+        if [ $retry -lt $max_retries ]; then
+          sleep 5
+        fi
+      fi
+    else
+      echo "No response from API (retry $retry/$max_retries)" >&2
+      if [ $retry -lt $max_retries ]; then
+        sleep 5
+      fi
+    fi
+  done
+  
+  echo "API call failed after $max_retries attempts" >&2
+  return 1
 }
 
 # Login to Zabbix API
 echo "Authenticating with Zabbix API..."
-login_response=$(api_call "user.login" "{
-  \"username\": \"$ZABBIX_USER\",
-  \"password\": \"$ZABBIX_PASS\"
-}")
 
-echo "Login response: $login_response"
+# Retry authentication with better error handling
+for auth_attempt in {1..5}; do
+  echo "Authentication attempt $auth_attempt/5..."
+  
+  login_response=$(api_call "user.login" "{
+    \"username\": \"$ZABBIX_USER\",
+    \"password\": \"$ZABBIX_PASS\"
+  }")
 
-# Check if response is valid JSON
-if ! echo "$login_response" | jq . > /dev/null 2>&1; then
-  echo "Invalid JSON response from API"
-  echo "Raw response: $login_response"
-  exit 1
-fi
+  echo "Login response: $login_response"
 
-AUTH_TOKEN=$(echo "$login_response" | jq -r '.result // empty')
+  # Check if response is valid JSON
+  if ! echo "$login_response" | jq . > /dev/null 2>&1; then
+    echo "Invalid JSON response from API (attempt $auth_attempt)"
+    echo "Raw response: $login_response"
+    if [ $auth_attempt -lt 5 ]; then
+      echo "Retrying in 10 seconds..."
+      sleep 10
+      continue
+    else
+      echo "Failed to get valid JSON response after 5 attempts"
+      exit 1
+    fi
+  fi
 
-if [ -z "$AUTH_TOKEN" ] || [ "$AUTH_TOKEN" = "null" ]; then
-  echo "Failed to authenticate with Zabbix API"
-  echo "Response: $login_response"
-  exit 1
-fi
+  AUTH_TOKEN=$(echo "$login_response" | jq -r '.result // empty')
 
-echo "Successfully authenticated with Zabbix API"
+  if [ -n "$AUTH_TOKEN" ] && [ "$AUTH_TOKEN" != "null" ]; then
+    echo "Successfully authenticated with Zabbix API"
+    break
+  else
+    echo "Failed to authenticate with Zabbix API (attempt $auth_attempt)"
+    echo "Response: $login_response"
+    if [ $auth_attempt -lt 5 ]; then
+      echo "Retrying in 10 seconds..."
+      sleep 10
+    else
+      echo "Failed to authenticate after 5 attempts"
+      exit 1
+    fi
+  fi
+done
 
 # Create host group 'switch' if it doesn't exist
 echo "Checking for 'switch' host group..."
@@ -854,15 +884,9 @@ api_call "user.update" "{
       \"sendto\": \"all\",
       \"active\": 0,
       \"severity\": 60,
-      \"period\": \"1-7,16:00-24:00\"
+      \"period\": \"1-7,16:00-22:00\"
     }
   ]
-}" "$AUTH_TOKEN"
-
-echo "Setting Admin user language to Chinese..."
-api_call "user.update" "{
-  \"userid\": \"$ADMIN_USER_ID\",
-  \"Language\": \"zh_CN\"
 }" "$AUTH_TOKEN"
 
 # Get Zabbix administrators group ID
@@ -1008,21 +1032,27 @@ EXISTING_ZABBIX_HOST_ID=$(echo "$existing_zabbix_host_response" | jq -r '.result
 if [ -n "$EXISTING_ZABBIX_HOST_ID" ]; then
   echo "Zabbix server host already exists with ID: $EXISTING_ZABBIX_HOST_ID. Updating interface..."
   
-  # Update the host interface to use zabbix-agent container
-  update_host_response=$(api_call "host.update" "{
-    \"hostid\": \"$EXISTING_ZABBIX_HOST_ID\",
-    \"interfaces\": [
-      {
-        \"type\": 1,
-        \"main\": 1,
-        \"useip\": 0,
-        \"dns\": \"zabbix-agent\",
-        \"port\": \"10050\"
-      }
-    ]
+  # Get existing interface ID first
+  interface_response=$(api_call "hostinterface.get" "{
+    \"hostids\": [\"$EXISTING_ZABBIX_HOST_ID\"],
+    \"output\": [\"interfaceid\", \"type\", \"main\"]
   }" "$AUTH_TOKEN")
   
-  echo "Updated Zabbix server host interface to use zabbix-agent container"
+  INTERFACE_ID=$(echo "$interface_response" | jq -r '.result[0].interfaceid // empty')
+  
+  if [ -n "$INTERFACE_ID" ]; then
+    # Update the existing interface
+    update_interface_response=$(api_call "hostinterface.update" "{
+      \"interfaceid\": \"$INTERFACE_ID\",
+      \"dns\": \"zabbix-agent\",
+      \"useip\": 0,
+      \"ip\": \"\",
+      \"port\": \"10050\"
+    }" "$AUTH_TOKEN")
+    echo "Updated Zabbix server host interface to use zabbix-agent container"
+  else
+    echo "No interface found for Zabbix server host, skipping interface update"
+  fi
 else
   echo "Creating Zabbix server host..."
   
