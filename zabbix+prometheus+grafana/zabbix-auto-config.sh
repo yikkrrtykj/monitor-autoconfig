@@ -1141,3 +1141,17 @@ test_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{
 }" "$ZABBIX_URL/api_jsonrpc.php")
 
 echo "Host status after refresh: $test_response"
+
+# Set default timezone to Asia/Shanghai
+echo "Setting default timezone to Asia/Shanghai..."
+timezone_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{
+  \"jsonrpc\": \"2.0\",
+  \"method\": \"settings.update\",
+  \"params\": {
+    \"default_timezone\": \"Asia/Shanghai\"
+  },
+  \"auth\": \"$AUTH_TOKEN\",
+  \"id\": 1
+}" "$ZABBIX_URL/api_jsonrpc.php")
+
+echo "Timezone setting response: $timezone_response"
