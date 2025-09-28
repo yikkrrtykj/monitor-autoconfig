@@ -24,7 +24,7 @@ sudo yum install -y yum-utils && sudo yum-config-manager --add-repo https://down
 # 安装地址
 
 ```
-wget https://github.com/yikkrrtykj/monitor-autoconfig/releases/download/v1.0/zabbix+prometheus+grafana.tar.gz
+[wget https://github.com/yikkrrtykj/monitor-autoconfig/releases/download/v1.0/zabbix+prometheus+grafana.tar.gz](https://github.com/yikkrrtykj/monitor-autoconfig.git)
 ```
 
 # docker部署
