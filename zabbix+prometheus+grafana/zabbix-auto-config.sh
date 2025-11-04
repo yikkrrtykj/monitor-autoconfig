@@ -686,29 +686,18 @@ fi
 # Create feishu-robot.py script in Zabbix server
 echo "Creating feishu-robot.py script..."
 feishu_script_content='#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# _*_coding:utf-8 _*_
 
-import json
-import sys
-
-import requests
+import sys, requests, json
 
 subject = str(sys.argv[1])
 message = str(sys.argv[2])
 robot_token = str(sys.argv[3])
 
-# 解析告警级别 (Zabbix 标准级别)
+# 解析告警级别 (Zabbix标准级别)
 severity = str(sys.argv[4]) if len(sys.argv) > 4 else "Not classified"
 
-# 检测是否为恢复通知
-is_recovery = (
-    "恢复" in subject
-    or "恢复" in message
-    or "RESOLVED" in subject.upper()
-    or "OK" in subject.upper()
-)
-
-# 根据 Zabbix 官方标准设置卡片颜色
+# 根据Zabbix官方标准设置卡片颜色
 severity_colors = {
     "Not classified": "grey",
     "Information": "blue",
@@ -717,9 +706,7 @@ severity_colors = {
     "High": "red",
     "Disaster": "purple"
 }
-card_color = "green" if is_recovery else severity_colors.get(
-    severity, severity_colors["Not classified"]
-)
+card_color = severity_colors.get(severity, severity_colors["Not classified"])
 
 robot = "https://open.feishu.cn/open-apis/bot/v2/hook/" + robot_token
 
@@ -770,7 +757,6 @@ headers = {
 }
 
 response = requests.post(url=robot, data=json.dumps(data), headers=headers)
-response.raise_for_status()
 
 print(response.json())'
 
@@ -1122,37 +1108,22 @@ fi
 echo "Zabbix server host configuration completed!"
 
 # Force refresh host interface to ensure DNS resolution works
-TARGET_HOST_ID="${EXISTING_ZABBIX_HOST_ID:-$ZABBIX_HOST_ID}"
-if [ -n "$TARGET_HOST_ID" ]; then
-  echo "Forcing host interface refresh for host ID: $TARGET_HOST_ID..."
-  interface_list_response=$(api_call "hostinterface.get" "{
-    \"hostids\": [\"$TARGET_HOST_ID\"],
-    \"output\": [\"interfaceid\", \"main\"]
-  }" "$AUTH_TOKEN")
+echo "Forcing host interface refresh..."
+refresh_interface_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{
+  \"jsonrpc\": \"2.0\",
+  \"method\": \"hostinterface.update\",
+  \"params\": {
+    \"interfaceid\": \"1\",
+    \"dns\": \"zabbix-agent\",
+    \"useip\": 0,
+    \"ip\": \"\",
+    \"port\": \"10050\"
+  },
+  \"auth\": \"$AUTH_TOKEN\",
+  \"id\": 1
+}" "$ZABBIX_URL/api_jsonrpc.php")
 
-  TARGET_INTERFACE_ID=$(echo "$interface_list_response" | jq -r '
-    ( .result[] | select(.main == "1") | .interfaceid ) // empty
-  ')
-
-  if [ -z "$TARGET_INTERFACE_ID" ]; then
-    TARGET_INTERFACE_ID=$(echo "$interface_list_response" | jq -r '.result[0].interfaceid // empty')
-  fi
-
-  if [ -n "$TARGET_INTERFACE_ID" ]; then
-    refresh_interface_response=$(api_call "hostinterface.update" "{
-      \"interfaceid\": \"$TARGET_INTERFACE_ID\",
-      \"dns\": \"zabbix-agent\",
-      \"useip\": 0,
-      \"ip\": \"\",
-      \"port\": \"10050\"
-    }" "$AUTH_TOKEN")
-    echo "Interface refresh response: $refresh_interface_response"
-  else
-    echo "Unable to determine interface ID for host $TARGET_HOST_ID, skipping interface refresh"
-  fi
-else
-  echo "Unable to determine Zabbix server host ID, skipping interface refresh"
-fi
+echo "Interface refresh response: $refresh_interface_response"
 
 # Wait a moment and test the connection
 sleep 10
@@ -1171,6 +1142,7 @@ test_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{
 
 echo "Host status after refresh: $test_response"
 
+# Set default timezone to Asia/Shanghai
 echo "Setting default timezone to Asia/Shanghai..."
 timezone_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{
   \"jsonrpc\": \"2.0\",
