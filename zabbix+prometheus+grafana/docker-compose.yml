@@ -36,7 +36,6 @@ services:
       - ./zabbix-server-data:/zabbix-server-data
       - ./grafana-data:/grafana-data
       - ./prometheus-data:/prometheus-data
-
     command: |
       sh -c '
         echo "Setting up directory permissions..."
@@ -45,9 +44,6 @@ services:
         chown -R 1997:1997 /zabbix-server-data
         chown -R 472:472 /grafana-data
         chown -R 65534:65534 /prometheus-data
-
-
-
         chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data
         echo "Permissions set successfully"
       '
@@ -195,11 +191,7 @@ services:
       - |
         apk add --no-cache curl jq bash python3 py3-requests mysql-client
         echo "Waiting for Zabbix services to be ready..."
-        
-        # Wait longer for all services to be fully initialized
         sleep 60
-        
-        # Check if Zabbix API is responsive
         echo "Checking Zabbix API availability..."
         for i in {1..60}; do
           if curl -s -f http://zabbix-web:8080/api_jsonrpc.php > /dev/null 2>&1; then
@@ -209,70 +201,45 @@ services:
           echo "Waiting for Zabbix API... (attempt $i/60)"
           sleep 5
         done
-        
-        # Additional wait to ensure database is fully ready
         echo "Ensuring database is fully initialized..."
         sleep 30
-        
-        # Immediate fix for Agent connection issues - run this first
-        echo "Performing immediate Agent connection fix..."
-        
-        # Wait for API to be available and get auth token
+        # Immediate fix for Agent connection issues
         for i in {1..30}; do
           AUTH_TOKEN=$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","method":"user.login","params":{"user":"Admin","password":"zabbix"},"id":1}' 2>/dev/null | \
             jq -r '.result' 2>/dev/null)
-          
           if [ "$AUTH_TOKEN" != "null" ] && [ -n "$AUTH_TOKEN" ] && [ "$AUTH_TOKEN" != "" ]; then
             echo "Successfully authenticated with Zabbix API"
             break
           fi
-          echo "Waiting for Zabbix API authentication... (attempt $i/30)"
           sleep 5
         done
-        
-        if [ "$AUTH_TOKEN" != "null" ] && [ -n "$AUTH_TOKEN" ] && [ "$AUTH_TOKEN" != "" ]; then
-          echo "Checking and fixing hosts with 127.0.0.1 interface..."
-          
-          # Get all hosts with 127.0.0.1 interface
+        if [ "$AUTH_TOKEN" != "null" ] && [ -n "$AUTH_TOKEN" ]; then
           HOSTS_WITH_LOCALHOST=$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
             -H "Content-Type: application/json" \
             -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.get\",\"params\":{\"selectInterfaces\":\"extend\",\"filter\":{\"status\":\"0\"}},\"auth\":\"$AUTH_TOKEN\",\"id\":1}" | \
             jq -r '.result[] | select(.interfaces[]?.ip == "127.0.0.1") | .hostid')
-          
           if [ -n "$HOSTS_WITH_LOCALHOST" ]; then
             for hostid in $HOSTS_WITH_LOCALHOST; do
-              echo "Fixing host $hostid with 127.0.0.1 interface..."
               curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
                 -H "Content-Type: application/json" \
                 -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.update\",\"params\":{\"hostid\":\"$hostid\",\"interfaces\":[{\"type\":1,\"main\":1,\"useip\":0,\"dns\":\"zabbix-agent\",\"port\":\"10050\"}]},\"auth\":\"$AUTH_TOKEN\",\"id\":1}" > /dev/null
               echo "Fixed host $hostid interface to use zabbix-agent"
             done
-            echo "Immediate Agent connection fix completed"
-          else
-            echo "No hosts with 127.0.0.1 interface found"
           fi
-        else
-          echo "Failed to authenticate with Zabbix API, skipping immediate fix"
         fi
-        
         echo "Starting full Zabbix configuration..."
         sleep 30
-        
-        # Execute the main configuration script with retry mechanism
         for attempt in {1..3}; do
           echo "Running zabbix-auto-config.sh (attempt $attempt/3)..."
           if bash /zabbix-auto-config.sh; then
             echo "Configuration completed successfully"
             exit 0
           else
-            echo "Configuration attempt $attempt failed, retrying in 30 seconds..."
             sleep 30
           fi
         done
-        
-        echo "Configuration failed after 3 attempts"
         exit 1
 
   prometheus:
@@ -420,7 +387,51 @@ services:
       - ./grafana-setup.sh:/grafana-setup.sh:ro
     command: ["/bin/sh", "-c", "sleep 30 && /bin/sh /grafana-setup.sh"]
 
+  # phpIPAM Web Interface - 管理界面
+  phpipam-web:
+    image: phpipam/phpipam-www:latest
+    container_name: phpipam-web
+    ports:
+      - "${PHPIPAM_PORT:-8002}:80"
+    environment:
+      - IPAM_DATABASE_HOST=mysql
+      - IPAM_DATABASE_USER=root
+      - IPAM_DATABASE_PASS=root
+      - IPAM_DATABASE_NAME=phpipam
+      - IPAM_DATABASE_WEBHOST=%
+      - IPAM_DATABASE_INSTALL=true            # [自动化] 自动安装数据库
+      - IPAM_DATABASE_ADMIN_USERNAME=admin    # [自动化] 设置初始管理员账号
+      - IPAM_DATABASE_ADMIN_PASS=ipamadmin    # [自动化] 设置初始管理员密码(您可按需修改)
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - monitor
 
+  # phpIPAM Cron - 后台扫描服务
+  phpipam-cron:
+    image: phpipam/phpipam-cron:latest
+    container_name: phpipam-cron
+    environment:
+      - IPAM_DATABASE_HOST=mysql
+      - IPAM_DATABASE_USER=root
+      - IPAM_DATABASE_PASS=root
+      - IPAM_DATABASE_NAME=phpipam
+      - TZ=Asia/Shanghai
+      - SCAN_INTERVAL=1h      # [用户配置] 自动发现间隔：1小时
+      - PING_INTERVAL=5m      # [用户配置] Ping检测间隔：5分钟
+    # 赋予网络管理权限，允许容器对外发Ping包
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - monitor
 
 networks:
   monitor:
