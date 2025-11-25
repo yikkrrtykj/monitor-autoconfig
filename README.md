@@ -2,11 +2,11 @@
 安装后修改Prometheus.yml的外网IP
 
 |    服务    |        访问地址      | 默认用户名 | 默认密码 |
-|------------|-----------------------|-----------|---------|
-|   Grafana  | http://localhost:3000 |   admin   |   root  |
-| Zabbix Web | http://localhost:8001 |   Admin   |  zabbix |
-| Prometheus | http://localhost:9090 |           |         |
-
+|------------|-----------------------|-----------|-----------|
+|   Grafana  | http://localhost:3000 |   admin   |    root   |
+| Zabbix Web | http://localhost:8001 |   Admin   |   zabbix  |
+| Prometheus | http://localhost:9090 |           |           |
+|    ipam    | http://localhost:8002 |   admin   | ipamadmin |
 # Ubuntu安装
 
 ```
