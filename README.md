@@ -1,5 +1,5 @@
-## monitor-autoconfig
-# 拉取文件后修改Prometheus.yml的监控IP
+# monitor-autoconfig
+## 拉取文件后修改Prometheus.yml的监控IP
 
 |    服务    |        访问地址      | 默认用户名 | 默认密码 |
 |------------|-----------------------|-----------|-----------|
