@@ -387,52 +387,6 @@ services:
       - ./grafana-setup.sh:/grafana-setup.sh:ro
     command: ["/bin/sh", "-c", "sleep 30 && /bin/sh /grafana-setup.sh"]
 
-  # phpIPAM Web Interface - 管理界面
-  phpipam-web:
-    image: phpipam/phpipam-www:latest
-    container_name: phpipam-web
-    ports:
-      - "${PHPIPAM_PORT:-8002}:80"
-    environment:
-      - IPAM_DATABASE_HOST=mysql
-      - IPAM_DATABASE_USER=root
-      - IPAM_DATABASE_PASS=root
-      - IPAM_DATABASE_NAME=phpipam
-      - IPAM_DATABASE_WEBHOST=%
-      - IPAM_DATABASE_INSTALL=true            # [自动化] 自动安装数据库
-      - IPAM_DATABASE_ADMIN_USERNAME=admin    # [自动化] 设置初始管理员账号
-      - IPAM_DATABASE_ADMIN_PASS=ipamadmin    # [自动化] 设置初始管理员密码(您可按需修改)
-      - TZ=Asia/Shanghai
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
-    networks:
-      - monitor
-
-  # phpIPAM Cron - 后台扫描服务
-  phpipam-cron:
-    image: phpipam/phpipam-cron:latest
-    container_name: phpipam-cron
-    environment:
-      - IPAM_DATABASE_HOST=mysql
-      - IPAM_DATABASE_USER=root
-      - IPAM_DATABASE_PASS=root
-      - IPAM_DATABASE_NAME=phpipam
-      - TZ=Asia/Shanghai
-      - SCAN_INTERVAL=1h      # [用户配置] 自动发现间隔：1小时
-      - PING_INTERVAL=5m      # [用户配置] Ping检测间隔：5分钟
-    # 赋予网络管理权限，允许容器对外发Ping包
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
-    networks:
-      - monitor
-
 networks:
   monitor:
     driver: bridge
