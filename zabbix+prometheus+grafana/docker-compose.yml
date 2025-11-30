@@ -76,6 +76,7 @@ services:
       /bin/sh -c '
         apt-get update &&
         apt-get install -y python3 python3-requests &&
+        chmod +x /usr/lib/zabbix/alertscripts/feishu-robot.py &&
         /usr/bin/docker-entrypoint.sh /usr/sbin/zabbix_server --foreground -c /etc/zabbix/zabbix_server.conf
       '
     depends_on:
