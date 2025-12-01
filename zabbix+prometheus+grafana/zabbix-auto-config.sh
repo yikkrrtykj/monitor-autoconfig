@@ -817,13 +817,13 @@ mediatype_response=$(api_call "mediatype.create" "{
       \"eventsource\": 0,
       \"recovery\": 0,
       \"subject\": \"⚠️ Zabbix 告警通知 - 问题触发\",
-      \"message\": \"📌告警设备：{HOST.NAME}\\n🌐告警IP：{HOST.IP}\\n🔄当前状态: {TRIGGER.STATUS}\\n⏰告警时间：{EVENT.DATE} {EVENT.TIME}\\n🔴告警级别：{EVENT.SEVERITY}\\n📋告警详情：{EVENT.OPDATA}\\n📝告警信息：{TRIGGER.NAME}\"
+      \"message\": \"📌告警设备:{HOST.NAME}\\n🌐告警IP:{HOST.IP}\\n🔄当前状态:{TRIGGER.STATUS}\\n⏰告警时间:{EVENT.DATE} {EVENT.TIME}\\n🔴告警级别:{EVENT.SEVERITY}\\n📋告警详情:{EVENT.OPDATA}\\n📝告警信息:{TRIGGER.NAME}\"
     },
     {
       \"eventsource\": 0,
       \"recovery\": 1,
       \"subject\": \"✅ Zabbix 告警通知 - 问题恢复\",
-      \"message\": \"📌恢复主机：{HOST.NAME}\\n🌐恢复IP：{HOST.IP}\\n🔴事件级别：{TRIGGER.SEVERITY}\\n⏰告警时间：{EVENT.DATE} {EVENT.TIME}\\n⏰恢复时间：{EVENT.RECOVERY.DATE} {EVENT.RECOVERY.TIME}\\n⏰持续时间：{EVENT.AGE}\\n📝告警信息：{EVENT.NAME}\\n📋恢复详情：{ITEM.NAME}({ITEM.KEY})：{ITEM.VALUE}\\n🔄恢复状态：{TRIGGER.STATUS}\"
+      \"message\": \"📌恢复主机:{HOST.NAME}\\n🌐恢复IP:{HOST.IP}\\n🔴事件级别:{TRIGGER.SEVERITY}\\n⏰告警时间:{EVENT.DATE} {EVENT.TIME}\\n⏰恢复时间:{EVENT.RECOVERY.DATE} {EVENT.RECOVERY.TIME}\\n⏰持续时间:{EVENT.AGE}\\n📝告警信息:{EVENT.NAME}\\n📋恢复详情:{ITEM.NAME}:{ITEM.VALUE}\\n🔄恢复状态:{TRIGGER.STATUS}\"
     }
   ]
 }" "$AUTH_TOKEN")
