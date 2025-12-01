@@ -6,6 +6,7 @@
 |   Grafana  | http://localhost:3000 |   admin   |    root   |
 | Zabbix Web | http://localhost:8001 |   Admin   |   zabbix  |
 | Prometheus | http://localhost:9090 |           |           |
+| uptimekuma | http://localhost:3001 |           |           |
 # Ubuntu安装
 
 ```
