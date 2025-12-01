@@ -36,15 +36,18 @@ services:
       - ./zabbix-server-data:/zabbix-server-data
       - ./grafana-data:/grafana-data
       - ./prometheus-data:/prometheus-data
+      - ./uptime-kuma-data:/uptime-kuma-data
     command: |
       sh -c '
         echo "Setting up directory permissions..."
-        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data
+        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data
         chown -R 999:999 /mysql-data
         chown -R 1997:1997 /zabbix-server-data
         chown -R 472:472 /grafana-data
         chown -R 65534:65534 /prometheus-data
-        chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data
+        # Uptime Kuma (v1) typically runs as root internally, so standard permissions are usually sufficient.
+        # Creating the directory ensures it exists for the bind mount.
+        chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data
         echo "Permissions set successfully"
       '
     networks:
@@ -332,6 +335,21 @@ services:
               preferred_ip_protocol: ip4
         EOF
         exec /bin/blackbox_exporter --config.file=/etc/blackbox_exporter/config.yml
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    container_name: uptime-kuma
+    restart: unless-stopped
+    volumes:
+      - ./uptime-kuma-data:/app/data
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "3001:3001"
+    networks:
+      - monitor
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
 
   grafana:
     image: grafana/grafana:latest
