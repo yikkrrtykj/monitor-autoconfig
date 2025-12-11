@@ -2,11 +2,11 @@
 ## 拉取文件后修改Prometheus.yml的监控IP
 
 |    服务    |        访问地址      | 默认用户名 | 默认密码 |
-|------------|-----------------------|-----------|-----------|
-|   Grafana  | http://localhost:3000 |   admin   |    root   |
-| Zabbix Web | http://localhost:8001 |   Admin   |   zabbix  |
-| Prometheus | http://localhost:9090 |           |           |
-| uptimekuma | http://localhost:3001 |           |           |
+|------------|-----------------------|------------|-----------|
+|   Grafana  | http://localhost:3000 |   admin    |    root   |
+| Zabbix Web | http://localhost:8001 |   Admin    |   zabbix  |
+| Prometheus | http://localhost:9090 |            |           |
+| uptimekuma | http://localhost:3001 | 需自己创建 |           |
 # Ubuntu安装
 
 ```
