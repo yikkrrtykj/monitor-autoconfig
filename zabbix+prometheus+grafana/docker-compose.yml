@@ -402,7 +402,6 @@ services:
       PGID: 1000
     volumes:
       - ./librenms-data:/data
-      - /etc/localtime:/etc/localtime:ro
     ports:
       - "${LIBRENMS_PORT:-8002}:8000"
     cap_add:
