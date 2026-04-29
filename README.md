@@ -49,6 +49,8 @@ SNMP_COMMUNITY=global
 LIBRENMS_DISCOVERY_TARGETS=192.168.10.1-100,192.168.10.254
 LIBRENMS_CORE_IP=192.168.10.254
 SWITCH_DISCOVERY_RANGE=192.168.10.1-100,192.168.10.254
+PROMETHEUS_SNMP_TARGETS=192.168.10.254,192.168.10.11-16
+PROMETHEUS_PING_TARGETS=192.168.10.254,192.168.10.11-16
 ```
 
 例如改成 `10.10.20.0/24`，可以写成：
@@ -57,10 +59,12 @@ SWITCH_DISCOVERY_RANGE=192.168.10.1-100,192.168.10.254
 LIBRENMS_DISCOVERY_TARGETS=10.10.20.1-100,10.10.20.254
 LIBRENMS_CORE_IP=10.10.20.254
 SWITCH_DISCOVERY_RANGE=10.10.20.1-100,10.10.20.254
+PROMETHEUS_SNMP_TARGETS=10.10.20.254,10.10.20.11-16
+PROMETHEUS_PING_TARGETS=10.10.20.254,10.10.20.11-16
 ```
 
 改完执行 `docker compose up -d --force-recreate librenms-config zabbix-config` 重新应用自动发现配置。
-如果 Grafana 的 SNMP 面板也要采集新网段里的固定设备，同步修改 `prometheus.yml` 里的 SNMP 目标 IP。
+如果 Grafana 的 SNMP / ICMP 面板也要跟着变，修改 `PROMETHEUS_SNMP_TARGETS` 和 `PROMETHEUS_PING_TARGETS`，再执行 `docker compose up -d --force-recreate prometheus`。
 
 ## 自动配置
 
@@ -68,6 +72,7 @@ SWITCH_DISCOVERY_RANGE=10.10.20.1-100,10.10.20.254
 
 - **Zabbix**：添加主机、模板、SNMP 监控、飞书告警
 - **LibreNMS**：创建默认管理员、自动发现 SNMP 设备（默认范围：`192.168.10.1-100,192.168.10.254`）、告警规则
+- **Prometheus**：轻量模式，只为 Grafana 采集核心/舞台交换机 SNMP 和 ICMP 数据
 
 查看配置日志：
 ```bash

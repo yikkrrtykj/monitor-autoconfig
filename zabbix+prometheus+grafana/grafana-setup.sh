@@ -37,17 +37,6 @@ curl -s -X POST \
   -d '{"name":"Zabbix","type":"alexanderzobnin-zabbix-datasource","url":"http://zabbix-web:8080/api_jsonrpc.php","access":"proxy","basicAuth":false,"jsonData":{"username":"Admin","trends":true,"trendsFrom":"7d","trendsRange":"4h","cacheTTL":"1h","dbConnectionEnable":true,"dbConnectionDatasourceId":1},"secureJsonData":{"password":"zabbix"}}' \
   http://grafana:3000/api/datasources
 
-echo "Importing SNMP Exporter dashboard..."
-if [ -f /snmp-exporter.json ]; then
-  import_payload=$(jq -n --slurpfile dash /snmp-exporter.json '{dashboard: $dash[0], overwrite: true, folderId: 0, inputs: [{name:"DS_PROMETHEUS", type:"datasource", pluginId:"prometheus", value:"Prometheus"}]}')
-  curl -s -X POST \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Basic YWRtaW46cm9vdA==" \
-    -d "$import_payload" \
-    http://grafana:3000/api/dashboards/import
-  echo "SNMP Exporter dashboard import attempted"
-fi
-
 echo "Importing SNMP Stats dashboard..."
 if [ -f /snmp-stats.json ]; then
   # Create a temporary file with updated UID and remove id field

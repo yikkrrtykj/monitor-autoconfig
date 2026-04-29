@@ -282,17 +282,18 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
+      PROMETHEUS_SNMP_TARGETS: "${PROMETHEUS_SNMP_TARGETS:-192.168.10.254,192.168.10.11-16}"
+      PROMETHEUS_PING_TARGETS: "${PROMETHEUS_PING_TARGETS:-192.168.10.254,192.168.10.11-16}"
+      PROMETHEUS_SNMP_AUTH: "${PROMETHEUS_SNMP_AUTH:-global}"
+      PROMETHEUS_SCRAPE_INTERVAL: "${PROMETHEUS_SCRAPE_INTERVAL:-30s}"
+      PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
     volumes:
       - prometheus-data:/prometheus
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus-gen-config.sh:/etc/prometheus/prometheus-gen-config.sh:ro
       - /etc/localtime:/etc/localtime:ro
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--web.enable-lifecycle'
-      - '--storage.tsdb.retention.time=30d'
+    entrypoint:
+      - /bin/sh
+      - /etc/prometheus/prometheus-gen-config.sh
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
     depends_on:
@@ -306,24 +307,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: node-exporter
-    restart: unless-stopped
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.rootfs=/rootfs'
-      - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
-    ports:
-      - "${NODE_EXPORTER_PORT:-9100}:9100"
-    networks:
-      - monitor
 
   snmp-exporter:
     image: prom/snmp-exporter:latest
@@ -511,7 +494,6 @@ services:
       - monitor
     restart: "no"
     volumes:
-      - ./snmp-exporter-dashboard.json:/snmp-exporter.json:ro
       - ./snmp-stats-dashboard.json:/snmp-stats.json:ro
       - ./blackbox-icmp-dashboard.json:/blackbox-icmp.json:ro
       - ./grafana-setup.sh:/grafana-setup.sh:ro
