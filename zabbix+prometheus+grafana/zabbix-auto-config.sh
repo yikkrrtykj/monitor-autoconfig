@@ -8,6 +8,10 @@ set -e
 ZABBIX_URL="http://zabbix-web:8080"
 ZABBIX_USER="Admin"
 ZABBIX_PASS="zabbix"
+SNMP_COMMUNITY="${SNMP_COMMUNITY:-global}"
+SWITCH_DISCOVERY_RANGE="${SWITCH_DISCOVERY_RANGE:-192.168.10.1-100,192.168.10.254}"
+FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-172.25.9.2-253,192.168.9.1-254}"
+FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-public}"
 
 # Copy script to writable location
 cp "$0" /tmp/zabbix-auto-config.sh
@@ -354,14 +358,14 @@ echo "'Watchguard Firewall' template ID: $WATCHGUARD_TEMPLATE_ID"
 echo "Creating discovery rule 'switch'..."
 drule_response=$(api_call "drule.create" "{
   \"name\": \"switch\",
-  \"iprange\": \"192.168.10.1-100,192.168.10.254\",
+  \"iprange\": \"$SWITCH_DISCOVERY_RANGE\",
   \"delay\": \"20m\",
   \"dchecks\": [
     {
       \"type\": 11,
       \"ports\": \"161\",
       \"key_\": \"1.3.6.1.2.1.1.1.0\",
-      \"snmp_community\": \"global\",
+      \"snmp_community\": \"$SNMP_COMMUNITY\",
       \"uniq\": 0
     }
   ]
@@ -392,28 +396,28 @@ fi
 echo "Creating discovery rule 'firewall'..."
 firewall_drule_response=$(api_call "drule.create" "{
   \"name\": \"firewall\",
-  \"iprange\": \"172.25.9.2-253,192.168.9.1-254\",
+  \"iprange\": \"$FIREWALL_DISCOVERY_RANGE\",
   \"delay\": \"30m\",
   \"dchecks\": [
     {
       \"type\": 11,
       \"ports\": \"161\",
       \"key_\": \"1.3.6.1.2.1.1.1.0\",
-      \"snmp_community\": \"public\",
+      \"snmp_community\": \"$FIREWALL_SNMP_COMMUNITY\",
       \"uniq\": 0
     },
     {
       \"type\": 11,
       \"ports\": \"161\",
       \"key_\": \"1.3.6.1.4.1.28557.2.2.1.1.0\",
-      \"snmp_community\": \"public\",
+      \"snmp_community\": \"$FIREWALL_SNMP_COMMUNITY\",
       \"uniq\": 0
     },
     {
       \"type\": 11,
       \"ports\": \"161\",
       \"key_\": \"1.3.6.1.4.1.3097.6.3.77.0\",
-      \"snmp_community\": \"public\",
+      \"snmp_community\": \"$FIREWALL_SNMP_COMMUNITY\",
       \"uniq\": 0
     }
   ]
@@ -994,8 +998,8 @@ verify_response=$(api_call "action.get" "{
 echo "Alert action verification completed"
 
 echo "Zabbix auto-discovery and Feishu alert configuration completed successfully!"
-echo "Discovery rule 'switch' created for IP ranges: 192.168.10.1-100, 192.168.10.254"
-echo "Discovery rule 'firewall' created for IP ranges: 172.25.9.2-253, 192.168.9.1-254"
+echo "Discovery rule 'switch' created for IP ranges: $SWITCH_DISCOVERY_RANGE"
+echo "Discovery rule 'firewall' created for IP ranges: $FIREWALL_DISCOVERY_RANGE"
 echo "Discovery action configured to add hosts to 'switch' group and link Cisco IOS template"
 echo "Imported firewall templates:"
 if [ -n "$HILLSTONE_TEMPLATE_ID" ]; then

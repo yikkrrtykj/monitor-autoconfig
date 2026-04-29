@@ -38,8 +38,29 @@ sudo usermod -aG docker $USER
 ```bash
 git clone https://github.com/yikkrrtykj/monitor-autoconfig.git
 cd monitor-autoconfig/zabbix+prometheus+grafana
+cp .env.example .env
 docker compose up -d
 ```
+
+如果以后内网换网段，修改 `zabbix+prometheus+grafana/.env`：
+
+```env
+SNMP_COMMUNITY=global
+LIBRENMS_DISCOVERY_TARGETS=192.168.10.1-100,192.168.10.254
+LIBRENMS_CORE_IP=192.168.10.254
+SWITCH_DISCOVERY_RANGE=192.168.10.1-100,192.168.10.254
+```
+
+例如改成 `10.10.20.0/24`，可以写成：
+
+```env
+LIBRENMS_DISCOVERY_TARGETS=10.10.20.1-100,10.10.20.254
+LIBRENMS_CORE_IP=10.10.20.254
+SWITCH_DISCOVERY_RANGE=10.10.20.1-100,10.10.20.254
+```
+
+改完执行 `docker compose up -d --force-recreate librenms-config zabbix-config` 重新应用自动发现配置。
+如果 Grafana 的 SNMP 面板也要采集新网段里的固定设备，同步修改 `prometheus.yml` 里的 SNMP 目标 IP。
 
 ## 自动配置
 
