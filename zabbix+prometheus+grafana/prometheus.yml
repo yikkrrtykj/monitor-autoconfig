@@ -38,7 +38,7 @@ scrape_configs:
   - job_name: 'core'
     static_configs:
       - targets:
-        - 172.25.10.254  # Cisco Catalyst L3 Switch
+        - 192.168.10.254  # Core switch
     metrics_path: /snmp
     params:
       auth: [global]
@@ -54,7 +54,7 @@ scrape_configs:
   - job_name: 'stage1'
     static_configs:
       - targets:
-        - 172.25.10.3    # Cisco C2960X
+        - 192.168.10.11   # Stage switch 1
     metrics_path: /snmp
     params:
       auth: [global]
@@ -70,7 +70,7 @@ scrape_configs:
   - job_name: 'stage2'
     static_configs:
       - targets:
-        - 172.25.10.4    # Cisco C2960X
+        - 192.168.10.12   # Stage switch 2
     metrics_path: /snmp
     params:
       auth: [global]
@@ -86,7 +86,7 @@ scrape_configs:
   - job_name: 'stage3'
     static_configs:
       - targets:
-        - 172.25.10.5    # Cisco C2960X
+        - 192.168.10.13   # Stage switch 3
     metrics_path: /snmp
     params:
       auth: [global]
@@ -102,7 +102,7 @@ scrape_configs:
   - job_name: 'stage4'
     static_configs:
       - targets:
-        - 172.25.10.6    # Cisco C2960X
+        - 192.168.10.14   # Stage switch 4
     metrics_path: /snmp
     params:
       auth: [global]
@@ -118,7 +118,7 @@ scrape_configs:
   - job_name: 'stage5'
     static_configs:
       - targets:
-        - 172.25.10.7    # Cisco C2960X
+        - 192.168.10.15   # Stage switch 5
     metrics_path: /snmp
     params:
       auth: [global]
@@ -134,7 +134,7 @@ scrape_configs:
   - job_name: 'stage6'
     static_configs:
       - targets:
-        - 172.25.10.8    # Cisco C2960X
+        - 192.168.10.16   # Stage switch 6
     metrics_path: /snmp
     params:
       auth: [global]

@@ -354,14 +354,14 @@ echo "'Watchguard Firewall' template ID: $WATCHGUARD_TEMPLATE_ID"
 echo "Creating discovery rule 'switch'..."
 drule_response=$(api_call "drule.create" "{
   \"name\": \"switch\",
-  \"iprange\": \"192.168.10.1-254,172.25.10.1-254\",
+  \"iprange\": \"192.168.10.1-100,192.168.10.254\",
   \"delay\": \"20m\",
   \"dchecks\": [
     {
       \"type\": 11,
       \"ports\": \"161\",
       \"key_\": \"1.3.6.1.2.1.1.1.0\",
-      \"snmp_community\": \"public\",
+      \"snmp_community\": \"global\",
       \"uniq\": 0
     }
   ]
@@ -994,7 +994,7 @@ verify_response=$(api_call "action.get" "{
 echo "Alert action verification completed"
 
 echo "Zabbix auto-discovery and Feishu alert configuration completed successfully!"
-echo "Discovery rule 'switch' created for IP ranges: 192.168.10.1-254, 172.25.10.1-254"
+echo "Discovery rule 'switch' created for IP ranges: 192.168.10.1-100, 192.168.10.254"
 echo "Discovery rule 'firewall' created for IP ranges: 172.25.9.2-253, 192.168.9.1-254"
 echo "Discovery action configured to add hosts to 'switch' group and link Cisco IOS template"
 echo "Imported firewall templates:"
