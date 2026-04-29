@@ -225,46 +225,46 @@ services:
         echo "Waiting for Zabbix services to be ready..."
         sleep 60
         echo "Checking Zabbix API availability..."
-        for i in $(seq 1 60); do
+        for i in $$(seq 1 60); do
           if curl -s -f http://zabbix-web:8080/api_jsonrpc.php > /dev/null 2>&1; then
             echo "Zabbix API is available"
             break
           fi
-          echo "Waiting for Zabbix API... (attempt $i/60)"
+          echo "Waiting for Zabbix API... (attempt $$i/60)"
           sleep 5
         done
         echo "Ensuring database is fully initialized..."
         sleep 30
         # Immediate fix for Agent connection issues
-        for i in $(seq 1 30); do
-          AUTH_TOKEN=$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
+        for i in $$(seq 1 30); do
+          AUTH_TOKEN=$$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","method":"user.login","params":{"username":"Admin","password":"zabbix"},"id":1}' 2>/dev/null | \
             jq -r '.result' 2>/dev/null)
-          if [ "$AUTH_TOKEN" != "null" ] && [ -n "$AUTH_TOKEN" ] && [ "$AUTH_TOKEN" != "" ]; then
+          if [ "$$AUTH_TOKEN" != "null" ] && [ -n "$$AUTH_TOKEN" ] && [ "$$AUTH_TOKEN" != "" ]; then
             echo "Successfully authenticated with Zabbix API"
             break
           fi
           sleep 5
         done
-        if [ "$AUTH_TOKEN" != "null" ] && [ -n "$AUTH_TOKEN" ]; then
-          HOSTS_WITH_LOCALHOST=$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
+        if [ "$$AUTH_TOKEN" != "null" ] && [ -n "$$AUTH_TOKEN" ]; then
+          HOSTS_WITH_LOCALHOST=$$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
             -H "Content-Type: application/json" \
-            -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.get\",\"params\":{\"selectInterfaces\":\"extend\",\"filter\":{\"status\":\"0\"}},\"auth\":\"$AUTH_TOKEN\",\"id\":1}" | \
+            -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.get\",\"params\":{\"selectInterfaces\":\"extend\",\"filter\":{\"status\":\"0\"}},\"auth\":\"$$AUTH_TOKEN\",\"id\":1}" | \
             jq -r '.result[] | select(.interfaces[]?.ip == "127.0.0.1") | .hostid')
-          if [ -n "$HOSTS_WITH_LOCALHOST" ]; then
-            for hostid in $HOSTS_WITH_LOCALHOST; do
+          if [ -n "$$HOSTS_WITH_LOCALHOST" ]; then
+            for hostid in $$HOSTS_WITH_LOCALHOST; do
               curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
                 -H "Content-Type: application/json" \
-                -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.update\",\"params\":{\"hostid\":\"$hostid\",\"interfaces\":[{\"type\":1,\"main\":1,\"useip\":0,\"dns\":\"zabbix-agent\",\"port\":\"10050\"}]},\"auth\":\"$AUTH_TOKEN\",\"id\":1}" > /dev/null
-              echo "Fixed host $hostid interface to use zabbix-agent"
+                -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.update\",\"params\":{\"hostid\":\"$$hostid\",\"interfaces\":[{\"type\":1,\"main\":1,\"useip\":0,\"dns\":\"zabbix-agent\",\"port\":\"10050\"}]},\"auth\":\"$$AUTH_TOKEN\",\"id\":1}" > /dev/null
+              echo "Fixed host $$hostid interface to use zabbix-agent"
             done
           fi
         fi
         echo "Starting full Zabbix configuration..."
         sleep 30
-        for attempt in $(seq 1 3); do
-          echo "Running zabbix-auto-config.sh (attempt $attempt/3)..."
+        for attempt in $$(seq 1 3); do
+          echo "Running zabbix-auto-config.sh (attempt $$attempt/3)..."
           if bash /zabbix-auto-config.sh; then
             echo "Configuration completed successfully"
             exit 0
@@ -392,10 +392,14 @@ services:
       DB_HOST: librenms-db
       DB_NAME: librenms
       DB_USER: librenms
+      DB_PASSWORD: librenms
       DB_PASS: librenms
-      BASE_URL: "http://localhost:8002"
+      DB_TIMEOUT: 120
+      LIBRENMS_BASE_URL: "http://localhost:8002"
       POLLERS: 4
-      SNMP_COMMUNITY: "global"
+      LIBRENMS_SNMP_COMMUNITY: "global"
+      PUID: 1000
+      PGID: 1000
     volumes:
       - ./librenms-data:/data
       - /etc/localtime:/etc/localtime:ro
@@ -407,18 +411,18 @@ services:
     networks:
       - monitor
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/ || exit 1"]
-      interval: 30s
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8000/ || exit 1"]
+      interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 120s
+      retries: 20
+      start_period: 300s
 
   librenms-config:
     image: librenms/librenms:latest
     container_name: librenms-config
     depends_on:
       librenms:
-        condition: service_healthy
+        condition: service_started
     networks:
       - monitor
     restart: "no"
