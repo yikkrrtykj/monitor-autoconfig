@@ -12,6 +12,12 @@ auths:
     auth_protocol: MD5
     priv_protocol: DES
     version: 2
+  global:
+    community: global
+    security_level: noAuthNoPriv
+    auth_protocol: MD5
+    priv_protocol: DES
+    version: 2
 modules:
   apcups:
     walk:

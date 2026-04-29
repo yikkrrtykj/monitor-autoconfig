@@ -1,0 +1,19 @@
+# Docker 数据目录（运行时生成）
+mysql-data/
+zabbix-server-data/
+grafana-data/
+prometheus-data/
+uptime-kuma-data/
+librenms-db-data/
+librenms-data/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Python 缓存
+__pycache__/
+*.py[cod]

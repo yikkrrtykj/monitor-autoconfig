@@ -28,6 +28,33 @@ services:
       retries: 10
       start_period: 60s
 
+  librenms-db:
+    image: mariadb:10.5
+    container_name: librenms-db
+    restart: unless-stopped
+    command:
+      - "mysqld"
+      - "--innodb-file-per-table=1"
+      - "--lower-case-table-names=0"
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: librenms_root
+      MYSQL_DATABASE: librenms
+      MYSQL_USER: librenms
+      MYSQL_PASSWORD: librenms
+    volumes:
+      - ./librenms-db-data:/var/lib/mysql
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-plibrenms_root"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 60s
+
   init-permissions:
     image: alpine:latest
     container_name: init-permissions
@@ -37,17 +64,18 @@ services:
       - ./grafana-data:/grafana-data
       - ./prometheus-data:/prometheus-data
       - ./uptime-kuma-data:/uptime-kuma-data
+      - ./librenms-db-data:/librenms-db-data
+      - ./librenms-data:/librenms-data
     command: |
       sh -c '
         echo "Setting up directory permissions..."
-        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data
-        chown -R 999:999 /mysql-data
+        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data /librenms-db-data /librenms-data
+        chown -R 999:999 /mysql-data /librenms-db-data
         chown -R 1997:1997 /zabbix-server-data
         chown -R 472:472 /grafana-data
         chown -R 65534:65534 /prometheus-data
-        # Uptime Kuma (v1) typically runs as root internally, so standard permissions are usually sufficient.
-        # Creating the directory ensures it exists for the bind mount.
-        chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data
+        chown -R 1000:1000 /librenms-data
+        chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data /librenms-db-data /librenms-data
         echo "Permissions set successfully"
       '
     networks:
@@ -197,7 +225,7 @@ services:
         echo "Waiting for Zabbix services to be ready..."
         sleep 60
         echo "Checking Zabbix API availability..."
-        for i in {1..60}; do
+        for i in $(seq 1 60); do
           if curl -s -f http://zabbix-web:8080/api_jsonrpc.php > /dev/null 2>&1; then
             echo "Zabbix API is available"
             break
@@ -208,10 +236,10 @@ services:
         echo "Ensuring database is fully initialized..."
         sleep 30
         # Immediate fix for Agent connection issues
-        for i in {1..30}; do
+        for i in $(seq 1 30); do
           AUTH_TOKEN=$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
             -H "Content-Type: application/json" \
-            -d '{"jsonrpc":"2.0","method":"user.login","params":{"user":"Admin","password":"zabbix"},"id":1}' 2>/dev/null | \
+            -d '{"jsonrpc":"2.0","method":"user.login","params":{"username":"Admin","password":"zabbix"},"id":1}' 2>/dev/null | \
             jq -r '.result' 2>/dev/null)
           if [ "$AUTH_TOKEN" != "null" ] && [ -n "$AUTH_TOKEN" ] && [ "$AUTH_TOKEN" != "" ]; then
             echo "Successfully authenticated with Zabbix API"
@@ -235,7 +263,7 @@ services:
         fi
         echo "Starting full Zabbix configuration..."
         sleep 30
-        for attempt in {1..3}; do
+        for attempt in $(seq 1 3); do
           echo "Running zabbix-auto-config.sh (attempt $attempt/3)..."
           if bash /zabbix-auto-config.sh; then
             echo "Configuration completed successfully"
@@ -351,6 +379,65 @@ services:
       init-permissions:
         condition: service_completed_successfully
 
+  librenms:
+    image: librenms/librenms:latest
+    container_name: librenms
+    restart: unless-stopped
+    hostname: librenms
+    depends_on:
+      librenms-db:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      DB_HOST: librenms-db
+      DB_NAME: librenms
+      DB_USER: librenms
+      DB_PASS: librenms
+      BASE_URL: "http://localhost:8002"
+      POLLERS: 4
+      SNMP_COMMUNITY: "global"
+    volumes:
+      - ./librenms-data:/data
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "${LIBRENMS_PORT:-8002}:8000"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  librenms-config:
+    image: librenms/librenms:latest
+    container_name: librenms-config
+    depends_on:
+      librenms:
+        condition: service_healthy
+    networks:
+      - monitor
+    restart: "no"
+    volumes:
+      - ./librenms-auto-config.sh:/librenms-auto-config.sh:ro
+    environment:
+      TZ: Asia/Shanghai
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "Waiting for LibreNMS to fully initialize..."
+        sleep 30
+        echo "Running LibreNMS auto-configuration..."
+        chmod +x /librenms-auto-config.sh
+        /bin/sh /librenms-auto-config.sh
+        echo ""
+        echo "UniFi APs: Add via SNMP in LibreNMS web UI (http://localhost:8002)"
+
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
@@ -415,3 +502,5 @@ volumes:
   grafana-data:
   mysql-data:
   zabbix-server-data:
+  librenms-db-data:
+  librenms-data:

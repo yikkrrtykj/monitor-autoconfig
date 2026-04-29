@@ -41,7 +41,7 @@ scrape_configs:
         - 172.25.10.254  # Cisco Catalyst L3 Switch
     metrics_path: /snmp
     params:
-      auth: [public_v2]
+      auth: [global]
       module: [if_mib]
     relabel_configs:
        - source_labels: [__address__]
@@ -57,7 +57,7 @@ scrape_configs:
         - 172.25.10.3    # Cisco C2960X
     metrics_path: /snmp
     params:
-      auth: [public_v2]
+      auth: [global]
       module: [if_mib]
     relabel_configs:
        - source_labels: [__address__]
@@ -73,7 +73,7 @@ scrape_configs:
         - 172.25.10.4    # Cisco C2960X
     metrics_path: /snmp
     params:
-      auth: [public_v2]
+      auth: [global]
       module: [if_mib]
     relabel_configs:
        - source_labels: [__address__]
@@ -89,7 +89,7 @@ scrape_configs:
         - 172.25.10.5    # Cisco C2960X
     metrics_path: /snmp
     params:
-      auth: [public_v2]
+      auth: [global]
       module: [if_mib]
     relabel_configs:
        - source_labels: [__address__]
@@ -105,7 +105,7 @@ scrape_configs:
         - 172.25.10.6    # Cisco C2960X
     metrics_path: /snmp
     params:
-      auth: [public_v2]
+      auth: [global]
       module: [if_mib]
     relabel_configs:
        - source_labels: [__address__]
@@ -121,7 +121,7 @@ scrape_configs:
         - 172.25.10.7    # Cisco C2960X
     metrics_path: /snmp
     params:
-      auth: [public_v2]
+      auth: [global]
       module: [if_mib]
     relabel_configs:
        - source_labels: [__address__]
@@ -137,7 +137,7 @@ scrape_configs:
         - 172.25.10.8    # Cisco C2960X
     metrics_path: /snmp
     params:
-      auth: [public_v2]
+      auth: [global]
       module: [if_mib]
     relabel_configs:
        - source_labels: [__address__]
