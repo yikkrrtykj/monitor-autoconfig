@@ -28,4 +28,15 @@ if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ] && [ -f /opt/librenms/.env 
   echo "[librenms-entry] APP_URL patched to http://${SERVER_IP}:${LIBRENMS_PORT}"
 fi
 
+# Patch RrdCheck.php to comment out progress echo lines that break JSON API responses.
+# LibreNMS prints "Scanning X rrd files..." to stdout during web validate,
+# which corrupts the JSON response body and causes front-end parse failure.
+if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then
+  sed -i '/Scanning.*rrd files/s/^\(\s*\)echo/\1\/\/ echo/' /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i '/echo \$test_status;/s/^\(\s*\)echo/\1\/\/ echo/' /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "/Status:.*Complete/s/^\(\s*\)echo/\1\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i '/echo "\\\\033\[/s/^\(\s*\)echo/\1\/\/ echo/' /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  echo "[librenms-entry] RrdCheck.php echo lines commented out"
+fi
+
 exec /init
