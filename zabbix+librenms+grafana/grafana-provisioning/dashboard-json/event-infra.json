@@ -82,7 +82,7 @@
       "gridPos": { "h": 3, "w": 4, "x": 20, "y": 0 },
       "id": 6,
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "count(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping\"})", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "count(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping\"} == 1)", "refId": "A" }],
       "title": "总计在线", "type": "stat"
     },
     {

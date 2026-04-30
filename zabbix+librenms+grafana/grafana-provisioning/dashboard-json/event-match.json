@@ -370,7 +370,7 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "count(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping\"})",
+                                           "expr":  "count(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping\"} == 1)",
                                            "refId":  "A"
                                        }
                                    ],
