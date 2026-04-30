@@ -319,8 +319,13 @@ services:
       PROMETHEUS_SNMP_AUTH: "${PROMETHEUS_SNMP_AUTH:-global}"
       PROMETHEUS_SCRAPE_INTERVAL: "${PROMETHEUS_SCRAPE_INTERVAL:-30s}"
       PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
+      INFRA_SWITCH_PING_TARGETS: "${INFRA_SWITCH_PING_TARGETS:-}"
+      INFRA_FIREWALL_PING_TARGETS: "${INFRA_FIREWALL_PING_TARGETS:-}"
+      INFRA_AP_PING_TARGETS: "${INFRA_AP_PING_TARGETS:-}"
+      PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
     volumes:
       - prometheus-data:/prometheus
+      - player-targets-data:/etc/prometheus/targets
       - ./prometheus-gen-config.sh:/etc/prometheus/prometheus-gen-config.sh:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
@@ -380,6 +385,38 @@ services:
               preferred_ip_protocol: ip4
         EOF
         exec /bin/blackbox_exporter --config.file=/etc/blackbox_exporter/config.yml
+
+  player-targets:
+    image: python:3-alpine
+    container_name: player-targets
+    restart: unless-stopped
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    networks:
+      - monitor
+    volumes:
+      - player-targets-data:/targets
+      - ./generate-player-targets.py:/generate-player-targets.py:ro
+    environment:
+      TZ: Asia/Shanghai
+      TOURNAMENT_SWITCHES: "${TOURNAMENT_SWITCHES:-}"
+      SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
+      PLAYER_SUBNETS: "${PLAYER_SUBNETS:-}"
+      WIRELESS_SUBNETS: "${WIRELESS_SUBNETS:-}"
+      PLAYER_TARGETS_FILE: "/targets/player_targets.json"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache net-snmp-tools
+        echo "[player-targets] starting target generator loop"
+        while true; do
+          python3 /generate-player-targets.py 2>&1 | while IFS= read -r line; do
+            echo "[player-targets] $$line"
+          done
+          sleep 60
+        done
 
   uptime-kuma:
     image: louislam/uptime-kuma:2
@@ -594,6 +631,7 @@ networks:
 
 volumes:
   prometheus-data:
+  player-targets-data:
   grafana-data:
   mysql-data:
   zabbix-server-data:

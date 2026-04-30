@@ -5,6 +5,10 @@ set -eu
 CONFIG_FILE="${PROMETHEUS_CONFIG_FILE:-/tmp/prometheus.yml}"
 SNMP_TARGETS="${PROMETHEUS_SNMP_TARGETS:-192.168.10.254,192.168.10.11-16}"
 PING_TARGETS="${PROMETHEUS_PING_TARGETS:-192.168.10.254,192.168.10.11-16}"
+INFRA_SWITCH_TARGETS="${INFRA_SWITCH_PING_TARGETS:-}"
+INFRA_FIREWALL_TARGETS="${INFRA_FIREWALL_PING_TARGETS:-}"
+INFRA_AP_TARGETS="${INFRA_AP_PING_TARGETS:-}"
+PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
 SNMP_AUTH="${PROMETHEUS_SNMP_AUTH:-global}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-30s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
@@ -79,6 +83,97 @@ cat >> "$CONFIG_FILE" <<EOF
       - target_label: __address__
         replacement: snmp-exporter:9116
 
+  - job_name: "infra-switch-ping"
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    static_configs:
+      - targets:
+EOF
+
+if [ -n "$INFRA_SWITCH_TARGETS" ]; then
+  write_target_list "$INFRA_SWITCH_TARGETS" >> "$CONFIG_FILE"
+else
+  echo "        []" >> "$CONFIG_FILE"
+fi
+
+cat >> "$CONFIG_FILE" <<EOF
+        labels:
+          infra_role: "switch"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: "infra-firewall-ping"
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    static_configs:
+      - targets:
+EOF
+
+if [ -n "$INFRA_FIREWALL_TARGETS" ]; then
+  write_target_list "$INFRA_FIREWALL_TARGETS" >> "$CONFIG_FILE"
+else
+  echo "        []" >> "$CONFIG_FILE"
+fi
+
+cat >> "$CONFIG_FILE" <<EOF
+        labels:
+          infra_role: "firewall"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: "infra-ap-ping"
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    static_configs:
+      - targets:
+EOF
+
+if [ -n "$INFRA_AP_TARGETS" ]; then
+  write_target_list "$INFRA_AP_TARGETS" >> "$CONFIG_FILE"
+else
+  echo "        []" >> "$CONFIG_FILE"
+fi
+
+cat >> "$CONFIG_FILE" <<EOF
+        labels:
+          infra_role: "ap"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: "player-ping"
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files:
+          - "${PLAYER_TARGETS_FILE}"
+        refresh_interval: 60s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
   - job_name: "network-ping"
     metrics_path: /probe
     params:
@@ -110,6 +205,10 @@ EOF
 echo "Generated Prometheus config:"
 echo "  SNMP targets: $SNMP_TARGETS"
 echo "  Ping targets: $PING_TARGETS"
+echo "  Switch ping:  ${INFRA_SWITCH_TARGETS:-none}"
+echo "  Firewall ping: ${INFRA_FIREWALL_TARGETS:-none}"
+echo "  AP ping:      ${INFRA_AP_TARGETS:-none}"
+echo "  Player targets: $PLAYER_TARGETS_FILE"
 echo "  Scrape interval: $SCRAPE_INTERVAL"
 echo "  Retention: $RETENTION_TIME"
 
