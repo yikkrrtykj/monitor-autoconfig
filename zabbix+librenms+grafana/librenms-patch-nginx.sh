@@ -28,6 +28,14 @@ if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ] && [ -f /opt/librenms/.env 
   echo "[librenms-init] APP_URL patched to http://${SERVER_IP}:${LIBRENMS_PORT}"
 fi
 
+# Delete Laravel config cache so PHP re-reads .env on next request.
+# If we don't do this, config:cache keeps serving the old APP_URL=localhost
+# even after .env was modified.
+if [ -f /opt/librenms/bootstrap/cache/config.php ]; then
+  rm -f /opt/librenms/bootstrap/cache/config.php
+  echo "[librenms-init] Laravel config cache removed"
+fi
+
 # Reload nginx to apply changes
 if nginx -t >/dev/null 2>&1; then
   nginx -s reload 2>/dev/null || true
@@ -35,6 +43,10 @@ if nginx -t >/dev/null 2>&1; then
 else
   echo "[librenms-init] WARNING: nginx config test failed"
 fi
+
+# Restart PHP-FPM so it drops opcache and reads the new .env
+pkill -USR2 php-fpm 2>/dev/null || pkill php-fpm 2>/dev/null || true
+echo "[librenms-init] PHP-FPM restarted"
 
 if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
   mkdir -p /var/spool/cron/crontabs
