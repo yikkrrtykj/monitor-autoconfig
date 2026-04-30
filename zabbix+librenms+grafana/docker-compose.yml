@@ -442,6 +442,7 @@ services:
     volumes:
       - ./librenms-data:/data
       - ./entrypoint-librenms.sh:/entrypoint-librenms.sh:ro
+      - ./librenms-patch-nginx.sh:/librenms-patch-nginx.sh:ro
     entrypoint: /entrypoint-librenms.sh
     ports:
       - "${LIBRENMS_PORT:-8002}:8000"

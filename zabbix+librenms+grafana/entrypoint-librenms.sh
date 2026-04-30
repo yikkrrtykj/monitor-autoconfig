@@ -1,6 +1,13 @@
 #!/bin/sh
+# Remove the nginx default site that returns 404, otherwise it will block LibreNMS
+if [ -f /etc/nginx/http.d/default.conf ]; then
+  rm -f /etc/nginx/http.d/default.conf
+  echo "[librenms-entry] removed nginx default.conf (404 catch-all)"
+fi
+
 if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
   find /etc/nginx -name "*.conf" -exec sed -i "s/server_name [^;]*;/server_name ${SERVER_IP};/" {} \; 2>/dev/null || true
+  echo "[librenms-entry] nginx server_name patched to ${SERVER_IP}"
 fi
 
 mkdir -p /etc/services.d/scheduler

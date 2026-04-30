@@ -1,12 +1,28 @@
 #!/bin/sh
 # Patch nginx server_name to fix LibreNMS "ServerName is set incorrectly" validation
+# Also remove the default.conf that returns 404 to prevent it from blocking LibreNMS
 # Also install scheduler cron and start cron daemon
+
+# Remove the nginx default site that returns 404, otherwise it will block LibreNMS
+# because it listens on default_server and the LibreNMS site config is not default_server
+if [ -f /etc/nginx/http.d/default.conf ]; then
+  rm -f /etc/nginx/http.d/default.conf
+  echo "[librenms-init] removed nginx default.conf (404 catch-all)"
+fi
 
 if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
   for conf in $(find /etc/nginx -name "*.conf" 2>/dev/null); do
     sed -i "s/server_name [^;]*;/server_name ${SERVER_IP};/" "$conf" 2>/dev/null || true
   done
   echo "[librenms-init] nginx server_name patched to ${SERVER_IP}"
+fi
+
+# Reload nginx to apply changes
+if nginx -t >/dev/null 2>&1; then
+  nginx -s reload 2>/dev/null || true
+  echo "[librenms-init] nginx reloaded"
+else
+  echo "[librenms-init] WARNING: nginx config test failed"
 fi
 
 if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
