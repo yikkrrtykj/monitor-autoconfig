@@ -497,7 +497,6 @@ services:
     container_name: librenms-scheduler
     hostname: librenms-scheduler
     restart: unless-stopped
-    user: "1000:1000"
     depends_on:
       librenms:
         condition: service_started
@@ -533,7 +532,7 @@ services:
     command: |
       echo "Starting LibreNMS scheduler loop..."
       while true; do
-        cd /opt/librenms && php artisan schedule:run --no-ansi --no-interaction || true
+        su -s /bin/sh librenms -c "cd /opt/librenms && php artisan schedule:run --no-ansi --no-interaction" || true
         sleep 60
       done
     networks:
