@@ -3,15 +3,90 @@
 set -eu
 
 CONFIG_FILE="${PROMETHEUS_CONFIG_FILE:-/tmp/prometheus.yml}"
-PING_TARGETS="${PROMETHEUS_PING_TARGETS:-192.168.10.254,192.168.10.11-16}"
-INFRA_SWITCH_TARGETS="${INFRA_SWITCH_PING_TARGETS:-}"
-INFRA_FIREWALL_TARGETS="${INFRA_FIREWALL_PING_TARGETS:-}"
-INFRA_AP_TARGETS="${INFRA_AP_PING_TARGETS:-}"
-PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
+CORE_SWITCH_PING="${CORE_SWITCH_PING:-}"
+DIST_SWITCH_PING="${DIST_SWITCH_PING:-}"
+FIREWALL_PING="${FIREWALL_PING:-}"
+SERVER_PING="${SERVER_PING:-}"
 FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
 SNMP_AUTH="${SNMP_AUTH:-global}"
+PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-30s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
+
+# Parse "NAME:IP" or "NAME:IP-START-IP-END" format.
+# Outputs Prometheus static_config target lines with display_name label.
+write_labeled_targets() {
+  old_ifs=$IFS
+  IFS=','
+  for entry in $1; do
+    IFS=$old_ifs
+    entry=$(echo "$entry" | tr -d '[:space:]')
+    [ -z "$entry" ] && continue
+
+    name="${entry%%:*}"
+    ip_part="${entry#*:}"
+    [ -z "$name" ] && name="$ip_part"
+    [ -z "$ip_part" ] && continue
+
+    case "$ip_part" in
+      *-*)
+        start_ip=${ip_part%-*}
+        end_part=${ip_part#*-}
+        prefix=${start_ip%.*}
+        start_octet=${start_ip##*.}
+        end_octet=${end_part##*.}
+        octet=$start_octet
+        while [ "$octet" -le "$end_octet" ]; do
+          echo "        - \"$prefix.$octet\""
+          octet=$((octet + 1))
+        done
+        ;;
+      *)
+        echo "        - \"$ip_part\""
+        ;;
+    esac
+    echo "        labels:"
+    echo "          display_name: \"$name\""
+    IFS=','
+  done
+  IFS=$old_ifs
+}
+
+# Write a named ping job to CONFIG_FILE
+write_ping_job() {
+  job_name="$1"
+  targets="$2"
+  role_label="$3"
+
+  cat >> "$CONFIG_FILE" <<EOF
+  - job_name: "${job_name}"
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    static_configs:
+      - targets:
+EOF
+
+  if [ -n "$targets" ]; then
+    write_labeled_targets "$targets" >> "$CONFIG_FILE"
+  else
+    echo "        []" >> "$CONFIG_FILE"
+  fi
+
+  cat >> "$CONFIG_FILE" <<EOF
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [display_name]
+        target_label: instance
+      - source_labels: [__param_target]
+        regex: '.*'
+        target_label: display_ip
+        replacement: '$$1'
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+EOF
+}
 
 expand_targets() {
   old_ifs=$IFS
@@ -20,7 +95,6 @@ expand_targets() {
     IFS=$old_ifs
     target=$(echo "$target" | tr -d '[:space:]')
     [ -z "$target" ] && continue
-
     case "$target" in
       *-*)
         start_ip=${target%-*}
@@ -28,7 +102,6 @@ expand_targets() {
         prefix=${start_ip%.*}
         start_octet=${start_ip##*.}
         end_octet=${end_part##*.}
-
         octet=$start_octet
         while [ "$octet" -le "$end_octet" ]; do
           echo "$prefix.$octet"
@@ -44,13 +117,13 @@ expand_targets() {
   IFS=$old_ifs
 }
 
-write_target_list() {
-  targets=$1
-  expand_targets "$targets" | while read -r target; do
-    [ -n "$target" ] && echo "        - \"$target\""
+write_static_targets() {
+  expand_targets "$1" | while read -r t; do
+    [ -n "$t" ] && echo "        - \"$t\""
   done
 }
 
+# ---- Generate config ----
 cat > "$CONFIG_FILE" <<EOF
 global:
   scrape_interval: $SCRAPE_INTERVAL
@@ -62,81 +135,39 @@ scrape_configs:
       - targets: ["prometheus:9090"]
         labels:
           app: "prometheus"
+EOF
 
-  - job_name: "infra-switch-ping"
-    metrics_path: /probe
+# Infrastructure ping jobs
+write_ping_job "infra-core-ping"  "$CORE_SWITCH_PING" "core"
+write_ping_job "infra-dist-ping"  "$DIST_SWITCH_PING" "dist"
+write_ping_job "infra-fw-ping"    "$FIREWALL_PING"    "firewall"
+write_ping_job "infra-srv-ping"   "$SERVER_PING"      "server"
+
+# Firewall SNMP
+cat >> "$CONFIG_FILE" <<EOF
+  - job_name: "firewall-snmp"
+    metrics_path: /snmp
     params:
-      module: [icmp]
+      auth: [${SNMP_AUTH}]
+      module: [if_mib]
     static_configs:
 EOF
 
-if [ -n "$INFRA_SWITCH_TARGETS" ]; then
+if [ -n "$FIREWALL_SNMP_TARGETS" ]; then
   echo "      - targets:" >> "$CONFIG_FILE"
-  write_target_list "$INFRA_SWITCH_TARGETS" >> "$CONFIG_FILE"
+  write_static_targets "$FIREWALL_SNMP_TARGETS" >> "$CONFIG_FILE"
 else
   echo "      - targets: []" >> "$CONFIG_FILE"
 fi
-echo "        labels:" >> "$CONFIG_FILE"
 
 cat >> "$CONFIG_FILE" <<EOF
-          infra_role: "switch"
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: instance
       - target_label: __address__
-        replacement: blackbox-exporter:9115
-
-  - job_name: "infra-firewall-ping"
-    metrics_path: /probe
-    params:
-      module: [icmp]
-    static_configs:
-EOF
-
-if [ -n "$INFRA_FIREWALL_TARGETS" ]; then
-  echo "      - targets:" >> "$CONFIG_FILE"
-  write_target_list "$INFRA_FIREWALL_TARGETS" >> "$CONFIG_FILE"
-else
-  echo "      - targets: []" >> "$CONFIG_FILE"
-fi
-echo "        labels:" >> "$CONFIG_FILE"
-
-cat >> "$CONFIG_FILE" <<EOF
-          infra_role: "firewall"
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
-
-  - job_name: "infra-ap-ping"
-    metrics_path: /probe
-    params:
-      module: [icmp]
-    static_configs:
-EOF
-
-if [ -n "$INFRA_AP_TARGETS" ]; then
-  echo "      - targets:" >> "$CONFIG_FILE"
-  write_target_list "$INFRA_AP_TARGETS" >> "$CONFIG_FILE"
-else
-  echo "      - targets: []" >> "$CONFIG_FILE"
-fi
-echo "        labels:" >> "$CONFIG_FILE"
-
-cat >> "$CONFIG_FILE" <<EOF
-          infra_role: "ap"
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+        replacement: snmp-exporter:9116
 
   - job_name: "player-ping"
     metrics_path: /probe
@@ -154,62 +185,18 @@ cat >> "$CONFIG_FILE" <<EOF
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
-  - job_name: "network-ping"
-    metrics_path: /probe
-    params:
-      module: [icmp]
-    static_configs:
-      - targets:
-EOF
-
-write_target_list "$PING_TARGETS" >> "$CONFIG_FILE"
-
-cat >> "$CONFIG_FILE" <<EOF
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
-
-  - job_name: "firewall-snmp"
-    metrics_path: /snmp
-    params:
-      auth: [${SNMP_AUTH}]
-      module: [if_mib]
-    static_configs:
-EOF
-
-if [ -n "$FIREWALL_SNMP_TARGETS" ]; then
-  echo "      - targets:" >> "$CONFIG_FILE"
-  write_target_list "$FIREWALL_SNMP_TARGETS" >> "$CONFIG_FILE"
-else
-  echo "      - targets: []" >> "$CONFIG_FILE"
-fi
-
-cat >> "$CONFIG_FILE" <<EOF
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: snmp-exporter:9116
-
   - job_name: "blackbox-exporter"
     static_configs:
       - targets: ["blackbox-exporter:9115"]
 EOF
 
 echo "Generated Prometheus config:"
-echo "  Ping targets: $PING_TARGETS"
-echo "  Switch ping:  ${INFRA_SWITCH_TARGETS:-none}"
-echo "  Firewall ping: ${INFRA_FIREWALL_TARGETS:-none}"
-echo "  AP ping:      ${INFRA_AP_TARGETS:-none}"
-echo "  Player targets: $PLAYER_TARGETS_FILE"
-echo "  Scrape interval: $SCRAPE_INTERVAL"
-echo "  Retention: $RETENTION_TIME"
+echo "  Core:    ${CORE_SWITCH_PING:-none}"
+echo "  Dist:    ${DIST_SWITCH_PING:-none}"
+echo "  FW:      ${FIREWALL_PING:-none}"
+echo "  Server:  ${SERVER_PING:-none}"
+echo "  FW SNMP: ${FIREWALL_SNMP_TARGETS:-none}"
+echo "  Players: $PLAYER_TARGETS_FILE"
 
 exec /bin/prometheus \
   --config.file="$CONFIG_FILE" \
