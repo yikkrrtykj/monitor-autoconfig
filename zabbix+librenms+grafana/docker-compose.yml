@@ -327,7 +327,7 @@ services:
       - /bin/sh
       - /etc/prometheus/prometheus-gen-config.sh
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      - "${PROMETHEUS_BIND:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
     depends_on:
       init-permissions:
         condition: service_completed_successfully
@@ -345,7 +345,7 @@ services:
     container_name: snmp-exporter
     restart: unless-stopped
     ports:
-      - "${SNMP_EXPORTER_PORT:-9116}:9116"
+      - "${SNMP_EXPORTER_BIND:-127.0.0.1}:${SNMP_EXPORTER_PORT:-9116}:9116"
     networks:
       - monitor
     volumes:
@@ -356,7 +356,7 @@ services:
     container_name: blackbox-exporter
     restart: unless-stopped
     ports:
-      - "${BLACKBOX_EXPORTER_PORT:-9115}:9115"
+      - "${BLACKBOX_EXPORTER_BIND:-127.0.0.1}:${BLACKBOX_EXPORTER_PORT:-9115}:9115"
     networks:
       - monitor
     entrypoint:
@@ -598,8 +598,6 @@ services:
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_PASSWORD: root
-      GF_INSTALL_PLUGINS: alexanderzobnin-zabbix-app
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: alexanderzobnin-zabbix-datasource
       GF_SERVER_HTTP_PORT: 3000
       GF_SERVER_PROTOCOL: http
       GF_DEFAULT_LOCALE: zh-Hans
@@ -616,12 +614,6 @@ services:
         condition: service_completed_successfully
       prometheus:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
     networks:
       - monitor
 
@@ -630,7 +622,7 @@ services:
     container_name: grafana-setup
     depends_on:
       grafana:
-        condition: service_healthy
+        condition: service_started
       prometheus:
         condition: service_healthy
     networks:

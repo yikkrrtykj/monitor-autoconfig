@@ -77,7 +77,7 @@ PROMETHEUS_PING_TARGETS=10.10.20.254,10.10.20.11-16
 
 - **Zabbix**：添加主机、模板、SNMP 监控、飞书告警，并把默认 `Zabbix server` 主机指向 `zabbix-agent` 容器
 - **LibreNMS**：启动 Web、Redis、dispatcher、scheduler、rrdcached，创建默认管理员，自动发现 SNMP 设备（默认范围：`192.168.10.1-100,192.168.10.254`），配置 dispatcher 轮询和告警规则
-- **Prometheus / Grafana**：轻量模式，只为 Grafana 采集核心/舞台交换机 SNMP 和 ICMP 数据，Grafana 会自动加载 Network 文件夹下的 SNMP Stats 和 Blackbox ICMP 面板
+- **Prometheus / Grafana**：轻量模式，只为 Grafana 采集核心/舞台交换机 SNMP 和 ICMP 数据，Grafana 会自动加载 Network 文件夹下的 SNMP Stats 和 Blackbox ICMP 面板；Prometheus、SNMP exporter、Blackbox exporter 默认只绑定服务器本机 `127.0.0.1`
 
 查看配置日志：
 ```bash
@@ -92,9 +92,11 @@ LibreNMS 首次启动后需要等一个 poller 周期，通常 3-5 分钟。`Mai
 
 如果 Grafana 的 Dashboards 还是空的，执行：
 ```bash
-docker compose up -d --force-recreate grafana grafana-setup
+docker compose up -d --remove-orphans --force-recreate prometheus grafana grafana-setup
 docker compose logs --tail=100 grafana grafana-setup
 ```
+
+Grafana 不再依赖启动时联网安装 Zabbix 插件；Grafana 面板只使用 Prometheus 数据源，这样新服务器离线或网络慢时也更稳。
 
 ## 监控的网络设备
 

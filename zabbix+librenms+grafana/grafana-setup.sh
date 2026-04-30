@@ -5,7 +5,9 @@ set -u
 apk add --no-cache curl jq
 
 GRAFANA_URL="${GRAFANA_URL:-http://grafana:3000}"
-GRAFANA_AUTH="${GRAFANA_AUTH:-Basic YWRtaW46cm9vdA==}"
+GRAFANA_USER="${GRAFANA_USER:-admin}"
+GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-root}"
+GRAFANA_AUTH="${GRAFANA_AUTH:-Basic $(echo -n "${GRAFANA_USER}:${GRAFANA_PASSWORD}" | base64)}"
 
 grafana_get() {
   curl -s -H "Authorization: $GRAFANA_AUTH" "$GRAFANA_URL$1"
@@ -46,20 +48,9 @@ while ! curl -s "$GRAFANA_URL/api/health" > /dev/null 2>&1; do
 done
 echo "Grafana is ready!"
 
-echo "Enabling Zabbix plugin..."
-curl -s -X POST \
-  -H "Content-Type: application/json" \
-  -H "Authorization: $GRAFANA_AUTH" \
-  -d '{"enabled": true, "pinned": true}' \
-  "$GRAFANA_URL/api/plugins/alexanderzobnin-zabbix-app/settings" > /dev/null || true
-
 echo "Ensuring Prometheus datasource..."
 prometheus_payload='{"name":"Prometheus","uid":"prometheus","type":"prometheus","url":"http://prometheus:9090","access":"proxy","isDefault":true,"editable":true}'
 upsert_datasource "Prometheus" "$prometheus_payload"
-
-echo "Ensuring Zabbix datasource..."
-zabbix_payload='{"name":"Zabbix","type":"alexanderzobnin-zabbix-datasource","url":"http://zabbix-web:8080/api_jsonrpc.php","access":"proxy","basicAuth":false,"jsonData":{"username":"Admin","trends":true,"trendsFrom":"7d","trendsRange":"4h","cacheTTL":"1h"},"secureJsonData":{"password":"zabbix"},"editable":true}'
-upsert_datasource "Zabbix" "$zabbix_payload"
 
 echo "Dashboards are provisioned from /etc/grafana/provisioning/dashboard-json"
 
