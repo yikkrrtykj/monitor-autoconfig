@@ -15,6 +15,8 @@ DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin}"
 LIBRENMS_ADMIN_EMAIL="${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
+LIBRENMS_BASE_URL="${LIBRENMS_BASE_URL:-http://localhost:8002}"
+RRDCACHED_SERVER="${RRDCACHED_SERVER:-}"
 
 echo "============================================"
 echo "  LibreNMS Auto-Discovery Configuration"
@@ -37,14 +39,11 @@ for i in $(seq 1 90); do
 done
 
 ensure_admin_user() {
-  if [ -x /opt/librenms/lnms ]; then
-    lnms_cmd="/opt/librenms/lnms"
-  elif command -v lnms > /dev/null 2>&1; then
-    lnms_cmd=$(command -v lnms)
-  else
+  if ! get_lnms_cmd > /dev/null; then
     echo "  WARNING: lnms command not found, skipping admin user creation."
     return 0
   fi
+  lnms_cmd=$(get_lnms_cmd)
 
   for i in $(seq 1 20); do
     output=$("$lnms_cmd" user:add \
@@ -71,9 +70,46 @@ ensure_admin_user() {
   return 0
 }
 
+get_lnms_cmd() {
+  if [ -x /opt/librenms/lnms ]; then
+    echo "/opt/librenms/lnms"
+    return 0
+  fi
+
+  command -v lnms 2>/dev/null
+}
+
+configure_runtime() {
+  mkdir -p /data/rrd
+  chmod 775 /data/rrd 2>/dev/null || true
+
+  if ! get_lnms_cmd > /dev/null; then
+    echo "  WARNING: lnms command not found, skipping runtime config."
+    return 0
+  fi
+  lnms_cmd=$(get_lnms_cmd)
+
+  "$lnms_cmd" config:set base_url "$LIBRENMS_BASE_URL" >/dev/null 2>&1 && \
+    echo "  base_url: $LIBRENMS_BASE_URL" || \
+    echo "  WARNING: Could not set base_url"
+
+  if [ -n "$RRDCACHED_SERVER" ]; then
+    "$lnms_cmd" config:set rrdcached "$RRDCACHED_SERVER" >/dev/null 2>&1 && \
+      echo "  rrdcached: $RRDCACHED_SERVER" || \
+      echo "  WARNING: Could not set rrdcached"
+  fi
+
+  "$lnms_cmd" config:set distributed_poller false >/dev/null 2>&1 && \
+    echo "  distributed_poller: disabled for single-server install" || true
+}
+
 echo ""
 echo "[2/5] Ensuring LibreNMS admin user..."
 ensure_admin_user
+
+echo ""
+echo "[2b/5] Applying LibreNMS runtime settings..."
+configure_runtime
 
 # Create API token
 echo ""
@@ -236,7 +272,7 @@ echo "============================================"
 echo "  LibreNMS Discovery Complete!"
 echo "============================================"
 echo ""
-echo "  Web UI:    http://localhost:8002"
+echo "  Web UI:    $LIBRENMS_BASE_URL"
 echo "  Username:  $LIBRENMS_ADMIN_USER"
 echo "  Password:  $LIBRENMS_ADMIN_PASSWORD"
 echo ""

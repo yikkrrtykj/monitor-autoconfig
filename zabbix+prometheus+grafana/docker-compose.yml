@@ -55,6 +55,37 @@ services:
       retries: 10
       start_period: 60s
 
+  librenms-redis:
+    image: redis:7.2-alpine
+    container_name: librenms-redis
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  librenms-rrdcached:
+    image: crazymax/rrdcached:latest
+    container_name: librenms-rrdcached
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      PUID: 1000
+      PGID: 1000
+      WRITE_TIMEOUT: 300
+      WRITE_JITTER: 180
+      WRITE_THREADS: 4
+    volumes:
+      - ./librenms-data/rrd:/data/db
+      - ./librenms-rrdcached-journal:/data/journal
+    networks:
+      - monitor
+
   init-permissions:
     image: alpine:latest
     container_name: init-permissions
@@ -66,16 +97,18 @@ services:
       - ./uptime-kuma-data:/uptime-kuma-data
       - ./librenms-db-data:/librenms-db-data
       - ./librenms-data:/librenms-data
+      - ./librenms-rrdcached-journal:/librenms-rrdcached-journal
     command: |
       sh -c '
         echo "Setting up directory permissions..."
-        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data /librenms-db-data /librenms-data
+        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data /librenms-db-data /librenms-data /librenms-data/rrd /librenms-rrdcached-journal
         chown -R 999:999 /mysql-data /librenms-db-data
         chown -R 1997:1997 /zabbix-server-data
         chown -R 472:472 /grafana-data
         chown -R 65534:65534 /prometheus-data
-        chown -R 1000:1000 /librenms-data
+        chown -R 1000:1000 /librenms-data /librenms-rrdcached-journal
         chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data /librenms-db-data /librenms-data
+        chmod -R 775 /librenms-data/rrd /librenms-rrdcached-journal
         echo "Permissions set successfully"
       '
     networks:
@@ -372,6 +405,10 @@ services:
     depends_on:
       librenms-db:
         condition: service_healthy
+      librenms-redis:
+        condition: service_healthy
+      librenms-rrdcached:
+        condition: service_started
     environment:
       TZ: Asia/Shanghai
       DB_HOST: librenms-db
@@ -380,7 +417,14 @@ services:
       DB_PASSWORD: librenms
       DB_PASS: librenms
       DB_TIMEOUT: 120
-      LIBRENMS_BASE_URL: "http://localhost:8002"
+      LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: librenms-redis
+      REDIS_PORT: 6379
+      RRDCACHED_SERVER: librenms-rrdcached:42217
       POLLERS: 4
       LIBRENMS_SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
       LIBRENMS_CORE_IP: "${LIBRENMS_CORE_IP:-192.168.10.254}"
@@ -403,11 +447,53 @@ services:
     networks:
       - monitor
 
+  librenms-dispatcher:
+    image: librenms/librenms:latest
+    container_name: librenms-dispatcher
+    hostname: librenms-dispatcher
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    depends_on:
+      librenms:
+        condition: service_started
+      librenms-redis:
+        condition: service_healthy
+      librenms-rrdcached:
+        condition: service_started
+    volumes:
+      - ./librenms-data:/data
+    environment:
+      TZ: Asia/Shanghai
+      DB_HOST: librenms-db
+      DB_NAME: librenms
+      DB_USER: librenms
+      DB_PASSWORD: librenms
+      DB_PASS: librenms
+      DB_TIMEOUT: 120
+      LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: librenms-redis
+      REDIS_PORT: 6379
+      RRDCACHED_SERVER: librenms-rrdcached:42217
+      DISPATCHER_NODE_ID: "${LIBRENMS_DISPATCHER_NODE_ID:-dispatcher1}"
+      SIDECAR_DISPATCHER: 1
+      PUID: 1000
+      PGID: 1000
+    networks:
+      - monitor
+
   librenms-config:
     image: librenms/librenms:latest
     container_name: librenms-config
     depends_on:
       librenms:
+        condition: service_started
+      librenms-dispatcher:
         condition: service_started
     networks:
       - monitor
@@ -423,7 +509,14 @@ services:
       DB_PASSWORD: librenms
       DB_PASS: librenms
       DB_TIMEOUT: 120
-      LIBRENMS_BASE_URL: "http://localhost:8002"
+      LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: librenms-redis
+      REDIS_PORT: 6379
+      RRDCACHED_SERVER: librenms-rrdcached:42217
       LIBRENMS_SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
       LIBRENMS_CORE_IP: "${LIBRENMS_CORE_IP:-192.168.10.254}"
       LIBRENMS_STAGE_START_OCTET: "${LIBRENMS_STAGE_START_OCTET:-11}"
