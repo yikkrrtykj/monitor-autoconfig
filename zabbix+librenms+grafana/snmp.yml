@@ -1,0 +1,12 @@
+modules:
+  if_mib:
+    walk:
+      - sysUpTime
+      - ifTable
+      - ifXTable
+    version: 2
+    max_repetitions: 25
+    retries: 3
+    timeout: 10s
+    auth:
+      community: global

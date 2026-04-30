@@ -319,6 +319,8 @@ services:
       INFRA_SWITCH_PING_TARGETS: "${INFRA_SWITCH_PING_TARGETS:-}"
       INFRA_FIREWALL_PING_TARGETS: "${INFRA_FIREWALL_PING_TARGETS:-}"
       INFRA_AP_PING_TARGETS: "${INFRA_AP_PING_TARGETS:-}"
+      FIREWALL_SNMP_TARGETS: "${FIREWALL_SNMP_TARGETS:-}"
+      SNMP_AUTH: "${SNMP_COMMUNITY:-global}"
       PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
     volumes:
       - prometheus-data:/prometheus
@@ -341,6 +343,17 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  snmp-exporter:
+    image: prom/snmp-exporter:latest
+    container_name: snmp-exporter
+    restart: unless-stopped
+    ports:
+      - "${SNMP_EXPORTER_BIND:-127.0.0.1}:${SNMP_EXPORTER_PORT:-9116}:9116"
+    networks:
+      - monitor
+    volumes:
+      - ./snmp.yml:/etc/snmp_exporter/snmp.yml:ro
 
   blackbox-exporter:
     image: prom/blackbox-exporter:latest

@@ -8,6 +8,8 @@ INFRA_SWITCH_TARGETS="${INFRA_SWITCH_PING_TARGETS:-}"
 INFRA_FIREWALL_TARGETS="${INFRA_FIREWALL_PING_TARGETS:-}"
 INFRA_AP_TARGETS="${INFRA_AP_PING_TARGETS:-}"
 PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
+FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
+SNMP_AUTH="${SNMP_AUTH:-global}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-30s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 
@@ -170,6 +172,30 @@ cat >> "$CONFIG_FILE" <<EOF
         target_label: instance
       - target_label: __address__
         replacement: blackbox-exporter:9115
+
+  - job_name: "firewall-snmp"
+    metrics_path: /snmp
+    params:
+      auth: [${SNMP_AUTH}]
+      module: [if_mib]
+    static_configs:
+EOF
+
+if [ -n "$FIREWALL_SNMP_TARGETS" ]; then
+  echo "      - targets:" >> "$CONFIG_FILE"
+  write_target_list "$FIREWALL_SNMP_TARGETS" >> "$CONFIG_FILE"
+else
+  echo "      - targets: []" >> "$CONFIG_FILE"
+fi
+
+cat >> "$CONFIG_FILE" <<EOF
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: snmp-exporter:9116
 
   - job_name: "blackbox-exporter"
     static_configs:
