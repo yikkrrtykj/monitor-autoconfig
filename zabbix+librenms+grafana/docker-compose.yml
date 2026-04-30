@@ -441,6 +441,7 @@ services:
       PGID: 1000
     volumes:
       - ./librenms-data:/data
+      - ./librenms-patch-nginx.sh:/etc/cont-init.d/01-patch-nginx.sh:ro
     ports:
       - "${LIBRENMS_PORT:-8002}:8000"
     cap_add:
