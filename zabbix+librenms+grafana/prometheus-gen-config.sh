@@ -28,6 +28,7 @@ write_labeled_targets() {
     [ -z "$name" ] && name="$ip_part"
     [ -z "$ip_part" ] && continue
 
+    echo "      - targets:"
     case "$ip_part" in
       *-*)
         start_ip=${ip_part%-*}
@@ -37,12 +38,12 @@ write_labeled_targets() {
         end_octet=${end_part##*.}
         octet=$start_octet
         while [ "$octet" -le "$end_octet" ]; do
-          echo "        - \"$prefix.$octet\""
+          echo "          - \"$prefix.$octet\""
           octet=$((octet + 1))
         done
         ;;
       *)
-        echo "        - \"$ip_part\""
+        echo "          - \"$ip_part\""
         ;;
     esac
     echo "        labels:"
@@ -64,13 +65,12 @@ write_ping_job() {
     params:
       module: [icmp]
     static_configs:
-      - targets:
 EOF
 
-  if [ -n "$targets" ]; then
-    write_labeled_targets "$targets" >> "$CONFIG_FILE"
+  if [ -z "$targets" ]; then
+    echo "      - targets: []" >> "$CONFIG_FILE"
   else
-    echo "        []" >> "$CONFIG_FILE"
+    write_labeled_targets "$targets" >> "$CONFIG_FILE"
   fi
 
   cat >> "$CONFIG_FILE" <<EOF
