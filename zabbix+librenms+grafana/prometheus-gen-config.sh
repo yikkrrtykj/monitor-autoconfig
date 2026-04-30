@@ -73,19 +73,15 @@ EOF
     write_labeled_targets "$targets" >> "$CONFIG_FILE"
   fi
 
-  cat >> "$CONFIG_FILE" <<EOF
+  cat >> "$CONFIG_FILE" <<'RELABEL'
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
-      - source_labels: [display_name]
-        target_label: instance
       - source_labels: [__param_target]
-        regex: '.*'
-        target_label: display_ip
-        replacement: '$$1'
+        target_label: instance
       - target_label: __address__
         replacement: blackbox-exporter:9115
-EOF
+RELABEL
 }
 
 expand_targets() {
