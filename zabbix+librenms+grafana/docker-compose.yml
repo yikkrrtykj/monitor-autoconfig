@@ -436,6 +436,7 @@ services:
       LIBRENMS_ADMIN_USER: "${LIBRENMS_ADMIN_USER:-admin}"
       LIBRENMS_ADMIN_PASSWORD: "${LIBRENMS_ADMIN_PASSWORD:-admin}"
       LIBRENMS_ADMIN_EMAIL: "${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
+      LIBRENMS_OWN_HOSTNAME: "${SERVER_IP:-}"
       PUID: 1000
       PGID: 1000
     volumes:
@@ -580,6 +581,7 @@ services:
       LIBRENMS_ADMIN_USER: "${LIBRENMS_ADMIN_USER:-admin}"
       LIBRENMS_ADMIN_PASSWORD: "${LIBRENMS_ADMIN_PASSWORD:-admin}"
       LIBRENMS_ADMIN_EMAIL: "${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
+      LIBRENMS_OWN_HOSTNAME: "${SERVER_IP:-}"
     entrypoint:
       - /bin/sh
       - -c

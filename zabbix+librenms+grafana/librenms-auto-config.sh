@@ -19,6 +19,7 @@ LIBRENMS_BASE_URL="${LIBRENMS_BASE_URL:-http://localhost:8002}"
 LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
 SERVER_IP="${SERVER_IP:-}"
 RRDCACHED_SERVER="${RRDCACHED_SERVER:-}"
+LIBRENMS_OWN_HOSTNAME="${LIBRENMS_OWN_HOSTNAME:-}"
 
 if [ "$LIBRENMS_BASE_URL" = "http://localhost:8002" ] && [ -n "$SERVER_IP" ]; then
   LIBRENMS_BASE_URL="http://$SERVER_IP:$LIBRENMS_PORT"
@@ -82,7 +83,17 @@ get_lnms_cmd() {
     return 0
   fi
 
-  command -v lnms 2>/dev/null
+  if command -v lnms >/dev/null 2>&1; then
+    echo "lnms"
+    return 0
+  fi
+
+  if [ -x /opt/librenms/artisan ]; then
+    echo "php /opt/librenms/artisan"
+    return 0
+  fi
+
+  return 1
 }
 
 configure_runtime() {
@@ -98,6 +109,12 @@ configure_runtime() {
   "$lnms_cmd" config:set base_url "$LIBRENMS_BASE_URL" >/dev/null 2>&1 && \
     echo "  base_url: $LIBRENMS_BASE_URL" || \
     echo "  WARNING: Could not set base_url"
+
+  if [ -n "$LIBRENMS_OWN_HOSTNAME" ]; then
+    "$lnms_cmd" config:set own_hostname "$LIBRENMS_OWN_HOSTNAME" >/dev/null 2>&1 && \
+      echo "  own_hostname: $LIBRENMS_OWN_HOSTNAME" || \
+      echo "  WARNING: Could not set own_hostname"
+  fi
 
   if [ -n "$RRDCACHED_SERVER" ]; then
     "$lnms_cmd" config:set rrdcached "$RRDCACHED_SERVER" >/dev/null 2>&1 && \
