@@ -10,14 +10,17 @@ if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
 fi
 
 if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
-  cp /opt/librenms/dist/librenms-scheduler.cron /etc/cron.d/librenms-scheduler 2>/dev/null
+  mkdir -p /var/spool/cron/crontabs
+  cat /opt/librenms/dist/librenms-scheduler.cron | crontab - 2>/dev/null || true
   echo "[librenms-init] scheduler cron installed"
 fi
 
-if command -v cron >/dev/null 2>&1; then
-  cron 2>/dev/null &
-  echo "[librenms-init] cron started (cron)"
+if [ -S /var/run/cron.sock ] || pgrep crond >/dev/null 2>&1; then
+  echo "[librenms-init] cron already running"
 elif command -v crond >/dev/null 2>&1; then
-  crond -b 2>/dev/null || crond 2>/dev/null &
-  echo "[librenms-init] cron started (crond)"
+  crond -b -l 2 2>/dev/null || crond -l 2 2>/dev/null &
+  echo "[librenms-init] crond started"
+elif command -v cron >/dev/null 2>&1; then
+  cron 2>/dev/null &
+  echo "[librenms-init] cron started"
 fi
