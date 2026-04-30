@@ -492,52 +492,6 @@ services:
     networks:
       - monitor
 
-  librenms-scheduler:
-    image: librenms/librenms:latest
-    container_name: librenms-scheduler
-    hostname: librenms-scheduler
-    restart: unless-stopped
-    depends_on:
-      librenms:
-        condition: service_started
-      librenms-redis:
-        condition: service_healthy
-      librenms-rrdcached:
-        condition: service_started
-    volumes:
-      - ./librenms-data:/data
-    environment:
-      TZ: Asia/Shanghai
-      DB_HOST: librenms-db
-      DB_NAME: librenms
-      DB_USER: librenms
-      DB_PASSWORD: librenms
-      DB_PASS: librenms
-      DB_TIMEOUT: 120
-      SERVER_IP: "${SERVER_IP:-}"
-      LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
-      LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
-      APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
-      CACHE_DRIVER: redis
-      SESSION_DRIVER: redis
-      QUEUE_CONNECTION: redis
-      REDIS_HOST: librenms-redis
-      REDIS_PORT: 6379
-      RRDCACHED_SERVER: librenms-rrdcached:42217
-      PUID: 1000
-      PGID: 1000
-    entrypoint:
-      - /bin/sh
-      - -c
-    command: |
-      echo "Starting LibreNMS scheduler loop..."
-      while true; do
-        sudo -u librenms php /opt/librenms/artisan schedule:run --no-ansi --no-interaction || true
-        sleep 60
-      done
-    networks:
-      - monitor
-
   librenms-config:
     image: librenms/librenms:latest
     container_name: librenms-config
@@ -545,8 +499,6 @@ services:
       librenms:
         condition: service_started
       librenms-dispatcher:
-        condition: service_started
-      librenms-scheduler:
         condition: service_started
     networks:
       - monitor
