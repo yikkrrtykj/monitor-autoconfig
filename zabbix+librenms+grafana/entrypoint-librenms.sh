@@ -5,9 +5,13 @@ if [ -f /etc/nginx/http.d/default.conf ]; then
   echo "[librenms-entry] removed nginx default.conf (404 catch-all)"
 fi
 
+# The LibreNMS Docker image's nginx.conf server block has no server_name directive,
+# which causes "ServerName is set incorrectly" validation error.
+# We must INSERT server_name after the listen directive, not try to replace it.
 if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
-  find /etc/nginx -name "*.conf" -exec sed -i "s/server_name [^;]*;/server_name ${SERVER_IP};/" {} \; 2>/dev/null || true
-  echo "[librenms-entry] nginx server_name patched to ${SERVER_IP}"
+  sed -i "/server_name /d" /etc/nginx/nginx.conf 2>/dev/null || true
+  sed -i "/listen \[::\]:8000;/a \        server_name ${SERVER_IP};" /etc/nginx/nginx.conf 2>/dev/null || true
+  echo "[librenms-entry] nginx server_name inserted: ${SERVER_IP}"
 fi
 
 mkdir -p /etc/services.d/scheduler
