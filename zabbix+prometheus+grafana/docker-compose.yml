@@ -579,16 +579,10 @@ services:
         condition: service_healthy
       prometheus:
         condition: service_healthy
-      zabbix-web:
-        condition: service_started
-      zabbix-server:
-        condition: service_healthy
     networks:
       - monitor
-    restart: "no"
+    restart: on-failure
     volumes:
-      - ./snmp-stats-dashboard.json:/snmp-stats.json:ro
-      - ./blackbox-icmp-dashboard.json:/blackbox-icmp.json:ro
       - ./grafana-setup.sh:/grafana-setup.sh:ro
     command: ["/bin/sh", "-c", "sleep 30 && /bin/sh /grafana-setup.sh"]
 

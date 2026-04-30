@@ -73,16 +73,23 @@ PROMETHEUS_PING_TARGETS=10.10.20.254,10.10.20.11-16
 
 - **Zabbix**：添加主机、模板、SNMP 监控、飞书告警
 - **LibreNMS**：启动 Web、Redis、dispatcher、rrdcached，创建默认管理员，自动发现 SNMP 设备（默认范围：`192.168.10.1-100,192.168.10.254`），配置告警规则
-- **Prometheus**：轻量模式，只为 Grafana 采集核心/舞台交换机 SNMP 和 ICMP 数据
+- **Prometheus / Grafana**：轻量模式，只为 Grafana 采集核心/舞台交换机 SNMP 和 ICMP 数据，Grafana 会自动加载 Network 文件夹下的 SNMP Stats 和 Blackbox ICMP 面板
 
 查看配置日志：
 ```bash
 docker compose logs zabbix-config
 docker compose logs librenms-config
 docker compose logs librenms-dispatcher
+docker compose logs grafana grafana-setup
 ```
 
 LibreNMS 首次启动后需要等一个 poller 周期，通常 3-5 分钟。`Mail skipped` 和 Docker 镜像的更新提示可以先不处理；如果 Validate 里还提示 Web Server 地址不正确，检查 `.env` 里的 `LIBRENMS_BASE_URL` 是否就是浏览器访问 LibreNMS 的地址。
+
+如果 Grafana 的 Dashboards 还是空的，执行：
+```bash
+docker compose up -d --force-recreate grafana grafana-setup
+docker compose logs --tail=100 grafana grafana-setup
+```
 
 ## 监控的网络设备
 

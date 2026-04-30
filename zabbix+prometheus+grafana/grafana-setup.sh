@@ -1,10 +1,46 @@
 #!/bin/sh
+set -u
 
 # Install required packages
 apk add --no-cache curl jq
 
+GRAFANA_URL="${GRAFANA_URL:-http://grafana:3000}"
+GRAFANA_AUTH="${GRAFANA_AUTH:-Basic YWRtaW46cm9vdA==}"
+
+grafana_get() {
+  curl -s -H "Authorization: $GRAFANA_AUTH" "$GRAFANA_URL$1"
+}
+
+grafana_send() {
+  method=$1
+  path=$2
+  payload=$3
+
+  curl -s -X "$method" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: $GRAFANA_AUTH" \
+    -d "$payload" \
+    "$GRAFANA_URL$path"
+}
+
+upsert_datasource() {
+  name=$1
+  payload=$2
+
+  existing=$(grafana_get "/api/datasources/name/$name")
+  datasource_id=$(echo "$existing" | jq -r '.id // empty' 2>/dev/null || true)
+
+  if [ -n "$datasource_id" ]; then
+    response=$(grafana_send PUT "/api/datasources/$datasource_id" "$payload")
+    echo "  $name datasource updated: $(echo "$response" | jq -r '.message // .name // "ok"' 2>/dev/null || echo "$response")"
+  else
+    response=$(grafana_send POST "/api/datasources" "$payload")
+    echo "  $name datasource created: $(echo "$response" | jq -r '.message // .name // "ok"' 2>/dev/null || echo "$response")"
+  fi
+}
+
 echo "Waiting for Grafana to be ready..."
-while ! curl -s http://grafana:3000/api/health > /dev/null 2>&1; do
+while ! curl -s "$GRAFANA_URL/api/health" > /dev/null 2>&1; do
   echo "Grafana not ready, waiting..."
   sleep 5
 done
@@ -13,62 +49,18 @@ echo "Grafana is ready!"
 echo "Enabling Zabbix plugin..."
 curl -s -X POST \
   -H "Content-Type: application/json" \
-  -H "Authorization: Basic YWRtaW46cm9vdA==" \
+  -H "Authorization: $GRAFANA_AUTH" \
   -d '{"enabled": true, "pinned": true}' \
-  http://grafana:3000/api/plugins/alexanderzobnin-zabbix-app/settings
+  "$GRAFANA_URL/api/plugins/alexanderzobnin-zabbix-app/settings" > /dev/null || true
 
-echo "Adding Prometheus datasource..."
-curl -s -X POST \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Basic YWRtaW46cm9vdA==" \
-  -d '{"name":"Prometheus","type":"prometheus","url":"http://prometheus:9090","access":"proxy","isDefault":false}' \
-  http://grafana:3000/api/datasources
+echo "Ensuring Prometheus datasource..."
+prometheus_payload='{"name":"Prometheus","uid":"prometheus","type":"prometheus","url":"http://prometheus:9090","access":"proxy","isDefault":true,"editable":true}'
+upsert_datasource "Prometheus" "$prometheus_payload"
 
-# Get Prometheus datasource UID dynamically
-echo "Getting Prometheus datasource UID..."
-PROMETHEUS_UID=$(curl -s -H "Authorization: Basic YWRtaW46cm9vdA==" \
-  http://grafana:3000/api/datasources/name/Prometheus | jq -r '.uid')
-echo "Prometheus UID: $PROMETHEUS_UID"
+echo "Ensuring Zabbix datasource..."
+zabbix_payload='{"name":"Zabbix","type":"alexanderzobnin-zabbix-datasource","url":"http://zabbix-web:8080/api_jsonrpc.php","access":"proxy","basicAuth":false,"jsonData":{"username":"Admin","trends":true,"trendsFrom":"7d","trendsRange":"4h","cacheTTL":"1h"},"secureJsonData":{"password":"zabbix"},"editable":true}'
+upsert_datasource "Zabbix" "$zabbix_payload"
 
-echo "Adding Zabbix datasource..."
-curl -s -X POST \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Basic YWRtaW46cm9vdA==" \
-  -d '{"name":"Zabbix","type":"alexanderzobnin-zabbix-datasource","url":"http://zabbix-web:8080/api_jsonrpc.php","access":"proxy","basicAuth":false,"jsonData":{"username":"Admin","trends":true,"trendsFrom":"7d","trendsRange":"4h","cacheTTL":"1h","dbConnectionEnable":true,"dbConnectionDatasourceId":1},"secureJsonData":{"password":"zabbix"}}' \
-  http://grafana:3000/api/datasources
-
-echo "Importing SNMP Stats dashboard..."
-if [ -f /snmp-stats.json ]; then
-  # Create a temporary file with updated UID and remove id field
-  jq 'del(.id)' /snmp-stats.json > /tmp/snmp-stats-temp.json
-  # Replace placeholder UID with the dynamic one
-  sed -i "s/PROMETHEUS_UID_PLACEHOLDER/$PROMETHEUS_UID/g" /tmp/snmp-stats-temp.json
-  
-  import_payload=$(jq -n --slurpfile dash /tmp/snmp-stats-temp.json '{dashboard: $dash[0], overwrite: true, folderId: 0}')
-  curl -s -X POST \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Basic YWRtaW46cm9vdA==" \
-    -d "$import_payload" \
-    http://grafana:3000/api/dashboards/import
-  echo "SNMP Stats dashboard import attempted"
-  rm -f /tmp/snmp-stats-temp.json
-fi
-
-echo "Importing Blackbox ICMP dashboard..."
-if [ -f /blackbox-icmp.json ]; then
-  # Create a temporary file with updated UID and remove id field
-  jq 'del(.id)' /blackbox-icmp.json > /tmp/blackbox-icmp-temp.json
-  # Replace placeholder UID with the dynamic one
-  sed -i "s/PROMETHEUS_UID_PLACEHOLDER/$PROMETHEUS_UID/g" /tmp/blackbox-icmp-temp.json
-  
-  import_payload=$(jq -n --slurpfile dash /tmp/blackbox-icmp-temp.json '{dashboard: $dash[0], overwrite: true, folderId: 0}')
-  curl -s -X POST \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Basic YWRtaW46cm9vdA==" \
-    -d "$import_payload" \
-    http://grafana:3000/api/dashboards/import
-  echo "Blackbox ICMP dashboard import attempted"
-  rm -f /tmp/blackbox-icmp-temp.json
-fi
+echo "Dashboards are provisioned from /etc/grafana/provisioning/dashboard-json"
 
 echo "Grafana setup completed!"
