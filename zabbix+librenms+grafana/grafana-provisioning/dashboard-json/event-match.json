@@ -50,7 +50,7 @@
                                        },
                        "gridPos":  {
                                        "h":  3,
-                                       "w":  4,
+                                       "w":  6,
                                        "x":  0,
                                        "y":  0
                                    },
@@ -90,74 +90,6 @@
                                       },
                        "fieldConfig":  {
                                            "defaults":  {
-                                                            "unit":  "s",
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "yellow",
-                                                                                                 "value":  0.005
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  0.01
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  3,
-                                       "w":  4,
-                                       "x":  4,
-                                       "y":  0
-                                   },
-                       "id":  2,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "center",
-                                       "orientation":  "auto",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "auto"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "editorMode":  "code",
-                                           "expr":  "avg(probe_icmp_duration_seconds{infra_role=\"switch\",phase=\"rtt\"})",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "交换机均延迟",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
                                                             "color":  {
                                                                           "mode":  "thresholds"
                                                                       },
@@ -177,8 +109,8 @@
                                        },
                        "gridPos":  {
                                        "h":  3,
-                                       "w":  4,
-                                       "x":  8,
+                                       "w":  6,
+                                       "x":  6,
                                        "y":  0
                                    },
                        "id":  3,
@@ -225,74 +157,6 @@
                                                                                "mode":  "absolute",
                                                                                "steps":  [
                                                                                              {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "yellow",
-                                                                                                 "value":  0.005
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  0.01
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  3,
-                                       "w":  4,
-                                       "x":  12,
-                                       "y":  0
-                                   },
-                       "id":  4,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "center",
-                                       "orientation":  "auto",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "auto"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "editorMode":  "code",
-                                           "expr":  "avg(probe_icmp_duration_seconds{infra_role=\"firewall\",phase=\"rtt\"})",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "防火墙均延迟",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "unit":  "s",
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
                                                                                                  "color":  "blue",
                                                                                                  "value":  null
                                                                                              }
@@ -305,8 +169,8 @@
                                        },
                        "gridPos":  {
                                        "h":  3,
-                                       "w":  4,
-                                       "x":  16,
+                                       "w":  6,
+                                       "x":  12,
                                        "y":  0
                                    },
                        "id":  5,
@@ -364,8 +228,8 @@
                                        },
                        "gridPos":  {
                                        "h":  3,
-                                       "w":  4,
-                                       "x":  20,
+                                       "w":  6,
+                                       "x":  18,
                                        "y":  0
                                    },
                        "id":  6,
