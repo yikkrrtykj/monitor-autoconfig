@@ -11,12 +11,14 @@ fi
 
 if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
   mkdir -p /var/spool/cron/crontabs
-  cat /opt/librenms/dist/librenms-scheduler.cron | crontab - 2>/dev/null || true
-  echo "[librenms-init] scheduler cron installed"
+  sed "s|php /opt/librenms/artisan|sudo -u librenms php /opt/librenms/artisan|" \
+    /opt/librenms/dist/librenms-scheduler.cron > /var/spool/cron/crontabs/root
+  chmod 600 /var/spool/cron/crontabs/root 2>/dev/null || true
+  echo "[librenms-init] scheduler cron installed (root crontab with sudo -u librenms)"
 fi
 
 if [ -S /var/run/cron.sock ] || pgrep crond >/dev/null 2>&1; then
-  echo "[librenms-init] cron already running"
+  echo "[librenms-init] cron daemon already running"
 elif command -v crond >/dev/null 2>&1; then
   crond -b -l 2 2>/dev/null || crond -l 2 2>/dev/null &
   echo "[librenms-init] crond started"
