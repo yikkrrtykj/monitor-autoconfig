@@ -31,11 +31,14 @@ fi
 # Patch RrdCheck.php to comment out progress echo lines that break JSON API responses.
 # LibreNMS prints "Scanning X rrd files..." to stdout during web validate,
 # which corrupts the JSON response body and causes front-end parse failure.
+# We use line-number sed because regex fails on shell-escaping \033[\ etc.
 if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then
-  sed -i '/Scanning.*rrd files/s/^\(\s*\)echo/\1\/\/ echo/' /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  sed -i '/echo \$test_status;/s/^\(\s*\)echo/\1\/\/ echo/' /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  sed -i "/Status:.*Complete/s/^\(\s*\)echo/\1\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  sed -i '/echo "\\\\033\[/s/^\(\s*\)echo/\1\/\/ echo/' /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "55s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "67s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "69s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "75s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "81s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "82s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
   echo "[librenms-entry] RrdCheck.php echo lines commented out"
 fi
 

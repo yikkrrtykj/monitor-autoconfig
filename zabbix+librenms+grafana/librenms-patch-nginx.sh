@@ -51,16 +51,15 @@ echo "[librenms-init] PHP-FPM restarted"
 # Patch RrdCheck.php to comment out progress echo lines that break JSON API responses.
 # LibreNMS 26.4.1 prints "Scanning X rrd files..." and "Status: X/Y" to stdout
 # during the web validate check, which corrupts the JSON response body.
+# We use line-number sed because regex fails on shell-escaping \033[\ etc.
 if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then
-  # Comment out: echo "Scanning ... rrd files in ..."
-  sed -i '/Scanning.*rrd files/s/^\(\s*\)echo/\1\/\/ echo/' /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  # Comment out: echo $test_status;
-  sed -i '/echo \$test_status;/s/^\(\s*\)echo/\1\/\/ echo/' /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  # Comment out: echo 'Status: ... Complete'
-  sed -i "/Status:.*Complete/s/^\(\s*\)echo/\1\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  # Comment out: echo "\033[... cursor movement escape sequences (no visible output alone, but clean up)
-  sed -i '/echo "\\\\033\[/s/^\(\s*\)echo/\1\/\/ echo/' /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  echo "[librenms-init] RrdCheck.php echo lines commented out for clean JSON"
+  sed -i "55s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "67s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "69s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "75s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "81s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  sed -i "82s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
+  echo "[librenms-init] RrdCheck.php echo lines commented out"
 fi
 
 if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
