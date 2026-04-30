@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "PUBGM 64-Player Tournament Network Monitor",
+  "description": "64-Player Tournament Network Monitor",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -307,7 +307,7 @@
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": ["pubgm", "tournament", "ping"],
+  "tags": ["tournament", "ping", "player"],
   "templating": {
     "list": [
       {
@@ -329,7 +329,7 @@
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "PUBGM Tournament 64",
-  "uid": "pubgm-tournament-64",
+  "title": "Tournament 64",
+  "uid": "tournament-64",
   "version": 1
 }

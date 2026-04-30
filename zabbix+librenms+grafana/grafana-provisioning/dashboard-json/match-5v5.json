@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "PUBGM 5v5 Match Network Monitor - Blue vs Red",
+  "description": "5v5 Match Network Monitor - Blue vs Red",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -113,7 +113,7 @@
           "refId": "A"
         }
       ],
-      "title": "PUBGM 5v5",
+      "title": "5v5",
       "type": "stat",
       "fieldConfig": {
         "defaults": {
@@ -360,7 +360,7 @@
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": ["pubgm", "match", "5v5", "ping"],
+  "tags": ["match", "5v5", "ping", "player"],
   "templating": {
     "list": [
       {
@@ -449,7 +449,7 @@
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "PUBGM Match 5v5",
-  "uid": "pubgm-match-5v5",
+  "title": "Match 5v5",
+  "uid": "match-5v5",
   "version": 1
 }
