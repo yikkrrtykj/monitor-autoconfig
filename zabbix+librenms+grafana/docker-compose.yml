@@ -455,7 +455,6 @@ services:
     container_name: librenms-dispatcher
     hostname: librenms-dispatcher
     restart: unless-stopped
-    user: "1000:1000"
     cap_add:
       - NET_ADMIN
       - NET_RAW
