@@ -21,6 +21,13 @@ if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
   echo "[librenms-init] nginx server_name inserted: ${SERVER_IP}"
 fi
 
+# Fix APP_URL in .env - otherwise front-end AJAX calls fail because it points to localhost
+if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ] && [ -f /opt/librenms/.env ]; then
+  LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
+  sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}:${LIBRENMS_PORT}|" /opt/librenms/.env 2>/dev/null || true
+  echo "[librenms-init] APP_URL patched to http://${SERVER_IP}:${LIBRENMS_PORT}"
+fi
+
 # Reload nginx to apply changes
 if nginx -t >/dev/null 2>&1; then
   nginx -s reload 2>/dev/null || true
@@ -31,10 +38,10 @@ fi
 
 if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
   mkdir -p /var/spool/cron/crontabs
-  sed "s|php /opt/librenms/artisan|sudo -u librenms php /opt/librenms/artisan|" \
+  sed "s|php /opt/librenms/artisan|su librenms -s /bin/sh -c \"php /opt/librenms/artisan\"|" \
     /opt/librenms/dist/librenms-scheduler.cron > /var/spool/cron/crontabs/root
   chmod 600 /var/spool/cron/crontabs/root 2>/dev/null || true
-  echo "[librenms-init] scheduler cron installed (root crontab with sudo -u librenms)"
+  echo "[librenms-init] scheduler cron installed"
 fi
 
 if [ -S /var/run/cron.sock ] || pgrep crond >/dev/null 2>&1; then

@@ -89,7 +89,7 @@ get_lnms_cmd() {
   fi
 
   if [ -x /opt/librenms/artisan ]; then
-    echo "sudo -u librenms php /opt/librenms/artisan"
+    echo "su librenms -s /bin/sh -c 'php /opt/librenms/artisan'"
     return 0
   fi
 

@@ -21,4 +21,11 @@ exec s6-setuidgid librenms sh -c 'while true; do php /opt/librenms/artisan sched
 S6EOF
 chmod +x /etc/services.d/scheduler/run
 
+# Fix APP_URL in .env before starting
+if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ] && [ -f /opt/librenms/.env ]; then
+  LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
+  sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}:${LIBRENMS_PORT}|" /opt/librenms/.env 2>/dev/null || true
+  echo "[librenms-entry] APP_URL patched to http://${SERVER_IP}:${LIBRENMS_PORT}"
+fi
+
 exec /init
