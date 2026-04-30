@@ -42,4 +42,13 @@ if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then
   echo "[librenms-entry] RrdCheck.php echo lines commented out"
 fi
 
+# Install crontab for scheduler — validate.php checks /etc/cron.d/ for scheduler validation
+if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
+  mkdir -p /var/spool/cron/crontabs /etc/cron.d
+  sed "s|php /opt/librenms/artisan|su librenms -s /bin/sh -c \"php /opt/librenms/artisan\"|" \
+    /opt/librenms/dist/librenms-scheduler.cron > /etc/cron.d/librenms 2>/dev/null || true
+  chmod 644 /etc/cron.d/librenms 2>/dev/null || true
+  echo "[librenms-entry] scheduler crontab installed to /etc/cron.d/librenms"
+fi
+
 exec /init

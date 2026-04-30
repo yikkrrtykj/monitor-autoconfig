@@ -63,11 +63,14 @@ if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then
 fi
 
 if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
-  mkdir -p /var/spool/cron/crontabs
+  mkdir -p /var/spool/cron/crontabs /etc/cron.d
   sed "s|php /opt/librenms/artisan|su librenms -s /bin/sh -c \"php /opt/librenms/artisan\"|" \
     /opt/librenms/dist/librenms-scheduler.cron > /var/spool/cron/crontabs/root
   chmod 600 /var/spool/cron/crontabs/root 2>/dev/null || true
-  echo "[librenms-init] scheduler cron installed"
+  sed "s|php /opt/librenms/artisan|su librenms -s /bin/sh -c \"php /opt/librenms/artisan\"|" \
+    /opt/librenms/dist/librenms-scheduler.cron > /etc/cron.d/librenms 2>/dev/null || true
+  chmod 644 /etc/cron.d/librenms 2>/dev/null || true
+  echo "[librenms-init] scheduler crontab installed"
 fi
 
 if [ -S /var/run/cron.sock ] || pgrep crond >/dev/null 2>&1; then
