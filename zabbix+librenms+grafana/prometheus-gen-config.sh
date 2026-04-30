@@ -66,17 +66,17 @@ scrape_configs:
     params:
       module: [icmp]
     static_configs:
-      - targets:
 EOF
 
 if [ -n "$INFRA_SWITCH_TARGETS" ]; then
+  echo "      - targets:" >> "$CONFIG_FILE"
   write_target_list "$INFRA_SWITCH_TARGETS" >> "$CONFIG_FILE"
 else
-  echo "        []" >> "$CONFIG_FILE"
+  echo "      - targets: []" >> "$CONFIG_FILE"
 fi
+echo "        labels:" >> "$CONFIG_FILE"
 
 cat >> "$CONFIG_FILE" <<EOF
-        labels:
           infra_role: "switch"
     relabel_configs:
       - source_labels: [__address__]
@@ -91,17 +91,17 @@ cat >> "$CONFIG_FILE" <<EOF
     params:
       module: [icmp]
     static_configs:
-      - targets:
 EOF
 
 if [ -n "$INFRA_FIREWALL_TARGETS" ]; then
+  echo "      - targets:" >> "$CONFIG_FILE"
   write_target_list "$INFRA_FIREWALL_TARGETS" >> "$CONFIG_FILE"
 else
-  echo "        []" >> "$CONFIG_FILE"
+  echo "      - targets: []" >> "$CONFIG_FILE"
 fi
+echo "        labels:" >> "$CONFIG_FILE"
 
 cat >> "$CONFIG_FILE" <<EOF
-        labels:
           infra_role: "firewall"
     relabel_configs:
       - source_labels: [__address__]
@@ -116,17 +116,17 @@ cat >> "$CONFIG_FILE" <<EOF
     params:
       module: [icmp]
     static_configs:
-      - targets:
 EOF
 
 if [ -n "$INFRA_AP_TARGETS" ]; then
+  echo "      - targets:" >> "$CONFIG_FILE"
   write_target_list "$INFRA_AP_TARGETS" >> "$CONFIG_FILE"
 else
-  echo "        []" >> "$CONFIG_FILE"
+  echo "      - targets: []" >> "$CONFIG_FILE"
 fi
+echo "        labels:" >> "$CONFIG_FILE"
 
 cat >> "$CONFIG_FILE" <<EOF
-        labels:
           infra_role: "ap"
     relabel_configs:
       - source_labels: [__address__]
