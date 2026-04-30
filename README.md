@@ -34,8 +34,6 @@ sudo usermod -aG docker $USER
 ```
 
 ## 部署
-如果不是本机访问，把下面这个地址改成服务器真实 IP 或域名
-LIBRENMS_BASE_URL=http://服务器IP:8002
 ```bash
 git clone https://github.com/yikkrrtykj/monitor-autoconfig.git
 cd monitor-autoconfig/zabbix+prometheus+grafana
