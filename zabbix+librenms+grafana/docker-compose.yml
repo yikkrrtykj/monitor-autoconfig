@@ -94,20 +94,19 @@ services:
       - ./zabbix-server-data:/zabbix-server-data
       - ./grafana-data:/grafana-data
       - ./prometheus-data:/prometheus-data
-      - ./uptime-kuma-data:/uptime-kuma-data
       - ./librenms-db-data:/librenms-db-data
       - ./librenms-data:/librenms-data
       - ./librenms-rrdcached-journal:/librenms-rrdcached-journal
     command: |
       sh -c '
         echo "Setting up directory permissions..."
-        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data /librenms-db-data /librenms-data /librenms-data/rrd /librenms-rrdcached-journal
+        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data /librenms-db-data /librenms-data /librenms-data/rrd /librenms-rrdcached-journal
         chown -R 999:999 /mysql-data /librenms-db-data
         chown -R 1997:1997 /zabbix-server-data
         chown -R 472:472 /grafana-data
         chown -R 65534:65534 /prometheus-data
         chown -R 1000:1000 /librenms-data /librenms-rrdcached-journal
-        chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data /uptime-kuma-data /librenms-db-data /librenms-data
+        chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data /librenms-db-data /librenms-data
         chmod -R 775 /librenms-data/rrd /librenms-rrdcached-journal
         echo "Permissions set successfully"
       '
@@ -314,9 +313,7 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
-      PROMETHEUS_SNMP_TARGETS: "${PROMETHEUS_SNMP_TARGETS:-192.168.10.254,192.168.10.11-16}"
       PROMETHEUS_PING_TARGETS: "${PROMETHEUS_PING_TARGETS:-192.168.10.254,192.168.10.11-16}"
-      PROMETHEUS_SNMP_AUTH: "${PROMETHEUS_SNMP_AUTH:-global}"
       PROMETHEUS_SCRAPE_INTERVAL: "${PROMETHEUS_SCRAPE_INTERVAL:-30s}"
       PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
       INFRA_SWITCH_PING_TARGETS: "${INFRA_SWITCH_PING_TARGETS:-}"
@@ -344,17 +341,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-
-  snmp-exporter:
-    image: prom/snmp-exporter:latest
-    container_name: snmp-exporter
-    restart: unless-stopped
-    ports:
-      - "${SNMP_EXPORTER_BIND:-127.0.0.1}:${SNMP_EXPORTER_PORT:-9116}:9116"
-    networks:
-      - monitor
-    volumes:
-      - './snmp.yml:/etc/snmp_exporter/snmp.yml'
 
   blackbox-exporter:
     image: prom/blackbox-exporter:latest
@@ -417,21 +403,6 @@ services:
           done
           sleep 60
         done
-
-  uptime-kuma:
-    image: louislam/uptime-kuma:2
-    container_name: uptime-kuma
-    restart: unless-stopped
-    volumes:
-      - ./uptime-kuma-data:/app/data
-      - /etc/localtime:/etc/localtime:ro
-    ports:
-      - "3001:3001"
-    networks:
-      - monitor
-    depends_on:
-      init-permissions:
-        condition: service_completed_successfully
 
   librenms:
     image: librenms/librenms:latest

@@ -3,13 +3,11 @@
 set -eu
 
 CONFIG_FILE="${PROMETHEUS_CONFIG_FILE:-/tmp/prometheus.yml}"
-SNMP_TARGETS="${PROMETHEUS_SNMP_TARGETS:-192.168.10.254,192.168.10.11-16}"
 PING_TARGETS="${PROMETHEUS_PING_TARGETS:-192.168.10.254,192.168.10.11-16}"
 INFRA_SWITCH_TARGETS="${INFRA_SWITCH_PING_TARGETS:-}"
 INFRA_FIREWALL_TARGETS="${INFRA_FIREWALL_PING_TARGETS:-}"
 INFRA_AP_TARGETS="${INFRA_AP_PING_TARGETS:-}"
 PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
-SNMP_AUTH="${PROMETHEUS_SNMP_AUTH:-global}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-30s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 
@@ -62,26 +60,6 @@ scrape_configs:
       - targets: ["prometheus:9090"]
         labels:
           app: "prometheus"
-
-  - job_name: "network-snmp"
-    metrics_path: /snmp
-    params:
-      auth: [$SNMP_AUTH]
-      module: [if_mib]
-    static_configs:
-      - targets:
-EOF
-
-write_target_list "$SNMP_TARGETS" >> "$CONFIG_FILE"
-
-cat >> "$CONFIG_FILE" <<EOF
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: snmp-exporter:9116
 
   - job_name: "infra-switch-ping"
     metrics_path: /probe
@@ -193,17 +171,12 @@ cat >> "$CONFIG_FILE" <<EOF
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
-  - job_name: "snmp-exporter"
-    static_configs:
-      - targets: ["snmp-exporter:9116"]
-
   - job_name: "blackbox-exporter"
     static_configs:
       - targets: ["blackbox-exporter:9115"]
 EOF
 
 echo "Generated Prometheus config:"
-echo "  SNMP targets: $SNMP_TARGETS"
 echo "  Ping targets: $PING_TARGETS"
 echo "  Switch ping:  ${INFRA_SWITCH_TARGETS:-none}"
 echo "  Firewall ping: ${INFRA_FIREWALL_TARGETS:-none}"
