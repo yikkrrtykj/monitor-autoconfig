@@ -603,12 +603,49 @@
                                                             "unit":  "bps"
                                                         },
                                            "overrides":  [
-
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "IN"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "displayName",
+                                                                                        "value":  "下载"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "fixedColor":  "green",
+                                                                                                      "mode":  "fixed"
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "OUT"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "displayName",
+                                                                                        "value":  "上传"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "color",
+                                                                                        "value":  {
+                                                                                                      "fixedColor":  "blue",
+                                                                                                      "mode":  "fixed"
+                                                                                                  }
+                                                                                    }
+                                                                                ]
+                                                             }
                                                          ]
                                        },
                        "gridPos":  {
-                                       "h":  10,
-                                       "w":  24,
+                                       "h":  8,
+                                       "w":  12,
                                        "x":  0,
                                        "y":  11
                                    },
@@ -621,7 +658,7 @@
                                                                     "lastNotNull"
                                                                 ],
                                                       "displayMode":  "table",
-                                                      "placement":  "right",
+                                                      "placement":  "bottom",
                                                       "showLegend":  true
                                                   },
                                        "tooltip":  {
@@ -629,6 +666,9 @@
                                                        "sort":  "none"
                                                    }
                                    },
+                       "repeat":  "wan_iface",
+                       "repeatDirection":  "h",
+                       "maxPerRow":  2,
                        "targets":  [
                                        {
                                            "datasource":  {
@@ -636,8 +676,8 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "rate(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}[1m]) * 8",
-                                           "legendFormat":  "{{instance}} {{ifAlias}} IN",
+                                           "expr":  "rate(ifHCInOctets{job=\"firewall-snmp\",ifAlias=\"$wan_iface\"}[1m]) * 8",
+                                           "legendFormat":  "IN",
                                            "refId":  "A"
                                        },
                                        {
@@ -646,12 +686,12 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "rate(ifHCOutOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}[1m]) * 8",
-                                           "legendFormat":  "{{instance}} {{ifAlias}} OUT",
+                                           "expr":  "rate(ifHCOutOctets{job=\"firewall-snmp\",ifAlias=\"$wan_iface\"}[1m]) * 8",
+                                           "legendFormat":  "OUT",
                                            "refId":  "B"
                                        }
                                    ],
-                       "title":  "防火墙 ISP 出口流量",
+                       "title":  "$wan_iface · ISP 流量",
                        "type":  "timeseries"
                    },
                    {
@@ -682,7 +722,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  0,
-                                       "y":  21
+                                       "y":  19
                                    },
                        "id":  10,
                        "options":  {
@@ -751,7 +791,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  4,
-                                       "y":  21
+                                       "y":  19
                                    },
                        "id":  11,
                        "options":  {
@@ -820,7 +860,7 @@
                                        "h":  4,
                                        "w":  8,
                                        "x":  8,
-                                       "y":  21
+                                       "y":  19
                                    },
                        "id":  12,
                        "options":  {
@@ -889,7 +929,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  16,
-                                       "y":  21
+                                       "y":  19
                                    },
                        "id":  13,
                        "options":  {
@@ -949,7 +989,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  20,
-                                       "y":  21
+                                       "y":  19
                                    },
                        "id":  14,
                        "options":  {
@@ -1027,7 +1067,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  25
+                                       "y":  23
                                    },
                        "id":  100,
                        "options":  {
@@ -1138,7 +1178,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  25
+                                       "y":  23
                                    },
                        "id":  200,
                        "options":  {
@@ -1260,7 +1300,7 @@
                                        "h":  10,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  41
+                                       "y":  39
                                    },
                        "id":  300,
                        "options":  {
@@ -1336,6 +1376,25 @@
                                         "name":  "wan_filter",
                                         "query":  "WAN|ISP|internet|wan|出口",
                                         "type":  "textbox"
+                                    },
+                                    {
+                                        "datasource":  {
+                                                           "type":  "prometheus",
+                                                           "uid":  "prometheus"
+                                                       },
+                                        "definition":  "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)",
+                                        "hide":  2,
+                                        "includeAll":  false,
+                                        "multi":  false,
+                                        "name":  "wan_iface",
+                                        "query":  {
+                                                      "query":  "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)",
+                                                      "refId":  "StandardVariableQuery"
+                                                  },
+                                        "refresh":  2,
+                                        "regex":  "",
+                                        "sort":  1,
+                                        "type":  "query"
                                     },
                                     {
                                         "current":  {

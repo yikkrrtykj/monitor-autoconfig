@@ -129,28 +129,40 @@
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
           "unit": "bps"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "IN" },
+            "properties": [{ "id": "displayName", "value": "下载" }, { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "OUT" },
+            "properties": [{ "id": "displayName", "value": "上传" }, { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          }
+        ]
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 11 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
       "id": 40,
-      "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "repeat": "wan_iface",
+      "repeatDirection": "h",
+      "maxPerRow": 2,
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "rate(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}[1m]) * 8",
-          "legendFormat": "{{instance}} {{ifAlias}} IN",
+          "expr": "rate(ifHCInOctets{job=\"firewall-snmp\",ifAlias=\"$wan_iface\"}[1m]) * 8",
+          "legendFormat": "IN",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "rate(ifHCOutOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}[1m]) * 8",
-          "legendFormat": "{{instance}} {{ifAlias}} OUT",
+          "expr": "rate(ifHCOutOctets{job=\"firewall-snmp\",ifAlias=\"$wan_iface\"}[1m]) * 8",
+          "legendFormat": "OUT",
           "refId": "B"
         }
       ],
-      "title": "防火墙 ISP 出口流量",
+      "title": "$wan_iface · ISP 流量",
       "type": "timeseries"
     }
   ],
@@ -166,6 +178,19 @@
         "name": "wan_filter",
         "query": "WAN|ISP|internet|wan|出口",
         "type": "textbox"
+      },
+      {
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "wan_iface",
+        "query": { "query": "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)", "refId": "StandardVariableQuery" },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
       }
     ]
   },
