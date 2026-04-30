@@ -16,7 +16,13 @@ LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin}"
 LIBRENMS_ADMIN_EMAIL="${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
 LIBRENMS_BASE_URL="${LIBRENMS_BASE_URL:-http://localhost:8002}"
+LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
+SERVER_IP="${SERVER_IP:-}"
 RRDCACHED_SERVER="${RRDCACHED_SERVER:-}"
+
+if [ "$LIBRENMS_BASE_URL" = "http://localhost:8002" ] && [ -n "$SERVER_IP" ]; then
+  LIBRENMS_BASE_URL="http://$SERVER_IP:$LIBRENMS_PORT"
+fi
 
 echo "============================================"
 echo "  LibreNMS Auto-Discovery Configuration"
@@ -99,8 +105,18 @@ configure_runtime() {
       echo "  WARNING: Could not set rrdcached"
   fi
 
-  "$lnms_cmd" config:set distributed_poller false >/dev/null 2>&1 && \
-    echo "  distributed_poller: disabled for single-server install" || true
+  "$lnms_cmd" config:set distributed_poller true >/dev/null 2>&1 && \
+    echo "  distributed_poller: enabled for dispatcher service" || \
+    echo "  WARNING: Could not enable distributed_poller"
+
+  for task in poller services discovery alerting billing ping; do
+    "$lnms_cmd" config:set "schedule_type.$task" dispatcher >/dev/null 2>&1 && \
+      echo "  schedule_type.$task: dispatcher" || \
+      echo "  WARNING: Could not set schedule_type.$task"
+  done
+
+  "$lnms_cmd" config:set service_poller_workers "${LIBRENMS_POLLER_WORKERS:-4}" >/dev/null 2>&1 || true
+  "$lnms_cmd" config:set service_discovery_workers "${LIBRENMS_DISCOVERY_WORKERS:-2}" >/dev/null 2>&1 || true
 }
 
 echo ""

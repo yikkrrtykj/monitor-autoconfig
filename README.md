@@ -38,6 +38,8 @@ sudo usermod -aG docker $USER
 git clone https://github.com/yikkrrtykj/monitor-autoconfig.git
 cd monitor-autoconfig/zabbix+prometheus+grafana
 cp .env.example .env
+# 远程服务器建议立刻改成实际访问地址，例如：
+# LIBRENMS_BASE_URL=http://43.134.220.230:8002
 docker compose up -d
 ```
 
@@ -45,6 +47,7 @@ docker compose up -d
 
 ```env
 SNMP_COMMUNITY=global
+SERVER_IP=192.168.10.10
 LIBRENMS_BASE_URL=http://192.168.10.10:8002
 LIBRENMS_DISCOVERY_TARGETS=192.168.10.1-100,192.168.10.254
 LIBRENMS_CORE_IP=192.168.10.254
@@ -56,6 +59,7 @@ PROMETHEUS_PING_TARGETS=192.168.10.254,192.168.10.11-16
 例如改成 `10.10.20.0/24`，可以写成：
 
 ```env
+SERVER_IP=10.10.20.10
 LIBRENMS_BASE_URL=http://10.10.20.10:8002
 LIBRENMS_DISCOVERY_TARGETS=10.10.20.1-100,10.10.20.254
 LIBRENMS_CORE_IP=10.10.20.254
@@ -64,15 +68,15 @@ PROMETHEUS_SNMP_TARGETS=10.10.20.254,10.10.20.11-16
 PROMETHEUS_PING_TARGETS=10.10.20.254,10.10.20.11-16
 ```
 
-改完执行 `docker compose up -d --force-recreate librenms librenms-dispatcher librenms-config zabbix-config` 重新应用自动发现配置。
+改完执行 `docker compose up -d --force-recreate librenms librenms-dispatcher librenms-scheduler librenms-config zabbix-agent zabbix-config` 重新应用自动发现和轮询配置。
 如果 Grafana 的 SNMP / ICMP 面板也要跟着变，修改 `PROMETHEUS_SNMP_TARGETS` 和 `PROMETHEUS_PING_TARGETS`，再执行 `docker compose up -d --force-recreate prometheus`。
 
 ## 自动配置
 
 启动后以下配置会自动完成：
 
-- **Zabbix**：添加主机、模板、SNMP 监控、飞书告警
-- **LibreNMS**：启动 Web、Redis、dispatcher、rrdcached，创建默认管理员，自动发现 SNMP 设备（默认范围：`192.168.10.1-100,192.168.10.254`），配置告警规则
+- **Zabbix**：添加主机、模板、SNMP 监控、飞书告警，并把默认 `Zabbix server` 主机指向 `zabbix-agent` 容器
+- **LibreNMS**：启动 Web、Redis、dispatcher、scheduler、rrdcached，创建默认管理员，自动发现 SNMP 设备（默认范围：`192.168.10.1-100,192.168.10.254`），配置 dispatcher 轮询和告警规则
 - **Prometheus / Grafana**：轻量模式，只为 Grafana 采集核心/舞台交换机 SNMP 和 ICMP 数据，Grafana 会自动加载 Network 文件夹下的 SNMP Stats 和 Blackbox ICMP 面板
 
 查看配置日志：
@@ -80,6 +84,7 @@ PROMETHEUS_PING_TARGETS=10.10.20.254,10.10.20.11-16
 docker compose logs zabbix-config
 docker compose logs librenms-config
 docker compose logs librenms-dispatcher
+docker compose logs librenms-scheduler
 docker compose logs grafana grafana-setup
 ```
 

@@ -1035,11 +1035,19 @@ EXISTING_ZABBIX_HOST_ID=$(echo "$existing_zabbix_host_response" | jq -r '.result
 
 if [ -n "$EXISTING_ZABBIX_HOST_ID" ]; then
   echo "Zabbix server host already exists with ID: $EXISTING_ZABBIX_HOST_ID. Updating interface..."
+
+  api_call "host.update" "{
+    \"hostid\": \"$EXISTING_ZABBIX_HOST_ID\",
+    \"status\": 0
+  }" "$AUTH_TOKEN" > /dev/null || true
   
   # Get existing interface ID first
   interface_response=$(api_call "hostinterface.get" "{
     \"hostids\": [\"$EXISTING_ZABBIX_HOST_ID\"],
-    \"output\": [\"interfaceid\", \"type\", \"main\"]
+    \"output\": [\"interfaceid\", \"type\", \"main\"],
+    \"filter\": {
+      \"type\": 1
+    }
   }" "$AUTH_TOKEN")
   
   INTERFACE_ID=$(echo "$interface_response" | jq -r '.result[0].interfaceid // empty')
@@ -1055,7 +1063,17 @@ if [ -n "$EXISTING_ZABBIX_HOST_ID" ]; then
     }" "$AUTH_TOKEN")
     echo "Updated Zabbix server host interface to use zabbix-agent container"
   else
-    echo "No interface found for Zabbix server host, skipping interface update"
+    create_interface_response=$(api_call "hostinterface.create" "{
+      \"hostid\": \"$EXISTING_ZABBIX_HOST_ID\",
+      \"type\": 1,
+      \"main\": 1,
+      \"useip\": 0,
+      \"ip\": \"\",
+      \"dns\": \"zabbix-agent\",
+      \"port\": \"10050\"
+    }" "$AUTH_TOKEN")
+    INTERFACE_ID=$(echo "$create_interface_response" | jq -r '.result.interfaceids[0] // empty')
+    echo "Created Zabbix server host interface to use zabbix-agent container"
   fi
 else
   echo "Creating Zabbix server host..."
@@ -1107,27 +1125,33 @@ else
   
   ZABBIX_HOST_ID=$(echo "$create_zabbix_host_response" | jq -r '.result.hostids[0]')
   echo "Created Zabbix server host with ID: $ZABBIX_HOST_ID"
+
+  interface_response=$(api_call "hostinterface.get" "{
+    \"hostids\": [\"$ZABBIX_HOST_ID\"],
+    \"output\": [\"interfaceid\", \"type\", \"main\"],
+    \"filter\": {
+      \"type\": 1
+    }
+  }" "$AUTH_TOKEN")
+  INTERFACE_ID=$(echo "$interface_response" | jq -r '.result[0].interfaceid // empty')
 fi
 
 echo "Zabbix server host configuration completed!"
 
 # Force refresh host interface to ensure DNS resolution works
-echo "Forcing host interface refresh..."
-refresh_interface_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{
-  \"jsonrpc\": \"2.0\",
-  \"method\": \"hostinterface.update\",
-  \"params\": {
-    \"interfaceid\": \"1\",
+if [ -n "$INTERFACE_ID" ]; then
+  echo "Forcing host interface refresh for interface $INTERFACE_ID..."
+  refresh_interface_response=$(api_call "hostinterface.update" "{
+    \"interfaceid\": \"$INTERFACE_ID\",
     \"dns\": \"zabbix-agent\",
     \"useip\": 0,
     \"ip\": \"\",
     \"port\": \"10050\"
-  },
-  \"auth\": \"$AUTH_TOKEN\",
-  \"id\": 1
-}" "$ZABBIX_URL/api_jsonrpc.php")
-
-echo "Interface refresh response: $refresh_interface_response"
+  }" "$AUTH_TOKEN")
+  echo "Interface refresh response: $refresh_interface_response"
+else
+  echo "WARNING: Could not find Zabbix server agent interface to refresh."
+fi
 
 # Wait a moment and test the connection
 sleep 10

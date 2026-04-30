@@ -200,7 +200,7 @@ services:
     hostname: zabbix-agent
     restart: unless-stopped
     environment:
-      ZBX_HOSTNAME: "zabbix-agent"
+      ZBX_HOSTNAME: "Zabbix server"
       ZBX_SERVER_HOST: zabbix-server
       ZBX_SERVER_PORT: 10051
       ZBX_PASSIVE_ALLOW: "true"
@@ -208,7 +208,6 @@ services:
       ZBX_METADATA: "Linux"
       ZBX_SERVER: zabbix-server
       ZBX_SERVERACTIVE: zabbix-server:10051
-      ZBX_HOSTNAMEITEM: system.hostname
       ZBX_TIMEOUT: 30
       ZBX_LISTENPORT: 10050
       ZBX_LISTENIP: "0.0.0.0"
@@ -417,6 +416,8 @@ services:
       DB_PASSWORD: librenms
       DB_PASS: librenms
       DB_TIMEOUT: 120
+      SERVER_IP: "${SERVER_IP:-}"
+      LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
       LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
       APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
       CACHE_DRIVER: redis
@@ -472,6 +473,8 @@ services:
       DB_PASSWORD: librenms
       DB_PASS: librenms
       DB_TIMEOUT: 120
+      SERVER_IP: "${SERVER_IP:-}"
+      LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
       LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
       APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
       CACHE_DRIVER: redis
@@ -487,6 +490,53 @@ services:
     networks:
       - monitor
 
+  librenms-scheduler:
+    image: librenms/librenms:latest
+    container_name: librenms-scheduler
+    hostname: librenms-scheduler
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      librenms:
+        condition: service_started
+      librenms-redis:
+        condition: service_healthy
+      librenms-rrdcached:
+        condition: service_started
+    volumes:
+      - ./librenms-data:/data
+    environment:
+      TZ: Asia/Shanghai
+      DB_HOST: librenms-db
+      DB_NAME: librenms
+      DB_USER: librenms
+      DB_PASSWORD: librenms
+      DB_PASS: librenms
+      DB_TIMEOUT: 120
+      SERVER_IP: "${SERVER_IP:-}"
+      LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
+      LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: librenms-redis
+      REDIS_PORT: 6379
+      RRDCACHED_SERVER: librenms-rrdcached:42217
+      PUID: 1000
+      PGID: 1000
+    entrypoint:
+      - /bin/sh
+      - -c
+    command: |
+      echo "Starting LibreNMS scheduler loop..."
+      while true; do
+        cd /opt/librenms && php artisan schedule:run --no-ansi --no-interaction || true
+        sleep 60
+      done
+    networks:
+      - monitor
+
   librenms-config:
     image: librenms/librenms:latest
     container_name: librenms-config
@@ -494,6 +544,8 @@ services:
       librenms:
         condition: service_started
       librenms-dispatcher:
+        condition: service_started
+      librenms-scheduler:
         condition: service_started
     networks:
       - monitor
@@ -509,6 +561,8 @@ services:
       DB_PASSWORD: librenms
       DB_PASS: librenms
       DB_TIMEOUT: 120
+      SERVER_IP: "${SERVER_IP:-}"
+      LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
       LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
       APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
       CACHE_DRIVER: redis
