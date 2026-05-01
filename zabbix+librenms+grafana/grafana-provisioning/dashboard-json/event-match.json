@@ -64,12 +64,15 @@
                                                         }
                                        },
                        "gridPos":  {
-                                       "h":  5,
-                                       "w":  24,
+                                       "h":  4,
+                                       "w":  4,
                                        "x":  0,
                                        "y":  0
                                    },
                        "id":  100,
+                       "repeat":  "sw_name",
+                       "repeatDirection":  "h",
+                       "maxPerRow":  6,
                        "options":  {
                                        "orientation":  "auto",
                                        "reduceOptions":  {
@@ -82,7 +85,7 @@
                                        "showThresholdLabels":  false,
                                        "showThresholdMarkers":  true,
                                        "text":  {
-                                                    "valueSize":  14
+
                                                 }
                                    },
                        "targets":  [
@@ -92,14 +95,14 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}",
+                                           "expr":  "probe_icmp_duration_seconds{instance=\"$sw_name\",phase=\"rtt\"}",
                                            "format":  "table",
                                            "instant":  true,
-                                           "legendFormat":  "{{instance}}",
+                                           "legendFormat":  "__auto",
                                            "refId":  "A"
                                        }
                                    ],
-                       "title":  "交换机 Ping",
+                       "title":  "$sw_name",
                        "type":  "gauge"
                    },
                    {
@@ -142,12 +145,15 @@
                                                         }
                                        },
                        "gridPos":  {
-                                       "h":  5,
-                                       "w":  24,
+                                       "h":  4,
+                                       "w":  4,
                                        "x":  0,
-                                       "y":  5
+                                       "y":  4
                                    },
                        "id":  101,
+                       "repeat":  "fw_name",
+                       "repeatDirection":  "h",
+                       "maxPerRow":  6,
                        "options":  {
                                        "orientation":  "auto",
                                        "reduceOptions":  {
@@ -160,7 +166,7 @@
                                        "showThresholdLabels":  false,
                                        "showThresholdMarkers":  true,
                                        "text":  {
-                                                    "valueSize":  14
+
                                                 }
                                    },
                        "targets":  [
@@ -170,14 +176,14 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}",
+                                           "expr":  "probe_icmp_duration_seconds{instance=\"$fw_name\",phase=\"rtt\"}",
                                            "format":  "table",
                                            "instant":  true,
-                                           "legendFormat":  "{{instance}}",
+                                           "legendFormat":  "__auto",
                                            "refId":  "A"
                                        }
                                    ],
-                       "title":  "防火墙 Ping",
+                       "title":  "$fw_name",
                        "type":  "gauge"
                    },
                    {
@@ -242,7 +248,7 @@
                                        "h":  8,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  10
+                                       "y":  8
                                    },
                        "id":  200,
                        "options":  {
@@ -375,7 +381,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  18
+                                       "y":  16
                                    },
                        "id":  300,
                        "options":  {
@@ -450,7 +456,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  0,
-                                       "y":  26
+                                       "y":  24
                                    },
                        "id":  10,
                        "options":  {
@@ -519,7 +525,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  4,
-                                       "y":  26
+                                       "y":  24
                                    },
                        "id":  11,
                        "options":  {
@@ -588,7 +594,7 @@
                                        "h":  4,
                                        "w":  8,
                                        "x":  8,
-                                       "y":  26
+                                       "y":  24
                                    },
                        "id":  12,
                        "options":  {
@@ -657,7 +663,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  16,
-                                       "y":  26
+                                       "y":  24
                                    },
                        "id":  13,
                        "options":  {
@@ -717,7 +723,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  20,
-                                       "y":  26
+                                       "y":  24
                                    },
                        "id":  14,
                        "options":  {
@@ -795,7 +801,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  30
+                                       "y":  28
                                    },
                        "id":  100,
                        "options":  {
@@ -906,7 +912,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  30
+                                       "y":  28
                                    },
                        "id":  200,
                        "options":  {
@@ -1028,7 +1034,7 @@
                                        "h":  10,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  46
+                                       "y":  44
                                    },
                        "id":  300,
                        "options":  {
@@ -1091,9 +1097,41 @@
     "timezone":  "browser",
     "title":  "Event + Match",
     "uid":  "event-match",
-    "version":  6,
+    "version":  7,
     "templating":  {
                        "list":  [
+                                    {
+                                        "datasource":  {
+                                                           "type":  "prometheus",
+                                                           "uid":  "prometheus"
+                                                       },
+                                        "definition":  "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
+                                        "hide":  2,
+                                        "includeAll":  true,
+                                        "multi":  true,
+                                        "name":  "sw_name",
+                                        "query":  "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
+                                        "refresh":  2,
+                                        "regex":  "",
+                                        "sort":  1,
+                                        "type":  "query"
+                                    },
+                                    {
+                                        "datasource":  {
+                                                           "type":  "prometheus",
+                                                           "uid":  "prometheus"
+                                                       },
+                                        "definition":  "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
+                                        "hide":  2,
+                                        "includeAll":  true,
+                                        "multi":  true,
+                                        "name":  "fw_name",
+                                        "query":  "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
+                                        "refresh":  2,
+                                        "regex":  "",
+                                        "sort":  1,
+                                        "type":  "query"
+                                    },
                                     {
                                         "current":  {
                                                         "text":  "WAN|ISP|internet|wan|出口",

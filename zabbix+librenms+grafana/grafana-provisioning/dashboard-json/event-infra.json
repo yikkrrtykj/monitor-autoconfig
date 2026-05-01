@@ -36,27 +36,30 @@
           "unit": "s"
         }
       },
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "id": 100,
+      "repeat": "sw_name",
+      "repeatDirection": "h",
+      "maxPerRow": 6,
       "options": {
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "showThresholdLabels": false,
         "showThresholdMarkers": true,
-        "text": { "valueSize": 14 }
+        "text": {}
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{instance=\"$sw_name\",phase=\"rtt\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "{{instance}}",
+          "legendFormat": "__auto",
           "refId": "A"
         }
       ],
-      "title": "交换机 Ping",
+      "title": "$sw_name",
       "type": "gauge"
     },
     {
@@ -76,27 +79,30 @@
           "unit": "s"
         }
       },
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 5 },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 4 },
       "id": 101,
+      "repeat": "fw_name",
+      "repeatDirection": "h",
+      "maxPerRow": 6,
       "options": {
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "showThresholdLabels": false,
         "showThresholdMarkers": true,
-        "text": { "valueSize": 14 }
+        "text": {}
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{instance=\"$fw_name\",phase=\"rtt\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "{{instance}}",
+          "legendFormat": "__auto",
           "refId": "A"
         }
       ],
-      "title": "防火墙 Ping",
+      "title": "$fw_name",
       "type": "gauge"
     },
     {
@@ -116,7 +122,7 @@
           "min": 0
         }
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 10 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
       "id": 200,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "targets": [
@@ -141,7 +147,7 @@
           { "matcher": { "id": "byName", "options": "OUT" }, "properties": [{ "id": "displayName", "value": "上传" }, { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "id": 300,
       "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "repeat": "wan_iface",
@@ -160,6 +166,32 @@
   "tags": ["infrastructure", "event", "ping", "traffic"],
   "templating": {
     "list": [
+      {
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "sw_name",
+        "query": "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "name": "fw_name",
+        "query": "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
       {
         "current": { "text": "WAN|ISP|internet|wan|出口", "value": "WAN|ISP|internet|wan|出口" },
         "hide": 0,
@@ -188,5 +220,5 @@
   "timezone": "browser",
   "title": "Event Infrastructure",
   "uid": "event-infra",
-  "version": 6
+  "version": 7
 }
