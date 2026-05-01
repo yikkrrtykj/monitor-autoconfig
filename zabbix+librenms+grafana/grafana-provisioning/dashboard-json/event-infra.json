@@ -23,127 +23,70 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [
-            { "type": "value", "options": { "0": { "text": "OFF", "color": "red" }, "1": { "text": "ON", "color": "green" } } }
-          ],
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "red", "value": null },
-            { "color": "green", "value": 1 }
-          ]},
-          "noValue": "N/A"
-        }
+          "custom": { "align": "center", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green" }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Status" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": { "0": { "text": "OFFLINE", "color": "red" }, "1": { "text": "ONLINE", "color": "green" } } }
+              ]},
+              { "width": 100 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "延迟" },
+            "properties": [{ "unit": "s" }, { "width": 100 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "设备" },
+            "properties": [{ "width": 120 }]
+          }
+        ]
       },
-      "gridPos": { "h": 2, "w": 3, "x": 0, "y": 0 },
-      "id": 100,
-      "repeat": "instance",
-      "repeatDirection": "h",
-      "maxPerRow": 8,
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
       "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "name"
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "probe_success{job=\"infra-core-ping\"}",
+          "expr": "probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "{{instance}}",
-          "refId": "A"
-        }
-      ],
-      "title": "$instance",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [
-            { "type": "value", "options": { "0": { "text": "OFF", "color": "red" }, "1": { "text": "ON", "color": "green" } } }
-          ],
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "red", "value": null },
-            { "color": "green", "value": 1 }
-          ]},
-          "noValue": "N/A"
-        }
-      },
-      "gridPos": { "h": 2, "w": 3, "x": 0, "y": 2 },
-      "id": 200,
-      "repeat": "instance",
-      "repeatDirection": "h",
-      "maxPerRow": 8,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "name"
-      },
-      "targets": [
+          "legendFormat": "Status",
+          "refId": "S"
+        },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "probe_success{job=\"infra-dist-ping\"}",
+          "expr": "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "{{instance}}",
-          "refId": "A"
+          "legendFormat": "延迟",
+          "refId": "L"
         }
       ],
-      "title": "$instance",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [
-            { "type": "value", "options": { "0": { "text": "OFF", "color": "red" }, "1": { "text": "ON", "color": "green" } } }
-          ],
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "red", "value": null },
-            { "color": "green", "value": 1 }
-          ]},
-          "noValue": "N/A"
-        }
-      },
-      "gridPos": { "h": 2, "w": 3, "x": 0, "y": 4 },
-      "id": 300,
-      "repeat": "instance",
-      "repeatDirection": "h",
-      "maxPerRow": 8,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "name"
-      },
-      "targets": [
+      "transformations": [
+        { "id": "merge" },
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "editorMode": "code",
-          "expr": "probe_success{job=\"infra-fw-ping\"}",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "{{instance}}",
-          "refId": "A"
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "phase": true, "job": true, "instance": true },
+            "renameByName": { "display_name": "设备", "Value #S": "Status", "Value #L": "延迟" }
+          }
         }
       ],
-      "title": "$instance",
-      "type": "stat"
+      "title": "设备状态",
+      "type": "table"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -161,7 +104,7 @@
           "min": 0
         }
       },
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 6 },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 4 },
       "id": 10,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "targets": [
@@ -192,7 +135,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
       "id": 40,
       "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "repeat": "wan_iface",
