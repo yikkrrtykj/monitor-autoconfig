@@ -52,9 +52,53 @@ const layouts = {
   },
 };
 
+const INFRA_H = 3;
 const HEADER_H = 4;
 const TREND_H = 5;
 const DS = { type: 'prometheus', uid: 'prometheus' };
+
+function infraStatPanel(id, x, w, title, jobRegex) {
+  return {
+    datasource: DS,
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'thresholds' },
+        mappings: [
+          { type: 'value', options: { '0': { text: '全部在线', color: 'green' } } },
+        ],
+        thresholds: {
+          mode: 'absolute',
+          steps: [
+            { color: 'green', value: null },
+            { color: 'red', value: 1 },
+          ],
+        },
+        unit: 'none',
+        noValue: '—',
+      },
+      overrides: [],
+    },
+    gridPos: { h: INFRA_H, w, x, y: 0 },
+    id,
+    options: {
+      colorMode: 'background',
+      graphMode: 'none',
+      justifyMode: 'center',
+      orientation: 'auto',
+      reduceOptions: { calcs: ['lastNotNull'], fields: '', values: false },
+      textMode: 'value',
+    },
+    pluginVersion: '12.1.1',
+    targets: [{
+      datasource: DS,
+      editorMode: 'code',
+      expr: 'count(probe_success{job=~"' + jobRegex + '"} == 0) or vector(0)',
+      refId: 'A',
+    }],
+    title,
+    type: 'stat',
+  };
+}
 
 function dotsPanel(team, gridPos, id) {
   return {
@@ -159,7 +203,7 @@ function statSummary(id, x, w, title, expr, color, thresholds) {
       },
       overrides: [],
     },
-    gridPos: { h: HEADER_H, w, x, y: 0 },
+    gridPos: { h: HEADER_H, w, x, y: INFRA_H },
     id,
     options: {
       colorMode: 'background',
@@ -184,6 +228,11 @@ function statSummary(id, x, w, title, expr, color, thresholds) {
 function buildPanels(layout) {
   const panels = [];
 
+  // Upstream infrastructure health row (always at top)
+  panels.push(infraStatPanel(80, 0,  8, '核心交换机离线', 'infra-core-ping'));
+  panels.push(infraStatPanel(81, 8,  8, '分线交换机离线', 'infra-dist-ping'));
+  panels.push(infraStatPanel(82, 16, 8, '防火墙离线',     'infra-fw-ping'));
+
   panels.push(statSummary(1, 0,  6, '在线',   'count(probe_success{role="player",network=~"$network"} == 1) or vector(0)', 'green'));
   panels.push(statSummary(2, 6,  6, '离线',   'count(probe_success{role="player",network=~"$network"} == 0) or vector(0)', 'green', {
     mode: 'absolute', steps: [{ color: 'green', value: null }, { color: 'red', value: 1 }],
@@ -193,7 +242,7 @@ function buildPanels(layout) {
   }));
   panels.push(statSummary(4, 18, 6, '总计',   'count(probe_success{role="player",network=~"$network"}) or vector(0)', 'blue'));
 
-  let y = HEADER_H;
+  let y = INFRA_H + HEADER_H;
   let idBase = 100;
   const halfWidth = 12;
 

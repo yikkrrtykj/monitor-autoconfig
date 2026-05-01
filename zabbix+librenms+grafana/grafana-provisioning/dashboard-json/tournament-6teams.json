@@ -32,6 +32,231 @@
           "color": {
             "mode": "thresholds"
           },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "全部在线",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "—"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "id": 80,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(probe_success{job=~\"infra-core-ping\"} == 0) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "核心交换机离线",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "全部在线",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "—"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "id": 81,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(probe_success{job=~\"infra-dist-ping\"} == 0) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "分线交换机离线",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "全部在线",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "—"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "id": 82,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(probe_success{job=~\"infra-fw-ping\"} == 0) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "防火墙离线",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -49,7 +274,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 0
+        "y": 3
       },
       "id": 1,
       "options": {
@@ -112,7 +337,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 0
+        "y": 3
       },
       "id": 2,
       "options": {
@@ -175,7 +400,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 0
+        "y": 3
       },
       "id": 3,
       "options": {
@@ -234,7 +459,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 0
+        "y": 3
       },
       "id": 4,
       "options": {
@@ -311,7 +536,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 4
+        "y": 7
       },
       "id": 101,
       "options": {
@@ -395,7 +620,7 @@
         "h": 8,
         "w": 4,
         "x": 0,
-        "y": 8
+        "y": 11
       },
       "id": 151,
       "options": {
@@ -473,7 +698,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 4
+        "y": 7
       },
       "id": 102,
       "options": {
@@ -557,7 +782,7 @@
         "h": 8,
         "w": 4,
         "x": 4,
-        "y": 8
+        "y": 11
       },
       "id": 152,
       "options": {
@@ -635,7 +860,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 4
+        "y": 7
       },
       "id": 103,
       "options": {
@@ -719,7 +944,7 @@
         "h": 8,
         "w": 4,
         "x": 8,
-        "y": 8
+        "y": 11
       },
       "id": 153,
       "options": {
@@ -797,7 +1022,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 4
+        "y": 7
       },
       "id": 104,
       "options": {
@@ -881,7 +1106,7 @@
         "h": 8,
         "w": 4,
         "x": 12,
-        "y": 8
+        "y": 11
       },
       "id": 154,
       "options": {
@@ -959,7 +1184,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 4
+        "y": 7
       },
       "id": 105,
       "options": {
@@ -1043,7 +1268,7 @@
         "h": 8,
         "w": 4,
         "x": 16,
-        "y": 8
+        "y": 11
       },
       "id": 155,
       "options": {
@@ -1121,7 +1346,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 4
+        "y": 7
       },
       "id": 106,
       "options": {
@@ -1205,7 +1430,7 @@
         "h": 8,
         "w": 4,
         "x": 20,
-        "y": 8
+        "y": 11
       },
       "id": 156,
       "options": {
@@ -1294,7 +1519,7 @@
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 16
+        "y": 19
       },
       "id": 900,
       "options": {

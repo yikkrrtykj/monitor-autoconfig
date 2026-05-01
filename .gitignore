@@ -3,7 +3,6 @@ mysql-data/
 zabbix-server-data/
 grafana-data/
 prometheus-data/
-uptime-kuma-data/
 librenms-db-data/
 librenms-data/
 

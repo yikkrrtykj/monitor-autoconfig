@@ -32,6 +32,231 @@
           "color": {
             "mode": "thresholds"
           },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "全部在线",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "—"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "id": 80,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(probe_success{job=~\"infra-core-ping\"} == 0) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "核心交换机离线",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "全部在线",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "—"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "id": 81,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(probe_success{job=~\"infra-dist-ping\"} == 0) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "分线交换机离线",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "全部在线",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none",
+          "noValue": "—"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "id": 82,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(probe_success{job=~\"infra-fw-ping\"} == 0) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "防火墙离线",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -49,7 +274,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 0
+        "y": 3
       },
       "id": 1,
       "options": {
@@ -112,7 +337,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 0
+        "y": 3
       },
       "id": 2,
       "options": {
@@ -175,7 +400,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 0
+        "y": 3
       },
       "id": 3,
       "options": {
@@ -234,7 +459,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 0
+        "y": 3
       },
       "id": 4,
       "options": {
@@ -311,7 +536,7 @@
         "h": 2,
         "w": 4,
         "x": 0,
-        "y": 4
+        "y": 7
       },
       "id": 111,
       "options": {
@@ -395,7 +620,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 6
+        "y": 9
       },
       "id": 161,
       "options": {
@@ -473,7 +698,7 @@
         "h": 2,
         "w": 4,
         "x": 4,
-        "y": 4
+        "y": 7
       },
       "id": 112,
       "options": {
@@ -557,7 +782,7 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 6
+        "y": 9
       },
       "id": 162,
       "options": {
@@ -635,7 +860,7 @@
         "h": 2,
         "w": 4,
         "x": 8,
-        "y": 4
+        "y": 7
       },
       "id": 113,
       "options": {
@@ -719,7 +944,7 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 6
+        "y": 9
       },
       "id": 163,
       "options": {
@@ -797,7 +1022,7 @@
         "h": 2,
         "w": 4,
         "x": 12,
-        "y": 4
+        "y": 7
       },
       "id": 114,
       "options": {
@@ -881,7 +1106,7 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 6
+        "y": 9
       },
       "id": 164,
       "options": {
@@ -959,7 +1184,7 @@
         "h": 2,
         "w": 4,
         "x": 16,
-        "y": 4
+        "y": 7
       },
       "id": 115,
       "options": {
@@ -1043,7 +1268,7 @@
         "h": 5,
         "w": 4,
         "x": 16,
-        "y": 6
+        "y": 9
       },
       "id": 165,
       "options": {
@@ -1121,7 +1346,7 @@
         "h": 2,
         "w": 4,
         "x": 20,
-        "y": 4
+        "y": 7
       },
       "id": 116,
       "options": {
@@ -1205,7 +1430,7 @@
         "h": 5,
         "w": 4,
         "x": 20,
-        "y": 6
+        "y": 9
       },
       "id": 166,
       "options": {
@@ -1283,7 +1508,7 @@
         "h": 2,
         "w": 4,
         "x": 0,
-        "y": 11
+        "y": 14
       },
       "id": 305,
       "options": {
@@ -1367,7 +1592,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 13
+        "y": 16
       },
       "id": 355,
       "options": {
@@ -1445,7 +1670,7 @@
         "h": 2,
         "w": 4,
         "x": 4,
-        "y": 11
+        "y": 14
       },
       "id": 306,
       "options": {
@@ -1529,7 +1754,7 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 13
+        "y": 16
       },
       "id": 356,
       "options": {
@@ -1607,7 +1832,7 @@
         "h": 2,
         "w": 4,
         "x": 8,
-        "y": 11
+        "y": 14
       },
       "id": 307,
       "options": {
@@ -1691,7 +1916,7 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 13
+        "y": 16
       },
       "id": 357,
       "options": {
@@ -1769,7 +1994,7 @@
         "h": 2,
         "w": 4,
         "x": 12,
-        "y": 11
+        "y": 14
       },
       "id": 308,
       "options": {
@@ -1853,7 +2078,7 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 13
+        "y": 16
       },
       "id": 358,
       "options": {
@@ -1931,7 +2156,7 @@
         "h": 2,
         "w": 4,
         "x": 16,
-        "y": 11
+        "y": 14
       },
       "id": 309,
       "options": {
@@ -2015,7 +2240,7 @@
         "h": 5,
         "w": 4,
         "x": 16,
-        "y": 13
+        "y": 16
       },
       "id": 359,
       "options": {
@@ -2093,7 +2318,7 @@
         "h": 2,
         "w": 4,
         "x": 20,
-        "y": 11
+        "y": 14
       },
       "id": 310,
       "options": {
@@ -2177,7 +2402,7 @@
         "h": 5,
         "w": 4,
         "x": 20,
-        "y": 13
+        "y": 16
       },
       "id": 360,
       "options": {
@@ -2255,7 +2480,7 @@
         "h": 2,
         "w": 6,
         "x": 0,
-        "y": 18
+        "y": 21
       },
       "id": 501,
       "options": {
@@ -2339,7 +2564,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 20
+        "y": 23
       },
       "id": 551,
       "options": {
@@ -2417,7 +2642,7 @@
         "h": 2,
         "w": 6,
         "x": 6,
-        "y": 18
+        "y": 21
       },
       "id": 502,
       "options": {
@@ -2501,7 +2726,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 20
+        "y": 23
       },
       "id": 552,
       "options": {
@@ -2579,7 +2804,7 @@
         "h": 2,
         "w": 6,
         "x": 12,
-        "y": 18
+        "y": 21
       },
       "id": 503,
       "options": {
@@ -2663,7 +2888,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 20
+        "y": 23
       },
       "id": 553,
       "options": {
@@ -2741,7 +2966,7 @@
         "h": 2,
         "w": 6,
         "x": 18,
-        "y": 18
+        "y": 21
       },
       "id": 504,
       "options": {
@@ -2825,7 +3050,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 20
+        "y": 23
       },
       "id": 554,
       "options": {
