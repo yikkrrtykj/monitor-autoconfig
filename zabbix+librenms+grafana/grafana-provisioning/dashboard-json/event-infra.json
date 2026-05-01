@@ -31,12 +31,12 @@
             { "color": "red", "value": null },
             { "color": "green", "value": 1 }
           ]},
-          "noValue": "OFF"
+          "noValue": "N/A"
         }
       },
-      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 0 },
+      "gridPos": { "h": 2, "w": 3, "x": 0, "y": 0 },
       "id": 100,
-      "repeat": "display_name",
+      "repeat": "instance",
       "repeatDirection": "h",
       "maxPerRow": 8,
       "options": {
@@ -45,7 +45,7 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "value_and_name"
+        "textMode": "name"
       },
       "targets": [
         {
@@ -54,11 +54,11 @@
           "expr": "probe_success{job=\"infra-core-ping\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "{{display_name}}",
+          "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "title": "${display_name}",
+      "title": "$instance",
       "type": "stat"
     },
     {
@@ -73,12 +73,12 @@
             { "color": "red", "value": null },
             { "color": "green", "value": 1 }
           ]},
-          "noValue": "OFF"
+          "noValue": "N/A"
         }
       },
-      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 3 },
+      "gridPos": { "h": 2, "w": 3, "x": 0, "y": 2 },
       "id": 200,
-      "repeat": "display_name",
+      "repeat": "instance",
       "repeatDirection": "h",
       "maxPerRow": 8,
       "options": {
@@ -87,7 +87,7 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "value_and_name"
+        "textMode": "name"
       },
       "targets": [
         {
@@ -96,11 +96,11 @@
           "expr": "probe_success{job=\"infra-dist-ping\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "{{display_name}}",
+          "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "title": "${display_name}",
+      "title": "$instance",
       "type": "stat"
     },
     {
@@ -115,12 +115,12 @@
             { "color": "red", "value": null },
             { "color": "green", "value": 1 }
           ]},
-          "noValue": "OFF"
+          "noValue": "N/A"
         }
       },
-      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 6 },
+      "gridPos": { "h": 2, "w": 3, "x": 0, "y": 4 },
       "id": 300,
-      "repeat": "display_name",
+      "repeat": "instance",
       "repeatDirection": "h",
       "maxPerRow": 8,
       "options": {
@@ -129,7 +129,7 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "value_and_name"
+        "textMode": "name"
       },
       "targets": [
         {
@@ -138,11 +138,11 @@
           "expr": "probe_success{job=\"infra-fw-ping\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "{{display_name}}",
+          "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "title": "${display_name}",
+      "title": "$instance",
       "type": "stat"
     },
     {
@@ -161,7 +161,7 @@
           "min": 0
         }
       },
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 9 },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 6 },
       "id": 10,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "targets": [
@@ -192,7 +192,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
       "id": 40,
       "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "repeat": "wan_iface",

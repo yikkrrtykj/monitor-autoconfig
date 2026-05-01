@@ -62,17 +62,17 @@
                                                                                              }
                                                                                          ]
                                                                            },
-                                                            "noValue":  "OFF"
+                                                            "noValue":  "N/A"
                                                         }
                                        },
                        "gridPos":  {
-                                       "h":  3,
+                                       "h":  2,
                                        "w":  3,
                                        "x":  0,
                                        "y":  0
                                    },
                        "id":  100,
-                       "repeat":  "display_name",
+                       "repeat":  "instance",
                        "repeatDirection":  "h",
                        "maxPerRow":  8,
                        "options":  {
@@ -87,7 +87,7 @@
                                                              "fields":  "",
                                                              "values":  false
                                                          },
-                                       "textMode":  "value_and_name"
+                                       "textMode":  "name"
                                    },
                        "targets":  [
                                        {
@@ -99,11 +99,11 @@
                                            "expr":  "probe_success{job=\"infra-core-ping\"}",
                                            "format":  "table",
                                            "instant":  true,
-                                           "legendFormat":  "{{display_name}}",
+                                           "legendFormat":  "{{instance}}",
                                            "refId":  "A"
                                        }
                                    ],
-                       "title":  "${display_name}",
+                       "title":  "$instance",
                        "type":  "stat"
                    },
                    {
@@ -144,17 +144,17 @@
                                                                                              }
                                                                                          ]
                                                                            },
-                                                            "noValue":  "OFF"
+                                                            "noValue":  "N/A"
                                                         }
                                        },
                        "gridPos":  {
-                                       "h":  3,
+                                       "h":  2,
                                        "w":  3,
                                        "x":  0,
-                                       "y":  3
+                                       "y":  2
                                    },
                        "id":  200,
-                       "repeat":  "display_name",
+                       "repeat":  "instance",
                        "repeatDirection":  "h",
                        "maxPerRow":  8,
                        "options":  {
@@ -169,7 +169,7 @@
                                                              "fields":  "",
                                                              "values":  false
                                                          },
-                                       "textMode":  "value_and_name"
+                                       "textMode":  "name"
                                    },
                        "targets":  [
                                        {
@@ -181,11 +181,11 @@
                                            "expr":  "probe_success{job=\"infra-dist-ping\"}",
                                            "format":  "table",
                                            "instant":  true,
-                                           "legendFormat":  "{{display_name}}",
+                                           "legendFormat":  "{{instance}}",
                                            "refId":  "A"
                                        }
                                    ],
-                       "title":  "${display_name}",
+                       "title":  "$instance",
                        "type":  "stat"
                    },
                    {
@@ -226,17 +226,17 @@
                                                                                              }
                                                                                          ]
                                                                            },
-                                                            "noValue":  "OFF"
+                                                            "noValue":  "N/A"
                                                         }
                                        },
                        "gridPos":  {
-                                       "h":  3,
+                                       "h":  2,
                                        "w":  3,
                                        "x":  0,
-                                       "y":  6
+                                       "y":  4
                                    },
                        "id":  300,
-                       "repeat":  "display_name",
+                       "repeat":  "instance",
                        "repeatDirection":  "h",
                        "maxPerRow":  8,
                        "options":  {
@@ -251,7 +251,7 @@
                                                              "fields":  "",
                                                              "values":  false
                                                          },
-                                       "textMode":  "value_and_name"
+                                       "textMode":  "name"
                                    },
                        "targets":  [
                                        {
@@ -263,11 +263,11 @@
                                            "expr":  "probe_success{job=\"infra-fw-ping\"}",
                                            "format":  "table",
                                            "instant":  true,
-                                           "legendFormat":  "{{display_name}}",
+                                           "legendFormat":  "{{instance}}",
                                            "refId":  "A"
                                        }
                                    ],
-                       "title":  "${display_name}",
+                       "title":  "$instance",
                        "type":  "stat"
                    },
                    {
@@ -312,7 +312,7 @@
                                        "h":  5,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  9
+                                       "y":  6
                                    },
                        "id":  10,
                        "options":  {
@@ -445,7 +445,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  14
+                                       "y":  11
                                    },
                        "id":  40,
                        "options":  {
@@ -520,7 +520,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  0,
-                                       "y":  22
+                                       "y":  19
                                    },
                        "id":  100,
                        "options":  {
@@ -581,7 +581,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  6,
-                                       "y":  22
+                                       "y":  19
                                    },
                        "id":  101,
                        "options":  {
@@ -642,7 +642,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  12,
-                                       "y":  22
+                                       "y":  19
                                    },
                        "id":  102,
                        "options":  {
@@ -703,7 +703,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  18,
-                                       "y":  22
+                                       "y":  19
                                    },
                        "id":  103,
                        "options":  {
@@ -851,7 +851,7 @@
                                        "h":  16,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  27
+                                       "y":  24
                                    },
                        "id":  200,
                        "options":  {
@@ -1014,7 +1014,7 @@
                                        "h":  12,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  43
+                                       "y":  40
                                    },
                        "id":  300,
                        "options":  {
