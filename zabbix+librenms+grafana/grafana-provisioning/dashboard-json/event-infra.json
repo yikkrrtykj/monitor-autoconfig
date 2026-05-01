@@ -27,33 +27,47 @@
           "mappings": [],
           "max": 0.05,
           "min": 0,
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": 0.0001 },
-            { "color": "yellow", "value": 0.005 },
-            { "color": "red", "value": 0.02 }
-          ]},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.005 },
+              { "color": "red", "value": 0.02 }
+            ]
+          },
           "unit": "s"
-        }
+        },
+        "overrides": []
       },
-      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
       "id": 100,
-      "options": { "displayMode": "list", "orientation": "horizontal", "showUnfilled": false },
+      "options": {
+        "orientation": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "minVizWidth": 75,
+        "minVizHeight": 75,
+        "sizing": "auto"
+      },
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}",
           "instant": true,
-          "format": "table",
           "legendFormat": "{{instance}}",
+          "range": false,
           "refId": "A"
         }
       ],
-      "transformations": [
-        { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "display_name": true, "job": true, "phase": true } } }
-      ],
       "title": "交换机",
-      "type": "bargauge"
+      "type": "gauge"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -63,122 +77,101 @@
           "mappings": [],
           "max": 0.05,
           "min": 0,
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": 0.0001 },
-            { "color": "yellow", "value": 0.005 },
-            { "color": "red", "value": 0.02 }
-          ]},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.005 },
+              { "color": "red", "value": 0.02 }
+            ]
+          },
           "unit": "s"
-        }
+        },
+        "overrides": []
       },
-      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
       "id": 101,
-      "options": { "displayMode": "list", "orientation": "horizontal", "showUnfilled": false },
+      "options": {
+        "orientation": "horizontal",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "minVizWidth": 75,
+        "minVizHeight": 75,
+        "sizing": "auto"
+      },
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}",
           "instant": true,
-          "format": "table",
+          "legendFormat": "{{instance}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "防火墙",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "id": 200,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "transformations": [
-        { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "display_name": true, "job": true, "phase": true } } }
-      ],
-      "title": "防火墙",
-      "type": "bargauge"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisPlacement": "auto", "fillOpacity": 15, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": true },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "green", "value": 0.0001 },
-            { "color": "yellow", "value": 0.005 },
-            { "color": "red", "value": 0.02 }
-          ]},
-          "unit": "s",
-          "min": 0
-        }
-      },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 5 },
-      "id": 200,
-      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
-      "targets": [
-        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}", "legendFormat": "{{instance}}", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}", "legendFormat": "{{instance}}", "refId": "B" }
-      ],
-      "title": "所有设备 Ping 趋势",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisPlacement": "auto", "axisSoftMin": 0, "fillOpacity": 20, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineWidth": 2, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": true },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "bps"
-        },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "IN" }, "properties": [{ "id": "displayName", "value": "下载" }, { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "OUT" }, "properties": [{ "id": "displayName", "value": "上传" }, { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] }
-        ]
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
-      "id": 300,
-      "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
-      "repeat": "wan_iface",
-      "repeatDirection": "h",
-      "maxPerRow": 2,
-      "targets": [
-        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "rate(ifHCInOctets{job=\"firewall-snmp\",ifAlias=\"$wan_iface\"}[1m]) * 8", "legendFormat": "IN", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "rate(ifHCOutOctets{job=\"firewall-snmp\",ifAlias=\"$wan_iface\"}[1m]) * 8", "legendFormat": "OUT", "refId": "B" }
-      ],
-      "title": "$wan_iface · ISP 流量",
+      "title": "Ping 趋势（所有设备）",
       "type": "timeseries"
     }
   ],
   "refresh": "5s",
-  "schemaVersion": 39,
-  "tags": ["infrastructure", "event", "ping", "traffic"],
-  "templating": {
-    "list": [
-      {
-        "current": { "text": "WAN|ISP|internet|wan|出口", "value": "WAN|ISP|internet|wan|出口" },
-        "hide": 0,
-        "label": "WAN 口过滤（正则）",
-        "name": "wan_filter",
-        "query": "WAN|ISP|internet|wan|出口",
-        "type": "textbox"
-      },
-      {
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "definition": "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)",
-        "hide": 2,
-        "includeAll": false,
-        "multi": false,
-        "name": "wan_iface",
-        "query": "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)",
-        "refresh": 2,
-        "regex": "",
-        "sort": 1,
-        "type": "query"
-      }
-    ]
-  },
+  "schemaVersion": 41,
+  "tags": ["infrastructure", "event", "ping"],
+  "templating": { "list": [] },
   "time": { "from": "now-30m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "Event Infrastructure",
   "uid": "event-infra",
-  "version": 10
+  "version": 11
 }
