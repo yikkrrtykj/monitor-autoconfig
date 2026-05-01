@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "5v5 Match Network Monitor - Blue vs Red",
+  "description": "5v5 Match Network Monitor - 2 teams x 5 players (mobile MOBA)",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -24,9 +24,7 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "mappings": [
-            { "type": "value", "options": { "5": { "color": "green" } } }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -34,11 +32,14 @@
               { "color": "yellow", "value": 4 },
               { "color": "green", "value": 5 }
             ]
-          }
+          },
+          "max": 5,
+          "min": 0,
+          "unit": "none"
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 0 },
       "id": 10,
       "options": {
         "colorMode": "background",
@@ -46,7 +47,7 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -54,10 +55,11 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
           "expr": "count(probe_success{role=\"player\",team=\"$team_left\",network=~\"$network\"} == 1) or vector(0)",
+          "legendFormat": "在线",
           "refId": "A"
         }
       ],
-      "title": "$team_left_name 在线",
+      "title": "$team_left_name 在线 / 5",
       "type": "stat"
     },
     {
@@ -77,11 +79,11 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 0 },
       "id": 11,
       "options": {
         "colorMode": "background",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["mean"], "fields": "", "values": false },
@@ -103,18 +105,18 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
-          "color": { "fixedColor": "blue", "mode": "fixed" },
+          "color": { "fixedColor": "text", "mode": "fixed" },
           "thresholds": { "mode": "absolute", "steps": [] },
           "mappings": [
             {
               "type": "value",
-              "options": { "1": { "text": "$team_left_name  $score_left  :  $score_right  $team_right_name", "color": "text" } }
+              "options": { "1": { "text": "$team_left_name   VS   $team_right_name", "color": "text" } }
             }
           ]
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 10, "y": 0 },
       "id": 12,
       "options": {
         "colorMode": "none",
@@ -133,7 +135,7 @@
           "refId": "A"
         }
       ],
-      "title": "5v5",
+      "title": "",
       "type": "stat"
     },
     {
@@ -153,11 +155,11 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 0 },
       "id": 13,
       "options": {
         "colorMode": "background",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["mean"], "fields": "", "values": false },
@@ -180,9 +182,7 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "mappings": [
-            { "type": "value", "options": { "5": { "color": "green" } } }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -190,11 +190,14 @@
               { "color": "yellow", "value": 4 },
               { "color": "green", "value": 5 }
             ]
-          }
+          },
+          "max": 5,
+          "min": 0,
+          "unit": "none"
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 0 },
       "id": 14,
       "options": {
         "colorMode": "background",
@@ -202,7 +205,7 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -210,10 +213,11 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
           "expr": "count(probe_success{role=\"player\",team=\"$team_right\",network=~\"$network\"} == 1) or vector(0)",
+          "legendFormat": "在线",
           "refId": "A"
         }
       ],
-      "title": "$team_right_name 在线",
+      "title": "$team_right_name 在线 / 5",
       "type": "stat"
     },
     {
@@ -236,14 +240,15 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 16, "w": 12, "x": 0, "y": 4 },
+      "gridPos": { "h": 12, "w": 12, "x": 0, "y": 4 },
       "id": 100,
       "options": {
-        "displayMode": "list",
+        "displayMode": "lcd",
         "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
         "orientation": "horizontal",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "showUnfilled": true
+        "showUnfilled": true,
+        "valueMode": "color"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -262,11 +267,11 @@
           "options": {
             "excludeByName": { "Time": true, "job": true, "network": true, "phase": true, "role": true, "team": true, "switch": true, "__name__": true },
             "indexByName": { "seat": 0, "instance": 1, "Value": 2 },
-            "renameByName": { "instance": "IP", "seat": "Seat", "Value": "RTT" }
+            "renameByName": { "instance": "IP", "seat": "座位", "Value": "RTT" }
           }
         }
       ],
-      "title": "BLUE - $team_left_name",
+      "title": "🔵 $team_left_name",
       "type": "bargauge"
     },
     {
@@ -289,14 +294,15 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 16, "w": 12, "x": 12, "y": 4 },
+      "gridPos": { "h": 12, "w": 12, "x": 12, "y": 4 },
       "id": 200,
       "options": {
-        "displayMode": "list",
+        "displayMode": "lcd",
         "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
         "orientation": "horizontal",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "showUnfilled": true
+        "showUnfilled": true,
+        "valueMode": "color"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -315,11 +321,11 @@
           "options": {
             "excludeByName": { "Time": true, "job": true, "network": true, "phase": true, "role": true, "team": true, "switch": true, "__name__": true },
             "indexByName": { "seat": 0, "instance": 1, "Value": 2 },
-            "renameByName": { "instance": "IP", "seat": "Seat", "Value": "RTT" }
+            "renameByName": { "instance": "IP", "seat": "座位", "Value": "RTT" }
           }
         }
       ],
-      "title": "RED - $team_right_name",
+      "title": "🔴 $team_right_name",
       "type": "bargauge"
     },
     {
@@ -352,9 +358,12 @@
           },
           "unit": "s"
         },
-        "overrides": []
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "$team_left_name" }, "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "$team_right_name" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }
+        ]
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 16 },
       "id": 300,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
@@ -387,9 +396,9 @@
   "templating": {
     "list": [
       {
-        "current": { "text": "wired", "value": "wired" },
+        "current": { "text": "有线", "value": "wired" },
         "hide": 0,
-        "label": "网络",
+        "label": "网络（默认有线，无线为备用）",
         "name": "network",
         "options": [
           { "selected": true, "text": "有线", "value": "wired" },
@@ -426,19 +435,11 @@
         "type": "custom"
       },
       {
-        "current": { "text": "Team 1", "value": "Team 1" },
+        "current": { "text": "蓝队", "value": "蓝队" },
         "hide": 0,
         "label": "蓝队名称",
         "name": "team_left_name",
-        "query": "Team 1",
-        "type": "textbox"
-      },
-      {
-        "current": { "text": "0", "value": "0" },
-        "hide": 0,
-        "label": "蓝队比分",
-        "name": "score_left",
-        "query": "0",
+        "query": "蓝队",
         "type": "textbox"
       },
       {
@@ -468,19 +469,11 @@
         "type": "custom"
       },
       {
-        "current": { "text": "Team 2", "value": "Team 2" },
+        "current": { "text": "红队", "value": "红队" },
         "hide": 0,
         "label": "红队名称",
         "name": "team_right_name",
-        "query": "Team 2",
-        "type": "textbox"
-      },
-      {
-        "current": { "text": "0", "value": "0" },
-        "hide": 0,
-        "label": "红队比分",
-        "name": "score_right",
-        "query": "0",
+        "query": "红队",
         "type": "textbox"
       }
     ]
@@ -490,5 +483,5 @@
   "timezone": "browser",
   "title": "Match 5v5",
   "uid": "match-5v5",
-  "version": 2
+  "version": 3
 }
