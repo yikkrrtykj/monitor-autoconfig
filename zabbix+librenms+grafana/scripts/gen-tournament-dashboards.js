@@ -26,6 +26,17 @@ const layouts = {
     dotsH: 2,
     withTrend: false,
   },
+  '18': {
+    title: 'Tournament 18 (三角洲)',
+    uid: 'tournament-18',
+    description: '18-Player Tournament — 6 teams x 3 players (Delta Force)',
+    rows: [
+      { layer: '舞台', left: [1, 2, 3], right: [4, 5, 6] },
+    ],
+    teamH: 12,
+    dotsH: 4,
+    withTrend: true,
+  },
   '332': {
     title: 'Tournament 64 (3 层 332)',
     uid: 'tournament-64-332',
@@ -156,7 +167,7 @@ function statSummary(id, x, w, title, expr, color, thresholds) {
       justifyMode: 'center',
       orientation: 'auto',
       reduceOptions: { calcs: ['lastNotNull'], fields: '', values: false },
-      textMode: 'value_and_name',
+      textMode: 'value',
     },
     pluginVersion: '12.1.1',
     targets: [{
@@ -309,7 +320,7 @@ function buildDashboard(layout) {
 const outDir = process.argv[2];
 for (const [key, layout] of Object.entries(layouts)) {
   const dash = buildDashboard(layout);
-  const path = outDir + '/tournament-64-' + key + '.json';
+  const path = outDir + '/' + layout.uid + '.json';
   fs.writeFileSync(path, JSON.stringify(dash, null, 2) + '\n');
   console.log('wrote ' + path + ' (' + dash.panels.length + ' panels)');
 }

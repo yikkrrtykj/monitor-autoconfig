@@ -64,7 +64,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -127,7 +127,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -190,7 +190,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -249,7 +249,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "pluginVersion": "12.1.1",
       "targets": [
