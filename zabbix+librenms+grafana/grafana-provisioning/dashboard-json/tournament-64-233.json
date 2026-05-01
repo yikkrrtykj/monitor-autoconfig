@@ -302,7 +302,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -361,8 +362,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -385,7 +386,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -423,7 +425,7 @@
           "refId": "A"
         }
       ],
-      "title": "顶层左1队",
+      "title": "Team 11",
       "type": "stat"
     },
     {
@@ -462,7 +464,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -521,8 +524,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -545,7 +548,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -583,7 +587,7 @@
           "refId": "A"
         }
       ],
-      "title": "顶层左2队",
+      "title": "Team 12",
       "type": "stat"
     },
     {
@@ -622,7 +626,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -681,8 +686,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -705,7 +710,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -743,7 +749,7 @@
           "refId": "A"
         }
       ],
-      "title": "顶层左3队",
+      "title": "Team 13",
       "type": "stat"
     },
     {
@@ -782,7 +788,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -841,8 +848,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -865,7 +872,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -903,7 +911,7 @@
           "refId": "A"
         }
       ],
-      "title": "顶层右1队",
+      "title": "Team 14",
       "type": "stat"
     },
     {
@@ -942,7 +950,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1001,8 +1010,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -1025,7 +1034,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1063,7 +1073,7 @@
           "refId": "A"
         }
       ],
-      "title": "顶层右2队",
+      "title": "Team 15",
       "type": "stat"
     },
     {
@@ -1102,7 +1112,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1161,8 +1172,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -1185,7 +1196,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1223,7 +1235,7 @@
           "refId": "A"
         }
       ],
-      "title": "顶层右3队",
+      "title": "Team 16",
       "type": "stat"
     },
     {
@@ -1262,7 +1274,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1321,8 +1334,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -1345,7 +1358,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1383,7 +1397,7 @@
           "refId": "A"
         }
       ],
-      "title": "中层左1队",
+      "title": "Team 5",
       "type": "stat"
     },
     {
@@ -1422,7 +1436,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1481,8 +1496,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -1505,7 +1520,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1543,7 +1559,7 @@
           "refId": "A"
         }
       ],
-      "title": "中层左2队",
+      "title": "Team 6",
       "type": "stat"
     },
     {
@@ -1582,7 +1598,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1641,8 +1658,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -1665,7 +1682,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1703,7 +1721,7 @@
           "refId": "A"
         }
       ],
-      "title": "中层左3队",
+      "title": "Team 7",
       "type": "stat"
     },
     {
@@ -1742,7 +1760,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1801,8 +1820,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -1825,7 +1844,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1863,7 +1883,7 @@
           "refId": "A"
         }
       ],
-      "title": "中层右1队",
+      "title": "Team 8",
       "type": "stat"
     },
     {
@@ -1902,7 +1922,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -1961,8 +1982,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -1985,7 +2006,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2023,7 +2045,7 @@
           "refId": "A"
         }
       ],
-      "title": "中层右2队",
+      "title": "Team 9",
       "type": "stat"
     },
     {
@@ -2062,7 +2084,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2121,8 +2144,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -2145,7 +2168,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2183,7 +2207,7 @@
           "refId": "A"
         }
       ],
-      "title": "中层右3队",
+      "title": "Team 10",
       "type": "stat"
     },
     {
@@ -2222,7 +2246,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2281,8 +2306,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -2305,7 +2330,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2343,7 +2369,7 @@
           "refId": "A"
         }
       ],
-      "title": "底层左1队",
+      "title": "Team 1",
       "type": "stat"
     },
     {
@@ -2382,7 +2408,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2441,8 +2468,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -2465,7 +2492,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2503,7 +2531,7 @@
           "refId": "A"
         }
       ],
-      "title": "底层左2队",
+      "title": "Team 2",
       "type": "stat"
     },
     {
@@ -2542,7 +2570,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2601,8 +2630,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -2625,7 +2654,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2663,7 +2693,7 @@
           "refId": "A"
         }
       ],
-      "title": "底层右1队",
+      "title": "Team 3",
       "type": "stat"
     },
     {
@@ -2702,7 +2732,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "none",
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2761,8 +2792,8 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "text": "离线",
-                  "color": "red"
+                  "text": "—",
+                  "color": "text"
                 }
               }
             }
@@ -2785,7 +2816,8 @@
             ]
           },
           "unit": "s",
-          "decimals": 1
+          "decimals": 1,
+          "noValue": "—"
         },
         "overrides": []
       },
@@ -2823,7 +2855,7 @@
           "refId": "A"
         }
       ],
-      "title": "底层右2队",
+      "title": "Team 4",
       "type": "stat"
     }
   ],

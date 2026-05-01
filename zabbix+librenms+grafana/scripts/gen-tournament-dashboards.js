@@ -62,6 +62,7 @@ function dotsPanel(team, gridPos, id) {
           ],
         },
         unit: 'none',
+        noValue: '—',
       },
       overrides: [],
     },
@@ -90,14 +91,14 @@ function dotsPanel(team, gridPos, id) {
   };
 }
 
-function rttPanel(team, gridPos, id, positionLabel) {
+function rttPanel(team, gridPos, id) {
   return {
     datasource: DS,
     fieldConfig: {
       defaults: {
         color: { mode: 'thresholds' },
         mappings: [
-          { type: 'special', options: { match: 'null', result: { text: '离线', color: 'red' } } },
+          { type: 'special', options: { match: 'null', result: { text: '—', color: 'text' } } },
         ],
         thresholds: {
           mode: 'absolute',
@@ -109,6 +110,7 @@ function rttPanel(team, gridPos, id, positionLabel) {
         },
         unit: 's',
         decimals: 1,
+        noValue: '—',
       },
       overrides: [],
     },
@@ -130,7 +132,7 @@ function rttPanel(team, gridPos, id, positionLabel) {
       expr: 'avg(probe_icmp_duration_seconds{role="player",team="' + team + '",phase="rtt",network=~"$network"})',
       refId: 'A',
     }],
-    title: positionLabel,
+    title: 'Team ' + team,
     type: 'stat',
   };
 }
@@ -193,9 +195,8 @@ function buildPanels(layout) {
     let x = 0;
     let idx = 1;
     for (const team of row.left) {
-      const label = row.layer + '左' + idx + '队';
       panels.push(dotsPanel(team, { h: layout.dotsH, w: leftW, x, y },                                       idBase + team));
-      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: leftW, x, y: y + layout.dotsH },     idBase + team + 50, label));
+      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: leftW, x, y: y + layout.dotsH },     idBase + team + 50));
       x += leftW;
       idx++;
     }
@@ -203,9 +204,8 @@ function buildPanels(layout) {
     x = 12;
     idx = 1;
     for (const team of row.right) {
-      const label = row.layer + '右' + idx + '队';
       panels.push(dotsPanel(team, { h: layout.dotsH, w: rightW, x, y },                                      idBase + team));
-      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: rightW, x, y: y + layout.dotsH },    idBase + team + 50, label));
+      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: rightW, x, y: y + layout.dotsH },    idBase + team + 50));
       x += rightW;
       idx++;
     }
