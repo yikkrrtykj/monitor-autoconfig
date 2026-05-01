@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "64-Player Tournament Network Monitor",
+  "description": "64-Player Tournament Network Monitor (16 teams x 4 players)",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -26,7 +26,8 @@
           "color": { "mode": "thresholds" },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
-        }
+        },
+        "overrides": []
       },
       "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
       "id": 100,
@@ -38,12 +39,12 @@
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "auto"
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",network=~\"$network\"} == 1)",
+          "expr": "count(probe_success{role=\"player\",network=~\"$network\"} == 1) or vector(0)",
           "legendFormat": "Online",
           "refId": "A"
         }
@@ -57,8 +58,15 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] }
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
       },
       "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
       "id": 101,
@@ -70,12 +78,12 @@
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "auto"
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",network=~\"$network\"} == 0)",
+          "expr": "count(probe_success{role=\"player\",network=~\"$network\"} == 0) or vector(0)",
           "legendFormat": "Offline",
           "refId": "A"
         }
@@ -89,8 +97,15 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] }
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
       },
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
       "id": 102,
@@ -102,12 +117,12 @@
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "auto"
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "count(probe_icmp_duration_seconds{role=\"player\",network=~\"$network\",phase=\"rtt\"} > 0.03)",
+          "expr": "count(probe_icmp_duration_seconds{role=\"player\",network=~\"$network\",phase=\"rtt\"} > 0.03) or vector(0)",
           "legendFormat": "High Latency (>30ms)",
           "refId": "A"
         }
@@ -122,7 +137,8 @@
           "color": { "mode": "thresholds" },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
-        }
+        },
+        "overrides": []
       },
       "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
       "id": 103,
@@ -134,12 +150,12 @@
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "auto"
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",network=~\"$network\"})",
+          "expr": "count(probe_success{role=\"player\",network=~\"$network\"}) or vector(0)",
           "legendFormat": "Total",
           "refId": "A"
         }
@@ -151,18 +167,13 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "align": "center",
-            "cellOptions": { "type": "auto" },
-            "inspect": false
-          },
+          "custom": { "align": "center", "cellOptions": { "type": "auto" }, "inspect": false },
           "mappings": [],
           "color": { "mode": "thresholds" },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "green", "value": 0 },
               { "color": "yellow", "value": 0.03 },
               { "color": "red", "value": 0.06 }
             ]
@@ -170,11 +181,10 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Latency" },
+            "matcher": { "id": "byName", "options": "RTT" },
             "properties": [
               { "id": "unit", "value": "s" },
-              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
-              { "id": "custom.displayMode", "value": "color-text" }
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
             ]
           },
           {
@@ -187,9 +197,18 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Loss" },
+            "matcher": { "id": "byName", "options": "丢包率" },
             "properties": [
-              { "id": "unit", "value": "percentunit" }
+              { "id": "unit", "value": "percentunit" },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.05 },
+                  { "color": "red", "value": 0.2 }
+                ]
+              }}
             ]
           }
         ]
@@ -200,9 +219,12 @@
         "cellHeight": "sm",
         "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
         "showHeader": true,
-        "sortBy": [{ "displayName": "Team", "desc": false }, { "displayName": "Seat", "desc": false }]
+        "sortBy": [
+          { "displayName": "Team", "desc": false },
+          { "displayName": "Seat", "desc": false }
+        ]
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -210,7 +232,6 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",network=~\"$network\",phase=\"rtt\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "Latency",
           "refId": "A"
         },
         {
@@ -219,16 +240,14 @@
           "expr": "probe_success{role=\"player\",network=~\"$network\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "Status",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "probe_icmp_loss_ratio{role=\"player\",network=~\"$network\"}",
+          "expr": "1 - avg_over_time(probe_success{role=\"player\",network=~\"$network\"}[1m])",
           "format": "table",
           "instant": true,
-          "legendFormat": "Loss",
           "refId": "C"
         }
       ],
@@ -244,9 +263,9 @@
               "seat": "Seat",
               "instance": "IP",
               "network": "网络",
-              "Value #A": "Latency",
+              "Value #A": "RTT",
               "Value #B": "Status",
-              "Value #C": "Loss"
+              "Value #C": "丢包率"
             }
           }
         }
@@ -283,15 +302,16 @@
             ]
           },
           "unit": "s"
-        }
+        },
+        "overrides": []
       },
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 21 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 21 },
       "id": 300,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
         "tooltip": { "mode": "multi", "sort": "none" }
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -301,12 +321,12 @@
           "refId": "A"
         }
       ],
-      "title": "各Team平均延迟趋势",
+      "title": "各队平均延迟趋势",
       "type": "timeseries"
     }
   ],
   "refresh": "5s",
-  "schemaVersion": 39,
+  "schemaVersion": 41,
   "tags": ["tournament", "ping", "player"],
   "templating": {
     "list": [
@@ -331,5 +351,5 @@
   "timezone": "browser",
   "title": "Tournament 64",
   "uid": "tournament-64",
-  "version": 1
+  "version": 2
 }

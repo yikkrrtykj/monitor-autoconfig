@@ -24,9 +24,19 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
-        }
+          "mappings": [
+            { "type": "value", "options": { "5": { "color": "green" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 4 },
+              { "color": "green", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
       },
       "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "id": 10,
@@ -38,12 +48,12 @@
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "auto"
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",team=\"$team_left\",network=~\"$network\"} == 1)",
+          "expr": "count(probe_success{role=\"player\",team=\"$team_left\",network=~\"$network\"} == 1) or vector(0)",
           "refId": "A"
         }
       ],
@@ -54,10 +64,18 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
+          "unit": "s",
           "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.03 },
+              { "color": "red", "value": 0.06 }
+            ]
+          }
+        },
+        "overrides": []
       },
       "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
       "id": 11,
@@ -69,7 +87,7 @@
         "reduceOptions": { "calcs": ["mean"], "fields": "", "values": false },
         "textMode": "value"
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -79,20 +97,22 @@
         }
       ],
       "title": "$team_left_name 均延迟",
-      "type": "stat",
-      "fieldConfig": {
-        "defaults": { "unit": "s", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.03 }, { "color": "red", "value": 0.06 }] } },
-        "overrides": []
-      }
+      "type": "stat"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
-        }
+          "color": { "fixedColor": "blue", "mode": "fixed" },
+          "thresholds": { "mode": "absolute", "steps": [] },
+          "mappings": [
+            {
+              "type": "value",
+              "options": { "1": { "text": "$team_left_name  $score_left  :  $score_right  $team_right_name", "color": "text" } }
+            }
+          ]
+        },
+        "overrides": []
       },
       "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
       "id": 12,
@@ -104,7 +124,7 @@
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "value"
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -114,24 +134,24 @@
         }
       ],
       "title": "5v5",
-      "type": "stat",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "fixedColor": "blue", "mode": "fixed" },
-          "thresholds": { "mode": "absolute", "steps": [] },
-          "mappings": [{ "type": "value", "options": { "1": { "text": "$team_left_name  $score_left  :  $score_right  $team_right_name", "color": "text" } } }]
-        },
-        "overrides": []
-      }
+      "type": "stat"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
+          "unit": "s",
           "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] }
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.03 },
+              { "color": "red", "value": 0.06 }
+            ]
+          }
+        },
+        "overrides": []
       },
       "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
       "id": 13,
@@ -140,10 +160,10 @@
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": { "calcs": ["mean"], "fields": "", "values": false },
         "textMode": "value"
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -153,20 +173,26 @@
         }
       ],
       "title": "$team_right_name 均延迟",
-      "type": "stat",
-      "fieldConfig": {
-        "defaults": { "unit": "s", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.03 }, { "color": "red", "value": 0.06 }] } },
-        "overrides": []
-      }
+      "type": "stat"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
-        }
+          "mappings": [
+            { "type": "value", "options": { "5": { "color": "green" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 4 },
+              { "color": "green", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
       },
       "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
       "id": 14,
@@ -178,12 +204,12 @@
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "textMode": "auto"
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",team=\"$team_right\",network=~\"$network\"} == 1)",
+          "expr": "count(probe_success{role=\"player\",team=\"$team_right\",network=~\"$network\"} == 1) or vector(0)",
           "refId": "A"
         }
       ],
@@ -202,7 +228,6 @@
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "green", "value": 0 },
               { "color": "yellow", "value": 0.03 },
               { "color": "red", "value": 0.06 }
             ]
@@ -215,12 +240,12 @@
       "id": 100,
       "options": {
         "displayMode": "list",
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
         "orientation": "horizontal",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "showUnfilled": true
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -228,7 +253,6 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"$team_left\",network=~\"$network\",phase=\"rtt\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "Seat {{seat}} - {{instance}}",
           "refId": "A"
         }
       ],
@@ -237,8 +261,8 @@
           "id": "organize",
           "options": {
             "excludeByName": { "Time": true, "job": true, "network": true, "phase": true, "role": true, "team": true, "switch": true, "__name__": true },
-            "indexByName": {},
-            "renameByName": { "instance": "IP", "seat": "Seat" }
+            "indexByName": { "seat": 0, "instance": 1, "Value": 2 },
+            "renameByName": { "instance": "IP", "seat": "Seat", "Value": "RTT" }
           }
         }
       ],
@@ -257,7 +281,6 @@
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "green", "value": 0 },
               { "color": "yellow", "value": 0.03 },
               { "color": "red", "value": 0.06 }
             ]
@@ -270,12 +293,12 @@
       "id": 200,
       "options": {
         "displayMode": "list",
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
         "orientation": "horizontal",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "showUnfilled": true
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -283,7 +306,6 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"$team_right\",network=~\"$network\",phase=\"rtt\"}",
           "format": "table",
           "instant": true,
-          "legendFormat": "Seat {{seat}} - {{instance}}",
           "refId": "A"
         }
       ],
@@ -292,8 +314,8 @@
           "id": "organize",
           "options": {
             "excludeByName": { "Time": true, "job": true, "network": true, "phase": true, "role": true, "team": true, "switch": true, "__name__": true },
-            "indexByName": {},
-            "renameByName": { "instance": "IP", "seat": "Seat" }
+            "indexByName": { "seat": 0, "instance": 1, "Value": 2 },
+            "renameByName": { "instance": "IP", "seat": "Seat", "Value": "RTT" }
           }
         }
       ],
@@ -329,15 +351,16 @@
             ]
           },
           "unit": "s"
-        }
+        },
+        "overrides": []
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 20 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
       "id": 300,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
         "tooltip": { "mode": "multi", "sort": "none" }
       },
-      "pluginVersion": "11.0.0",
+      "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -359,7 +382,7 @@
     }
   ],
   "refresh": "5s",
-  "schemaVersion": 39,
+  "schemaVersion": 41,
   "tags": ["match", "5v5", "ping", "player"],
   "templating": {
     "list": [
@@ -382,16 +405,24 @@
         "label": "蓝队 Team #",
         "name": "team_left",
         "options": [
-          { "selected": false, "text": "Team 1", "value": "1" },
+          { "selected": true, "text": "Team 1", "value": "1" },
           { "selected": false, "text": "Team 2", "value": "2" },
           { "selected": false, "text": "Team 3", "value": "3" },
           { "selected": false, "text": "Team 4", "value": "4" },
           { "selected": false, "text": "Team 5", "value": "5" },
           { "selected": false, "text": "Team 6", "value": "6" },
           { "selected": false, "text": "Team 7", "value": "7" },
-          { "selected": false, "text": "Team 8", "value": "8" }
+          { "selected": false, "text": "Team 8", "value": "8" },
+          { "selected": false, "text": "Team 9", "value": "9" },
+          { "selected": false, "text": "Team 10", "value": "10" },
+          { "selected": false, "text": "Team 11", "value": "11" },
+          { "selected": false, "text": "Team 12", "value": "12" },
+          { "selected": false, "text": "Team 13", "value": "13" },
+          { "selected": false, "text": "Team 14", "value": "14" },
+          { "selected": false, "text": "Team 15", "value": "15" },
+          { "selected": false, "text": "Team 16", "value": "16" }
         ],
-        "query": "1,2,3,4,5,6,7,8",
+        "query": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
         "type": "custom"
       },
       {
@@ -417,15 +448,23 @@
         "name": "team_right",
         "options": [
           { "selected": false, "text": "Team 1", "value": "1" },
-          { "selected": false, "text": "Team 2", "value": "2" },
+          { "selected": true, "text": "Team 2", "value": "2" },
           { "selected": false, "text": "Team 3", "value": "3" },
           { "selected": false, "text": "Team 4", "value": "4" },
           { "selected": false, "text": "Team 5", "value": "5" },
           { "selected": false, "text": "Team 6", "value": "6" },
           { "selected": false, "text": "Team 7", "value": "7" },
-          { "selected": false, "text": "Team 8", "value": "8" }
+          { "selected": false, "text": "Team 8", "value": "8" },
+          { "selected": false, "text": "Team 9", "value": "9" },
+          { "selected": false, "text": "Team 10", "value": "10" },
+          { "selected": false, "text": "Team 11", "value": "11" },
+          { "selected": false, "text": "Team 12", "value": "12" },
+          { "selected": false, "text": "Team 13", "value": "13" },
+          { "selected": false, "text": "Team 14", "value": "14" },
+          { "selected": false, "text": "Team 15", "value": "15" },
+          { "selected": false, "text": "Team 16", "value": "16" }
         ],
-        "query": "1,2,3,4,5,6,7,8",
+        "query": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
         "type": "custom"
       },
       {
@@ -451,5 +490,5 @@
   "timezone": "browser",
   "title": "Match 5v5",
   "uid": "match-5v5",
-  "version": 1
+  "version": 2
 }
