@@ -293,11 +293,11 @@ if [ -n "$API_TOKEN" ]; then
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
     -d '{
-      "name": "高延迟告警",
-      "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_up\",\"field\":\"macros.device_up\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"},{\"id\":\"device_perf_loss\",\"field\":\"device_perf_loss\",\"type\":\"text\",\"operator\":\"greater\",\"value\":\"5\"}],\"valid\":true}",
+      "name": "高丢包告警",
+      "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_up\",\"field\":\"macros.device_up\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"},{\"id\":\"device_perf_loss\",\"field\":\"device_perf_loss\",\"type\":\"text\",\"operator\":\"greater\",\"value\":\"10\"}],\"valid\":true}",
       "severity": "warning",
       "disabled": 0
-    }' > /dev/null 2>&1 && echo "  Alert rule: 高延迟告警 - OK" || echo "  Alert rule: 高延迟告警 - skipped"
+    }' > /dev/null 2>&1 && echo "  Alert rule: 高丢包告警 - OK" || echo "  Alert rule: 高丢包告警 - skipped"
 fi
 
 echo ""
