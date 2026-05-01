@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "18-Player Tournament — 6 teams x 3 players (Delta Force)",
+  "description": "6-team tournament (works for any team size — 3-per-team / 4-per-team / etc., auto-detected from data)",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -1374,7 +1374,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Tournament 18 (三角洲)",
-  "uid": "tournament-18",
+  "title": "Tournament 6 队",
+  "uid": "tournament-6teams",
   "version": 2
 }

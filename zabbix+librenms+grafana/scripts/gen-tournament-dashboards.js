@@ -26,10 +26,10 @@ const layouts = {
     dotsH: 2,
     withTrend: false,
   },
-  '18': {
-    title: 'Tournament 18 (三角洲)',
-    uid: 'tournament-18',
-    description: '18-Player Tournament — 6 teams x 3 players (Delta Force)',
+  '6teams': {
+    title: 'Tournament 6 队',
+    uid: 'tournament-6teams',
+    description: '6-team tournament (works for any team size — 3-per-team / 4-per-team / etc., auto-detected from data)',
     rows: [
       { layer: '舞台', left: [1, 2, 3], right: [4, 5, 6] },
     ],
