@@ -127,16 +127,42 @@ docker compose up -d
 
 ## 四、赛后清理
 
-赛事结束、服务器要回收：
+赛事结束、服务器要回收（或换给别人用）。Docker 的两种数据存法要分开清：
+
+**容器 + 镜像 + 命名卷**（grafana-data、prometheus-data、player-targets-data）：
+
 ```bash
-docker compose down -v        # 停服务并删数据卷
-docker system prune -a        # 清镜像（如果服务器还要给别人用）
+docker compose down -v        # 停容器、删 monitor 网络、删命名卷
+docker system prune -a        # 删镜像（占空间最多）
 ```
 
-数据要带走的话，先备份：
+**bind mount 目录**（mysql、zabbix、librenms 数据落在仓库目录里）——`down -v` 不会删，要手动：
+
+```bash
+sudo rm -rf mysql-data zabbix-server-data \
+            librenms-data librenms-db-data \
+            librenms-rrdcached-journal
+```
+
+要 `sudo` 是因为 `init-permissions` 容器把这些目录 chown 给了容器内 UID（grafana=472、zabbix=1997 等），普通用户删不掉。
+
+**仓库本身也删**：
+
+```bash
+cd .. && rm -rf monitor-autoconfig
+```
+
+到这一步服务器上完全没痕迹，可以放心给别人。
+
+数据要带走的话先备份再清：
+
 ```bash
 tar czf monitor-backup-$(date +%Y%m%d).tar.gz \
-  mysql-data/ grafana-data/ librenms-data/ librenms-db-data/ prometheus-data/ .env
+  mysql-data/ zabbix-server-data/ \
+  librenms-data/ librenms-db-data/ \
+  .env grafana-provisioning/
 ```
+
+注意 `prometheus-data/` 和 `grafana-data/` 是命名卷，不在仓库目录里——Prometheus 数据短期赛事不值得带（默认 15d 保留），Grafana dashboard 都在 git 里随 `grafana-provisioning/` 走。
 
 下次新场子直接 `git clone` + `cp .env.example .env` 重头来。
