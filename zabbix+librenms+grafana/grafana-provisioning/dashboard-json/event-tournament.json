@@ -31,9 +31,9 @@
                                       },
                        "fieldConfig":  {
                                            "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
+                                                            "custom":  {
+                                                                           "align":  "center"
+                                                                       },
                                                             "mappings":  [
 
                                                                          ],
@@ -41,35 +41,98 @@
                                                                                "mode":  "absolute",
                                                                                "steps":  [
                                                                                              {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  0.0001
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "yellow",
-                                                                                                 "value":  0.005
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  0.02
+                                                                                                 "color":  "green"
                                                                                              }
                                                                                          ]
-                                                                           },
-                                                            "unit":  "s",
-                                                            "min":  0,
-                                                            "max":  0.1
-                                                        }
+                                                                           }
+                                                        },
+                                           "overrides":  [
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "Device"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "width":  120
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "Status"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "width":  80
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "custom.cellOptions",
+                                                                                        "value":  {
+                                                                                                      "type":  "color-background"
+                                                                                                  }
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "mappings",
+                                                                                        "value":  [
+                                                                                                      {
+                                                                                                          "type":  "value",
+                                                                                                          "options":  {
+                                                                                                                          "0":  {
+                                                                                                                                    "text":  "OFFLINE",
+                                                                                                                                    "color":  "red"
+                                                                                                                                },
+                                                                                                                          "1":  {
+                                                                                                                                    "text":  "ONLINE",
+                                                                                                                                    "color":  "green"
+                                                                                                                                }
+                                                                                                                      }
+                                                                                                      }
+                                                                                                  ]
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "Ping"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "unit":  "s",
+                                                                                        "width":  100
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "Loss"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "unit":  "percentunit",
+                                                                                        "decimals":  1,
+                                                                                        "width":  80
+                                                                                    }
+                                                                                ]
+                                                             }
+                                                         ]
                                        },
                        "gridPos":  {
-                                       "h":  3,
-                                       "w":  12,
+                                       "h":  6,
+                                       "w":  24,
                                        "x":  0,
                                        "y":  0
                                    },
                        "id":  101,
                        "options":  {
-                                       "displayMode":  "list",
-                                       "orientation":  "horizontal",
-                                       "showUnfilled":  false
+                                       "cellHeight":  "sm",
+                                       "footer":  {
+                                                      "show":  false
+                                                  },
+                                       "showHeader":  true
                                    },
                        "targets":  [
                                        {
@@ -78,79 +141,61 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}",
+                                           "expr":  "probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}",
                                            "format":  "table",
                                            "instant":  true,
-                                           "legendFormat":  "{{instance}}",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "交换机 Ping",
-                       "type":  "bargauge"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  0.0001
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "yellow",
-                                                                                                 "value":  0.005
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  0.02
-                                                                                             }
-                                                                                         ]
-                                                                           },
-                                                            "unit":  "s",
-                                                            "min":  0,
-                                                            "max":  0.1
-                                                        }
+                                           "legendFormat":  "Status",
+                                           "refId":  "S"
                                        },
-                       "gridPos":  {
-                                       "h":  4,
-                                       "w":  12,
-                                       "x":  12,
-                                       "y":  0
-                                   },
-                       "id":  102,
-                       "options":  {
-                                       "displayMode":  "list",
-                                       "orientation":  "horizontal",
-                                       "showUnfilled":  false
-                                   },
-                       "targets":  [
                                        {
                                            "datasource":  {
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}",
+                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}",
                                            "format":  "table",
                                            "instant":  true,
-                                           "legendFormat":  "{{instance}}",
-                                           "refId":  "A"
+                                           "legendFormat":  "Ping",
+                                           "refId":  "L"
+                                       },
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "editorMode":  "code",
+                                           "expr":  "probe_icmp_loss_ratio{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}",
+                                           "format":  "table",
+                                           "instant":  true,
+                                           "legendFormat":  "Loss",
+                                           "refId":  "P"
                                        }
                                    ],
-                       "title":  "防火墙 Ping",
-                       "type":  "bargauge"
+                       "transformations":  [
+                                               {
+                                                   "id":  "merge"
+                                               },
+                                               {
+                                                   "id":  "organize",
+                                                   "options":  {
+                                                                   "excludeByName":  {
+                                                                                         "Time":  true,
+                                                                                         "__name__":  true,
+                                                                                         "phase":  true,
+                                                                                         "job":  true
+                                                                                     },
+                                                                   "renameByName":  {
+                                                                                        "instance":  "Device",
+                                                                                        "Value #S":  "Status",
+                                                                                        "Value #L":  "Ping",
+                                                                                        "Value #P":  "Loss"
+                                                                                    }
+                                                               }
+                                               }
+                                           ],
+                       "title":  "设备状态",
+                       "type":  "table"
                    },
                    {
                        "datasource":  {
@@ -214,7 +259,7 @@
                                        "h":  8,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  4
+                                       "y":  6
                                    },
                        "id":  200,
                        "options":  {
@@ -347,7 +392,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  12
+                                       "y":  14
                                    },
                        "id":  300,
                        "options":  {
@@ -422,7 +467,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  0,
-                                       "y":  20
+                                       "y":  22
                                    },
                        "id":  100,
                        "options":  {
@@ -483,7 +528,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  6,
-                                       "y":  20
+                                       "y":  22
                                    },
                        "id":  101,
                        "options":  {
@@ -544,7 +589,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  12,
-                                       "y":  20
+                                       "y":  22
                                    },
                        "id":  102,
                        "options":  {
@@ -605,7 +650,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  18,
-                                       "y":  20
+                                       "y":  22
                                    },
                        "id":  103,
                        "options":  {
@@ -753,7 +798,7 @@
                                        "h":  16,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  25
+                                       "y":  27
                                    },
                        "id":  200,
                        "options":  {
@@ -916,7 +961,7 @@
                                        "h":  12,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  41
+                                       "y":  43
                                    },
                        "id":  300,
                        "options":  {
@@ -969,41 +1014,9 @@
     "timezone":  "browser",
     "title":  "Event + Tournament",
     "uid":  "event-tournament",
-    "version":  4,
+    "version":  5,
     "templating":  {
                        "list":  [
-                                    {
-                                        "datasource":  {
-                                                           "type":  "prometheus",
-                                                           "uid":  "prometheus"
-                                                       },
-                                        "definition":  "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
-                                        "hide":  2,
-                                        "includeAll":  false,
-                                        "multi":  false,
-                                        "name":  "sw",
-                                        "query":  "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
-                                        "refresh":  2,
-                                        "regex":  "",
-                                        "sort":  1,
-                                        "type":  "query"
-                                    },
-                                    {
-                                        "datasource":  {
-                                                           "type":  "prometheus",
-                                                           "uid":  "prometheus"
-                                                       },
-                                        "definition":  "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
-                                        "hide":  2,
-                                        "includeAll":  false,
-                                        "multi":  false,
-                                        "name":  "fw",
-                                        "query":  "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
-                                        "refresh":  2,
-                                        "regex":  "",
-                                        "sort":  1,
-                                        "type":  "query"
-                                    },
                                     {
                                         "current":  {
                                                         "text":  "WAN|ISP|internet|wan|出口",

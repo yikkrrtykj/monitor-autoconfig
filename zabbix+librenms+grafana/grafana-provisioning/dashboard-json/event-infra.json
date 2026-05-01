@@ -23,47 +23,70 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "custom": { "align": "center" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": 0.0001 },
-            { "color": "yellow", "value": 0.005 },
-            { "color": "red", "value": 0.02 }
-          ]},
-          "unit": "s",
-          "min": 0,
-          "max": 0.1
-        }
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green" }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Device" },
+            "properties": [{ "width": 120 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Status" },
+            "properties": [
+              { "width": 80 },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": { "0": { "text": "OFFLINE", "color": "red" }, "1": { "text": "ONLINE", "color": "green" } } }
+              ]}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Ping" },
+            "properties": [{ "unit": "s", "width": 100 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Loss" },
+            "properties": [{ "unit": "percentunit", "decimals": 1, "width": 80 }]
+          }
+        ]
       },
-      "gridPos": { "h": 3, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
       "id": 101,
-      "options": { "displayMode": "list", "orientation": "horizontal", "showUnfilled": false },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}", "format": "table", "instant": true, "legendFormat": "{{instance}}", "refId": "A" }],
-      "title": "交换机 Ping",
-      "type": "bargauge"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": 0.0001 },
-            { "color": "yellow", "value": 0.005 },
-            { "color": "red", "value": 0.02 }
-          ]},
-          "unit": "s",
-          "min": 0,
-          "max": 0.1
+      "options": { "cellHeight": "sm", "footer": { "show": false }, "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}",
+          "format": "table", "instant": true, "legendFormat": "Status", "refId": "S"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}",
+          "format": "table", "instant": true, "legendFormat": "Ping", "refId": "L"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "probe_icmp_loss_ratio{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}",
+          "format": "table", "instant": true, "legendFormat": "Loss", "refId": "P"
         }
-      },
-      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 0 },
-      "id": 102,
-      "options": { "displayMode": "list", "orientation": "horizontal", "showUnfilled": false },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}", "format": "table", "instant": true, "legendFormat": "{{instance}}", "refId": "A" }],
-      "title": "防火墙 Ping",
-      "type": "bargauge"
+      ],
+      "transformations": [
+        { "id": "merge" },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "phase": true, "job": true },
+            "renameByName": { "instance": "Device", "Value #S": "Status", "Value #L": "Ping", "Value #P": "Loss" }
+          }
+        }
+      ],
+      "title": "设备状态",
+      "type": "table"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -82,7 +105,7 @@
           "min": 0
         }
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
       "id": 200,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "targets": [
@@ -107,7 +130,7 @@
           { "matcher": { "id": "byName", "options": "OUT" }, "properties": [{ "id": "displayName", "value": "上传" }, { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "id": 300,
       "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "repeat": "wan_iface",
@@ -126,32 +149,6 @@
   "tags": ["infrastructure", "event", "ping", "traffic"],
   "templating": {
     "list": [
-      {
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "definition": "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
-        "hide": 2,
-        "includeAll": false,
-        "multi": false,
-        "name": "sw",
-        "query": "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
-        "refresh": 2,
-        "regex": "",
-        "sort": 1,
-        "type": "query"
-      },
-      {
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "definition": "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
-        "hide": 2,
-        "includeAll": false,
-        "multi": false,
-        "name": "fw",
-        "query": "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
-        "refresh": 2,
-        "regex": "",
-        "sort": 1,
-        "type": "query"
-      },
       {
         "current": { "text": "WAN|ISP|internet|wan|出口", "value": "WAN|ISP|internet|wan|出口" },
         "hide": 0,
@@ -180,5 +177,5 @@
   "timezone": "browser",
   "title": "Event Infrastructure",
   "uid": "event-infra",
-  "version": 4
+  "version": 5
 }
