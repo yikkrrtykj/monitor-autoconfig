@@ -68,7 +68,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "name",
         "wideLayout": false
@@ -135,7 +135,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "name",
         "wideLayout": false
@@ -202,7 +202,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "name",
         "wideLayout": false
@@ -525,7 +525,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -687,7 +687,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -849,7 +849,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -1011,7 +1011,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -1173,7 +1173,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -1335,7 +1335,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -1497,7 +1497,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -1659,7 +1659,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -1821,7 +1821,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -1983,7 +1983,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -2145,7 +2145,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -2307,7 +2307,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -2469,7 +2469,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -2631,7 +2631,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -2793,7 +2793,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false
@@ -2955,7 +2955,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value_and_name",
         "wideLayout": false

@@ -68,7 +68,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "name",
         "wideLayout": false
@@ -135,7 +135,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "name",
         "wideLayout": false
@@ -202,7 +202,7 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "name",
         "wideLayout": false
@@ -950,5 +950,5 @@
   "timezone": "browser",
   "title": "Match 5v5",
   "uid": "match-5v5",
-  "version": 6
+  "version": 7
 }
