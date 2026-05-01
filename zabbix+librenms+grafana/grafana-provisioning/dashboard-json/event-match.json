@@ -1098,10 +1098,7 @@
                                         "includeAll":  false,
                                         "multi":  false,
                                         "name":  "sw",
-                                        "query":  {
-                                                      "query":  "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
-                                                      "refId":  "StandardVariableQuery"
-                                                  },
+                                        "query":  "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
                                         "refresh":  2,
                                         "regex":  "",
                                         "sort":  1,
@@ -1117,10 +1114,7 @@
                                         "includeAll":  false,
                                         "multi":  false,
                                         "name":  "fw",
-                                        "query":  {
-                                                      "query":  "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
-                                                      "refId":  "StandardVariableQuery"
-                                                  },
+                                        "query":  "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
                                         "refresh":  2,
                                         "regex":  "",
                                         "sort":  1,
@@ -1147,10 +1141,7 @@
                                         "includeAll":  false,
                                         "multi":  false,
                                         "name":  "wan_iface",
-                                        "query":  {
-                                                      "query":  "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)",
-                                                      "refId":  "StandardVariableQuery"
-                                                  },
+                                        "query":  "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)",
                                         "refresh":  2,
                                         "regex":  "",
                                         "sort":  1,
