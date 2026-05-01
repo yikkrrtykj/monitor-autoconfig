@@ -31,13 +31,9 @@
                                       },
                        "fieldConfig":  {
                                            "defaults":  {
-                                                            "custom":  {
-                                                                           "align":  "center",
-                                                                           "cellOptions":  {
-                                                                                               "type":  "auto"
-                                                                                           },
-                                                                           "inspect":  false
-                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
                                                             "mappings":  [
 
                                                                          ],
@@ -45,94 +41,49 @@
                                                                                "mode":  "absolute",
                                                                                "steps":  [
                                                                                              {
-                                                                                                 "color":  "green"
+                                                                                                 "color":  "green",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "yellow",
+                                                                                                 "value":  0.005
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  0.02
                                                                                              }
                                                                                          ]
-                                                                           }
-                                                        },
-                                           "overrides":  [
-                                                             {
-                                                                 "matcher":  {
-                                                                                 "id":  "byName",
-                                                                                 "options":  "Status"
-                                                                             },
-                                                                 "properties":  [
-                                                                                    {
-                                                                                        "id":  "custom.cellOptions",
-                                                                                        "value":  {
-                                                                                                      "type":  "color-background",
-                                                                                                      "mode":  "basic"
-                                                                                                  }
-                                                                                    },
-                                                                                    {
-                                                                                        "id":  "mappings",
-                                                                                        "value":  [
-                                                                                                      {
-                                                                                                          "type":  "value",
-                                                                                                          "options":  {
-                                                                                                                          "0":  {
-                                                                                                                                    "text":  "OFFLINE",
-                                                                                                                                    "color":  "red"
-                                                                                                                                },
-                                                                                                                          "1":  {
-                                                                                                                                    "text":  "ONLINE",
-                                                                                                                                    "color":  "green"
-                                                                                                                                }
-                                                                                                                      }
-                                                                                                      }
-                                                                                                  ]
-                                                                                    },
-                                                                                    {
-                                                                                        "width":  100
-                                                                                    }
-                                                                                ]
-                                                             },
-                                                             {
-                                                                 "matcher":  {
-                                                                                 "id":  "byName",
-                                                                                 "options":  "延迟"
-                                                                             },
-                                                                 "properties":  [
-                                                                                    {
-                                                                                        "unit":  "s"
-                                                                                    },
-                                                                                    {
-                                                                                        "width":  100
-                                                                                    }
-                                                                                ]
-                                                             },
-                                                             {
-                                                                 "matcher":  {
-                                                                                 "id":  "byName",
-                                                                                 "options":  "设备"
-                                                                             },
-                                                                 "properties":  [
-                                                                                    {
-                                                                                        "width":  120
-                                                                                    }
-                                                                                ]
-                                                             }
-                                                         ]
+                                                                           },
+                                                            "unit":  "s",
+                                                            "min":  0,
+                                                            "max":  0.05
+                                                        }
                                        },
                        "gridPos":  {
                                        "h":  4,
-                                       "w":  24,
+                                       "w":  2,
                                        "x":  0,
                                        "y":  0
                                    },
-                       "id":  1,
+                       "id":  101,
                        "options":  {
-                                       "cellHeight":  "sm",
-                                       "footer":  {
-                                                      "countRows":  false,
-                                                      "fields":  "",
-                                                      "reducer":  [
-                                                                      "sum"
-                                                                  ],
-                                                      "show":  false
-                                                  },
-                                       "showHeader":  true
+                                       "orientation":  "horizontal",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "showThresholdLabels":  false,
+                                       "showThresholdMarkers":  true,
+                                       "text":  {
+
+                                                }
                                    },
+                       "repeat":  "sw",
+                       "repeatDirection":  "h",
+                       "maxPerRow":  6,
                        "targets":  [
                                        {
                                            "datasource":  {
@@ -140,49 +91,13 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}",
-                                           "format":  "table",
-                                           "instant":  true,
-                                           "legendFormat":  "Status",
-                                           "refId":  "S"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "editorMode":  "code",
-                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}",
-                                           "format":  "table",
-                                           "instant":  true,
-                                           "legendFormat":  "延迟",
-                                           "refId":  "L"
+                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",instance=\"$sw\",phase=\"rtt\"}",
+                                           "legendFormat":  "{{instance}}",
+                                           "refId":  "A"
                                        }
                                    ],
-                       "transformations":  [
-                                               {
-                                                   "id":  "merge"
-                                               },
-                                               {
-                                                   "id":  "organize",
-                                                   "options":  {
-                                                                   "excludeByName":  {
-                                                                                         "Time":  true,
-                                                                                         "__name__":  true,
-                                                                                         "phase":  true,
-                                                                                         "job":  true,
-                                                                                         "instance":  true
-                                                                                     },
-                                                                   "renameByName":  {
-                                                                                        "display_name":  "设备",
-                                                                                        "Value #S":  "Status",
-                                                                                        "Value #L":  "延迟"
-                                                                                    }
-                                                               }
-                                               }
-                                           ],
-                       "title":  "设备状态",
-                       "type":  "table"
+                       "title":  "$sw",
+                       "type":  "gauge"
                    },
                    {
                        "datasource":  {
@@ -194,6 +109,101 @@
                                                             "color":  {
                                                                           "mode":  "thresholds"
                                                                       },
+                                                            "mappings":  [
+
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "yellow",
+                                                                                                 "value":  0.005
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  0.02
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "s",
+                                                            "min":  0,
+                                                            "max":  0.05
+                                                        }
+                                       },
+                       "gridPos":  {
+                                       "h":  4,
+                                       "w":  2,
+                                       "x":  0,
+                                       "y":  4
+                                   },
+                       "id":  102,
+                       "options":  {
+                                       "orientation":  "horizontal",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "showThresholdLabels":  false,
+                                       "showThresholdMarkers":  true,
+                                       "text":  {
+
+                                                }
+                                   },
+                       "repeat":  "fw",
+                       "repeatDirection":  "h",
+                       "maxPerRow":  6,
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "editorMode":  "code",
+                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",instance=\"$fw\",phase=\"rtt\"}",
+                                           "legendFormat":  "{{instance}}",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "$fw",
+                       "type":  "gauge"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "custom":  {
+                                                                           "axisBorderShow":  false,
+                                                                           "axisCenteredZero":  false,
+                                                                           "axisColorMode":  "text",
+                                                                           "axisPlacement":  "auto",
+                                                                           "fillOpacity":  15,
+                                                                           "gradientMode":  "none",
+                                                                           "hideFrom":  {
+                                                                                            "legend":  false,
+                                                                                            "tooltip":  false,
+                                                                                            "viz":  false
+                                                                                        },
+                                                                           "lineWidth":  1,
+                                                                           "pointSize":  5,
+                                                                           "scaleDistribution":  {
+                                                                                                     "type":  "linear"
+                                                                                                 },
+                                                                           "showPoints":  "never",
+                                                                           "spanNulls":  true
+                                                                       },
                                                             "mappings":  [
 
                                                                          ],
@@ -223,12 +233,12 @@
                                                         }
                                        },
                        "gridPos":  {
-                                       "h":  5,
+                                       "h":  8,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  4
+                                       "y":  8
                                    },
-                       "id":  10,
+                       "id":  200,
                        "options":  {
                                        "legend":  {
                                                       "calcs":  [
@@ -252,7 +262,7 @@
                                                           },
                                            "editorMode":  "code",
                                            "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}",
-                                           "legendFormat":  "{{display_name}}",
+                                           "legendFormat":  "{{instance}}",
                                            "refId":  "A"
                                        },
                                        {
@@ -262,7 +272,7 @@
                                                           },
                                            "editorMode":  "code",
                                            "expr":  "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}",
-                                           "legendFormat":  "{{display_name}}",
+                                           "legendFormat":  "{{instance}}",
                                            "refId":  "B"
                                        }
                                    ],
@@ -359,9 +369,9 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  9
+                                       "y":  16
                                    },
-                       "id":  40,
+                       "id":  300,
                        "options":  {
                                        "legend":  {
                                                       "calcs":  [
@@ -434,7 +444,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  0,
-                                       "y":  17
+                                       "y":  24
                                    },
                        "id":  10,
                        "options":  {
@@ -503,7 +513,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  4,
-                                       "y":  17
+                                       "y":  24
                                    },
                        "id":  11,
                        "options":  {
@@ -572,7 +582,7 @@
                                        "h":  4,
                                        "w":  8,
                                        "x":  8,
-                                       "y":  17
+                                       "y":  24
                                    },
                        "id":  12,
                        "options":  {
@@ -641,7 +651,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  16,
-                                       "y":  17
+                                       "y":  24
                                    },
                        "id":  13,
                        "options":  {
@@ -701,7 +711,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  20,
-                                       "y":  17
+                                       "y":  24
                                    },
                        "id":  14,
                        "options":  {
@@ -779,7 +789,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  21
+                                       "y":  28
                                    },
                        "id":  100,
                        "options":  {
@@ -890,7 +900,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  21
+                                       "y":  28
                                    },
                        "id":  200,
                        "options":  {
@@ -1012,7 +1022,7 @@
                                        "h":  10,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  37
+                                       "y":  44
                                    },
                        "id":  300,
                        "options":  {
@@ -1075,9 +1085,47 @@
     "timezone":  "browser",
     "title":  "Event + Match",
     "uid":  "event-match",
-    "version":  2,
+    "version":  3,
     "templating":  {
                        "list":  [
+                                    {
+                                        "datasource":  {
+                                                           "type":  "prometheus",
+                                                           "uid":  "prometheus"
+                                                       },
+                                        "definition":  "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
+                                        "hide":  2,
+                                        "includeAll":  false,
+                                        "multi":  false,
+                                        "name":  "sw",
+                                        "query":  {
+                                                      "query":  "label_values(probe_success{job=~\"infra-core-ping|infra-dist-ping\"}, instance)",
+                                                      "refId":  "StandardVariableQuery"
+                                                  },
+                                        "refresh":  2,
+                                        "regex":  "",
+                                        "sort":  1,
+                                        "type":  "query"
+                                    },
+                                    {
+                                        "datasource":  {
+                                                           "type":  "prometheus",
+                                                           "uid":  "prometheus"
+                                                       },
+                                        "definition":  "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
+                                        "hide":  2,
+                                        "includeAll":  false,
+                                        "multi":  false,
+                                        "name":  "fw",
+                                        "query":  {
+                                                      "query":  "label_values(probe_success{job=~\"infra-fw-ping\"}, instance)",
+                                                      "refId":  "StandardVariableQuery"
+                                                  },
+                                        "refresh":  2,
+                                        "regex":  "",
+                                        "sort":  1,
+                                        "type":  "query"
+                                    },
                                     {
                                         "current":  {
                                                         "text":  "WAN|ISP|internet|wan|出口",
