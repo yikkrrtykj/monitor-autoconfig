@@ -42,7 +42,7 @@
                                                                                "steps":  [
                                                                                              {
                                                                                                  "color":  "green",
-                                                                                                 "value":  null
+                                                                                                 "value":  0.0001
                                                                                              },
                                                                                              {
                                                                                                  "color":  "yellow",
@@ -56,18 +56,19 @@
                                                                            },
                                                             "unit":  "s",
                                                             "min":  0,
-                                                            "max":  0.05
+                                                            "max":  0.1
                                                         }
                                        },
                        "gridPos":  {
                                        "h":  3,
-                                       "w":  2,
+                                       "w":  12,
                                        "x":  0,
                                        "y":  0
                                    },
                        "id":  101,
                        "options":  {
-                                       "orientation":  "auto",
+                                       "displayMode":  "list",
+                                       "orientation":  "horizontal",
                                        "reduceOptions":  {
                                                              "calcs":  [
                                                                            "lastNotNull"
@@ -75,15 +76,8 @@
                                                              "fields":  "",
                                                              "values":  false
                                                          },
-                                       "showThresholdLabels":  false,
-                                       "showThresholdMarkers":  true,
-                                       "text":  {
-
-                                                }
+                                       "showUnfilled":  false
                                    },
-                       "repeat":  "sw",
-                       "repeatDirection":  "h",
-                       "maxPerRow":  12,
                        "targets":  [
                                        {
                                            "datasource":  {
@@ -91,13 +85,15 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",instance=\"$sw\",phase=\"rtt\"}",
+                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}",
+                                           "format":  "table",
+                                           "instant":  true,
                                            "legendFormat":  "{{instance}}",
                                            "refId":  "A"
                                        }
                                    ],
-                       "title":  "$sw",
-                       "type":  "gauge"
+                       "title":  "交换机 Ping",
+                       "type":  "bargauge"
                    },
                    {
                        "datasource":  {
@@ -117,7 +113,7 @@
                                                                                "steps":  [
                                                                                              {
                                                                                                  "color":  "green",
-                                                                                                 "value":  null
+                                                                                                 "value":  0.0001
                                                                                              },
                                                                                              {
                                                                                                  "color":  "yellow",
@@ -131,18 +127,19 @@
                                                                            },
                                                             "unit":  "s",
                                                             "min":  0,
-                                                            "max":  0.05
+                                                            "max":  0.1
                                                         }
                                        },
                        "gridPos":  {
                                        "h":  3,
-                                       "w":  2,
-                                       "x":  0,
-                                       "y":  3
+                                       "w":  12,
+                                       "x":  12,
+                                       "y":  0
                                    },
                        "id":  102,
                        "options":  {
-                                       "orientation":  "auto",
+                                       "displayMode":  "list",
+                                       "orientation":  "horizontal",
                                        "reduceOptions":  {
                                                              "calcs":  [
                                                                            "lastNotNull"
@@ -150,15 +147,8 @@
                                                              "fields":  "",
                                                              "values":  false
                                                          },
-                                       "showThresholdLabels":  false,
-                                       "showThresholdMarkers":  true,
-                                       "text":  {
-
-                                                }
+                                       "showUnfilled":  false
                                    },
-                       "repeat":  "fw",
-                       "repeatDirection":  "h",
-                       "maxPerRow":  12,
                        "targets":  [
                                        {
                                            "datasource":  {
@@ -166,13 +156,15 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",instance=\"$fw\",phase=\"rtt\"}",
+                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}",
+                                           "format":  "table",
+                                           "instant":  true,
                                            "legendFormat":  "{{instance}}",
                                            "refId":  "A"
                                        }
                                    ],
-                       "title":  "$fw",
-                       "type":  "gauge"
+                       "title":  "防火墙 Ping",
+                       "type":  "bargauge"
                    },
                    {
                        "datasource":  {
@@ -236,7 +228,7 @@
                                        "h":  8,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  6
+                                       "y":  3
                                    },
                        "id":  200,
                        "options":  {
@@ -369,7 +361,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  14
+                                       "y":  11
                                    },
                        "id":  300,
                        "options":  {
@@ -444,7 +436,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  0,
-                                       "y":  22
+                                       "y":  19
                                    },
                        "id":  100,
                        "options":  {
@@ -505,7 +497,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  6,
-                                       "y":  22
+                                       "y":  19
                                    },
                        "id":  101,
                        "options":  {
@@ -566,7 +558,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  12,
-                                       "y":  22
+                                       "y":  19
                                    },
                        "id":  102,
                        "options":  {
@@ -627,7 +619,7 @@
                                        "h":  5,
                                        "w":  6,
                                        "x":  18,
-                                       "y":  22
+                                       "y":  19
                                    },
                        "id":  103,
                        "options":  {
@@ -775,7 +767,7 @@
                                        "h":  16,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  27
+                                       "y":  24
                                    },
                        "id":  200,
                        "options":  {
@@ -938,7 +930,7 @@
                                        "h":  12,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  43
+                                       "y":  40
                                    },
                        "id":  300,
                        "options":  {
@@ -991,7 +983,7 @@
     "timezone":  "browser",
     "title":  "Event + Tournament",
     "uid":  "event-tournament",
-    "version":  3,
+    "version":  4,
     "templating":  {
                        "list":  [
                                     {
