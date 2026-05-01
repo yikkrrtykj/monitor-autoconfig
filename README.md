@@ -10,17 +10,6 @@ Docker Compose 一键部署的赛事网络监控栈，**Zabbix + LibreNMS + Prom
 | Zabbix | 8001 | Admin / zabbix | 防火墙告警 + 飞书推送 |
 | LibreNMS | 8002 | admin / admin | 交换机自动发现 + 拓扑图 |
 
-## Dashboard 列表（Grafana → Network 文件夹）
-
-| Dashboard | 用什么时候看 |
-|---|---|
-| Event Infrastructure | 赛前 / 平时——设备 ping + ISP 上下行流量 + 丢包热力图 |
-| Match 5v5 | 2 队 × 5 人对战（5v5、王者荣耀类） |
-| Tournament 6 队 | 6 队比赛（3 人/队 / 4 人/队，三角洲、CS 类） |
-| Tournament 64 (2 层) | 16 队 × 4 人，舞台 2 层 4-4/4-4 |
-| Tournament 64 (3 层 233) | 16 队 × 4 人，舞台 3 层下窄上宽 |
-| Tournament 64 (3 层 332) | 16 队 × 4 人，舞台 3 层下宽上窄 |
-
 ## 一、装 Docker
 
 ### Ubuntu
@@ -41,7 +30,7 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker $USER && newgrp docker
 ```
 
-## 二、部署 checklist（每次新机都跑一遍）
+## 二、部署 checklist
 
 ### 1. 拉代码
 
@@ -69,7 +58,7 @@ DIST_SWITCH_PING=SW1:192.168.10.11,SW2:192.168.10.12
 FIREWALL_PING=FW1:192.168.1.1,FW2:192.168.1.2
 SERVER_PING=Server:192.168.10.10
 
-# 防火墙 SNMP（HA 两台都写）
+# 防火墙 SNMP
 FIREWALL_SNMP_TARGETS=192.168.1.1,192.168.1.2
 
 # LibreNMS 自动发现
@@ -103,80 +92,7 @@ docker compose ps
 
 输出每条监控链路的状态：容器、Prometheus 抓取目标、设备 ping、选手 targets 注册情况、ISP 链路检测、Grafana 加载情况。绿色=OK，红色=要解决。
 
-### 5. 浏览器访问
-
-`http://${SERVER_IP}:3000` Grafana → Network 文件夹 → 挑对应比赛形态的 dashboard。
-
-## 三、选手监控接线约定
-
-`generate-player-targets.py` 通过 SNMP walk 读交换机端口 `ifAlias`（端口描述），按 `team\d+[-_]\d+` 正则解析 `team` 和 `seat` 标签。
-
-**约定**：交换机端口描述写成 `teamNN-MM`，编号**从下往上、从左往右**递增。
-
-例：64 人 2 层布局，舞台左下第 1 队的 4 个选手插在交换机的 4 个端口：
-```
-端口 1 ifAlias = team01-01
-端口 2 ifAlias = team01-02
-端口 3 ifAlias = team01-03
-端口 4 ifAlias = team01-04
-```
-
-3 层布局的 team 编号映射：
-
-| 布局 | 顶层 | 中层 | 底层 |
-|---|---|---|---|
-| 2 层 (4-4/4-4) | T9-12 ︱ T13-16 | — | T1-4 ︱ T5-8 |
-| 3 层 233 (下→上 2-3-3) | T11-13 ︱ T14-16 | T5-7 ︱ T8-10 | T1-2 ︱ T3-4 |
-| 3 层 332 (下→上 3-3-2) | T13-14 ︱ T15-16 | T7-9 ︱ T10-12 | T1-3 ︱ T4-6 |
-
-无线选手（备用）：把无线 AP 接入网段写到 `.env` 的 `WIRELESS_SUBNETS`。dashboard 顶部"网络"选择器切到"无线"或"全部"看。
-
-## 四、防火墙 ISP 接口约定
-
-防火墙 SNMP 抓 `ifHCInOctets` / `ifHCOutOctets` 算上下行流量。Dashboard 自动按 `ifAlias` 包含 `telecom|telcom|unicom|isp|wan` 关键词（不区分大小写）筛选 WAN 口。
-
-**约定**：在防火墙上把 WAN 口的 description / ifAlias 改成包含 ISP 名字的字符串：
-
-| 例子 | 匹配关键词 |
-|---|---|
-| `ISP-Telecom-100M` | telecom + isp |
-| `Unicom-WAN-Backup` | unicom + wan |
-| `WAN1-Telcom` | wan + telcom |
-
-每条 ISP 一个独立 panel 显示上下行，最多自动平铺 4 条。
-
-## 五、网段变更（赛后换场）
-
-新场地换网段，改 `.env`：
-
-```bash
-SERVER_IP=10.10.20.10
-CORE_SWITCH_PING=Core:10.10.20.254
-DIST_SWITCH_PING=SW1:10.10.20.11,SW2:10.10.20.12
-FIREWALL_PING=FW1:10.10.20.1
-LIBRENMS_DISCOVERY_TARGETS=10.10.20.1-100,10.10.20.254
-LIBRENMS_CORE_IP=10.10.20.254
-SWITCH_DISCOVERY_RANGE=10.10.20.1-100,10.10.20.254
-```
-
-应用：
-
-```bash
-docker compose up -d --force-recreate prometheus librenms librenms-dispatcher librenms-config zabbix-config player-targets
-```
-
-## 六、自动配置说明
-
-### Zabbix
-`zabbix-config` 容器自动：修复 Agent localhost 连接、创建主机和 SNMP 接口、导入 WatchGuard / Hillstone 防火墙模板、配置飞书告警机器人（`feishu-robot.py`，token 在 Zabbix 媒介里设）。
-
-### LibreNMS
-`librenms-config` 容器自动：启 dispatcher / rrdcached、创建 admin 用户和 API Token、按 `LIBRENMS_DISCOVERY_TARGETS` 自动发现设备、配置 2 条告警规则（**设备离线告警** critical + **高丢包告警** warning，丢包 > 10%）。**不接通知渠道**——告警只在 LibreNMS UI 显示，飞书告警走 Zabbix 那条线。
-
-### Prometheus / Grafana
-Prometheus 抓基础设施 ping + 防火墙 SNMP（64-bit 计数器）+ 选手 ping（file_sd 自动同步）。Grafana 通过 file provisioning 自动加载 dashboard，每 30 秒重载。
-
-## 七、常见问题
+## 三、常见问题
 
 **服务起不来 / 一直重启**
 ```bash
@@ -209,7 +125,7 @@ rm -rf mysql-data zabbix-server-data grafana-data librenms-db-data librenms-data
 docker compose up -d
 ```
 
-## 八、赛后清理
+## 四、赛后清理
 
 赛事结束、服务器要回收：
 ```bash
