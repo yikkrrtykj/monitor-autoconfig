@@ -62,41 +62,41 @@ function infraStatPanel(id, x, w, title, jobRegex) {
     datasource: DS,
     fieldConfig: {
       defaults: {
-        color: { mode: 'thresholds' },
-        mappings: [
-          { type: 'value', options: { '0': { text: '全部在线', color: 'green' } } },
-        ],
+        color: { mode: "thresholds" },
+        mappings: [],
         thresholds: {
-          mode: 'absolute',
+          mode: "absolute",
           steps: [
-            { color: 'green', value: null },
-            { color: 'red', value: 1 },
+            { color: "red", value: null },
+            { color: "green", value: 1 },
           ],
         },
-        unit: 'none',
-        noValue: '—',
+        unit: "none",
+        noValue: "—",
       },
       overrides: [],
     },
     gridPos: { h: INFRA_H, w, x, y: 0 },
     id,
     options: {
-      colorMode: 'background',
-      graphMode: 'none',
-      justifyMode: 'center',
-      orientation: 'auto',
-      reduceOptions: { calcs: ['lastNotNull'], fields: '', values: false },
-      textMode: 'value',
+      colorMode: "background",
+      graphMode: "none",
+      justifyMode: "center",
+      orientation: "auto",
+      reduceOptions: { calcs: ["lastNotNull"], fields: "", values: true },
+      textMode: "name",
+      wideLayout: false,
     },
-    pluginVersion: '12.1.1',
+    pluginVersion: "12.1.1",
     targets: [{
       datasource: DS,
-      editorMode: 'code',
-      expr: 'count(probe_success{job=~"' + jobRegex + '"} == 0) or vector(0)',
-      refId: 'A',
+      editorMode: "code",
+      expr: "probe_success{job=~\"" + jobRegex + "\"}",
+      legendFormat: "{{instance}}",
+      refId: "A",
     }],
     title,
-    type: 'stat',
+    type: "stat",
   };
 }
 
@@ -229,9 +229,9 @@ function buildPanels(layout) {
   const panels = [];
 
   // Upstream infrastructure health row (always at top)
-  panels.push(infraStatPanel(80, 0,  8, '核心交换机离线', 'infra-core-ping'));
-  panels.push(infraStatPanel(81, 8,  8, '分线交换机离线', 'infra-dist-ping'));
-  panels.push(infraStatPanel(82, 16, 8, '防火墙离线',     'infra-fw-ping'));
+  panels.push(infraStatPanel(80, 0,  8, '核心交换机', 'infra-core-ping'));
+  panels.push(infraStatPanel(81, 8,  8, '分线交换机', 'infra-dist-ping'));
+  panels.push(infraStatPanel(82, 16, 8, '防火墙',     'infra-fw-ping'));
 
   panels.push(statSummary(1, 0,  6, '在线',   'count(probe_success{role="player",network=~"$network"} == 1) or vector(0)', 'green'));
   panels.push(statSummary(2, 6,  6, '离线',   'count(probe_success{role="player",network=~"$network"} == 0) or vector(0)', 'green', {

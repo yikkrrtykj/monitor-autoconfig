@@ -32,26 +32,16 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "全部在线",
-                  "color": "green"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "red",
+                "color": "green",
                 "value": 1
               }
             ]
@@ -78,9 +68,10 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": false
+          "values": true
         },
-        "textMode": "value"
+        "textMode": "name",
+        "wideLayout": false
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -90,11 +81,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count(probe_success{job=~\"infra-core-ping\"} == 0) or vector(0)",
+          "expr": "probe_success{job=~\"infra-core-ping\"}",
+          "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "title": "核心交换机离线",
+      "title": "核心交换机",
       "type": "stat"
     },
     {
@@ -107,26 +99,16 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "全部在线",
-                  "color": "green"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "red",
+                "color": "green",
                 "value": 1
               }
             ]
@@ -153,9 +135,10 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": false
+          "values": true
         },
-        "textMode": "value"
+        "textMode": "name",
+        "wideLayout": false
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -165,11 +148,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count(probe_success{job=~\"infra-dist-ping\"} == 0) or vector(0)",
+          "expr": "probe_success{job=~\"infra-dist-ping\"}",
+          "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "title": "分线交换机离线",
+      "title": "分线交换机",
       "type": "stat"
     },
     {
@@ -182,26 +166,16 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "全部在线",
-                  "color": "green"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "red",
+                "color": "green",
                 "value": 1
               }
             ]
@@ -228,9 +202,10 @@
             "lastNotNull"
           ],
           "fields": "",
-          "values": false
+          "values": true
         },
-        "textMode": "value"
+        "textMode": "name",
+        "wideLayout": false
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -240,11 +215,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count(probe_success{job=~\"infra-fw-ping\"} == 0) or vector(0)",
+          "expr": "probe_success{job=~\"infra-fw-ping\"}",
+          "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "title": "防火墙离线",
+      "title": "防火墙",
       "type": "stat"
     },
     {
@@ -974,5 +950,5 @@
   "timezone": "browser",
   "title": "Match 5v5",
   "uid": "match-5v5",
-  "version": 5
+  "version": 6
 }
