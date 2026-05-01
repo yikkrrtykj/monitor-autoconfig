@@ -31,9 +31,9 @@
                                       },
                        "fieldConfig":  {
                                            "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
+                                                            "custom":  {
+                                                                           "align":  "center"
+                                                                       },
                                                             "mappings":  [
 
                                                                          ],
@@ -41,33 +41,140 @@
                                                                                "mode":  "absolute",
                                                                                "steps":  [
                                                                                              {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  -1
+                                                                                             },
+                                                                                             {
                                                                                                  "color":  "green",
-                                                                                                 "value":  null
+                                                                                                 "value":  0.01
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  1
                                                                                              }
                                                                                          ]
                                                                            }
-                                                        }
+                                                        },
+                                           "overrides":  [
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "设备"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "width":  160
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "类别"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "width":  80
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "mappings",
+                                                                                        "value":  [
+                                                                                                      {
+                                                                                                          "type":  "value",
+                                                                                                          "options":  {
+                                                                                                                          "infra-core-ping":  {
+                                                                                                                                                  "text":  "核心"
+                                                                                                                                              }
+                                                                                                                      }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "type":  "value",
+                                                                                                          "options":  {
+                                                                                                                          "infra-dist-ping":  {
+                                                                                                                                                  "text":  "分线"
+                                                                                                                                              }
+                                                                                                                      }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "type":  "value",
+                                                                                                          "options":  {
+                                                                                                                          "infra-fw-ping":  {
+                                                                                                                                                "text":  "防火墙"
+                                                                                                                                            }
+                                                                                                                      }
+                                                                                                      }
+                                                                                                  ]
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "Status"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "id":  "custom.displayMode",
+                                                                                        "value":  "color-background"
+                                                                                    },
+                                                                                    {
+                                                                                        "id":  "mappings",
+                                                                                        "value":  [
+                                                                                                      {
+                                                                                                          "type":  "value",
+                                                                                                          "options":  {
+                                                                                                                          "0":  {
+                                                                                                                                    "text":  "OFFLINE",
+                                                                                                                                    "color":  "red"
+                                                                                                                                },
+                                                                                                                          "1":  {
+                                                                                                                                    "text":  "ONLINE",
+                                                                                                                                    "color":  "green"
+                                                                                                                                }
+                                                                                                                      }
+                                                                                                      }
+                                                                                                  ]
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "延迟"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "unit":  "s"
+                                                                                    }
+                                                                                ]
+                                                             },
+                                                             {
+                                                                 "matcher":  {
+                                                                                 "id":  "byName",
+                                                                                 "options":  "丢包"
+                                                                             },
+                                                                 "properties":  [
+                                                                                    {
+                                                                                        "unit":  "percentunit",
+                                                                                        "decimals":  1
+                                                                                    }
+                                                                                ]
+                                                             }
+                                                         ]
                                        },
                        "gridPos":  {
-                                       "h":  3,
-                                       "w":  4,
+                                       "h":  5,
+                                       "w":  24,
                                        "x":  0,
                                        "y":  0
                                    },
                        "id":  1,
                        "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "center",
-                                       "orientation":  "auto",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "auto"
+                                       "cellHeight":  "sm",
+                                       "footer":  {
+                                                      "show":  false
+                                                  },
+                                       "showHeader":  true
                                    },
                        "targets":  [
                                        {
@@ -76,247 +183,61 @@
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "count(probe_success{job=\"infra-core-ping\"} == 1)",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "核心在线",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  null
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        }
+                                           "expr":  "probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}",
+                                           "format":  "table",
+                                           "instant":  true,
+                                           "legendFormat":  "Status",
+                                           "refId":  "S"
                                        },
-                       "gridPos":  {
-                                       "h":  3,
-                                       "w":  4,
-                                       "x":  4,
-                                       "y":  0
-                                   },
-                       "id":  2,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "center",
-                                       "orientation":  "auto",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "auto"
-                                   },
-                       "targets":  [
                                        {
                                            "datasource":  {
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "count(probe_success{job=\"infra-dist-ping\"} == 1)",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "分线在线",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  null
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        }
+                                           "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}",
+                                           "format":  "table",
+                                           "instant":  true,
+                                           "legendFormat":  "延迟",
+                                           "refId":  "L"
                                        },
-                       "gridPos":  {
-                                       "h":  3,
-                                       "w":  4,
-                                       "x":  8,
-                                       "y":  0
-                                   },
-                       "id":  3,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "center",
-                                       "orientation":  "auto",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "auto"
-                                   },
-                       "targets":  [
                                        {
                                            "datasource":  {
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
                                            "editorMode":  "code",
-                                           "expr":  "count(probe_success{job=\"infra-fw-ping\"} == 1)",
-                                           "refId":  "A"
+                                           "expr":  "probe_icmp_loss_ratio{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}",
+                                           "format":  "table",
+                                           "instant":  true,
+                                           "legendFormat":  "丢包",
+                                           "refId":  "P"
                                        }
                                    ],
-                       "title":  "防火墙在线",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "unit":  "s",
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "blue",
-                                                                                                 "value":  null
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        }
-                                       },
-                       "gridPos":  {
-                                       "h":  3,
-                                       "w":  4,
-                                       "x":  12,
-                                       "y":  0
-                                   },
-                       "id":  5,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "center",
-                                       "orientation":  "auto",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "value"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "editorMode":  "code",
-                                           "expr":  "sysUpTime{job=\"firewall-snmp\"} / 100",
-                                           "legendFormat":  "{{instance}}",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "防火墙运行时间",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  null
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        }
-                                       },
-                       "gridPos":  {
-                                       "h":  3,
-                                       "w":  4,
-                                       "x":  16,
-                                       "y":  0
-                                   },
-                       "id":  6,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "center",
-                                       "orientation":  "auto",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "auto"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "editorMode":  "code",
-                                           "expr":  "count(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"} == 1)",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "总计在线",
-                       "type":  "stat"
+                       "transformations":  [
+                                               {
+                                                   "id":  "merge"
+                                               },
+                                               {
+                                                   "id":  "organize",
+                                                   "options":  {
+                                                                   "excludeByName":  {
+                                                                                         "Time":  true,
+                                                                                         "__name__":  true,
+                                                                                         "phase":  true
+                                                                                     },
+                                                                   "renameByName":  {
+                                                                                        "display_name":  "设备",
+                                                                                        "job":  "类别",
+                                                                                        "Value #S":  "Status",
+                                                                                        "Value #L":  "延迟",
+                                                                                        "Value #P":  "丢包"
+                                                                                    }
+                                                               }
+                                               }
+                                           ],
+                       "title":  "设备状态",
+                       "type":  "table"
                    },
                    {
                        "datasource":  {
@@ -375,7 +296,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  3
+                                       "y":  5
                                    },
                        "id":  10,
                        "options":  {
@@ -465,7 +386,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  3
+                                       "y":  5
                                    },
                        "id":  20,
                        "options":  {
@@ -588,7 +509,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  11
+                                       "y":  13
                                    },
                        "id":  40,
                        "options":  {
@@ -663,7 +584,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  0,
-                                       "y":  19
+                                       "y":  21
                                    },
                        "id":  10,
                        "options":  {
@@ -732,7 +653,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  4,
-                                       "y":  19
+                                       "y":  21
                                    },
                        "id":  11,
                        "options":  {
@@ -801,7 +722,7 @@
                                        "h":  4,
                                        "w":  8,
                                        "x":  8,
-                                       "y":  19
+                                       "y":  21
                                    },
                        "id":  12,
                        "options":  {
@@ -870,7 +791,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  16,
-                                       "y":  19
+                                       "y":  21
                                    },
                        "id":  13,
                        "options":  {
@@ -930,7 +851,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  20,
-                                       "y":  19
+                                       "y":  21
                                    },
                        "id":  14,
                        "options":  {
@@ -1008,7 +929,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  23
+                                       "y":  25
                                    },
                        "id":  100,
                        "options":  {
@@ -1119,7 +1040,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  23
+                                       "y":  25
                                    },
                        "id":  200,
                        "options":  {
@@ -1241,7 +1162,7 @@
                                        "h":  10,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  39
+                                       "y":  41
                                    },
                        "id":  300,
                        "options":  {
