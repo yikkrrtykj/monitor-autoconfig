@@ -33,15 +33,14 @@
             { "color": "yellow", "value": 0.005 },
             { "color": "red", "value": 0.02 }
           ]},
-          "unit": "s",
-          "displayName": "${__series.name}"
+          "unit": "s"
         }
       },
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 0 },
       "id": 100,
       "options": {
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^.*$/", "values": true },
+        "reduceOptions": { "calcs": ["mean"], "fields": "/^.*$/", "values": true },
         "showThresholdLabels": false,
         "showThresholdMarkers": true,
         "text": {}
@@ -51,8 +50,6 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
@@ -77,11 +74,11 @@
           "unit": "s"
         }
       },
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 5 },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 0 },
       "id": 101,
       "options": {
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^.*$/", "values": true },
+        "reduceOptions": { "calcs": ["mean"], "fields": "/^.*$/", "values": true },
         "showThresholdLabels": false,
         "showThresholdMarkers": true,
         "text": {}
@@ -91,8 +88,6 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
@@ -117,7 +112,7 @@
           "min": 0
         }
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 10 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 5 },
       "id": 200,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "targets": [
@@ -142,7 +137,7 @@
           { "matcher": { "id": "byName", "options": "OUT" }, "properties": [{ "id": "displayName", "value": "上传" }, { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
       "id": 300,
       "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "repeat": "wan_iface",
@@ -189,5 +184,5 @@
   "timezone": "browser",
   "title": "Event Infrastructure",
   "uid": "event-infra",
-  "version": 8
+  "version": 9
 }

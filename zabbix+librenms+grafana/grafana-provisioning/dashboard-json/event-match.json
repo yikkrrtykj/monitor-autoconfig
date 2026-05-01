@@ -60,13 +60,12 @@
                                                                                              }
                                                                                          ]
                                                                            },
-                                                            "unit":  "s",
-                                                            "displayName":  "${__series.name}"
+                                                            "unit":  "s"
                                                         }
                                        },
                        "gridPos":  {
                                        "h":  5,
-                                       "w":  24,
+                                       "w":  12,
                                        "x":  0,
                                        "y":  0
                                    },
@@ -75,7 +74,7 @@
                                        "orientation":  "auto",
                                        "reduceOptions":  {
                                                              "calcs":  [
-                                                                           "lastNotNull"
+                                                                           "mean"
                                                                        ],
                                                              "fields":  "/^.*$/",
                                                              "values":  true
@@ -94,8 +93,6 @@
                                                           },
                                            "editorMode":  "code",
                                            "expr":  "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping\",phase=\"rtt\"}",
-                                           "format":  "table",
-                                           "instant":  true,
                                            "legendFormat":  "{{instance}}",
                                            "refId":  "A"
                                        }
@@ -144,16 +141,16 @@
                                        },
                        "gridPos":  {
                                        "h":  5,
-                                       "w":  24,
-                                       "x":  0,
-                                       "y":  5
+                                       "w":  12,
+                                       "x":  12,
+                                       "y":  0
                                    },
                        "id":  101,
                        "options":  {
                                        "orientation":  "auto",
                                        "reduceOptions":  {
                                                              "calcs":  [
-                                                                           "lastNotNull"
+                                                                           "mean"
                                                                        ],
                                                              "fields":  "/^.*$/",
                                                              "values":  true
@@ -172,8 +169,6 @@
                                                           },
                                            "editorMode":  "code",
                                            "expr":  "probe_icmp_duration_seconds{job=~\"infra-fw-ping\",phase=\"rtt\"}",
-                                           "format":  "table",
-                                           "instant":  true,
                                            "legendFormat":  "{{instance}}",
                                            "refId":  "A"
                                        }
@@ -243,7 +238,7 @@
                                        "h":  8,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  10
+                                       "y":  5
                                    },
                        "id":  200,
                        "options":  {
@@ -376,7 +371,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  18
+                                       "y":  13
                                    },
                        "id":  300,
                        "options":  {
@@ -451,7 +446,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  0,
-                                       "y":  26
+                                       "y":  21
                                    },
                        "id":  10,
                        "options":  {
@@ -520,7 +515,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  4,
-                                       "y":  26
+                                       "y":  21
                                    },
                        "id":  11,
                        "options":  {
@@ -589,7 +584,7 @@
                                        "h":  4,
                                        "w":  8,
                                        "x":  8,
-                                       "y":  26
+                                       "y":  21
                                    },
                        "id":  12,
                        "options":  {
@@ -658,7 +653,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  16,
-                                       "y":  26
+                                       "y":  21
                                    },
                        "id":  13,
                        "options":  {
@@ -718,7 +713,7 @@
                                        "h":  4,
                                        "w":  4,
                                        "x":  20,
-                                       "y":  26
+                                       "y":  21
                                    },
                        "id":  14,
                        "options":  {
@@ -796,7 +791,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  30
+                                       "y":  25
                                    },
                        "id":  100,
                        "options":  {
@@ -907,7 +902,7 @@
                                        "h":  16,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  30
+                                       "y":  25
                                    },
                        "id":  200,
                        "options":  {
@@ -1029,7 +1024,7 @@
                                        "h":  10,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  46
+                                       "y":  41
                                    },
                        "id":  300,
                        "options":  {
@@ -1092,7 +1087,7 @@
     "timezone":  "browser",
     "title":  "Event + Match",
     "uid":  "event-match",
-    "version":  8,
+    "version":  9,
     "templating":  {
                        "list":  [
                                     {
