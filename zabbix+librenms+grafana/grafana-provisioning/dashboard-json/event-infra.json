@@ -39,7 +39,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 0 },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 0 },
       "id": 100,
       "options": {
         "orientation": "auto",
@@ -89,7 +89,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 0 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
       "id": 101,
       "options": {
         "orientation": "auto",
@@ -145,7 +145,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 9 },
+      "gridPos": { "h": 6, "w": 16, "x": 0, "y": 8 },
       "id": 200,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
@@ -174,7 +174,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
       "id": 300,
       "options": {
         "calculate": false,
@@ -207,16 +207,85 @@
       ],
       "title": "丢包热力图",
       "type": "heatmap"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "bps"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "IN" }, "properties": [{ "id": "displayName", "value": "下载" }, { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "OUT" }, "properties": [{ "id": "displayName", "value": "上传" }, { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] }
+        ]
+      },
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 14 },
+      "id": 400,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "repeat": "wan_iface",
+      "repeatDirection": "h",
+      "maxPerRow": 4,
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "rate(ifHCInOctets{job=\"firewall-snmp\",ifAlias=\"$wan_iface\"}[1m]) * 8", "legendFormat": "IN", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "rate(ifHCOutOctets{job=\"firewall-snmp\",ifAlias=\"$wan_iface\"}[1m]) * 8", "legendFormat": "OUT", "refId": "B" }
+      ],
+      "title": "ISP · $wan_iface",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
   "schemaVersion": 41,
-  "tags": ["infrastructure", "event", "ping"],
-  "templating": { "list": [] },
+  "tags": ["infrastructure", "event", "ping", "traffic"],
+  "templating": {
+    "list": [
+      {
+        "current": { "text": "WAN|ISP|internet|wan|出口", "value": "WAN|ISP|internet|wan|出口" },
+        "hide": 0,
+        "label": "WAN 口过滤（正则）",
+        "name": "wan_filter",
+        "query": "WAN|ISP|internet|wan|出口",
+        "type": "textbox"
+      },
+      {
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "wan_iface",
+        "query": "label_values(ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\"$wan_filter\"}, ifAlias)",
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
   "time": { "from": "now-30m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "Event Infrastructure",
   "uid": "event-infra",
-  "version": 12
+  "version": 13
 }
