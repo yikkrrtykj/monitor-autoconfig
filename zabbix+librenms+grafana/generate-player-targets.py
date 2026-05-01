@@ -104,8 +104,9 @@ def load_subnets(env_var):
 
 
 def ip_in_subnets(ip_str, subnets):
+    """True if ip is in any of the given subnets. Empty list -> False (no match)."""
     if not subnets:
-        return True
+        return False
     try:
         addr = IPv4Address(ip_str)
     except ValueError:
@@ -155,11 +156,14 @@ def main():
 
             team_info = ifalias_map[ifindex]
 
-            network_type = "wired"
-            if ip_in_subnets(ip, wireless_nets):
+            # Default wired. Mark wireless only when WIRELESS_SUBNETS is set and ip matches.
+            # If PLAYER_SUBNETS (wired) is set, drop ips outside it (likely non-player).
+            if wireless_nets and ip_in_subnets(ip, wireless_nets):
                 network_type = "wireless"
-            elif not ip_in_subnets(ip, wired_nets):
+            elif wired_nets and not ip_in_subnets(ip, wired_nets):
                 continue
+            else:
+                network_type = "wired"
 
             all_targets.append({
                 "targets": [ip],

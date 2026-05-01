@@ -57,7 +57,6 @@ write_labeled_targets() {
 write_ping_job() {
   job_name="$1"
   targets="$2"
-  role_label="$3"
 
   cat >> "$CONFIG_FILE" <<EOF
   - job_name: "${job_name}"
@@ -134,10 +133,10 @@ scrape_configs:
 EOF
 
 # Infrastructure ping jobs
-write_ping_job "infra-core-ping"  "$CORE_SWITCH_PING" "core"
-write_ping_job "infra-dist-ping"  "$DIST_SWITCH_PING" "dist"
-write_ping_job "infra-fw-ping"    "$FIREWALL_PING"    "firewall"
-write_ping_job "infra-srv-ping"   "$SERVER_PING"      "server"
+write_ping_job "infra-core-ping"  "$CORE_SWITCH_PING"
+write_ping_job "infra-dist-ping"  "$DIST_SWITCH_PING"
+write_ping_job "infra-fw-ping"    "$FIREWALL_PING"
+write_ping_job "infra-srv-ping"   "$SERVER_PING"
 
 # Firewall SNMP
 cat >> "$CONFIG_FILE" <<EOF

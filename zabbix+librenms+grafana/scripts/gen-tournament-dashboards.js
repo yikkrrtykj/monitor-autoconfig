@@ -6,8 +6,8 @@ const layouts = {
     uid: 'tournament-64-2layer',
     description: '64-Player Tournament — 2-layer stage (4-4 / 4-4)',
     rows: [
-      { layer: '顶层', left: [9, 10, 11, 12], right: [13, 14, 15, 16] },
-      { layer: '底层', left: [1, 2, 3, 4],    right: [5, 6, 7, 8] },
+      { left: [9, 10, 11, 12], right: [13, 14, 15, 16] },
+      { left: [1, 2, 3, 4],    right: [5, 6, 7, 8] },
     ],
     teamH: 8,
     dotsH: 3,
@@ -18,9 +18,9 @@ const layouts = {
     uid: 'tournament-64-233',
     description: '64-Player Tournament — 3-layer stage, bottom-up 2-3-3',
     rows: [
-      { layer: '顶层', left: [11, 12, 13], right: [14, 15, 16] },
-      { layer: '中层', left: [5, 6, 7],    right: [8, 9, 10] },
-      { layer: '底层', left: [1, 2],       right: [3, 4] },
+      { left: [11, 12, 13], right: [14, 15, 16] },
+      { left: [5, 6, 7],    right: [8, 9, 10] },
+      { left: [1, 2],       right: [3, 4] },
     ],
     teamH: 7,
     dotsH: 2,
@@ -31,7 +31,7 @@ const layouts = {
     uid: 'tournament-6teams',
     description: '6-team tournament (works for any team size — 3-per-team / 4-per-team / etc., auto-detected from data)',
     rows: [
-      { layer: '舞台', left: [1, 2, 3], right: [4, 5, 6] },
+      { left: [1, 2, 3], right: [4, 5, 6] },
     ],
     teamH: 12,
     dotsH: 4,
@@ -42,9 +42,9 @@ const layouts = {
     uid: 'tournament-64-332',
     description: '64-Player Tournament — 3-layer stage, bottom-up 3-3-2',
     rows: [
-      { layer: '顶层', left: [13, 14],     right: [15, 16] },
-      { layer: '中层', left: [7, 8, 9],    right: [10, 11, 12] },
-      { layer: '底层', left: [1, 2, 3],    right: [4, 5, 6] },
+      { left: [13, 14],     right: [15, 16] },
+      { left: [7, 8, 9],    right: [10, 11, 12] },
+      { left: [1, 2, 3],    right: [4, 5, 6] },
     ],
     teamH: 7,
     dotsH: 2,
@@ -204,21 +204,17 @@ function buildPanels(layout) {
     const rightW = Math.floor(halfWidth / rightCount);
 
     let x = 0;
-    let idx = 1;
     for (const team of row.left) {
       panels.push(dotsPanel(team, { h: layout.dotsH, w: leftW, x, y },                                       idBase + team));
       panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: leftW, x, y: y + layout.dotsH },     idBase + team + 50));
       x += leftW;
-      idx++;
     }
 
     x = 12;
-    idx = 1;
     for (const team of row.right) {
       panels.push(dotsPanel(team, { h: layout.dotsH, w: rightW, x, y },                                      idBase + team));
       panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: rightW, x, y: y + layout.dotsH },    idBase + team + 50));
       x += rightW;
-      idx++;
     }
 
     y += layout.teamH;
