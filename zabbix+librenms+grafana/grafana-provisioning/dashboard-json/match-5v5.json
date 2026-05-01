@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "5v5 Match Network Monitor - 2 teams x 5 players (mobile MOBA)",
+  "description": "5v5 Match Network Monitor - 舞台左 vs 舞台右 (team=1 vs team=2)",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -47,19 +47,18 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",team=\"$team_left\",network=~\"$network\"} == 1) or vector(0)",
-          "legendFormat": "在线",
+          "expr": "count(probe_success{role=\"player\",team=\"1\",network=~\"$network\"} == 1) or vector(0)",
           "refId": "A"
         }
       ],
-      "title": "$team_left_name 在线 / 5",
+      "title": "舞台左 在线 / 5",
       "type": "stat"
     },
     {
@@ -94,11 +93,11 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"$team_left\",network=~\"$network\",phase=\"rtt\"})",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"})",
           "refId": "A"
         }
       ],
-      "title": "$team_left_name 均延迟",
+      "title": "舞台左 均延迟",
       "type": "stat"
     },
     {
@@ -110,7 +109,7 @@
           "mappings": [
             {
               "type": "value",
-              "options": { "1": { "text": "$team_left_name   VS   $team_right_name", "color": "text" } }
+              "options": { "1": { "text": "舞台左   VS   舞台右", "color": "text" } }
             }
           ]
         },
@@ -170,11 +169,11 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"$team_right\",network=~\"$network\",phase=\"rtt\"})",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"})",
           "refId": "A"
         }
       ],
-      "title": "$team_right_name 均延迟",
+      "title": "舞台右 均延迟",
       "type": "stat"
     },
     {
@@ -205,19 +204,18 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",team=\"$team_right\",network=~\"$network\"} == 1) or vector(0)",
-          "legendFormat": "在线",
+          "expr": "count(probe_success{role=\"player\",team=\"2\",network=~\"$network\"} == 1) or vector(0)",
           "refId": "A"
         }
       ],
-      "title": "$team_right_name 在线 / 5",
+      "title": "舞台右 在线 / 5",
       "type": "stat"
     },
     {
@@ -255,7 +253,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"$team_left\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -271,7 +269,7 @@
           }
         }
       ],
-      "title": "🔵 $team_left_name",
+      "title": "🔵 舞台左",
       "type": "bargauge"
     },
     {
@@ -309,7 +307,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"$team_right\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -325,7 +323,7 @@
           }
         }
       ],
-      "title": "🔴 $team_right_name",
+      "title": "🔴 舞台右",
       "type": "bargauge"
     },
     {
@@ -359,8 +357,8 @@
           "unit": "s"
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "$team_left_name" }, "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "$team_right_name" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "舞台左" }, "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "舞台右" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }
         ]
       },
       "gridPos": { "h": 7, "w": 24, "x": 0, "y": 16 },
@@ -374,15 +372,15 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"$team_left\",network=~\"$network\",phase=\"rtt\"})",
-          "legendFormat": "$team_left_name",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"})",
+          "legendFormat": "舞台左",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"$team_right\",network=~\"$network\",phase=\"rtt\"})",
-          "legendFormat": "$team_right_name",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"})",
+          "legendFormat": "舞台右",
           "refId": "B"
         }
       ],
@@ -407,74 +405,6 @@
         ],
         "query": "wired,wireless,.*",
         "type": "custom"
-      },
-      {
-        "current": { "text": "1", "value": "1" },
-        "hide": 0,
-        "label": "蓝队 Team #",
-        "name": "team_left",
-        "options": [
-          { "selected": true, "text": "Team 1", "value": "1" },
-          { "selected": false, "text": "Team 2", "value": "2" },
-          { "selected": false, "text": "Team 3", "value": "3" },
-          { "selected": false, "text": "Team 4", "value": "4" },
-          { "selected": false, "text": "Team 5", "value": "5" },
-          { "selected": false, "text": "Team 6", "value": "6" },
-          { "selected": false, "text": "Team 7", "value": "7" },
-          { "selected": false, "text": "Team 8", "value": "8" },
-          { "selected": false, "text": "Team 9", "value": "9" },
-          { "selected": false, "text": "Team 10", "value": "10" },
-          { "selected": false, "text": "Team 11", "value": "11" },
-          { "selected": false, "text": "Team 12", "value": "12" },
-          { "selected": false, "text": "Team 13", "value": "13" },
-          { "selected": false, "text": "Team 14", "value": "14" },
-          { "selected": false, "text": "Team 15", "value": "15" },
-          { "selected": false, "text": "Team 16", "value": "16" }
-        ],
-        "query": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
-        "type": "custom"
-      },
-      {
-        "current": { "text": "蓝队", "value": "蓝队" },
-        "hide": 0,
-        "label": "蓝队名称",
-        "name": "team_left_name",
-        "query": "蓝队",
-        "type": "textbox"
-      },
-      {
-        "current": { "text": "2", "value": "2" },
-        "hide": 0,
-        "label": "红队 Team #",
-        "name": "team_right",
-        "options": [
-          { "selected": false, "text": "Team 1", "value": "1" },
-          { "selected": true, "text": "Team 2", "value": "2" },
-          { "selected": false, "text": "Team 3", "value": "3" },
-          { "selected": false, "text": "Team 4", "value": "4" },
-          { "selected": false, "text": "Team 5", "value": "5" },
-          { "selected": false, "text": "Team 6", "value": "6" },
-          { "selected": false, "text": "Team 7", "value": "7" },
-          { "selected": false, "text": "Team 8", "value": "8" },
-          { "selected": false, "text": "Team 9", "value": "9" },
-          { "selected": false, "text": "Team 10", "value": "10" },
-          { "selected": false, "text": "Team 11", "value": "11" },
-          { "selected": false, "text": "Team 12", "value": "12" },
-          { "selected": false, "text": "Team 13", "value": "13" },
-          { "selected": false, "text": "Team 14", "value": "14" },
-          { "selected": false, "text": "Team 15", "value": "15" },
-          { "selected": false, "text": "Team 16", "value": "16" }
-        ],
-        "query": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
-        "type": "custom"
-      },
-      {
-        "current": { "text": "红队", "value": "红队" },
-        "hide": 0,
-        "label": "红队名称",
-        "name": "team_right_name",
-        "query": "红队",
-        "type": "textbox"
       }
     ]
   },
@@ -483,5 +413,5 @@
   "timezone": "browser",
   "title": "Match 5v5",
   "uid": "match-5v5",
-  "version": 3
+  "version": 4
 }
