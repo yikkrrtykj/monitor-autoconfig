@@ -25,23 +25,41 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [
-            { "type": "value", "options": { "0": { "text": "OFFLINE", "color": "red" }, "1": { "text": "ONLINE", "color": "green" } } }
+            { "type": "value", "options": { "0": { "text": "OFF", "color": "red" }, "1": { "text": "ON", "color": "green" } } }
           ],
           "thresholds": { "mode": "absolute", "steps": [
             { "color": "red", "value": null },
             { "color": "green", "value": 1 }
           ]},
-          "unit": "none",
-          "min": 0,
-          "max": 1
+          "noValue": "OFF"
         }
       },
-      "gridPos": { "h": 5, "w": 16, "x": 0, "y": 0 },
-      "id": 1,
-      "options": { "displayMode": "list", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": false },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "probe_success{job=~\"infra-core-ping|infra-dist-ping\"}", "format": "table", "instant": true, "legendFormat": "{{display_name}}", "refId": "A" }],
-      "title": "交换机状态",
-      "type": "bargauge"
+      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 0 },
+      "id": 100,
+      "repeat": "display_name",
+      "repeatDirection": "h",
+      "maxPerRow": 8,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "probe_success{job=\"infra-core-ping\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "{{display_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "${display_name}",
+      "type": "stat"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -49,23 +67,83 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [
-            { "type": "value", "options": { "0": { "text": "OFFLINE", "color": "red" }, "1": { "text": "ONLINE", "color": "green" } } }
+            { "type": "value", "options": { "0": { "text": "OFF", "color": "red" }, "1": { "text": "ON", "color": "green" } } }
           ],
           "thresholds": { "mode": "absolute", "steps": [
             { "color": "red", "value": null },
             { "color": "green", "value": 1 }
           ]},
-          "unit": "none",
-          "min": 0,
-          "max": 1
+          "noValue": "OFF"
         }
       },
-      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
-      "id": 2,
-      "options": { "displayMode": "list", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": false },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "probe_success{job=~\"infra-fw-ping\"}", "format": "table", "instant": true, "legendFormat": "{{display_name}}", "refId": "A" }],
-      "title": "防火墙状态",
-      "type": "bargauge"
+      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 3 },
+      "id": 200,
+      "repeat": "display_name",
+      "repeatDirection": "h",
+      "maxPerRow": 8,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "probe_success{job=\"infra-dist-ping\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "{{display_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "${display_name}",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "OFF", "color": "red" }, "1": { "text": "ON", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "green", "value": 1 }
+          ]},
+          "noValue": "OFF"
+        }
+      },
+      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 6 },
+      "id": 300,
+      "repeat": "display_name",
+      "repeatDirection": "h",
+      "maxPerRow": 8,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "probe_success{job=\"infra-fw-ping\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "{{display_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "${display_name}",
+      "type": "stat"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -83,7 +161,7 @@
           "min": 0
         }
       },
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 5 },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 9 },
       "id": 10,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "targets": [
@@ -114,7 +192,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "id": 40,
       "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
       "repeat": "wan_iface",
