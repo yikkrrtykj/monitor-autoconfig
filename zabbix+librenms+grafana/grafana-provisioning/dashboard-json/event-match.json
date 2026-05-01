@@ -67,7 +67,7 @@
                                    },
                        "id":  1,
                        "options":  {
-                                       "displayMode":  "gradient",
+                                       "displayMode":  "basic",
                                        "orientation":  "horizontal",
                                        "reduceOptions":  {
                                                              "calcs":  [
@@ -138,7 +138,7 @@
                                    },
                        "id":  2,
                        "options":  {
-                                       "displayMode":  "gradient",
+                                       "displayMode":  "basic",
                                        "orientation":  "horizontal",
                                        "reduceOptions":  {
                                                              "calcs":  [
