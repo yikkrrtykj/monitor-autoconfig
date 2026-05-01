@@ -260,11 +260,11 @@
   "templating": {
     "list": [
       {
-        "current": { "text": "WAN|ISP|internet|wan|出口", "value": "WAN|ISP|internet|wan|出口" },
+        "current": { "text": "(?i)telecom|telcom|unicom|isp|wan", "value": "(?i)telecom|telcom|unicom|isp|wan" },
         "hide": 0,
         "label": "WAN 口过滤（正则）",
         "name": "wan_filter",
-        "query": "WAN|ISP|internet|wan|出口",
+        "query": "(?i)telecom|telcom|unicom|isp|wan",
         "type": "textbox"
       },
       {
