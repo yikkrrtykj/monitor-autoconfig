@@ -64,7 +64,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -127,7 +127,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -190,7 +190,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -249,7 +249,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -276,55 +276,57 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "yellow",
-                "value": 0.03
-              },
-              {
-                "color": "red",
-                "value": 0.06
+                "color": "green",
+                "value": 1
               }
             ]
           },
-          "unit": "s"
+          "unit": "none"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 2,
         "w": 4,
         "x": 0,
         "y": 4
       },
       "id": 111,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
         "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
-          "values": false
+          "values": true
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value_and_name",
+        "wideLayout": false
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -334,40 +336,14 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"11\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "probe_success{role=\"player\",team=\"11\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 11",
-      "type": "bargauge"
+      "title": "",
+      "transparent": true,
+      "type": "stat"
     },
     {
       "datasource": {
@@ -379,9 +355,18 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -399,522 +384,8 @@
               }
             ]
           },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 4,
-        "y": 4
-      },
-      "id": 112,
-      "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true,
-        "valueMode": "color"
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"12\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 12",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.03
-              },
-              {
-                "color": "red",
-                "value": 0.06
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 8,
-        "y": 4
-      },
-      "id": 113,
-      "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true,
-        "valueMode": "color"
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"13\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 13",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.03
-              },
-              {
-                "color": "red",
-                "value": 0.06
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 12,
-        "y": 4
-      },
-      "id": 114,
-      "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true,
-        "valueMode": "color"
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"14\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 14",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.03
-              },
-              {
-                "color": "red",
-                "value": 0.06
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 16,
-        "y": 4
-      },
-      "id": 115,
-      "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true,
-        "valueMode": "color"
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"15\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 15",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.03
-              },
-              {
-                "color": "red",
-                "value": 0.06
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 20,
-        "y": 4
-      },
-      "id": 116,
-      "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true,
-        "valueMode": "color"
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"16\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 16",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.03
-              },
-              {
-                "color": "red",
-                "value": 0.06
-              }
-            ]
-          },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -922,18 +393,14 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 9
+        "y": 6
       },
-      "id": 205,
+      "id": 161,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -941,8 +408,8 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -952,40 +419,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"5\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"11\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 5",
-      "type": "bargauge"
+      "title": "顶层左1队",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -997,9 +436,97 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 4,
+        "y": 4
+      },
+      "id": 112,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"12\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1017,7 +544,8 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -1025,18 +553,14 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 9
+        "y": 6
       },
-      "id": 206,
+      "id": 162,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1044,8 +568,8 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1055,40 +579,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"6\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"12\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 6",
-      "type": "bargauge"
+      "title": "顶层左2队",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -1100,9 +596,97 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 8,
+        "y": 4
+      },
+      "id": 113,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"13\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1120,7 +704,8 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -1128,18 +713,14 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 9
+        "y": 6
       },
-      "id": 207,
+      "id": 163,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1147,8 +728,8 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1158,40 +739,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"7\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"13\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 7",
-      "type": "bargauge"
+      "title": "顶层左3队",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -1203,9 +756,97 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 12,
+        "y": 4
+      },
+      "id": 114,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"14\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1223,7 +864,8 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -1231,18 +873,14 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 9
+        "y": 6
       },
-      "id": 208,
+      "id": 164,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1250,8 +888,8 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1261,40 +899,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"8\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"14\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 8",
-      "type": "bargauge"
+      "title": "顶层右1队",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -1306,9 +916,97 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 16,
+        "y": 4
+      },
+      "id": 115,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"15\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1326,7 +1024,8 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -1334,18 +1033,14 @@
         "h": 5,
         "w": 4,
         "x": 16,
-        "y": 9
+        "y": 6
       },
-      "id": 209,
+      "id": 165,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1353,8 +1048,8 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1364,40 +1059,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"9\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"15\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 9",
-      "type": "bargauge"
+      "title": "顶层右2队",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -1409,9 +1076,97 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 20,
+        "y": 4
+      },
+      "id": 116,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"16\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1429,7 +1184,8 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -1437,18 +1193,14 @@
         "h": 5,
         "w": 4,
         "x": 20,
-        "y": 9
+        "y": 6
       },
-      "id": 210,
+      "id": 166,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1456,8 +1208,8 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1467,40 +1219,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"10\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"16\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 10",
-      "type": "bargauge"
+      "title": "顶层右3队",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -1512,9 +1236,97 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 0,
+        "y": 11
+      },
+      "id": 305,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"5\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1532,7 +1344,968 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 13
+      },
+      "id": 355,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"5\",phase=\"rtt\",network=~\"$network\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "中层左1队",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 4,
+        "y": 11
+      },
+      "id": 306,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"6\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.03
+              },
+              {
+                "color": "red",
+                "value": 0.06
+              }
+            ]
+          },
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 13
+      },
+      "id": 356,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"6\",phase=\"rtt\",network=~\"$network\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "中层左2队",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 8,
+        "y": 11
+      },
+      "id": 307,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"7\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.03
+              },
+              {
+                "color": "red",
+                "value": 0.06
+              }
+            ]
+          },
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 13
+      },
+      "id": 357,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"7\",phase=\"rtt\",network=~\"$network\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "中层左3队",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 12,
+        "y": 11
+      },
+      "id": 308,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"8\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.03
+              },
+              {
+                "color": "red",
+                "value": 0.06
+              }
+            ]
+          },
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 12,
+        "y": 13
+      },
+      "id": 358,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"8\",phase=\"rtt\",network=~\"$network\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "中层右1队",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 16,
+        "y": 11
+      },
+      "id": 309,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"9\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.03
+              },
+              {
+                "color": "red",
+                "value": 0.06
+              }
+            ]
+          },
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 16,
+        "y": 13
+      },
+      "id": 359,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"9\",phase=\"rtt\",network=~\"$network\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "中层右2队",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 20,
+        "y": 11
+      },
+      "id": 310,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"10\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.03
+              },
+              {
+                "color": "red",
+                "value": 0.06
+              }
+            ]
+          },
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 20,
+        "y": 13
+      },
+      "id": 360,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"10\",phase=\"rtt\",network=~\"$network\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "中层右3队",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 6,
+        "x": 0,
+        "y": 18
+      },
+      "id": 501,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"1\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.03
+              },
+              {
+                "color": "red",
+                "value": 0.06
+              }
+            ]
+          },
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -1540,18 +2313,14 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 14
+        "y": 20
       },
-      "id": 301,
+      "id": 551,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1559,8 +2328,8 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1570,40 +2339,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"1\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 1",
-      "type": "bargauge"
+      "title": "底层左1队",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -1615,9 +2356,97 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 6,
+        "x": 6,
+        "y": 18
+      },
+      "id": 502,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"2\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1635,7 +2464,8 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -1643,18 +2473,14 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 14
+        "y": 20
       },
-      "id": 302,
+      "id": 552,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1662,8 +2488,8 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1673,40 +2499,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"2\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 2",
-      "type": "bargauge"
+      "title": "底层左2队",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -1718,9 +2516,97 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 6,
+        "x": 12,
+        "y": 18
+      },
+      "id": 503,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{role=\"player\",team=\"3\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "transparent": true,
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1738,7 +2624,8 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
@@ -1746,18 +2633,14 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 14
+        "y": 20
       },
-      "id": 303,
+      "id": 553,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1765,8 +2648,8 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1776,40 +2659,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"3\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"3\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 3",
-      "type": "bargauge"
+      "title": "底层右1队",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -1821,55 +2676,57 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 0.1,
-          "min": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "●"
+                },
+                "1": {
+                  "text": "●"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "yellow",
-                "value": 0.03
-              },
-              {
-                "color": "red",
-                "value": 0.06
+                "color": "green",
+                "value": 1
               }
             ]
           },
-          "unit": "s"
+          "unit": "none"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 2,
         "w": 6,
         "x": 18,
-        "y": 14
+        "y": 18
       },
-      "id": 304,
+      "id": 504,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
         "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
-          "values": false
+          "values": true
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "value_and_name",
+        "wideLayout": false
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1879,40 +2736,14 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"4\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
-          "instant": true,
+          "expr": "probe_success{role=\"player\",team=\"4\",network=~\"$network\"}",
+          "legendFormat": "S{{seat}}",
           "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "instance": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "Value": 1
-            },
-            "renameByName": {
-              "seat": "S",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "Team 4",
-      "type": "bargauge"
+      "title": "",
+      "transparent": true,
+      "type": "stat"
     },
     {
       "datasource": {
@@ -1922,29 +2753,20 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisPlacement": "auto",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": true
-          },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "离线",
+                  "color": "red"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1962,31 +2784,32 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "decimals": 1
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 19
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 20
       },
-      "id": 900,
+      "id": 554,
       "options": {
-        "legend": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
           "calcs": [
-            "mean",
-            "max"
+            "lastNotNull"
           ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
+        "textMode": "value",
+        "wideLayout": true
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1996,13 +2819,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg by (team) (probe_icmp_duration_seconds{role=\"player\",network=~\"$network\",phase=\"rtt\"})",
-          "legendFormat": "Team {{team}}",
+          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"4\",phase=\"rtt\",network=~\"$network\"})",
           "refId": "A"
         }
       ],
-      "title": "各队平均延迟趋势",
-      "type": "timeseries"
+      "title": "底层右2队",
+      "type": "stat"
     }
   ],
   "refresh": "5s",
@@ -2052,5 +2874,5 @@
   "timezone": "browser",
   "title": "Tournament 64 (3 层 233)",
   "uid": "tournament-64-233",
-  "version": 1
+  "version": 2
 }

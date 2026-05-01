@@ -6,43 +6,99 @@ const layouts = {
     uid: 'tournament-64-2layer',
     description: '64-Player Tournament — 2-layer stage (4-4 / 4-4)',
     rows: [
-      { left: [9, 10, 11, 12], right: [13, 14, 15, 16] },
-      { left: [1, 2, 3, 4],    right: [5, 6, 7, 8] },
+      { layer: '顶层', left: [9, 10, 11, 12], right: [13, 14, 15, 16] },
+      { layer: '底层', left: [1, 2, 3, 4],    right: [5, 6, 7, 8] },
     ],
+    teamH: 8,
+    dotsH: 3,
+    withTrend: true,
   },
   '233': {
     title: 'Tournament 64 (3 层 233)',
     uid: 'tournament-64-233',
     description: '64-Player Tournament — 3-layer stage, bottom-up 2-3-3',
     rows: [
-      { left: [11, 12, 13], right: [14, 15, 16] },
-      { left: [5, 6, 7],    right: [8, 9, 10] },
-      { left: [1, 2],       right: [3, 4] },
+      { layer: '顶层', left: [11, 12, 13], right: [14, 15, 16] },
+      { layer: '中层', left: [5, 6, 7],    right: [8, 9, 10] },
+      { layer: '底层', left: [1, 2],       right: [3, 4] },
     ],
+    teamH: 7,
+    dotsH: 2,
+    withTrend: false,
   },
   '332': {
     title: 'Tournament 64 (3 层 332)',
     uid: 'tournament-64-332',
     description: '64-Player Tournament — 3-layer stage, bottom-up 3-3-2',
     rows: [
-      { left: [13, 14],     right: [15, 16] },
-      { left: [7, 8, 9],    right: [10, 11, 12] },
-      { left: [1, 2, 3],    right: [4, 5, 6] },
+      { layer: '顶层', left: [13, 14],     right: [15, 16] },
+      { layer: '中层', left: [7, 8, 9],    right: [10, 11, 12] },
+      { layer: '底层', left: [1, 2, 3],    right: [4, 5, 6] },
     ],
+    teamH: 7,
+    dotsH: 2,
+    withTrend: false,
   },
 };
 
-const ROW_HEIGHT = 5;
 const HEADER_H = 4;
+const TREND_H = 5;
+const DS = { type: 'prometheus', uid: 'prometheus' };
 
-function teamPanel(team, gridPos, idBase) {
+function dotsPanel(team, gridPos, id) {
   return {
-    datasource: { type: 'prometheus', uid: 'prometheus' },
+    datasource: DS,
     fieldConfig: {
       defaults: {
         color: { mode: 'thresholds' },
-        mappings: [],
-        max: 0.1, min: 0,
+        mappings: [
+          { type: 'value', options: { '0': { text: '●' }, '1': { text: '●' } } },
+        ],
+        thresholds: {
+          mode: 'absolute',
+          steps: [
+            { color: 'red', value: null },
+            { color: 'green', value: 1 },
+          ],
+        },
+        unit: 'none',
+      },
+      overrides: [],
+    },
+    gridPos,
+    id,
+    options: {
+      colorMode: 'background',
+      graphMode: 'none',
+      justifyMode: 'center',
+      orientation: 'horizontal',
+      reduceOptions: { calcs: ['lastNotNull'], fields: '', values: true },
+      textMode: 'value_and_name',
+      wideLayout: false,
+    },
+    pluginVersion: '12.1.1',
+    targets: [{
+      datasource: DS,
+      editorMode: 'code',
+      expr: 'probe_success{role="player",team="' + team + '",network=~"$network"}',
+      legendFormat: 'S{{seat}}',
+      refId: 'A',
+    }],
+    title: '',
+    transparent: true,
+    type: 'stat',
+  };
+}
+
+function rttPanel(team, gridPos, id, positionLabel) {
+  return {
+    datasource: DS,
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'thresholds' },
+        mappings: [
+          { type: 'special', options: { match: 'null', result: { text: '离线', color: 'red' } } },
+        ],
         thresholds: {
           mode: 'absolute',
           steps: [
@@ -52,47 +108,36 @@ function teamPanel(team, gridPos, idBase) {
           ],
         },
         unit: 's',
+        decimals: 1,
       },
       overrides: [],
     },
     gridPos,
-    id: idBase + team,
+    id,
     options: {
-      displayMode: 'lcd',
-      legend: { showLegend: false, displayMode: 'list', placement: 'bottom', calcs: [] },
-      orientation: 'horizontal',
+      colorMode: 'background',
+      graphMode: 'area',
+      justifyMode: 'center',
+      orientation: 'auto',
       reduceOptions: { calcs: ['lastNotNull'], fields: '', values: false },
-      showUnfilled: true,
-      valueMode: 'color',
+      textMode: 'value',
+      wideLayout: true,
     },
     pluginVersion: '12.1.1',
     targets: [{
-      datasource: { type: 'prometheus', uid: 'prometheus' },
+      datasource: DS,
       editorMode: 'code',
-      expr: 'probe_icmp_duration_seconds{role="player",team="' + team + '",network=~"$network",phase="rtt"}',
-      format: 'table',
-      instant: true,
+      expr: 'avg(probe_icmp_duration_seconds{role="player",team="' + team + '",phase="rtt",network=~"$network"})',
       refId: 'A',
     }],
-    transformations: [{
-      id: 'organize',
-      options: {
-        excludeByName: {
-          Time: true, job: true, network: true, phase: true, role: true,
-          team: true, switch: true, instance: true, __name__: true,
-        },
-        indexByName: { seat: 0, Value: 1 },
-        renameByName: { seat: 'S', Value: 'RTT' },
-      },
-    }],
-    title: 'Team ' + team,
-    type: 'bargauge',
+    title: positionLabel,
+    type: 'stat',
   };
 }
 
-function statPanel(id, x, w, title, expr, color, thresholds) {
+function statSummary(id, x, w, title, expr, color, thresholds) {
   return {
-    datasource: { type: 'prometheus', uid: 'prometheus' },
+    datasource: DS,
     fieldConfig: {
       defaults: {
         color: { mode: 'thresholds' },
@@ -109,11 +154,11 @@ function statPanel(id, x, w, title, expr, color, thresholds) {
       justifyMode: 'center',
       orientation: 'auto',
       reduceOptions: { calcs: ['lastNotNull'], fields: '', values: false },
-      textMode: 'auto',
+      textMode: 'value_and_name',
     },
     pluginVersion: '12.1.1',
     targets: [{
-      datasource: { type: 'prometheus', uid: 'prometheus' },
+      datasource: DS,
       editorMode: 'code',
       expr,
       refId: 'A',
@@ -126,78 +171,91 @@ function statPanel(id, x, w, title, expr, color, thresholds) {
 function buildPanels(layout) {
   const panels = [];
 
-  panels.push(statPanel(1, 0,  6, '在线',   'count(probe_success{role="player",network=~"$network"} == 1) or vector(0)', 'green'));
-  panels.push(statPanel(2, 6,  6, '离线',   'count(probe_success{role="player",network=~"$network"} == 0) or vector(0)', 'green', {
+  panels.push(statSummary(1, 0,  6, '在线',   'count(probe_success{role="player",network=~"$network"} == 1) or vector(0)', 'green'));
+  panels.push(statSummary(2, 6,  6, '离线',   'count(probe_success{role="player",network=~"$network"} == 0) or vector(0)', 'green', {
     mode: 'absolute', steps: [{ color: 'green', value: null }, { color: 'red', value: 1 }],
   }));
-  panels.push(statPanel(3, 12, 6, '高延迟', 'count(probe_icmp_duration_seconds{role="player",network=~"$network",phase="rtt"} > 0.03) or vector(0)', 'green', {
+  panels.push(statSummary(3, 12, 6, '高延迟', 'count(probe_icmp_duration_seconds{role="player",network=~"$network",phase="rtt"} > 0.03) or vector(0)', 'green', {
     mode: 'absolute', steps: [{ color: 'green', value: null }, { color: 'orange', value: 1 }],
   }));
-  panels.push(statPanel(4, 18, 6, '总计',   'count(probe_success{role="player",network=~"$network"}) or vector(0)', 'blue'));
+  panels.push(statSummary(4, 18, 6, '总计',   'count(probe_success{role="player",network=~"$network"}) or vector(0)', 'blue'));
 
   let y = HEADER_H;
   let idBase = 100;
+  const halfWidth = 12;
+
   for (const row of layout.rows) {
     const leftCount = row.left.length;
     const rightCount = row.right.length;
-    const halfWidth = 12;
     const leftW = Math.floor(halfWidth / leftCount);
     const rightW = Math.floor(halfWidth / rightCount);
 
     let x = 0;
+    let idx = 1;
     for (const team of row.left) {
-      panels.push(teamPanel(team, { h: ROW_HEIGHT, w: leftW, x, y }, idBase));
+      const label = row.layer + '左' + idx + '队';
+      panels.push(dotsPanel(team, { h: layout.dotsH, w: leftW, x, y },                                       idBase + team));
+      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: leftW, x, y: y + layout.dotsH },     idBase + team + 50, label));
       x += leftW;
+      idx++;
     }
+
     x = 12;
+    idx = 1;
     for (const team of row.right) {
-      panels.push(teamPanel(team, { h: ROW_HEIGHT, w: rightW, x, y }, idBase));
+      const label = row.layer + '右' + idx + '队';
+      panels.push(dotsPanel(team, { h: layout.dotsH, w: rightW, x, y },                                      idBase + team));
+      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: rightW, x, y: y + layout.dotsH },    idBase + team + 50, label));
       x += rightW;
+      idx++;
     }
-    y += ROW_HEIGHT;
-    idBase += 100;
+
+    y += layout.teamH;
+    idBase += 200;
   }
 
-  panels.push({
-    datasource: { type: 'prometheus', uid: 'prometheus' },
-    fieldConfig: {
-      defaults: {
-        color: { mode: 'palette-classic' },
-        custom: {
-          axisBorderShow: false, axisCenteredZero: false, axisColorMode: 'text', axisPlacement: 'auto',
-          fillOpacity: 10, gradientMode: 'none',
-          hideFrom: { legend: false, tooltip: false, viz: false },
-          lineWidth: 1, pointSize: 5,
-          scaleDistribution: { type: 'linear' },
-          showPoints: 'never', spanNulls: true,
+  if (layout.withTrend) {
+    panels.push({
+      datasource: DS,
+      fieldConfig: {
+        defaults: {
+          color: { mode: 'palette-classic' },
+          custom: {
+            axisBorderShow: false, axisCenteredZero: false, axisColorMode: 'text', axisPlacement: 'auto',
+            fillOpacity: 10, gradientMode: 'none',
+            hideFrom: { legend: false, tooltip: false, viz: false },
+            lineWidth: 1, pointSize: 5,
+            scaleDistribution: { type: 'linear' },
+            showPoints: 'never', spanNulls: true,
+          },
+          mappings: [],
+          thresholds: { mode: 'absolute', steps: [
+            { color: 'green', value: null },
+            { color: 'yellow', value: 0.03 },
+            { color: 'red', value: 0.06 },
+          ]},
+          unit: 's',
         },
-        mappings: [],
-        thresholds: { mode: 'absolute', steps: [
-          { color: 'green', value: null },
-          { color: 'yellow', value: 0.03 },
-          { color: 'red', value: 0.06 },
-        ] },
-        unit: 's',
+        overrides: [],
       },
-      overrides: [],
-    },
-    gridPos: { h: 7, w: 24, x: 0, y },
-    id: 900,
-    options: {
-      legend: { calcs: ['mean', 'max'], displayMode: 'table', placement: 'right', showLegend: true },
-      tooltip: { mode: 'multi', sort: 'none' },
-    },
-    pluginVersion: '12.1.1',
-    targets: [{
-      datasource: { type: 'prometheus', uid: 'prometheus' },
-      editorMode: 'code',
-      expr: 'avg by (team) (probe_icmp_duration_seconds{role="player",network=~"$network",phase="rtt"})',
-      legendFormat: 'Team {{team}}',
-      refId: 'A',
-    }],
-    title: '各队平均延迟趋势',
-    type: 'timeseries',
-  });
+      gridPos: { h: TREND_H, w: 24, x: 0, y },
+      id: 900,
+      options: {
+        legend: { calcs: ['mean', 'max'], displayMode: 'table', placement: 'right', showLegend: true },
+        tooltip: { mode: 'multi', sort: 'none' },
+      },
+      pluginVersion: '12.1.1',
+      targets: [{
+        datasource: DS,
+        editorMode: 'code',
+        expr: 'avg by (team) (probe_icmp_duration_seconds{role="player",network=~"$network",phase="rtt"})',
+        legendFormat: 'Team {{team}}',
+        refId: 'A',
+      }],
+      title: '各队平均延迟趋势',
+      type: 'timeseries',
+    });
+  }
 
   return panels;
 }
@@ -244,7 +302,7 @@ function buildDashboard(layout) {
     timezone: 'browser',
     title: layout.title,
     uid: layout.uid,
-    version: 1,
+    version: 2,
   };
 }
 
