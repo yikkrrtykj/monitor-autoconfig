@@ -39,7 +39,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 0 },
       "id": 100,
       "options": {
         "orientation": "auto",
@@ -89,10 +89,10 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 0 },
       "id": 101,
       "options": {
-        "orientation": "horizontal",
+        "orientation": "auto",
         "showThresholdLabels": false,
         "showThresholdMarkers": true,
         "reduceOptions": {
@@ -145,7 +145,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 9 },
       "id": 200,
       "options": {
         "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
@@ -160,8 +160,53 @@
           "refId": "A"
         }
       ],
-      "title": "Ping 趋势（所有设备）",
+      "title": "Ping 趋势",
       "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "scaleDistribution": { "type": "linear" }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
+      "id": 300,
+      "options": {
+        "calculate": false,
+        "cellGap": 2,
+        "color": {
+          "exponent": 0.5,
+          "fill": "dark-orange",
+          "mode": "scheme",
+          "reverse": false,
+          "scale": "exponential",
+          "scheme": "RdYlGn",
+          "steps": 2
+        },
+        "exemplars": { "color": "rgba(255,0,255,0.7)" },
+        "filterValues": { "le": -1 },
+        "legend": { "show": false },
+        "rowsFrame": { "layout": "auto" },
+        "tooltip": { "maxHeight": 600, "mode": "single", "showColorScale": false, "yHistogram": false },
+        "yAxis": { "axisPlacement": "left", "reverse": true, "unit": "percentunit" }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "1 - probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "丢包热力图",
+      "type": "heatmap"
     }
   ],
   "refresh": "5s",
@@ -173,5 +218,5 @@
   "timezone": "browser",
   "title": "Event Infrastructure",
   "uid": "event-infra",
-  "version": 11
+  "version": 12
 }
