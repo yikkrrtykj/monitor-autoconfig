@@ -37,207 +37,6 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 8,
-        "x": 0,
-        "y": 0
-      },
-      "id": 80,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{job=~\"infra-core-ping\"}",
-          "legendFormat": "{{instance}}",
-          "refId": "A"
-        }
-      ],
-      "title": "核心交换机",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 8,
-        "x": 8,
-        "y": 0
-      },
-      "id": 81,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{job=~\"infra-dist-ping\"}",
-          "legendFormat": "{{instance}}",
-          "refId": "A"
-        }
-      ],
-      "title": "分线交换机",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 8,
-        "x": 16,
-        "y": 0
-      },
-      "id": 82,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{job=~\"infra-fw-ping\"}",
-          "legendFormat": "{{instance}}",
-          "refId": "A"
-        }
-      ],
-      "title": "防火墙",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
                 "color": "green",
                 "value": null
               }
@@ -250,7 +49,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 3
+        "y": 0
       },
       "id": 1,
       "options": {
@@ -313,7 +112,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 3
+        "y": 0
       },
       "id": 2,
       "options": {
@@ -376,7 +175,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 3
+        "y": 0
       },
       "id": 3,
       "options": {
@@ -435,7 +234,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 3
+        "y": 0
       },
       "id": 4,
       "options": {
@@ -512,7 +311,7 @@
         "h": 2,
         "w": 4,
         "x": 0,
-        "y": 7
+        "y": 4
       },
       "id": 111,
       "options": {
@@ -596,7 +395,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 9
+        "y": 6
       },
       "id": 161,
       "options": {
@@ -674,7 +473,7 @@
         "h": 2,
         "w": 4,
         "x": 4,
-        "y": 7
+        "y": 4
       },
       "id": 112,
       "options": {
@@ -758,7 +557,7 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 9
+        "y": 6
       },
       "id": 162,
       "options": {
@@ -836,7 +635,7 @@
         "h": 2,
         "w": 4,
         "x": 8,
-        "y": 7
+        "y": 4
       },
       "id": 113,
       "options": {
@@ -920,7 +719,7 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 9
+        "y": 6
       },
       "id": 163,
       "options": {
@@ -998,7 +797,7 @@
         "h": 2,
         "w": 4,
         "x": 12,
-        "y": 7
+        "y": 4
       },
       "id": 114,
       "options": {
@@ -1082,7 +881,7 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 9
+        "y": 6
       },
       "id": 164,
       "options": {
@@ -1160,7 +959,7 @@
         "h": 2,
         "w": 4,
         "x": 16,
-        "y": 7
+        "y": 4
       },
       "id": 115,
       "options": {
@@ -1244,7 +1043,7 @@
         "h": 5,
         "w": 4,
         "x": 16,
-        "y": 9
+        "y": 6
       },
       "id": 165,
       "options": {
@@ -1322,7 +1121,7 @@
         "h": 2,
         "w": 4,
         "x": 20,
-        "y": 7
+        "y": 4
       },
       "id": 116,
       "options": {
@@ -1406,7 +1205,7 @@
         "h": 5,
         "w": 4,
         "x": 20,
-        "y": 9
+        "y": 6
       },
       "id": 166,
       "options": {
@@ -1484,7 +1283,7 @@
         "h": 2,
         "w": 4,
         "x": 0,
-        "y": 14
+        "y": 11
       },
       "id": 305,
       "options": {
@@ -1568,7 +1367,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 16
+        "y": 13
       },
       "id": 355,
       "options": {
@@ -1646,7 +1445,7 @@
         "h": 2,
         "w": 4,
         "x": 4,
-        "y": 14
+        "y": 11
       },
       "id": 306,
       "options": {
@@ -1730,7 +1529,7 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 16
+        "y": 13
       },
       "id": 356,
       "options": {
@@ -1808,7 +1607,7 @@
         "h": 2,
         "w": 4,
         "x": 8,
-        "y": 14
+        "y": 11
       },
       "id": 307,
       "options": {
@@ -1892,7 +1691,7 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 16
+        "y": 13
       },
       "id": 357,
       "options": {
@@ -1970,7 +1769,7 @@
         "h": 2,
         "w": 4,
         "x": 12,
-        "y": 14
+        "y": 11
       },
       "id": 308,
       "options": {
@@ -2054,7 +1853,7 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 16
+        "y": 13
       },
       "id": 358,
       "options": {
@@ -2132,7 +1931,7 @@
         "h": 2,
         "w": 4,
         "x": 16,
-        "y": 14
+        "y": 11
       },
       "id": 309,
       "options": {
@@ -2216,7 +2015,7 @@
         "h": 5,
         "w": 4,
         "x": 16,
-        "y": 16
+        "y": 13
       },
       "id": 359,
       "options": {
@@ -2294,7 +2093,7 @@
         "h": 2,
         "w": 4,
         "x": 20,
-        "y": 14
+        "y": 11
       },
       "id": 310,
       "options": {
@@ -2378,7 +2177,7 @@
         "h": 5,
         "w": 4,
         "x": 20,
-        "y": 16
+        "y": 13
       },
       "id": 360,
       "options": {
@@ -2456,7 +2255,7 @@
         "h": 2,
         "w": 6,
         "x": 0,
-        "y": 21
+        "y": 18
       },
       "id": 501,
       "options": {
@@ -2540,7 +2339,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 23
+        "y": 20
       },
       "id": 551,
       "options": {
@@ -2618,7 +2417,7 @@
         "h": 2,
         "w": 6,
         "x": 6,
-        "y": 21
+        "y": 18
       },
       "id": 502,
       "options": {
@@ -2702,7 +2501,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 23
+        "y": 20
       },
       "id": 552,
       "options": {
@@ -2780,7 +2579,7 @@
         "h": 2,
         "w": 6,
         "x": 12,
-        "y": 21
+        "y": 18
       },
       "id": 503,
       "options": {
@@ -2864,7 +2663,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 23
+        "y": 20
       },
       "id": 553,
       "options": {
@@ -2942,7 +2741,7 @@
         "h": 2,
         "w": 6,
         "x": 18,
-        "y": 21
+        "y": 18
       },
       "id": 504,
       "options": {
@@ -3026,7 +2825,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 23
+        "y": 20
       },
       "id": 554,
       "options": {
