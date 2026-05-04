@@ -1,11 +1,23 @@
 """Unit tests for generate-player-targets.py parsing logic.
 
-Pure functions only. No SNMP, no filesystem, no env. Imports the module via
-the conftest fixture (which uses importlib because of the hyphenated filename).
+Pure functions only. Module is loaded via importlib because the script
+ships with hyphens in its filename (matching its container path).
 """
+import importlib.util
+import pathlib
+import sys
 from ipaddress import IPv4Network
 
-from conftest import gpt
+
+# Load the script once at module import. Avoids the `from conftest import gpt`
+# pattern, which doesn't resolve cleanly when conftest.py is auto-loaded.
+_ROOT = pathlib.Path(__file__).resolve().parent.parent
+_spec = importlib.util.spec_from_file_location(
+    "generate_player_targets", _ROOT / "generate-player-targets.py"
+)
+gpt = importlib.util.module_from_spec(_spec)
+sys.modules["generate_player_targets"] = gpt
+_spec.loader.exec_module(gpt)
 
 
 # ---- TEAM_RE regex ------------------------------------------------
@@ -57,7 +69,6 @@ class TestParseIfalias:
         assert gpt.parse_ifalias("") == {}
 
     def test_quoted_value(self):
-        # snmpwalk sometimes emits quoted values
         out = '.1.3.6.1.2.1.31.1.1.1.18.5 = STRING: "team02-03"'
         assert gpt.parse_ifalias(out) == {5: {"team": 2, "seat": 3}}
 
@@ -65,7 +76,7 @@ class TestParseIfalias:
         out = (
             "garbage line without equals\n"
             ".1.3.6.1.2.1.31.1.1.1.18.1 = STRING: team01-01\n"
-            ".1.3.6.1.2.1.31.1.1.1.18.2 = STRING: Uplink"  # no team match
+            ".1.3.6.1.2.1.31.1.1.1.18.2 = STRING: Uplink"
         )
         assert gpt.parse_ifalias(out) == {1: {"team": 1, "seat": 1}}
 
@@ -85,13 +96,11 @@ class TestParseIfalias:
 
 class TestParseArpIfindex:
     def test_basic(self):
-        # ipNetToMediaIfIndex.<ifIndex>.<a>.<b>.<c>.<d> = INTEGER: <ifIndex>
         out = ".1.3.6.1.2.1.4.22.1.1.5.192.168.11.10 = INTEGER: 5"
         result = gpt.parse_arp_ifindex(out)
         assert (5, "192.168.11.10") in result
 
     def test_short_oid_skipped(self):
-        # Less than 15 parts after splitting — should skip
         out = ".1.3.6.1.2.1.4.22.1.1.5 = INTEGER: 5"
         assert gpt.parse_arp_ifindex(out) == {}
 
