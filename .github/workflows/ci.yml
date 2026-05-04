@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck (errors only)
+        # Severity=error so existing warnings don't fail CI yet.
+        # Tighten to "warning" once the legacy scripts are cleaned up.
+        run: |
+          shellcheck --severity=error \
+            zabbix+librenms+grafana/*.sh
+
+  python-syntax:
+    name: python-syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m py_compile zabbix+librenms+grafana/generate-player-targets.py
+          python -m py_compile zabbix+librenms+grafana/feishu-robot.py
+
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r zabbix+librenms+grafana/requirements-dev.txt
+      - run: pytest zabbix+librenms+grafana/tests/ -v
+
+  compose-config:
+    name: compose-config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose.yml
+        working-directory: zabbix+librenms+grafana
+        run: |
+          # Provide a dummy .env so interpolation doesn't fail.
+          cp .env.example .env
+          docker compose config --quiet
+
+  dashboards-json:
+    name: dashboards-json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate every dashboard JSON
+        run: |
+          python3 -c "
+          import json, glob, sys
+          fails = []
+          for f in glob.glob('zabbix+librenms+grafana/grafana-provisioning/dashboard-json/*.json'):
+              try:
+                  json.load(open(f, encoding='utf-8'))
+                  print(f'OK  {f}')
+              except Exception as e:
+                  fails.append(f'{f}: {e}')
+                  print(f'FAIL {f}: {e}')
+          sys.exit(1 if fails else 0)
+          "

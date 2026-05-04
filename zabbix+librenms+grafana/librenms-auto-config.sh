@@ -278,26 +278,49 @@ done
 echo ""
 echo "[5/5] Setting up alert rules..."
 
-if [ -n "$API_TOKEN" ]; then
-  curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
-    -H "X-Auth-Token: $API_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "name": "设备离线告警",
-      "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_down\",\"field\":\"macros.device_down\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"}],\"valid\":true}",
-      "severity": "critical",
-      "disabled": 0
-    }' > /dev/null 2>&1 && echo "  Alert rule: 设备离线告警 - OK" || echo "  Alert rule: 设备离线告警 - skipped"
+# Idempotency: GET existing rules once, skip POST if name already exists.
+# Re-running this script no longer creates duplicate rule entries.
+upsert_rule() {
+  rule_name="$1"
+  rule_payload="$2"
+
+  if echo "$EXISTING_RULES" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    rules = data if isinstance(data, list) else data.get('rules', [])
+    sys.exit(0 if any(r.get('name') == sys.argv[1] for r in rules) else 1)
+except Exception:
+    sys.exit(1)
+" "$rule_name" 2>/dev/null; then
+    echo "  Alert rule: $rule_name - skipped (already exists)"
+    return 0
+  fi
 
   curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
-    -d '{
-      "name": "高丢包告警",
-      "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_up\",\"field\":\"macros.device_up\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"},{\"id\":\"device_perf_loss\",\"field\":\"device_perf_loss\",\"type\":\"text\",\"operator\":\"greater\",\"value\":\"10\"}],\"valid\":true}",
-      "severity": "warning",
-      "disabled": 0
-    }' > /dev/null 2>&1 && echo "  Alert rule: 高丢包告警 - OK" || echo "  Alert rule: 高丢包告警 - skipped"
+    -d "$rule_payload" > /dev/null 2>&1 \
+    && echo "  Alert rule: $rule_name - created" \
+    || echo "  Alert rule: $rule_name - failed"
+}
+
+if [ -n "$API_TOKEN" ]; then
+  EXISTING_RULES=$(curl -s -H "X-Auth-Token: $API_TOKEN" "$LIBRENMS_URL/api/v0/rules" 2>/dev/null || echo '{"rules":[]}')
+
+  upsert_rule "设备离线告警" '{
+    "name": "设备离线告警",
+    "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_down\",\"field\":\"macros.device_down\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"}],\"valid\":true}",
+    "severity": "critical",
+    "disabled": 0
+  }'
+
+  upsert_rule "高丢包告警" '{
+    "name": "高丢包告警",
+    "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_up\",\"field\":\"macros.device_up\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"},{\"id\":\"device_perf_loss\",\"field\":\"device_perf_loss\",\"type\":\"text\",\"operator\":\"greater\",\"value\":\"10\"}],\"valid\":true}",
+    "severity": "warning",
+    "disabled": 0
+  }'
 fi
 
 echo ""

@@ -10,6 +10,19 @@ Docker Compose 一键部署的赛事网络监控栈，**Zabbix + LibreNMS + Prom
 | Zabbix | 8001 | Admin / zabbix | 防火墙告警 + 飞书推送 |
 | LibreNMS | 8002 | admin / admin | 交换机自动发现 + 拓扑图 |
 
+## ⚠️ 安全提醒
+
+上表里的默认账户密码**只适合内网临时使用**。任何对外网络可达、需要存活超过一场赛事、或共享给他人的部署，都必须改：
+
+| 服务 | 默认 | 改在哪 |
+|---|---|---|
+| Grafana 管理员 | `admin / root` | `.env` 里 `GRAFANA_PASSWORD`（首次起服务前改） |
+| LibreNMS 管理员 | `admin / admin` | `.env` 里 `LIBRENMS_ADMIN_PASSWORD` |
+| Zabbix 管理员 | `Admin / zabbix` | Zabbix UI 首次登录后立即改（`.env` 不管 Zabbix 默认账户） |
+| SNMP community | `global` | `.env` 里 `SNMP_COMMUNITY` + 交换机 / 防火墙 SNMP 配置同步改 |
+
+MariaDB 内部账户（`mysql root` 等）只在容器网络内可达，不暴露到宿主机端口，可以维持默认。
+
 ## 一、装 Docker
 
 ### Ubuntu
