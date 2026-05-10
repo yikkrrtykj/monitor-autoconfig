@@ -1,3 +1,8 @@
+auths:
+  global:
+    version: 2
+    community: global
+
 modules:
   if_mib:
     walk:
@@ -8,5 +13,3 @@ modules:
     max_repetitions: 25
     retries: 3
     timeout: 10s
-    auth:
-      community: global
