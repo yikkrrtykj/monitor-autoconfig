@@ -112,21 +112,18 @@ ensure_admin_user() {
       --email="$LIBRENMS_ADMIN_EMAIL" \
       --no-interaction \
       "$LIBRENMS_ADMIN_USER" 2>&1) && {
+        reset_admin_user_password >/dev/null 2>&1 || true
         echo "  Admin user '$LIBRENMS_ADMIN_USER' is ready."
         return 0
       }
 
-    if echo "$output" | grep -qi "already"; then
-      if reset_admin_user_password; then
-        echo "  Admin user '$LIBRENMS_ADMIN_USER' already exists; password synced from .env."
-        return 0
-      fi
-      echo "  Waiting for LibreNMS database initialization... ($i/20)"
-      sleep 10
-      continue
+    if reset_admin_user_password; then
+      echo "  Admin user '$LIBRENMS_ADMIN_USER' password synced from .env."
+      return 0
     fi
 
     echo "  Waiting for LibreNMS database initialization... ($i/20)"
+    [ -n "$output" ] && echo "  Last output: $output"
     sleep 10
   done
 
@@ -163,6 +160,10 @@ configure_runtime() {
     return 0
   fi
   lnms_cmd=$(get_lnms_cmd)
+
+  "$lnms_cmd" config:set auth_mechanism mysql >/dev/null 2>&1 && \
+    echo "  auth_mechanism: mysql" || \
+    echo "  WARNING: Could not set auth_mechanism"
 
   "$lnms_cmd" config:set base_url "$LIBRENMS_BASE_URL" >/dev/null 2>&1 && \
     echo "  base_url: $LIBRENMS_BASE_URL" || \
