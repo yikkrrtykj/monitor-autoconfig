@@ -356,18 +356,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "text": "—",
-                  "color": "text"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -387,7 +376,9 @@
           },
           "unit": "s",
           "decimals": 1,
-          "noValue": "—"
+          "noValue": "—",
+          "max": 0.1,
+          "min": 0
         },
         "overrides": []
       },
@@ -399,10 +390,14 @@
       },
       "id": 151,
       "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
+        "displayMode": "lcd",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -410,8 +405,8 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value",
-        "wideLayout": true
+        "showUnfilled": true,
+        "valueMode": "text"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -421,12 +416,16 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"1\",phase=\"rtt\",network=~\"$network\"})",
-          "refId": "A"
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",phase=\"rtt\",network=~\"$network\"}",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
         }
       ],
-      "title": "Team 1",
-      "type": "stat"
+      "title": "Team 1 单台延迟",
+      "type": "bargauge",
+      "transformations": []
     },
     {
       "datasource": {
@@ -518,18 +517,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "text": "—",
-                  "color": "text"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -549,7 +537,9 @@
           },
           "unit": "s",
           "decimals": 1,
-          "noValue": "—"
+          "noValue": "—",
+          "max": 0.1,
+          "min": 0
         },
         "overrides": []
       },
@@ -561,10 +551,14 @@
       },
       "id": 152,
       "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
+        "displayMode": "lcd",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -572,8 +566,8 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value",
-        "wideLayout": true
+        "showUnfilled": true,
+        "valueMode": "text"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -583,12 +577,16 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"2\",phase=\"rtt\",network=~\"$network\"})",
-          "refId": "A"
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",phase=\"rtt\",network=~\"$network\"}",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
         }
       ],
-      "title": "Team 2",
-      "type": "stat"
+      "title": "Team 2 单台延迟",
+      "type": "bargauge",
+      "transformations": []
     },
     {
       "datasource": {
@@ -680,18 +678,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "text": "—",
-                  "color": "text"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -711,7 +698,9 @@
           },
           "unit": "s",
           "decimals": 1,
-          "noValue": "—"
+          "noValue": "—",
+          "max": 0.1,
+          "min": 0
         },
         "overrides": []
       },
@@ -723,10 +712,14 @@
       },
       "id": 153,
       "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
+        "displayMode": "lcd",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -734,8 +727,8 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value",
-        "wideLayout": true
+        "showUnfilled": true,
+        "valueMode": "text"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -745,12 +738,16 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"3\",phase=\"rtt\",network=~\"$network\"})",
-          "refId": "A"
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"3\",phase=\"rtt\",network=~\"$network\"}",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
         }
       ],
-      "title": "Team 3",
-      "type": "stat"
+      "title": "Team 3 单台延迟",
+      "type": "bargauge",
+      "transformations": []
     },
     {
       "datasource": {
@@ -842,18 +839,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "text": "—",
-                  "color": "text"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -873,7 +859,9 @@
           },
           "unit": "s",
           "decimals": 1,
-          "noValue": "—"
+          "noValue": "—",
+          "max": 0.1,
+          "min": 0
         },
         "overrides": []
       },
@@ -885,10 +873,14 @@
       },
       "id": 154,
       "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
+        "displayMode": "lcd",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -896,8 +888,8 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value",
-        "wideLayout": true
+        "showUnfilled": true,
+        "valueMode": "text"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -907,12 +899,16 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"4\",phase=\"rtt\",network=~\"$network\"})",
-          "refId": "A"
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"4\",phase=\"rtt\",network=~\"$network\"}",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
         }
       ],
-      "title": "Team 4",
-      "type": "stat"
+      "title": "Team 4 单台延迟",
+      "type": "bargauge",
+      "transformations": []
     },
     {
       "datasource": {
@@ -1004,18 +1000,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "text": "—",
-                  "color": "text"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1035,7 +1020,9 @@
           },
           "unit": "s",
           "decimals": 1,
-          "noValue": "—"
+          "noValue": "—",
+          "max": 0.1,
+          "min": 0
         },
         "overrides": []
       },
@@ -1047,10 +1034,14 @@
       },
       "id": 155,
       "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
+        "displayMode": "lcd",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1058,8 +1049,8 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value",
-        "wideLayout": true
+        "showUnfilled": true,
+        "valueMode": "text"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1069,12 +1060,16 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"5\",phase=\"rtt\",network=~\"$network\"})",
-          "refId": "A"
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"5\",phase=\"rtt\",network=~\"$network\"}",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
         }
       ],
-      "title": "Team 5",
-      "type": "stat"
+      "title": "Team 5 单台延迟",
+      "type": "bargauge",
+      "transformations": []
     },
     {
       "datasource": {
@@ -1166,18 +1161,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "special",
-              "options": {
-                "match": "null",
-                "result": {
-                  "text": "—",
-                  "color": "text"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1197,7 +1181,9 @@
           },
           "unit": "s",
           "decimals": 1,
-          "noValue": "—"
+          "noValue": "—",
+          "max": 0.1,
+          "min": 0
         },
         "overrides": []
       },
@@ -1209,10 +1195,14 @@
       },
       "id": 156,
       "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
+        "displayMode": "lcd",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -1220,8 +1210,8 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value",
-        "wideLayout": true
+        "showUnfilled": true,
+        "valueMode": "text"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1231,12 +1221,16 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"6\",phase=\"rtt\",network=~\"$network\"})",
-          "refId": "A"
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"6\",phase=\"rtt\",network=~\"$network\"}",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
         }
       ],
-      "title": "Team 6",
-      "type": "stat"
+      "title": "Team 6 单台延迟",
+      "type": "bargauge",
+      "transformations": []
     },
     {
       "datasource": {
@@ -1320,12 +1314,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg by (team) (probe_icmp_duration_seconds{role=\"player\",network=~\"$network\",phase=\"rtt\"})",
-          "legendFormat": "Team {{team}}",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",network=~\"$network\",phase=\"rtt\"}",
+          "legendFormat": "T{{team}} S{{seat}} {{instance}}",
           "refId": "A"
         }
       ],
-      "title": "各队平均延迟趋势",
+      "title": "单台延迟趋势",
       "type": "timeseries"
     }
   ],
@@ -1376,5 +1370,5 @@
   "timezone": "browser",
   "title": "Tournament 6 队",
   "uid": "tournament-6teams",
-  "version": 2
+  "version": 3
 }

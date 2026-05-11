@@ -19,7 +19,8 @@ Environment variables:
                          true/false, ping-scan WIRELESS_SUBNETS and create
                          synthetic network=wireless player targets
   PLAYER_WIRELESS_SCAN_LIMIT
-                         max wireless scan targets to keep (default: 10)
+                         max wireless scan targets to keep; 0 means unlimited
+                         (default: 0)
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -238,10 +239,16 @@ def ping_host(ip, timeout=1):
         return False
 
 
-def build_wireless_scan_targets(ips, limit=10, team_size=5):
+def limited_items(items, limit=0):
+    if limit and limit > 0:
+        return items[:limit]
+    return items
+
+
+def build_wireless_scan_targets(ips, limit=0, team_size=5):
     targets = []
     unique_ips = sorted({str(IPv4Address(ip)) for ip in ips}, key=IPv4Address)
-    for idx, ip in enumerate(unique_ips[:limit]):
+    for idx, ip in enumerate(limited_items(unique_ips, limit)):
         team = idx // team_size + 1
         seat = idx % team_size + 1
         targets.append({
@@ -257,7 +264,7 @@ def build_wireless_scan_targets(ips, limit=10, team_size=5):
     return targets
 
 
-def discover_wireless_scan_ips(subnets, limit=10, timeout=1, workers=64, max_hosts=512):
+def discover_wireless_scan_ips(subnets, limit=0, timeout=1, workers=64, max_hosts=512):
     if not subnets:
         return []
 
@@ -284,12 +291,14 @@ def discover_wireless_scan_ips(subnets, limit=10, timeout=1, workers=64, max_hos
                 online.append(ip)
 
     online = sorted(online, key=IPv4Address)
-    if len(online) > limit:
+    if limit and limit > 0 and len(online) > limit:
         print(
             f"[INFO] wireless scan found {len(online)} live hosts, keeping first {limit}",
             file=sys.stderr,
         )
-    return online[:limit]
+    else:
+        print(f"[INFO] wireless scan found {len(online)} live hosts", file=sys.stderr)
+    return limited_items(online, limit)
 
 
 def main():
@@ -300,7 +309,7 @@ def main():
     static_targets_raw = os.environ.get("PLAYER_STATIC_TARGETS", "")
     static_default_network = os.environ.get("PLAYER_STATIC_NETWORK", "wireless")
     wireless_scan_enabled = env_bool("PLAYER_WIRELESS_SCAN", default=True) or env_bool("PLAYER_WIRELESS_PREVIEW")
-    wireless_scan_limit = env_int_alias("PLAYER_WIRELESS_SCAN_LIMIT", "PLAYER_WIRELESS_PREVIEW_LIMIT", 10, minimum=1, maximum=100)
+    wireless_scan_limit = env_int_alias("PLAYER_WIRELESS_SCAN_LIMIT", "PLAYER_WIRELESS_PREVIEW_LIMIT", 0, minimum=0, maximum=4096)
     wireless_scan_team_size = env_int_alias("PLAYER_WIRELESS_SCAN_TEAM_SIZE", "PLAYER_WIRELESS_PREVIEW_TEAM_SIZE", 5, minimum=1, maximum=50)
     wireless_scan_timeout = env_int_alias("PLAYER_WIRELESS_SCAN_TIMEOUT", "PLAYER_WIRELESS_PREVIEW_TIMEOUT", 1, minimum=1, maximum=5)
     wireless_scan_workers = env_int_alias("PLAYER_WIRELESS_SCAN_WORKERS", "PLAYER_WIRELESS_PREVIEW_WORKERS", 64, minimum=1, maximum=256)

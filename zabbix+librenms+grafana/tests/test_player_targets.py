@@ -151,3 +151,82 @@ class TestIpInSubnets:
         nets = [IPv4Network("192.168.1.5/32")]
         assert gpt.ip_in_subnets("192.168.1.5", nets) is True
         assert gpt.ip_in_subnets("192.168.1.6", nets) is False
+
+
+# ---- parse_static_player_targets() --------------------------------
+
+class TestParseStaticPlayerTargets:
+    def test_basic_wireless_target(self):
+        wireless = [IPv4Network("192.168.12.0/24")]
+        result = gpt.parse_static_player_targets(
+            "1-1=192.168.12.101", [], wireless, "wireless"
+        )
+        assert result == [{
+            "targets": ["192.168.12.101"],
+            "labels": {
+                "team": "1",
+                "seat": "1",
+                "switch": "static",
+                "network": "wireless",
+                "role": "player",
+            },
+        }]
+
+    def test_team_prefix_and_explicit_network(self):
+        result = gpt.parse_static_player_targets(
+            "team02-05=192.168.11.205:wired", [], [], "wireless"
+        )
+        assert result[0]["labels"]["team"] == "2"
+        assert result[0]["labels"]["seat"] == "5"
+        assert result[0]["labels"]["network"] == "wired"
+
+    def test_at_separator_and_subnet_inference(self):
+        wired = [IPv4Network("192.168.11.0/24")]
+        result = gpt.parse_static_player_targets(
+            "2-3@192.168.11.203", wired, [], "wireless"
+        )
+        assert result[0]["labels"]["network"] == "wired"
+
+    def test_invalid_entries_are_skipped(self):
+        result = gpt.parse_static_player_targets(
+            "bad,1-1=not.an.ip,2-2=192.168.12.22:cellular", [], [], "wireless"
+        )
+        assert result == []
+
+
+# ---- build_wireless_scan_targets() --------------------------------
+
+class TestBuildWirelessScanTargets:
+    def test_sorts_and_assigns_synthetic_teams(self):
+        result = gpt.build_wireless_scan_targets(
+            ["172.16.40.80", "172.16.40.73", "172.16.40.68"],
+            team_size=2,
+        )
+        assert [item["targets"][0] for item in result] == [
+            "172.16.40.68",
+            "172.16.40.73",
+            "172.16.40.80",
+        ]
+        assert [item["labels"]["team"] for item in result] == ["1", "1", "2"]
+        assert [item["labels"]["seat"] for item in result] == ["1", "2", "1"]
+        assert all(item["labels"]["network"] == "wireless" for item in result)
+
+    def test_zero_limit_keeps_all_targets(self):
+        result = gpt.build_wireless_scan_targets(
+            ["172.16.40.10", "172.16.40.11", "172.16.40.12"],
+            limit=0,
+            team_size=5,
+        )
+        assert [item["targets"][0] for item in result] == [
+            "172.16.40.10",
+            "172.16.40.11",
+            "172.16.40.12",
+        ]
+
+    def test_positive_limit_caps_scan_targets(self):
+        result = gpt.build_wireless_scan_targets(
+            ["172.16.40.10", "172.16.40.11", "172.16.40.12"],
+            limit=2,
+            team_size=5,
+        )
+        assert [item["targets"][0] for item in result] == ["172.16.40.10", "172.16.40.11"]

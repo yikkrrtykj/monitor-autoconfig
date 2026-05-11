@@ -167,24 +167,18 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "fixedColor": "text",
-            "mode": "fixed"
+            "mode": "thresholds"
           },
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
-            "steps": []
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "1": {
-                  "text": "舞台左   VS   舞台右",
-                  "color": "text"
-                }
+            "steps": [
+              {
+                "color": "green",
+                "value": null
               }
-            }
-          ]
+            ]
+          }
         },
         "overrides": []
       },
@@ -196,7 +190,7 @@
       },
       "id": 12,
       "options": {
-        "colorMode": "none",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
@@ -217,11 +211,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "vector(1)",
+          "expr": "count(probe_success{role=\"player\",network=~\"$network\"} == 1) or vector(0)",
+          "instant": true,
           "refId": "A"
         }
       ],
-      "title": "",
+      "title": "总在线",
       "type": "stat"
     },
     {
@@ -419,7 +414,7 @@
           "values": false
         },
         "showUnfilled": true,
-        "valueMode": "color"
+        "valueMode": "text"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -430,39 +425,14 @@
           },
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
+          "format": "time_series",
           "instant": true,
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "instance": 1,
-              "Value": 2
-            },
-            "renameByName": {
-              "instance": "IP",
-              "seat": "座位",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "🔵 舞台左",
+      "transformations": [],
+      "title": "舞台左 单台延迟",
       "type": "bargauge"
     },
     {
@@ -523,7 +493,7 @@
           "values": false
         },
         "showUnfilled": true,
-        "valueMode": "color"
+        "valueMode": "text"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -534,39 +504,14 @@
           },
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "table",
+          "format": "time_series",
           "instant": true,
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "network": true,
-              "phase": true,
-              "role": true,
-              "team": true,
-              "switch": true,
-              "__name__": true
-            },
-            "indexByName": {
-              "seat": 0,
-              "instance": 1,
-              "Value": 2
-            },
-            "renameByName": {
-              "instance": "IP",
-              "seat": "座位",
-              "Value": "RTT"
-            }
-          }
-        }
-      ],
-      "title": "🔴 舞台右",
+      "transformations": [],
+      "title": "舞台右 单台延迟",
       "type": "bargauge"
     },
     {
@@ -682,8 +627,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"})",
-          "legendFormat": "舞台左",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
+          "legendFormat": "左 S{{seat}} {{instance}}",
           "refId": "A"
         },
         {
@@ -692,12 +637,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg(probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"})",
-          "legendFormat": "舞台右",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
+          "legendFormat": "右 S{{seat}} {{instance}}",
           "refId": "B"
         }
       ],
-      "title": "双方延迟对比",
+      "title": "双方单台延迟对比",
       "type": "timeseries"
     }
   ],
@@ -749,5 +694,5 @@
   "timezone": "browser",
   "title": "Match 5v5",
   "uid": "match-5v5",
-  "version": 8
+  "version": 12
 }
