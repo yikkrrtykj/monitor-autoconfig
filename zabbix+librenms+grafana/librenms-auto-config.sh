@@ -45,7 +45,7 @@ for i in $(seq 1 90); do
   sleep 10
 done
 
-reset_admin_user_password() {
+upsert_admin_user() {
   php <<'PHP'
 <?php
 try {
@@ -73,35 +73,90 @@ try {
         throw new RuntimeException('Unsupported users table schema');
     }
 
+    $hash = password_hash($password, PASSWORD_BCRYPT);
     $userStmt = $pdo->prepare("SELECT `{$idColumn}` FROM users WHERE username = ? LIMIT 1");
     $userStmt->execute([$username]);
     $userId = $userStmt->fetchColumn();
-    if (!$userId) {
-        exit(2);
+
+    if ($userId) {
+        $sets = ['password = ?'];
+        $values = [$hash];
+        if (isset($columns['email'])) {
+            $sets[] = 'email = ?';
+            $values[] = $email;
+        }
+        if (isset($columns['realname'])) {
+            $sets[] = 'realname = ?';
+            $values[] = $username;
+        }
+        if (isset($columns['descr'])) {
+            $sets[] = 'descr = ?';
+            $values[] = 'Auto-created administrator';
+        }
+        if (isset($columns['auth_type'])) {
+            $sets[] = 'auth_type = ?';
+            $values[] = 'mysql';
+        }
+        if (isset($columns['level'])) {
+            $sets[] = 'level = 10';
+        }
+        if (isset($columns['can_modify_passwd'])) {
+            $sets[] = 'can_modify_passwd = 1';
+        }
+        if (isset($columns['updated_at'])) {
+            $sets[] = 'updated_at = NOW()';
+        }
+
+        $values[] = $userId;
+        $update = $pdo->prepare('UPDATE users SET ' . implode(', ', $sets) . " WHERE `{$idColumn}` = ?");
+        $update->execute($values);
+        exit(0);
     }
 
-    $sets = ['password = ?'];
-    $values = [password_hash($password, PASSWORD_BCRYPT)];
-    if (isset($columns['email'])) {
-        $sets[] = 'email = ?';
-        $values[] = $email;
+    $insert = [];
+    $values = [];
+    $add = function ($column, $value) use (&$insert, &$values, $columns) {
+        if (isset($columns[$column])) {
+            $insert[] = "`{$column}`";
+            $values[] = $value;
+        }
+    };
+
+    $add('username', $username);
+    $add('password', $hash);
+    $add('email', $email);
+    $add('realname', $username);
+    $add('descr', 'Auto-created administrator');
+    $add('auth_type', 'mysql');
+    $add('level', 10);
+    $add('can_modify_passwd', 1);
+    if (isset($columns['created_at'])) {
+        $insert[] = '`created_at`';
+        $values[] = date('Y-m-d H:i:s');
     }
-    if (isset($columns['auth_type'])) {
-        $sets[] = 'auth_type = ?';
-        $values[] = 'mysql';
-    }
-    if (isset($columns['level'])) {
-        $sets[] = 'level = 10';
-    }
-    if (isset($columns['can_modify_passwd'])) {
-        $sets[] = 'can_modify_passwd = 1';
+    if (isset($columns['updated_at'])) {
+        $insert[] = '`updated_at`';
+        $values[] = date('Y-m-d H:i:s');
     }
 
-    $values[] = $userId;
-    $update = $pdo->prepare('UPDATE users SET ' . implode(', ', $sets) . " WHERE `{$idColumn}` = ?");
-    $update->execute($values);
+    foreach ($columns as $field => $unused) {
+        if ($field === $idColumn || in_array("`{$field}`", $insert, true)) {
+            continue;
+        }
+        $metaStmt = $pdo->query("SHOW COLUMNS FROM users LIKE " . $pdo->quote($field));
+        $meta = $metaStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$meta || $meta['Null'] !== 'NO' || $meta['Default'] !== null || stripos($meta['Extra'], 'auto_increment') !== false) {
+            continue;
+        }
+        $insert[] = "`{$field}`";
+        $values[] = preg_match('/int|float|double|decimal|bool/i', $meta['Type']) ? 0 : '';
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($insert), '?'));
+    $sql = 'INSERT INTO users (' . implode(', ', $insert) . ') VALUES (' . $placeholders . ')';
+    $pdo->prepare($sql)->execute($values);
 } catch (Throwable $e) {
-    fwrite(STDERR, 'LibreNMS admin password sync failed: ' . $e->getMessage() . PHP_EOL);
+    fwrite(STDERR, 'LibreNMS admin user upsert failed: ' . $e->getMessage() . PHP_EOL);
     exit(1);
 }
 PHP
@@ -143,6 +198,16 @@ run_lnms() {
 }
 
 ensure_admin_user() {
+  for i in $(seq 1 20); do
+    if upsert_admin_user; then
+      echo "  Admin user '$LIBRENMS_ADMIN_USER' is ready; password synced from .env."
+      return 0
+    fi
+
+    echo "  Waiting for LibreNMS database initialization... ($i/20)"
+    sleep 10
+  done
+
   if ! has_lnms_cmd; then
     echo "  WARNING: lnms command not found, skipping admin user creation."
     return 0
@@ -155,15 +220,9 @@ ensure_admin_user() {
       --email="$LIBRENMS_ADMIN_EMAIL" \
       --no-interaction \
       "$LIBRENMS_ADMIN_USER" 2>&1) && {
-        reset_admin_user_password >/dev/null 2>&1 || true
         echo "  Admin user '$LIBRENMS_ADMIN_USER' is ready."
         return 0
       }
-
-    if reset_admin_user_password; then
-      echo "  Admin user '$LIBRENMS_ADMIN_USER' password synced from .env."
-      return 0
-    fi
 
     echo "  Waiting for LibreNMS database initialization... ($i/20)"
     [ -n "$output" ] && echo "  Last output: $output"
