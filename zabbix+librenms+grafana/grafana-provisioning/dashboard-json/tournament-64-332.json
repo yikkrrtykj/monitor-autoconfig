@@ -356,6 +356,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -373,14 +380,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -390,23 +451,22 @@
       },
       "id": 163,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -419,13 +479,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"13\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 13 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -517,6 +602,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -534,14 +626,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -551,23 +697,22 @@
       },
       "id": 164,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -580,13 +725,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"14\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 14 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -678,6 +848,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -695,14 +872,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -712,23 +943,22 @@
       },
       "id": 165,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -741,13 +971,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"15\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 15 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -839,6 +1094,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -856,14 +1118,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -873,23 +1189,22 @@
       },
       "id": 166,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -902,13 +1217,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"16\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 16 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -1000,6 +1340,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -1017,14 +1364,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -1034,23 +1435,22 @@
       },
       "id": 357,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1063,13 +1463,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"7\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 7 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -1161,6 +1586,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -1178,14 +1610,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -1195,23 +1681,22 @@
       },
       "id": 358,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1224,13 +1709,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"8\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 8 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -1322,6 +1832,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -1339,14 +1856,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -1356,23 +1927,22 @@
       },
       "id": 359,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1385,13 +1955,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"9\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 9 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -1483,6 +2078,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -1500,14 +2102,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -1517,23 +2173,22 @@
       },
       "id": 360,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1546,13 +2201,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"10\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 10 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -1644,6 +2324,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -1661,14 +2348,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -1678,23 +2419,22 @@
       },
       "id": 361,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1707,13 +2447,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"11\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 11 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -1805,6 +2570,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -1822,14 +2594,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -1839,23 +2665,22 @@
       },
       "id": 362,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -1868,13 +2693,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"12\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 12 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -1966,6 +2816,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -1983,14 +2840,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -2000,23 +2911,22 @@
       },
       "id": 551,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -2029,13 +2939,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 1 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -2127,6 +3062,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -2144,14 +3086,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -2161,23 +3157,22 @@
       },
       "id": 552,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -2190,13 +3185,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 2 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -2288,6 +3308,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -2305,14 +3332,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -2322,23 +3403,22 @@
       },
       "id": 553,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -2351,13 +3431,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"3\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 3 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -2449,6 +3554,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -2466,14 +3578,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -2483,23 +3649,22 @@
       },
       "id": 554,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -2512,13 +3677,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"4\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 4 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -2610,6 +3800,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -2627,14 +3824,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -2644,23 +3895,22 @@
       },
       "id": 555,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -2673,13 +3923,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"5\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 5 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     },
     {
       "datasource": {
@@ -2771,6 +4046,13 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -2788,14 +4070,68 @@
                 "value": 0.06
               }
             ]
-          },
-          "unit": "s",
-          "decimals": 1,
-          "noValue": "—",
-          "max": 0.1,
-          "min": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "座位"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 54
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "IP"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 118
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "延迟"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -2805,23 +4141,22 @@
       },
       "id": 556,
       "options": {
-        "displayMode": "lcd",
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": false
+          "reducer": [
+            "sum"
+          ],
+          "show": false
         },
-        "showUnfilled": true,
-        "valueMode": "text"
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "座位"
+          }
+        ]
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -2834,13 +4169,38 @@
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"6\",phase=\"rtt\",network=~\"$network\"}",
           "refId": "A",
           "instant": true,
-          "format": "time_series",
-          "legendFormat": "T{{team}} S{{seat}} {{instance}}"
+          "format": "table"
         }
       ],
       "title": "Team 6 单台延迟",
-      "type": "bargauge",
-      "transformations": []
+      "type": "table",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "network": true,
+              "phase": true,
+              "role": true,
+              "switch": true,
+              "team": true
+            },
+            "indexByName": {
+              "seat": 0,
+              "instance": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "seat": "座位",
+              "instance": "IP",
+              "Value": "延迟"
+            }
+          }
+        }
+      ]
     }
   ],
   "refresh": "5s",
@@ -2890,5 +4250,5 @@
   "timezone": "browser",
   "title": "Tournament 64 (3 层 332)",
   "uid": "tournament-64-332",
-  "version": 3
+  "version": 5
 }
