@@ -424,11 +424,59 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "time_series",
-          "instant": true,
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"1\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}"
+          "legendFormat": "S1",
+          "instant": true,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"2\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "B",
+          "legendFormat": "S2",
+          "instant": true,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"3\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "C",
+          "legendFormat": "S3",
+          "instant": true,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"4\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "D",
+          "legendFormat": "S4",
+          "instant": true,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"5\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "E",
+          "legendFormat": "S5",
+          "instant": true,
+          "format": "time_series"
         }
       ],
       "transformations": [],
@@ -503,11 +551,59 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
-          "format": "time_series",
-          "instant": true,
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"1\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}"
+          "legendFormat": "S1",
+          "instant": true,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"2\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "B",
+          "legendFormat": "S2",
+          "instant": true,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"3\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "C",
+          "legendFormat": "S3",
+          "instant": true,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"4\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "D",
+          "legendFormat": "S4",
+          "instant": true,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"5\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "E",
+          "legendFormat": "S5",
+          "instant": true,
+          "format": "time_series"
         }
       ],
       "transformations": [],
@@ -528,21 +624,33 @@
             "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
+            "axisLabel": "",
             "axisPlacement": "auto",
-            "fillOpacity": 15,
-            "gradientMode": "none",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
             "lineWidth": 2,
-            "pointSize": 5,
+            "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
             },
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
           "thresholds": {
@@ -564,54 +672,20 @@
           },
           "unit": "s"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "舞台左"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "舞台右"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 7,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 16
       },
       "id": 300,
       "options": {
         "legend": {
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -627,9 +701,9 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
-          "legendFormat": "左 S{{seat}} {{instance}}",
-          "refId": "A"
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"1\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "A",
+          "legendFormat": "S1"
         },
         {
           "datasource": {
@@ -637,12 +711,181 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
-          "legendFormat": "右 S{{seat}} {{instance}}",
-          "refId": "B"
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"2\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "B",
+          "legendFormat": "S2"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"3\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "C",
+          "legendFormat": "S3"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"4\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "D",
+          "legendFormat": "S4"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"5\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "E",
+          "legendFormat": "S5"
         }
       ],
-      "title": "双方单台延迟对比",
+      "title": "舞台左单台延迟趋势",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.03
+              },
+              {
+                "color": "red",
+                "value": 0.06
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 301,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"1\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "A",
+          "legendFormat": "S1"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"2\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "B",
+          "legendFormat": "S2"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"3\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "C",
+          "legendFormat": "S3"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"4\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "D",
+          "legendFormat": "S4"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"5\",network=~\"$network\",phase=\"rtt\"}",
+          "refId": "E",
+          "legendFormat": "S5"
+        }
+      ],
+      "title": "舞台右单台延迟趋势",
       "type": "timeseries"
     }
   ],
@@ -694,5 +937,5 @@
   "timezone": "browser",
   "title": "Match 5v5",
   "uid": "match-5v5",
-  "version": 12
+  "version": 13
 }
