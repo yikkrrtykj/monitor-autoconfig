@@ -48,65 +48,108 @@ done
 reset_admin_user_password() {
   php <<'PHP'
 <?php
-$username = getenv('LIBRENMS_ADMIN_USER') ?: 'admin';
-$password = getenv('LIBRENMS_ADMIN_PASSWORD') ?: 'admin';
-$email = getenv('LIBRENMS_ADMIN_EMAIL') ?: 'admin@example.com';
-$host = getenv('DB_HOST') ?: 'librenms-db';
-$database = getenv('DB_NAME') ?: 'librenms';
-$dbUser = getenv('DB_USER') ?: 'librenms';
-$dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
+try {
+    $username = getenv('LIBRENMS_ADMIN_USER') ?: 'admin';
+    $password = getenv('LIBRENMS_ADMIN_PASSWORD') ?: 'admin';
+    $email = getenv('LIBRENMS_ADMIN_EMAIL') ?: 'admin@example.com';
+    $host = getenv('DB_HOST') ?: 'librenms-db';
+    $database = getenv('DB_NAME') ?: 'librenms';
+    $dbUser = getenv('DB_USER') ?: 'librenms';
+    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
 
-$pdo = new PDO(
-    "mysql:host={$host};dbname={$database};charset=utf8mb4",
-    $dbUser,
-    $dbPass,
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
+    $pdo = new PDO(
+        "mysql:host={$host};dbname={$database};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
 
-$userStmt = $pdo->prepare('SELECT user_id FROM users WHERE username = ? LIMIT 1');
-$userStmt->execute([$username]);
-$userId = $userStmt->fetchColumn();
-if (!$userId) {
-    exit(2);
-}
+    $columns = [];
+    foreach ($pdo->query('SHOW COLUMNS FROM users') as $column) {
+        $columns[$column['Field']] = true;
+    }
+    $idColumn = isset($columns['user_id']) ? 'user_id' : (isset($columns['id']) ? 'id' : null);
+    if ($idColumn === null || !isset($columns['username']) || !isset($columns['password'])) {
+        throw new RuntimeException('Unsupported users table schema');
+    }
 
-$columns = [];
-foreach ($pdo->query('SHOW COLUMNS FROM users') as $column) {
-    $columns[$column['Field']] = true;
-}
+    $userStmt = $pdo->prepare("SELECT `{$idColumn}` FROM users WHERE username = ? LIMIT 1");
+    $userStmt->execute([$username]);
+    $userId = $userStmt->fetchColumn();
+    if (!$userId) {
+        exit(2);
+    }
 
-$sets = ['password = ?'];
-$values = [password_hash($password, PASSWORD_BCRYPT)];
-if (isset($columns['email'])) {
-    $sets[] = 'email = ?';
-    $values[] = $email;
-}
-if (isset($columns['auth_type'])) {
-    $sets[] = 'auth_type = ?';
-    $values[] = 'mysql';
-}
-if (isset($columns['level'])) {
-    $sets[] = 'level = 10';
-}
-if (isset($columns['can_modify_passwd'])) {
-    $sets[] = 'can_modify_passwd = 1';
-}
+    $sets = ['password = ?'];
+    $values = [password_hash($password, PASSWORD_BCRYPT)];
+    if (isset($columns['email'])) {
+        $sets[] = 'email = ?';
+        $values[] = $email;
+    }
+    if (isset($columns['auth_type'])) {
+        $sets[] = 'auth_type = ?';
+        $values[] = 'mysql';
+    }
+    if (isset($columns['level'])) {
+        $sets[] = 'level = 10';
+    }
+    if (isset($columns['can_modify_passwd'])) {
+        $sets[] = 'can_modify_passwd = 1';
+    }
 
-$values[] = $userId;
-$update = $pdo->prepare('UPDATE users SET ' . implode(', ', $sets) . ' WHERE user_id = ?');
-$update->execute($values);
+    $values[] = $userId;
+    $update = $pdo->prepare('UPDATE users SET ' . implode(', ', $sets) . " WHERE `{$idColumn}` = ?");
+    $update->execute($values);
+} catch (Throwable $e) {
+    fwrite(STDERR, 'LibreNMS admin password sync failed: ' . $e->getMessage() . PHP_EOL);
+    exit(1);
+}
 PHP
 }
 
+has_lnms_cmd() {
+  [ -x /opt/librenms/lnms ] && return 0
+  command -v lnms >/dev/null 2>&1 && return 0
+  [ -x /opt/librenms/artisan ] && return 0
+  return 1
+}
+
+run_as_librenms() {
+  if [ "$(id -u)" = "0" ] && command -v s6-setuidgid >/dev/null 2>&1; then
+    s6-setuidgid librenms "$@"
+    return $?
+  fi
+
+  "$@"
+}
+
+run_lnms() {
+  if [ -x /opt/librenms/lnms ]; then
+    run_as_librenms /opt/librenms/lnms "$@"
+    return $?
+  fi
+
+  if command -v lnms >/dev/null 2>&1; then
+    run_as_librenms "$(command -v lnms)" "$@"
+    return $?
+  fi
+
+  if [ -x /opt/librenms/artisan ]; then
+    run_as_librenms php /opt/librenms/artisan "$@"
+    return $?
+  fi
+
+  return 1
+}
+
 ensure_admin_user() {
-  if ! get_lnms_cmd > /dev/null; then
+  if ! has_lnms_cmd; then
     echo "  WARNING: lnms command not found, skipping admin user creation."
     return 0
   fi
-  lnms_cmd=$(get_lnms_cmd)
 
   for i in $(seq 1 20); do
-    output=$("$lnms_cmd" user:add \
+    output=$(run_lnms user:add \
       --password="$LIBRENMS_ADMIN_PASSWORD" \
       --role=admin \
       --email="$LIBRENMS_ADMIN_EMAIL" \
@@ -132,67 +175,47 @@ ensure_admin_user() {
   return 0
 }
 
-get_lnms_cmd() {
-  if [ -x /opt/librenms/lnms ]; then
-    echo "/opt/librenms/lnms"
-    return 0
-  fi
-
-  if command -v lnms >/dev/null 2>&1; then
-    echo "lnms"
-    return 0
-  fi
-
-  if [ -x /opt/librenms/artisan ]; then
-    echo "su librenms -s /bin/sh -c 'php /opt/librenms/artisan'"
-    return 0
-  fi
-
-  return 1
-}
-
 configure_runtime() {
   mkdir -p /data/rrd
   chmod 775 /data/rrd 2>/dev/null || true
 
-  if ! get_lnms_cmd > /dev/null; then
+  if ! has_lnms_cmd; then
     echo "  WARNING: lnms command not found, skipping runtime config."
     return 0
   fi
-  lnms_cmd=$(get_lnms_cmd)
 
-  "$lnms_cmd" config:set auth_mechanism mysql >/dev/null 2>&1 && \
+  run_lnms config:set auth_mechanism mysql >/dev/null 2>&1 && \
     echo "  auth_mechanism: mysql" || \
     echo "  WARNING: Could not set auth_mechanism"
 
-  "$lnms_cmd" config:set base_url "$LIBRENMS_BASE_URL" >/dev/null 2>&1 && \
+  run_lnms config:set base_url "$LIBRENMS_BASE_URL" >/dev/null 2>&1 && \
     echo "  base_url: $LIBRENMS_BASE_URL" || \
     echo "  WARNING: Could not set base_url"
 
   if [ -n "$LIBRENMS_OWN_HOSTNAME" ]; then
-    "$lnms_cmd" config:set own_hostname "$LIBRENMS_OWN_HOSTNAME" >/dev/null 2>&1 && \
+    run_lnms config:set own_hostname "$LIBRENMS_OWN_HOSTNAME" >/dev/null 2>&1 && \
       echo "  own_hostname: $LIBRENMS_OWN_HOSTNAME" || \
       echo "  WARNING: Could not set own_hostname"
   fi
 
   if [ -n "$RRDCACHED_SERVER" ]; then
-    "$lnms_cmd" config:set rrdcached "$RRDCACHED_SERVER" >/dev/null 2>&1 && \
+    run_lnms config:set rrdcached "$RRDCACHED_SERVER" >/dev/null 2>&1 && \
       echo "  rrdcached: $RRDCACHED_SERVER" || \
       echo "  WARNING: Could not set rrdcached"
   fi
 
-  "$lnms_cmd" config:set distributed_poller true >/dev/null 2>&1 && \
+  run_lnms config:set distributed_poller true >/dev/null 2>&1 && \
     echo "  distributed_poller: enabled for dispatcher service" || \
     echo "  WARNING: Could not enable distributed_poller"
 
   for task in poller services discovery alerting billing ping; do
-    "$lnms_cmd" config:set "schedule_type.$task" dispatcher >/dev/null 2>&1 && \
+    run_lnms config:set "schedule_type.$task" dispatcher >/dev/null 2>&1 && \
       echo "  schedule_type.$task: dispatcher" || \
       echo "  WARNING: Could not set schedule_type.$task"
   done
 
-  "$lnms_cmd" config:set service_poller_workers "${LIBRENMS_POLLER_WORKERS:-4}" >/dev/null 2>&1 || true
-  "$lnms_cmd" config:set service_discovery_workers "${LIBRENMS_DISCOVERY_WORKERS:-2}" >/dev/null 2>&1 || true
+  run_lnms config:set service_poller_workers "${LIBRENMS_POLLER_WORKERS:-4}" >/dev/null 2>&1 || true
+  run_lnms config:set service_discovery_workers "${LIBRENMS_DISCOVERY_WORKERS:-2}" >/dev/null 2>&1 || true
 }
 
 echo ""

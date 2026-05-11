@@ -598,7 +598,6 @@ services:
         echo "Waiting for LibreNMS to fully initialize..."
         sleep 30
         echo "Running LibreNMS auto-configuration..."
-        chmod +x /librenms-auto-config.sh
         /bin/sh /librenms-auto-config.sh
         echo ""
         echo "UniFi APs: Add via SNMP in LibreNMS web UI (http://localhost:8002)"
