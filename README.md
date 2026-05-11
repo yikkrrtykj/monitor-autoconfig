@@ -95,6 +95,17 @@ SWITCH_DISCOVERY_RANGE=192.168.10.1-100,192.168.10.254
 TOURNAMENT_SWITCHES=192.168.10.11,192.168.10.12   # 选手接入交换机 IP
 PLAYER_SUBNETS=192.168.11.0/24                    # 选手有线网段
 WIRELESS_SUBNETS=192.168.12.0/24                  # 选手无线（备用，不用就留空）
+
+# 无线扫描：只按 WIRELESS_SUBNETS ping 扫在线 IP，生成 network=wireless 的选手 targets
+# 面板选 wired 只看有线，选 wireless 只看无线扫描，互不影响
+# 无线不知道真实座位，左右队和座位只是按 IP 排序临时分配，用来看 WiFi 连接数量/效果
+# 默认开启，比赛中可以随时切到 wireless 看有没有人连 WiFi；不需要时改成 false
+PLAYER_WIRELESS_SCAN=true
+PLAYER_WIRELESS_SCAN_LIMIT=10
+
+# WiFi-only 比赛如果无法从交换机端口自动映射选手，可手动指定 10 个选手 IP
+PLAYER_STATIC_TARGETS=1-1=192.168.12.101,1-2=192.168.12.102,2-1=192.168.12.201
+PLAYER_STATIC_NETWORK=wireless
 ```
 
 ### 3. 起服务
@@ -142,10 +153,15 @@ docker exec librenms snmpwalk -v2c -c global 192.168.10.254 sysName.0
 **选手 dashboard 全是 No data**
 1. `./pre-match-check.sh` 看选手 targets 注册了多少
 2. 0 个 = 检查 `TOURNAMENT_SWITCHES` 配了没 + 交换机端口 ifAlias 是否按约定命名
-3. 注册了但都离线 = 选手电脑 / 手机没接好
+3. 看 WiFi 连接数量/效果 = 确认 `PLAYER_WIRELESS_SCAN=true`，脚本会扫 `WIRELESS_SUBNETS` 并生成 `network="wireless"` targets
+4. WiFi-only 比赛通常不能靠交换机端口自动映射每个选手，固定 IP 场景可在 `.env` 填 `PLAYER_STATIC_TARGETS`
+5. 注册了但都离线 = 选手电脑 / 手机没接好
 
 **改了 .env 后某些数据不更新**
-- 改 IP / community / 选手网段 → 重启 prometheus 和 player-targets
+- 改 `TOURNAMENT_SWITCHES` / `PLAYER_SUBNETS` / `WIRELESS_SUBNETS` / `PLAYER_STATIC_TARGETS` / `PLAYER_WIRELESS_SCAN` → `player-targets` 每 60 秒自动读取 `.env`
+- 第一次升级到支持自动读取 `.env` 的版本后，先执行一次 `docker compose up -d --force-recreate player-targets`，让容器挂载 `.env`
+- 之后日常改选手交换机、选手有线/无线网段、静态选手名单，不需要重建容器；看 `docker logs -f player-targets` 确认日志里的实际值
+- 改基础设施 Ping / 防火墙 SNMP / Prometheus 保留时间 → 重启 prometheus
 - 改 dashboard JSON → Grafana 30 秒自动 reload，或 `docker compose restart grafana`
 
 **重置所有数据从头开始**
