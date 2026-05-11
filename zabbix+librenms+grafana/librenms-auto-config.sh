@@ -13,7 +13,7 @@ CORE_IP="${LIBRENMS_CORE_IP:-192.168.10.254}"
 STAGE_START_OCTET="${LIBRENMS_STAGE_START_OCTET:-11}"
 DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
-LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin}"
+LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
 LIBRENMS_ADMIN_EMAIL="${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
 LIBRENMS_BASE_URL="${LIBRENMS_BASE_URL:-http://localhost:8002}"
 LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
@@ -50,7 +50,7 @@ upsert_admin_user() {
 <?php
 try {
     $username = getenv('LIBRENMS_ADMIN_USER') ?: 'admin';
-    $password = getenv('LIBRENMS_ADMIN_PASSWORD') ?: 'admin';
+    $password = getenv('LIBRENMS_ADMIN_PASSWORD') ?: 'admin123';
     $email = getenv('LIBRENMS_ADMIN_EMAIL') ?: 'admin@example.com';
     $host = getenv('DB_HOST') ?: 'librenms-db';
     $database = getenv('DB_NAME') ?: 'librenms';
@@ -64,12 +64,119 @@ try {
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
     );
 
-    $columns = [];
-    foreach ($pdo->query('SHOW COLUMNS FROM users') as $column) {
-        $columns[$column['Field']] = true;
+    $tableExists = function ($table) use ($pdo) {
+        $stmt = $pdo->prepare('SHOW TABLES LIKE ?');
+        $stmt->execute([$table]);
+        return (bool) $stmt->fetchColumn();
+    };
+
+    $tableColumns = function ($table) use ($pdo) {
+        $columns = [];
+        foreach ($pdo->query("SHOW COLUMNS FROM `{$table}`") as $column) {
+            $columns[$column['Field']] = $column;
+        }
+        return $columns;
+    };
+
+    $columns = $tableColumns('users');
+    $hasColumn = function ($columns, $field) {
+        return array_key_exists($field, $columns);
+    };
+    $columnNames = function ($columns) {
+        return array_map(function ($field) {
+            return "`{$field}`";
+        }, array_keys($columns));
+    };
+    $hasInsertedColumn = function ($insert, $field) {
+        return in_array("`{$field}`", $insert, true);
+    };
+
+    $missingRequiredColumn = function ($meta) {
+        return $meta['Null'] === 'NO'
+            && $meta['Default'] === null
+            && stripos($meta['Extra'], 'auto_increment') === false;
+    };
+
+    $requiredDefault = function ($type) {
+        return preg_match('/int|float|double|decimal|bool/i', $type) ? 0 : '';
+    };
+
+    $insertRequiredDefaults = function ($columns, &$insert, &$values, $idColumn = null) use ($missingRequiredColumn, $requiredDefault, $hasInsertedColumn) {
+        foreach ($columns as $field => $meta) {
+            if ($field === $idColumn || $hasInsertedColumn($insert, $field) || !$missingRequiredColumn($meta)) {
+                continue;
+            }
+            $insert[] = "`{$field}`";
+            $values[] = $requiredDefault($meta['Type']);
+        }
+    };
+
+    $assignAdminRole = function ($userId) use ($pdo, $tableExists, $tableColumns, $hasColumn, $insertRequiredDefaults) {
+        if (!$tableExists('roles') || !$tableExists('assigned_roles')) {
+            return;
+        }
+
+        $roleColumns = $tableColumns('roles');
+        $roleIdColumn = $hasColumn($roleColumns, 'id') ? 'id' : ($hasColumn($roleColumns, 'role_id') ? 'role_id' : null);
+        if ($roleIdColumn === null || !$hasColumn($roleColumns, 'name')) {
+            throw new RuntimeException('Unsupported roles table schema');
+        }
+
+        $roleSql = "SELECT `{$roleIdColumn}` FROM roles WHERE name = ?";
+        if ($hasColumn($roleColumns, 'scope')) {
+            $roleSql .= ' AND scope IS NULL';
+        }
+        $roleSql .= ' LIMIT 1';
+        $roleStmt = $pdo->prepare($roleSql);
+        $roleStmt->execute(['admin']);
+        $roleId = $roleStmt->fetchColumn();
+        if (!$roleId) {
+            throw new RuntimeException('LibreNMS admin role was not seeded');
+        }
+
+        $assignedColumns = $tableColumns('assigned_roles');
+        $entityIdColumn = $hasColumn($assignedColumns, 'entity_id') ? 'entity_id' : ($hasColumn($assignedColumns, 'model_id') ? 'model_id' : null);
+        $entityTypeColumn = $hasColumn($assignedColumns, 'entity_type') ? 'entity_type' : ($hasColumn($assignedColumns, 'model_type') ? 'model_type' : null);
+        if (!$hasColumn($assignedColumns, 'role_id') || $entityIdColumn === null || $entityTypeColumn === null) {
+            throw new RuntimeException('Unsupported assigned_roles table schema');
+        }
+
+        $entityType = 'App\\Models\\User';
+        $existsSql = "SELECT 1 FROM assigned_roles WHERE role_id = ? AND `{$entityIdColumn}` = ? AND `{$entityTypeColumn}` = ?";
+        if ($hasColumn($assignedColumns, 'scope')) {
+            $existsSql .= ' AND scope IS NULL';
+        }
+        $existsSql .= ' LIMIT 1';
+        $existsStmt = $pdo->prepare($existsSql);
+        $existsStmt->execute([$roleId, $userId, $entityType]);
+        if ($existsStmt->fetchColumn()) {
+            return;
+        }
+
+        $insert = ['`role_id`', "`{$entityIdColumn}`", "`{$entityTypeColumn}`"];
+        $values = [$roleId, $userId, $entityType];
+        if ($hasColumn($assignedColumns, 'scope')) {
+            $insert[] = '`scope`';
+            $values[] = null;
+        }
+        if ($hasColumn($assignedColumns, 'created_at')) {
+            $insert[] = '`created_at`';
+            $values[] = date('Y-m-d H:i:s');
+        }
+        if ($hasColumn($assignedColumns, 'updated_at')) {
+            $insert[] = '`updated_at`';
+            $values[] = date('Y-m-d H:i:s');
+        }
+        $insertRequiredDefaults($assignedColumns, $insert, $values);
+        $placeholders = implode(', ', array_fill(0, count($insert), '?'));
+        $pdo->prepare('INSERT INTO assigned_roles (' . implode(', ', $insert) . ') VALUES (' . $placeholders . ')')->execute($values);
+    };
+
+    if (!$hasColumn($columns, 'username') || !$hasColumn($columns, 'password')) {
+        throw new RuntimeException('Unsupported users table schema');
     }
-    $idColumn = isset($columns['user_id']) ? 'user_id' : (isset($columns['id']) ? 'id' : null);
-    if ($idColumn === null || !isset($columns['username']) || !isset($columns['password'])) {
+    $idColumn = $hasColumn($columns, 'user_id') ? 'user_id' : ($hasColumn($columns, 'id') ? 'id' : null);
+    if ($idColumn === null) {
         throw new RuntimeException('Unsupported users table schema');
     }
 
@@ -81,42 +188,43 @@ try {
     if ($userId) {
         $sets = ['password = ?'];
         $values = [$hash];
-        if (isset($columns['email'])) {
+        if ($hasColumn($columns, 'email')) {
             $sets[] = 'email = ?';
             $values[] = $email;
         }
-        if (isset($columns['realname'])) {
+        if ($hasColumn($columns, 'realname')) {
             $sets[] = 'realname = ?';
             $values[] = $username;
         }
-        if (isset($columns['descr'])) {
+        if ($hasColumn($columns, 'descr')) {
             $sets[] = 'descr = ?';
             $values[] = 'Auto-created administrator';
         }
-        if (isset($columns['auth_type'])) {
+        if ($hasColumn($columns, 'auth_type')) {
             $sets[] = 'auth_type = ?';
             $values[] = 'mysql';
         }
-        if (isset($columns['level'])) {
+        if ($hasColumn($columns, 'level')) {
             $sets[] = 'level = 10';
         }
-        if (isset($columns['can_modify_passwd'])) {
+        if ($hasColumn($columns, 'can_modify_passwd')) {
             $sets[] = 'can_modify_passwd = 1';
         }
-        if (isset($columns['updated_at'])) {
+        if ($hasColumn($columns, 'updated_at')) {
             $sets[] = 'updated_at = NOW()';
         }
 
         $values[] = $userId;
         $update = $pdo->prepare('UPDATE users SET ' . implode(', ', $sets) . " WHERE `{$idColumn}` = ?");
         $update->execute($values);
+        $assignAdminRole($userId);
         exit(0);
     }
 
     $insert = [];
     $values = [];
-    $add = function ($column, $value) use (&$insert, &$values, $columns) {
-        if (isset($columns[$column])) {
+    $add = function ($column, $value) use (&$insert, &$values, $columns, $hasColumn) {
+        if ($hasColumn($columns, $column)) {
             $insert[] = "`{$column}`";
             $values[] = $value;
         }
@@ -130,31 +238,21 @@ try {
     $add('auth_type', 'mysql');
     $add('level', 10);
     $add('can_modify_passwd', 1);
-    if (isset($columns['created_at'])) {
+    if ($hasColumn($columns, 'created_at')) {
         $insert[] = '`created_at`';
         $values[] = date('Y-m-d H:i:s');
     }
-    if (isset($columns['updated_at'])) {
+    if ($hasColumn($columns, 'updated_at')) {
         $insert[] = '`updated_at`';
         $values[] = date('Y-m-d H:i:s');
     }
 
-    foreach ($columns as $field => $unused) {
-        if ($field === $idColumn || in_array("`{$field}`", $insert, true)) {
-            continue;
-        }
-        $metaStmt = $pdo->query("SHOW COLUMNS FROM users LIKE " . $pdo->quote($field));
-        $meta = $metaStmt->fetch(PDO::FETCH_ASSOC);
-        if (!$meta || $meta['Null'] !== 'NO' || $meta['Default'] !== null || stripos($meta['Extra'], 'auto_increment') !== false) {
-            continue;
-        }
-        $insert[] = "`{$field}`";
-        $values[] = preg_match('/int|float|double|decimal|bool/i', $meta['Type']) ? 0 : '';
-    }
+    $insertRequiredDefaults($columns, $insert, $values, $idColumn);
 
     $placeholders = implode(', ', array_fill(0, count($insert), '?'));
     $sql = 'INSERT INTO users (' . implode(', ', $insert) . ') VALUES (' . $placeholders . ')';
     $pdo->prepare($sql)->execute($values);
+    $assignAdminRole($pdo->lastInsertId());
 } catch (Throwable $e) {
     fwrite(STDERR, 'LibreNMS admin user upsert failed: ' . $e->getMessage() . PHP_EOL);
     exit(1);
@@ -198,18 +296,17 @@ run_lnms() {
 }
 
 ensure_admin_user() {
-  for i in $(seq 1 20); do
-    if upsert_admin_user; then
-      echo "  Admin user '$LIBRENMS_ADMIN_USER' is ready; password synced from .env."
-      return 0
-    fi
-
-    echo "  Waiting for LibreNMS database initialization... ($i/20)"
-    sleep 10
-  done
-
   if ! has_lnms_cmd; then
-    echo "  WARNING: lnms command not found, skipping admin user creation."
+    echo "  WARNING: lnms command not found, falling back to database admin user sync."
+    for i in $(seq 1 20); do
+      if upsert_admin_user; then
+        echo "  Admin user '$LIBRENMS_ADMIN_USER' is ready; password synced from .env."
+        return 0
+      fi
+
+      echo "  Waiting for LibreNMS database initialization... ($i/20)"
+      sleep 10
+    done
     return 0
   fi
 
@@ -223,6 +320,18 @@ ensure_admin_user() {
         echo "  Admin user '$LIBRENMS_ADMIN_USER' is ready."
         return 0
       }
+
+    if echo "$output" | grep -qi "already"; then
+      if upsert_admin_user; then
+        echo "  Admin user '$LIBRENMS_ADMIN_USER' already exists; password and admin role synced from .env."
+        return 0
+      fi
+    fi
+
+    if upsert_admin_user >/dev/null 2>&1; then
+      echo "  Admin user '$LIBRENMS_ADMIN_USER' is ready; password and admin role synced from .env."
+      return 0
+    fi
 
     echo "  Waiting for LibreNMS database initialization... ($i/20)"
     [ -n "$output" ] && echo "  Last output: $output"
