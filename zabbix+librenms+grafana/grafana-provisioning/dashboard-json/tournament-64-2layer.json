@@ -276,646 +276,6 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 0,
-        "y": 4
-      },
-      "id": 109,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"9\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 3,
-        "y": 4
-      },
-      "id": 110,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"10\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 6,
-        "y": 4
-      },
-      "id": 111,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"11\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 9,
-        "y": 4
-      },
-      "id": 112,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"12\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 12,
-        "y": 4
-      },
-      "id": 113,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"13\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 15,
-        "y": 4
-      },
-      "id": 114,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"14\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 18,
-        "y": 4
-      },
-      "id": 115,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"15\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 21,
-        "y": 4
-      },
-      "id": 116,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"16\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
           "mappings": [],
           "max": 0.1,
           "min": 0,
@@ -944,7 +304,7 @@
         "h": 10,
         "w": 3,
         "x": 0,
-        "y": 7
+        "y": 4
       },
       "id": 159,
       "options": {
@@ -976,7 +336,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"9\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -1023,7 +383,7 @@
         "h": 10,
         "w": 3,
         "x": 3,
-        "y": 7
+        "y": 4
       },
       "id": 160,
       "options": {
@@ -1055,7 +415,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"10\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -1102,7 +462,7 @@
         "h": 10,
         "w": 3,
         "x": 6,
-        "y": 7
+        "y": 4
       },
       "id": 161,
       "options": {
@@ -1134,7 +494,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"11\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -1181,7 +541,7 @@
         "h": 10,
         "w": 3,
         "x": 9,
-        "y": 7
+        "y": 4
       },
       "id": 162,
       "options": {
@@ -1213,7 +573,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"12\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -1260,7 +620,7 @@
         "h": 10,
         "w": 3,
         "x": 12,
-        "y": 7
+        "y": 4
       },
       "id": 163,
       "options": {
@@ -1292,7 +652,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"13\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -1339,7 +699,7 @@
         "h": 10,
         "w": 3,
         "x": 15,
-        "y": 7
+        "y": 4
       },
       "id": 164,
       "options": {
@@ -1371,7 +731,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"14\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -1418,7 +778,7 @@
         "h": 10,
         "w": 3,
         "x": 18,
-        "y": 7
+        "y": 4
       },
       "id": 165,
       "options": {
@@ -1450,7 +810,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"15\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -1497,7 +857,7 @@
         "h": 10,
         "w": 3,
         "x": 21,
-        "y": 7
+        "y": 4
       },
       "id": 166,
       "options": {
@@ -1529,7 +889,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"16\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -1537,646 +897,6 @@
       "title": "Team 16 单台延迟",
       "type": "bargauge",
       "transformations": []
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 0,
-        "y": 17
-      },
-      "id": 301,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"1\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 3,
-        "y": 17
-      },
-      "id": 302,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"2\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 6,
-        "y": 17
-      },
-      "id": 303,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"3\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 9,
-        "y": 17
-      },
-      "id": 304,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"4\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 12,
-        "y": 17
-      },
-      "id": 305,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"5\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 15,
-        "y": 17
-      },
-      "id": 306,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"6\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 18,
-        "y": 17
-      },
-      "id": 307,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"7\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "●"
-                },
-                "1": {
-                  "text": "●"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none",
-          "noValue": "—"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 3,
-        "x": 21,
-        "y": 17
-      },
-      "id": 308,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name",
-        "wideLayout": false
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "probe_success{role=\"player\",team=\"8\",network=~\"$network\"}",
-          "legendFormat": "S{{seat}}",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "transparent": true,
-      "type": "stat"
     },
     {
       "datasource": {
@@ -2216,7 +936,7 @@
         "h": 10,
         "w": 3,
         "x": 0,
-        "y": 20
+        "y": 14
       },
       "id": 351,
       "options": {
@@ -2248,7 +968,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -2295,7 +1015,7 @@
         "h": 10,
         "w": 3,
         "x": 3,
-        "y": 20
+        "y": 14
       },
       "id": 352,
       "options": {
@@ -2327,7 +1047,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -2374,7 +1094,7 @@
         "h": 10,
         "w": 3,
         "x": 6,
-        "y": 20
+        "y": 14
       },
       "id": 353,
       "options": {
@@ -2406,7 +1126,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"3\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -2453,7 +1173,7 @@
         "h": 10,
         "w": 3,
         "x": 9,
-        "y": 20
+        "y": 14
       },
       "id": 354,
       "options": {
@@ -2485,7 +1205,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -2532,7 +1252,7 @@
         "h": 10,
         "w": 3,
         "x": 12,
-        "y": 20
+        "y": 14
       },
       "id": 355,
       "options": {
@@ -2564,7 +1284,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"5\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -2611,7 +1331,7 @@
         "h": 10,
         "w": 3,
         "x": 15,
-        "y": 20
+        "y": 14
       },
       "id": 356,
       "options": {
@@ -2643,7 +1363,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"6\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -2690,7 +1410,7 @@
         "h": 10,
         "w": 3,
         "x": 18,
-        "y": 20
+        "y": 14
       },
       "id": 357,
       "options": {
@@ -2722,7 +1442,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"7\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -2769,7 +1489,7 @@
         "h": 10,
         "w": 3,
         "x": 21,
-        "y": 20
+        "y": 14
       },
       "id": 358,
       "options": {
@@ -2801,7 +1521,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"8\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}",
+          "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -2878,7 +1598,7 @@
         "h": 7,
         "w": 3,
         "x": 0,
-        "y": 31
+        "y": 25
       },
       "id": 9009,
       "options": {
@@ -2903,7 +1623,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"9\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 9 延迟趋势",
@@ -2977,7 +1697,7 @@
         "h": 7,
         "w": 3,
         "x": 3,
-        "y": 31
+        "y": 25
       },
       "id": 9010,
       "options": {
@@ -3002,7 +1722,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"10\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 10 延迟趋势",
@@ -3076,7 +1796,7 @@
         "h": 7,
         "w": 3,
         "x": 6,
-        "y": 31
+        "y": 25
       },
       "id": 9011,
       "options": {
@@ -3101,7 +1821,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"11\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 11 延迟趋势",
@@ -3175,7 +1895,7 @@
         "h": 7,
         "w": 3,
         "x": 9,
-        "y": 31
+        "y": 25
       },
       "id": 9012,
       "options": {
@@ -3200,7 +1920,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"12\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 12 延迟趋势",
@@ -3274,7 +1994,7 @@
         "h": 7,
         "w": 3,
         "x": 12,
-        "y": 31
+        "y": 25
       },
       "id": 9013,
       "options": {
@@ -3299,7 +2019,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"13\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 13 延迟趋势",
@@ -3373,7 +2093,7 @@
         "h": 7,
         "w": 3,
         "x": 15,
-        "y": 31
+        "y": 25
       },
       "id": 9014,
       "options": {
@@ -3398,7 +2118,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"14\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 14 延迟趋势",
@@ -3472,7 +2192,7 @@
         "h": 7,
         "w": 3,
         "x": 18,
-        "y": 31
+        "y": 25
       },
       "id": 9015,
       "options": {
@@ -3497,7 +2217,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"15\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 15 延迟趋势",
@@ -3571,7 +2291,7 @@
         "h": 7,
         "w": 3,
         "x": 21,
-        "y": 31
+        "y": 25
       },
       "id": 9016,
       "options": {
@@ -3596,7 +2316,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"16\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 16 延迟趋势",
@@ -3670,7 +2390,7 @@
         "h": 7,
         "w": 3,
         "x": 0,
-        "y": 39
+        "y": 33
       },
       "id": 9001,
       "options": {
@@ -3695,7 +2415,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 1 延迟趋势",
@@ -3769,7 +2489,7 @@
         "h": 7,
         "w": 3,
         "x": 3,
-        "y": 39
+        "y": 33
       },
       "id": 9002,
       "options": {
@@ -3794,7 +2514,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 2 延迟趋势",
@@ -3868,7 +2588,7 @@
         "h": 7,
         "w": 3,
         "x": 6,
-        "y": 39
+        "y": 33
       },
       "id": 9003,
       "options": {
@@ -3893,7 +2613,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"3\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 3 延迟趋势",
@@ -3967,7 +2687,7 @@
         "h": 7,
         "w": 3,
         "x": 9,
-        "y": 39
+        "y": 33
       },
       "id": 9004,
       "options": {
@@ -3992,7 +2712,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 4 延迟趋势",
@@ -4066,7 +2786,7 @@
         "h": 7,
         "w": 3,
         "x": 12,
-        "y": 39
+        "y": 33
       },
       "id": 9005,
       "options": {
@@ -4091,7 +2811,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"5\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 5 延迟趋势",
@@ -4165,7 +2885,7 @@
         "h": 7,
         "w": 3,
         "x": 15,
-        "y": 39
+        "y": 33
       },
       "id": 9006,
       "options": {
@@ -4190,7 +2910,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"6\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 6 延迟趋势",
@@ -4264,7 +2984,7 @@
         "h": 7,
         "w": 3,
         "x": 18,
-        "y": 39
+        "y": 33
       },
       "id": 9007,
       "options": {
@@ -4289,7 +3009,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"7\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 7 延迟趋势",
@@ -4363,7 +3083,7 @@
         "h": 7,
         "w": 3,
         "x": 21,
-        "y": 39
+        "y": 33
       },
       "id": 9008,
       "options": {
@@ -4388,7 +3108,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"8\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}}"
+          "legendFormat": "S{{seat}} {{instance}}"
         }
       ],
       "title": "Team 8 延迟趋势",

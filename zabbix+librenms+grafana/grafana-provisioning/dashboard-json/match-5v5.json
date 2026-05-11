@@ -426,7 +426,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"1\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S1",
+          "legendFormat": "S1 {{instance}}",
           "instant": true,
           "format": "time_series"
         },
@@ -438,7 +438,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"2\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "B",
-          "legendFormat": "S2",
+          "legendFormat": "S2 {{instance}}",
           "instant": true,
           "format": "time_series"
         },
@@ -450,7 +450,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"3\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "C",
-          "legendFormat": "S3",
+          "legendFormat": "S3 {{instance}}",
           "instant": true,
           "format": "time_series"
         },
@@ -462,7 +462,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "D",
-          "legendFormat": "S4",
+          "legendFormat": "S4 {{instance}}",
           "instant": true,
           "format": "time_series"
         },
@@ -474,7 +474,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"5\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "E",
-          "legendFormat": "S5",
+          "legendFormat": "S5 {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -553,7 +553,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"1\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S1",
+          "legendFormat": "S1 {{instance}}",
           "instant": true,
           "format": "time_series"
         },
@@ -565,7 +565,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"2\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "B",
-          "legendFormat": "S2",
+          "legendFormat": "S2 {{instance}}",
           "instant": true,
           "format": "time_series"
         },
@@ -577,7 +577,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"3\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "C",
-          "legendFormat": "S3",
+          "legendFormat": "S3 {{instance}}",
           "instant": true,
           "format": "time_series"
         },
@@ -589,7 +589,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "D",
-          "legendFormat": "S4",
+          "legendFormat": "S4 {{instance}}",
           "instant": true,
           "format": "time_series"
         },
@@ -601,7 +601,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"5\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "E",
-          "legendFormat": "S5",
+          "legendFormat": "S5 {{instance}}",
           "instant": true,
           "format": "time_series"
         }
@@ -703,7 +703,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"1\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S1"
+          "legendFormat": "S1 {{instance}}"
         },
         {
           "datasource": {
@@ -713,7 +713,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"2\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "B",
-          "legendFormat": "S2"
+          "legendFormat": "S2 {{instance}}"
         },
         {
           "datasource": {
@@ -723,7 +723,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"3\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "C",
-          "legendFormat": "S3"
+          "legendFormat": "S3 {{instance}}"
         },
         {
           "datasource": {
@@ -733,7 +733,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "D",
-          "legendFormat": "S4"
+          "legendFormat": "S4 {{instance}}"
         },
         {
           "datasource": {
@@ -743,7 +743,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=\"5\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "E",
-          "legendFormat": "S5"
+          "legendFormat": "S5 {{instance}}"
         }
       ],
       "title": "舞台左单台延迟趋势",
@@ -842,7 +842,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"1\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S1"
+          "legendFormat": "S1 {{instance}}"
         },
         {
           "datasource": {
@@ -852,7 +852,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"2\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "B",
-          "legendFormat": "S2"
+          "legendFormat": "S2 {{instance}}"
         },
         {
           "datasource": {
@@ -862,7 +862,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"3\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "C",
-          "legendFormat": "S3"
+          "legendFormat": "S3 {{instance}}"
         },
         {
           "datasource": {
@@ -872,7 +872,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "D",
-          "legendFormat": "S4"
+          "legendFormat": "S4 {{instance}}"
         },
         {
           "datasource": {
@@ -882,7 +882,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=\"5\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "E",
-          "legendFormat": "S5"
+          "legendFormat": "S5 {{instance}}"
         }
       ],
       "title": "舞台右单台延迟趋势",
