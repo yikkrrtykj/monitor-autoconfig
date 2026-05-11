@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>网络监控大屏</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="screen">
+      <header class="topbar">
+        <div class="brand" id="brand">
+          <div class="brand-mark" id="brandMark" aria-hidden="true"></div>
+          <div class="brand-text" id="logoText"></div>
+        </div>
+        <div class="headline">
+          <h1 id="screenTitle">网络监控大屏</h1>
+          <div id="screenSubtitle" class="subtitle"></div>
+        </div>
+        <time class="clock" aria-live="polite">
+          <span id="dateText">---- -- --</span>
+          <strong id="timeText">--:--:--</strong>
+        </time>
+      </header>
+
+      <section class="panel-grid" aria-label="监控面板">
+        <section class="panel custom-panel ping-panel" aria-labelledby="pingTitle">
+          <h2 id="pingTitle">Ping</h2>
+          <div class="gauge-grid" id="pingGaugeGrid"></div>
+        </section>
+        <section class="panel custom-panel uptime-panel" aria-labelledby="uptimeTitle">
+          <h2 id="uptimeTitle">Uptime</h2>
+          <div class="gauge-grid" id="uptimeGaugeGrid"></div>
+        </section>
+        <section class="chart-panel trend-panel" aria-labelledby="trendTitle">
+          <h2 id="trendTitle">Ping 趋势</h2>
+          <div class="chart-body" id="pingTrendChart"></div>
+        </section>
+        <section class="chart-panel loss-panel" aria-labelledby="lossTitle">
+          <h2 id="lossTitle">丢包热力图</h2>
+          <div class="chart-body" id="lossHeatmap"></div>
+        </section>
+        <div class="isp-grid" id="ispGrid"></div>
+      </section>
+    </main>
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

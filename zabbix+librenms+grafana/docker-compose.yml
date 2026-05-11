@@ -1,0 +1,723 @@
+services:
+  mysql:
+    image: mariadb:10.5
+    container_name: mysql
+    restart: unless-stopped
+    command:
+      - "mysqld"
+      - "--innodb-file-per-table=1"
+      - "--lower-case-table-names=0"
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_bin"
+      - "--log-bin-trust-function-creators=1"
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: root
+    volumes:
+      - ./mysql-data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 60s
+
+  librenms-db:
+    image: mariadb:10.5
+    container_name: librenms-db
+    restart: unless-stopped
+    command:
+      - "mysqld"
+      - "--innodb-file-per-table=1"
+      - "--lower-case-table-names=0"
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: librenms_root
+      MYSQL_DATABASE: librenms
+      MYSQL_USER: librenms
+      MYSQL_PASSWORD: librenms
+    volumes:
+      - ./librenms-db-data:/var/lib/mysql
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-plibrenms_root"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 60s
+
+  librenms-redis:
+    image: redis:7.2-alpine
+    container_name: librenms-redis
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  librenms-rrdcached:
+    image: crazymax/rrdcached:latest
+    container_name: librenms-rrdcached
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      PUID: 1000
+      PGID: 1000
+      WRITE_TIMEOUT: 300
+      WRITE_JITTER: 180
+      WRITE_THREADS: 4
+    volumes:
+      - ./librenms-data/rrd:/data/db
+      - ./librenms-rrdcached-journal:/data/journal
+    networks:
+      - monitor
+
+  init-permissions:
+    image: alpine:latest
+    container_name: init-permissions
+    volumes:
+      - ./mysql-data:/mysql-data
+      - ./zabbix-server-data:/zabbix-server-data
+      - ./grafana-data:/grafana-data
+      - ./prometheus-data:/prometheus-data
+      - ./librenms-db-data:/librenms-db-data
+      - ./librenms-data:/librenms-data
+      - ./librenms-rrdcached-journal:/librenms-rrdcached-journal
+    command: |
+      sh -c '
+        echo "Setting up directory permissions..."
+        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data /librenms-db-data /librenms-data /librenms-data/rrd /librenms-rrdcached-journal
+        chown -R 999:999 /mysql-data /librenms-db-data
+        chown -R 1997:1997 /zabbix-server-data
+        chown -R 472:472 /grafana-data
+        chown -R 65534:65534 /prometheus-data
+        chown -R 1000:1000 /librenms-data /librenms-rrdcached-journal
+        chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data /librenms-db-data /librenms-data
+        chmod -R 775 /librenms-data/rrd /librenms-rrdcached-journal
+        echo "Permissions set successfully"
+      '
+    networks:
+      - monitor
+    restart: "no"
+
+  zabbix-server:
+    image: zabbix/zabbix-server-mysql:7.0-ubuntu-latest
+    container_name: zabbix-server
+    hostname: zabbix-server
+    restart: unless-stopped
+    user: root
+    environment:
+      DB_SERVER_HOST: mysql
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: root
+      ZBX_ENABLE_SNMP_TRAPS: "true"
+      ZBX_STARTPOLLERS: 5
+      ZBX_STARTPOLLERSUNREACHABLE: 1
+      ZBX_STARTTRAPPERS: 5
+      ZBX_STARTPINGERS: 1
+      ZBX_STARTDISCOVERERS: 1
+      ZBX_STARTHTTPPOLLERS: 1
+      ZBX_TIMEOUT: 30
+      ZBX_UNREACHABLEPERIOD: 45
+      ZBX_UNAVAILABLEDELAY: 60
+    command: >
+      /bin/sh -c '
+        apt-get update &&
+        apt-get install -y python3 python3-requests &&
+        chmod +x /usr/lib/zabbix/alertscripts/feishu-robot.py &&
+        /usr/bin/docker-entrypoint.sh /usr/sbin/zabbix_server --foreground -c /etc/zabbix/zabbix_server.conf
+      '
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+    ports:
+      - "${ZABBIX_SERVER_PORT:-10051}:10051"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./zabbix-server-data:/var/lib/zabbix
+      - ./feishu-robot.py:/usr/lib/zabbix/alertscripts/feishu-robot.py
+      - ./watchguard-firewall-zabbix7.0-template.yaml:/watchguard-firewall-zabbix7.0-template.yaml:ro
+      - ./hillstone-zabbix7.0-UnofficialV1.1.yaml:/hillstone-zabbix7.0-UnofficialV1.1.yaml:ro
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep '[z]abbix_server' | grep -v grep || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-mysql:7.0-ubuntu-latest
+    container_name: zabbix-web
+    restart: unless-stopped
+    environment:
+      DB_SERVER_HOST: mysql
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: root
+      PHP_TZ: Asia/Shanghai
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_PORT: 10051
+      ZBX_POSTMAXSIZE: 64M
+      ZBX_UPLOADMAXFILESIZE: 2M
+      ZBX_MAXEXECUTIONTIME: 600
+      ZBX_DEFAULT_LANG: zh_CN
+      LANG: zh_CN.UTF-8
+      LC_ALL: zh_CN.UTF-8
+      TZ: Asia/Shanghai
+    depends_on:
+      zabbix-server:
+        condition: service_healthy
+    ports:
+      - "${ZABBIX_WEB_PORT:-8001}:8080"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - monitor
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent:7.0-ubuntu-latest
+    container_name: zabbix-agent
+    hostname: zabbix-agent
+    restart: unless-stopped
+    environment:
+      ZBX_HOSTNAME: "Zabbix server"
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_PORT: 10051
+      ZBX_PASSIVE_ALLOW: "true"
+      ZBX_ACTIVE_ALLOW: "true"
+      ZBX_METADATA: "Linux"
+      ZBX_SERVER: zabbix-server
+      ZBX_SERVERACTIVE: zabbix-server:10051
+      ZBX_TIMEOUT: 30
+      ZBX_LISTENPORT: 10050
+      ZBX_LISTENIP: "0.0.0.0"
+    depends_on:
+      zabbix-server:
+        condition: service_healthy
+    ports:
+      - "${ZABBIX_AGENT_PORT:-10050}:10050"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep '[z]abbix_agentd' | wc -l | grep -q '^[1-9]' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  zabbix-config:
+    image: alpine:latest
+    container_name: zabbix-config
+    depends_on:
+      zabbix-web:
+        condition: service_started
+      zabbix-server:
+        condition: service_healthy
+      zabbix-agent:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ./zabbix-auto-config.sh:/zabbix-auto-config.sh:ro
+      - ./feishu-robot.py:/feishu-robot.py:ro
+      - ./hillstone-zabbix7.0-UnofficialV1.1.yaml:/hillstone-zabbix7.0-UnofficialV1.1.yaml:ro
+      - ./watchguard-firewall-zabbix7.0-template.yaml:/watchguard-firewall-zabbix7.0-template.yaml:ro
+    networks:
+      - monitor
+    restart: "no"
+    environment:
+      TZ: Asia/Shanghai
+      SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
+      SWITCH_DISCOVERY_RANGE: "${SWITCH_DISCOVERY_RANGE:-192.168.10.1-100,192.168.10.254}"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache curl jq bash python3 py3-requests mysql-client
+        echo "Waiting for Zabbix services to be ready..."
+        sleep 60
+        echo "Checking Zabbix API availability..."
+        for i in $$(seq 1 60); do
+          if curl -s -f http://zabbix-web:8080/api_jsonrpc.php > /dev/null 2>&1; then
+            echo "Zabbix API is available"
+            break
+          fi
+          echo "Waiting for Zabbix API... (attempt $$i/60)"
+          sleep 5
+        done
+        echo "Ensuring database is fully initialized..."
+        sleep 30
+        # Immediate fix for Agent connection issues
+        for i in $$(seq 1 30); do
+          AUTH_TOKEN=$$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","method":"user.login","params":{"username":"Admin","password":"zabbix"},"id":1}' 2>/dev/null | \
+            jq -r '.result' 2>/dev/null)
+          if [ "$$AUTH_TOKEN" != "null" ] && [ -n "$$AUTH_TOKEN" ] && [ "$$AUTH_TOKEN" != "" ]; then
+            echo "Successfully authenticated with Zabbix API"
+            break
+          fi
+          sleep 5
+        done
+        if [ "$$AUTH_TOKEN" != "null" ] && [ -n "$$AUTH_TOKEN" ]; then
+          HOSTS_WITH_LOCALHOST=$$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.get\",\"params\":{\"selectInterfaces\":\"extend\",\"filter\":{\"status\":\"0\"}},\"auth\":\"$$AUTH_TOKEN\",\"id\":1}" | \
+            jq -r '.result[] | select(.interfaces[]?.ip == "127.0.0.1") | .hostid')
+          if [ -n "$$HOSTS_WITH_LOCALHOST" ]; then
+            for hostid in $$HOSTS_WITH_LOCALHOST; do
+              curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
+                -H "Content-Type: application/json" \
+                -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.update\",\"params\":{\"hostid\":\"$$hostid\",\"interfaces\":[{\"type\":1,\"main\":1,\"useip\":0,\"dns\":\"zabbix-agent\",\"port\":\"10050\"}]},\"auth\":\"$$AUTH_TOKEN\",\"id\":1}" > /dev/null
+              echo "Fixed host $$hostid interface to use zabbix-agent"
+            done
+          fi
+        fi
+        echo "Starting full Zabbix configuration..."
+        sleep 30
+        for attempt in $$(seq 1 3); do
+          echo "Running zabbix-auto-config.sh (attempt $$attempt/3)..."
+          if bash /zabbix-auto-config.sh; then
+            echo "Configuration completed successfully"
+            exit 0
+          else
+            sleep 30
+          fi
+        done
+        exit 1
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      CORE_SWITCH_PING: "${CORE_SWITCH_PING:-}"
+      DIST_SWITCH_PING: "${DIST_SWITCH_PING:-}"
+      FIREWALL_PING: "${FIREWALL_PING:-}"
+      SERVER_PING: "${SERVER_PING:-}"
+      FIREWALL_SNMP_TARGETS: "${FIREWALL_SNMP_TARGETS:-}"
+      SNMP_AUTH: "${SNMP_AUTH:-global}"
+      PROMETHEUS_SCRAPE_INTERVAL: "${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
+      PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
+      PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
+    volumes:
+      - prometheus-data:/prometheus
+      - player-targets-data:/etc/prometheus/targets
+      - ./prometheus-gen-config.sh:/etc/prometheus/prometheus-gen-config.sh:ro
+      - /etc/localtime:/etc/localtime:ro
+    entrypoint:
+      - /bin/sh
+      - /etc/prometheus/prometheus-gen-config.sh
+    ports:
+      - "${PROMETHEUS_BIND:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  snmp-exporter:
+    image: prom/snmp-exporter:latest
+    container_name: snmp-exporter
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cat > /tmp/snmp-auth.yml <<EOF
+        auths:
+          $${SNMP_AUTH:-global}:
+            community: "$${SNMP_COMMUNITY:-global}"
+            security_level: noAuthNoPriv
+            auth_protocol: MD5
+            priv_protocol: DES
+            version: 2
+        EOF
+        cat > /tmp/snmp-system.yml <<'EOF'
+        modules:
+          system_uptime:
+            get:
+              - 1.3.6.1.2.1.1.3.0
+            max_repetitions: 25
+            retries: 3
+            timeout: 10s
+            metrics:
+              - name: sysUpTime
+                oid: 1.3.6.1.2.1.1.3
+                type: gauge
+                help: The time in hundredths of a second since the network management portion of the system was last re-initialized.
+        EOF
+        exec /bin/snmp_exporter \
+          --config.file=/etc/snmp_exporter/snmp.yml \
+          --config.file=/tmp/snmp-system.yml \
+          --config.file=/tmp/snmp-auth.yml
+    environment:
+      SNMP_AUTH: "${SNMP_AUTH:-global}"
+      SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
+    ports:
+      - "${SNMP_EXPORTER_BIND:-127.0.0.1}:${SNMP_EXPORTER_PORT:-9116}:9116"
+    networks:
+      - monitor
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    ports:
+      - "${BLACKBOX_EXPORTER_BIND:-127.0.0.1}:${BLACKBOX_EXPORTER_PORT:-9115}:9115"
+    networks:
+      - monitor
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cat > /etc/blackbox_exporter/config.yml << 'EOF'
+        modules:
+          icmp:
+            prober: icmp
+            timeout: 5s
+            icmp:
+              preferred_ip_protocol: ip4
+          http_2xx:
+            prober: http
+            timeout: 5s
+            http:
+              valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+              valid_status_codes: []
+              method: GET
+              preferred_ip_protocol: ip4
+        EOF
+        exec /bin/blackbox_exporter --config.file=/etc/blackbox_exporter/config.yml
+
+  player-targets:
+    image: python:3-alpine
+    container_name: player-targets
+    restart: unless-stopped
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    networks:
+      - monitor
+    volumes:
+      - player-targets-data:/targets
+      - ./generate-player-targets.py:/generate-player-targets.py:ro
+    environment:
+      TZ: Asia/Shanghai
+      TOURNAMENT_SWITCHES: "${TOURNAMENT_SWITCHES:-}"
+      SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
+      PLAYER_SUBNETS: "${PLAYER_SUBNETS:-}"
+      WIRELESS_SUBNETS: "${WIRELESS_SUBNETS:-}"
+      PLAYER_TARGETS_FILE: "/targets/player_targets.json"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache net-snmp-tools
+        echo "[player-targets] starting target generator loop"
+        while true; do
+          python3 /generate-player-targets.py 2>&1 | while IFS= read -r line; do
+            echo "[player-targets] $$line"
+          done
+          sleep 60
+        done
+
+  librenms:
+    image: librenms/librenms:latest
+    container_name: librenms
+    restart: unless-stopped
+    hostname: librenms
+    depends_on:
+      librenms-db:
+        condition: service_healthy
+      librenms-redis:
+        condition: service_healthy
+      librenms-rrdcached:
+        condition: service_started
+    environment:
+      TZ: Asia/Shanghai
+      DB_HOST: librenms-db
+      DB_NAME: librenms
+      DB_USER: librenms
+      DB_PASSWORD: librenms
+      DB_PASS: librenms
+      DB_TIMEOUT: 120
+      SERVER_IP: "${SERVER_IP:-}"
+      LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
+      LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: librenms-redis
+      REDIS_PORT: 6379
+      RRDCACHED_SERVER: librenms-rrdcached:42217
+      POLLERS: 4
+      LIBRENMS_SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
+      LIBRENMS_CORE_IP: "${LIBRENMS_CORE_IP:-192.168.10.254}"
+      LIBRENMS_STAGE_START_OCTET: "${LIBRENMS_STAGE_START_OCTET:-11}"
+      LIBRENMS_DISCOVERY_TARGETS: "${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
+      SNMP_TIMEOUT: "${SNMP_TIMEOUT:-1}"
+      SNMP_RETRIES: "${SNMP_RETRIES:-0}"
+      LIBRENMS_ADMIN_USER: "${LIBRENMS_ADMIN_USER:-admin}"
+      LIBRENMS_ADMIN_PASSWORD: "${LIBRENMS_ADMIN_PASSWORD:-admin}"
+      LIBRENMS_ADMIN_EMAIL: "${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
+      LIBRENMS_OWN_HOSTNAME: "${SERVER_IP:-}"
+      PUID: 1000
+      PGID: 1000
+    volumes:
+      - ./librenms-data:/data
+      - ./entrypoint-librenms.sh:/entrypoint-librenms.sh:ro
+      - ./librenms-patch-nginx.sh:/librenms-patch-nginx.sh:ro
+    entrypoint:
+      - /bin/sh
+      - /entrypoint-librenms.sh
+    ports:
+      - "${LIBRENMS_PORT:-8002}:8000"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    networks:
+      - monitor
+
+  librenms-dispatcher:
+    image: librenms/librenms:latest
+    container_name: librenms-dispatcher
+    hostname: librenms-dispatcher
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    depends_on:
+      librenms:
+        condition: service_started
+      librenms-redis:
+        condition: service_healthy
+      librenms-rrdcached:
+        condition: service_started
+    volumes:
+      - ./librenms-data:/data
+    environment:
+      TZ: Asia/Shanghai
+      DB_HOST: librenms-db
+      DB_NAME: librenms
+      DB_USER: librenms
+      DB_PASSWORD: librenms
+      DB_PASS: librenms
+      DB_TIMEOUT: 120
+      SERVER_IP: "${SERVER_IP:-}"
+      LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
+      LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: librenms-redis
+      REDIS_PORT: 6379
+      RRDCACHED_SERVER: librenms-rrdcached:42217
+      DISPATCHER_NODE_ID: "${LIBRENMS_DISPATCHER_NODE_ID:-dispatcher1}"
+      SIDECAR_DISPATCHER: 1
+      PUID: 1000
+      PGID: 1000
+    networks:
+      - monitor
+
+  librenms-config:
+    image: librenms/librenms:latest
+    container_name: librenms-config
+    depends_on:
+      librenms:
+        condition: service_started
+      librenms-dispatcher:
+        condition: service_started
+    networks:
+      - monitor
+    restart: "no"
+    volumes:
+      - ./librenms-data:/data
+      - ./librenms-auto-config.sh:/librenms-auto-config.sh:ro
+    environment:
+      TZ: Asia/Shanghai
+      DB_HOST: librenms-db
+      DB_NAME: librenms
+      DB_USER: librenms
+      DB_PASSWORD: librenms
+      DB_PASS: librenms
+      DB_TIMEOUT: 120
+      SERVER_IP: "${SERVER_IP:-}"
+      LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
+      LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      APP_URL: "${LIBRENMS_BASE_URL:-http://localhost:8002}"
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: librenms-redis
+      REDIS_PORT: 6379
+      RRDCACHED_SERVER: librenms-rrdcached:42217
+      LIBRENMS_SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
+      LIBRENMS_CORE_IP: "${LIBRENMS_CORE_IP:-192.168.10.254}"
+      LIBRENMS_STAGE_START_OCTET: "${LIBRENMS_STAGE_START_OCTET:-11}"
+      LIBRENMS_DISCOVERY_TARGETS: "${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
+      SNMP_TIMEOUT: "${SNMP_TIMEOUT:-1}"
+      SNMP_RETRIES: "${SNMP_RETRIES:-0}"
+      LIBRENMS_ADMIN_USER: "${LIBRENMS_ADMIN_USER:-admin}"
+      LIBRENMS_ADMIN_PASSWORD: "${LIBRENMS_ADMIN_PASSWORD:-admin}"
+      LIBRENMS_ADMIN_EMAIL: "${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
+      LIBRENMS_OWN_HOSTNAME: "${SERVER_IP:-}"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "Waiting for LibreNMS to fully initialize..."
+        sleep 30
+        echo "Running LibreNMS auto-configuration..."
+        chmod +x /librenms-auto-config.sh
+        /bin/sh /librenms-auto-config.sh
+        echo ""
+        echo "UniFi APs: Add via SNMP in LibreNMS web UI (http://localhost:8002)"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-root}"
+      GF_SECURITY_ALLOW_EMBEDDING: "${GRAFANA_ALLOW_EMBEDDING:-true}"
+      GF_AUTH_ANONYMOUS_ENABLED: "${GRAFANA_ANONYMOUS_ENABLED:-true}"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "${GRAFANA_ANONYMOUS_ORG_ROLE:-Viewer}"
+      GF_USERS_VIEWERS_CAN_EDIT: "false"
+      GF_SERVER_HTTP_PORT: 3000
+      GF_SERVER_PROTOCOL: http
+      GF_DEFAULT_LOCALE: zh-Hans
+      GF_DEFAULT_TIMEZONE: Asia/Shanghai
+      TZ: Asia/Shanghai
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-provisioning:/etc/grafana/provisioning
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+      prometheus:
+        condition: service_healthy
+    networks:
+      - monitor
+
+  bigscreen:
+    image: nginx:alpine
+    container_name: bigscreen
+    restart: unless-stopped
+    environment:
+      BIGSCREEN_EVENT_NAME: "${EVENT_NAME:-}"
+      BIGSCREEN_TITLE: "${BIGSCREEN_TITLE:-}"
+      BIGSCREEN_SUBTITLE: "${BIGSCREEN_SUBTITLE:-}"
+      BIGSCREEN_LOGO_TEXT: "${BIGSCREEN_LOGO_TEXT:-}"
+      BIGSCREEN_GRAFANA_BASE_URL: "${BIGSCREEN_GRAFANA_BASE_URL:-}"
+      BIGSCREEN_PROMETHEUS_BASE_URL: "${BIGSCREEN_PROMETHEUS_BASE_URL:-}"
+      BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
+      GRAFANA_PORT: "${GRAFANA_PORT:-3000}"
+    volumes:
+      - ./bigscreen:/app:ro
+    ports:
+      - "${BIGSCREEN_PORT:-8088}:80"
+    depends_on:
+      grafana:
+        condition: service_started
+      prometheus:
+        condition: service_healthy
+    networks:
+      - monitor
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cp -r /app/. /usr/share/nginx/html/
+        cat > /usr/share/nginx/html/config.js <<EOF
+        window.BIGSCREEN_CONFIG = {
+          eventName: "$${BIGSCREEN_EVENT_NAME:-}",
+          title: "$${BIGSCREEN_TITLE:-}",
+          subtitle: "$${BIGSCREEN_SUBTITLE:-}",
+          logoText: "$${BIGSCREEN_LOGO_TEXT:-}",
+          grafanaBaseUrl: "$${BIGSCREEN_GRAFANA_BASE_URL:-}",
+          prometheusBaseUrl: "$${BIGSCREEN_PROMETHEUS_BASE_URL:-}",
+          grafanaPort: "$${GRAFANA_PORT:-3000}",
+          ispNames: "$${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
+        };
+        EOF
+        cat > /etc/nginx/conf.d/default.conf <<'EOF'
+        server {
+          listen 80;
+          server_name _;
+          root /usr/share/nginx/html;
+          add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
+          add_header Pragma "no-cache" always;
+          add_header Expires "0" always;
+
+          location / {
+            try_files $$uri $$uri/ /index.html;
+          }
+
+          location /prometheus/ {
+            proxy_pass http://prometheus:9090/;
+          }
+        }
+        EOF
+        exec nginx -g 'daemon off;'
+
+  grafana-setup:
+    image: alpine:latest
+    container_name: grafana-setup
+    depends_on:
+      grafana:
+        condition: service_started
+      prometheus:
+        condition: service_healthy
+    networks:
+      - monitor
+    restart: on-failure
+    volumes:
+      - ./grafana-setup.sh:/grafana-setup.sh:ro
+    command: ["/bin/sh", "-c", "sleep 30 && /bin/sh /grafana-setup.sh"]
+
+networks:
+  monitor:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  player-targets-data:
+  grafana-data:
+  mysql-data:
+  zabbix-server-data:
+  librenms-db-data:
+  librenms-data:
