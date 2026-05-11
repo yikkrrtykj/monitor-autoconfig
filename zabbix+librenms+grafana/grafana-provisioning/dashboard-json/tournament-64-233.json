@@ -361,6 +361,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -391,7 +392,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -407,7 +408,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -430,13 +431,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -444,7 +449,7 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 0,
         "y": 6
@@ -460,7 +465,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -607,6 +612,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -637,7 +643,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -653,7 +659,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -676,13 +682,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -690,7 +700,7 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 4,
         "y": 6
@@ -706,7 +716,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -853,6 +863,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -883,7 +894,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -899,7 +910,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -922,13 +933,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -936,7 +951,7 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 8,
         "y": 6
@@ -952,7 +967,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -1099,6 +1114,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -1129,7 +1145,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -1145,7 +1161,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -1168,13 +1184,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -1182,7 +1202,7 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 12,
         "y": 6
@@ -1198,7 +1218,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -1345,6 +1365,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -1375,7 +1396,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -1391,7 +1412,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -1414,13 +1435,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -1428,7 +1453,7 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 16,
         "y": 6
@@ -1444,7 +1469,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -1591,6 +1616,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -1621,7 +1647,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -1637,7 +1663,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -1660,13 +1686,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -1674,7 +1704,7 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 20,
         "y": 6
@@ -1690,7 +1720,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -1787,7 +1817,7 @@
         "h": 2,
         "w": 4,
         "x": 0,
-        "y": 11
+        "y": 16
       },
       "id": 305,
       "options": {
@@ -1837,6 +1867,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -1867,7 +1898,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -1883,7 +1914,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -1906,13 +1937,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -1920,10 +1955,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 0,
-        "y": 13
+        "y": 18
       },
       "id": 355,
       "options": {
@@ -1936,7 +1971,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -2033,7 +2068,7 @@
         "h": 2,
         "w": 4,
         "x": 4,
-        "y": 11
+        "y": 16
       },
       "id": 306,
       "options": {
@@ -2083,6 +2118,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -2113,7 +2149,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -2129,7 +2165,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -2152,13 +2188,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -2166,10 +2206,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 4,
-        "y": 13
+        "y": 18
       },
       "id": 356,
       "options": {
@@ -2182,7 +2222,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -2279,7 +2319,7 @@
         "h": 2,
         "w": 4,
         "x": 8,
-        "y": 11
+        "y": 16
       },
       "id": 307,
       "options": {
@@ -2329,6 +2369,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -2359,7 +2400,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -2375,7 +2416,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -2398,13 +2439,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -2412,10 +2457,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 8,
-        "y": 13
+        "y": 18
       },
       "id": 357,
       "options": {
@@ -2428,7 +2473,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -2525,7 +2570,7 @@
         "h": 2,
         "w": 4,
         "x": 12,
-        "y": 11
+        "y": 16
       },
       "id": 308,
       "options": {
@@ -2575,6 +2620,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -2605,7 +2651,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -2621,7 +2667,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -2644,13 +2690,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -2658,10 +2708,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 12,
-        "y": 13
+        "y": 18
       },
       "id": 358,
       "options": {
@@ -2674,7 +2724,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -2771,7 +2821,7 @@
         "h": 2,
         "w": 4,
         "x": 16,
-        "y": 11
+        "y": 16
       },
       "id": 309,
       "options": {
@@ -2821,6 +2871,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -2851,7 +2902,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -2867,7 +2918,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -2890,13 +2941,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -2904,10 +2959,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 16,
-        "y": 13
+        "y": 18
       },
       "id": 359,
       "options": {
@@ -2920,7 +2975,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -3017,7 +3072,7 @@
         "h": 2,
         "w": 4,
         "x": 20,
-        "y": 11
+        "y": 16
       },
       "id": 310,
       "options": {
@@ -3067,6 +3122,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -3097,7 +3153,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -3113,7 +3169,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -3136,13 +3192,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -3150,10 +3210,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 4,
         "x": 20,
-        "y": 13
+        "y": 18
       },
       "id": 360,
       "options": {
@@ -3166,7 +3226,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -3263,7 +3323,7 @@
         "h": 2,
         "w": 6,
         "x": 0,
-        "y": 18
+        "y": 28
       },
       "id": 501,
       "options": {
@@ -3313,6 +3373,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -3343,7 +3404,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -3359,7 +3420,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -3382,13 +3443,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -3396,10 +3461,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 6,
         "x": 0,
-        "y": 20
+        "y": 30
       },
       "id": 551,
       "options": {
@@ -3412,7 +3477,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -3509,7 +3574,7 @@
         "h": 2,
         "w": 6,
         "x": 6,
-        "y": 18
+        "y": 28
       },
       "id": 502,
       "options": {
@@ -3559,6 +3624,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -3589,7 +3655,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -3605,7 +3671,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -3628,13 +3694,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -3642,10 +3712,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 6,
         "x": 6,
-        "y": 20
+        "y": 30
       },
       "id": 552,
       "options": {
@@ -3658,7 +3728,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -3755,7 +3825,7 @@
         "h": 2,
         "w": 6,
         "x": 12,
-        "y": 18
+        "y": 28
       },
       "id": 503,
       "options": {
@@ -3805,6 +3875,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -3835,7 +3906,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -3851,7 +3922,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -3874,13 +3945,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -3888,10 +3963,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 6,
         "x": 12,
-        "y": 20
+        "y": 30
       },
       "id": 553,
       "options": {
@@ -3904,7 +3979,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -4001,7 +4076,7 @@
         "h": 2,
         "w": 6,
         "x": 18,
-        "y": 18
+        "y": 28
       },
       "id": 504,
       "options": {
@@ -4051,6 +4126,7 @@
             "cellOptions": {
               "type": "auto"
             },
+            "filterable": false,
             "inspect": false
           },
           "mappings": [],
@@ -4081,7 +4157,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 54
+                "value": 34
               },
               {
                 "id": "custom.align",
@@ -4097,7 +4173,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 118
+                "value": 108
               },
               {
                 "id": "custom.align",
@@ -4120,13 +4196,17 @@
                 "value": 1
               },
               {
+                "id": "custom.width",
+                "value": 62
+              },
+              {
                 "id": "custom.align",
                 "value": "right"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "auto"
                 }
               }
             ]
@@ -4134,10 +4214,10 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 10,
         "w": 6,
         "x": 18,
-        "y": 20
+        "y": 30
       },
       "id": 554,
       "options": {
@@ -4150,7 +4230,7 @@
           ],
           "show": false
         },
-        "showHeader": true,
+        "showHeader": false,
         "sortBy": [
           {
             "desc": false,
@@ -4250,5 +4330,5 @@
   "timezone": "browser",
   "title": "Tournament 64 (3 层 233)",
   "uid": "tournament-64-233",
-  "version": 5
+  "version": 6
 }

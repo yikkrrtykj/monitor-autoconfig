@@ -230,3 +230,14 @@ class TestBuildWirelessScanTargets:
             team_size=5,
         )
         assert [item["targets"][0] for item in result] == ["172.16.40.10", "172.16.40.11"]
+
+
+class TestWirelessScanExclusions:
+    def test_gateway_like_ips_excludes_first_and_last_host(self):
+        result = gpt.gateway_like_ips([IPv4Network("172.16.40.0/24")])
+        assert "172.16.40.1" in result
+        assert "172.16.40.254" in result
+        assert "172.16.40.2" not in result
+
+    def test_gateway_like_ips_keeps_tiny_subnets(self):
+        assert gpt.gateway_like_ips([IPv4Network("172.16.40.0/30")]) == set()

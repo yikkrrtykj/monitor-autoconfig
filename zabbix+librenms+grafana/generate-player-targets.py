@@ -21,6 +21,11 @@ Environment variables:
   PLAYER_WIRELESS_SCAN_LIMIT
                          max wireless scan targets to keep; 0 means unlimited
                          (default: 0)
+  PLAYER_WIRELESS_SCAN_EXCLUDE
+                         comma-separated IPs to exclude from wireless scan
+  PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS
+                         true/false, skip first and last host in each
+                         wireless subnet (default: true)
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,6 +45,7 @@ STATIC_TEAM_RE = re.compile(r"(?:team\s*)?0*(\d+)\s*[-_]\s*0*(\d+)$", re.IGNOREC
 VALID_NETWORKS = {"wired", "wireless"}
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
+FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def snmpwalk(host, community, oid, timeout=15):
@@ -132,7 +138,12 @@ def env_bool(name, default=False):
     raw = os.environ.get(name, "")
     if not raw:
         return default
-    return raw.strip().lower() in TRUE_VALUES
+    value = raw.strip().lower()
+    if value in TRUE_VALUES:
+        return True
+    if value in FALSE_VALUES:
+        return False
+    return default
 
 
 def env_int(name, default, minimum=None, maximum=None):
@@ -245,6 +256,32 @@ def limited_items(items, limit=0):
     return items
 
 
+def load_excluded_ips(env_var):
+    raw = os.environ.get(env_var, "")
+    excluded = set()
+    if not raw:
+        return excluded
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            excluded.add(str(IPv4Address(item)))
+        except ValueError:
+            print(f"[WARN] invalid excluded IP: {item}", file=sys.stderr)
+    return excluded
+
+
+def gateway_like_ips(subnets):
+    excluded = set()
+    for net in subnets:
+        hosts = list(net.hosts())
+        if len(hosts) > 2:
+            excluded.add(str(hosts[0]))
+            excluded.add(str(hosts[-1]))
+    return excluded
+
+
 def build_wireless_scan_targets(ips, limit=0, team_size=5):
     targets = []
     unique_ips = sorted({str(IPv4Address(ip)) for ip in ips}, key=IPv4Address)
@@ -264,13 +301,14 @@ def build_wireless_scan_targets(ips, limit=0, team_size=5):
     return targets
 
 
-def discover_wireless_scan_ips(subnets, limit=0, timeout=1, workers=64, max_hosts=512):
+def discover_wireless_scan_ips(subnets, limit=0, timeout=1, workers=64, max_hosts=512, excluded_ips=None):
     if not subnets:
         return []
 
+    excluded_ips = excluded_ips or set()
     candidates = []
     for net in subnets:
-        hosts = list(net.hosts())
+        hosts = [ip for ip in net.hosts() if str(ip) not in excluded_ips]
         if len(hosts) > max_hosts:
             print(
                 f"[WARN] wireless scan subnet {net} has {len(hosts)} hosts; scanning first {max_hosts}",
@@ -314,6 +352,9 @@ def main():
     wireless_scan_timeout = env_int_alias("PLAYER_WIRELESS_SCAN_TIMEOUT", "PLAYER_WIRELESS_PREVIEW_TIMEOUT", 1, minimum=1, maximum=5)
     wireless_scan_workers = env_int_alias("PLAYER_WIRELESS_SCAN_WORKERS", "PLAYER_WIRELESS_PREVIEW_WORKERS", 64, minimum=1, maximum=256)
     wireless_scan_max_hosts = env_int_alias("PLAYER_WIRELESS_SCAN_MAX_HOSTS", "PLAYER_WIRELESS_PREVIEW_MAX_HOSTS", 512, minimum=1, maximum=4096)
+    wireless_scan_exclude = load_excluded_ips("PLAYER_WIRELESS_SCAN_EXCLUDE")
+    if env_bool("PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS", default=True):
+        wireless_scan_exclude.update(gateway_like_ips(wireless_nets))
     output_file = os.environ.get("PLAYER_TARGETS_FILE", "/etc/prometheus/player_targets.json")
 
     all_targets = []
@@ -325,6 +366,7 @@ def main():
             timeout=wireless_scan_timeout,
             workers=wireless_scan_workers,
             max_hosts=wireless_scan_max_hosts,
+            excluded_ips=wireless_scan_exclude,
         )
         scan_targets = build_wireless_scan_targets(
             scan_ips,
