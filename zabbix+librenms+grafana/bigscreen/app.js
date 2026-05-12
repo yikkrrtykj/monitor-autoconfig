@@ -680,6 +680,11 @@
   function renderNav(activePage) {
     const nav = document.getElementById("screenNav");
     if (!nav) return;
+    nav.hidden = activePage.id !== "home";
+    if (nav.hidden) {
+      nav.innerHTML = "";
+      return;
+    }
     nav.innerHTML = pages.map((page) => `
       <a href="${page.path}" ${page.id === activePage.id ? 'aria-current="page"' : ""}>${escapeHtml(page.label)}</a>
     `).join("");
@@ -696,8 +701,7 @@
   }
 
   function renderHeader(page) {
-    const baseTitle = titleText();
-    const title = page && page.id !== "infra" ? page.title : baseTitle;
+    const title = titleText();
     const logoText = config.logoText || "";
     const brand = document.getElementById("brand");
     setText("screenTitle", title);
@@ -705,7 +709,7 @@
     setText("logoText", logoText);
     setText("brandMark", logoText ? logoText.slice(0, 1).toUpperCase() : "");
     brand.hidden = !logoText;
-    document.title = page && page.id !== "infra" ? `${page.title} - ${baseTitle}` : title;
+    document.title = title;
   }
 
   function stopInfraRefresh() {

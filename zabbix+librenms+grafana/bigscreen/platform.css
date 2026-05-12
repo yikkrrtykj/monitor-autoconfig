@@ -15,6 +15,10 @@
   min-width: 0;
 }
 
+.screen-nav[hidden] {
+  display: none;
+}
+
 .screen-nav a {
   display: inline-flex;
   align-items: center;
@@ -92,9 +96,13 @@
   font-style: normal;
 }
 
+.screen.infra-mode {
+  grid-template-rows: 104px 1fr;
+}
+
 .screen.tournament-mode {
   grid-template-columns: minmax(360px, 33vw) minmax(0, 1fr);
-  grid-template-rows: 116px 1fr;
+  grid-template-rows: 104px 1fr;
   column-gap: 12px;
 }
 
