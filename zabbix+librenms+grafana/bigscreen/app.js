@@ -8,7 +8,7 @@
   const pages = [
     { id: "home", path: "/", label: "首页", title: "选择大屏", description: "选择现场正在使用的比赛面板" },
     { id: "infra", path: "/infra", label: "网络总览", title: "网络总览", description: "只显示核心网络、丢包和 ISP 流量" },
-    { id: "evidence", path: "/evidence", label: "卡顿取证", title: "卡顿取证", description: "按队伍座位复盘延迟和断线" },
+    { id: "evidence", path: "/latency", label: "延迟查询", title: "延迟查询", description: "按队伍座位查询延迟和断线" },
     { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "5v5 对战", description: "舞台左 vs 舞台右", kind: "match", teams: [1, 2], teamSize: 5 },
     { id: "tournament-6", path: "/tournament-6", label: "6队", title: "6 队赛", description: "6 队比赛布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6], teamSize: 5, groups: [[1, 2, 3, 4, 5, 6]] },
     { id: "tournament-64-2layer", path: "/tournament-64-2layer", label: "64人 2层", title: "64 人二层", description: "16 队四人布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[9, 10, 11, 12, 13, 14, 15, 16], [1, 2, 3, 4, 5, 6, 7, 8]] },
@@ -57,6 +57,7 @@
   function pageFromPath() {
     const path = window.location.pathname.replace(/\/+$/, "") || "/";
     if (path === "/index.html") return pages[0];
+    if (path === "/evidence") return pages.find((page) => page.id === "evidence") || pages[0];
     return pages.find((page) => page.path === path) || pages[0];
   }
 
@@ -734,9 +735,12 @@
     const centerDate = atInput && atInput.value ? new Date(atInput.value) : new Date();
     const center = Number.isFinite(centerDate.getTime()) ? centerDate.getTime() / 1000 : Date.now() / 1000;
     const minutes = Math.max(1, Number(windowInput && windowInput.value ? windowInput.value : 10));
+    const now = Math.floor(Date.now() / 1000);
+    const end = Math.min(Math.floor(center + minutes * 60), now);
+    const start = Math.floor(center - minutes * 60);
     return {
-      start: Math.floor(center - minutes * 60),
-      end: Math.floor(center + minutes * 60),
+      start: start <= end ? start : Math.max(0, end - minutes * 60),
+      end,
       step: 5
     };
   }
@@ -822,7 +826,7 @@
     const network = document.getElementById("evidenceNetwork").value || "wired";
     const queryWindow = evidenceWindow();
     const selector = evidenceSelector(team, seat, network);
-    const label = `Team ${team} S${seat} ${network}`;
+    const label = `Team ${team} S${seat} ${network} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`;
 
     renderNoData(document.getElementById("evidenceLatencyChart"), "Loading");
     renderNoData(document.getElementById("evidenceSuccessChart"), "Loading");
