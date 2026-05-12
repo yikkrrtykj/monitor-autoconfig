@@ -57,6 +57,38 @@
           <div class="chart-body" id="tournamentTrendChart"></div>
         </section>
       </section>
+      <section class="evidence-panel" id="evidencePanel" aria-label="卡顿取证" hidden>
+        <form class="evidence-controls" id="evidenceForm">
+          <label>队伍 <input id="evidenceTeam" type="number" min="1" max="16" value="1" /></label>
+          <label>座位 <input id="evidenceSeat" type="number" min="1" max="5" value="1" /></label>
+          <label>网络
+            <select id="evidenceNetwork">
+              <option value="wired">wired</option>
+              <option value="wireless">wireless</option>
+              <option value="all">all</option>
+            </select>
+          </label>
+          <label>中心时间 <input id="evidenceAt" type="datetime-local" /></label>
+          <label>窗口
+            <select id="evidenceWindow">
+              <option value="5">±5 分钟</option>
+              <option value="10">±10 分钟</option>
+              <option value="15">±15 分钟</option>
+              <option value="30">±30 分钟</option>
+            </select>
+          </label>
+          <button type="submit">查询</button>
+        </form>
+        <div class="evidence-summary" id="evidenceSummary"></div>
+        <section class="chart-panel evidence-latency-panel" aria-labelledby="evidenceLatencyTitle">
+          <h2 id="evidenceLatencyTitle">延迟证据</h2>
+          <div class="chart-body" id="evidenceLatencyChart"></div>
+        </section>
+        <section class="chart-panel evidence-success-panel" aria-labelledby="evidenceSuccessTitle">
+          <h2 id="evidenceSuccessTitle">在线状态</h2>
+          <div class="chart-body" id="evidenceSuccessChart"></div>
+        </section>
+      </section>
     </main>
     <script src="./config.js"></script>
     <script src="./app.js"></script>

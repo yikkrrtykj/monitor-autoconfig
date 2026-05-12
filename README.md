@@ -24,7 +24,7 @@ Docker Compose 一键部署的赛事网络监控栈，**Zabbix + LibreNMS + Prom
 
 MariaDB 内部账户（`mysql root` 等）只在容器网络内可达，不暴露到宿主机端口，可以维持默认。
 
-`BIGSCREEN_PORT` 默认会开放一个只读展示页，适合内网大屏。第一排 Ping/Uptime 由大屏页面直接从 Prometheus 读取，设备名显示在仪表下方；下面的趋势和 ISP 图嵌入 Grafana solo panel，不显示 Grafana 搜索、Share、Edit 等后台控件。页面依赖 Grafana 匿名 Viewer 和 iframe 嵌入能力；如果机器暴露到不可信网络，请把 `GRAFANA_ANONYMOUS_ENABLED=false`，或只允许现场内网访问 8088/3000 端口。
+`BIGSCREEN_PORT` 默认会开放一个只读展示页，适合内网大屏。8088 大屏是原生页面，直接读取 Prometheus API，不显示 Grafana 搜索、Share、Edit 等后台控件；Grafana 仍然保留给运维编辑 dashboard 和临时排查。机器如果暴露到不可信网络，请只允许现场内网访问 8088/3000 端口，并及时修改上面的默认密码。
 
 ## 一、装 Docker
 
@@ -126,7 +126,30 @@ chmod +x deploy.sh
 http://服务器IP:8088
 ```
 
-现场电视 / 投屏电脑打开这个地址后按 `F11` 全屏。这个页面只是展示外壳，里面嵌入同一个 Grafana dashboard 的 solo panels；运维自己需要编辑时仍然进 `http://服务器IP:3000`。
+现场电视 / 投屏电脑打开这个地址后按 `F11` 全屏。这个页面直接从 Prometheus 读取数据并自己渲染，运维需要编辑 Grafana dashboard 时仍然进 `http://服务器IP:3000`。
+
+首页会列出所有大屏入口：`网络总览`、`5v5`、`6队`、三种 `64人` 摆法，以及 `卡顿取证`。进入比赛大屏后不会再显示切换按钮，避免现场误点。
+
+如果选手说“卡了”，打开：
+
+```text
+http://服务器IP:8088/evidence
+```
+
+按 `队伍 + 座位 + 网络 + 中心时间 + 窗口` 查询。取证页会同时显示：
+
+- 延迟证据：这个时间窗口内该选手的 ping 延迟趋势，曲线做了平滑，方便给裁判/选手看整体变化。
+- 在线状态：`probe_success` 的在线/失败采样；在线率不是 100% 或失败时长大于 0，就可以说明这个窗口内确实有断线/探测失败。
+- 结论卡片：自动汇总平均延迟、最高延迟、在线率、失败时长，适合截图留证。
+
+Grafana 里手动查同一件事时，用这两类 PromQL：
+
+```promql
+probe_icmp_duration_seconds{role="player",team="1",seat="3",network="wired",phase="rtt"} * 1000
+probe_success{role="player",team="1",seat="3",network="wired"}
+```
+
+`team` / `seat` 对应交换机 description 里的 `teamX-Y`；无线扫描不知道真实座位时，会按 IP 排序临时分配座位，只适合看“有多少人连 WiFi”和大概延迟状态。
 
 ### 4. 跑赛前自检
 

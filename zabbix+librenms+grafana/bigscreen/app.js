@@ -8,6 +8,7 @@
   const pages = [
     { id: "home", path: "/", label: "首页", title: "选择大屏", description: "选择现场正在使用的比赛面板" },
     { id: "infra", path: "/infra", label: "网络总览", title: "网络总览", description: "只显示核心网络、丢包和 ISP 流量" },
+    { id: "evidence", path: "/evidence", label: "卡顿取证", title: "卡顿取证", description: "按队伍座位复盘延迟和断线" },
     { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "5v5 对战", description: "舞台左 vs 舞台右", kind: "match", teams: [1, 2], teamSize: 5 },
     { id: "tournament-6", path: "/tournament-6", label: "6队", title: "6 队赛", description: "6 队比赛布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6], teamSize: 5, groups: [[1, 2, 3, 4, 5, 6]] },
     { id: "tournament-64-2layer", path: "/tournament-64-2layer", label: "64人 2层", title: "64 人二层", description: "16 队四人布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[9, 10, 11, 12, 13, 14, 15, 16], [1, 2, 3, 4, 5, 6, 7, 8]] },
@@ -106,10 +107,10 @@
       .filter((item) => Number.isFinite(item.value));
   }
 
-  async function prometheusRange(query, nameGetter = metricName) {
+  async function prometheusRangeFor(query, window, nameGetter = metricName) {
     const params = new URLSearchParams({
       query,
-      ...Object.fromEntries(Object.entries(rangeWindow()).map(([key, value]) => [key, String(value)]))
+      ...Object.fromEntries(Object.entries(window).map(([key, value]) => [key, String(value)]))
     });
     const response = await fetch(`${prometheusBaseUrl()}/api/v1/query_range?${params.toString()}`, { cache: "no-store" });
     if (!response.ok) {
@@ -129,6 +130,10 @@
       }))
       .filter((item) => item.values.length)
       .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  }
+
+  async function prometheusRange(query, nameGetter = metricName) {
+    return prometheusRangeFor(query, rangeWindow(), nameGetter);
   }
 
   function formatPing(seconds) {
@@ -718,6 +723,156 @@
     }
   }
 
+  function dateTimeInputValue(date) {
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  }
+
+  function evidenceWindow() {
+    const atInput = document.getElementById("evidenceAt");
+    const windowInput = document.getElementById("evidenceWindow");
+    const centerDate = atInput && atInput.value ? new Date(atInput.value) : new Date();
+    const center = Number.isFinite(centerDate.getTime()) ? centerDate.getTime() / 1000 : Date.now() / 1000;
+    const minutes = Math.max(1, Number(windowInput && windowInput.value ? windowInput.value : 10));
+    return {
+      start: Math.floor(center - minutes * 60),
+      end: Math.floor(center + minutes * 60),
+      step: 5
+    };
+  }
+
+  function evidenceSelector(team, seat, network) {
+    const networkFilter = network === "all" ? 'network=~".*"' : `network="${escapeLabel(network)}"`;
+    return `role="player",team="${escapeLabel(team)}",seat="${escapeLabel(seat)}",${networkFilter}`;
+  }
+
+  function evidenceSeriesName(metric) {
+    const seat = metric.seat ? `S${metric.seat}` : "";
+    const ip = metric.instance || "";
+    const network = metric.network ? ` ${metric.network}` : "";
+    return `${seat} ${ip}${network}`.trim() || "player";
+  }
+
+  function flattenSeriesValues(seriesList) {
+    return seriesList.flatMap((series) => series.values.map((point) => point.v)).filter((value) => Number.isFinite(value));
+  }
+
+  function estimateStepSeconds(seriesList) {
+    const times = seriesList.flatMap((series) => series.values.map((point) => point.t)).sort((a, b) => a - b);
+    const gaps = [];
+    for (let index = 1; index < times.length; index += 1) {
+      const gap = times[index] - times[index - 1];
+      if (gap > 0 && gap < 300) gaps.push(gap);
+    }
+    return gaps.length ? Math.round(average(gaps)) : 5;
+  }
+
+  function evidenceVerdict(latencyValues, successValues) {
+    const maxLatency = latencyValues.length ? Math.max(...latencyValues) : null;
+    const avgLatency = latencyValues.length ? average(latencyValues) : null;
+    const failCount = successValues.filter((value) => value < 0.5).length;
+
+    if (!latencyValues.length && !successValues.length) {
+      return { level: "unknown", text: "没有查到数据", detail: "这个时间窗口内 Prometheus 没有这名选手的采样。" };
+    }
+    if (failCount > 0) {
+      return { level: "bad", text: "存在断线/探测失败", detail: "在线状态出现失败采样，可以直接截图给裁判确认。" };
+    }
+    if (avgLatency !== null && avgLatency >= 0.08) {
+      return { level: "bad", text: "持续高延迟", detail: "平均延迟已经超过 80 ms，属于明显异常。" };
+    }
+    if (maxLatency !== null && maxLatency >= 0.1) {
+      return { level: "warn", text: "有高延迟尖峰", detail: "最高延迟超过 100 ms，可能对应玩家口中的卡顿瞬间。" };
+    }
+    if (maxLatency !== null && maxLatency >= 0.04) {
+      return { level: "warn", text: "有轻微抖动", detail: "有 40 ms 以上波动，建议结合现场体验判断。" };
+    }
+    return { level: "good", text: "未见明显网络异常", detail: "这个窗口内延迟和在线状态都比较稳定。" };
+  }
+
+  function renderEvidenceSummary(context, latencySeries, successSeries) {
+    const container = document.getElementById("evidenceSummary");
+    const latencyValues = flattenSeriesValues(latencySeries);
+    const successValues = flattenSeriesValues(successSeries);
+    const verdict = evidenceVerdict(latencyValues, successValues);
+    const maxLatency = latencyValues.length ? formatPingText(Math.max(...latencyValues)) : "-";
+    const avgLatency = latencyValues.length ? formatPingText(average(latencyValues)) : "-";
+    const onlineRate = successValues.length ? `${(average(successValues) * 100).toFixed(1)}%` : "-";
+    const failCount = successValues.filter((value) => value < 0.5).length;
+    const offlineSeconds = failCount ? `${Math.round(failCount * estimateStepSeconds(successSeries))}s` : "0s";
+
+    container.innerHTML = `
+      <div class="evidence-verdict ${verdict.level}">
+        <span>${escapeHtml(context.label)}</span>
+        <strong>${escapeHtml(verdict.text)}</strong>
+        <em>${escapeHtml(verdict.detail)}</em>
+      </div>
+      <div class="evidence-kpis">
+        <div><span>平均延迟</span><strong>${escapeHtml(avgLatency)}</strong></div>
+        <div><span>最高延迟</span><strong>${escapeHtml(maxLatency)}</strong></div>
+        <div><span>在线率</span><strong>${escapeHtml(onlineRate)}</strong></div>
+        <div><span>失败时长</span><strong>${escapeHtml(offlineSeconds)}</strong></div>
+      </div>
+    `;
+  }
+
+  async function queryEvidence() {
+    const team = document.getElementById("evidenceTeam").value || "1";
+    const seat = document.getElementById("evidenceSeat").value || "1";
+    const network = document.getElementById("evidenceNetwork").value || "wired";
+    const queryWindow = evidenceWindow();
+    const selector = evidenceSelector(team, seat, network);
+    const label = `Team ${team} S${seat} ${network}`;
+
+    renderNoData(document.getElementById("evidenceLatencyChart"), "Loading");
+    renderNoData(document.getElementById("evidenceSuccessChart"), "Loading");
+
+    try {
+      const [latencySeries, successSeries] = await Promise.all([
+        prometheusRangeFor(`probe_icmp_duration_seconds{${selector},phase="rtt"}`, queryWindow, evidenceSeriesName),
+        prometheusRangeFor(`probe_success{${selector}}`, queryWindow, evidenceSeriesName)
+      ]);
+      renderEvidenceSummary({ label }, latencySeries, successSeries);
+      renderLineChart("evidenceLatencyChart", latencySeries, {
+        axisFormatter: formatPingText,
+        valueFormatter: formatPingText,
+        minMax: 0.005,
+        smooth: true,
+        smoothWindow: 5,
+        legend: "bottom"
+      });
+      renderLineChart("evidenceSuccessChart", successSeries.map((series) => ({ ...series, color: "#73d17a" })), {
+        axisFormatter: (value) => `${Math.round(value * 100)}%`,
+        valueFormatter: (value) => `${Math.round(value * 100)}%`,
+        minMax: 1,
+        smooth: false,
+        fill: true,
+        legend: "bottom"
+      });
+    } catch (error) {
+      renderNoData(document.getElementById("evidenceSummary"), "Prometheus query failed");
+      renderNoData(document.getElementById("evidenceLatencyChart"));
+      renderNoData(document.getElementById("evidenceSuccessChart"));
+      console.error(error);
+    }
+  }
+
+  function setupEvidencePanel() {
+    const atInput = document.getElementById("evidenceAt");
+    const form = document.getElementById("evidenceForm");
+    if (atInput && !atInput.value) {
+      atInput.value = dateTimeInputValue(new Date());
+    }
+    if (form && !form.dataset.bound) {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        queryEvidence();
+      });
+      form.dataset.bound = "1";
+    }
+    queryEvidence();
+  }
+
   function renderNav() {
     const nav = document.getElementById("screenNav");
     if (!nav) return;
@@ -805,6 +960,7 @@
     setVisible("homePanel", true);
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
+    setVisible("evidencePanel", false);
     renderHomeCards();
   }
 
@@ -815,6 +971,7 @@
     setVisible("homePanel", false);
     setVisible("panelGrid", true);
     setVisible("tournamentPanel", false);
+    setVisible("evidencePanel", false);
     startInfraRefresh();
   }
 
@@ -824,9 +981,22 @@
     setVisible("homePanel", false);
     setVisible("panelGrid", true);
     setVisible("tournamentPanel", true);
+    setVisible("evidencePanel", false);
     document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
     startInfraRefresh();
     startTournamentRefresh(page);
+  }
+
+  function showEvidence() {
+    const screen = document.querySelector(".screen");
+    stopInfraRefresh();
+    stopTournamentRefresh();
+    screen.className = "screen evidence-mode";
+    setVisible("homePanel", false);
+    setVisible("panelGrid", false);
+    setVisible("tournamentPanel", false);
+    setVisible("evidencePanel", true);
+    setupEvidencePanel();
   }
 
   function renderPage() {
@@ -837,6 +1007,8 @@
     activePageId = page.id;
     if (page.id === "home") {
       showHome();
+    } else if (page.id === "evidence") {
+      showEvidence();
     } else if (page.kind) {
       showTournament(page);
     } else {
