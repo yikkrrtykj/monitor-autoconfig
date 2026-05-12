@@ -459,7 +459,7 @@ services:
           [ -f /config/.env ] || return 0
           line="$$(grep -E "^[[:space:]]*$${key}[[:space:]]*=" /config/.env | tail -n 1 || true)"
           [ -n "$$line" ] || return 0
-          value="$$(printf '%s' "$$line" | sed -E "s/^[[:space:]]*$${key}[[:space:]]*=[[:space:]]*//; s/\r$$//")"
+          value="$$(printf '%s' "$$line" | sed -E "s/^[[:space:]]*$${key}[[:space:]]*=[[:space:]]*//; s/[[:space:]]+#.*$$//; s/[[:space:]]*\r?$$//")"
           export "$$key=$$value"
         }
 
