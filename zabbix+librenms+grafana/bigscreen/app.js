@@ -295,8 +295,8 @@
     const width = Math.max(320, Math.round(box.width || container.clientWidth || 1000));
     const height = Math.max(150, Math.round(box.height || container.clientHeight || 260));
     const pad = {
-      left: width < 520 ? 58 : 76,
-      right: 14,
+      left: options.axisPadLeft || (width < 520 ? 64 : 76),
+      right: options.axisPadRight || 14,
       top: 12,
       bottom: height < 190 ? 24 : 30
     };
@@ -442,6 +442,8 @@
       renderLineChart(`ispChart${index}`, [result.download, result.upload], {
         axisFormatter: formatBits,
         valueFormatter: formatBits,
+        axisPadLeft: 92,
+        axisPadRight: 8,
         fill: true,
         legend: "bottom",
         minMax: 1
