@@ -766,7 +766,7 @@
               "viz": false
             },
             "insertNulls": false,
-            "lineInterpolation": "linear",
+            "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 4,
             "scaleDistribution": {
@@ -831,7 +831,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}[1m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -865,7 +865,7 @@
               "viz": false
             },
             "insertNulls": false,
-            "lineInterpolation": "linear",
+            "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 4,
             "scaleDistribution": {
@@ -930,7 +930,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}[1m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -964,7 +964,7 @@
               "viz": false
             },
             "insertNulls": false,
-            "lineInterpolation": "linear",
+            "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 4,
             "scaleDistribution": {
@@ -1029,7 +1029,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"3\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"3\",network=~\"$network\",phase=\"rtt\"}[1m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -1063,7 +1063,7 @@
               "viz": false
             },
             "insertNulls": false,
-            "lineInterpolation": "linear",
+            "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 4,
             "scaleDistribution": {
@@ -1128,7 +1128,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"4\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"4\",network=~\"$network\",phase=\"rtt\"}[1m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -1162,7 +1162,7 @@
               "viz": false
             },
             "insertNulls": false,
-            "lineInterpolation": "linear",
+            "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 4,
             "scaleDistribution": {
@@ -1227,7 +1227,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"5\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"5\",network=~\"$network\",phase=\"rtt\"}[1m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -1261,7 +1261,7 @@
               "viz": false
             },
             "insertNulls": false,
-            "lineInterpolation": "linear",
+            "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 4,
             "scaleDistribution": {
@@ -1326,7 +1326,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"6\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"6\",network=~\"$network\",phase=\"rtt\"}[1m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
