@@ -778,10 +778,6 @@
 
   function renderHomeCards() {
     const modeGrid = document.getElementById("modeGrid");
-    const homeTitle = document.getElementById("homeHeroTitle");
-    const homeSubtitle = document.getElementById("homeHeroSubtitle");
-    if (homeTitle) homeTitle.textContent = "选择大屏";
-    if (homeSubtitle) homeSubtitle.textContent = titleText();
     modeGrid.innerHTML = pages
       .filter((page) => page.id !== "home")
       .map((page, index) => `
