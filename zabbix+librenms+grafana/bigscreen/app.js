@@ -291,9 +291,15 @@
       return;
     }
 
-    const width = 1000;
-    const height = 260;
-    const pad = { left: 84, right: 16, top: 14, bottom: 30 };
+    const box = container.getBoundingClientRect();
+    const width = Math.max(320, Math.round(box.width || container.clientWidth || 1000));
+    const height = Math.max(150, Math.round(box.height || container.clientHeight || 260));
+    const pad = {
+      left: width < 520 ? 58 : 76,
+      right: 14,
+      top: 12,
+      bottom: height < 190 ? 24 : 30
+    };
     const plotWidth = width - pad.left - pad.right;
     const plotHeight = height - pad.top - pad.bottom;
     const times = series.flatMap((item) => item.values.map((point) => point.t));
@@ -347,7 +353,7 @@
 
     container.innerHTML = `
       <div class="line-layout ${options.legend === "bottom" ? "bottom-layout" : "side-layout"}">
-        <svg class="line-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" focusable="false">
+        <svg class="line-chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" focusable="false">
           ${timeGridLines}
           ${gridLines}
           ${paths}
