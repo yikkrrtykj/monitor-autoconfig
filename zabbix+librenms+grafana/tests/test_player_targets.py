@@ -4,6 +4,7 @@ Pure functions only. Module is loaded via importlib because the script
 ships with hyphens in its filename (matching its container path).
 """
 import importlib.util
+import os
 import pathlib
 import sys
 from ipaddress import IPv4Network
@@ -233,6 +234,43 @@ class TestBuildWirelessScanTargets:
 
 
 class TestWirelessScanExclusions:
+    def test_exclude_single_ip(self):
+        assert gpt.parse_excluded_ip_item("172.16.40.220") == {"172.16.40.220"}
+
+    def test_exclude_short_last_octet_range(self):
+        result = gpt.parse_excluded_ip_item("172.16.40.220-224")
+        assert result == {
+            "172.16.40.220",
+            "172.16.40.221",
+            "172.16.40.222",
+            "172.16.40.223",
+            "172.16.40.224",
+        }
+
+    def test_exclude_full_ip_range(self):
+        result = gpt.parse_excluded_ip_item("172.16.40.252-172.16.40.254")
+        assert result == {"172.16.40.252", "172.16.40.253", "172.16.40.254"}
+
+    def test_load_excluded_ips_accepts_mixed_items(self):
+        os.environ["TEST_WIRELESS_EXCLUDE"] = "172.16.40.220-222,172.16.40.10"
+        try:
+            result = gpt.load_excluded_ips("TEST_WIRELESS_EXCLUDE")
+        finally:
+            os.environ.pop("TEST_WIRELESS_EXCLUDE", None)
+        assert result == {
+            "172.16.40.10",
+            "172.16.40.220",
+            "172.16.40.221",
+            "172.16.40.222",
+        }
+
+    def test_exclude_reversed_range_is_invalid(self):
+        try:
+            gpt.parse_excluded_ip_item("172.16.40.254-220")
+        except ValueError:
+            return
+        assert False, "expected ValueError"
+
     def test_gateway_like_ips_excludes_first_and_last_host(self):
         result = gpt.gateway_like_ips([IPv4Network("172.16.40.0/24")])
         assert "172.16.40.1" in result

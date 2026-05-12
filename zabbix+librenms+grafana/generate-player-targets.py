@@ -22,7 +22,8 @@ Environment variables:
                          max wireless scan targets to keep; 0 means unlimited
                          (default: 0)
   PLAYER_WIRELESS_SCAN_EXCLUDE
-                         comma-separated IPs to exclude from wireless scan
+                         comma-separated IPs/ranges to exclude from wireless
+                         scan (e.g. 192.168.12.220-254)
   PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS
                          true/false, skip first and last host in each
                          wireless subnet (default: true)
@@ -256,6 +257,34 @@ def limited_items(items, limit=0):
     return items
 
 
+def expand_ip_range(item):
+    start_raw, end_raw = [part.strip() for part in item.split("-", 1)]
+    start = IPv4Address(start_raw)
+    if re.fullmatch(r"\d{1,3}", end_raw):
+        end_octet = int(end_raw)
+        if end_octet > 255:
+            raise ValueError("range end octet out of bounds")
+        prefix = start_raw.rsplit(".", 1)[0]
+        end = IPv4Address(f"{prefix}.{end_octet}")
+    else:
+        end = IPv4Address(end_raw)
+
+    if int(end) < int(start):
+        raise ValueError("range end before start")
+
+    size = int(end) - int(start) + 1
+    if size > 4096:
+        raise ValueError("range too large")
+
+    return {str(IPv4Address(int(start) + offset)) for offset in range(size)}
+
+
+def parse_excluded_ip_item(item):
+    if "-" in item:
+        return expand_ip_range(item)
+    return {str(IPv4Address(item))}
+
+
 def load_excluded_ips(env_var):
     raw = os.environ.get(env_var, "")
     excluded = set()
@@ -266,9 +295,9 @@ def load_excluded_ips(env_var):
         if not item:
             continue
         try:
-            excluded.add(str(IPv4Address(item)))
+            excluded.update(parse_excluded_ip_item(item))
         except ValueError:
-            print(f"[WARN] invalid excluded IP: {item}", file=sys.stderr)
+            print(f"[WARN] invalid excluded IP/range: {item}", file=sys.stderr)
     return excluded
 
 
