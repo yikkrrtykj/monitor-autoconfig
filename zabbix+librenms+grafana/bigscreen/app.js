@@ -1,6 +1,6 @@
 (function () {
   const config = window.BIGSCREEN_CONFIG || {};
-  const pingRawQuery = 'avg by (instance) (probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"})';
+  const pingTrendQuery = 'avg by (instance) (avg_over_time(probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[1m]))';
   const pingGaugeQuery = 'avg by (instance) (quantile_over_time(0.5, probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[1m]))';
   const uptimeQuery = 'max by (instance) (sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"} / 100) or max by (instance) ((sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance=~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"} / 100) unless on(target_ip) sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"})';
   const lossQuery = 'max by (instance) (1 - probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping"})';
@@ -203,6 +203,31 @@
     container.innerHTML = `<div class="no-data">${message || "No data"}</div>`;
   }
 
+  function linePathFromPoints(points, smooth) {
+    if (!points.length) return "";
+    if (!smooth || points.length < 3) {
+      return `M ${points.join(" L ")}`;
+    }
+
+    const coords = points.map((point) => {
+      const [x, y] = point.split(",").map(Number);
+      return { x, y };
+    });
+    const commands = [`M ${points[0]}`];
+    for (let index = 0; index < coords.length - 1; index += 1) {
+      const current = coords[index];
+      const next = coords[index + 1];
+      const previous = coords[index - 1] || current;
+      const afterNext = coords[index + 2] || next;
+      const cp1x = current.x + (next.x - previous.x) / 6;
+      const cp1y = current.y + (next.y - previous.y) / 6;
+      const cp2x = next.x - (afterNext.x - current.x) / 6;
+      const cp2y = next.y - (afterNext.y - current.y) / 6;
+      commands.push(`C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${next.x.toFixed(1)},${next.y.toFixed(1)}`);
+    }
+    return commands.join(" ");
+  }
+
   function renderLineChart(containerId, seriesList, options) {
     const container = document.getElementById(containerId);
     const series = seriesList.filter((item) => item.values.length);
@@ -242,7 +267,7 @@
     const paths = series.map((item, index) => {
       const color = item.color || seriesColors[index % seriesColors.length];
       const points = item.values.map((point) => `${xOf(point.t).toFixed(1)},${yOf(point.v).toFixed(1)}`);
-      const linePath = `M ${points.join(" L ")}`;
+      const linePath = linePathFromPoints(points, options.smooth);
       const areaPath = options.fill
         ? `${linePath} L ${xOf(item.values[item.values.length - 1].t).toFixed(1)},${height - pad.bottom} L ${xOf(item.values[0].t).toFixed(1)},${height - pad.bottom} Z`
         : "";
@@ -381,14 +406,15 @@
   async function refreshCharts() {
     try {
       const [pingSeries, lossSeries, ispTraffic] = await Promise.all([
-        prometheusRange(pingRawQuery),
+        prometheusRange(pingTrendQuery),
         prometheusRange(lossQuery),
         fetchIspTraffic()
       ]);
       renderLineChart("pingTrendChart", pingSeries, {
         axisFormatter: formatPingText,
         valueFormatter: formatPingText,
-        minMax: 0.005
+        minMax: 0.005,
+        smooth: true
       });
       renderHeatmap("lossHeatmap", lossSeries);
       renderIspPanels(ispTraffic);
