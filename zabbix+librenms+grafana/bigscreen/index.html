@@ -25,7 +25,7 @@
         </time>
       </header>
 
-      <section class="panel-grid" aria-label="监控面板">
+      <section class="panel-grid" id="panelGrid" aria-label="监控面板">
         <section class="panel custom-panel ping-panel" aria-labelledby="pingTitle">
           <h2 id="pingTitle">Ping</h2>
           <div class="gauge-grid" id="pingGaugeGrid"></div>
@@ -44,8 +44,16 @@
         </section>
         <div class="isp-grid" id="ispGrid"></div>
       </section>
-      <section class="dashboard-frame-panel" id="dashboardFramePanel" aria-label="比赛面板" hidden>
-        <iframe class="dashboard-frame" id="dashboardFrame" title="比赛面板"></iframe>
+      <section class="home-panel" id="homePanel" aria-label="大屏选择" hidden>
+        <div class="mode-grid" id="modeGrid"></div>
+      </section>
+      <section class="tournament-panel" id="tournamentPanel" aria-label="比赛面板" hidden>
+        <div class="tournament-summary" id="tournamentSummary"></div>
+        <div class="tournament-board" id="tournamentBoard"></div>
+        <section class="chart-panel tournament-trend-panel" aria-labelledby="tournamentTrendTitle">
+          <h2 id="tournamentTrendTitle">选手延迟趋势</h2>
+          <div class="chart-body" id="tournamentTrendChart"></div>
+        </section>
       </section>
     </main>
     <script src="./config.js"></script>

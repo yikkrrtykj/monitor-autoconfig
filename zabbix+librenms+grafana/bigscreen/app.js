@@ -6,15 +6,17 @@
   const lossQuery = 'max by (instance) (1 - probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping"})';
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
   const pages = [
-    { id: "infra", path: "/infra", label: "网络总览", title: "网络总览" },
-    { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "Match 5v5", uid: "match-5v5", slug: "match-5v5" },
-    { id: "tournament-6", path: "/tournament-6", label: "6队", title: "Tournament 6 队", uid: "tournament-6teams", slug: "tournament-6-teams" },
-    { id: "tournament-64-2layer", path: "/tournament-64-2layer", label: "64人 2层", title: "Tournament 64 (2 层)", uid: "tournament-64-2layer", slug: "tournament-64-2layer" },
-    { id: "tournament-64-233", path: "/tournament-64-233", label: "64人 233", title: "Tournament 64 (3 层 233)", uid: "tournament-64-233", slug: "tournament-64-233" },
-    { id: "tournament-64-332", path: "/tournament-64-332", label: "64人 332", title: "Tournament 64 (3 层 332)", uid: "tournament-64-332", slug: "tournament-64-332" }
+    { id: "home", path: "/", label: "首页", title: "选择大屏", description: "选择现场正在使用的比赛面板" },
+    { id: "infra", path: "/infra", label: "网络总览", title: "网络总览", description: "只显示核心网络、丢包和 ISP 流量" },
+    { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "Match 5v5", description: "舞台左 vs 舞台右", kind: "match", teams: [1, 2], teamSize: 5 },
+    { id: "tournament-6", path: "/tournament-6", label: "6队", title: "Tournament 6 队", description: "6 队比赛布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6], teamSize: 5, groups: [[1, 2, 3, 4, 5, 6]] },
+    { id: "tournament-64-2layer", path: "/tournament-64-2layer", label: "64人 2层", title: "Tournament 64 (2 层)", description: "64 人 2 层摆法", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[9, 10, 11, 12, 13, 14, 15, 16], [1, 2, 3, 4, 5, 6, 7, 8]] },
+    { id: "tournament-64-233", path: "/tournament-64-233", label: "64人 233", title: "Tournament 64 (3 层 233)", description: "64 人 3 层 2-3-3 摆法", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[11, 12, 13, 14, 15, 16], [5, 6, 7, 8, 9, 10], [1, 2, 3, 4]] },
+    { id: "tournament-64-332", path: "/tournament-64-332", label: "64人 332", title: "Tournament 64 (3 层 332)", description: "64 人 3 层 3-3-2 摆法", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[13, 14, 15, 16], [7, 8, 9, 10, 11, 12], [1, 2, 3, 4, 5, 6]] }
   ];
   let gaugeTimer = null;
   let chartTimer = null;
+  let tournamentTimer = null;
   let activePageId = "";
 
   function setText(id, value) {
@@ -51,29 +53,9 @@
     return "/prometheus";
   }
 
-  function grafanaBaseUrl() {
-    if (config.grafanaBaseUrl) {
-      return config.grafanaBaseUrl.replace(/\/$/, "");
-    }
-    const port = config.grafanaPort || "3000";
-    const portPart = port ? `:${port}` : "";
-    return `${window.location.protocol}//${window.location.hostname}${portPart}`;
-  }
-
-  function dashboardUrl(page) {
-    const params = new URLSearchParams({
-      orgId: "1",
-      from: "now-15m",
-      to: "now",
-      refresh: "5s",
-      theme: "dark"
-    });
-    return `${grafanaBaseUrl()}/d/${page.uid}/${page.slug}?${params.toString()}&kiosk`;
-  }
-
   function pageFromPath() {
     const path = window.location.pathname.replace(/\/+$/, "") || "/";
-    if (path === "/" || path === "/index.html") return pages[0];
+    if (path === "/index.html") return pages[0];
     return pages.find((page) => page.path === path) || pages[0];
   }
 
@@ -106,7 +88,25 @@
       .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }
 
-  async function prometheusRange(query) {
+  async function prometheusInstant(query) {
+    const url = `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}`;
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Prometheus HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    if (payload.status !== "success") {
+      throw new Error("Prometheus query failed");
+    }
+    return payload.data.result
+      .map((item) => ({
+        metric: item.metric || {},
+        value: Number(item.value[1])
+      }))
+      .filter((item) => Number.isFinite(item.value));
+  }
+
+  async function prometheusRange(query, nameGetter = metricName) {
     const params = new URLSearchParams({
       query,
       ...Object.fromEntries(Object.entries(rangeWindow()).map(([key, value]) => [key, String(value)]))
@@ -121,7 +121,8 @@
     }
     return payload.data.result
       .map((item) => ({
-        name: metricName(item.metric),
+        name: nameGetter(item.metric || {}),
+        metric: item.metric || {},
         values: item.values
           .map(([timestamp, value]) => ({ t: Number(timestamp), v: Number(value) }))
           .filter((point) => Number.isFinite(point.t) && Number.isFinite(point.v))
@@ -442,6 +443,201 @@
     });
   }
 
+  function teamName(page, team) {
+    const teamNumber = Number(team);
+    if (page.id === "match-5v5") {
+      if (teamNumber === 1) return "舞台左";
+      if (teamNumber === 2) return "舞台右";
+    }
+    return `Team ${teamNumber}`;
+  }
+
+  function tournamentSelector(page) {
+    const teamRegex = (page.teams || []).join("|");
+    const teamFilter = teamRegex ? `,team=~"${teamRegex}"` : "";
+    return `role="player",network=~".*"${teamFilter}`;
+  }
+
+  function playerKey(metric) {
+    return [metric.team || "", metric.seat || "", metric.instance || "", metric.network || ""].join("|");
+  }
+
+  function isGatewayAddress(ip) {
+    return /\.(?:1|254)$/.test(String(ip || ""));
+  }
+
+  function buildPlayers(latencyItems, successItems) {
+    const byKey = new Map();
+    successItems.forEach((item) => {
+      if (isGatewayAddress(item.metric.instance)) return;
+      byKey.set(playerKey(item.metric), {
+        team: Number(item.metric.team || 0),
+        seat: Number(item.metric.seat || 0),
+        ip: item.metric.instance || "",
+        network: item.metric.network || "",
+        success: item.value >= 1,
+        latency: null
+      });
+    });
+    latencyItems.forEach((item) => {
+      if (isGatewayAddress(item.metric.instance)) return;
+      const key = playerKey(item.metric);
+      const player = byKey.get(key) || {
+        team: Number(item.metric.team || 0),
+        seat: Number(item.metric.seat || 0),
+        ip: item.metric.instance || "",
+        network: item.metric.network || "",
+        success: true,
+        latency: null
+      };
+      player.latency = item.value;
+      byKey.set(key, player);
+    });
+    return Array.from(byKey.values())
+      .filter((player) => player.team > 0 && player.seat > 0 && player.ip)
+      .sort((a, b) => a.team - b.team || a.seat - b.seat || a.ip.localeCompare(b.ip));
+  }
+
+  function latencyLevel(player) {
+    if (!player || !player.success) return "offline";
+    if (!Number.isFinite(player.latency)) return "unknown";
+    if (player.latency >= 0.08) return "bad";
+    if (player.latency >= 0.04) return "warn";
+    return "good";
+  }
+
+  function renderTournamentSummary(page, players) {
+    const online = players.filter((player) => player.success).length;
+    const high = players.filter((player) => player.success && Number.isFinite(player.latency) && player.latency >= 0.08).length;
+    const total = players.length;
+    const offline = Math.max(0, total - online);
+    const values = [
+      ["在线", online, "good"],
+      ["离线", offline, offline ? "bad" : "good"],
+      ["高延迟", high, high ? "warn" : "good"],
+      ["总计", total, "info"]
+    ];
+    document.getElementById("tournamentSummary").innerHTML = values.map(([label, value, level]) => `
+      <div class="tournament-kpi ${level}">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </div>
+    `).join("");
+  }
+
+  function playersByTeam(players) {
+    const grouped = new Map();
+    players.forEach((player) => {
+      if (!grouped.has(player.team)) grouped.set(player.team, []);
+      grouped.get(player.team).push(player);
+    });
+    return grouped;
+  }
+
+  function expectedSeats(page, teamPlayers) {
+    const maxSeat = Math.max(0, ...teamPlayers.map((player) => player.seat));
+    return Math.max(page.teamSize || 0, maxSeat);
+  }
+
+  function renderSeatSlot(player, seat) {
+    if (!player) {
+      return `
+        <div class="seat-slot empty">
+          <span>S${seat}</span>
+          <strong>-</strong>
+          <em>未连接</em>
+        </div>
+      `;
+    }
+    const level = latencyLevel(player);
+    const latency = Number.isFinite(player.latency) ? formatPingText(player.latency) : "-";
+    return `
+      <div class="seat-slot ${level}">
+        <span>S${player.seat}</span>
+        <strong>${escapeHtml(latency)}</strong>
+        <em>${escapeHtml(player.ip)}</em>
+      </div>
+    `;
+  }
+
+  function renderTeamCard(page, team, teamPlayers) {
+    const bySeat = new Map(teamPlayers.map((player) => [player.seat, player]));
+    const seatCount = expectedSeats(page, teamPlayers);
+    const seats = Array.from({ length: seatCount }, (_, index) => index + 1);
+    const online = teamPlayers.filter((player) => player.success).length;
+    const latencies = teamPlayers
+      .filter((player) => player.success && Number.isFinite(player.latency))
+      .map((player) => player.latency);
+    const avg = latencies.length ? formatPingText(average(latencies)) : "-";
+    return `
+      <article class="team-card">
+        <header>
+          <h3>${escapeHtml(teamName(page, team))}</h3>
+          <span>${online}/${Math.max(seatCount, teamPlayers.length)}</span>
+        </header>
+        <div class="team-avg">${escapeHtml(avg)}</div>
+        <div class="seat-grid">
+          ${seats.map((seat) => renderSeatSlot(bySeat.get(seat), seat)).join("")}
+        </div>
+      </article>
+    `;
+  }
+
+  function renderTournamentBoard(page, players) {
+    const grouped = playersByTeam(players);
+    const board = document.getElementById("tournamentBoard");
+    if (page.kind === "match") {
+      board.className = "tournament-board match-board";
+      board.innerHTML = [1, 2].map((team) => renderTeamCard(page, team, grouped.get(team) || [])).join('<div class="versus">VS</div>');
+      return;
+    }
+
+    board.className = `tournament-board team-board ${page.id}`;
+    board.innerHTML = (page.groups || [page.teams || []]).map((group) => `
+      <div class="team-row" style="--team-count:${group.length}">
+        ${group.map((team) => renderTeamCard(page, team, grouped.get(team) || [])).join("")}
+      </div>
+    `).join("");
+  }
+
+  function tournamentTrendQuery(page) {
+    const selector = tournamentSelector(page);
+    if (page.kind === "match") {
+      return `avg by (team,seat,instance) (avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[3m]))`;
+    }
+    return `avg by (team) (avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[3m]))`;
+  }
+
+  async function refreshTournament(page) {
+    try {
+      const selector = tournamentSelector(page);
+      const [latencyItems, successItems, trendSeries] = await Promise.all([
+        prometheusInstant(`probe_icmp_duration_seconds{${selector},phase="rtt"}`),
+        prometheusInstant(`probe_success{${selector}}`),
+        prometheusRange(tournamentTrendQuery(page), (metric) => {
+          if (page.kind === "match") {
+            return `${teamName(page, metric.team)} S${metric.seat || "?"} ${metric.instance || ""}`.trim();
+          }
+          return teamName(page, metric.team);
+        })
+      ]);
+      const players = buildPlayers(latencyItems, successItems);
+      renderTournamentSummary(page, players);
+      renderTournamentBoard(page, players);
+      renderLineChart("tournamentTrendChart", trendSeries, {
+        axisFormatter: formatPingText,
+        valueFormatter: formatPingText,
+        minMax: 0.005,
+        smooth: true,
+        smoothWindow: 5
+      });
+    } catch (error) {
+      renderNoData(document.getElementById("tournamentBoard"), "No player data");
+      renderNoData(document.getElementById("tournamentTrendChart"));
+      console.error(error);
+    }
+  }
+
   async function refreshGauges() {
     try {
       const [pingItems, uptimeItems] = await Promise.all([
@@ -523,6 +719,13 @@
     }
   }
 
+  function stopTournamentRefresh() {
+    if (tournamentTimer) {
+      window.clearInterval(tournamentTimer);
+      tournamentTimer = null;
+    }
+  }
+
   function startInfraRefresh() {
     if (gaugeTimer || chartTimer) return;
     refreshGauges();
@@ -531,30 +734,69 @@
     chartTimer = window.setInterval(refreshCharts, 5000);
   }
 
+  function startTournamentRefresh(page) {
+    stopTournamentRefresh();
+    refreshTournament(page);
+    tournamentTimer = window.setInterval(() => refreshTournament(page), 5000);
+  }
+
+  function setVisible(id, visible) {
+    const element = document.getElementById(id);
+    if (element) {
+      element.hidden = !visible;
+    }
+  }
+
+  function renderHomeCards() {
+    const modeGrid = document.getElementById("modeGrid");
+    modeGrid.innerHTML = pages
+      .filter((page) => page.id !== "home")
+      .map((page) => `
+        <a class="mode-card" href="${page.path}">
+          <span>${escapeHtml(page.label)}</span>
+          <strong>${escapeHtml(page.title)}</strong>
+          <em>${escapeHtml(page.description || "")}</em>
+        </a>
+      `).join("");
+    modeGrid.querySelectorAll("a").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        window.history.pushState({}, "", link.getAttribute("href"));
+        renderPage();
+      });
+    });
+  }
+
+  function showHome() {
+    const screen = document.querySelector(".screen");
+    stopInfraRefresh();
+    stopTournamentRefresh();
+    screen.className = "screen home-mode";
+    setVisible("homePanel", true);
+    setVisible("panelGrid", false);
+    setVisible("tournamentPanel", false);
+    renderHomeCards();
+  }
+
   function showInfra() {
     const screen = document.querySelector(".screen");
-    const framePanel = document.getElementById("dashboardFramePanel");
-    const frame = document.getElementById("dashboardFrame");
-    screen.classList.remove("dashboard-mode");
-    framePanel.hidden = true;
-    if (frame.getAttribute("src")) {
-      frame.setAttribute("src", "about:blank");
-    }
+    stopTournamentRefresh();
+    screen.className = "screen infra-mode";
+    setVisible("homePanel", false);
+    setVisible("panelGrid", true);
+    setVisible("tournamentPanel", false);
     startInfraRefresh();
   }
 
-  function showDashboard(page) {
+  function showTournament(page) {
     const screen = document.querySelector(".screen");
-    const framePanel = document.getElementById("dashboardFramePanel");
-    const frame = document.getElementById("dashboardFrame");
-    stopInfraRefresh();
-    screen.classList.add("dashboard-mode");
-    framePanel.hidden = false;
-    const nextUrl = dashboardUrl(page);
-    if (frame.getAttribute("src") !== nextUrl) {
-      frame.setAttribute("src", nextUrl);
-    }
-    frame.setAttribute("title", page.title);
+    screen.className = `screen tournament-mode ${page.kind === "match" ? "match-mode" : "multi-team-mode"} ${page.id}`;
+    setVisible("homePanel", false);
+    setVisible("panelGrid", true);
+    setVisible("tournamentPanel", true);
+    document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
+    startInfraRefresh();
+    startTournamentRefresh(page);
   }
 
   function renderPage() {
@@ -563,8 +805,10 @@
     renderNav(page);
     if (page.id === activePageId) return;
     activePageId = page.id;
-    if (page.uid) {
-      showDashboard(page);
+    if (page.id === "home") {
+      showHome();
+    } else if (page.kind) {
+      showTournament(page);
     } else {
       showInfra();
     }
