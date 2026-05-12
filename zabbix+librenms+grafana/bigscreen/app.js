@@ -1,6 +1,6 @@
 (function () {
   const config = window.BIGSCREEN_CONFIG || {};
-  const pingTrendQuery = 'avg by (instance) (avg_over_time(probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[1m]))';
+  const pingTrendQuery = 'avg by (instance) (avg_over_time(probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[3m]))';
   const pingGaugeQuery = 'avg by (instance) (quantile_over_time(0.5, probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[1m]))';
   const uptimeQuery = 'max by (instance) (sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"} / 100) or max by (instance) ((sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance=~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"} / 100) unless on(target_ip) sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"})';
   const lossQuery = 'max by (instance) (1 - probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping"})';
@@ -228,9 +228,26 @@
     return commands.join(" ");
   }
 
+  function smoothValues(values, windowSize) {
+    if (!windowSize || windowSize < 2 || values.length < 3) {
+      return values;
+    }
+
+    return values.map((point, index) => {
+      const start = Math.max(0, index - windowSize + 1);
+      const window = values.slice(start, index + 1).map((item) => item.v);
+      return { ...point, v: average(window) };
+    });
+  }
+
   function renderLineChart(containerId, seriesList, options) {
     const container = document.getElementById(containerId);
-    const series = seriesList.filter((item) => item.values.length);
+    const series = seriesList
+      .filter((item) => item.values.length)
+      .map((item) => ({
+        ...item,
+        values: smoothValues(item.values, options.smoothWindow)
+      }));
     if (!series.length) {
       renderNoData(container);
       return;
@@ -414,7 +431,8 @@
         axisFormatter: formatPingText,
         valueFormatter: formatPingText,
         minMax: 0.005,
-        smooth: true
+        smooth: true,
+        smoothWindow: 5
       });
       renderHeatmap("lossHeatmap", lossSeries);
       renderIspPanels(ispTraffic);
