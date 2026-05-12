@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./platform.css" />
   </head>
   <body>
     <main class="screen">
@@ -16,6 +17,7 @@
         <div class="headline">
           <h1 id="screenTitle">网络监控大屏</h1>
           <div id="screenSubtitle" class="subtitle"></div>
+          <nav class="screen-nav" id="screenNav" aria-label="页面导航"></nav>
         </div>
         <time class="clock" aria-live="polite">
           <span id="dateText">---- -- --</span>
@@ -41,6 +43,9 @@
           <div class="chart-body" id="lossHeatmap"></div>
         </section>
         <div class="isp-grid" id="ispGrid"></div>
+      </section>
+      <section class="dashboard-frame-panel" id="dashboardFramePanel" aria-label="比赛面板" hidden>
+        <iframe class="dashboard-frame" id="dashboardFrame" title="比赛面板"></iframe>
       </section>
     </main>
     <script src="./config.js"></script>

@@ -5,6 +5,17 @@
   const uptimeQuery = 'max by (instance) (sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"} / 100) or max by (instance) ((sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance=~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"} / 100) unless on(target_ip) sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"})';
   const lossQuery = 'max by (instance) (1 - probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping"})';
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
+  const pages = [
+    { id: "infra", path: "/infra", label: "网络总览", title: "网络总览" },
+    { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "Match 5v5", uid: "match-5v5", slug: "match-5v5" },
+    { id: "tournament-6", path: "/tournament-6", label: "6队", title: "Tournament 6 队", uid: "tournament-6teams", slug: "tournament-6-teams" },
+    { id: "tournament-64-2layer", path: "/tournament-64-2layer", label: "64人 2层", title: "Tournament 64 (2 层)", uid: "tournament-64-2layer", slug: "tournament-64-2layer" },
+    { id: "tournament-64-233", path: "/tournament-64-233", label: "64人 233", title: "Tournament 64 (3 层 233)", uid: "tournament-64-233", slug: "tournament-64-233" },
+    { id: "tournament-64-332", path: "/tournament-64-332", label: "64人 332", title: "Tournament 64 (3 层 332)", uid: "tournament-64-332", slug: "tournament-64-332" }
+  ];
+  let gaugeTimer = null;
+  let chartTimer = null;
+  let activePageId = "";
 
   function setText(id, value) {
     const element = document.getElementById(id);
@@ -38,6 +49,32 @@
       return config.prometheusBaseUrl.replace(/\/$/, "");
     }
     return "/prometheus";
+  }
+
+  function grafanaBaseUrl() {
+    if (config.grafanaBaseUrl) {
+      return config.grafanaBaseUrl.replace(/\/$/, "");
+    }
+    const port = config.grafanaPort || "3000";
+    const portPart = port ? `:${port}` : "";
+    return `${window.location.protocol}//${window.location.hostname}${portPart}`;
+  }
+
+  function dashboardUrl(page) {
+    const params = new URLSearchParams({
+      orgId: "1",
+      from: "now-15m",
+      to: "now",
+      refresh: "5s",
+      theme: "dark"
+    });
+    return `${grafanaBaseUrl()}/d/${page.uid}/${page.slug}?${params.toString()}&kiosk`;
+  }
+
+  function pageFromPath() {
+    const path = window.location.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/" || path === "/index.html") return pages[0];
+    return pages.find((page) => page.path === path) || pages[0];
   }
 
   function metricName(metric) {
@@ -444,8 +481,27 @@
     }
   }
 
-  function renderHeader() {
-    const title = titleText();
+  function renderNav(activePage) {
+    const nav = document.getElementById("screenNav");
+    if (!nav) return;
+    nav.innerHTML = pages.map((page) => `
+      <a href="${page.path}" ${page.id === activePage.id ? 'aria-current="page"' : ""}>${escapeHtml(page.label)}</a>
+    `).join("");
+    nav.querySelectorAll("a").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        const nextPath = link.getAttribute("href");
+        if (nextPath && nextPath !== window.location.pathname) {
+          window.history.pushState({}, "", nextPath);
+        }
+        renderPage();
+      });
+    });
+  }
+
+  function renderHeader(page) {
+    const baseTitle = titleText();
+    const title = page && page.id !== "infra" ? page.title : baseTitle;
     const logoText = config.logoText || "";
     const brand = document.getElementById("brand");
     setText("screenTitle", title);
@@ -453,7 +509,65 @@
     setText("logoText", logoText);
     setText("brandMark", logoText ? logoText.slice(0, 1).toUpperCase() : "");
     brand.hidden = !logoText;
-    document.title = title;
+    document.title = page && page.id !== "infra" ? `${page.title} - ${baseTitle}` : title;
+  }
+
+  function stopInfraRefresh() {
+    if (gaugeTimer) {
+      window.clearInterval(gaugeTimer);
+      gaugeTimer = null;
+    }
+    if (chartTimer) {
+      window.clearInterval(chartTimer);
+      chartTimer = null;
+    }
+  }
+
+  function startInfraRefresh() {
+    if (gaugeTimer || chartTimer) return;
+    refreshGauges();
+    refreshCharts();
+    gaugeTimer = window.setInterval(refreshGauges, 5000);
+    chartTimer = window.setInterval(refreshCharts, 5000);
+  }
+
+  function showInfra() {
+    const screen = document.querySelector(".screen");
+    const framePanel = document.getElementById("dashboardFramePanel");
+    const frame = document.getElementById("dashboardFrame");
+    screen.classList.remove("dashboard-mode");
+    framePanel.hidden = true;
+    if (frame.getAttribute("src")) {
+      frame.setAttribute("src", "about:blank");
+    }
+    startInfraRefresh();
+  }
+
+  function showDashboard(page) {
+    const screen = document.querySelector(".screen");
+    const framePanel = document.getElementById("dashboardFramePanel");
+    const frame = document.getElementById("dashboardFrame");
+    stopInfraRefresh();
+    screen.classList.add("dashboard-mode");
+    framePanel.hidden = false;
+    const nextUrl = dashboardUrl(page);
+    if (frame.getAttribute("src") !== nextUrl) {
+      frame.setAttribute("src", nextUrl);
+    }
+    frame.setAttribute("title", page.title);
+  }
+
+  function renderPage() {
+    const page = pageFromPath();
+    renderHeader(page);
+    renderNav(page);
+    if (page.id === activePageId) return;
+    activePageId = page.id;
+    if (page.uid) {
+      showDashboard(page);
+    } else {
+      showInfra();
+    }
   }
 
   function tick() {
@@ -472,11 +586,8 @@
     }).format(now));
   }
 
-  renderHeader();
-  refreshGauges();
-  refreshCharts();
+  renderPage();
   tick();
-  window.setInterval(refreshGauges, 5000);
-  window.setInterval(refreshCharts, 5000);
   window.setInterval(tick, 1000);
+  window.addEventListener("popstate", renderPage);
 })();
