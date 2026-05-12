@@ -1,21 +1,20 @@
 # monitor-autoconfig
 
-Docker Compose 一键部署的赛事网络监控栈，**Zabbix + LibreNMS + Prometheus + Grafana** 自动发现 + 模板化告警，专为短期出差赛事设计：clone → 改 IP → 起服务 → 自检 → 用一阵子 → 拆机回收。
-
+Docker Compose 一键部署的赛事网络监控栈
 ## 服务
 
 | 服务 | 默认端口 | 用户 / 密码 | 用途 |
 |---|---|---|---|
 | Grafana | 3000 | admin / root | 大屏 dashboard，比赛中实时看 |
-| 对外展示大屏 | 8088 | 无需登录（只读） | 给领导 / 观众 / 现场屏幕看 |
+| 对外展示大屏 | 8088 | 无需登录 | 给大屏看 |
 | Zabbix | 8001 | Admin / zabbix | 防火墙告警 + 飞书推送 |
 | LibreNMS | 8002 | admin / admin | 交换机自动发现 + 拓扑图 |
 
 ## ⚠️ 安全提醒
 
-上表里的默认账户密码**只适合内网临时使用**。任何对外网络可达、需要存活超过一场赛事、或共享给他人的部署，都必须改：
+上表里的默认账户密码**只适合内网临时使用**。
 
-| 服务 | 默认 | 改在哪 |
+| 服务 | 默认 | 改 |
 |---|---|---|
 | Grafana 管理员 | `admin / root` | `.env` 里 `GRAFANA_PASSWORD`（首次起服务前改） |
 | LibreNMS 管理员 | `admin / admin` | `.env` 里 `LIBRENMS_ADMIN_PASSWORD` |
@@ -23,8 +22,6 @@ Docker Compose 一键部署的赛事网络监控栈，**Zabbix + LibreNMS + Prom
 | SNMP community | `global` | `.env` 里 `SNMP_COMMUNITY` + 交换机 / 防火墙 SNMP 配置同步改 |
 
 MariaDB 内部账户（`mysql root` 等）只在容器网络内可达，不暴露到宿主机端口，可以维持默认。
-
-`BIGSCREEN_PORT` 默认会开放一个只读展示页，适合内网大屏。8088 大屏是原生页面，直接读取 Prometheus API，不显示 Grafana 搜索、Share、Edit 等后台控件；Grafana 仍然保留给运维编辑 dashboard 和临时排查。机器如果暴露到不可信网络，请只允许现场内网访问 8088/3000 端口，并及时修改上面的默认密码。
 
 ## 一、装 Docker
 
@@ -66,21 +63,21 @@ vi .env
 
 ```bash
 SERVER_IP=                 # 监控服务器自身 IP
-EVENT_NAME=                # 赛事名，留空则大屏标题显示“网络监控大屏”
+EVENT_NAME=                # 留空则大屏标题显示“网络监控大屏”
 LIBRENMS_BASE_URL=http://${SERVER_IP}:8002
 
-# 给别人看的大屏
+# 大屏
 BIGSCREEN_TITLE=           # 留空时自动使用“EVENT_NAME 网络监控大屏”
-BIGSCREEN_LOGO_TEXT=       # 可选，比如品牌名；留空则不显示左侧 logo
+BIGSCREEN_LOGO_TEXT=       # 可选；留空则不显示左侧 logo
 BIGSCREEN_ISP_NAMES=ISP1,ISP2
 
-# 基础设施 ping（Name:IP 格式，逗号分隔，支持 1-10 范围）
+# 基础设施 ping（Name:IP 格式，逗号分隔）
 CORE_SWITCH_PING=Core:192.168.10.254
 DIST_SWITCH_PING=SW1:192.168.10.11,SW2:192.168.10.12
 FIREWALL_PING=FW1:192.168.1.1,FW2:192.168.1.2
 SERVER_PING=Server:192.168.10.10
 
-# 防火墙 SNMP（建议用 Name:IP；如果只写 IP，会优先继承 FIREWALL_PING 里同 IP 的名字）
+# 防火墙 SNMP（建议用 Name:IP）
 FIREWALL_SNMP_TARGETS=FW1:192.168.1.1,FW2:192.168.1.2
 
 # LibreNMS 自动发现
@@ -120,7 +117,7 @@ chmod +x deploy.sh
 
 首次 5-8 分钟（拉镜像 + DB 初始化 + 自动配置）。`deploy.sh` 会先串行拉镜像并自动重试，避免 Docker Hub / CDN 偶发 502 导致整次部署中断。
 
-### 3.1 打开给别人看的大屏
+### 3.1 大屏
 
 ```text
 http://服务器IP:8088
@@ -129,20 +126,6 @@ http://服务器IP:8088
 现场电视 / 投屏电脑打开这个地址后按 `F11` 全屏。这个页面直接从 Prometheus 读取数据并自己渲染，运维需要编辑 Grafana dashboard 时仍然进 `http://服务器IP:3000`。
 
 首页会列出所有大屏入口：`网络总览`、`5v5`、`6队`、三种 `64人` 摆法，以及 `延迟查询`。进入比赛大屏后不会再显示切换按钮，避免现场误点。
-
-如果选手说“卡了”，打开：
-
-```text
-http://服务器IP:8088/latency
-```
-
-按 `队伍 + 座位 + 网络 + 查询时间 + 窗口` 查询。延迟查询页会同时显示：
-
-- 延迟趋势：这个时间窗口内该选手的 ping 延迟趋势，曲线做了平滑，方便给裁判/选手看整体变化。
-- 在线状态：`probe_success` 的在线/失败采样；在线率不是 100% 或失败时长大于 0，就可以说明这个窗口内确实有断线/探测失败。
-- 汇总卡片：自动汇总平均延迟、最高延迟、在线率、失败时长，适合截图给裁判/选手确认。
-
-窗口含义是“查询时间前后 N 分钟”。如果查询时间接近当前时间，结束时间会自动封顶到当前时间，避免图表画到未来。
 
 Grafana 里手动查同一件事时，用这两类 PromQL：
 
@@ -218,15 +201,11 @@ sudo rm -rf mysql-data zabbix-server-data \
             librenms-rrdcached-journal
 ```
 
-要 `sudo` 是因为 `init-permissions` 容器把这些目录 chown 给了容器内 UID（grafana=472、zabbix=1997 等），普通用户删不掉。
-
 **仓库本身也删**：
 
 ```bash
 cd .. && rm -rf monitor-autoconfig
 ```
-
-到这一步服务器上完全没痕迹，可以放心给别人。
 
 数据要带走的话先备份再清：
 
@@ -238,5 +217,4 @@ tar czf monitor-backup-$(date +%Y%m%d).tar.gz \
 ```
 
 注意 `prometheus-data/` 和 `grafana-data/` 是命名卷，不在仓库目录里——Prometheus 数据短期赛事不值得带（默认 15d 保留），Grafana dashboard 都在 git 里随 `grafana-provisioning/` 走。
-
-下次新场子直接 `git clone` + `cp .env.example .env` 重头来。
+下次新场直接 `git clone` + `cp .env.example .env` 重头来。
