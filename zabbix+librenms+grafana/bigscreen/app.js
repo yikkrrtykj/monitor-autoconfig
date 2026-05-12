@@ -8,11 +8,11 @@
   const pages = [
     { id: "home", path: "/", label: "首页", title: "选择大屏", description: "选择现场正在使用的比赛面板" },
     { id: "infra", path: "/infra", label: "网络总览", title: "网络总览", description: "只显示核心网络、丢包和 ISP 流量" },
-    { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "Match 5v5", description: "舞台左 vs 舞台右", kind: "match", teams: [1, 2], teamSize: 5 },
-    { id: "tournament-6", path: "/tournament-6", label: "6队", title: "Tournament 6 队", description: "6 队比赛布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6], teamSize: 5, groups: [[1, 2, 3, 4, 5, 6]] },
-    { id: "tournament-64-2layer", path: "/tournament-64-2layer", label: "64人 2层", title: "Tournament 64 (2 层)", description: "64 人 2 层摆法", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[9, 10, 11, 12, 13, 14, 15, 16], [1, 2, 3, 4, 5, 6, 7, 8]] },
-    { id: "tournament-64-233", path: "/tournament-64-233", label: "64人 233", title: "Tournament 64 (3 层 233)", description: "64 人 3 层 2-3-3 摆法", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[11, 12, 13, 14, 15, 16], [5, 6, 7, 8, 9, 10], [1, 2, 3, 4]] },
-    { id: "tournament-64-332", path: "/tournament-64-332", label: "64人 332", title: "Tournament 64 (3 层 332)", description: "64 人 3 层 3-3-2 摆法", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[13, 14, 15, 16], [7, 8, 9, 10, 11, 12], [1, 2, 3, 4, 5, 6]] }
+    { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "5v5 对战", description: "舞台左 vs 舞台右", kind: "match", teams: [1, 2], teamSize: 5 },
+    { id: "tournament-6", path: "/tournament-6", label: "6队", title: "6 队赛", description: "6 队比赛布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6], teamSize: 5, groups: [[1, 2, 3, 4, 5, 6]] },
+    { id: "tournament-64-2layer", path: "/tournament-64-2layer", label: "64人 2层", title: "64 人二层", description: "16 队四人布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[9, 10, 11, 12, 13, 14, 15, 16], [1, 2, 3, 4, 5, 6, 7, 8]] },
+    { id: "tournament-64-233", path: "/tournament-64-233", label: "64人 233", title: "64 人三层 233", description: "16 队四人布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[11, 12, 13, 14, 15, 16], [5, 6, 7, 8, 9, 10], [1, 2, 3, 4]] },
+    { id: "tournament-64-332", path: "/tournament-64-332", label: "64人 332", title: "64 人三层 332", description: "16 队四人布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[13, 14, 15, 16], [7, 8, 9, 10, 11, 12], [1, 2, 3, 4, 5, 6]] }
   ];
   let gaugeTimer = null;
   let chartTimer = null;
@@ -463,7 +463,9 @@
   function tournamentSelector(page) {
     const teamRegex = (page.teams || []).join("|");
     const teamFilter = teamRegex ? `,team=~"${teamRegex}"` : "";
-    return `role="player",network=~".*"${teamFilter}`;
+    const seatRegex = page.teamSize ? Array.from({ length: page.teamSize }, (_, index) => index + 1).join("|") : "";
+    const seatFilter = seatRegex ? `,seat=~"${seatRegex}"` : "";
+    return `role="player",network=~".*"${teamFilter}${seatFilter}`;
   }
 
   function playerKey(metric) {
@@ -619,6 +621,39 @@
     return `avg by (team) (avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[3m]))`;
   }
 
+  function lineChartOptions() {
+    return {
+      axisFormatter: formatPingText,
+      valueFormatter: formatPingText,
+      minMax: 0.005,
+      smooth: true,
+      smoothWindow: 5
+    };
+  }
+
+  function renderTournamentTrend(page, trendSeries) {
+    const container = document.getElementById("tournamentTrendChart");
+    if (page.kind !== "match") {
+      renderLineChart("tournamentTrendChart", trendSeries, lineChartOptions());
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="match-trend-grid">
+        <section class="match-trend-card">
+          <h3>舞台左延迟</h3>
+          <div class="chart-body" id="matchTrendLeft"></div>
+        </section>
+        <section class="match-trend-card">
+          <h3>舞台右延迟</h3>
+          <div class="chart-body" id="matchTrendRight"></div>
+        </section>
+      </div>
+    `;
+    renderLineChart("matchTrendLeft", trendSeries.filter((item) => String(item.metric.team || "") === "1"), lineChartOptions());
+    renderLineChart("matchTrendRight", trendSeries.filter((item) => String(item.metric.team || "") === "2"), lineChartOptions());
+  }
+
   async function refreshTournament(page) {
     try {
       const selector = tournamentSelector(page);
@@ -636,13 +671,7 @@
         .filter((player) => !page.teamSize || player.seat <= page.teamSize);
       renderTournamentSummary(page, players);
       renderTournamentBoard(page, players);
-      renderLineChart("tournamentTrendChart", trendSeries, {
-        axisFormatter: formatPingText,
-        valueFormatter: formatPingText,
-        minMax: 0.005,
-        smooth: true,
-        smoothWindow: 5
-      });
+      renderTournamentTrend(page, trendSeries);
     } catch (error) {
       renderNoData(document.getElementById("tournamentBoard"), "No player data");
       renderNoData(document.getElementById("tournamentTrendChart"));
@@ -689,27 +718,11 @@
     }
   }
 
-  function renderNav(activePage) {
+  function renderNav() {
     const nav = document.getElementById("screenNav");
     if (!nav) return;
-    nav.hidden = activePage.id !== "home";
-    if (nav.hidden) {
-      nav.innerHTML = "";
-      return;
-    }
-    nav.innerHTML = pages.map((page) => `
-      <a href="${page.path}" ${page.id === activePage.id ? 'aria-current="page"' : ""}>${escapeHtml(page.label)}</a>
-    `).join("");
-    nav.querySelectorAll("a").forEach((link) => {
-      link.addEventListener("click", (event) => {
-        event.preventDefault();
-        const nextPath = link.getAttribute("href");
-        if (nextPath && nextPath !== window.location.pathname) {
-          window.history.pushState({}, "", nextPath);
-        }
-        renderPage();
-      });
-    });
+    nav.hidden = true;
+    nav.innerHTML = "";
   }
 
   function renderHeader(page) {
@@ -767,7 +780,7 @@
     const modeGrid = document.getElementById("modeGrid");
     const homeTitle = document.getElementById("homeHeroTitle");
     const homeSubtitle = document.getElementById("homeHeroSubtitle");
-    if (homeTitle) homeTitle.textContent = config.eventName || "PUBGM-WOW";
+    if (homeTitle) homeTitle.textContent = "选择大屏";
     if (homeSubtitle) homeSubtitle.textContent = titleText();
     modeGrid.innerHTML = pages
       .filter((page) => page.id !== "home")
