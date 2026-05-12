@@ -56,44 +56,179 @@
 
 .home-panel {
   display: grid;
-  place-items: center;
+  align-items: stretch;
+  padding: clamp(18px, 3.5vh, 44px) clamp(24px, 4.5vw, 82px);
+}
+
+.home-shell {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.85fr) minmax(620px, 1.35fr);
+  gap: clamp(18px, 2.2vw, 34px);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.home-hero {
+  position: relative;
+  display: grid;
+  align-content: space-between;
+  min-width: 0;
+  min-height: 0;
+  padding: clamp(24px, 3.2vw, 48px);
+  overflow: hidden;
+  border: 1px solid rgba(105, 160, 255, 0.25);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(88, 214, 141, 0.11) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(105, 160, 255, 0.09) 1px, transparent 1px),
+    linear-gradient(145deg, rgba(10, 18, 31, 0.98), rgba(3, 8, 16, 0.98));
+  background-size: 46px 46px, 46px 46px, auto;
+}
+
+.home-hero::after {
+  position: absolute;
+  right: clamp(18px, 3vw, 50px);
+  bottom: clamp(18px, 3vw, 50px);
+  width: 34%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(88, 214, 141, 0.86));
+  content: "";
+}
+
+.home-hero p {
+  margin: 0;
+  color: #58d68d;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.home-hero h2 {
+  max-width: 9ch;
+  margin: 0;
+  color: #eef4ff;
+  font-size: clamp(46px, 5vw, 88px);
+  font-weight: 900;
+  line-height: 0.95;
+}
+
+.home-hero > strong {
+  align-self: end;
+  color: #b7c8e8;
+  font-size: clamp(20px, 1.7vw, 32px);
+  font-weight: 800;
+}
+
+.home-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: clamp(22px, 4vh, 54px);
+}
+
+.home-stat-grid div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.38);
+}
+
+.home-stat-grid span {
+  color: #91a7c7;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.home-stat-grid b {
+  color: #fff;
+  font-size: clamp(22px, 2vw, 34px);
+  line-height: 1;
 }
 
 .mode-grid {
   display: grid;
-  width: min(1180px, 92vw);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: center;
+  min-width: 0;
+  min-height: 0;
+  gap: 12px;
 }
 
 .mode-card {
+  position: relative;
   display: grid;
-  min-height: 150px;
-  align-content: center;
-  gap: 10px;
-  padding: 22px;
-  border: 1px solid rgba(105, 160, 255, 0.28);
+  min-height: 128px;
+  align-content: space-between;
+  gap: 8px;
+  padding: 18px 20px;
+  overflow: hidden;
+  border: 1px solid rgba(105, 160, 255, 0.24);
   border-radius: 8px;
-  background: rgba(7, 14, 26, 0.84);
+  background: rgba(7, 14, 26, 0.86);
   color: #eaf2ff;
   text-decoration: none;
 }
 
+.mode-card::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: #58d68d;
+  content: "";
+}
+
+.mode-card::after {
+  position: absolute;
+  right: 18px;
+  bottom: 16px;
+  width: 38px;
+  height: 38px;
+  border-top: 2px solid rgba(216, 230, 255, 0.32);
+  border-right: 2px solid rgba(216, 230, 255, 0.32);
+  content: "";
+}
+
+.mode-card-match::before {
+  background: #5b8ff9;
+}
+
+.mode-card:hover {
+  border-color: rgba(88, 214, 141, 0.66);
+  background: rgba(10, 22, 38, 0.94);
+}
+
 .mode-card span {
-  color: #73d17a;
-  font-size: 15px;
+  color: #8ea6c8;
+  font-size: 13px;
   font-weight: 800;
 }
 
 .mode-card strong {
-  font-size: 28px;
-  font-weight: 800;
+  color: #fff;
+  font-size: clamp(28px, 2.2vw, 40px);
+  font-weight: 900;
+  line-height: 1;
 }
 
 .mode-card em {
-  color: #9fb0ca;
+  color: #c9d9f2;
   font-size: 15px;
+  font-weight: 800;
   font-style: normal;
+}
+
+.mode-card b {
+  max-width: calc(100% - 44px);
+  overflow: hidden;
+  color: #8fa1bc;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .screen.infra-mode {
@@ -213,7 +348,8 @@
   display: grid;
   grid-column: 2;
   grid-row: 2;
-  grid-template-rows: 56px auto minmax(0, 1fr);
+  align-content: start;
+  grid-template-rows: 56px auto clamp(220px, 25vh, 310px);
   gap: 9px;
 }
 
@@ -410,7 +546,7 @@
 }
 
 .multi-team-panel {
-  grid-template-rows: 52px auto minmax(0, 1fr);
+  grid-template-rows: 52px auto clamp(180px, 22vh, 260px);
 }
 
 .multi-team-panel .team-card {
@@ -466,6 +602,10 @@
   }
 
   .mode-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
+  }
+
+  .home-shell {
+    grid-template-columns: 1fr;
   }
 }

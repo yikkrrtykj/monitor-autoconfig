@@ -543,8 +543,10 @@
   }
 
   function expectedSeats(page, teamPlayers) {
-    const maxSeat = Math.max(0, ...teamPlayers.map((player) => player.seat));
-    return Math.max(page.teamSize || 0, maxSeat);
+    if (page.teamSize) {
+      return page.teamSize;
+    }
+    return Math.max(0, ...teamPlayers.map((player) => player.seat));
   }
 
   function renderSeatSlot(player, seat) {
@@ -569,11 +571,12 @@
   }
 
   function renderTeamCard(page, team, teamPlayers) {
-    const bySeat = new Map(teamPlayers.map((player) => [player.seat, player]));
     const seatCount = expectedSeats(page, teamPlayers);
+    const visiblePlayers = teamPlayers.filter((player) => player.seat >= 1 && player.seat <= seatCount);
+    const bySeat = new Map(visiblePlayers.map((player) => [player.seat, player]));
     const seats = Array.from({ length: seatCount }, (_, index) => index + 1);
-    const online = teamPlayers.filter((player) => player.success).length;
-    const latencies = teamPlayers
+    const online = visiblePlayers.filter((player) => player.success).length;
+    const latencies = visiblePlayers
       .filter((player) => player.success && Number.isFinite(player.latency))
       .map((player) => player.latency);
     const avg = latencies.length ? formatPingText(average(latencies)) : "-";
@@ -581,7 +584,7 @@
       <article class="team-card">
         <header>
           <h3>${escapeHtml(teamName(page, team))}</h3>
-          <span>${online}/${Math.max(seatCount, teamPlayers.length)}</span>
+          <span>${online}/${seatCount}</span>
         </header>
         <div class="team-avg">${escapeHtml(avg)}</div>
         <div class="seat-grid">
@@ -629,7 +632,8 @@
           return teamName(page, metric.team);
         })
       ]);
-      const players = buildPlayers(latencyItems, successItems);
+      const players = buildPlayers(latencyItems, successItems)
+        .filter((player) => !page.teamSize || player.seat <= page.teamSize);
       renderTournamentSummary(page, players);
       renderTournamentBoard(page, players);
       renderLineChart("tournamentTrendChart", trendSeries, {
@@ -761,13 +765,18 @@
 
   function renderHomeCards() {
     const modeGrid = document.getElementById("modeGrid");
+    const homeTitle = document.getElementById("homeHeroTitle");
+    const homeSubtitle = document.getElementById("homeHeroSubtitle");
+    if (homeTitle) homeTitle.textContent = config.eventName || "PUBGM-WOW";
+    if (homeSubtitle) homeSubtitle.textContent = titleText();
     modeGrid.innerHTML = pages
       .filter((page) => page.id !== "home")
-      .map((page) => `
-        <a class="mode-card" href="${page.path}">
-          <span>${escapeHtml(page.label)}</span>
-          <strong>${escapeHtml(page.title)}</strong>
-          <em>${escapeHtml(page.description || "")}</em>
+      .map((page, index) => `
+        <a class="mode-card ${page.kind ? "mode-card-match" : "mode-card-network"}" href="${page.path}">
+          <span>${String(index + 1).padStart(2, "0")}</span>
+          <strong>${escapeHtml(page.label)}</strong>
+          <em>${escapeHtml(page.title)}</em>
+          <b>${escapeHtml(page.description || "")}</b>
         </a>
       `).join("");
     modeGrid.querySelectorAll("a").forEach((link) => {
