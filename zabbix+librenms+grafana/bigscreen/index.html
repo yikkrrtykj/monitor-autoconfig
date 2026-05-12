@@ -31,7 +31,7 @@
           <div class="gauge-grid" id="pingGaugeGrid"></div>
         </section>
         <section class="panel custom-panel uptime-panel" aria-labelledby="uptimeTitle">
-          <h2 id="uptimeTitle">Uptime</h2>
+          <h2 id="uptimeTitle">运行时长</h2>
           <div class="gauge-grid" id="uptimeGaugeGrid"></div>
         </section>
         <section class="chart-panel trend-panel" aria-labelledby="trendTitle">
@@ -63,13 +63,13 @@
           <label>座位 <input id="evidenceSeat" type="number" min="1" max="5" value="1" /></label>
           <label>网络
             <select id="evidenceNetwork">
-              <option value="wired">wired</option>
-              <option value="wireless">wireless</option>
-              <option value="all">all</option>
+              <option value="wired">有线</option>
+              <option value="wireless">无线</option>
+              <option value="all">全部</option>
             </select>
           </label>
           <label>查询时间 <input id="evidenceAt" type="datetime-local" /></label>
-          <label>窗口
+          <label>查询范围
             <select id="evidenceWindow">
               <option value="5">前后 5 分钟</option>
               <option value="10">前后 10 分钟</option>
@@ -89,8 +89,14 @@
           <div class="chart-body" id="evidenceSuccessChart"></div>
         </section>
       </section>
+      <section class="ops-panel" id="opsPanel" aria-label="现场核对" hidden>
+        <div class="ops-controls" id="opsControls"></div>
+        <div class="ops-summary" id="opsSummary"></div>
+        <div class="ops-board" id="opsBoard"></div>
+      </section>
     </main>
     <script src="./config.js"></script>
+    <script src="./pages.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

@@ -1,24 +1,18 @@
 (function () {
   const config = window.BIGSCREEN_CONFIG || {};
-  const pingTrendQuery = 'avg by (instance) (avg_over_time(probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[3m]))';
-  const pingGaugeQuery = 'avg by (instance) (quantile_over_time(0.5, probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[1m]))';
-  const uptimeQuery = 'max by (instance) (sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"} / 100) or max by (instance) ((sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance=~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"} / 100) unless on(target_ip) sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"})';
-  const lossQuery = 'max by (instance) (1 - probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping"})';
+  const queries = window.BIGSCREEN_QUERIES || {};
+  const pingTrendQuery = queries.pingTrend || "";
+  const pingGaugeQuery = queries.pingGauge || "";
+  const uptimeQuery = queries.uptime || "";
+  const lossQuery = queries.loss || "";
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
-  const pages = [
-    { id: "home", path: "/", label: "首页", title: "选择大屏", description: "选择现场正在使用的比赛面板" },
-    { id: "infra", path: "/infra", label: "网络总览", title: "网络总览", description: "只显示核心网络、丢包和 ISP 流量" },
-    { id: "evidence", path: "/latency", label: "延迟查询", title: "延迟查询", description: "按队伍座位查询延迟和断线" },
-    { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "5v5 对战", description: "舞台左 vs 舞台右", kind: "match", teams: [1, 2], teamSize: 5 },
-    { id: "tournament-6", path: "/tournament-6", label: "6队", title: "6 队赛", description: "6 队比赛布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6], teamSize: 5, groups: [[1, 2, 3, 4, 5, 6]] },
-    { id: "tournament-64-2layer", path: "/tournament-64-2layer", label: "64人 2层", title: "64 人二层", description: "16 队四人布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[9, 10, 11, 12, 13, 14, 15, 16], [1, 2, 3, 4, 5, 6, 7, 8]] },
-    { id: "tournament-64-233", path: "/tournament-64-233", label: "64人 233", title: "64 人三层 233", description: "16 队四人布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[11, 12, 13, 14, 15, 16], [5, 6, 7, 8, 9, 10], [1, 2, 3, 4]] },
-    { id: "tournament-64-332", path: "/tournament-64-332", label: "64人 332", title: "64 人三层 332", description: "16 队四人布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[13, 14, 15, 16], [7, 8, 9, 10, 11, 12], [1, 2, 3, 4, 5, 6]] }
-  ];
+  const pages = window.BIGSCREEN_PAGES || [];
   let gaugeTimer = null;
   let chartTimer = null;
   let tournamentTimer = null;
+  let opsTimer = null;
   let activePageId = "";
+  let activeRoute = "";
 
   function setText(id, value) {
     const element = document.getElementById(id);
@@ -151,12 +145,12 @@
 
   function formatUptime(seconds) {
     if (seconds < 3600) {
-      return { value: Math.max(1, Math.round(seconds / 60)), unit: "min" };
+      return { value: Math.max(1, Math.round(seconds / 60)), unit: "分钟" };
     }
     if (seconds < 86400) {
-      return { value: (seconds / 3600).toFixed(2), unit: "hours" };
+      return { value: (seconds / 3600).toFixed(2), unit: "小时" };
     }
-    return { value: (seconds / 86400).toFixed(2), unit: "days" };
+    return { value: (seconds / 86400).toFixed(2), unit: "天" };
   }
 
   function formatBits(value) {
@@ -165,6 +159,21 @@
     if (abs >= 1000000) return `${(value / 1000000).toFixed(1)} Mb/s`;
     if (abs >= 1000) return `${(value / 1000).toFixed(1)} kb/s`;
     return `${Math.round(value)} b/s`;
+  }
+
+  function networkLabel(network) {
+    if (network === "wired") return "有线";
+    if (network === "wireless") return "无线";
+    if (network === "all") return "全部";
+    return network || "-";
+  }
+
+  function seatLabel(seat) {
+    return `S${seat}`;
+  }
+
+  function playerLabel(team, seat, network) {
+    return `${teamName({ id: "" }, team)} ${seatLabel(seat)} ${networkLabel(network)}`;
   }
 
   function gaugeColor(kind, rawValue) {
@@ -192,7 +201,7 @@
     container.innerHTML = "";
 
     if (!items.length) {
-      container.innerHTML = '<div class="empty-state">No data</div>';
+      container.innerHTML = '<div class="empty-state">暂无数据</div>';
       return;
     }
 
@@ -244,7 +253,7 @@
   }
 
   function renderNoData(container, message) {
-    container.innerHTML = `<div class="no-data">${message || "No data"}</div>`;
+    container.innerHTML = `<div class="no-data">${message || "暂无数据"}</div>`;
   }
 
   function linePathFromPoints(points, smooth) {
@@ -354,7 +363,7 @@
         </div>
       `;
     }).join("");
-    const legendHeader = '<div class="legend-row legend-head"><span></span><span>Name</span><span>Mean</span><span>Max</span></div>';
+    const legendHeader = '<div class="legend-row legend-head"><span></span><span>名称</span><span>平均</span><span>最高</span></div>';
     const legendClass = options.legend === "bottom" ? "chart-legend bottom-legend" : "chart-legend side-legend";
 
     container.innerHTML = `
@@ -463,15 +472,16 @@
       if (teamNumber === 1) return "舞台左";
       if (teamNumber === 2) return "舞台右";
     }
-    return `Team ${teamNumber}`;
+    return `第 ${teamNumber} 队`;
   }
 
-  function tournamentSelector(page) {
+  function tournamentSelector(page, network = "all") {
+    const networkFilter = network === "all" ? 'network=~".*"' : `network="${escapeLabel(network)}"`;
     const teamRegex = (page.teams || []).join("|");
     const teamFilter = teamRegex ? `,team=~"${teamRegex}"` : "";
     const seatRegex = page.teamSize ? Array.from({ length: page.teamSize }, (_, index) => index + 1).join("|") : "";
     const seatFilter = seatRegex ? `,seat=~"${seatRegex}"` : "";
-    return `role="player",network=~".*"${teamFilter}${seatFilter}`;
+    return `role="player",${networkFilter}${teamFilter}${seatFilter}`;
   }
 
   function playerKey(metric) {
@@ -557,11 +567,20 @@
     return Math.max(0, ...teamPlayers.map((player) => player.seat));
   }
 
+  function latencyUrlForPlayer(player) {
+    const params = new URLSearchParams({
+      team: String(player.team),
+      seat: String(player.seat),
+      network: player.network || "wired"
+    });
+    return `/latency?${params.toString()}`;
+  }
+
   function renderSeatSlot(player, seat) {
     if (!player) {
       return `
         <div class="seat-slot empty">
-          <span>S${seat}</span>
+          <span>${seatLabel(seat)}</span>
           <strong>-</strong>
           <em>未连接</em>
         </div>
@@ -570,11 +589,11 @@
     const level = latencyLevel(player);
     const latency = Number.isFinite(player.latency) ? formatPingText(player.latency) : "-";
     return `
-      <div class="seat-slot ${level}">
-        <span>S${player.seat}</span>
+      <a class="seat-slot ${level}" href="${escapeHtml(latencyUrlForPlayer(player))}" title="查看${escapeHtml(playerLabel(player.team, player.seat, player.network))}延迟">
+        <span>${seatLabel(player.seat)}</span>
         <strong>${escapeHtml(latency)}</strong>
         <em>${escapeHtml(player.ip)}</em>
-      </div>
+      </a>
     `;
   }
 
@@ -679,7 +698,7 @@
       renderTournamentBoard(page, players);
       renderTournamentTrend(page, trendSeries);
     } catch (error) {
-      renderNoData(document.getElementById("tournamentBoard"), "No player data");
+      renderNoData(document.getElementById("tournamentBoard"), "暂无选手数据");
       renderNoData(document.getElementById("tournamentTrendChart"));
       console.error(error);
     }
@@ -724,6 +743,221 @@
     }
   }
 
+  async function fetchPlayerSnapshot(selector) {
+    const [latencyItems, successItems] = await Promise.all([
+      prometheusInstant(`probe_icmp_duration_seconds{${selector},phase="rtt"}`),
+      prometheusInstant(`probe_success{${selector}}`)
+    ]);
+    return {
+      latencyItems,
+      successItems,
+      players: buildPlayers(latencyItems, successItems)
+    };
+  }
+
+  function renderOpsKpis(items) {
+    document.getElementById("opsSummary").innerHTML = items.map((item) => `
+      <div class="ops-kpi ${item.level || "info"}">
+        <span>${escapeHtml(item.label)}</span>
+        <strong>${escapeHtml(item.value)}</strong>
+        <em>${escapeHtml(item.note || "")}</em>
+      </div>
+    `).join("");
+  }
+
+  function playerStatusText(player) {
+    if (!player.success) return "离线";
+    if (!Number.isFinite(player.latency)) return "暂无延迟";
+    if (player.latency >= 0.08) return "高延迟";
+    if (player.latency >= 0.04) return "轻微抖动";
+    return "正常";
+  }
+
+  function renderWirelessControls() {
+    const controls = document.getElementById("opsControls");
+    if (controls.dataset.mode === "wireless") return;
+    controls.dataset.mode = "wireless";
+    controls.innerHTML = `
+      <div class="ops-title">
+        <strong>无线异常总览</strong>
+        <span>只统计无线选手，用来确认是否有人连入 WiFi，以及是否出现高延迟或离线。</span>
+      </div>
+    `;
+  }
+
+  function renderWirelessBoard(players) {
+    const board = document.getElementById("opsBoard");
+    if (!players.length) {
+      renderNoData(board, "当前没有无线选手");
+      return;
+    }
+    const rows = players
+      .slice()
+      .sort((a, b) => Number(a.success) - Number(b.success) || (b.latency || 0) - (a.latency || 0) || a.team - b.team || a.seat - b.seat)
+      .map((player) => `
+        <a class="ops-table-row ${latencyLevel(player)}" href="${escapeHtml(latencyUrlForPlayer(player))}">
+          <span>${escapeHtml(teamName({ id: "" }, player.team))}</span>
+          <span>${escapeHtml(seatLabel(player.seat))}</span>
+          <span>${escapeHtml(player.ip)}</span>
+          <span>${escapeHtml(Number.isFinite(player.latency) ? formatPingText(player.latency) : "-")}</span>
+          <span>${escapeHtml(playerStatusText(player))}</span>
+        </a>
+      `).join("");
+    board.innerHTML = `
+      <div class="ops-table">
+        <div class="ops-table-head"><span>队伍</span><span>座位</span><span>IP</span><span>延迟</span><span>状态</span></div>
+        ${rows}
+      </div>
+    `;
+  }
+
+  async function refreshWirelessOverview() {
+    renderWirelessControls();
+    try {
+      const snapshot = await fetchPlayerSnapshot('role="player",network="wireless"');
+      const rawItems = [...snapshot.latencyItems, ...snapshot.successItems];
+      const gatewayIps = new Set(rawItems.map((item) => item.metric.instance).filter(isGatewayAddress));
+      const players = snapshot.players;
+      const online = players.filter((player) => player.success).length;
+      const high = players.filter((player) => player.success && Number.isFinite(player.latency) && player.latency >= 0.08).length;
+      const maxLatency = players
+        .filter((player) => Number.isFinite(player.latency))
+        .map((player) => player.latency)
+        .sort((a, b) => b - a)[0];
+      renderOpsKpis([
+        { label: "无线目标", value: players.length, note: "当前识别到的无线选手" },
+        { label: "在线", value: online, level: !players.length || online === players.length ? "good" : "warn", note: "当前可达" },
+        { label: "高延迟", value: high, level: high ? "warn" : "good", note: ">= 80 ms" },
+        { label: "疑似网关", value: gatewayIps.size, level: gatewayIps.size ? "bad" : "good", note: ".1 / .254" },
+        { label: "最高延迟", value: Number.isFinite(maxLatency) ? formatPingText(maxLatency) : "-", level: maxLatency >= 0.08 ? "warn" : "good" }
+      ]);
+      renderWirelessBoard(players);
+    } catch (error) {
+      renderNoData(document.getElementById("opsSummary"), "查询失败");
+      renderNoData(document.getElementById("opsBoard"));
+      console.error(error);
+    }
+  }
+
+  function seatCheckConfigFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const layout = params.get("layout") || "match-5v5";
+    const network = params.get("network") || "wired";
+    return {
+      page: pages.find((page) => page.id === layout && page.kind) || pages.find((page) => page.id === "match-5v5"),
+      network: ["wired", "wireless", "all"].includes(network) ? network : "wired"
+    };
+  }
+
+  function renderSeatCheckControls(page, network) {
+    const matchPages = pages.filter((item) => item.kind);
+    const controls = document.getElementById("opsControls");
+    const modeKey = `seat-check:${page.id}:${network}`;
+    if (controls.dataset.mode === modeKey) return;
+    controls.dataset.mode = modeKey;
+    controls.innerHTML = `
+      <label>赛制
+        <select id="seatCheckLayout">
+          ${matchPages.map((item) => `<option value="${escapeHtml(item.id)}"${item.id === page.id ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+        </select>
+      </label>
+      <label>网络
+        <select id="seatCheckNetwork">
+          ${["wired", "wireless", "all"].map((item) => `<option value="${item}"${item === network ? " selected" : ""}>${networkLabel(item)}</option>`).join("")}
+        </select>
+      </label>
+      <div class="ops-title compact">
+        <strong>赛前座位核对</strong>
+        <span>缺失、重复、离线会直接标出。</span>
+      </div>
+    `;
+    document.getElementById("seatCheckLayout").addEventListener("change", updateSeatCheckUrl);
+    document.getElementById("seatCheckNetwork").addEventListener("change", updateSeatCheckUrl);
+  }
+
+  function updateSeatCheckUrl() {
+    const layout = document.getElementById("seatCheckLayout").value;
+    const network = document.getElementById("seatCheckNetwork").value;
+    window.history.replaceState({}, "", `/seat-check?layout=${encodeURIComponent(layout)}&network=${encodeURIComponent(network)}`);
+    activeRoute = `seat-check${window.location.search}`;
+    refreshSeatCheck();
+  }
+
+  function groupPlayersBySeat(players) {
+    const grouped = new Map();
+    players.forEach((player) => {
+      const key = `${player.team}|${player.seat}`;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(player);
+    });
+    return grouped;
+  }
+
+  function renderCheckSeat(team, seat, players) {
+    if (!players.length) {
+      return `<div class="check-seat missing"><span>${seatLabel(seat)}</span><strong>缺失</strong><em>-</em></div>`;
+    }
+    const player = players[0];
+    const duplicate = players.length > 1;
+    const level = duplicate ? "duplicate" : latencyLevel(player);
+    const status = duplicate ? `重复 ${players.length}` : playerStatusText(player);
+    return `
+      <a class="check-seat ${level}" href="${escapeHtml(latencyUrlForPlayer(player))}">
+        <span>${seatLabel(seat)}</span>
+        <strong>${escapeHtml(status)}</strong>
+        <em>${escapeHtml(player.ip)}</em>
+      </a>
+    `;
+  }
+
+  function renderSeatCheckBoard(page, players) {
+    const grouped = groupPlayersBySeat(players);
+    document.getElementById("opsBoard").innerHTML = `
+      <div class="seat-check-grid">
+        ${(page.teams || []).map((team) => `
+          <article class="seat-check-card">
+            <header><strong>${escapeHtml(teamName(page, team))}</strong><span>${page.teamSize} 座</span></header>
+            <div>
+              ${Array.from({ length: page.teamSize }, (_, index) => {
+                const seat = index + 1;
+                return renderCheckSeat(team, seat, grouped.get(`${team}|${seat}`) || []);
+              }).join("")}
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  async function refreshSeatCheck() {
+    const { page, network } = seatCheckConfigFromUrl();
+    renderSeatCheckControls(page, network);
+    try {
+      const snapshot = await fetchPlayerSnapshot(tournamentSelector(page, network));
+      const players = snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize);
+      const grouped = groupPlayersBySeat(players);
+      const expected = (page.teams || []).length * page.teamSize;
+      const missing = (page.teams || []).reduce((sum, team) => {
+        return sum + Array.from({ length: page.teamSize }, (_, index) => index + 1)
+          .filter((seat) => !(grouped.get(`${team}|${seat}`) || []).length).length;
+      }, 0);
+      const duplicateSeats = Array.from(grouped.values()).filter((items) => items.length > 1).length;
+      const online = players.filter((player) => player.success).length;
+      renderOpsKpis([
+        { label: "应到座位", value: expected, note: `${page.label} · ${networkLabel(network)}` },
+        { label: "已识别", value: grouped.size, level: grouped.size === expected ? "good" : "warn", note: "按队伍/座位去重" },
+        { label: "在线", value: online, level: !players.length || online === players.length ? "good" : "warn", note: `${players.length} 个目标` },
+        { label: "缺失", value: missing, level: missing ? "bad" : "good", note: "未发现 IP" },
+        { label: "重复座位", value: duplicateSeats, level: duplicateSeats ? "bad" : "good", note: "同座位多个 IP" }
+      ]);
+      renderSeatCheckBoard(page, players);
+    } catch (error) {
+      renderNoData(document.getElementById("opsSummary"), "查询失败");
+      renderNoData(document.getElementById("opsBoard"));
+      console.error(error);
+    }
+  }
+
   function dateTimeInputValue(date) {
     const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
     return local.toISOString().slice(0, 16);
@@ -753,8 +987,8 @@
   function evidenceSeriesName(metric) {
     const seat = metric.seat ? `S${metric.seat}` : "";
     const ip = metric.instance || "";
-    const network = metric.network ? ` ${metric.network}` : "";
-    return `${seat} ${ip}${network}`.trim() || "player";
+    const network = metric.network ? ` ${networkLabel(metric.network)}` : "";
+    return `${seat} ${ip}${network}`.trim() || "选手";
   }
 
   function flattenSeriesValues(seriesList) {
@@ -786,7 +1020,7 @@
       return { level: "bad", text: "持续高延迟", detail: "平均延迟已经超过 80 ms，属于明显异常。" };
     }
     if (maxLatency !== null && maxLatency >= 0.1) {
-      return { level: "warn", text: "有高延迟尖峰", detail: "最高延迟超过 100 ms，可能对应玩家口中的卡顿瞬间。" };
+      return { level: "warn", text: "有高延迟尖峰", detail: "最高延迟超过 100 ms，可能对应玩家反馈的延迟异常瞬间。" };
     }
     if (maxLatency !== null && maxLatency >= 0.04) {
       return { level: "warn", text: "有轻微抖动", detail: "有 40 ms 以上波动，建议结合现场体验判断。" };
@@ -815,7 +1049,7 @@
         <div><span>平均延迟</span><strong>${escapeHtml(avgLatency)}</strong></div>
         <div><span>最高延迟</span><strong>${escapeHtml(maxLatency)}</strong></div>
         <div><span>在线率</span><strong>${escapeHtml(onlineRate)}</strong></div>
-        <div><span>失败时长</span><strong>${escapeHtml(offlineSeconds)}</strong></div>
+        <div><span>离线累计</span><strong>${escapeHtml(offlineSeconds)}</strong></div>
       </div>
     `;
   }
@@ -824,12 +1058,17 @@
     const team = document.getElementById("evidenceTeam").value || "1";
     const seat = document.getElementById("evidenceSeat").value || "1";
     const network = document.getElementById("evidenceNetwork").value || "wired";
+    const range = document.getElementById("evidenceWindow").value || "5";
+    const at = document.getElementById("evidenceAt").value || "";
     const queryWindow = evidenceWindow();
     const selector = evidenceSelector(team, seat, network);
-    const label = `Team ${team} S${seat} ${network} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`;
+    const label = `${playerLabel(team, seat, network)} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`;
+    const params = new URLSearchParams({ team, seat, network, range });
+    if (at) params.set("at", at);
+    window.history.replaceState({}, "", `/latency?${params.toString()}`);
 
-    renderNoData(document.getElementById("evidenceLatencyChart"), "Loading");
-    renderNoData(document.getElementById("evidenceSuccessChart"), "Loading");
+    renderNoData(document.getElementById("evidenceLatencyChart"), "加载中");
+    renderNoData(document.getElementById("evidenceSuccessChart"), "加载中");
 
     try {
       const [latencySeries, successSeries] = await Promise.all([
@@ -854,7 +1093,7 @@
         legend: "bottom"
       });
     } catch (error) {
-      renderNoData(document.getElementById("evidenceSummary"), "Prometheus query failed");
+      renderNoData(document.getElementById("evidenceSummary"), "查询失败");
       renderNoData(document.getElementById("evidenceLatencyChart"));
       renderNoData(document.getElementById("evidenceSuccessChart"));
       console.error(error);
@@ -864,7 +1103,19 @@
   function setupEvidencePanel() {
     const atInput = document.getElementById("evidenceAt");
     const form = document.getElementById("evidenceForm");
-    if (atInput && !atInput.value) {
+    const params = new URLSearchParams(window.location.search);
+    const team = params.get("team");
+    const seat = params.get("seat");
+    const network = params.get("network");
+    const range = params.get("range") || params.get("window");
+    const at = params.get("at");
+    if (team) document.getElementById("evidenceTeam").value = team;
+    if (seat) document.getElementById("evidenceSeat").value = seat;
+    if (["wired", "wireless", "all"].includes(network)) document.getElementById("evidenceNetwork").value = network;
+    if (range) document.getElementById("evidenceWindow").value = range;
+    if (atInput && at) {
+      atInput.value = at;
+    } else if (atInput && !atInput.value) {
       atInput.value = dateTimeInputValue(new Date());
     }
     if (form && !form.dataset.bound) {
@@ -914,6 +1165,13 @@
     }
   }
 
+  function stopOpsRefresh() {
+    if (opsTimer) {
+      window.clearInterval(opsTimer);
+      opsTimer = null;
+    }
+  }
+
   function startInfraRefresh() {
     if (gaugeTimer || chartTimer) return;
     refreshGauges();
@@ -926,6 +1184,13 @@
     stopTournamentRefresh();
     refreshTournament(page);
     tournamentTimer = window.setInterval(() => refreshTournament(page), 5000);
+  }
+
+  function startOpsRefresh(page) {
+    stopOpsRefresh();
+    const refresh = page.id === "wireless" ? refreshWirelessOverview : refreshSeatCheck;
+    refresh();
+    opsTimer = window.setInterval(refresh, 5000);
   }
 
   function setVisible(id, visible) {
@@ -960,32 +1225,38 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
+    stopOpsRefresh();
     screen.className = "screen home-mode";
     setVisible("homePanel", true);
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
+    setVisible("opsPanel", false);
     renderHomeCards();
   }
 
   function showInfra() {
     const screen = document.querySelector(".screen");
     stopTournamentRefresh();
+    stopOpsRefresh();
     screen.className = "screen infra-mode";
     setVisible("homePanel", false);
     setVisible("panelGrid", true);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
+    setVisible("opsPanel", false);
     startInfraRefresh();
   }
 
   function showTournament(page) {
     const screen = document.querySelector(".screen");
+    stopOpsRefresh();
     screen.className = `screen tournament-mode ${page.kind === "match" ? "match-mode" : "multi-team-mode"} ${page.id}`;
     setVisible("homePanel", false);
     setVisible("panelGrid", true);
     setVisible("tournamentPanel", true);
     setVisible("evidencePanel", false);
+    setVisible("opsPanel", false);
     document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
     startInfraRefresh();
     startTournamentRefresh(page);
@@ -995,24 +1266,43 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
+    stopOpsRefresh();
     screen.className = "screen evidence-mode";
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", true);
+    setVisible("opsPanel", false);
     setupEvidencePanel();
+  }
+
+  function showOps(page) {
+    const screen = document.querySelector(".screen");
+    stopInfraRefresh();
+    stopTournamentRefresh();
+    screen.className = `screen ops-mode ${page.id}-mode`;
+    setVisible("homePanel", false);
+    setVisible("panelGrid", false);
+    setVisible("tournamentPanel", false);
+    setVisible("evidencePanel", false);
+    setVisible("opsPanel", true);
+    startOpsRefresh(page);
   }
 
   function renderPage() {
     const page = pageFromPath();
     renderHeader(page);
     renderNav(page);
-    if (page.id === activePageId) return;
+    const routeKey = `${page.id}${window.location.search}`;
+    if (routeKey === activeRoute) return;
     activePageId = page.id;
+    activeRoute = routeKey;
     if (page.id === "home") {
       showHome();
     } else if (page.id === "evidence") {
       showEvidence();
+    } else if (page.id === "wireless" || page.id === "seat-check") {
+      showOps(page);
     } else if (page.kind) {
       showTournament(page);
     } else {
