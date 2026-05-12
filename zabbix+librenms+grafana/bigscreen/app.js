@@ -311,7 +311,7 @@
     const height = Math.max(150, Math.round(box.height || container.clientHeight || 260));
     const pad = {
       left: options.axisPadLeft || (width < 520 ? 64 : 76),
-      right: options.axisPadRight || 14,
+      right: options.axisPadRight || 38,
       top: 12,
       bottom: height < 190 ? 24 : 30
     };
@@ -336,9 +336,13 @@
       const x = xOf(timestamp);
       return `<line class="chart-time-line" x1="${x}" y1="${pad.top}" x2="${x}" y2="${height - pad.bottom}" />`;
     }).join("");
-    const timeLabels = [minT, (minT + maxT) / 2, maxT].map((timestamp) => {
+    const timeLabels = [
+      { timestamp: minT, anchor: "start" },
+      { timestamp: (minT + maxT) / 2, anchor: "middle" },
+      { timestamp: maxT, anchor: "end" }
+    ].map(({ timestamp, anchor }) => {
       const x = xOf(timestamp);
-      return `<text class="chart-axis" x="${x}" y="${height - 7}" text-anchor="middle">${formatTime(timestamp)}</text>`;
+      return `<text class="chart-axis" x="${x}" y="${height - 7}" text-anchor="${anchor}">${formatTime(timestamp)}</text>`;
     }).join("");
     const paths = series.map((item, index) => {
       const color = item.color || seriesColors[index % seriesColors.length];
@@ -458,7 +462,7 @@
         axisFormatter: formatBits,
         valueFormatter: formatBits,
         axisPadLeft: 92,
-        axisPadRight: 8,
+        axisPadRight: 38,
         fill: true,
         legend: "bottom",
         minMax: 1
@@ -1136,11 +1140,12 @@
   }
 
   function renderHeader(page) {
-    const title = titleText();
+    const isHome = page && page.id === "home";
+    const title = isHome ? page.title : titleText();
     const logoText = config.logoText || "";
     const brand = document.getElementById("brand");
     setText("screenTitle", title);
-    setText("screenSubtitle", config.subtitle || "");
+    setText("screenSubtitle", isHome ? page.description || "" : config.subtitle || "");
     setText("logoText", logoText);
     setText("brandMark", logoText ? logoText.slice(0, 1).toUpperCase() : "");
     brand.hidden = !logoText;
