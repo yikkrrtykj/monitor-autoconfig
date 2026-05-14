@@ -621,7 +621,7 @@
     return `第 ${teamNumber} 队`;
   }
 
-  function tournamentSelector(page, network = "all") {
+  function tournamentSelector(page, network = "wired") {
     const networkFilter = network === "all" ? 'network=~".*"' : `network="${escapeLabel(network)}"`;
     const teamRegex = (page.teams || []).join("|");
     const teamFilter = teamRegex ? `,team=~"${teamRegex}"` : "";
