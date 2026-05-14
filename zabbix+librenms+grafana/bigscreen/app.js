@@ -5,6 +5,7 @@
   const pingGaugeQuery = queries.pingGauge || "";
   const uptimeQuery = queries.uptime || "";
   const lossQuery = queries.loss || "";
+  const infraPingJobs = queries.infraPingJobs || "infra-core-ping|infra-dist-ping|infra-fw-ping";
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
   const pages = window.BIGSCREEN_PAGES || [];
   let gaugeTimer = null;
@@ -129,6 +130,18 @@
 
   async function prometheusRange(query, nameGetter = metricName) {
     return prometheusRangeFor(query, rangeWindow(), nameGetter);
+  }
+
+  function activeInfraPingQuery() {
+    return `up{job=~"${escapeLabel(infraPingJobs)}"}`;
+  }
+
+  function activeSeriesNames(items) {
+    return new Set(items.map((item) => metricName(item.metric)).filter(Boolean));
+  }
+
+  function filterSeriesByNames(seriesList, names) {
+    return seriesList.filter((item) => names.has(item.name));
   }
 
   function formatPing(seconds) {
@@ -369,9 +382,10 @@
     }).join("");
     const legendHeader = '<div class="legend-row legend-head"><span></span><span>名称</span><span>平均</span><span>最高</span></div>';
     const legendClass = options.legend === "bottom" ? "chart-legend bottom-legend" : "chart-legend side-legend";
+    const densityClass = series.length > 12 ? "compact-series" : series.length > 8 ? "dense-series" : "";
 
     container.innerHTML = `
-      <div class="line-layout ${options.legend === "bottom" ? "bottom-layout" : "side-layout"}">
+      <div class="line-layout ${options.legend === "bottom" ? "bottom-layout" : "side-layout"} ${densityClass}" style="--series-count:${series.length}">
         <svg class="line-chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" focusable="false">
           ${timeGridLines}
           ${gridLines}
@@ -393,6 +407,7 @@
     const allTimes = series.flatMap((item) => item.values.map((point) => point.t));
     const minT = Math.min(...allTimes);
     const maxT = Math.max(...allTimes);
+    const densityClass = series.length > 12 ? "compact-heatmap" : series.length > 8 ? "dense-heatmap" : "";
     const rows = series.map((item) => {
       const cells = item.values.map((point) => {
         const level = point.v > 0.5 ? "bad" : point.v > 0 ? "warn" : "good";
@@ -406,9 +421,12 @@
       `;
     }).join("");
     container.innerHTML = `
-      <div class="heatmap">
+      <div class="heatmap ${densityClass}" style="--heatmap-rows:${series.length}">
         <div class="heatmap-rows">${rows}</div>
-        <div class="heatmap-axis"><span>${formatTime(minT)}</span><span>${formatTime((minT + maxT) / 2)}</span><span>${formatTime(maxT)}</span></div>
+        <div class="heatmap-axis">
+          <span aria-hidden="true"></span>
+          <span class="heatmap-axis-times"><span>${formatTime(minT)}</span><span>${formatTime((minT + maxT) / 2)}</span><span>${formatTime(maxT)}</span></span>
+        </div>
       </div>
     `;
   }
@@ -421,6 +439,46 @@
       .slice(0, 4);
   }
 
+  function escapeRegex(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function wanFilterPattern() {
+    return String(config.wanIfFilter || "telecom,telcom,unicom,isp,wan")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .map(escapeRegex)
+      .join("|") || "telecom|telcom|unicom|isp|wan";
+  }
+
+  function ispDiscoveryQuery() {
+    const pattern = wanFilterPattern();
+    return `group by (ifAlias) (ifHCInOctets{job="firewall-snmp",ifAlias=~".+",ifAlias=~"(?i).*(${pattern}).*"}) or group by (ifName) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName=~".+",ifName=~"(?i).*(${pattern}).*"}) or group by (ifDescr) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName="",ifDescr=~".+",ifDescr=~"(?i).*(${pattern}).*"})`;
+  }
+
+  function uniqueNames(names) {
+    return Array.from(new Set(names.map((name) => String(name || "").trim()).filter(Boolean)));
+  }
+
+  async function fetchIspNames() {
+    const configured = getIspNames();
+    try {
+      const discovered = await prometheusInstant(ispDiscoveryQuery());
+      const discoveredNames = uniqueNames(discovered.map((item) => item.metric.ifAlias || item.metric.ifName || item.metric.ifDescr));
+      discoveredNames.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
+      const usesDefaultNames = configured.length === 2 && configured[0] === "ISP1" && configured[1] === "ISP2";
+      const names = usesDefaultNames && discoveredNames.length
+        ? discoveredNames
+        : uniqueNames([...configured, ...discoveredNames]);
+      const limitedNames = names.slice(0, 4);
+      return limitedNames.length ? limitedNames : configured;
+    } catch (error) {
+      console.warn("ISP discovery failed", error);
+      return configured;
+    }
+  }
+
   function escapeLabel(value) {
     return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
@@ -431,7 +489,7 @@
   }
 
   async function fetchIspTraffic() {
-    const names = getIspNames();
+    const names = await fetchIspNames();
     return Promise.all(names.map(async (name) => {
       const [download, upload] = await Promise.all([
         prometheusRange(ispTrafficQuery("ifHCInOctets", name)),
@@ -725,19 +783,23 @@
 
   async function refreshCharts() {
     try {
-      const [pingSeries, lossSeries, ispTraffic] = await Promise.all([
+      const [activeItems, pingSeries, lossSeries, ispTraffic] = await Promise.all([
+        prometheusInstant(activeInfraPingQuery()),
         prometheusRange(pingTrendQuery),
         prometheusRange(lossQuery),
         fetchIspTraffic()
       ]);
-      renderLineChart("pingTrendChart", pingSeries, {
+      const activeNames = activeSeriesNames(activeItems);
+      const activePingSeries = filterSeriesByNames(pingSeries, activeNames);
+      const activeLossSeries = filterSeriesByNames(lossSeries, activeNames);
+      renderLineChart("pingTrendChart", activePingSeries, {
         axisFormatter: formatPingText,
         valueFormatter: formatPingText,
         minMax: 0.005,
         smooth: true,
         smoothWindow: 5
       });
-      renderHeatmap("lossHeatmap", lossSeries);
+      renderHeatmap("lossHeatmap", activeLossSeries);
       renderIspPanels(ispTraffic);
     } catch (error) {
       renderNoData(document.getElementById("pingTrendChart"));

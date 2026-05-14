@@ -802,15 +802,18 @@
 }
 
 .screen.tournament-mode .heatmap-row {
-  grid-template-columns: 128px minmax(0, 1fr);
-  gap: 7px;
+  grid-template-columns: var(--heatmap-name-width) minmax(0, 1fr);
+  gap: var(--heatmap-gap);
 }
 
 .screen.tournament-mode .heatmap-axis {
-  padding-left: 135px;
+  grid-template-columns: var(--heatmap-name-width) minmax(0, 1fr);
+  gap: var(--heatmap-gap);
 }
 
 .screen.tournament-mode .heatmap {
+  --heatmap-name-width: 128px;
+  --heatmap-gap: 7px;
   grid-template-rows: minmax(0, 1fr) 18px;
   padding-top: 0;
 }
@@ -825,7 +828,8 @@
 }
 
 .screen.tournament-mode .heatmap-cells {
-  height: clamp(6px, 1vh, 10px);
+  height: min(10px, 100%);
+  min-height: 3px;
 }
 
 .tournament-panel {

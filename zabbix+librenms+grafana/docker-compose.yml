@@ -673,6 +673,7 @@ services:
       BIGSCREEN_GRAFANA_BASE_URL: "${BIGSCREEN_GRAFANA_BASE_URL:-}"
       BIGSCREEN_PROMETHEUS_BASE_URL: "${BIGSCREEN_PROMETHEUS_BASE_URL:-}"
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
+      BIGSCREEN_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       GRAFANA_PORT: "${GRAFANA_PORT:-3000}"
     volumes:
       - ./bigscreen:/app:ro
@@ -699,7 +700,8 @@ services:
           grafanaBaseUrl: "$${BIGSCREEN_GRAFANA_BASE_URL:-}",
           prometheusBaseUrl: "$${BIGSCREEN_PROMETHEUS_BASE_URL:-}",
           grafanaPort: "$${GRAFANA_PORT:-3000}",
-          ispNames: "$${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
+          ispNames: "$${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}",
+          wanIfFilter: "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
         };
         EOF
         cat > /etc/nginx/conf.d/default.conf <<'EOF'

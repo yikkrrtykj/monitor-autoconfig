@@ -10,10 +10,18 @@
 
 set -u
 
-PROM_URL="${PROM_URL:-http://localhost:9090}"
-GRAFANA_URL="${GRAFANA_URL:-http://localhost:3000}"
+if [ -f ./.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
+PROM_URL="${PROM_URL:-http://localhost:${PROMETHEUS_PORT:-9090}}"
+GRAFANA_URL="${GRAFANA_URL:-http://localhost:${GRAFANA_PORT:-3000}}"
 GRAFANA_USER="${GRAFANA_USER:-admin}"
 GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-root}"
+FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,wan}"
 
 QUIET=0
 [ "${1:-}" = "--quiet" ] && QUIET=1
@@ -28,7 +36,7 @@ hdr()   { [ $QUIET -eq 0 ] && echo -e "\n${YELLOW}== $* ==${NC}"; }
 
 # ---- helpers ----
 prom_query() {
-  curl -s --max-time 5 "${PROM_URL}/api/v1/query?query=$1" 2>/dev/null
+  curl -s --max-time 5 --get --data-urlencode "query=$1" "${PROM_URL}/api/v1/query" 2>/dev/null
 }
 
 prom_value() {
@@ -41,6 +49,76 @@ try:
   print(r[0]['value'][1])
 except Exception:
   print('')
+" 2>/dev/null
+}
+
+prom_targets_summary() {
+  job="$1"
+  curl -s --max-time 5 "${PROM_URL}/api/v1/targets?state=active" 2>/dev/null | python3 -c "
+import json, sys
+job = sys.argv[1]
+try:
+  d = json.load(sys.stdin)
+  targets = d.get('data', {}).get('activeTargets', [])
+  total = 0
+  up = 0
+  for target in targets:
+    labels = target.get('labels') or {}
+    discovered = target.get('discoveredLabels') or {}
+    if labels.get('job') == job or discovered.get('job') == job or target.get('scrapePool') == job:
+      total += 1
+      if target.get('health') == 'up':
+        up += 1
+  print(f'{total} {up}')
+except Exception:
+  print('0 0')
+" "$job" 2>/dev/null
+}
+
+prom_job_count() {
+  metric="$1"
+  job="$2"
+  value=$(prom_value "count(${metric}{job=\"$job\"})")
+  printf '%s' "${value:-0}"
+}
+
+prom_job_up_count() {
+  metric="$1"
+  job="$2"
+  value=$(prom_value "count(${metric}{job=\"$job\"} == 1)")
+  printf '%s' "${value:-0}"
+}
+
+print_known_jobs() {
+  metric="$1"
+  title="$2"
+  rows=$(prom_query "count by (job) (${metric})" | python3 -c "
+import json, sys
+try:
+  d = json.load(sys.stdin)
+  rows = []
+  for r in d.get('data', {}).get('result', []):
+    job = r.get('metric', {}).get('job', '?')
+    value = r.get('value', ['', '0'])[1]
+    rows.append((job, value))
+  rows.sort()
+  for job, value in rows:
+    print(f'         - {job}: {value}')
+except Exception:
+  pass
+" 2>/dev/null)
+  if [ -n "$rows" ]; then
+    echo "       ${title}:"
+    echo "$rows"
+  fi
+}
+
+wan_filter_regex() {
+  printf '%s' "$FIREWALL_WAN_IF_FILTER" | python3 -c "
+import re, sys
+raw = sys.stdin.read().strip()
+parts = [p.strip() for p in raw.split(',') if p.strip()]
+print('|'.join(re.escape(p) for p in parts) or 'telecom|telcom|unicom|isp|wan')
 " 2>/dev/null
 }
 
@@ -69,6 +147,7 @@ if ! curl -s --max-time 5 "${PROM_URL}/-/healthy" >/dev/null 2>&1; then
   exit 1
 fi
 ok "Prometheus API 可达"
+[ $QUIET -eq 0 ] && echo "       使用 Prometheus: ${PROM_URL}"
 
 cfg_reload=$(prom_value 'prometheus_config_last_reload_successful')
 if [ "$cfg_reload" = "1" ]; then ok "配置文件最近一次 reload 成功"
@@ -78,15 +157,28 @@ fi
 # ---- 3. 抓取目标健康度 ----
 hdr "3. Prometheus 抓取目标 (targets)"
 
+target_total_all=0
 for job in infra-core-ping infra-dist-ping infra-fw-ping infra-srv-ping firewall-snmp player-ping; do
-  total=$(prom_value "count(up{job=\"$job\"})")
-  up=$(prom_value "count(up{job=\"$job\"} == 1)")
+  read -r total up <<EOF
+$(prom_targets_summary "$job")
+EOF
+  if [ "${total:-0}" = "0" ]; then
+    total=$(prom_job_count up "$job")
+    up=$(prom_job_up_count up "$job")
+  fi
   total=${total:-0}; up=${up:-0}
+  target_total_all=$((target_total_all + ${total%.*}))
   if [ "$total" = "0" ]; then warn "$job: 0 个目标（如未配置可忽略）"
   elif [ "$up" = "$total" ]; then ok "$job: $up/$total"
   else fail "$job: $up/$total — 有目标抓取失败"
   fi
 done
+
+if [ "$target_total_all" = "0" ]; then
+  warn "当前 Prometheus 没查到任何本项目 target；如果 8088 有数据，请确认脚本的 PROM_URL 是否指向同一个 Prometheus"
+  print_known_jobs up "当前 up 指标里的 job"
+  print_known_jobs probe_success "当前 probe_success 指标里的 job"
+fi
 
 # ---- 4. 设备 ping 联通性 ----
 hdr "4. 设备 ICMP 联通性"
@@ -100,7 +192,7 @@ for job in infra-core-ping infra-dist-ping infra-fw-ping infra-srv-ping; do
   else
     fail "$job 有设备 ping 不通 ($ok_count/$total)"
     # List which ones are down
-    curl -s --max-time 5 "${PROM_URL}/api/v1/query?query=probe_success{job=\"$job\"}==0" 2>/dev/null | \
+    curl -s --max-time 5 --get --data-urlencode "query=probe_success{job=\"$job\"} == 0" "${PROM_URL}/api/v1/query" 2>/dev/null | \
       python3 -c "
 import sys, json
 try:
@@ -113,6 +205,10 @@ except Exception:
   fi
 done
 
+if [ "$(prom_value 'count(probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping"})')" = "0" ]; then
+  print_known_jobs probe_success "可用的 probe_success job"
+fi
+
 # ---- 5. 选手 targets 注册情况 ----
 hdr "5. 选手 targets 生成"
 
@@ -123,6 +219,8 @@ if [ "$player_total" = "0" ]; then
   echo "         可能原因:"
   echo "         - TOURNAMENT_SWITCHES 未配置"
   echo "         - 交换机端口 description 未按 teamNN-MM 命名"
+  echo "         - WIRELESS_SUBNETS 未配置，或无线扫描未发现在线 IP"
+  echo "         - WiFi-only 比赛未配置 PLAYER_STATIC_TARGETS"
   echo "         - generate-player-targets.py 还没跑完第一轮（每 60s 一次）"
 else
   ok "已注册 $player_total 个选手 targets"
@@ -134,7 +232,7 @@ else
   echo "         有线: $wired, 无线: $wireless"
 
   if [ "$wireless" -gt 0 ] && [ "$wired" = "0" ]; then
-    fail "所有选手都被打成无线 — 检查 PLAYER_SUBNETS / WIRELESS_SUBNETS 是否搞反"
+    warn "当前只注册到无线选手 targets — 如果现场只接 WiFi，这是正常的；否则检查 PLAYER_SUBNETS / WIRELESS_SUBNETS"
   fi
 
   # Online ratio
@@ -176,16 +274,23 @@ hdr "6. 防火墙 SNMP（ISP 流量）"
 snmp_total=$(prom_value 'count(up{job="firewall-snmp"})')
 snmp_up=$(prom_value 'count(up{job="firewall-snmp"} == 1)')
 snmp_total=${snmp_total:-0}; snmp_up=${snmp_up:-0}
+snmp_metric_total=$(prom_value 'count(ifHCInOctets{job="firewall-snmp"})')
+snmp_metric_total=${snmp_metric_total:-0}
 
-if [ "$snmp_total" = "0" ]; then
+if [ "$snmp_total" = "0" ] && [ "$snmp_metric_total" = "0" ]; then
   warn "未配置 FIREWALL_SNMP_TARGETS"
 elif [ "$snmp_up" != "$snmp_total" ]; then
   fail "防火墙 SNMP 抓取失败 ($snmp_up/$snmp_total) — 检查 SNMP community / 防火墙策略"
 else
-  ok "防火墙 SNMP 全部抓通 ($snmp_up/$snmp_total)"
+  if [ "$snmp_total" = "0" ]; then
+    ok "检测到 firewall-snmp 流量指标 ($snmp_metric_total 条)"
+  else
+    ok "防火墙 SNMP 全部抓通 ($snmp_up/$snmp_total)"
+  fi
 
   # ISP interfaces detected
-  isp_count=$(prom_value 'count(count by (ifAlias) (ifHCInOctets{job="firewall-snmp",ifAlias=~"(?i)telecom|telcom|unicom|isp|wan"}))')
+  wan_regex="$(wan_filter_regex)"
+  isp_count=$(prom_value "count((count by (ifAlias) (ifHCInOctets{job=\"firewall-snmp\",ifAlias=~\".+\",ifAlias=~\"(?i).*(${wan_regex}).*\"})) or (count by (ifName) (ifHCInOctets{job=\"firewall-snmp\",ifAlias=\"\",ifName=~\".+\",ifName=~\"(?i).*(${wan_regex}).*\"})) or (count by (ifDescr) (ifHCInOctets{job=\"firewall-snmp\",ifAlias=\"\",ifName=\"\",ifDescr=~\".+\",ifDescr=~\"(?i).*(${wan_regex}).*\"})))")
   isp_count=${isp_count:-0}
   if [ "$isp_count" = "0" ]; then
     warn "未检测到 ISP/WAN 接口 — 防火墙端口 description 是否包含 telecom/unicom/isp/wan?"

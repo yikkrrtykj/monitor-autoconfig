@@ -6,5 +6,6 @@ window.BIGSCREEN_CONFIG = {
   grafanaBaseUrl: "",
   prometheusBaseUrl: "",
   grafanaPort: "3000",
-  ispNames: "ISP1,ISP2"
+  ispNames: "ISP1,ISP2",
+  wanIfFilter: "telecom,telcom,unicom,isp,WAN"
 };
