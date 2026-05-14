@@ -73,6 +73,7 @@ LIBRENMS_BASE_URL=http://${SERVER_IP}:8002
 BIGSCREEN_TITLE=           # 留空时自动使用“EVENT_NAME 网络监控大屏”
 BIGSCREEN_LOGO_TEXT=       # 可选，比如品牌名；留空则不显示左侧 logo
 BIGSCREEN_ISP_NAMES=ISP1,ISP2
+BIGSCREEN_ISP_AUTO_DISCOVER=false  # true 时自动加入 Prometheus 发现到的 WAN 口
 
 # 基础设施 ping（Name:IP 格式，逗号分隔，支持 1-10 范围）
 CORE_SWITCH_PING=Core:192.168.10.254
@@ -190,7 +191,7 @@ docker exec librenms snmpwalk -v2c -c global 192.168.10.254 sysName.0
 - 第一次升级到支持自动读取 `.env` 的版本后，先执行一次 `docker compose up -d --force-recreate player-targets`，让容器挂载 `.env`
 - 之后日常改选手交换机、选手有线/无线网段、静态选手名单，不需要重建容器；看 `docker logs -f player-targets` 确认日志里的实际值
 - 改基础设施 Ping / 防火墙 SNMP / Prometheus 保留时间 → 重启 prometheus
-- 改大屏标题、时间、ISP 名称/过滤条件 → `docker compose up -d --force-recreate bigscreen`
+- 改大屏标题、时间、ISP 名称/过滤条件/ISP 自动发现开关 → `docker compose up -d --force-recreate bigscreen`
 - 改 dashboard JSON → Grafana 30 秒自动 reload，或 `docker compose restart grafana`
 
 **重置所有数据从头开始**

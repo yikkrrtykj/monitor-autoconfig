@@ -439,6 +439,10 @@
       .slice(0, 4);
   }
 
+  function isIspAutoDiscoveryEnabled() {
+    return ["1", "true", "yes", "on"].includes(String(config.ispAutoDiscovery || "").trim().toLowerCase());
+  }
+
   function escapeRegex(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
@@ -463,14 +467,15 @@
 
   async function fetchIspNames() {
     const configured = getIspNames();
+    if (!isIspAutoDiscoveryEnabled()) {
+      return configured;
+    }
+
     try {
       const discovered = await prometheusInstant(ispDiscoveryQuery());
       const discoveredNames = uniqueNames(discovered.map((item) => item.metric.ifAlias || item.metric.ifName || item.metric.ifDescr));
       discoveredNames.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
-      const usesDefaultNames = configured.length === 2 && configured[0] === "ISP1" && configured[1] === "ISP2";
-      const names = usesDefaultNames && discoveredNames.length
-        ? discoveredNames
-        : uniqueNames([...configured, ...discoveredNames]);
+      const names = configured.length ? uniqueNames([...configured, ...discoveredNames]) : discoveredNames;
       const limitedNames = names.slice(0, 4);
       return limitedNames.length ? limitedNames : configured;
     } catch (error) {
