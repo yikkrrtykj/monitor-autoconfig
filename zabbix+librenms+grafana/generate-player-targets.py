@@ -7,9 +7,15 @@ Usage (inside container):
   python3 generate-player-targets.py
 
 Environment variables:
-  TOURNAMENT_SWITCHES    comma-separated switch IPs (e.g. 192.168.10.11,192.168.10.12)
-  SNMP_COMMUNITY         SNMP v2c community string
-  PLAYER_SUBNETS         comma-separated subnets to filter (e.g. 192.168.35.0/24)
+  TOURNAMENT_SWITCHES    comma-separated stage switch IPs (e.g. 192.168.10.11,192.168.10.12)
+  SNMP_COMMUNITY         SNMP v2c community string for stage switches
+  PLAYER_GATEWAYS        comma-separated L3 gateway IPs whose ARP table maps
+                         player IPs to MACs. Required when stage switches are
+                         pure L2. Falls back to LIBRENMS_CORE_IP if unset.
+  PLAYER_GATEWAY_SNMP_COMMUNITY
+                         SNMP community for gateways (default: same as SNMP_COMMUNITY)
+  PLAYER_SUBNETS         comma-separated wired subnets (classification hint only,
+                         no longer filters; team labels on ports are authoritative)
   PLAYER_TARGETS_FILE    output path (default: /etc/prometheus/player_targets.json)
   WIRELESS_SUBNETS       comma-separated wireless subnets (e.g. 192.168.66.0/24)
   PLAYER_STATIC_TARGETS  comma-separated manual targets for WiFi-only events
@@ -40,10 +46,15 @@ from ipaddress import IPv4Address, IPv4Network
 IF_ALIAS_OID = "1.3.6.1.2.1.31.1.1.1.18"
 ARP_IFINDEX_OID = "1.3.6.1.2.1.4.22.1.1"
 ARP_NETADDR_OID = "1.3.6.1.2.1.4.22.1.3"
+ARP_PHYSADDR_OID = "1.3.6.1.2.1.4.22.1.2"
+BRIDGE_MIB_FDB_PORT_OID = "1.3.6.1.2.1.17.4.3.1.2"
+BRIDGE_MIB_BASEPORT_OID = "1.3.6.1.2.1.17.1.4.1.2"
+Q_BRIDGE_MIB_FDB_PORT_OID = "1.3.6.1.2.1.17.7.1.2.2.1.2"
 
 TEAM_RE = re.compile(r"team\s*0*(\d+)\s*[-_]\s*0*(\d+)", re.IGNORECASE)
 STATIC_TEAM_RE = re.compile(r"(?:team\s*)?0*(\d+)\s*[-_]\s*0*(\d+)$", re.IGNORECASE)
 VALID_NETWORKS = {"wired", "wireless"}
+HEX_BYTE_RE = re.compile(r"[0-9a-fA-F]{1,2}")
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
@@ -106,6 +117,139 @@ def parse_arp_ifindex(output):
             continue
         entries[(ifindex, ip)] = True
     return entries
+
+
+def normalize_mac(raw):
+    """Common SNMP MAC encodings -> '00:1a:2b:3c:4d:5e' or None.
+
+    Accepts 'Hex-STRING: 00 1a 2b 3c 4d 5e', 'STRING: 0:1a:...', or any
+    string with 6 hex byte tokens separated by spaces/colons/dashes/dots.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip().strip('"')
+    if ":" in s:
+        head, _, tail = s.partition(":")
+        if head.strip().lower() in ("hex-string", "string"):
+            s = tail.strip()
+    tokens = HEX_BYTE_RE.findall(s)
+    if len(tokens) != 6:
+        return None
+    return ":".join(t.lower().zfill(2) for t in tokens)
+
+
+def mac_from_decimal_suffix(parts):
+    """Trailing 6 decimal OID parts -> canonical MAC, else None."""
+    if len(parts) < 6:
+        return None
+    try:
+        octets = [int(p) for p in parts[-6:]]
+    except ValueError:
+        return None
+    if any(o < 0 or o > 255 for o in octets):
+        return None
+    return ":".join(f"{o:02x}" for o in octets)
+
+
+def _int_from_snmp_value(value):
+    """Extract trailing integer from 'INTEGER: 42', 'Gauge32: 5', '42'."""
+    if value is None:
+        return None
+    text = value.strip()
+    if ":" in text:
+        text = text.rsplit(":", 1)[1].strip()
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def parse_dot1d_fdb(output):
+    """dot1dTpFdbPort -> {mac: bridgePort}.
+
+    OID layout: <prefix>.<6 decimal mac octets> = INTEGER: bridgePort
+    """
+    out = {}
+    for line in output.strip().split("\n"):
+        if "=" not in line:
+            continue
+        oid_str, value = line.split("=", 1)
+        parts = oid_str.strip().strip(".").split(".")
+        mac = mac_from_decimal_suffix(parts)
+        if mac is None:
+            continue
+        port = _int_from_snmp_value(value)
+        if port is None or port <= 0:
+            continue
+        out[mac] = port
+    return out
+
+
+def parse_dot1d_baseport(output):
+    """dot1dBasePortIfIndex -> {bridgePort: ifIndex}."""
+    out = {}
+    for line in output.strip().split("\n"):
+        if "=" not in line:
+            continue
+        oid_str, value = line.split("=", 1)
+        parts = oid_str.strip().strip(".").split(".")
+        try:
+            bridge_port = int(parts[-1])
+        except (ValueError, IndexError):
+            continue
+        ifindex = _int_from_snmp_value(value)
+        if ifindex is None:
+            continue
+        out[bridge_port] = ifindex
+    return out
+
+
+def parse_dot1q_fdb(output):
+    """dot1qTpFdbPort -> {mac: bridgePort}; VLAN dimension dropped.
+
+    OID layout: <prefix>.<vlan>.<6 decimal mac octets> = INTEGER: bridgePort
+    """
+    out = {}
+    for line in output.strip().split("\n"):
+        if "=" not in line:
+            continue
+        oid_str, value = line.split("=", 1)
+        parts = oid_str.strip().strip(".").split(".")
+        if len(parts) < 7:
+            continue
+        mac = mac_from_decimal_suffix(parts)
+        if mac is None:
+            continue
+        port = _int_from_snmp_value(value)
+        if port is None or port <= 0:
+            continue
+        out[mac] = port
+    return out
+
+
+def parse_arp_macaddr(output):
+    """ipNetToMediaPhysAddress -> {ip: mac}.
+
+    OID layout: <prefix>.<ifIndex>.<ip octets> = Hex-STRING: aa bb cc dd ee ff
+    """
+    out = {}
+    for line in output.strip().split("\n"):
+        if "=" not in line:
+            continue
+        oid_str, value = line.split("=", 1)
+        parts = oid_str.strip().strip(".").split(".")
+        if len(parts) < 15:
+            continue
+        try:
+            ip = ".".join(parts[11:15])
+            IPv4Address(ip)
+        except (ValueError, IndexError):
+            continue
+        mac = normalize_mac(value)
+        if mac is None:
+            continue
+        out[ip] = mac
+    return out
 
 
 def load_subnets(env_var):
@@ -368,9 +512,153 @@ def discover_wireless_scan_ips(subnets, limit=0, timeout=1, workers=64, max_host
     return limited_items(online, limit)
 
 
+def build_stage_mac_index(switches, community):
+    """Return {sw_ip: {'ifalias': {ifIndex: {team, seat}},
+                       'mac_to_ifindex': {mac: ifIndex}}}.
+
+    Logs per-switch counts to stderr for diagnosis. Tries BRIDGE-MIB FDB
+    first, falls back to Q-BRIDGE-MIB when the default-VLAN view is empty.
+    """
+    index = {}
+    for sw in switches:
+        alias_out = snmpwalk(sw, community, IF_ALIAS_OID)
+        ifalias_map = parse_ifalias(alias_out)
+        print(
+            f"[INFO] {sw}: ifAlias entries with team label = {len(ifalias_map)}",
+            file=sys.stderr,
+        )
+
+        bp_out = snmpwalk(sw, community, BRIDGE_MIB_BASEPORT_OID)
+        bp_map = parse_dot1d_baseport(bp_out)
+        print(
+            f"[INFO] {sw}: bridgePort->ifIndex entries = {len(bp_map)}",
+            file=sys.stderr,
+        )
+
+        fdb_out = snmpwalk(sw, community, BRIDGE_MIB_FDB_PORT_OID)
+        fdb_map = parse_dot1d_fdb(fdb_out)
+        source = "BRIDGE-MIB"
+        if not fdb_map:
+            fdb_out = snmpwalk(sw, community, Q_BRIDGE_MIB_FDB_PORT_OID)
+            fdb_map = parse_dot1q_fdb(fdb_out)
+            source = "Q-BRIDGE-MIB"
+        print(
+            f"[INFO] {sw}: MAC table entries ({source}) = {len(fdb_map)}",
+            file=sys.stderr,
+        )
+
+        mac_to_ifindex = {mac: bp_map.get(bp, bp) for mac, bp in fdb_map.items()}
+        index[sw] = {"ifalias": ifalias_map, "mac_to_ifindex": mac_to_ifindex}
+    return index
+
+
+def join_gateway_arp_to_teams(gateway_arp, stage_index, wireless_nets):
+    """For each (ip, mac) from gateway ARP, locate the stage switch whose MAC
+    table contains that MAC and emit a player target. The team label on the
+    matching port is authoritative; PLAYER_SUBNETS is intentionally not used
+    to filter here. Returns (targets, stats).
+    """
+    targets = []
+    matched = 0
+    unmatched_macs = 0
+
+    for ip, mac in gateway_arp.items():
+        hit = None
+        for sw, data in stage_index.items():
+            ifx = data["mac_to_ifindex"].get(mac)
+            if ifx is None:
+                continue
+            team_info = data["ifalias"].get(ifx)
+            if team_info is None:
+                continue
+            hit = (sw, ifx, team_info)
+            break
+
+        if hit is None:
+            unmatched_macs += 1
+            continue
+
+        sw, _, team_info = hit
+        if wireless_nets and ip_in_subnets(ip, wireless_nets):
+            network_type = "wireless"
+        else:
+            network_type = "wired"
+
+        targets.append({
+            "targets": [ip],
+            "labels": {
+                "team": str(team_info["team"]),
+                "seat": str(team_info["seat"]),
+                "switch": sw,
+                "network": network_type,
+                "role": "player",
+            },
+        })
+        matched += 1
+
+    return targets, {"matched": matched, "unmatched_macs": unmatched_macs}
+
+
+def collect_direct_arp_targets(switches, community, stage_index, wireless_nets):
+    """Path A: query each stage switch's own ARP table (only works when the
+    stage has an L3 SVI on the player VLAN). Empty on pure-L2 deployments.
+    """
+    targets = []
+    for sw in switches:
+        ifalias_map = stage_index.get(sw, {}).get("ifalias", {})
+        if not ifalias_map:
+            continue
+        arp_out = snmpwalk(sw, community, ARP_IFINDEX_OID)
+        if not arp_out:
+            print(
+                f"[WARN] no ARP response from {sw}, trying netAddress",
+                file=sys.stderr,
+            )
+            arp_out = snmpwalk(sw, community, ARP_NETADDR_OID)
+
+        for (ifindex, ip), _ in parse_arp_ifindex(arp_out).items():
+            team_info = ifalias_map.get(ifindex)
+            if team_info is None:
+                continue
+            if wireless_nets and ip_in_subnets(ip, wireless_nets):
+                network_type = "wireless"
+            else:
+                network_type = "wired"
+            targets.append({
+                "targets": [ip],
+                "labels": {
+                    "team": str(team_info["team"]),
+                    "seat": str(team_info["seat"]),
+                    "switch": sw,
+                    "network": network_type,
+                    "role": "player",
+                },
+            })
+    return targets
+
+
+def merge_dedup_targets(path_b_targets, path_a_targets):
+    """Deduplicate by (team, seat, ip). Path B wins on conflict because the
+    gateway-ARP + MAC-table join uses real bridging data."""
+    seen = set()
+    merged = []
+    for target in list(path_b_targets) + list(path_a_targets):
+        key = (target["labels"]["team"], target["labels"]["seat"], target["targets"][0])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(target)
+    return merged
+
+
 def main():
     switches_raw = os.environ.get("TOURNAMENT_SWITCHES", "")
     community = os.environ.get("SNMP_COMMUNITY", "global")
+    gateways_raw = os.environ.get("PLAYER_GATEWAYS", "").strip()
+    if not gateways_raw:
+        gateways_raw = os.environ.get("LIBRENMS_CORE_IP", "").strip()
+    gateways = [g.strip() for g in gateways_raw.split(",") if g.strip()]
+    gateway_community = os.environ.get("PLAYER_GATEWAY_SNMP_COMMUNITY", "").strip() or community
     wired_nets = load_subnets("PLAYER_SUBNETS")
     wireless_nets = load_subnets("WIRELESS_SUBNETS")
     static_targets_raw = os.environ.get("PLAYER_STATIC_TARGETS", "")
@@ -420,51 +708,51 @@ def main():
     else:
         switches = [s.strip() for s in switches_raw.split(",") if s.strip()]
 
-        for sw_ip in switches:
-            print(f"[INFO] querying switch {sw_ip}", file=sys.stderr)
+        stage_index = build_stage_mac_index(switches, community)
 
-            alias_out = snmpwalk(sw_ip, community, IF_ALIAS_OID)
-            if not alias_out:
-                print(f"[WARN] no ifAlias response from {sw_ip}", file=sys.stderr)
-                continue
+        path_a_targets = collect_direct_arp_targets(
+            switches, community, stage_index, wireless_nets
+        )
+        print(
+            f"[INFO] direct-ARP-on-stage produced {len(path_a_targets)} targets",
+            file=sys.stderr,
+        )
 
-            ifalias_map = parse_ifalias(alias_out)
-            if not ifalias_map:
-                print(f"[WARN] no team descriptions found on {sw_ip}", file=sys.stderr)
-                continue
+        path_b_targets = []
+        if gateways:
+            gateway_arp = {}
+            for gw in gateways:
+                arp_out = snmpwalk(gw, gateway_community, ARP_PHYSADDR_OID)
+                entries = parse_arp_macaddr(arp_out)
+                print(
+                    f"[INFO] gateway {gw}: ARP entries = {len(entries)}",
+                    file=sys.stderr,
+                )
+                gateway_arp.update(entries)
+            path_b_targets, stats = join_gateway_arp_to_teams(
+                gateway_arp, stage_index, wireless_nets
+            )
+            print(
+                f"[INFO] gateway-ARP join: matched {stats['matched']} IPs, "
+                f"{stats['unmatched_macs']} MACs had no stage port",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "[INFO] PLAYER_GATEWAYS / LIBRENMS_CORE_IP not set; skipping gateway-ARP path",
+                file=sys.stderr,
+            )
 
-            arp_out = snmpwalk(sw_ip, community, ARP_IFINDEX_OID)
-            if not arp_out:
-                print(f"[WARN] no ARP response from {sw_ip}, trying netAddress", file=sys.stderr)
-                arp_out = snmpwalk(sw_ip, community, ARP_NETADDR_OID)
+        merged = merge_dedup_targets(path_b_targets, path_a_targets)
 
-            arp_entries = parse_arp_ifindex(arp_out)
+        per_team = {}
+        for target in merged:
+            key = (target["labels"]["team"], target["labels"]["network"])
+            per_team[key] = per_team.get(key, 0) + 1
+        for (team, net), count in sorted(per_team.items(), key=lambda kv: (int(kv[0][0]), kv[0][1])):
+            print(f"[INFO] team {team} {net}: {count} target(s)", file=sys.stderr)
 
-            for (ifindex, ip), _ in arp_entries.items():
-                if ifindex not in ifalias_map:
-                    continue
-
-                team_info = ifalias_map[ifindex]
-
-                # Default wired. Mark wireless only when WIRELESS_SUBNETS is set and ip matches.
-                # If PLAYER_SUBNETS (wired) is set, drop ips outside it (likely non-player).
-                if wireless_nets and ip_in_subnets(ip, wireless_nets):
-                    network_type = "wireless"
-                elif wired_nets and not ip_in_subnets(ip, wired_nets):
-                    continue
-                else:
-                    network_type = "wired"
-
-                all_targets.append({
-                    "targets": [ip],
-                    "labels": {
-                        "team": str(team_info["team"]),
-                        "seat": str(team_info["seat"]),
-                        "switch": sw_ip,
-                        "network": network_type,
-                        "role": "player",
-                    },
-                })
+        all_targets.extend(merged)
 
     all_targets.sort(key=lambda t: (
         int(t["labels"]["team"]),

@@ -279,3 +279,261 @@ class TestWirelessScanExclusions:
 
     def test_gateway_like_ips_keeps_tiny_subnets(self):
         assert gpt.gateway_like_ips([IPv4Network("172.16.40.0/30")]) == set()
+
+
+# ---- normalize_mac() ----------------------------------------------
+
+class TestNormalizeMac:
+    def test_hex_string_with_spaces(self):
+        assert gpt.normalize_mac("Hex-STRING: 00 1a 2b 3c 4d 5e") == "00:1a:2b:3c:4d:5e"
+
+    def test_string_colon_form(self):
+        assert gpt.normalize_mac("STRING: 0:1a:2b:3c:4d:5e") == "00:1a:2b:3c:4d:5e"
+
+    def test_bare_colon_form(self):
+        assert gpt.normalize_mac("aa:bb:cc:dd:ee:ff") == "aa:bb:cc:dd:ee:ff"
+
+    def test_upper_case_normalised(self):
+        assert gpt.normalize_mac("AA:BB:CC:DD:EE:FF") == "aa:bb:cc:dd:ee:ff"
+
+    def test_dash_separator(self):
+        assert gpt.normalize_mac("00-1a-2b-3c-4d-5e") == "00:1a:2b:3c:4d:5e"
+
+    def test_quoted_value(self):
+        assert gpt.normalize_mac('"00 1a 2b 3c 4d 5e"') == "00:1a:2b:3c:4d:5e"
+
+    def test_too_few_bytes(self):
+        assert gpt.normalize_mac("00 1a 2b 3c 4d") is None
+
+    def test_too_many_bytes(self):
+        assert gpt.normalize_mac("00 1a 2b 3c 4d 5e 6f") is None
+
+    def test_none_input(self):
+        assert gpt.normalize_mac(None) is None
+
+    def test_garbage_input(self):
+        assert gpt.normalize_mac("hello world") is None
+
+
+# ---- mac_from_decimal_suffix() ------------------------------------
+
+class TestMacFromDecimalSuffix:
+    def test_basic(self):
+        # 0,26,43,60,77,94 = 00:1a:2b:3c:4d:5e
+        assert gpt.mac_from_decimal_suffix(["0", "26", "43", "60", "77", "94"]) == "00:1a:2b:3c:4d:5e"
+
+    def test_takes_last_six_octets(self):
+        # OID prefix before the MAC should be ignored
+        assert gpt.mac_from_decimal_suffix(["1", "3", "6", "1", "0", "26", "43", "60", "77", "94"]) == "00:1a:2b:3c:4d:5e"
+
+    def test_short_input_returns_none(self):
+        assert gpt.mac_from_decimal_suffix(["0", "26", "43", "60", "77"]) is None
+
+    def test_out_of_range_octet(self):
+        assert gpt.mac_from_decimal_suffix(["0", "26", "43", "60", "77", "300"]) is None
+
+    def test_non_numeric(self):
+        assert gpt.mac_from_decimal_suffix(["0", "26", "43", "60", "77", "abc"]) is None
+
+
+# ---- parse_dot1d_fdb() / parse_dot1d_baseport() -------------------
+
+class TestParseDot1dFdb:
+    def test_basic(self):
+        # MAC 00:1a:2b:3c:4d:5e on bridgePort 5
+        out = ".1.3.6.1.2.1.17.4.3.1.2.0.26.43.60.77.94 = INTEGER: 5"
+        assert gpt.parse_dot1d_fdb(out) == {"00:1a:2b:3c:4d:5e": 5}
+
+    def test_zero_port_dropped(self):
+        # port 0 means "learning" / "no port" - drop it
+        out = ".1.3.6.1.2.1.17.4.3.1.2.0.26.43.60.77.94 = INTEGER: 0"
+        assert gpt.parse_dot1d_fdb(out) == {}
+
+    def test_multiple_entries(self):
+        out = "\n".join([
+            ".1.3.6.1.2.1.17.4.3.1.2.0.26.43.60.77.94 = INTEGER: 5",
+            ".1.3.6.1.2.1.17.4.3.1.2.170.187.204.221.238.255 = INTEGER: 7",
+        ])
+        result = gpt.parse_dot1d_fdb(out)
+        assert result == {
+            "00:1a:2b:3c:4d:5e": 5,
+            "aa:bb:cc:dd:ee:ff": 7,
+        }
+
+    def test_empty_input(self):
+        assert gpt.parse_dot1d_fdb("") == {}
+
+
+class TestParseDot1dBaseport:
+    def test_basic(self):
+        # bridgePort 5 -> ifIndex 105
+        out = ".1.3.6.1.2.1.17.1.4.1.2.5 = INTEGER: 105"
+        assert gpt.parse_dot1d_baseport(out) == {5: 105}
+
+    def test_multiple_entries(self):
+        out = "\n".join([
+            ".1.3.6.1.2.1.17.1.4.1.2.1 = INTEGER: 101",
+            ".1.3.6.1.2.1.17.1.4.1.2.2 = INTEGER: 102",
+            ".1.3.6.1.2.1.17.1.4.1.2.3 = INTEGER: 103",
+        ])
+        assert gpt.parse_dot1d_baseport(out) == {1: 101, 2: 102, 3: 103}
+
+    def test_empty_input(self):
+        assert gpt.parse_dot1d_baseport("") == {}
+
+
+class TestParseDot1qFdb:
+    def test_basic_with_vlan(self):
+        # VLAN 10, MAC 00:1a:2b:3c:4d:5e, bridgePort 5
+        out = ".1.3.6.1.2.1.17.7.1.2.2.1.2.10.0.26.43.60.77.94 = INTEGER: 5"
+        assert gpt.parse_dot1q_fdb(out) == {"00:1a:2b:3c:4d:5e": 5}
+
+    def test_vlan_dimension_dropped(self):
+        # Same MAC seen on two VLANs - only last entry kept (dict semantics)
+        out = "\n".join([
+            ".1.3.6.1.2.1.17.7.1.2.2.1.2.10.0.26.43.60.77.94 = INTEGER: 5",
+            ".1.3.6.1.2.1.17.7.1.2.2.1.2.20.0.26.43.60.77.94 = INTEGER: 7",
+        ])
+        result = gpt.parse_dot1q_fdb(out)
+        assert len(result) == 1
+        assert result["00:1a:2b:3c:4d:5e"] in (5, 7)
+
+    def test_port_zero_dropped(self):
+        out = ".1.3.6.1.2.1.17.7.1.2.2.1.2.10.0.26.43.60.77.94 = INTEGER: 0"
+        assert gpt.parse_dot1q_fdb(out) == {}
+
+    def test_empty_input(self):
+        assert gpt.parse_dot1q_fdb("") == {}
+
+
+# ---- parse_arp_macaddr() ------------------------------------------
+
+class TestParseArpMacaddr:
+    def test_basic_hex_string(self):
+        # ifIndex 5, IP 192.168.11.100, MAC aa:bb:cc:dd:ee:ff
+        out = ".1.3.6.1.2.1.4.22.1.2.5.192.168.11.100 = Hex-STRING: AA BB CC DD EE FF"
+        assert gpt.parse_arp_macaddr(out) == {"192.168.11.100": "aa:bb:cc:dd:ee:ff"}
+
+    def test_string_form(self):
+        out = ".1.3.6.1.2.1.4.22.1.2.5.192.168.11.100 = STRING: aa:bb:cc:dd:ee:ff"
+        assert gpt.parse_arp_macaddr(out) == {"192.168.11.100": "aa:bb:cc:dd:ee:ff"}
+
+    def test_invalid_mac_skipped(self):
+        out = ".1.3.6.1.2.1.4.22.1.2.5.192.168.11.100 = Hex-STRING: AA BB CC"
+        assert gpt.parse_arp_macaddr(out) == {}
+
+    def test_invalid_ip_skipped(self):
+        out = ".1.3.6.1.2.1.4.22.1.2.5.999.168.11.100 = Hex-STRING: AA BB CC DD EE FF"
+        assert gpt.parse_arp_macaddr(out) == {}
+
+    def test_multiple_entries(self):
+        out = "\n".join([
+            ".1.3.6.1.2.1.4.22.1.2.5.172.25.11.10 = Hex-STRING: 00 1a 2b 3c 4d 5e",
+            ".1.3.6.1.2.1.4.22.1.2.5.172.25.11.11 = Hex-STRING: AA BB CC DD EE FF",
+        ])
+        assert gpt.parse_arp_macaddr(out) == {
+            "172.25.11.10": "00:1a:2b:3c:4d:5e",
+            "172.25.11.11": "aa:bb:cc:dd:ee:ff",
+        }
+
+    def test_empty_input(self):
+        assert gpt.parse_arp_macaddr("") == {}
+
+
+# ---- join_gateway_arp_to_teams() ----------------------------------
+
+class TestJoinGatewayArpToTeams:
+    def _stage_index(self):
+        return {
+            "172.25.10.3": {
+                "ifalias": {
+                    101: {"team": 1, "seat": 1},
+                    102: {"team": 1, "seat": 2},
+                },
+                "mac_to_ifindex": {
+                    "00:1a:2b:3c:4d:5e": 101,
+                    "00:1a:2b:3c:4d:5f": 102,
+                },
+            },
+            "172.25.10.4": {
+                "ifalias": {
+                    201: {"team": 2, "seat": 1},
+                },
+                "mac_to_ifindex": {
+                    "aa:bb:cc:dd:ee:ff": 201,
+                },
+            },
+        }
+
+    def test_emits_targets_for_matched_macs(self):
+        arp = {
+            "172.25.11.10": "00:1a:2b:3c:4d:5e",
+            "172.25.11.11": "00:1a:2b:3c:4d:5f",
+            "172.25.11.20": "aa:bb:cc:dd:ee:ff",
+        }
+        targets, stats = gpt.join_gateway_arp_to_teams(arp, self._stage_index(), [])
+        assert stats == {"matched": 3, "unmatched_macs": 0}
+        by_ip = {t["targets"][0]: t["labels"] for t in targets}
+        assert by_ip["172.25.11.10"]["team"] == "1"
+        assert by_ip["172.25.11.10"]["seat"] == "1"
+        assert by_ip["172.25.11.10"]["switch"] == "172.25.10.3"
+        assert by_ip["172.25.11.20"]["switch"] == "172.25.10.4"
+        assert all(label["network"] == "wired" for label in by_ip.values())
+
+    def test_unmatched_macs_counted(self):
+        arp = {"172.25.11.99": "de:ad:be:ef:00:01"}
+        targets, stats = gpt.join_gateway_arp_to_teams(arp, self._stage_index(), [])
+        assert targets == []
+        assert stats == {"matched": 0, "unmatched_macs": 1}
+
+    def test_wireless_classification_when_ip_in_wireless_subnet(self):
+        wireless = [IPv4Network("172.25.12.0/24")]
+        arp = {"172.25.12.50": "00:1a:2b:3c:4d:5e"}
+        targets, _ = gpt.join_gateway_arp_to_teams(arp, self._stage_index(), wireless)
+        assert targets[0]["labels"]["network"] == "wireless"
+
+    def test_trust_team_label_even_when_ip_outside_player_subnets(self):
+        # Regression: previously the loop would drop IPs not in PLAYER_SUBNETS
+        # even when the port had a team label. Now the team label is
+        # authoritative.
+        arp = {"10.99.99.99": "00:1a:2b:3c:4d:5e"}
+        targets, stats = gpt.join_gateway_arp_to_teams(arp, self._stage_index(), [])
+        assert stats == {"matched": 1, "unmatched_macs": 0}
+        assert targets[0]["labels"]["network"] == "wired"
+        assert targets[0]["labels"]["team"] == "1"
+
+
+# ---- merge_dedup_targets() ----------------------------------------
+
+class TestMergeDedupTargets:
+    def _target(self, team, seat, ip, switch):
+        return {
+            "targets": [ip],
+            "labels": {
+                "team": str(team),
+                "seat": str(seat),
+                "switch": switch,
+                "network": "wired",
+                "role": "player",
+            },
+        }
+
+    def test_path_b_wins_on_conflict(self):
+        path_a = [self._target(1, 1, "172.25.11.10", "stage-via-arp")]
+        path_b = [self._target(1, 1, "172.25.11.10", "stage-via-mac-table")]
+        merged = gpt.merge_dedup_targets(path_b, path_a)
+        assert len(merged) == 1
+        assert merged[0]["labels"]["switch"] == "stage-via-mac-table"
+
+    def test_distinct_entries_kept(self):
+        path_a = [self._target(1, 1, "172.25.11.10", "sw-A")]
+        path_b = [self._target(2, 1, "172.25.11.20", "sw-B")]
+        merged = gpt.merge_dedup_targets(path_b, path_a)
+        assert len(merged) == 2
+
+    def test_dedup_key_is_team_seat_ip(self):
+        # Same team+seat but different IP -> two entries
+        path_a = [self._target(1, 1, "172.25.11.10", "sw")]
+        path_b = [self._target(1, 1, "172.25.11.11", "sw")]
+        merged = gpt.merge_dedup_targets(path_b, path_a)
+        assert len(merged) == 2
