@@ -472,7 +472,8 @@ class TestJoinGatewayArpToTeams:
             "172.25.11.20": "aa:bb:cc:dd:ee:ff",
         }
         targets, stats = gpt.join_gateway_arp_to_teams(arp, self._stage_index(), [])
-        assert stats == {"matched": 3, "unmatched_macs": 0}
+        assert stats["matched"] == 3
+        assert stats["unmatched_macs"] == 0
         by_ip = {t["targets"][0]: t["labels"] for t in targets}
         assert by_ip["172.25.11.10"]["team"] == "1"
         assert by_ip["172.25.11.10"]["seat"] == "1"
@@ -484,7 +485,8 @@ class TestJoinGatewayArpToTeams:
         arp = {"172.25.11.99": "de:ad:be:ef:00:01"}
         targets, stats = gpt.join_gateway_arp_to_teams(arp, self._stage_index(), [])
         assert targets == []
-        assert stats == {"matched": 0, "unmatched_macs": 1}
+        assert stats["matched"] == 0
+        assert stats["unmatched_macs"] == 1
 
     def test_wireless_classification_when_ip_in_wireless_subnet(self):
         wireless = [IPv4Network("172.25.12.0/24")]
@@ -498,7 +500,8 @@ class TestJoinGatewayArpToTeams:
         # authoritative.
         arp = {"10.99.99.99": "00:1a:2b:3c:4d:5e"}
         targets, stats = gpt.join_gateway_arp_to_teams(arp, self._stage_index(), [])
-        assert stats == {"matched": 1, "unmatched_macs": 0}
+        assert stats["matched"] == 1
+        assert stats["unmatched_macs"] == 0
         assert targets[0]["labels"]["network"] == "wired"
         assert targets[0]["labels"]["team"] == "1"
 
@@ -622,3 +625,87 @@ class TestBuildStageMacIndexCommunityIndexing:
             "00:1a:2b:3c:4d:5e": 10,
             "aa:bb:cc:dd:ee:ff": 11,
         }
+
+
+# ---- parse_if_oper_status() ---------------------------------------
+
+class TestParseIfOperStatus:
+    def test_integer_status(self):
+        out = ".1.3.6.1.2.1.2.2.1.8.10 = INTEGER: 1"
+        assert gpt.parse_if_oper_status(out) == {10: 1}
+
+    def test_named_status(self):
+        out = ".1.3.6.1.2.1.2.2.1.8.10 = INTEGER: up(1)"
+        assert gpt.parse_if_oper_status(out) == {10: 1}
+
+    def test_down_status(self):
+        out = ".1.3.6.1.2.1.2.2.1.8.11 = INTEGER: 2"
+        assert gpt.parse_if_oper_status(out) == {11: 2}
+
+    def test_multiple_entries(self):
+        out = "\n".join([
+            ".1.3.6.1.2.1.2.2.1.8.10 = INTEGER: 1",
+            ".1.3.6.1.2.1.2.2.1.8.11 = INTEGER: 2",
+            ".1.3.6.1.2.1.2.2.1.8.12 = INTEGER: 1",
+        ])
+        assert gpt.parse_if_oper_status(out) == {10: 1, 11: 2, 12: 1}
+
+    def test_empty_input(self):
+        assert gpt.parse_if_oper_status("") == {}
+
+
+# ---- link-up filter on join paths ---------------------------------
+
+class TestRequireLinkUpFilter:
+    def _stage_index_with_oper(self, oper_status_for_101):
+        return {
+            "172.25.10.3": {
+                "ifalias": {101: {"team": 14, "seat": 1}},
+                "mac_to_ifindex": {"00:1a:2b:3c:4d:5e": 101},
+                "oper_status": {101: oper_status_for_101},
+            },
+        }
+
+    def test_link_up_emits_target(self):
+        idx = self._stage_index_with_oper(1)  # up
+        arp = {"172.25.11.10": "00:1a:2b:3c:4d:5e"}
+        targets, stats = gpt.join_gateway_arp_to_teams(arp, idx, [], require_link_up=True)
+        assert len(targets) == 1
+        assert stats["skipped_link_down"] == 0
+        assert stats["matched"] == 1
+
+    def test_link_down_skipped_when_required(self):
+        # The canonical phantom case: port unplugged but MAC and ARP are still
+        # cached on the switch / gateway.
+        idx = self._stage_index_with_oper(2)  # down
+        arp = {"172.25.11.10": "00:1a:2b:3c:4d:5e"}
+        targets, stats = gpt.join_gateway_arp_to_teams(arp, idx, [], require_link_up=True)
+        assert targets == []
+        assert stats["skipped_link_down"] == 1
+        assert stats["matched"] == 0
+        assert stats["unmatched_macs"] == 0
+
+    def test_link_down_emitted_when_disabled(self):
+        # If user opts out, behaviour reverts to pre-filter (emit phantoms too).
+        idx = self._stage_index_with_oper(2)
+        arp = {"172.25.11.10": "00:1a:2b:3c:4d:5e"}
+        targets, stats = gpt.join_gateway_arp_to_teams(arp, idx, [], require_link_up=False)
+        assert len(targets) == 1
+        assert stats["matched"] == 1
+        assert stats["skipped_link_down"] == 0
+
+    def test_missing_oper_status_does_not_skip(self):
+        # If ifOperStatus didn't come back at all (old switch, ACL, etc.),
+        # don't punish the port — better to over-emit than to silently hide
+        # real players.
+        idx = {
+            "172.25.10.3": {
+                "ifalias": {101: {"team": 14, "seat": 1}},
+                "mac_to_ifindex": {"00:1a:2b:3c:4d:5e": 101},
+                "oper_status": {},
+            },
+        }
+        arp = {"172.25.11.10": "00:1a:2b:3c:4d:5e"}
+        targets, stats = gpt.join_gateway_arp_to_teams(arp, idx, [], require_link_up=True)
+        assert len(targets) == 1
+        assert stats["matched"] == 1

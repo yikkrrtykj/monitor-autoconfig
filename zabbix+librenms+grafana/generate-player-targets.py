@@ -19,6 +19,9 @@ Environment variables:
                          community-indexing (community@vlan_id) so per-VLAN MAC
                          tables become visible on Cisco IOS / IOS-XE switches
                          where the default context only exposes VLAN 1.
+  PLAYER_REQUIRE_LINK_UP true/false (default true). Skip team ports whose
+                         ifOperStatus is not "up". Prevents phantom targets
+                         from stale MAC/ARP cache entries on disconnected ports.
   PLAYER_SUBNETS         comma-separated wired subnets (classification hint only,
                          no longer filters; team labels on ports are authoritative)
   PLAYER_TARGETS_FILE    output path (default: /etc/prometheus/player_targets.json)
@@ -49,12 +52,14 @@ import sys
 from ipaddress import IPv4Address, IPv4Network
 
 IF_ALIAS_OID = "1.3.6.1.2.1.31.1.1.1.18"
+IF_OPER_STATUS_OID = "1.3.6.1.2.1.2.2.1.8"
 ARP_IFINDEX_OID = "1.3.6.1.2.1.4.22.1.1"
 ARP_NETADDR_OID = "1.3.6.1.2.1.4.22.1.3"
 ARP_PHYSADDR_OID = "1.3.6.1.2.1.4.22.1.2"
 BRIDGE_MIB_FDB_PORT_OID = "1.3.6.1.2.1.17.4.3.1.2"
 BRIDGE_MIB_BASEPORT_OID = "1.3.6.1.2.1.17.1.4.1.2"
 Q_BRIDGE_MIB_FDB_PORT_OID = "1.3.6.1.2.1.17.7.1.2.2.1.2"
+IF_OPER_STATUS_UP = 1
 
 TEAM_RE = re.compile(r"team\s*0*(\d+)\s*[-_]\s*0*(\d+)", re.IGNORECASE)
 STATIC_TEAM_RE = re.compile(r"(?:team\s*)?0*(\d+)\s*[-_]\s*0*(\d+)$", re.IGNORECASE)
@@ -102,6 +107,36 @@ def parse_ifalias(output):
 
         mapping[ifindex] = {"team": int(m.group(1)), "seat": int(m.group(2))}
     return mapping
+
+
+def parse_if_oper_status(output):
+    """ifOperStatus -> {ifIndex: status_int} (1 = up, 2 = down, ...).
+
+    Accepts both 'INTEGER: 1' and 'INTEGER: up(1)' forms.
+    """
+    NAMED = {"up": 1, "down": 2, "testing": 3, "unknown": 4,
+             "dormant": 5, "notpresent": 6, "lowerlayerdown": 7}
+    out = {}
+    for line in output.strip().split("\n"):
+        if "=" not in line:
+            continue
+        oid_str, value = line.split("=", 1)
+        parts = oid_str.strip().strip(".").split(".")
+        try:
+            ifindex = int(parts[-1])
+        except (ValueError, IndexError):
+            continue
+        text = value.strip()
+        if ":" in text:
+            text = text.rsplit(":", 1)[1].strip()
+        m = re.search(r"\d+", text)
+        if m:
+            out[ifindex] = int(m.group(0))
+            continue
+        name = text.lower().split("(", 1)[0].strip()
+        if name in NAMED:
+            out[ifindex] = NAMED[name]
+    return out
 
 
 def parse_arp_ifindex(output):
@@ -541,12 +576,15 @@ def _walk_vlan_mac_table(sw, community):
 
 def build_stage_mac_index(switches, community, vlan_ids=None):
     """Return {sw_ip: {'ifalias': {ifIndex: {team, seat}},
-                       'mac_to_ifindex': {mac: ifIndex}}}.
+                       'mac_to_ifindex': {mac: ifIndex},
+                       'oper_status': {ifIndex: status_int}}}.
 
     Queries the default SNMP context first. If vlan_ids is set, also queries
     each VLAN via Cisco's community-indexing (community@vlan_id) so the
     per-VLAN BRIDGE-MIB tables (e.g. on Cisco IOS, where the default context
     only exposes VLAN 1) become visible. Results are merged across contexts.
+    ifOperStatus is queried once on the default context and used downstream
+    to filter stale MAC/ARP entries on currently-disconnected ports.
     """
     vlan_ids = vlan_ids or []
     index = {}
@@ -555,6 +593,16 @@ def build_stage_mac_index(switches, community, vlan_ids=None):
         ifalias_map = parse_ifalias(alias_out)
         print(
             f"[INFO] {sw}: ifAlias entries with team label = {len(ifalias_map)}",
+            file=sys.stderr,
+        )
+
+        oper_out = snmpwalk(sw, community, IF_OPER_STATUS_OID)
+        oper_map = parse_if_oper_status(oper_out)
+        team_ports_up = sum(
+            1 for ifx in ifalias_map if oper_map.get(ifx) == IF_OPER_STATUS_UP
+        )
+        print(
+            f"[INFO] {sw}: team ports with link up = {team_ports_up}/{len(ifalias_map)}",
             file=sys.stderr,
         )
 
@@ -584,19 +632,26 @@ def build_stage_mac_index(switches, community, vlan_ids=None):
             f"[INFO] {sw}: combined MAC table entries = {len(mac_to_ifindex)}",
             file=sys.stderr,
         )
-        index[sw] = {"ifalias": ifalias_map, "mac_to_ifindex": mac_to_ifindex}
+        index[sw] = {
+            "ifalias": ifalias_map,
+            "mac_to_ifindex": mac_to_ifindex,
+            "oper_status": oper_map,
+        }
     return index
 
 
-def join_gateway_arp_to_teams(gateway_arp, stage_index, wireless_nets):
+def join_gateway_arp_to_teams(gateway_arp, stage_index, wireless_nets, require_link_up=True):
     """For each (ip, mac) from gateway ARP, locate the stage switch whose MAC
     table contains that MAC and emit a player target. The team label on the
     matching port is authoritative; PLAYER_SUBNETS is intentionally not used
-    to filter here. Returns (targets, stats).
+    to filter here. When require_link_up is True (default), stale MAC/ARP
+    entries on currently-disconnected team ports are skipped via ifOperStatus.
+    Returns (targets, stats).
     """
     targets = []
     matched = 0
     unmatched_macs = 0
+    skipped_link_down = 0
 
     for ip, mac in gateway_arp.items():
         hit = None
@@ -607,11 +662,19 @@ def join_gateway_arp_to_teams(gateway_arp, stage_index, wireless_nets):
             team_info = data["ifalias"].get(ifx)
             if team_info is None:
                 continue
+            if require_link_up:
+                oper = data.get("oper_status", {}).get(ifx)
+                if oper is not None and oper != IF_OPER_STATUS_UP:
+                    skipped_link_down += 1
+                    hit = "link-down"
+                    break
             hit = (sw, ifx, team_info)
             break
 
         if hit is None:
             unmatched_macs += 1
+            continue
+        if hit == "link-down":
             continue
 
         sw, _, team_info = hit
@@ -632,16 +695,23 @@ def join_gateway_arp_to_teams(gateway_arp, stage_index, wireless_nets):
         })
         matched += 1
 
-    return targets, {"matched": matched, "unmatched_macs": unmatched_macs}
+    return targets, {
+        "matched": matched,
+        "unmatched_macs": unmatched_macs,
+        "skipped_link_down": skipped_link_down,
+    }
 
 
-def collect_direct_arp_targets(switches, community, stage_index, wireless_nets):
+def collect_direct_arp_targets(switches, community, stage_index, wireless_nets, require_link_up=True):
     """Path A: query each stage switch's own ARP table (only works when the
     stage has an L3 SVI on the player VLAN). Empty on pure-L2 deployments.
+    Skips team ports that are currently link-down when require_link_up is set.
     """
     targets = []
     for sw in switches:
-        ifalias_map = stage_index.get(sw, {}).get("ifalias", {})
+        data = stage_index.get(sw, {})
+        ifalias_map = data.get("ifalias", {})
+        oper_map = data.get("oper_status", {})
         if not ifalias_map:
             continue
         arp_out = snmpwalk(sw, community, ARP_IFINDEX_OID)
@@ -656,6 +726,10 @@ def collect_direct_arp_targets(switches, community, stage_index, wireless_nets):
             team_info = ifalias_map.get(ifindex)
             if team_info is None:
                 continue
+            if require_link_up:
+                oper = oper_map.get(ifindex)
+                if oper is not None and oper != IF_OPER_STATUS_UP:
+                    continue
             if wireless_nets and ip_in_subnets(ip, wireless_nets):
                 network_type = "wireless"
             else:
@@ -707,6 +781,7 @@ def main():
             print(f"[WARN] invalid PLAYER_VLAN_IDS entry: {item}", file=sys.stderr)
     wired_nets = load_subnets("PLAYER_SUBNETS")
     wireless_nets = load_subnets("WIRELESS_SUBNETS")
+    require_link_up = env_bool("PLAYER_REQUIRE_LINK_UP", default=True)
     static_targets_raw = os.environ.get("PLAYER_STATIC_TARGETS", "")
     static_default_network = os.environ.get("PLAYER_STATIC_NETWORK", "wireless")
     wireless_scan_enabled = env_bool("PLAYER_WIRELESS_SCAN", default=True) or env_bool("PLAYER_WIRELESS_PREVIEW")
@@ -757,7 +832,7 @@ def main():
         stage_index = build_stage_mac_index(switches, community, player_vlan_ids)
 
         path_a_targets = collect_direct_arp_targets(
-            switches, community, stage_index, wireless_nets
+            switches, community, stage_index, wireless_nets, require_link_up
         )
         print(
             f"[INFO] direct-ARP-on-stage produced {len(path_a_targets)} targets",
@@ -776,11 +851,12 @@ def main():
                 )
                 gateway_arp.update(entries)
             path_b_targets, stats = join_gateway_arp_to_teams(
-                gateway_arp, stage_index, wireless_nets
+                gateway_arp, stage_index, wireless_nets, require_link_up
             )
             print(
                 f"[INFO] gateway-ARP join: matched {stats['matched']} IPs, "
-                f"{stats['unmatched_macs']} MACs had no stage port",
+                f"{stats['unmatched_macs']} MACs had no stage port, "
+                f"{stats['skipped_link_down']} skipped (link down)",
                 file=sys.stderr,
             )
         else:
