@@ -31,13 +31,14 @@ const layouts = {
   '6teams': {
     title: 'Tournament 6 队',
     uid: 'tournament-6teams',
-    description: '6-team tournament (works for any team size — 3-per-team / 4-per-team / etc., auto-detected from data)',
+    description: '6-team tournament (3-per-team or 4-per-team — never 5; seat filter caps to 4)',
     rows: [
       { left: [1, 2, 3], right: [4, 5, 6] },
     ],
     teamH: 12,
     dotsH: 4,
     withTrend: true,
+    teamSize: 4,
   },
   '332': {
     title: 'Tournament 64 (3 层 332)',

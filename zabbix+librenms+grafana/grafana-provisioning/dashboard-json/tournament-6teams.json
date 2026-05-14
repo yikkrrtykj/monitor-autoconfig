@@ -74,7 +74,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",network=~\"$network\"} == 1) or vector(0)",
+          "expr": "count(probe_success{role=\"player\",seat=~\"1|2|3|4\",network=~\"$network\"} == 1) or vector(0)",
           "refId": "A"
         }
       ],
@@ -137,7 +137,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",network=~\"$network\"} == 0) or vector(0)",
+          "expr": "count(probe_success{role=\"player\",seat=~\"1|2|3|4\",network=~\"$network\"} == 0) or vector(0)",
           "refId": "A"
         }
       ],
@@ -200,7 +200,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count(probe_icmp_duration_seconds{role=\"player\",network=~\"$network\",phase=\"rtt\"} > 0.03) or vector(0)",
+          "expr": "count(probe_icmp_duration_seconds{role=\"player\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"} > 0.03) or vector(0)",
           "refId": "A"
         }
       ],
@@ -259,7 +259,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count(probe_success{role=\"player\",network=~\"$network\"}) or vector(0)",
+          "expr": "count(probe_success{role=\"player\",seat=~\"1|2|3|4\",network=~\"$network\"}) or vector(0)",
           "refId": "A"
         }
       ],
@@ -334,7 +334,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
@@ -413,7 +413,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
@@ -492,7 +492,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"3\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"3\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
@@ -571,7 +571,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"4\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"4\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
@@ -650,7 +650,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"5\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"5\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
@@ -729,7 +729,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"6\",network=~\"$network\",phase=\"rtt\"}",
+          "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"6\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}",
           "instant": true,
@@ -831,7 +831,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"1\",network=~\"$network\",phase=\"rtt\"}[3m])",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -930,7 +930,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"2\",network=~\"$network\",phase=\"rtt\"}[3m])",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -1029,7 +1029,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"3\",network=~\"$network\",phase=\"rtt\"}[3m])",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"3\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -1128,7 +1128,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"4\",network=~\"$network\",phase=\"rtt\"}[3m])",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"4\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -1227,7 +1227,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"5\",network=~\"$network\",phase=\"rtt\"}[3m])",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"5\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
@@ -1326,7 +1326,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"6\",network=~\"$network\",phase=\"rtt\"}[3m])",
+          "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"6\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
           "legendFormat": "S{{seat}} {{instance}}"
         }
