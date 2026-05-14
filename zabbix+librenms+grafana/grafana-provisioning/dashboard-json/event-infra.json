@@ -259,11 +259,11 @@
   "templating": {
     "list": [
       {
-        "current": { "text": "telecom|telcom|unicom|isp|wan|internet|outside|untrust|电信|联通", "value": "telecom|telcom|unicom|isp|wan|internet|outside|untrust|电信|联通" },
+        "current": { "text": "ISP1|ISP2", "value": "ISP1|ISP2" },
         "hide": 0,
         "label": "WAN 口过滤（正则）",
         "name": "wan_filter",
-        "query": "telecom|telcom|unicom|isp|wan|internet|outside|untrust|电信|联通",
+        "query": "ISP1|ISP2",
         "type": "textbox"
       },
       {
@@ -288,5 +288,5 @@
   "timezone": "browser",
   "title": "Event Infrastructure",
   "uid": "event-infra",
-  "version": 109
+  "version": 110
 }

@@ -837,7 +837,7 @@
   grid-column: 2;
   grid-row: 2;
   align-content: start;
-  grid-template-rows: 56px auto clamp(160px, 17vh, 230px);
+  grid-template-rows: 56px auto clamp(220px, 25vh, 320px);
   gap: 9px;
 }
 
@@ -1039,7 +1039,7 @@ a.seat-slot:hover {
 }
 
 .multi-team-panel {
-  grid-template-rows: 52px auto clamp(150px, 16vh, 215px);
+  grid-template-rows: 52px auto clamp(260px, 31vh, 360px);
 }
 
 .multi-team-panel .team-card {
@@ -1075,6 +1075,112 @@ a.seat-slot:hover {
 
 .tournament-trend-panel {
   min-height: 0;
+  overflow: hidden;
+}
+
+.team-trend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  grid-auto-rows: minmax(66px, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  gap: 6px;
+}
+
+.team-trend-card {
+  display: grid;
+  grid-template-rows: 18px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(105, 160, 255, 0.2);
+  border-radius: 5px;
+  background: rgba(11, 18, 30, 0.68);
+}
+
+.team-trend-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0 6px;
+  border-bottom: 1px solid rgba(105, 160, 255, 0.12);
+}
+
+.team-trend-card h3 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #cfe0ff;
+  font-size: 10px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-trend-card header span {
+  color: #b9d1ff;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.team-trend-chart {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sparkline-chart {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.sparkline-grid {
+  stroke: rgba(125, 139, 160, 0.14);
+  stroke-width: 1;
+}
+
+.sparkline-path {
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.sparkline-legend {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  left: 4px;
+  display: flex;
+  gap: 5px;
+  overflow: hidden;
+  color: #b9c7de;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.sparkline-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sparkline-legend i {
+  width: 8px;
+  height: 2px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.team-trend-chart .no-data {
+  font-size: 11px;
 }
 
 .match-trend-grid {

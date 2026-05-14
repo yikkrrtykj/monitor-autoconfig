@@ -144,6 +144,27 @@
     return seriesList.filter((item) => names.has(item.name));
   }
 
+  function stageDevicePattern() {
+    return String(config.stageDeviceFilter || "stage,wutai,舞台")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .map(escapeRegex)
+      .join("|") || "stage|wutai|舞台";
+  }
+
+  function isStageDeviceName(name) {
+    return new RegExp(stageDevicePattern(), "i").test(String(name || ""));
+  }
+
+  function filterStageDeviceItems(items) {
+    return items.filter((item) => isStageDeviceName(item.name || metricName(item.metric || {})));
+  }
+
+  function filterStageDeviceSeries(seriesList) {
+    return seriesList.filter((item) => isStageDeviceName(item.name));
+  }
+
   function formatPing(seconds) {
     if (seconds < 0.001) {
       return { value: Math.round(seconds * 1000000), unit: "μs" };
@@ -394,6 +415,48 @@
         </svg>
         <div class="${legendClass}">${legendHeader}${legend}</div>
       </div>
+    `;
+  }
+
+  function renderSparkline(containerId, seriesList) {
+    const container = document.getElementById(containerId);
+    const series = seriesList
+      .filter((item) => item.values.length)
+      .map((item) => ({ ...item, values: smoothValues(item.values, 5) }));
+    if (!series.length) {
+      renderNoData(container, "暂无趋势");
+      return;
+    }
+
+    const box = container.getBoundingClientRect();
+    const width = Math.max(120, Math.round(box.width || container.clientWidth || 180));
+    const height = Math.max(44, Math.round(box.height || container.clientHeight || 72));
+    const pad = { left: 4, right: 4, top: 6, bottom: 10 };
+    const plotWidth = width - pad.left - pad.right;
+    const plotHeight = height - pad.top - pad.bottom;
+    const times = series.flatMap((item) => item.values.map((point) => point.t));
+    const minT = Math.min(...times);
+    const maxT = Math.max(...times);
+    const rawMax = Math.max(0.005, ...series.flatMap((item) => item.values.map((point) => point.v)));
+    const maxV = niceMax(rawMax);
+    const xOf = (timestamp) => pad.left + ((timestamp - minT) / Math.max(1, maxT - minT)) * plotWidth;
+    const yOf = (value) => pad.top + (1 - Math.min(1, Math.max(0, value / maxV))) * plotHeight;
+    const paths = series.map((item, index) => {
+      const color = item.color || seriesColors[index % seriesColors.length];
+      const points = item.values.map((point) => `${xOf(point.t).toFixed(1)},${yOf(point.v).toFixed(1)}`);
+      return `<path class="sparkline-path" d="${linePathFromPoints(points, true)}" style="stroke:${color}" />`;
+    }).join("");
+    const legend = series.slice(0, 5).map((item, index) => {
+      const color = item.color || seriesColors[index % seriesColors.length];
+      return `<span><i style="background:${color}"></i>${escapeHtml(item.name)}</span>`;
+    }).join("");
+
+    container.innerHTML = `
+      <svg class="sparkline-chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" focusable="false">
+        <line class="sparkline-grid" x1="${pad.left}" y1="${yOf(maxV * 0.5)}" x2="${width - pad.right}" y2="${yOf(maxV * 0.5)}" />
+        ${paths}
+      </svg>
+      <div class="sparkline-legend">${legend}</div>
     `;
   }
 
@@ -707,10 +770,7 @@
 
   function tournamentTrendQuery(page) {
     const selector = tournamentSelector(page);
-    if (page.kind === "match") {
-      return `avg by (team,seat,instance) (avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[3m]))`;
-    }
-    return `avg by (team) (avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[3m]))`;
+    return `avg by (team,seat) (avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[3m]))`;
   }
 
   function lineChartOptions() {
@@ -725,25 +785,32 @@
 
   function renderTournamentTrend(page, trendSeries) {
     const container = document.getElementById("tournamentTrendChart");
-    if (page.kind !== "match") {
-      renderLineChart("tournamentTrendChart", trendSeries, lineChartOptions());
-      return;
-    }
-
+    const teams = page.teams || [];
     container.innerHTML = `
-      <div class="match-trend-grid">
-        <section class="match-trend-card">
-          <h3>舞台左延迟</h3>
-          <div class="chart-body" id="matchTrendLeft"></div>
-        </section>
-        <section class="match-trend-card">
-          <h3>舞台右延迟</h3>
-          <div class="chart-body" id="matchTrendRight"></div>
-        </section>
+      <div class="team-trend-grid" style="--trend-team-count:${teams.length}">
+        ${teams.map((team) => {
+          const teamSeries = trendSeries.filter((item) => String(item.metric.team || "") === String(team));
+          const latestValues = teamSeries
+            .map((item) => item.values[item.values.length - 1])
+            .filter(Boolean)
+            .map((point) => point.v);
+          const latest = latestValues.length ? formatPingText(average(latestValues)) : "-";
+          return `
+            <section class="team-trend-card">
+              <header><h3>${escapeHtml(teamName(page, team))}</h3><span>${escapeHtml(latest)}</span></header>
+              <div class="team-trend-chart" id="teamTrend${team}"></div>
+            </section>
+          `;
+        }).join("")}
       </div>
     `;
-    renderLineChart("matchTrendLeft", trendSeries.filter((item) => String(item.metric.team || "") === "1"), lineChartOptions());
-    renderLineChart("matchTrendRight", trendSeries.filter((item) => String(item.metric.team || "") === "2"), lineChartOptions());
+    teams.forEach((team) => {
+      const teamSeries = trendSeries
+        .filter((item) => String(item.metric.team || "") === String(team))
+        .sort((a, b) => Number(a.metric.seat || 0) - Number(b.metric.seat || 0))
+        .map((item) => ({ ...item, name: seatLabel(item.metric.seat || "?") }));
+      renderSparkline(`teamTrend${team}`, teamSeries);
+    });
   }
 
   async function refreshTournament(page) {
@@ -753,10 +820,7 @@
         prometheusInstant(`probe_icmp_duration_seconds{${selector},phase="rtt"}`),
         prometheusInstant(`probe_success{${selector}}`),
         prometheusRange(tournamentTrendQuery(page), (metric) => {
-          if (page.kind === "match") {
-            return `${teamName(page, metric.team)} S${metric.seat || "?"} ${metric.instance || ""}`.trim();
-          }
-          return teamName(page, metric.team);
+          return `${teamName(page, metric.team)} ${seatLabel(metric.seat || "?")}`;
         })
       ]);
       const players = buildPlayers(latencyItems, successItems)
@@ -777,8 +841,8 @@
         prometheusQuery(pingGaugeQuery),
         prometheusQuery(uptimeQuery)
       ]);
-      renderGaugeGrid("pingGaugeGrid", pingItems, "ping");
-      renderGaugeGrid("uptimeGaugeGrid", uptimeItems, "uptime");
+      renderGaugeGrid("pingGaugeGrid", filterStageDeviceItems(pingItems), "ping");
+      renderGaugeGrid("uptimeGaugeGrid", filterStageDeviceItems(uptimeItems), "uptime");
     } catch (error) {
       renderGaugeGrid("pingGaugeGrid", [], "ping");
       renderGaugeGrid("uptimeGaugeGrid", [], "uptime");
@@ -794,9 +858,9 @@
         prometheusRange(lossQuery),
         fetchIspTraffic()
       ]);
-      const activeNames = activeSeriesNames(activeItems);
-      const activePingSeries = filterSeriesByNames(pingSeries, activeNames);
-      const activeLossSeries = filterSeriesByNames(lossSeries, activeNames);
+      const activeNames = activeSeriesNames(filterStageDeviceItems(activeItems));
+      const activePingSeries = filterStageDeviceSeries(filterSeriesByNames(pingSeries, activeNames));
+      const activeLossSeries = filterStageDeviceSeries(filterSeriesByNames(lossSeries, activeNames));
       renderLineChart("pingTrendChart", activePingSeries, {
         axisFormatter: formatPingText,
         valueFormatter: formatPingText,

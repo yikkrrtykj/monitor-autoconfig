@@ -631,6 +631,20 @@ services:
         echo ""
         echo "UniFi APs: Add via SNMP in LibreNMS web UI (http://localhost:8002)"
 
+  grafana-provisioning-render:
+    image: alpine:latest
+    container_name: grafana-provisioning-render
+    environment:
+      BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
+      BIGSCREEN_ISP_AUTO_DISCOVER: "${BIGSCREEN_ISP_AUTO_DISCOVER:-false}"
+      FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+    volumes:
+      - ./grafana-provisioning:/grafana-provisioning-src:ro
+      - grafana-provisioning-rendered:/grafana-provisioning-out
+      - ./render-grafana-provisioning.sh:/render-grafana-provisioning.sh:ro
+    command: ["/bin/sh", "-c", "apk add --no-cache jq && /bin/sh /render-grafana-provisioning.sh"]
+    restart: "no"
+
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
@@ -649,12 +663,14 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./grafana-provisioning:/etc/grafana/provisioning
+      - grafana-provisioning-rendered:/etc/grafana/provisioning:ro
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "${GRAFANA_PORT:-3000}:3000"
     depends_on:
       init-permissions:
+        condition: service_completed_successfully
+      grafana-provisioning-render:
         condition: service_completed_successfully
       prometheus:
         condition: service_healthy
@@ -674,6 +690,7 @@ services:
       BIGSCREEN_PROMETHEUS_BASE_URL: "${BIGSCREEN_PROMETHEUS_BASE_URL:-}"
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
       BIGSCREEN_ISP_AUTO_DISCOVER: "${BIGSCREEN_ISP_AUTO_DISCOVER:-false}"
+      BIGSCREEN_STAGE_DEVICE_FILTER: "${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}"
       BIGSCREEN_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       GRAFANA_PORT: "${GRAFANA_PORT:-3000}"
     volumes:
@@ -703,6 +720,7 @@ services:
           grafanaPort: "$${GRAFANA_PORT:-3000}",
           ispNames: "$${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}",
           ispAutoDiscovery: "$${BIGSCREEN_ISP_AUTO_DISCOVER:-false}",
+          stageDeviceFilter: "$${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}",
           wanIfFilter: "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
         };
         EOF
@@ -729,6 +747,9 @@ services:
   grafana-setup:
     image: alpine:latest
     container_name: grafana-setup
+    environment:
+      GRAFANA_USER: "${GRAFANA_USER:-admin}"
+      GRAFANA_PASSWORD: "${GRAFANA_PASSWORD:-root}"
     depends_on:
       grafana:
         condition: service_started
@@ -749,6 +770,7 @@ volumes:
   prometheus-data:
   player-targets-data:
   grafana-data:
+  grafana-provisioning-rendered:
   mysql-data:
   zabbix-server-data:
   librenms-db-data:
