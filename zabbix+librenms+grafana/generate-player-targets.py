@@ -14,6 +14,11 @@ Environment variables:
                          pure L2. Falls back to LIBRENMS_CORE_IP if unset.
   PLAYER_GATEWAY_SNMP_COMMUNITY
                          SNMP community for gateways (default: same as SNMP_COMMUNITY)
+  PLAYER_VLAN_IDS        comma-separated player VLAN IDs (e.g. 11,12). When set,
+                         BRIDGE-MIB tables are also queried via Cisco-style
+                         community-indexing (community@vlan_id) so per-VLAN MAC
+                         tables become visible on Cisco IOS / IOS-XE switches
+                         where the default context only exposes VLAN 1.
   PLAYER_SUBNETS         comma-separated wired subnets (classification hint only,
                          no longer filters; team labels on ports are authoritative)
   PLAYER_TARGETS_FILE    output path (default: /etc/prometheus/player_targets.json)
@@ -512,13 +517,38 @@ def discover_wireless_scan_ips(subnets, limit=0, timeout=1, workers=64, max_host
     return limited_items(online, limit)
 
 
-def build_stage_mac_index(switches, community):
+def _walk_vlan_mac_table(sw, community):
+    """Walk one SNMP context for MAC->ifIndex. Returns (mac_to_ifindex, source).
+
+    Tries BRIDGE-MIB (dot1dTpFdbPort + dot1dBasePortIfIndex) first since on
+    Cisco the per-VLAN context exposes it directly, falls back to
+    Q-BRIDGE-MIB for vendors that only expose dot1qTpFdbPort.
+    """
+    bp_out = snmpwalk(sw, community, BRIDGE_MIB_BASEPORT_OID)
+    bp_map = parse_dot1d_baseport(bp_out)
+
+    fdb_out = snmpwalk(sw, community, BRIDGE_MIB_FDB_PORT_OID)
+    fdb_map = parse_dot1d_fdb(fdb_out)
+    source = "BRIDGE-MIB"
+    if not fdb_map:
+        fdb_out = snmpwalk(sw, community, Q_BRIDGE_MIB_FDB_PORT_OID)
+        fdb_map = parse_dot1q_fdb(fdb_out)
+        source = "Q-BRIDGE-MIB"
+
+    mac_to_ifindex = {mac: bp_map.get(bp, bp) for mac, bp in fdb_map.items()}
+    return mac_to_ifindex, source, len(bp_map)
+
+
+def build_stage_mac_index(switches, community, vlan_ids=None):
     """Return {sw_ip: {'ifalias': {ifIndex: {team, seat}},
                        'mac_to_ifindex': {mac: ifIndex}}}.
 
-    Logs per-switch counts to stderr for diagnosis. Tries BRIDGE-MIB FDB
-    first, falls back to Q-BRIDGE-MIB when the default-VLAN view is empty.
+    Queries the default SNMP context first. If vlan_ids is set, also queries
+    each VLAN via Cisco's community-indexing (community@vlan_id) so the
+    per-VLAN BRIDGE-MIB tables (e.g. on Cisco IOS, where the default context
+    only exposes VLAN 1) become visible. Results are merged across contexts.
     """
+    vlan_ids = vlan_ids or []
     index = {}
     for sw in switches:
         alias_out = snmpwalk(sw, community, IF_ALIAS_OID)
@@ -528,26 +558,32 @@ def build_stage_mac_index(switches, community):
             file=sys.stderr,
         )
 
-        bp_out = snmpwalk(sw, community, BRIDGE_MIB_BASEPORT_OID)
-        bp_map = parse_dot1d_baseport(bp_out)
+        default_macs, default_source, default_bp = _walk_vlan_mac_table(sw, community)
         print(
-            f"[INFO] {sw}: bridgePort->ifIndex entries = {len(bp_map)}",
+            f"[INFO] {sw}: bridgePort->ifIndex entries = {default_bp}",
+            file=sys.stderr,
+        )
+        print(
+            f"[INFO] {sw}: default-context MAC entries ({default_source}) = {len(default_macs)}",
             file=sys.stderr,
         )
 
-        fdb_out = snmpwalk(sw, community, BRIDGE_MIB_FDB_PORT_OID)
-        fdb_map = parse_dot1d_fdb(fdb_out)
-        source = "BRIDGE-MIB"
-        if not fdb_map:
-            fdb_out = snmpwalk(sw, community, Q_BRIDGE_MIB_FDB_PORT_OID)
-            fdb_map = parse_dot1q_fdb(fdb_out)
-            source = "Q-BRIDGE-MIB"
+        mac_to_ifindex = dict(default_macs)
+        for vlan_id in vlan_ids:
+            indexed_community = f"{community}@{vlan_id}"
+            vlan_macs, vlan_source, vlan_bp = _walk_vlan_mac_table(sw, indexed_community)
+            print(
+                f"[INFO] {sw}: VLAN {vlan_id} MAC entries ({vlan_source}) = {len(vlan_macs)} "
+                f"(bridgePort->ifIndex = {vlan_bp})",
+                file=sys.stderr,
+            )
+            for mac, ifx in vlan_macs.items():
+                mac_to_ifindex.setdefault(mac, ifx)
+
         print(
-            f"[INFO] {sw}: MAC table entries ({source}) = {len(fdb_map)}",
+            f"[INFO] {sw}: combined MAC table entries = {len(mac_to_ifindex)}",
             file=sys.stderr,
         )
-
-        mac_to_ifindex = {mac: bp_map.get(bp, bp) for mac, bp in fdb_map.items()}
         index[sw] = {"ifalias": ifalias_map, "mac_to_ifindex": mac_to_ifindex}
     return index
 
@@ -659,6 +695,16 @@ def main():
         gateways_raw = os.environ.get("LIBRENMS_CORE_IP", "").strip()
     gateways = [g.strip() for g in gateways_raw.split(",") if g.strip()]
     gateway_community = os.environ.get("PLAYER_GATEWAY_SNMP_COMMUNITY", "").strip() or community
+    vlan_ids_raw = os.environ.get("PLAYER_VLAN_IDS", "").strip()
+    player_vlan_ids = []
+    for item in vlan_ids_raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            player_vlan_ids.append(int(item))
+        except ValueError:
+            print(f"[WARN] invalid PLAYER_VLAN_IDS entry: {item}", file=sys.stderr)
     wired_nets = load_subnets("PLAYER_SUBNETS")
     wireless_nets = load_subnets("WIRELESS_SUBNETS")
     static_targets_raw = os.environ.get("PLAYER_STATIC_TARGETS", "")
@@ -708,7 +754,7 @@ def main():
     else:
         switches = [s.strip() for s in switches_raw.split(",") if s.strip()]
 
-        stage_index = build_stage_mac_index(switches, community)
+        stage_index = build_stage_mac_index(switches, community, player_vlan_ids)
 
         path_a_targets = collect_direct_arp_targets(
             switches, community, stage_index, wireless_nets

@@ -537,3 +537,88 @@ class TestMergeDedupTargets:
         path_b = [self._target(1, 1, "172.25.11.11", "sw")]
         merged = gpt.merge_dedup_targets(path_b, path_a)
         assert len(merged) == 2
+
+
+# ---- build_stage_mac_index() community-indexing -------------------
+
+class TestBuildStageMacIndexCommunityIndexing:
+    def setup_method(self):
+        self._snmpwalk = gpt.snmpwalk
+        self.calls = []
+
+    def teardown_method(self):
+        gpt.snmpwalk = self._snmpwalk
+
+    def _install_fake_snmpwalk(self, responses):
+        """responses: dict keyed by (host, community, oid) -> stdout."""
+        def fake(host, community, oid, timeout=15):
+            self.calls.append((host, community, oid))
+            return responses.get((host, community, oid), "")
+        gpt.snmpwalk = fake
+
+    def test_default_context_only_when_no_vlan_ids(self):
+        self._install_fake_snmpwalk({
+            ("10.0.0.1", "global", gpt.IF_ALIAS_OID):
+                ".1.3.6.1.2.1.31.1.1.1.18.10 = STRING: team01-01",
+            ("10.0.0.1", "global", gpt.BRIDGE_MIB_BASEPORT_OID):
+                ".1.3.6.1.2.1.17.1.4.1.2.5 = INTEGER: 10",
+            ("10.0.0.1", "global", gpt.BRIDGE_MIB_FDB_PORT_OID):
+                ".1.3.6.1.2.1.17.4.3.1.2.0.26.43.60.77.94 = INTEGER: 5",
+        })
+        idx = gpt.build_stage_mac_index(["10.0.0.1"], "global")
+        assert idx["10.0.0.1"]["mac_to_ifindex"] == {"00:1a:2b:3c:4d:5e": 10}
+        communities = {c for _, c, _ in self.calls}
+        assert communities == {"global"}, "should not use community-indexing when vlan_ids empty"
+
+    def test_per_vlan_community_indexing(self):
+        # Default context returns nothing (Cisco VLAN 1 stripped); VLAN 11 has data
+        self._install_fake_snmpwalk({
+            ("10.0.0.1", "global", gpt.IF_ALIAS_OID):
+                ".1.3.6.1.2.1.31.1.1.1.18.10 = STRING: team01-01",
+            ("10.0.0.1", "global@11", gpt.BRIDGE_MIB_BASEPORT_OID):
+                ".1.3.6.1.2.1.17.1.4.1.2.5 = INTEGER: 10",
+            ("10.0.0.1", "global@11", gpt.BRIDGE_MIB_FDB_PORT_OID):
+                ".1.3.6.1.2.1.17.4.3.1.2.0.26.43.60.77.94 = INTEGER: 5",
+        })
+        idx = gpt.build_stage_mac_index(["10.0.0.1"], "global", vlan_ids=[11])
+        assert idx["10.0.0.1"]["mac_to_ifindex"] == {"00:1a:2b:3c:4d:5e": 10}
+        # Both default and VLAN 11 contexts should have been queried
+        communities = {c for _, c, _ in self.calls}
+        assert "global" in communities
+        assert "global@11" in communities
+
+    def test_default_context_wins_over_vlan_context(self):
+        # If same MAC appears in both contexts, default context value is kept
+        self._install_fake_snmpwalk({
+            ("10.0.0.1", "global", gpt.IF_ALIAS_OID):
+                ".1.3.6.1.2.1.31.1.1.1.18.10 = STRING: team01-01",
+            ("10.0.0.1", "global", gpt.BRIDGE_MIB_BASEPORT_OID):
+                ".1.3.6.1.2.1.17.1.4.1.2.5 = INTEGER: 100",
+            ("10.0.0.1", "global", gpt.BRIDGE_MIB_FDB_PORT_OID):
+                ".1.3.6.1.2.1.17.4.3.1.2.0.26.43.60.77.94 = INTEGER: 5",
+            ("10.0.0.1", "global@11", gpt.BRIDGE_MIB_BASEPORT_OID):
+                ".1.3.6.1.2.1.17.1.4.1.2.7 = INTEGER: 200",
+            ("10.0.0.1", "global@11", gpt.BRIDGE_MIB_FDB_PORT_OID):
+                ".1.3.6.1.2.1.17.4.3.1.2.0.26.43.60.77.94 = INTEGER: 7",
+        })
+        idx = gpt.build_stage_mac_index(["10.0.0.1"], "global", vlan_ids=[11])
+        assert idx["10.0.0.1"]["mac_to_ifindex"] == {"00:1a:2b:3c:4d:5e": 100}
+
+    def test_multiple_vlans_merge(self):
+        self._install_fake_snmpwalk({
+            ("10.0.0.1", "global", gpt.IF_ALIAS_OID):
+                ".1.3.6.1.2.1.31.1.1.1.18.10 = STRING: team01-01",
+            ("10.0.0.1", "global@11", gpt.BRIDGE_MIB_BASEPORT_OID):
+                ".1.3.6.1.2.1.17.1.4.1.2.5 = INTEGER: 10",
+            ("10.0.0.1", "global@11", gpt.BRIDGE_MIB_FDB_PORT_OID):
+                ".1.3.6.1.2.1.17.4.3.1.2.0.26.43.60.77.94 = INTEGER: 5",
+            ("10.0.0.1", "global@12", gpt.BRIDGE_MIB_BASEPORT_OID):
+                ".1.3.6.1.2.1.17.1.4.1.2.6 = INTEGER: 11",
+            ("10.0.0.1", "global@12", gpt.BRIDGE_MIB_FDB_PORT_OID):
+                ".1.3.6.1.2.1.17.4.3.1.2.170.187.204.221.238.255 = INTEGER: 6",
+        })
+        idx = gpt.build_stage_mac_index(["10.0.0.1"], "global", vlan_ids=[11, 12])
+        assert idx["10.0.0.1"]["mac_to_ifindex"] == {
+            "00:1a:2b:3c:4d:5e": 10,
+            "aa:bb:cc:dd:ee:ff": 11,
+        }

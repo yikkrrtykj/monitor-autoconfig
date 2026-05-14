@@ -12,6 +12,7 @@ const layouts = {
     teamH: 8,
     dotsH: 3,
     withTrend: true,
+    teamSize: 4,
   },
   '233': {
     title: 'Tournament 64 (3 层 233)',
@@ -25,6 +26,7 @@ const layouts = {
     teamH: 7,
     dotsH: 2,
     withTrend: false,
+    teamSize: 4,
   },
   '6teams': {
     title: 'Tournament 6 队',
@@ -49,6 +51,7 @@ const layouts = {
     teamH: 7,
     dotsH: 2,
     withTrend: false,
+    teamSize: 4,
   },
 };
 
@@ -56,7 +59,13 @@ const HEADER_H = 4;
 const TREND_H = 5;
 const DS = { type: 'prometheus', uid: 'prometheus' };
 
-function dotsPanel(team, gridPos, id) {
+function seatFilter(teamSize) {
+  if (!teamSize) return '';
+  const seats = Array.from({ length: teamSize }, (_, i) => i + 1).join('|');
+  return ',seat=~"' + seats + '"';
+}
+
+function dotsPanel(team, gridPos, id, teamSize) {
   return {
     datasource: DS,
     fieldConfig: {
@@ -92,7 +101,7 @@ function dotsPanel(team, gridPos, id) {
     targets: [{
       datasource: DS,
       editorMode: 'code',
-      expr: 'probe_success{role="player",team="' + team + '",network=~"$network"}',
+      expr: 'probe_success{role="player",team="' + team + '"' + seatFilter(teamSize) + ',network=~"$network"}',
       legendFormat: 'S{{seat}}',
       refId: 'A',
     }],
@@ -102,7 +111,7 @@ function dotsPanel(team, gridPos, id) {
   };
 }
 
-function rttPanel(team, gridPos, id) {
+function rttPanel(team, gridPos, id, teamSize) {
   return {
     datasource: DS,
     fieldConfig: {
@@ -140,7 +149,7 @@ function rttPanel(team, gridPos, id) {
     targets: [{
       datasource: DS,
       editorMode: 'code',
-      expr: 'avg(probe_icmp_duration_seconds{role="player",team="' + team + '",phase="rtt",network=~"$network"})',
+      expr: 'avg(probe_icmp_duration_seconds{role="player",team="' + team + '",phase="rtt"' + seatFilter(teamSize) + ',network=~"$network"})',
       refId: 'A',
     }],
     title: 'Team ' + team,
@@ -183,15 +192,16 @@ function statSummary(id, x, w, title, expr, color, thresholds) {
 
 function buildPanels(layout) {
   const panels = [];
+  const sf = seatFilter(layout.teamSize);
 
-  panels.push(statSummary(1, 0,  6, '在线',   'count(probe_success{role="player",network=~"$network"} == 1) or vector(0)', 'green'));
-  panels.push(statSummary(2, 6,  6, '离线',   'count(probe_success{role="player",network=~"$network"} == 0) or vector(0)', 'green', {
+  panels.push(statSummary(1, 0,  6, '在线',   'count(probe_success{role="player"' + sf + ',network=~"$network"} == 1) or vector(0)', 'green'));
+  panels.push(statSummary(2, 6,  6, '离线',   'count(probe_success{role="player"' + sf + ',network=~"$network"} == 0) or vector(0)', 'green', {
     mode: 'absolute', steps: [{ color: 'green', value: null }, { color: 'red', value: 1 }],
   }));
-  panels.push(statSummary(3, 12, 6, '高延迟', 'count(probe_icmp_duration_seconds{role="player",network=~"$network",phase="rtt"} > 0.03) or vector(0)', 'green', {
+  panels.push(statSummary(3, 12, 6, '高延迟', 'count(probe_icmp_duration_seconds{role="player"' + sf + ',network=~"$network",phase="rtt"} > 0.03) or vector(0)', 'green', {
     mode: 'absolute', steps: [{ color: 'green', value: null }, { color: 'orange', value: 1 }],
   }));
-  panels.push(statSummary(4, 18, 6, '总计',   'count(probe_success{role="player",network=~"$network"}) or vector(0)', 'blue'));
+  panels.push(statSummary(4, 18, 6, '总计',   'count(probe_success{role="player"' + sf + ',network=~"$network"}) or vector(0)', 'blue'));
 
   let y = HEADER_H;
   let idBase = 100;
@@ -205,15 +215,15 @@ function buildPanels(layout) {
 
     let x = 0;
     for (const team of row.left) {
-      panels.push(dotsPanel(team, { h: layout.dotsH, w: leftW, x, y },                                       idBase + team));
-      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: leftW, x, y: y + layout.dotsH },     idBase + team + 50));
+      panels.push(dotsPanel(team, { h: layout.dotsH, w: leftW, x, y },                                       idBase + team,       layout.teamSize));
+      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: leftW, x, y: y + layout.dotsH },     idBase + team + 50,  layout.teamSize));
       x += leftW;
     }
 
     x = 12;
     for (const team of row.right) {
-      panels.push(dotsPanel(team, { h: layout.dotsH, w: rightW, x, y },                                      idBase + team));
-      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: rightW, x, y: y + layout.dotsH },    idBase + team + 50));
+      panels.push(dotsPanel(team, { h: layout.dotsH, w: rightW, x, y },                                      idBase + team,       layout.teamSize));
+      panels.push(rttPanel (team, { h: layout.teamH - layout.dotsH, w: rightW, x, y: y + layout.dotsH },    idBase + team + 50,  layout.teamSize));
       x += rightW;
     }
 
@@ -255,7 +265,7 @@ function buildPanels(layout) {
       targets: [{
         datasource: DS,
         editorMode: 'code',
-        expr: 'avg by (team) (probe_icmp_duration_seconds{role="player",network=~"$network",phase="rtt"})',
+        expr: 'avg by (team) (probe_icmp_duration_seconds{role="player"' + sf + ',network=~"$network",phase="rtt"})',
         legendFormat: 'Team {{team}}',
         refId: 'A',
       }],
