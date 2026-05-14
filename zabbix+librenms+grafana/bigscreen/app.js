@@ -165,6 +165,22 @@
     return seriesList.filter((item) => isStageDeviceName(item.name));
   }
 
+  function activePage() {
+    return pages.find((page) => page.id === activePageId) || {};
+  }
+
+  function shouldFilterStageDevices() {
+    return Boolean(activePage().kind);
+  }
+
+  function visibleInfraItems(items) {
+    return shouldFilterStageDevices() ? filterStageDeviceItems(items) : items;
+  }
+
+  function visibleInfraSeries(seriesList) {
+    return shouldFilterStageDevices() ? filterStageDeviceSeries(seriesList) : seriesList;
+  }
+
   function formatPing(seconds) {
     if (seconds < 0.001) {
       return { value: Math.round(seconds * 1000000), unit: "μs" };
@@ -841,8 +857,8 @@
         prometheusQuery(pingGaugeQuery),
         prometheusQuery(uptimeQuery)
       ]);
-      renderGaugeGrid("pingGaugeGrid", filterStageDeviceItems(pingItems), "ping");
-      renderGaugeGrid("uptimeGaugeGrid", filterStageDeviceItems(uptimeItems), "uptime");
+      renderGaugeGrid("pingGaugeGrid", visibleInfraItems(pingItems), "ping");
+      renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime");
     } catch (error) {
       renderGaugeGrid("pingGaugeGrid", [], "ping");
       renderGaugeGrid("uptimeGaugeGrid", [], "uptime");
@@ -858,9 +874,9 @@
         prometheusRange(lossQuery),
         fetchIspTraffic()
       ]);
-      const activeNames = activeSeriesNames(filterStageDeviceItems(activeItems));
-      const activePingSeries = filterStageDeviceSeries(filterSeriesByNames(pingSeries, activeNames));
-      const activeLossSeries = filterStageDeviceSeries(filterSeriesByNames(lossSeries, activeNames));
+      const activeNames = activeSeriesNames(visibleInfraItems(activeItems));
+      const activePingSeries = visibleInfraSeries(filterSeriesByNames(pingSeries, activeNames));
+      const activeLossSeries = visibleInfraSeries(filterSeriesByNames(lossSeries, activeNames));
       renderLineChart("pingTrendChart", activePingSeries, {
         axisFormatter: formatPingText,
         valueFormatter: formatPingText,
