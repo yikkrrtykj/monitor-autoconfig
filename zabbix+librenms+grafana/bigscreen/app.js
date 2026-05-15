@@ -229,7 +229,7 @@
   function gaugeColor(kind, rawValue) {
     if (kind === "ping") {
       if (rawValue >= 0.02) return "#ff4d66";
-      if (rawValue >= 0.005) return "#ffe32d";
+      if (rawValue >= 0.01) return "#ffe32d";
       return "#73d17a";
     }
     return rawValue < 86400 ? "#ffe32d" : "#73d17a";
@@ -1138,7 +1138,10 @@
     };
   }
 
-  function evidenceSelector(team, seat, network) {
+  function evidenceSelector(team, seat, network, ip) {
+    if (ip) {
+      return `role="player",instance="${escapeLabel(ip)}"`;
+    }
     const networkFilter = network === "all" ? 'network=~".*"' : `network="${escapeLabel(network)}"`;
     return `role="player",team="${escapeLabel(team)}",seat="${escapeLabel(seat)}",${networkFilter}`;
   }
@@ -1219,11 +1222,15 @@
     const network = document.getElementById("evidenceNetwork").value || "wired";
     const range = document.getElementById("evidenceWindow").value || "5";
     const at = document.getElementById("evidenceAt").value || "";
+    const ip = (document.getElementById("evidenceIp").value || "").trim();
     const queryWindow = evidenceWindow();
-    const selector = evidenceSelector(team, seat, network);
-    const label = `${playerLabel(team, seat, network)} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`;
+    const selector = evidenceSelector(team, seat, network, ip);
+    const label = ip
+      ? `${ip} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`
+      : `${playerLabel(team, seat, network)} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`;
     const params = new URLSearchParams({ team, seat, network, range });
     if (at) params.set("at", at);
+    if (ip) params.set("ip", ip);
     window.history.replaceState({}, "", `/latency?${params.toString()}`);
 
     renderNoData(document.getElementById("evidenceLatencyChart"), "加载中");
@@ -1268,10 +1275,12 @@
     const network = params.get("network");
     const range = params.get("range") || params.get("window");
     const at = params.get("at");
+    const ip = params.get("ip");
     if (team) document.getElementById("evidenceTeam").value = team;
     if (seat) document.getElementById("evidenceSeat").value = seat;
     if (["wired", "wireless", "all"].includes(network)) document.getElementById("evidenceNetwork").value = network;
     if (range) document.getElementById("evidenceWindow").value = range;
+    if (ip) document.getElementById("evidenceIp").value = ip;
     if (atInput && at) {
       atInput.value = at;
     } else if (atInput && !atInput.value) {
