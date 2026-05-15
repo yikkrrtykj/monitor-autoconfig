@@ -336,7 +336,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}",
+          "legendFormat": "S{{seat}} .{{ip_last}}",
           "instant": true,
           "format": "time_series"
         }
@@ -415,7 +415,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}",
+          "legendFormat": "S{{seat}} .{{ip_last}}",
           "instant": true,
           "format": "time_series"
         }
@@ -494,7 +494,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"3\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}",
+          "legendFormat": "S{{seat}} .{{ip_last}}",
           "instant": true,
           "format": "time_series"
         }
@@ -573,7 +573,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"4\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}",
+          "legendFormat": "S{{seat}} .{{ip_last}}",
           "instant": true,
           "format": "time_series"
         }
@@ -652,7 +652,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"5\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}",
+          "legendFormat": "S{{seat}} .{{ip_last}}",
           "instant": true,
           "format": "time_series"
         }
@@ -731,7 +731,7 @@
           "editorMode": "code",
           "expr": "probe_icmp_duration_seconds{role=\"player\",team=\"6\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}",
+          "legendFormat": "S{{seat}} .{{ip_last}}",
           "instant": true,
           "format": "time_series"
         }
@@ -833,7 +833,7 @@
           "editorMode": "code",
           "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"1\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}"
+          "legendFormat": "S{{seat}} .{{ip_last}}"
         }
       ],
       "title": "Team 1 延迟趋势",
@@ -932,7 +932,7 @@
           "editorMode": "code",
           "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"2\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}"
+          "legendFormat": "S{{seat}} .{{ip_last}}"
         }
       ],
       "title": "Team 2 延迟趋势",
@@ -1031,7 +1031,7 @@
           "editorMode": "code",
           "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"3\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}"
+          "legendFormat": "S{{seat}} .{{ip_last}}"
         }
       ],
       "title": "Team 3 延迟趋势",
@@ -1130,7 +1130,7 @@
           "editorMode": "code",
           "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"4\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}"
+          "legendFormat": "S{{seat}} .{{ip_last}}"
         }
       ],
       "title": "Team 4 延迟趋势",
@@ -1229,7 +1229,7 @@
           "editorMode": "code",
           "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"5\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}"
+          "legendFormat": "S{{seat}} .{{ip_last}}"
         }
       ],
       "title": "Team 5 延迟趋势",
@@ -1328,7 +1328,7 @@
           "editorMode": "code",
           "expr": "avg_over_time(probe_icmp_duration_seconds{role=\"player\",team=\"6\",seat=~\"1|2|3|4\",network=~\"$network\",phase=\"rtt\"}[3m])",
           "refId": "A",
-          "legendFormat": "S{{seat}} {{instance}}"
+          "legendFormat": "S{{seat}} .{{ip_last}}"
         }
       ],
       "title": "Team 6 延迟趋势",

@@ -277,6 +277,10 @@ cat >> "$CONFIG_FILE" <<EOF
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: instance
+      - source_labels: [__param_target]
+        regex: '\d+\.\d+\.\d+\.(\d+)'
+        target_label: ip_last
+        replacement: '${1}'
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
