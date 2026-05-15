@@ -403,21 +403,28 @@
         : "";
       return `${areaPath ? `<path class="chart-area" d="${areaPath}" style="fill:${color}" />` : ""}<path class="chart-line" d="${linePath}" style="stroke:${color}" />`;
     }).join("");
+    const calcs = options.calcs || ["mean", "max"];
+    const calcLabels = { last: "最近", max: "最高", mean: "平均", min: "最低" };
     const legend = series.map((item, index) => {
       const color = item.color || seriesColors[index % seriesColors.length];
       const values = item.values.map((point) => point.v);
-      const max = Math.max(...values);
-      const mean = average(values);
+      const stats = {
+        last: values[values.length - 1],
+        max: Math.max(...values),
+        mean: average(values),
+        min: Math.min(...values),
+      };
+      const cells = calcs.map((calc) => `<span>${escapeHtml(valueFormatter(stats[calc]))}</span>`).join("");
       return `
         <div class="legend-row">
           <span class="legend-swatch" style="background:${color}"></span>
           <span class="legend-name">${escapeHtml(item.name)}</span>
-          <span>${escapeHtml(valueFormatter(mean))}</span>
-          <span>${escapeHtml(valueFormatter(max))}</span>
+          ${cells}
         </div>
       `;
     }).join("");
-    const legendHeader = '<div class="legend-row legend-head"><span></span><span>名称</span><span>平均</span><span>最高</span></div>';
+    const headerCells = calcs.map((calc) => `<span>${escapeHtml(calcLabels[calc] || calc)}</span>`).join("");
+    const legendHeader = `<div class="legend-row legend-head"><span></span><span>名称</span>${headerCells}</div>`;
     const legendClass = options.legend === "bottom" ? "chart-legend bottom-legend" : "chart-legend side-legend";
     const densityClass = series.length > 12 ? "compact-series" : series.length > 8 ? "dense-series" : "";
 
@@ -607,7 +614,8 @@
         axisPadRight: 38,
         fill: true,
         legend: "bottom",
-        minMax: 1
+        minMax: 1,
+        calcs: ["last", "max"]
       });
     });
   }
