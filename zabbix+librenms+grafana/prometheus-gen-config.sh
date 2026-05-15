@@ -280,7 +280,7 @@ cat >> "$CONFIG_FILE" <<EOF
       - source_labels: [__param_target]
         regex: '\d+\.\d+\.\d+\.(\d+)'
         target_label: ip_last
-        replacement: '${1}'
+        replacement: '\${1}'
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
