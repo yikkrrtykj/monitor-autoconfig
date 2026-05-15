@@ -626,6 +626,38 @@ class TestBuildStageMacIndexCommunityIndexing:
             "aa:bb:cc:dd:ee:ff": 11,
         }
 
+    def test_vlan_context_does_not_fall_back_to_q_bridge(self):
+        # Cisco community-indexing only applies to BRIDGE-MIB. A Q-BRIDGE walk
+        # under an indexed community can return unindexed VLAN 1 data and
+        # pollute the merged map, so the fallback must be suppressed inside
+        # VLAN contexts (this is the C1 guard).
+        q_bridge_pollution = (
+            ".1.3.6.1.2.1.17.7.1.2.2.1.2.1.222.173.190.239.0.1 = INTEGER: 99"
+        )
+        self._install_fake_snmpwalk({
+            ("10.0.0.1", "global", gpt.IF_ALIAS_OID):
+                ".1.3.6.1.2.1.31.1.1.1.18.10 = STRING: team01-01",
+            # default context exposes nothing — would normally fall back to Q-BRIDGE
+            ("10.0.0.1", "global", gpt.Q_BRIDGE_MIB_FDB_PORT_OID):
+                q_bridge_pollution,
+            # VLAN context: BRIDGE-MIB also empty. Without the guard, the code
+            # would fall back to Q_BRIDGE_MIB_FDB_PORT_OID here as well and
+            # pick up the "de:ad:be:ef:00:01" pollution.
+            ("10.0.0.1", "global@11", gpt.Q_BRIDGE_MIB_FDB_PORT_OID):
+                q_bridge_pollution,
+        })
+        idx = gpt.build_stage_mac_index(["10.0.0.1"], "global", vlan_ids=[11])
+        # Default context fell back to Q-BRIDGE (allowed) -> pollution present
+        assert idx["10.0.0.1"]["mac_to_ifindex"].get("de:ad:be:ef:00:01") == 99
+        # We can't easily separate default-vs-vlan contribution from the merged
+        # map alone, so verify via call log that VLAN context did NOT issue a
+        # Q-BRIDGE walk.
+        vlan_q_bridge_calls = [
+            c for c in self.calls
+            if c[1] == "global@11" and c[2] == gpt.Q_BRIDGE_MIB_FDB_PORT_OID
+        ]
+        assert vlan_q_bridge_calls == [], "VLAN context must not query Q-BRIDGE-MIB"
+
 
 # ---- parse_if_oper_status() ---------------------------------------
 

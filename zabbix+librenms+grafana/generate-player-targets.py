@@ -552,12 +552,18 @@ def discover_wireless_scan_ips(subnets, limit=0, timeout=1, workers=64, max_host
     return limited_items(online, limit)
 
 
-def _walk_vlan_mac_table(sw, community):
-    """Walk one SNMP context for MAC->ifIndex. Returns (mac_to_ifindex, source).
+def _walk_vlan_mac_table(sw, community, vlan_context=False):
+    """Walk one SNMP context for MAC->ifIndex.
+
+    Returns (mac_to_ifindex, source_label, bridgeport_count).
 
     Tries BRIDGE-MIB (dot1dTpFdbPort + dot1dBasePortIfIndex) first since on
-    Cisco the per-VLAN context exposes it directly, falls back to
-    Q-BRIDGE-MIB for vendors that only expose dot1qTpFdbPort.
+    Cisco the per-VLAN context exposes it directly. When `vlan_context` is
+    False (the default-context call), falls back to Q-BRIDGE-MIB for vendors
+    that only expose dot1qTpFdbPort. When `vlan_context` is True (community
+    is `name@vlan_id`), the fallback is skipped: Cisco's community-indexing
+    only applies to BRIDGE-MIB, and a Q-BRIDGE walk under an indexed
+    community can return unindexed VLAN 1 data and pollute the merged map.
     """
     bp_out = snmpwalk(sw, community, BRIDGE_MIB_BASEPORT_OID)
     bp_map = parse_dot1d_baseport(bp_out)
@@ -565,7 +571,7 @@ def _walk_vlan_mac_table(sw, community):
     fdb_out = snmpwalk(sw, community, BRIDGE_MIB_FDB_PORT_OID)
     fdb_map = parse_dot1d_fdb(fdb_out)
     source = "BRIDGE-MIB"
-    if not fdb_map:
+    if not fdb_map and not vlan_context:
         fdb_out = snmpwalk(sw, community, Q_BRIDGE_MIB_FDB_PORT_OID)
         fdb_map = parse_dot1q_fdb(fdb_out)
         source = "Q-BRIDGE-MIB"
@@ -619,7 +625,9 @@ def build_stage_mac_index(switches, community, vlan_ids=None):
         mac_to_ifindex = dict(default_macs)
         for vlan_id in vlan_ids:
             indexed_community = f"{community}@{vlan_id}"
-            vlan_macs, vlan_source, vlan_bp = _walk_vlan_mac_table(sw, indexed_community)
+            vlan_macs, vlan_source, vlan_bp = _walk_vlan_mac_table(
+                sw, indexed_community, vlan_context=True
+            )
             print(
                 f"[INFO] {sw}: VLAN {vlan_id} MAC entries ({vlan_source}) = {len(vlan_macs)} "
                 f"(bridgePort->ifIndex = {vlan_bp})",
@@ -655,6 +663,7 @@ def join_gateway_arp_to_teams(gateway_arp, stage_index, wireless_nets, require_l
 
     for ip, mac in gateway_arp.items():
         hit = None
+        link_down = False
         for sw, data in stage_index.items():
             ifx = data["mac_to_ifindex"].get(mac)
             if ifx is None:
@@ -665,16 +674,16 @@ def join_gateway_arp_to_teams(gateway_arp, stage_index, wireless_nets, require_l
             if require_link_up:
                 oper = data.get("oper_status", {}).get(ifx)
                 if oper is not None and oper != IF_OPER_STATUS_UP:
-                    skipped_link_down += 1
-                    hit = "link-down"
+                    link_down = True
                     break
             hit = (sw, ifx, team_info)
             break
 
+        if link_down:
+            skipped_link_down += 1
+            continue
         if hit is None:
             unmatched_macs += 1
-            continue
-        if hit == "link-down":
             continue
 
         sw, _, team_info = hit
@@ -849,7 +858,11 @@ def main():
                     f"[INFO] gateway {gw}: ARP entries = {len(entries)}",
                     file=sys.stderr,
                 )
-                gateway_arp.update(entries)
+                for ip, mac in entries.items():
+                    # First gateway wins on conflict; for HA pairs list the
+                    # active one first so stale entries on the standby don't
+                    # mask live MACs.
+                    gateway_arp.setdefault(ip, mac)
             path_b_targets, stats = join_gateway_arp_to_teams(
                 gateway_arp, stage_index, wireless_nets, require_link_up
             )

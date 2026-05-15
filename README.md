@@ -106,6 +106,18 @@ PLAYER_GATEWAYS=192.168.10.254
 # 网关 SNMP community 不同时在这里覆盖，否则用 SNMP_COMMUNITY
 PLAYER_GATEWAY_SNMP_COMMUNITY=
 
+# 选手 VLAN ID（逗号分隔）。Cisco / H3C 默认只在 VLAN 1 暴露 BRIDGE-MIB MAC 表，
+# 设上 VLAN ID 后脚本会用 community@vlan_id 的方式查每个 VLAN 的 MAC 表合并起来。
+# 不配会导致 Cisco 上 stage MAC 表查到 0 条，gateway-ARP join 永远匹配不到选手。
+# 例: PLAYER_VLAN_IDS=11,12   （11=有线选手，12=无线选手 AP 上行）
+PLAYER_VLAN_IDS=11,12
+
+# 端口 link-down 时跳过该 team 位（默认开）。交换机 MAC 老化要 5 分钟、网关 ARP
+# 老化要 4 小时，断开后这两个表里残留的条目会让脚本误以为有人，造成"挂着显示红色"。
+# 开启后下次脚本运行（60 秒内）就会自动清掉幻影 target。极少数老型号交换机不报
+# ifOperStatus，可改成 false 回退到旧行为
+PLAYER_REQUIRE_LINK_UP=true
+
 # 无线扫描：只按 WIRELESS_SUBNETS ping 扫在线 IP，生成 network=wireless 的选手 targets
 # 面板选 wired 只看有线，选 wireless 只看无线扫描，互不影响
 # 无线不知道真实座位，左右队和座位只是按 IP 排序临时分配，用来看 WiFi 连接数量/效果
@@ -126,6 +138,14 @@ PLAYER_STATIC_NETWORK=wireless
 - **L3 舞台**（端口描述 `team X-Y` 在舞台、SVI 也在舞台、ARP 表在舞台）：`PLAYER_GATEWAYS` 留空即可，脚本直接查舞台 ARP。
 - **L2 舞台**（端口描述 `team X-Y` 在舞台，但 ARP 表在核心/防火墙）：把 L3 网关 IP 写入 `PLAYER_GATEWAYS`，脚本会查网关 ARP 拿到 `IP→MAC`，再查舞台 MAC 表 (`dot1dTpFdbPort` / `dot1qTpFdbPort`) 反推到 team 端口。`docker logs player-targets` 会看到每台舞台的 `ifAlias / MAC 表 / bridgePort` 计数。
 - 端口已经标了 `team X-Y` 就是真理：即便 IP 不在 `PLAYER_SUBNETS` 也会作为 wired 发出，避免网段写错时静默丢数据。
+
+**Cisco 交换机必须额外配 `PLAYER_VLAN_IDS`**：
+
+Cisco IOS / IOS-XE 的 BRIDGE-MIB 默认只暴露 VLAN 1 的 MAC 表，非 VLAN 1 的数据需要用 community-indexing 形式访问（`community@vlan_id`）。`PLAYER_VLAN_IDS=11,12` 后脚本会同时查 `global@11`、`global@12`，把每个 VLAN 的 MAC 表合并。不配会出现 stage MAC 表显示 0 条但端口实际有人。
+
+**幻影 target 防护（默认开）**：
+
+选手拔掉网线后，stage 交换机 MAC 表里的 MAC 要 5 分钟才老化、核心 ARP 表里的 IP 要 4 小时才老化，期间 join 路径会以为还有人，大屏上挂着红色。`PLAYER_REQUIRE_LINK_UP=true`（默认）查 `ifOperStatus`，端口不是 up 就跳过，60 秒内幻影自动消失。极少数老型号交换机不报 ifOperStatus，可改 `false` 回退。
 
 ### 3. 起服务
 
