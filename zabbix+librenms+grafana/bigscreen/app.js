@@ -1621,22 +1621,26 @@
   }
 
   async function queryIncidentData(win) {
-    const playerLatencyQ = 'probe_icmp_duration_seconds{role="player",phase="rtt"}';
-    const playerSuccessQ = 'probe_success{role="player"}';
+    const playerLatencyQ = 'probe_icmp_duration_seconds{role="player",network="wired",phase="rtt"}';
+    const playerSuccessQ = 'probe_success{role="player",network="wired"}';
     const infraLatencyQ = 'probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping",phase="rtt"}';
     const infraSuccessQ = 'probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping"}';
-    const ispInQ = 'sum by (ifAlias) (rate(ifHCInOctets{job="firewall-snmp"}[1m])) * 8';
-    const ispOutQ = 'sum by (ifAlias) (rate(ifHCOutOctets{job="firewall-snmp"}[1m])) * 8';
 
-    const [playerLatency, playerSuccess, infraLatency, infraSuccess, ispIn, ispOut] = await Promise.all([
+    const ispNames = await fetchIspNames();
+    const ispPromises = ispNames.flatMap((name) => [
+      prometheusRangeFor(ispTrafficQuery("ifHCInOctets", name), win).then((series) => series.map((s) => ({ ...s, _ispName: name, _direction: "in" }))),
+      prometheusRangeFor(ispTrafficQuery("ifHCOutOctets", name), win).then((series) => series.map((s) => ({ ...s, _ispName: name, _direction: "out" })))
+    ]);
+
+    const [playerLatency, playerSuccess, infraLatency, infraSuccess, ...ispArrays] = await Promise.all([
       prometheusRangeFor(playerLatencyQ, win),
       prometheusRangeFor(playerSuccessQ, win),
       prometheusRangeFor(infraLatencyQ, win),
       prometheusRangeFor(infraSuccessQ, win),
-      prometheusRangeFor(ispInQ, win),
-      prometheusRangeFor(ispOutQ, win)
+      ...ispPromises
     ]);
-    return { playerLatency, playerSuccess, infraLatency, infraSuccess, ispIn, ispOut };
+    const isp = ispArrays.flat();
+    return { playerLatency, playerSuccess, infraLatency, infraSuccess, isp };
   }
 
   function seriesMaxValue(series) {
@@ -1705,13 +1709,17 @@
     });
 
     const ispEvents = [];
-    data.ispIn.forEach((series) => {
+    const ispMaxBps = (Number(config.ispMaxBandwidthMbps) || 1000) * 1000 * 1000;
+    data.isp.forEach((series) => {
       const max = seriesMaxValue(series);
-      if (max !== null) ispEvents.push({ ifAlias: series.metric.ifAlias, direction: "in", maxBps: max });
-    });
-    data.ispOut.forEach((series) => {
-      const max = seriesMaxValue(series);
-      if (max !== null) ispEvents.push({ ifAlias: series.metric.ifAlias, direction: "out", maxBps: max });
+      if (max === null) return;
+      ispEvents.push({
+        ifAlias: series._ispName || series.metric.ifAlias,
+        direction: series._direction || (series.metric.direction || "in"),
+        maxBps: max,
+        capacityBps: ispMaxBps,
+        utilization: ispMaxBps > 0 ? max / ispMaxBps : 0
+      });
     });
 
     const stageGroups = {};
@@ -1758,12 +1766,12 @@
       };
     }
 
-    const highIsp = isp.filter((event) => event.maxBps > 100 * 1000 * 1000);
+    const highIsp = isp.filter((event) => event.utilization >= 0.7);
     if (highIsp.length > 0 && totalAffected >= 3) {
       return {
         level: "warn",
-        text: "ISP 链路流量飙升",
-        detail: `${highIsp.map((event) => `${event.ifAlias} ${event.direction === "in" ? "下载" : "上传"}=${formatBits(event.maxBps)}`).join("、")}。多个选手同时卡顿 — 怀疑 ISP 拥塞或被打满。`
+        text: "ISP 链路接近饱和",
+        detail: `${highIsp.map((event) => `${event.ifAlias} ${event.direction === "in" ? "下载" : "上传"}=${formatBits(event.maxBps)}（${Math.round(event.utilization * 100)}% / ${formatBits(event.capacityBps)}）`).join("、")}。多个选手同时卡顿 — 怀疑该 ISP 链路被打满。`
       };
     }
 
@@ -1851,14 +1859,18 @@
     }
 
     element.innerHTML = result.ispEvents
-      .sort((a, b) => b.maxBps - a.maxBps)
-      .map((event) => `
-        <div class="incident-item info">
-          <strong>${escapeHtml(event.ifAlias)}</strong>
-          <em>${event.direction === "in" ? "下载" : "上传"}</em>
-          <span>峰值 ${escapeHtml(formatBits(event.maxBps))}</span>
-        </div>
-      `).join("");
+      .sort((a, b) => b.utilization - a.utilization)
+      .map((event) => {
+        const pct = Math.round(event.utilization * 100);
+        const cls = event.utilization >= 0.7 ? "warn" : event.utilization >= 0.4 ? "info" : "info";
+        return `
+          <div class="incident-item ${cls}">
+            <strong>${escapeHtml(event.ifAlias)}</strong>
+            <em>${event.direction === "in" ? "下载" : "上传"} · 上限 ${escapeHtml(formatBits(event.capacityBps))}</em>
+            <span>峰值 ${escapeHtml(formatBits(event.maxBps))}（${pct}%）</span>
+          </div>
+        `;
+      }).join("");
   }
 
   function renderIncidentStage(result) {

@@ -642,6 +642,7 @@ services:
     environment:
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
       BIGSCREEN_ISP_AUTO_DISCOVER: "${BIGSCREEN_ISP_AUTO_DISCOVER:-false}"
+      BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
     volumes:
       - ./grafana-provisioning:/grafana-provisioning-src:ro
@@ -695,6 +696,7 @@ services:
       BIGSCREEN_PROMETHEUS_BASE_URL: "${BIGSCREEN_PROMETHEUS_BASE_URL:-}"
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
       BIGSCREEN_ISP_AUTO_DISCOVER: "${BIGSCREEN_ISP_AUTO_DISCOVER:-false}"
+      BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       BIGSCREEN_STAGE_DEVICE_FILTER: "${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}"
       BIGSCREEN_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       GRAFANA_PORT: "${GRAFANA_PORT:-3000}"
@@ -725,6 +727,7 @@ services:
           grafanaPort: "$${GRAFANA_PORT:-3000}",
           ispNames: "$${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}",
           ispAutoDiscovery: "$${BIGSCREEN_ISP_AUTO_DISCOVER:-false}",
+          ispMaxBandwidthMbps: "$${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}",
           stageDeviceFilter: "$${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}",
           wanIfFilter: "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
         };
