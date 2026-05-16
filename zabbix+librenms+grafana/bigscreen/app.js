@@ -1405,6 +1405,16 @@
     stopTournamentRefresh();
     refreshTournament(page);
     tournamentTimer = window.setInterval(() => refreshTournament(page), 5000);
+    const refreshBtn = document.getElementById("tournamentRefresh");
+    if (refreshBtn && !refreshBtn.dataset.bound) {
+      refreshBtn.addEventListener("click", () => {
+        const current = activePage();
+        if (current && (current.kind === "match" || current.kind === "tournament")) {
+          refreshTournament(current);
+        }
+      });
+      refreshBtn.dataset.bound = "1";
+    }
   }
 
   function startOpsRefresh(page) {

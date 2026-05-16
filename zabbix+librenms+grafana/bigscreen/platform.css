@@ -839,6 +839,33 @@
   align-content: start;
   grid-template-rows: 56px auto clamp(220px, 25vh, 320px);
   gap: 9px;
+  position: relative;
+}
+
+.tournament-refresh {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  color: rgba(199, 208, 223, 0.18);
+  font-size: 14px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  padding: 0;
+  z-index: 2;
+  transition: color 0.2s;
+}
+
+.tournament-refresh:hover {
+  color: rgba(199, 208, 223, 0.85);
+}
+
+.tournament-refresh:active {
+  color: #69a0ff;
 }
 
 .tournament-summary {
