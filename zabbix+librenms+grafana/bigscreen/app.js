@@ -185,7 +185,7 @@
     if (seconds < 0.001) {
       return { value: Math.round(seconds * 1000000), unit: "μs" };
     }
-    return { value: (seconds * 1000).toFixed(2), unit: "ms" };
+    return { value: (seconds * 1000).toFixed(1), unit: "ms" };
   }
 
   function formatPingText(seconds) {
@@ -847,26 +847,31 @@
 
   function renderTournamentTrend(page, trendSeries) {
     const container = document.getElementById("tournamentTrendChart");
-    const teams = page.teams || [];
+    const groups = page.groups || [page.teams || []];
+    const renderCard = (team) => {
+      const teamSeries = trendSeries.filter((item) => String(item.metric.team || "") === String(team));
+      const latestValues = teamSeries
+        .map((item) => item.values[item.values.length - 1])
+        .filter(Boolean)
+        .map((point) => point.v);
+      const latest = latestValues.length ? formatPingText(average(latestValues)) : "-";
+      return `
+        <section class="team-trend-card">
+          <header><h3>${escapeHtml(teamName(page, team))}</h3><span>${escapeHtml(latest)}</span></header>
+          <div class="team-trend-chart" id="teamTrend${team}"></div>
+        </section>
+      `;
+    };
     container.innerHTML = `
-      <div class="team-trend-grid" style="--trend-team-count:${teams.length}">
-        ${teams.map((team) => {
-          const teamSeries = trendSeries.filter((item) => String(item.metric.team || "") === String(team));
-          const latestValues = teamSeries
-            .map((item) => item.values[item.values.length - 1])
-            .filter(Boolean)
-            .map((point) => point.v);
-          const latest = latestValues.length ? formatPingText(average(latestValues)) : "-";
-          return `
-            <section class="team-trend-card">
-              <header><h3>${escapeHtml(teamName(page, team))}</h3><span>${escapeHtml(latest)}</span></header>
-              <div class="team-trend-chart" id="teamTrend${team}"></div>
-            </section>
-          `;
-        }).join("")}
+      <div class="team-trend-stack">
+        ${groups.map((group) => `
+          <div class="team-trend-grid" style="--trend-team-count:${group.length}">
+            ${group.map(renderCard).join("")}
+          </div>
+        `).join("")}
       </div>
     `;
-    teams.forEach((team) => {
+    (page.teams || []).forEach((team) => {
       const teamSeries = trendSeries
         .filter((item) => String(item.metric.team || "") === String(team))
         .sort((a, b) => Number(a.metric.seat || 0) - Number(b.metric.seat || 0))
