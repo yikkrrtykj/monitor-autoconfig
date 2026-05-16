@@ -686,10 +686,6 @@ body {
 }
 
 /* ============= Incident root-cause analysis ============= */
-.incident-panel[hidden] {
-  display: none;
-}
-
 .incident-panel {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
@@ -838,8 +834,6 @@ body {
 .incident-item span { color: #c9d4e8; text-align: right; }
 
 /* ============= Connection quality heatmap ============= */
-.heatmap-panel[hidden] { display: none; }
-
 .heatmap-panel {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
