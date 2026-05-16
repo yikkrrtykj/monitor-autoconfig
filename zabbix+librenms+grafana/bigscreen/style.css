@@ -686,6 +686,10 @@ body {
 }
 
 /* ============= Incident root-cause analysis ============= */
+.incident-panel[hidden] {
+  display: none;
+}
+
 .incident-panel {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
