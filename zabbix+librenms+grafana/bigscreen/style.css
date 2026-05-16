@@ -836,12 +836,13 @@ body {
 /* ============= Connection quality heatmap ============= */
 .heatmap-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto;
   gap: 12px;
   padding: 16px;
   width: 100%;
   height: 100%;
-  overflow: auto;
+  overflow-y: auto;
+  align-content: start;
 }
 
 .heatmap-controls {
@@ -921,7 +922,7 @@ body {
 .heatmap-grid {
   display: grid;
   grid-template-columns: repeat(var(--heatmap-seat-count, 4), minmax(0, 1fr));
-  grid-auto-rows: minmax(54px, 1fr);
+  grid-auto-rows: 56px;
   gap: 4px;
   min-height: 0;
 }
