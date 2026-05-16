@@ -495,6 +495,13 @@ body {
   white-space: nowrap;
 }
 
+.legend-calc-label {
+  color: #8aa1c0;
+  font-style: normal;
+  font-size: 0.85em;
+  margin-right: 2px;
+}
+
 .heatmap {
   --heatmap-name-width: 150px;
   --heatmap-gap: 8px;

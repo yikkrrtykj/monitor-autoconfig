@@ -404,6 +404,7 @@
       return `${areaPath ? `<path class="chart-area" d="${areaPath}" style="fill:${color}" />` : ""}<path class="chart-line" d="${linePath}" style="stroke:${color}" />`;
     }).join("");
     const calcs = options.calcs || ["mean", "max"];
+    const calcsExplicit = !!options.calcs;
     const calcLabels = { last: "最近", max: "最高", mean: "平均", min: "最低" };
     const legend = series.map((item, index) => {
       const color = item.color || seriesColors[index % seriesColors.length];
@@ -414,7 +415,14 @@
         mean: average(values),
         min: Math.min(...values),
       };
-      const cells = calcs.map((calc) => `<span>${escapeHtml(valueFormatter(stats[calc]))}</span>`).join("");
+      const cells = calcs.map((calc) => {
+        const value = escapeHtml(valueFormatter(stats[calc]));
+        if (calcsExplicit) {
+          const label = escapeHtml(calcLabels[calc] || calc);
+          return `<span><i class="legend-calc-label">${label}</i> ${value}</span>`;
+        }
+        return `<span>${value}</span>`;
+      }).join("");
       return `
         <div class="legend-row">
           <span class="legend-swatch" style="background:${color}"></span>
