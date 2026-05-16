@@ -96,6 +96,47 @@
         <div class="ops-summary" id="opsSummary"></div>
         <div class="ops-board" id="opsBoard"></div>
       </section>
+      <section class="incident-panel" id="incidentPanel" aria-label="卡顿根因分析" hidden>
+        <form class="incident-controls" id="incidentForm">
+          <label>事发时间 <input id="incidentAt" type="datetime-local" /></label>
+          <label>分析窗口
+            <select id="incidentWindow">
+              <option value="2">前后 2 分钟</option>
+              <option value="5" selected>前后 5 分钟</option>
+              <option value="10">前后 10 分钟</option>
+              <option value="15">前后 15 分钟</option>
+            </select>
+          </label>
+          <label>抖动阈值
+            <select id="incidentThreshold">
+              <option value="0.02">20 ms（推荐）</option>
+              <option value="0.03">30 ms</option>
+              <option value="0.05">50 ms</option>
+              <option value="0.08">80 ms</option>
+            </select>
+          </label>
+          <button type="submit">分析</button>
+        </form>
+        <div class="incident-verdict" id="incidentVerdict"></div>
+        <section class="incident-grid">
+          <article class="incident-card" aria-labelledby="incidentPlayersTitle">
+            <h2 id="incidentPlayersTitle">受影响选手</h2>
+            <div class="incident-card-body" id="incidentPlayers"></div>
+          </article>
+          <article class="incident-card" aria-labelledby="incidentInfraTitle">
+            <h2 id="incidentInfraTitle">基础设施</h2>
+            <div class="incident-card-body" id="incidentInfra"></div>
+          </article>
+          <article class="incident-card" aria-labelledby="incidentIspTitle">
+            <h2 id="incidentIspTitle">ISP / WAN 流量</h2>
+            <div class="incident-card-body" id="incidentIsp"></div>
+          </article>
+          <article class="incident-card" aria-labelledby="incidentStageTitle">
+            <h2 id="incidentStageTitle">按 Stage 分组</h2>
+            <div class="incident-card-body" id="incidentStage"></div>
+          </article>
+        </section>
+      </section>
     </main>
     <script src="./config.js"></script>
     <script src="./pages.js"></script>

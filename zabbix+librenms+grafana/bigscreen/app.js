@@ -1539,6 +1539,7 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("incidentPanel", false);
     renderHomeCards();
   }
 
@@ -1552,6 +1553,7 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("incidentPanel", false);
     startInfraRefresh();
   }
 
@@ -1564,6 +1566,7 @@
     setVisible("tournamentPanel", true);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("incidentPanel", false);
     document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
     startInfraRefresh();
     startTournamentRefresh(page);
@@ -1580,6 +1583,7 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", true);
     setVisible("opsPanel", false);
+    setVisible("incidentPanel", false);
     setupEvidencePanel();
   }
 
@@ -1593,7 +1597,367 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", true);
+    setVisible("incidentPanel", false);
     startOpsRefresh(page);
+  }
+
+  // ---- Incident root-cause analysis ----
+
+  function incidentWindow() {
+    const atInput = document.getElementById("incidentAt");
+    const windowInput = document.getElementById("incidentWindow");
+    const centerDate = atInput && atInput.value ? new Date(atInput.value) : new Date();
+    const center = Number.isFinite(centerDate.getTime()) ? centerDate.getTime() / 1000 : Date.now() / 1000;
+    const minutes = Math.max(1, Number(windowInput && windowInput.value ? windowInput.value : 5));
+    const now = Math.floor(Date.now() / 1000);
+    const end = Math.min(Math.floor(center + minutes * 60), now);
+    const start = Math.floor(center - minutes * 60);
+    return {
+      start: start <= end ? start : Math.max(0, end - minutes * 60),
+      end,
+      step: 5,
+      minutes
+    };
+  }
+
+  async function queryIncidentData(win) {
+    const playerLatencyQ = 'probe_icmp_duration_seconds{role="player",phase="rtt"}';
+    const playerSuccessQ = 'probe_success{role="player"}';
+    const infraLatencyQ = 'probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping",phase="rtt"}';
+    const infraSuccessQ = 'probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping"}';
+    const ispInQ = 'sum by (ifAlias) (rate(ifHCInOctets{job="firewall-snmp"}[1m])) * 8';
+    const ispOutQ = 'sum by (ifAlias) (rate(ifHCOutOctets{job="firewall-snmp"}[1m])) * 8';
+
+    const [playerLatency, playerSuccess, infraLatency, infraSuccess, ispIn, ispOut] = await Promise.all([
+      prometheusRangeFor(playerLatencyQ, win),
+      prometheusRangeFor(playerSuccessQ, win),
+      prometheusRangeFor(infraLatencyQ, win),
+      prometheusRangeFor(infraSuccessQ, win),
+      prometheusRangeFor(ispInQ, win),
+      prometheusRangeFor(ispOutQ, win)
+    ]);
+    return { playerLatency, playerSuccess, infraLatency, infraSuccess, ispIn, ispOut };
+  }
+
+  function seriesMaxValue(series) {
+    if (!series || !series.values || !series.values.length) return null;
+    let max = -Infinity;
+    for (const point of series.values) {
+      if (Number.isFinite(point.v) && point.v > max) max = point.v;
+    }
+    return max === -Infinity ? null : max;
+  }
+
+  function analyzeIncident(data, threshold) {
+    const affectedPlayers = [];
+    const offlinePlayers = [];
+
+    data.playerLatency.forEach((series) => {
+      const max = seriesMaxValue(series);
+      if (max !== null && max >= threshold) {
+        affectedPlayers.push({
+          team: series.metric.team,
+          seat: series.metric.seat,
+          network: series.metric.network,
+          switch: series.metric.switch,
+          instance: series.metric.instance,
+          maxLatency: max
+        });
+      }
+    });
+
+    data.playerSuccess.forEach((series) => {
+      const failedSamples = series.values.filter((point) => point.v < 0.5).length;
+      if (failedSamples > 0) {
+        offlinePlayers.push({
+          team: series.metric.team,
+          seat: series.metric.seat,
+          network: series.metric.network,
+          instance: series.metric.instance,
+          failCount: failedSamples
+        });
+      }
+    });
+
+    const infraEvents = [];
+    data.infraLatency.forEach((series) => {
+      const max = seriesMaxValue(series);
+      if (max !== null && max >= threshold) {
+        infraEvents.push({
+          instance: series.metric.instance || series.metric.display_name,
+          targetIp: series.metric.target_ip,
+          job: series.metric.job,
+          maxLatency: max
+        });
+      }
+    });
+    data.infraSuccess.forEach((series) => {
+      const failedSamples = series.values.filter((point) => point.v < 0.5).length;
+      if (failedSamples > 0) {
+        infraEvents.push({
+          instance: series.metric.instance || series.metric.display_name,
+          targetIp: series.metric.target_ip,
+          job: series.metric.job,
+          offline: true,
+          failCount: failedSamples
+        });
+      }
+    });
+
+    const ispEvents = [];
+    data.ispIn.forEach((series) => {
+      const max = seriesMaxValue(series);
+      if (max !== null) ispEvents.push({ ifAlias: series.metric.ifAlias, direction: "in", maxBps: max });
+    });
+    data.ispOut.forEach((series) => {
+      const max = seriesMaxValue(series);
+      if (max !== null) ispEvents.push({ ifAlias: series.metric.ifAlias, direction: "out", maxBps: max });
+    });
+
+    const stageGroups = {};
+    [...affectedPlayers, ...offlinePlayers].forEach((player) => {
+      const sw = player.switch || "unknown";
+      if (sw === "static" || sw === "wireless-scan" || sw === "unknown") return;
+      if (!stageGroups[sw]) stageGroups[sw] = { switch: sw, players: new Map() };
+      const key = `${player.team}-${player.seat}-${player.network}`;
+      stageGroups[sw].players.set(key, player);
+    });
+    Object.values(stageGroups).forEach((group) => {
+      group.players = Array.from(group.players.values());
+    });
+
+    const verdict = computeIncidentVerdict(affectedPlayers, offlinePlayers, infraEvents, ispEvents, stageGroups);
+    return { affectedPlayers, offlinePlayers, infraEvents, ispEvents, stageGroups, verdict };
+  }
+
+  function computeIncidentVerdict(affected, offline, infra, isp, stageGroups) {
+    const totalAffected = affected.length + offline.length;
+
+    if (totalAffected === 0 && infra.length === 0) {
+      return { level: "good", text: "未检测到异常", detail: "这个时间窗口内没有任何选手或基础设施超过阈值。" };
+    }
+
+    const coreEvent = infra.find((event) => event.job === "infra-core-ping");
+    const fwOffline = infra.find((event) => event.job === "infra-fw-ping" && event.offline);
+    if (coreEvent || fwOffline) {
+      return {
+        level: "bad",
+        text: "核心层异常",
+        detail: `${coreEvent ? "核心交换机" : "防火墙"}在该时间窗口内有延迟尖峰或离线 — 所有选手可能都会受影响。`
+      };
+    }
+
+    const stageKeys = Object.keys(stageGroups);
+    if (stageKeys.length === 1 && stageGroups[stageKeys[0]].players.length >= 3) {
+      const sw = stageKeys[0];
+      const stageInfra = infra.find((event) => event.targetIp === sw || event.instance === sw);
+      return {
+        level: "warn",
+        text: `怀疑 ${sw} 接入交换机`,
+        detail: `${stageGroups[sw].players.length} 个选手集中卡顿，都接在这台 stage。${stageInfra ? "该交换机自身 ping 也抖动 — 高度怀疑该交换机问题。" : "该交换机自身 ping 正常 — 可能是它的上行链路或 VLAN 配置问题。"}`
+      };
+    }
+
+    const highIsp = isp.filter((event) => event.maxBps > 100 * 1000 * 1000);
+    if (highIsp.length > 0 && totalAffected >= 3) {
+      return {
+        level: "warn",
+        text: "ISP 链路流量飙升",
+        detail: `${highIsp.map((event) => `${event.ifAlias} ${event.direction === "in" ? "下载" : "上传"}=${formatBits(event.maxBps)}`).join("、")}。多个选手同时卡顿 — 怀疑 ISP 拥塞或被打满。`
+      };
+    }
+
+    if (totalAffected === 1) {
+      const player = affected[0] || offline[0];
+      return {
+        level: "warn",
+        text: "单选手问题",
+        detail: `仅 Team ${player.team} S${player.seat} 出现卡顿/离线 — 基础设施正常，怀疑该选手 PC / 网线 / 无线干扰等单点问题。`
+      };
+    }
+
+    if (totalAffected >= 2) {
+      return {
+        level: "warn",
+        text: "多选手卡顿",
+        detail: `${totalAffected} 个选手出现异常，但没有明显的基础设施 / ISP 关联 — 建议手工进 /latency 单独看每个选手的趋势。`
+      };
+    }
+
+    return { level: "warn", text: "基础设施异常未影响选手", detail: "检测到基础设施抖动但选手 ping 正常。" };
+  }
+
+  function renderIncidentVerdict(verdict) {
+    const element = document.getElementById("incidentVerdict");
+    element.className = `incident-verdict ${verdict.level}`;
+    element.innerHTML = `
+      <strong>${escapeHtml(verdict.text)}</strong>
+      <span>${escapeHtml(verdict.detail)}</span>
+    `;
+  }
+
+  function renderIncidentPlayers(result) {
+    const element = document.getElementById("incidentPlayers");
+    const items = [
+      ...result.affectedPlayers.map((player) => ({
+        type: "warn",
+        label: `Team ${player.team} S${player.seat} (${networkLabel(player.network)})`,
+        detail: `最高 ${formatPingText(player.maxLatency)}`,
+        ip: player.instance
+      })),
+      ...result.offlinePlayers.map((player) => ({
+        type: "bad",
+        label: `Team ${player.team} S${player.seat} (${networkLabel(player.network)})`,
+        detail: `${player.failCount} 次失败采样`,
+        ip: player.instance
+      }))
+    ];
+
+    if (!items.length) {
+      element.innerHTML = `<div class="incident-empty">没有选手超过阈值</div>`;
+      return;
+    }
+
+    element.innerHTML = items.map((item) => `
+      <div class="incident-item ${item.type}">
+        <strong>${escapeHtml(item.label)}</strong>
+        <em>${escapeHtml(item.ip || "")}</em>
+        <span>${escapeHtml(item.detail)}</span>
+      </div>
+    `).join("");
+  }
+
+  function renderIncidentInfra(result) {
+    const element = document.getElementById("incidentInfra");
+    if (!result.infraEvents.length) {
+      element.innerHTML = `<div class="incident-empty">基础设施正常</div>`;
+      return;
+    }
+
+    element.innerHTML = result.infraEvents.map((event) => `
+      <div class="incident-item ${event.offline ? "bad" : "warn"}">
+        <strong>${escapeHtml(event.instance || event.targetIp || "?")}</strong>
+        <em>${escapeHtml(event.job)}</em>
+        <span>${event.offline ? `${event.failCount} 次离线` : `最高 ${formatPingText(event.maxLatency)}`}</span>
+      </div>
+    `).join("");
+  }
+
+  function renderIncidentIsp(result) {
+    const element = document.getElementById("incidentIsp");
+    if (!result.ispEvents.length) {
+      element.innerHTML = `<div class="incident-empty">ISP 流量数据不可用</div>`;
+      return;
+    }
+
+    element.innerHTML = result.ispEvents
+      .sort((a, b) => b.maxBps - a.maxBps)
+      .map((event) => `
+        <div class="incident-item info">
+          <strong>${escapeHtml(event.ifAlias)}</strong>
+          <em>${event.direction === "in" ? "下载" : "上传"}</em>
+          <span>峰值 ${escapeHtml(formatBits(event.maxBps))}</span>
+        </div>
+      `).join("");
+  }
+
+  function renderIncidentStage(result) {
+    const element = document.getElementById("incidentStage");
+    const stages = Object.values(result.stageGroups || {});
+    if (!stages.length) {
+      element.innerHTML = `<div class="incident-empty">没有 stage 受影响</div>`;
+      return;
+    }
+
+    element.innerHTML = stages
+      .sort((a, b) => b.players.length - a.players.length)
+      .map((stage) => `
+        <div class="incident-item ${stage.players.length >= 3 ? "warn" : "info"}">
+          <strong>${escapeHtml(stage.switch)}</strong>
+          <em>${stage.players.length} 个选手</em>
+          <span>${stage.players.slice(0, 8).map((player) => `T${player.team}S${player.seat}`).join("、")}${stage.players.length > 8 ? "…" : ""}</span>
+        </div>
+      `).join("");
+  }
+
+  async function runIncidentAnalysis() {
+    const win = incidentWindow();
+    const threshold = Number(document.getElementById("incidentThreshold").value || 0.02);
+
+    const params = new URLSearchParams();
+    const at = document.getElementById("incidentAt").value;
+    if (at) params.set("at", at);
+    params.set("window", String(win.minutes));
+    params.set("threshold", String(threshold));
+    window.history.replaceState({}, "", `/incident?${params.toString()}`);
+
+    ["incidentVerdict","incidentPlayers","incidentInfra","incidentIsp","incidentStage"].forEach((id) => {
+      document.getElementById(id).innerHTML = `<div class="incident-empty">加载中...</div>`;
+    });
+
+    try {
+      const data = await queryIncidentData(win);
+      const result = analyzeIncident(data, threshold);
+      renderIncidentVerdict(result.verdict);
+      renderIncidentPlayers(result);
+      renderIncidentInfra(result);
+      renderIncidentIsp(result);
+      renderIncidentStage(result);
+    } catch (error) {
+      console.error("Incident analysis failed:", error);
+      document.getElementById("incidentVerdict").className = "incident-verdict bad";
+      document.getElementById("incidentVerdict").innerHTML = `<strong>分析失败</strong><span>${escapeHtml(error.message || "")}</span>`;
+    }
+  }
+
+  function setupIncidentPanel() {
+    const atInput = document.getElementById("incidentAt");
+    const form = document.getElementById("incidentForm");
+    const params = new URLSearchParams(window.location.search);
+    const at = params.get("at");
+    const winVal = params.get("window");
+    const threshold = params.get("threshold");
+
+    if (at) atInput.value = at;
+    else if (!atInput.value) atInput.value = dateTimeInputValue(new Date());
+
+    if (winVal) {
+      const winSelect = document.getElementById("incidentWindow");
+      if (winSelect && Array.from(winSelect.options).some((opt) => opt.value === winVal)) {
+        winSelect.value = winVal;
+      }
+    }
+    if (threshold) {
+      const thrSelect = document.getElementById("incidentThreshold");
+      if (thrSelect && Array.from(thrSelect.options).some((opt) => opt.value === threshold)) {
+        thrSelect.value = threshold;
+      }
+    }
+
+    if (form && !form.dataset.bound) {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        runIncidentAnalysis();
+      });
+      form.dataset.bound = "1";
+    }
+
+    runIncidentAnalysis();
+  }
+
+  function showIncident() {
+    const screen = document.querySelector(".screen");
+    stopInfraRefresh();
+    stopTournamentRefresh();
+    stopOpsRefresh();
+    screen.className = "screen incident-mode";
+    setVisible("homePanel", false);
+    setVisible("panelGrid", false);
+    setVisible("tournamentPanel", false);
+    setVisible("evidencePanel", false);
+    setVisible("opsPanel", false);
+    setVisible("incidentPanel", true);
+    setupIncidentPanel();
   }
 
   function renderPage() {
@@ -1608,6 +1972,8 @@
       showHome();
     } else if (page.id === "evidence") {
       showEvidence();
+    } else if (page.id === "incident") {
+      showIncident();
     } else if (page.id === "wireless" || page.id === "seat-check") {
       showOps(page);
     } else if (page.kind) {
