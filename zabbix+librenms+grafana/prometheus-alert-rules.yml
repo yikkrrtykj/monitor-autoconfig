@@ -1,27 +1,10 @@
 groups:
-  - name: tournament-network-critical
+  - name: tournament-prometheus-only
     interval: 30s
     rules:
-      - alert: CoreSwitchDown
-        expr: probe_success{job="infra-core-ping"} == 0
-        for: 1m
-        labels:
-          severity: critical
-          component: core
-        annotations:
-          summary: "核心交换机离线"
-          description: "{{ $labels.instance }} 持续 1 分钟无 ICMP 响应 — 整场监控可能失联"
-
-      - alert: FirewallDown
-        expr: probe_success{job="infra-fw-ping"} == 0
-        for: 1m
-        labels:
-          severity: critical
-          component: firewall
-        annotations:
-          summary: "防火墙离线: {{ $labels.instance }}"
-          description: "{{ $labels.target_ip }} 持续 1 分钟无 ICMP 响应"
-
+      # Zabbix 监控不到自己挂的情况 —— 监控服务器宕机时 Zabbix 不会推送，
+      # Prometheus blackbox 是 ICMP self-ping，Prometheus + Alertmanager 容器
+      # 能在自己挂之前最后一刻把这条告警推到飞书。
       - alert: MonitoringServerDown
         expr: probe_success{job="infra-srv-ping"} == 0
         for: 1m
@@ -30,34 +13,15 @@ groups:
           component: server
         annotations:
           summary: "监控服务器自身离线"
-          description: "{{ $labels.instance }} 持续 1 分钟无 ICMP 响应 — 这条告警如果你能看到，说明告警系统还活着"
+          description: "{{ $labels.instance }} 持续 1 分钟无 ICMP 响应 — 这条告警如果你能看到，说明告警系统在最后挣扎"
 
-  - name: tournament-network-warning
-    interval: 30s
-    rules:
-      - alert: StageSwitchDown
-        expr: probe_success{job="infra-dist-ping"} == 0
-        for: 2m
-        labels:
-          severity: high
-          component: stage
-        annotations:
-          summary: "接入交换机离线: {{ $labels.instance }}"
-          description: "{{ $labels.target_ip }} 持续 2 分钟无 ICMP 响应 — 该 stage 下所有选手都会断"
-
-      - alert: FirewallSnmpDown
-        expr: up{job="firewall-snmp"} == 0
-        for: 3m
-        labels:
-          severity: warning
-          component: firewall-snmp
-        annotations:
-          summary: "防火墙 SNMP 抓取失败: {{ $labels.instance }}"
-          description: "ISP 流量数据 3 分钟无法采集 — 大屏 ISP 面板会出现空白"
-
+      # Zabbix 默认的防火墙模板不会按"接近饱和"做阈值告警，只有"流量统计"。
+      # Prometheus 阈值告警，可以提前知道 ISP 上行被打满了。
+      # 默认 800Mbps 对应 1Gbps 链路 80% 占用。链路速率不同请按需调整：
+      # - 双 500M：把 800 * 1000 * 1000 改成 400 * 1000 * 1000
+      # - 万兆：改成 8000 * 1000 * 1000
+      # 改完 docker compose up -d --force-recreate prometheus 让规则重新加载。
       - alert: ISPLinkSaturation
-        # Default threshold: any single WAN interface sustained >800 Mbps
-        # 对应 1 Gbps 链路 80% 占用。链路速率不同请按需调整这条规则。
         expr: |
           sum by (ifAlias, instance) (
             rate(ifHCInOctets{job="firewall-snmp"}[1m])
@@ -70,3 +34,9 @@ groups:
         annotations:
           summary: "ISP 链路接近饱和: {{ $labels.ifAlias }}"
           description: "{{ $labels.ifAlias }} 流量峰值持续超过 800 Mbps（1 Gbps 链路的 80%）"
+
+# 已移除（由 Zabbix 处理，避免飞书群收到双份）：
+#   CoreSwitchDown        Zabbix 自动发现 + SNMP ping trigger
+#   FirewallDown          Zabbix Hillstone/Watchguard 模板 + 飞火警告
+#   StageSwitchDown       Zabbix 自动发现 + SNMP ping trigger
+#   FirewallSnmpDown      Zabbix 本身就是用 SNMP 抓取，连不上会自己报

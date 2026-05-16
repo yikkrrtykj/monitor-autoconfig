@@ -21,17 +21,11 @@ receivers:
         send_resolved: true
         max_alerts: 0
 
-inhibit_rules:
-  - source_matchers:
-      - severity = critical
-      - component = core
-    target_matchers:
-      - severity =~ "high|warning"
-    equal: []
-
-  - source_matchers:
-      - severity = critical
-      - component = firewall
-    target_matchers:
-      - alertname = "FirewallSnmpDown"
-    equal: ['instance']
+# 暂无 inhibit_rules — 当前只保留 MonitoringServerDown + ISPLinkSaturation 两条规则，
+# 互相之间不存在层级关系。后续如果再加规则需要抑制下游告警，在这里追加：
+# inhibit_rules:
+#   - source_matchers:
+#       - severity = critical
+#     target_matchers:
+#       - severity = warning
+#     equal: ['instance']
