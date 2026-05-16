@@ -198,7 +198,7 @@ probe_success{role="player",team="1",seat="3",network="wired"}
 输出每条监控链路的状态：容器、Prometheus 抓取目标、设备 ping、选手 targets 注册情况、ISP 链路检测、Grafana 加载情况。绿色=OK，红色=要解决。
 自动修复：
 ```
-  ./pre-match-check.sh --fix
+./pre-match-check.sh --fix
 ```
 如果 dispatcher 不在跑 → docker compose up -d librenms-dispatcher
 如果没设备 → docker compose up -d --force-recreate librenms-config（重跑自动发现，会读 .env 里的LIBRENMS_DISCOVERY_TARGETS 扫描）
