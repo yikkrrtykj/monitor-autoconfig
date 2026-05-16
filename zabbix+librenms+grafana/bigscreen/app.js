@@ -655,11 +655,8 @@
   }
 
   function preferPlayer(prev, candidate) {
-    // Online wins over offline.
     if (candidate.success && !prev.success) return candidate;
     if (!candidate.success && prev.success) return prev;
-    // Both online or both offline -- prefer the one with a finite latency,
-    // then the lower latency (more reliable connection).
     const candFinite = Number.isFinite(candidate.latency);
     const prevFinite = Number.isFinite(prev.latency);
     if (candFinite && !prevFinite) return candidate;
@@ -669,11 +666,10 @@
   }
 
   function dedupePlayersBySeat(players) {
-    // A team-labeled port can show multiple (ip) targets when the switch MAC
-    // table still holds a recently-aged entry alongside the live one. The
-    // bigscreen only has one slot per (team, seat, network), so collapse
-    // duplicates -- keep the online entry; if both online, keep the lower
-    // latency one. Offline duplicates collapse silently.
+    // Switch MAC table caches a recently-aged entry alongside the live one,
+    // so the generator emits multiple (ip) targets per (team, seat, network).
+    // The bigscreen has one slot per seat -- keep the online entry; if both
+    // online, the lower-latency wins.
     const seen = new Map();
     for (const player of players) {
       const key = `${player.team}|${player.seat}|${player.network}`;
@@ -1686,9 +1682,8 @@
   }
 
   function countOfflineRecoveries(values) {
-    // Count 0 -> 1 transitions (a completed offline event that ended with
-    // the IP coming back). Targets that stayed offline the whole window
-    // (stale entries) have no recoveries and won't be flagged as flapping.
+    // Recovery edges (0 -> 1) = completed disconnect events. Stale entries
+    // that stayed offline the whole window have no recoveries.
     let recoveries = 0;
     for (let i = 1; i < values.length; i += 1) {
       const prev = values[i - 1].v;

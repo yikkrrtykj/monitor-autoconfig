@@ -773,11 +773,9 @@ def merge_dedup_targets(path_b_targets, path_a_targets):
 def verify_targets_alive(targets, timeout=1, workers=64):
     """Drop targets whose IP doesn't respond to ICMP within `timeout` seconds.
 
-    Filters stale entries left behind by switch-MAC aging (~5 min) and
-    gateway-ARP aging (~4 hours) -- both can keep a long-gone device in
-    the join until the table entry finally ages out. Wireless-scan targets
-    already passed a ping during scan, so this is mostly belt-and-suspenders
-    for them.
+    Filters stale entries left by switch-MAC aging (~5 min) and gateway-ARP
+    aging (~4 hours) -- both can keep a long-gone device in the join until
+    the table entry finally ages out.
     """
     candidate_ips = sorted({t["targets"][0] for t in targets if t.get("targets")})
     if not candidate_ips:

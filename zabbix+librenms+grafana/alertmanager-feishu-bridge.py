@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
-Alertmanager → Feishu bridge.
+Alertmanager v2 webhook -> Feishu bot bridge.
 
-Receives Prometheus Alertmanager v2 webhook payloads on POST /webhook,
-formats each group as a Feishu interactive card, and forwards to the
-Feishu bot endpoint configured via FEISHU_ROBOT_TOKEN.
-
-Standard library only (http.server + urllib + json) so the container
-can run with just python:3-slim, no requirements.txt.
+Stdlib only (http.server + urllib + json) so the container runs on
+python:3-slim with no requirements.txt.
 
 Env:
   FEISHU_BRIDGE_PORT       listen port (default 5005)
-  FEISHU_ROBOT_TOKEN       Feishu bot webhook token (the part after /hook/)
+  FEISHU_ROBOT_TOKEN       Feishu bot webhook token (part after /hook/)
   FEISHU_BRIDGE_DRY_RUN    true = log payloads, never POST to Feishu
 """
-from datetime import datetime, timezone
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
@@ -25,7 +21,6 @@ PORT = int(os.environ.get("FEISHU_BRIDGE_PORT", "5005"))
 TOKEN = os.environ.get("FEISHU_ROBOT_TOKEN", "").strip()
 DRY_RUN = os.environ.get("FEISHU_BRIDGE_DRY_RUN", "").lower() in ("1", "true", "yes", "on")
 
-# Feishu interactive-card header colors per severity. Resolution always green.
 SEVERITY_COLOR = {
     "critical": "red",
     "high": "orange",
@@ -41,11 +36,6 @@ def log(message):
 
 
 def parse_iso_timestamp(raw):
-    """Parse Alertmanager's ISO-8601 timestamps into a local-time string.
-
-    Returns the original string if parsing fails so the message still
-    renders rather than disappear.
-    """
     if not raw:
         return ""
     text = raw
@@ -209,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, b"not found")
 
     def log_message(self, fmt, *args):
-        # silence the noisy default access log; we log explicitly in do_POST
+        # override the default access log; do_POST logs explicitly
         pass
 
 
