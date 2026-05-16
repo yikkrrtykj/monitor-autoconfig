@@ -1146,12 +1146,25 @@
     };
   }
 
-  function evidenceSelector(team, seat, network, ip) {
-    if (ip) {
-      return `role="player",instance="${escapeLabel(ip)}"`;
-    }
+  function evidencePlayerSelector(team, seat, network) {
     const networkFilter = network === "all" ? 'network=~".*"' : `network="${escapeLabel(network)}"`;
     return `role="player",team="${escapeLabel(team)}",seat="${escapeLabel(seat)}",${networkFilter}`;
+  }
+
+  function evidenceLatencyQuery(team, seat, network, ip) {
+    if (ip) {
+      const ipStr = escapeLabel(ip);
+      return `probe_icmp_duration_seconds{instance="${ipStr}",phase="rtt"} or probe_icmp_duration_seconds{target_ip="${ipStr}",phase="rtt"}`;
+    }
+    return `probe_icmp_duration_seconds{${evidencePlayerSelector(team, seat, network)},phase="rtt"}`;
+  }
+
+  function evidenceSuccessQuery(team, seat, network, ip) {
+    if (ip) {
+      const ipStr = escapeLabel(ip);
+      return `probe_success{instance="${ipStr}"} or probe_success{target_ip="${ipStr}"}`;
+    }
+    return `probe_success{${evidencePlayerSelector(team, seat, network)}}`;
   }
 
   function evidenceSeriesName(metric) {
@@ -1232,7 +1245,8 @@
     const at = document.getElementById("evidenceAt").value || "";
     const ip = (document.getElementById("evidenceIp").value || "").trim();
     const queryWindow = evidenceWindow();
-    const selector = evidenceSelector(team, seat, network, ip);
+    const latencyQuery = evidenceLatencyQuery(team, seat, network, ip);
+    const successQuery = evidenceSuccessQuery(team, seat, network, ip);
     const label = ip
       ? `${ip} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`
       : `${playerLabel(team, seat, network)} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`;
@@ -1246,8 +1260,8 @@
 
     try {
       const [latencySeries, successSeries] = await Promise.all([
-        prometheusRangeFor(`probe_icmp_duration_seconds{${selector},phase="rtt"}`, queryWindow, evidenceSeriesName),
-        prometheusRangeFor(`probe_success{${selector}}`, queryWindow, evidenceSeriesName)
+        prometheusRangeFor(latencyQuery, queryWindow, evidenceSeriesName),
+        prometheusRangeFor(successQuery, queryWindow, evidenceSeriesName)
       ]);
       renderEvidenceSummary({ label }, latencySeries, successSeries);
       renderLineChart("evidenceLatencyChart", latencySeries, {
