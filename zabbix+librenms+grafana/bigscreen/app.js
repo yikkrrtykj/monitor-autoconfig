@@ -1685,6 +1685,19 @@
     return max === -Infinity ? null : max;
   }
 
+  function countOfflineRecoveries(values) {
+    // Count 0 -> 1 transitions (a completed offline event that ended with
+    // the IP coming back). Targets that stayed offline the whole window
+    // (stale entries) have no recoveries and won't be flagged as flapping.
+    let recoveries = 0;
+    for (let i = 1; i < values.length; i += 1) {
+      const prev = values[i - 1].v;
+      const curr = values[i].v;
+      if (prev < 0.5 && curr >= 0.5) recoveries += 1;
+    }
+    return recoveries;
+  }
+
   function analyzeIncident(data, threshold) {
     const affectedPlayers = [];
     const offlinePlayers = [];
@@ -1704,14 +1717,14 @@
     });
 
     data.playerSuccess.forEach((series) => {
-      const failedSamples = series.values.filter((point) => point.v < 0.5).length;
-      if (failedSamples > 0) {
+      const recoveries = countOfflineRecoveries(series.values);
+      if (recoveries > 0) {
         offlinePlayers.push({
           team: series.metric.team,
           seat: series.metric.seat,
           network: series.metric.network,
           instance: series.metric.instance,
-          failCount: failedSamples
+          recoveryCount: recoveries
         });
       }
     });
@@ -1729,14 +1742,14 @@
       }
     });
     data.infraSuccess.forEach((series) => {
-      const failedSamples = series.values.filter((point) => point.v < 0.5).length;
-      if (failedSamples > 0) {
+      const recoveries = countOfflineRecoveries(series.values);
+      if (recoveries > 0) {
         infraEvents.push({
           instance: series.metric.instance || series.metric.display_name,
           targetIp: series.metric.target_ip,
           job: series.metric.job,
           offline: true,
-          failCount: failedSamples
+          recoveryCount: recoveries
         });
       }
     });
@@ -1851,7 +1864,7 @@
       ...result.offlinePlayers.map((player) => ({
         type: "bad",
         label: `Team ${player.team} S${player.seat} (${networkLabel(player.network)})`,
-        detail: `${player.failCount} 次失败采样`,
+        detail: `${player.recoveryCount} 次断线后恢复`,
         ip: player.instance
       }))
     ];
@@ -1881,7 +1894,7 @@
       <div class="incident-item ${event.offline ? "bad" : "warn"}">
         <strong>${escapeHtml(event.instance || event.targetIp || "?")}</strong>
         <em>${escapeHtml(event.job)}</em>
-        <span>${event.offline ? `${event.failCount} 次离线` : `最高 ${formatPingText(event.maxLatency)}`}</span>
+        <span>${event.offline ? `${event.recoveryCount} 次断线后恢复` : `最高 ${formatPingText(event.maxLatency)}`}</span>
       </div>
     `).join("");
   }
