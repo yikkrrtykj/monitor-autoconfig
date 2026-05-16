@@ -654,6 +654,35 @@
     return /\.(?:1|254)$/.test(String(ip || ""));
   }
 
+  function preferPlayer(prev, candidate) {
+    // Online wins over offline.
+    if (candidate.success && !prev.success) return candidate;
+    if (!candidate.success && prev.success) return prev;
+    // Both online or both offline -- prefer the one with a finite latency,
+    // then the lower latency (more reliable connection).
+    const candFinite = Number.isFinite(candidate.latency);
+    const prevFinite = Number.isFinite(prev.latency);
+    if (candFinite && !prevFinite) return candidate;
+    if (!candFinite && prevFinite) return prev;
+    if (candFinite && prevFinite && candidate.latency < prev.latency) return candidate;
+    return prev;
+  }
+
+  function dedupePlayersBySeat(players) {
+    // A team-labeled port can show multiple (ip) targets when the switch MAC
+    // table still holds a recently-aged entry alongside the live one. The
+    // bigscreen only has one slot per (team, seat, network), so collapse
+    // duplicates -- keep the online entry; if both online, keep the lower
+    // latency one. Offline duplicates collapse silently.
+    const seen = new Map();
+    for (const player of players) {
+      const key = `${player.team}|${player.seat}|${player.network}`;
+      const prev = seen.get(key);
+      seen.set(key, prev ? preferPlayer(prev, player) : player);
+    }
+    return Array.from(seen.values());
+  }
+
   function buildPlayers(latencyItems, successItems) {
     const byKey = new Map();
     successItems.forEach((item) => {
@@ -681,8 +710,9 @@
       player.latency = item.value;
       byKey.set(key, player);
     });
-    return Array.from(byKey.values())
-      .filter((player) => player.team > 0 && player.seat > 0 && player.ip)
+    const all = Array.from(byKey.values())
+      .filter((player) => player.team > 0 && player.seat > 0 && player.ip);
+    return dedupePlayersBySeat(all)
       .sort((a, b) => a.team - b.team || a.seat - b.seat || a.ip.localeCompare(b.ip));
   }
 
