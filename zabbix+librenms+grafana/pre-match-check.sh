@@ -247,23 +247,22 @@ else
     warn "当前只注册到无线选手 targets — 如果现场只接 WiFi，这是正常的；否则检查 PLAYER_SUBNETS / WIRELESS_SUBNETS"
   fi
 
-  # Online ratio
-  online=$(prom_value 'count(probe_success{role="player"} == 1) or vector(0)')
+  # Online ratio (only wired counts — wireless scan is a separate sanity signal)
+  online=$(prom_value 'count(probe_success{role="player",network="wired"} == 1) or vector(0)')
   online=${online:-0}
-  if [ "$online" = "$player_total" ]; then
-    ok "全部选手在线 ($online/$player_total)"
-  else
-    warn "$online/$player_total 选手在线（赛前正常，开赛时应全部在线）"
+  if [ "$wired" -gt 0 ] && [ "$online" = "$wired" ]; then
+    ok "全部有线选手在线 ($online/$wired)"
+  elif [ "$wired" -gt 0 ]; then
+    warn "$online/$wired 有线选手在线（赛前正常，开赛时应全部在线）"
   fi
 
-  # Team count
-  teams=$(prom_value 'count(count by (team) (probe_success{role="player"}))')
+  # Team count + distribution — wired only so headcount isn't polluted by wireless-scan synthetic seats
+  teams=$(prom_value 'count(count by (team) (probe_success{role="player",network="wired"}))')
   teams=${teams:-0}
-  echo "         队伍数: $teams"
+  echo "         有线选手队伍数: $teams"
 
-  # Team distribution sanity
   if [ "$teams" -gt 0 ]; then
-    teams_per_size=$(curl -s --max-time 5 "${PROM_URL}/api/v1/query?query=count%20by%20(team)%20(probe_success%7Brole%3D%22player%22%7D)" 2>/dev/null | \
+    teams_per_size=$(curl -s --max-time 5 "${PROM_URL}/api/v1/query?query=count%20by%20(team)%20(probe_success%7Brole%3D%22player%22%2Cnetwork%3D%22wired%22%7D)" 2>/dev/null | \
       python3 -c "
 import sys, json
 try:
