@@ -96,6 +96,31 @@
         <div class="ops-summary" id="opsSummary"></div>
         <div class="ops-board" id="opsBoard"></div>
       </section>
+      <section class="heatmap-panel" id="heatmapPanel" aria-label="质量热图" hidden>
+        <form class="heatmap-controls" id="heatmapForm">
+          <label>起点 <input id="heatmapStart" type="datetime-local" /></label>
+          <label>时长
+            <select id="heatmapWindow">
+              <option value="1">最近 1 小时</option>
+              <option value="3">最近 3 小时</option>
+              <option value="6" selected>最近 6 小时</option>
+              <option value="12">最近 12 小时</option>
+              <option value="24">最近 24 小时</option>
+            </select>
+          </label>
+          <label>队伍数
+            <select id="heatmapTeams">
+              <option value="2">2 队 (5v5)</option>
+              <option value="6">6 队</option>
+              <option value="16" selected>16 队 (64 人)</option>
+            </select>
+          </label>
+          <button type="submit">绘制</button>
+        </form>
+        <div class="heatmap-summary" id="heatmapSummary"></div>
+        <div class="heatmap-grid" id="heatmapGrid"></div>
+        <div class="heatmap-legend" id="heatmapLegend"></div>
+      </section>
       <section class="incident-panel" id="incidentPanel" aria-label="卡顿根因分析" hidden>
         <form class="incident-controls" id="incidentForm">
           <label>事发时间 <input id="incidentAt" type="datetime-local" /></label>
