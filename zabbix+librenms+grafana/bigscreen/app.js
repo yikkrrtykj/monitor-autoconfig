@@ -1620,6 +1620,39 @@
     };
   }
 
+  function parseIspBandwidthConfig(raw) {
+    const result = { default: { down: 1000, up: 1000 }, perIsp: {} };
+    if (raw === undefined || raw === null) return result;
+    const text = String(raw).trim();
+    if (!text) return result;
+    if (/^\d+(\.\d+)?$/.test(text)) {
+      const value = Number(text);
+      result.default = { down: value, up: value };
+      return result;
+    }
+    text.split(",").forEach((item) => {
+      const trimmed = item.trim();
+      if (!trimmed) return;
+      const colonIdx = trimmed.lastIndexOf(":");
+      if (colonIdx <= 0) return;
+      const name = trimmed.slice(0, colonIdx).trim();
+      const bandwidth = trimmed.slice(colonIdx + 1).trim();
+      const parts = bandwidth.split("/").map((part) => Number(part.trim()));
+      const down = Number.isFinite(parts[0]) ? parts[0] : null;
+      if (down === null) return;
+      const up = Number.isFinite(parts[1]) ? parts[1] : down;
+      result.perIsp[name] = { down, up };
+    });
+    return result;
+  }
+
+  function ispCapacityBps(name, direction) {
+    const cfg = parseIspBandwidthConfig(config.ispMaxBandwidthMbps);
+    const entry = cfg.perIsp[name] || cfg.default;
+    const mbps = direction === "in" ? entry.down : entry.up;
+    return Math.max(1, Number(mbps) || 1000) * 1000 * 1000;
+  }
+
   async function queryIncidentData(win) {
     const playerLatencyQ = 'probe_icmp_duration_seconds{role="player",network="wired",phase="rtt"}';
     const playerSuccessQ = 'probe_success{role="player",network="wired"}';
@@ -1709,16 +1742,18 @@
     });
 
     const ispEvents = [];
-    const ispMaxBps = (Number(config.ispMaxBandwidthMbps) || 1000) * 1000 * 1000;
     data.isp.forEach((series) => {
       const max = seriesMaxValue(series);
       if (max === null) return;
+      const ifAlias = series._ispName || series.metric.ifAlias;
+      const direction = series._direction || (series.metric.direction || "in");
+      const capacityBps = ispCapacityBps(ifAlias, direction);
       ispEvents.push({
-        ifAlias: series._ispName || series.metric.ifAlias,
-        direction: series._direction || (series.metric.direction || "in"),
+        ifAlias,
+        direction,
         maxBps: max,
-        capacityBps: ispMaxBps,
-        utilization: ispMaxBps > 0 ? max / ispMaxBps : 0
+        capacityBps,
+        utilization: capacityBps > 0 ? max / capacityBps : 0
       });
     });
 
