@@ -326,6 +326,7 @@ services:
       - prometheus-data:/prometheus
       - player-targets-data:/etc/prometheus/targets
       - ./prometheus-gen-config.sh:/etc/prometheus/prometheus-gen-config.sh:ro
+      - ./prometheus-alert-rules.yml:/etc/prometheus/prometheus-alert-rules.yml:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - /bin/sh
@@ -343,6 +344,54 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+      - /etc/localtime:/etc/localtime:ro
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=:9093
+    ports:
+      - "${ALERTMANAGER_BIND:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
+    depends_on:
+      alertmanager-feishu-bridge:
+        condition: service_started
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9093/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  alertmanager-feishu-bridge:
+    image: python:3.12-slim
+    container_name: alertmanager-feishu-bridge
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager-feishu-bridge.py:/app/bridge.py:ro
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      TZ: Asia/Shanghai
+      FEISHU_BRIDGE_PORT: "5005"
+      FEISHU_ROBOT_TOKEN: "${FEISHU_ROBOT_TOKEN:-}"
+      FEISHU_BRIDGE_DRY_RUN: "${FEISHU_BRIDGE_DRY_RUN:-false}"
+    command: ["python", "/app/bridge.py"]
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5005/health', timeout=2)\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   snmp-exporter:
     image: prom/snmp-exporter:latest
@@ -777,6 +826,7 @@ networks:
 
 volumes:
   prometheus-data:
+  alertmanager-data:
   player-targets-data:
   grafana-data:
   grafana-provisioning-rendered:

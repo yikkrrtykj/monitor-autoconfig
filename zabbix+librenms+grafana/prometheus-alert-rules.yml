@@ -1,0 +1,72 @@
+groups:
+  - name: tournament-network-critical
+    interval: 30s
+    rules:
+      - alert: CoreSwitchDown
+        expr: probe_success{job="infra-core-ping"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: core
+        annotations:
+          summary: "核心交换机离线"
+          description: "{{ $labels.instance }} 持续 1 分钟无 ICMP 响应 — 整场监控可能失联"
+
+      - alert: FirewallDown
+        expr: probe_success{job="infra-fw-ping"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: firewall
+        annotations:
+          summary: "防火墙离线: {{ $labels.instance }}"
+          description: "{{ $labels.target_ip }} 持续 1 分钟无 ICMP 响应"
+
+      - alert: MonitoringServerDown
+        expr: probe_success{job="infra-srv-ping"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: server
+        annotations:
+          summary: "监控服务器自身离线"
+          description: "{{ $labels.instance }} 持续 1 分钟无 ICMP 响应 — 这条告警如果你能看到，说明告警系统还活着"
+
+  - name: tournament-network-warning
+    interval: 30s
+    rules:
+      - alert: StageSwitchDown
+        expr: probe_success{job="infra-dist-ping"} == 0
+        for: 2m
+        labels:
+          severity: high
+          component: stage
+        annotations:
+          summary: "接入交换机离线: {{ $labels.instance }}"
+          description: "{{ $labels.target_ip }} 持续 2 分钟无 ICMP 响应 — 该 stage 下所有选手都会断"
+
+      - alert: FirewallSnmpDown
+        expr: up{job="firewall-snmp"} == 0
+        for: 3m
+        labels:
+          severity: warning
+          component: firewall-snmp
+        annotations:
+          summary: "防火墙 SNMP 抓取失败: {{ $labels.instance }}"
+          description: "ISP 流量数据 3 分钟无法采集 — 大屏 ISP 面板会出现空白"
+
+      - alert: ISPLinkSaturation
+        # Default threshold: any single WAN interface sustained >800 Mbps
+        # 对应 1 Gbps 链路 80% 占用。链路速率不同请按需调整这条规则。
+        expr: |
+          sum by (ifAlias, instance) (
+            rate(ifHCInOctets{job="firewall-snmp"}[1m])
+            or rate(ifHCOutOctets{job="firewall-snmp"}[1m])
+          ) * 8 > 800 * 1000 * 1000
+        for: 2m
+        labels:
+          severity: warning
+          component: isp
+        annotations:
+          summary: "ISP 链路接近饱和: {{ $labels.ifAlias }}"
+          description: "{{ $labels.ifAlias }} 流量峰值持续超过 800 Mbps（1 Gbps 链路的 80%）"

@@ -219,6 +219,15 @@ global:
   scrape_interval: $SCRAPE_INTERVAL
   evaluation_interval: $SCRAPE_INTERVAL
 
+rule_files:
+  - /etc/prometheus/prometheus-alert-rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
 scrape_configs:
   - job_name: "prometheus"
     static_configs:
