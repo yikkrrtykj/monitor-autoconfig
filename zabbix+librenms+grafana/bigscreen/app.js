@@ -780,11 +780,12 @@
     }
     const level = latencyLevel(player);
     const latency = Number.isFinite(player.latency) ? formatPingText(player.latency) : "-";
+    const ipShort = player.ip ? "." + player.ip.split(".").pop() : "";
     return `
-      <a class="seat-slot ${level}" href="${escapeHtml(latencyUrlForPlayer(player))}" title="查看${escapeHtml(playerLabel(player.team, player.seat, player.network))}延迟">
+      <a class="seat-slot ${level}" href="${escapeHtml(latencyUrlForPlayer(player))}" title="${escapeHtml(playerLabel(player.team, player.seat, player.network))} ${escapeHtml(player.ip)}">
         <span>${seatLabel(player.seat)}</span>
         <strong>${escapeHtml(latency)}</strong>
-        <em>${escapeHtml(player.ip)}</em>
+        <em>${escapeHtml(ipShort)}</em>
       </a>
     `;
   }
@@ -847,36 +848,106 @@
 
   function renderTournamentTrend(page, trendSeries) {
     const container = document.getElementById("tournamentTrendChart");
-    const groups = page.groups || [page.teams || []];
-    const renderCard = (team) => {
-      const teamSeries = trendSeries.filter((item) => String(item.metric.team || "") === String(team));
-      const latestValues = teamSeries
-        .map((item) => item.values[item.values.length - 1])
-        .filter(Boolean)
-        .map((point) => point.v);
-      const latest = latestValues.length ? formatPingText(average(latestValues)) : "-";
-      return `
-        <section class="team-trend-card">
-          <header><h3>${escapeHtml(teamName(page, team))}</h3><span>${escapeHtml(latest)}</span></header>
-          <div class="team-trend-chart" id="teamTrend${team}"></div>
-        </section>
-      `;
-    };
-    container.innerHTML = `
-      <div class="team-trend-stack">
-        ${groups.map((group) => `
-          <div class="team-trend-grid" style="--trend-team-count:${group.length}">
-            ${group.map(renderCard).join("")}
-          </div>
-        `).join("")}
-      </div>
+
+    if (page.trendMode === "per-seat") {
+      renderTournamentTrendPerSeat(page, trendSeries, container);
+      return;
+    }
+    if (page.trendMode === "groups") {
+      renderTournamentTrendByGroups(page, trendSeries, container);
+      return;
+    }
+    renderTournamentTrendFlat(page, trendSeries, container);
+  }
+
+  function renderTeamTrendCard(page, team, trendSeries) {
+    const teamSeries = trendSeries.filter((item) => String(item.metric.team || "") === String(team));
+    const latestValues = teamSeries
+      .map((item) => item.values[item.values.length - 1])
+      .filter(Boolean)
+      .map((point) => point.v);
+    const latest = latestValues.length ? formatPingText(average(latestValues)) : "-";
+    return `
+      <section class="team-trend-card">
+        <header><h3>${escapeHtml(teamName(page, team))}</h3><span>${escapeHtml(latest)}</span></header>
+        <div class="team-trend-chart" id="teamTrend${team}"></div>
+      </section>
     `;
+  }
+
+  function renderTeamSparklines(page, trendSeries) {
     (page.teams || []).forEach((team) => {
       const teamSeries = trendSeries
         .filter((item) => String(item.metric.team || "") === String(team))
         .sort((a, b) => Number(a.metric.seat || 0) - Number(b.metric.seat || 0))
         .map((item) => ({ ...item, name: seatLabel(item.metric.seat || "?") }));
       renderSparkline(`teamTrend${team}`, teamSeries);
+    });
+  }
+
+  function renderTournamentTrendFlat(page, trendSeries, container) {
+    const teams = page.teams || [];
+    container.innerHTML = `
+      <div class="team-trend-grid" style="--trend-team-count:${teams.length}">
+        ${teams.map((team) => renderTeamTrendCard(page, team, trendSeries)).join("")}
+      </div>
+    `;
+    renderTeamSparklines(page, trendSeries);
+  }
+
+  function renderTournamentTrendByGroups(page, trendSeries, container) {
+    const groups = page.groups || [page.teams || []];
+    container.innerHTML = `
+      <div class="team-trend-stack">
+        ${groups.map((group) => `
+          <div class="team-trend-grid" style="--trend-team-count:${group.length}">
+            ${group.map((team) => renderTeamTrendCard(page, team, trendSeries)).join("")}
+          </div>
+        `).join("")}
+      </div>
+    `;
+    renderTeamSparklines(page, trendSeries);
+  }
+
+  function renderTournamentTrendPerSeat(page, trendSeries, container) {
+    const teams = page.teams || [];
+    const seatCount = page.teamSize || 1;
+    const seats = Array.from({ length: seatCount }, (_, i) => i + 1);
+    const cardId = (team, seat) => `seatTrend_${team}_${seat}`;
+    container.innerHTML = `
+      <div class="team-trend-stack">
+        ${teams.map((team) => `
+          <div class="team-trend-grid" style="--trend-team-count:${seatCount}">
+            ${seats.map((seat) => {
+              const series = trendSeries.find(
+                (item) =>
+                  String(item.metric.team || "") === String(team) &&
+                  String(item.metric.seat || "") === String(seat)
+              );
+              const latest = series && series.values.length
+                ? formatPingText(series.values[series.values.length - 1].v)
+                : "-";
+              return `
+                <section class="team-trend-card">
+                  <header><h3>${escapeHtml(teamName(page, team))} ${escapeHtml(seatLabel(seat))}</h3><span>${escapeHtml(latest)}</span></header>
+                  <div class="team-trend-chart" id="${cardId(team, seat)}"></div>
+                </section>
+              `;
+            }).join("")}
+          </div>
+        `).join("")}
+      </div>
+    `;
+    teams.forEach((team) => {
+      seats.forEach((seat) => {
+        const series = trendSeries
+          .filter((item) =>
+            String(item.metric.team || "") === String(team) &&
+            String(item.metric.seat || "") === String(seat)
+          )
+          .map((item) => ({ ...item, name: seatLabel(seat) }));
+        renderSparkline(cardId(team, seat), series);
+      });
     });
   }
 
