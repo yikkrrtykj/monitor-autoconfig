@@ -24,7 +24,19 @@ GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-root}"
 FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,wan}"
 
 QUIET=0
-[ "${1:-}" = "--quiet" ] && QUIET=1
+FIX=0
+for arg in "$@"; do
+  case "$arg" in
+    --quiet) QUIET=1 ;;
+    --fix)   FIX=1 ;;
+    -h|--help)
+      echo "Usage: $0 [--quiet] [--fix]"
+      echo "  --quiet  only print failures"
+      echo "  --fix    attempt automatic repair of known LibreNMS issues"
+      exit 0
+      ;;
+  esac
+done
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
 PASS=0; WARN=0; FAIL=0
@@ -328,14 +340,95 @@ except Exception: print('')
   fi
 fi
 
-# ---- 总结 ----
+# ---- 8. LibreNMS ----
+hdr "8. LibreNMS"
+
+if ! docker inspect librenms >/dev/null 2>&1; then
+  warn "librenms 容器不存在 — 如果不用 LibreNMS 可忽略"
+else
+  # 8a. dispatcher container (scheduler in docker setup)
+  disp_state=$(docker inspect -f '{{.State.Status}}' librenms-dispatcher 2>/dev/null || echo missing)
+  if [ "$disp_state" = "running" ]; then
+    ok "librenms-dispatcher (scheduler) 运行中"
+  else
+    fail "librenms-dispatcher 未运行 ($disp_state) — validate.php 会报 Scheduler is not running"
+    if [ $FIX -eq 1 ]; then
+      echo "       [FIX] docker compose up -d librenms-dispatcher"
+      docker compose up -d librenms-dispatcher >/dev/null 2>&1 && \
+        echo "       重启成功，给 30 秒注册时间" && sleep 30
+    fi
+  fi
+
+  # 8b. validate.php
+  if [ "$disp_state" = "running" ] || [ $FIX -eq 1 ]; then
+    validate=$(docker exec -u librenms librenms sh -lc 'php /opt/librenms/validate.php 2>&1' 2>/dev/null || true)
+    if [ -z "$validate" ]; then
+      fail "无法运行 validate.php（容器可能没就绪）"
+    else
+      # 已知可忽略的 WARN（docker 部署专属）
+      ignore_warn='Updates are managed through the official Docker image'
+      fail_lines=$(echo "$validate" | grep -E '^\[FAIL\]' | grep -v 'Scheduler is not running' || true)
+      # 上面单独检查了 dispatcher，所以 validate 报的 "Scheduler is not running" 在 dispatcher 已 up 时是误报
+      warn_lines=$(echo "$validate" | grep -E '^\[WARN\]' | grep -v "$ignore_warn" || true)
+      no_devices=$(echo "$validate" | grep -c 'You have no devices' || true)
+
+      if [ -n "$fail_lines" ]; then
+        echo "$fail_lines" | while IFS= read -r line; do
+          fail "validate.php: ${line#\[FAIL\]  }"
+        done
+      else
+        ok "validate.php 没有真实 FAIL"
+      fi
+
+      if [ "$no_devices" -gt 0 ]; then
+        fail "LibreNMS 还没添加任何设备"
+        # 看一下 librenms-config 一次性容器的退出状态
+        cfg_status=$(docker inspect -f '{{.State.Status}}' librenms-config 2>/dev/null || echo missing)
+        cfg_exit=$(docker inspect -f '{{.State.ExitCode}}' librenms-config 2>/dev/null || echo "?")
+        if [ "$cfg_status" = "missing" ]; then
+          echo "       librenms-config 容器从未运行过 — 检查 docker-compose.yml"
+        elif [ "$cfg_status" = "exited" ] && [ "$cfg_exit" != "0" ]; then
+          echo "       librenms-config 退出码=$cfg_exit（异常）— 看日志: docker logs librenms-config"
+        else
+          echo "       librenms-config 状态: $cfg_status (exit=$cfg_exit)"
+        fi
+        echo "       .env 里 LIBRENMS_DISCOVERY_TARGETS=${LIBRENMS_DISCOVERY_TARGETS:-未设置}"
+        if [ $FIX -eq 1 ]; then
+          echo "       [FIX] 重跑 librenms-config 触发自动发现"
+          docker compose up -d --force-recreate librenms-config >/dev/null 2>&1 && \
+            echo "       已重启，看进度: docker logs -f librenms-config"
+        else
+          echo "       手工修复: docker compose up -d --force-recreate librenms-config"
+        fi
+      else
+        # 已经有设备，数一下
+        dev_count=$(docker exec -u librenms librenms sh -lc 'php /opt/librenms/lnms device:list 2>/dev/null | grep -c "^|" || true' 2>/dev/null || echo 0)
+        dev_count=${dev_count:-0}
+        if [ "$dev_count" -gt 0 ]; then
+          ok "LibreNMS 已注册 $dev_count 个设备"
+        fi
+      fi
+
+      # 其他 WARN（不计入"设备空"重复）
+      other_warns=$(echo "$warn_lines" | grep -v 'You have no devices' || true)
+      if [ -n "$other_warns" ]; then
+        echo "$other_warns" | while IFS= read -r line; do
+          warn "validate.php: ${line#\[WARN\]  }"
+        done
+      fi
+    fi
+  fi
+fi
+
+
 echo
 echo "=========================================="
 printf "  ${GREEN}通过 %d${NC}    ${YELLOW}警告 %d${NC}    ${RED}失败 %d${NC}\n" "$PASS" "$WARN" "$FAIL"
 echo "=========================================="
 
 if [ $FAIL -gt 0 ]; then
-  echo "❌ 有失败项，建议解决后再开赛"
+  echo "❌ 有失败项，必须解决后再开赛"
+  [ $FIX -eq 0 ] && echo "   提示：跑 $0 --fix 尝试自动修复部分已知问题"
   exit 1
 elif [ $WARN -gt 0 ]; then
   echo "⚠ 有警告项，确认是否预期"
