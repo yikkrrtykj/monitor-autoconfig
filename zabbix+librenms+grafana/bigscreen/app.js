@@ -915,9 +915,9 @@
     const seats = Array.from({ length: seatCount }, (_, i) => i + 1);
     const cardId = (team, seat) => `seatTrend_${team}_${seat}`;
     container.innerHTML = `
-      <div class="team-trend-stack">
+      <div class="team-trend-stack-horizontal">
         ${teams.map((team) => `
-          <div class="team-trend-grid" style="--trend-team-count:${seatCount}">
+          <div class="team-trend-grid team-trend-grid-vertical" style="--trend-seat-count:${seatCount}">
             ${seats.map((seat) => {
               const series = trendSeries.find(
                 (item) =>
