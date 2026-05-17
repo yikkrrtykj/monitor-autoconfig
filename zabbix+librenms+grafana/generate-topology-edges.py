@@ -134,20 +134,38 @@ def normalize_hostname(name):
 
 
 def normalize_port_name(name):
-    """Reduce a Cisco port name to its slash-numeric tail.
+    """Reduce vendor-specific interface names to a comparable key.
 
     "GigabitEthernet1/0/19" -> "1/0/19"
     "Gi1/0/19"              -> "1/0/19"
-    "Te0/1"                 -> "0/1"
-    Anything without a digit/slash path returns the trimmed lowercase original.
+    "Port-channel1"         -> "agg1"
+    "Po1"                   -> "agg1"
+    Anything without a known shape returns the trimmed lowercase original.
     """
     if not name:
         return ""
-    text = str(name).strip()
+    text = str(name).strip().lower()
+    agg = re.search(
+        r"(?:port[\s_-]*channel|bundle[\s_-]*ether|eth[\s_-]*trunk|po|lag|trk|ae|be)\s*([0-9]+)",
+        text,
+    )
+    if agg:
+        return f"agg{int(agg.group(1))}"
     match = re.search(r"(\d+(?:/\d+)+)", text)
     if match:
         return match.group(1)
-    return text.lower()
+    return text
+
+
+def resolve_ifindex_by_name(port_name, ifname_map):
+    target = normalize_port_name(port_name)
+    if not target:
+        return None
+    matches = [ifindex for ifindex, name in ifname_map.items()
+               if normalize_port_name(name) == target]
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def resolve_ifindex(loc_port, ifname_map, loc_port_desc_map):
@@ -162,14 +180,7 @@ def resolve_ifindex(loc_port, ifname_map, loc_port_desc_map):
     if not desc:
         return None
 
-    target = normalize_port_name(desc)
-    if not target:
-        return None
-    matches = [ifindex for ifindex, name in ifname_map.items()
-               if normalize_port_name(name) == target]
-    if len(matches) == 1:
-        return matches[0]
-    return None
+    return resolve_ifindex_by_name(desc, ifname_map)
 
 
 def load_device_list():
@@ -259,12 +270,9 @@ def build_edges(devices, name_index):
             remote_ifindex = None
             remote = devices.get(neighbor_ip)
             if remote and remote_port_name:
-                target = normalize_port_name(remote_port_name)
-                if target:
-                    for idx, name in remote["ifname"].items():
-                        if normalize_port_name(name) == target:
-                            remote_ifindex = idx
-                            break
+                remote_ifindex = resolve_ifindex_by_name(remote_port_name, remote["ifname"])
+                if remote_ifindex is not None:
+                    remote_port_name = remote["ifname"].get(remote_ifindex, remote_port_name)
 
             edge = {
                 "from_ip": ip,
@@ -289,28 +297,27 @@ def build_edges(devices, name_index):
 
 
 def build_uplink_targets(edges):
-    """Each (device, ifIndex) used by an edge becomes one file_sd entry."""
+    """Each device with at least one resolved edge interface becomes one file_sd entry.
+
+    Prometheus scrapes if_mib once per device and the frontend picks the edge's
+    real metric ifIndex from that scrape. Emitting one target per (device,
+    ifIndex) made the same core switch walk if_mib many times per scrape and
+    also collided with the exporter-provided ifIndex label.
+    """
     seen = set()
     targets = []
     for edge in edges:
         for side in ("from", "to"):
             ip = edge.get(f"{side}_ip")
             ifindex = edge.get(f"{side}_ifindex")
-            port = edge.get(f"{side}_port") or ""
             if not ip or ifindex is None:
                 continue
-            key = (ip, ifindex)
-            if key in seen:
+            if ip in seen:
                 continue
-            seen.add(key)
-            peer_side = "to" if side == "from" else "from"
-            peer_ip = edge.get(f"{peer_side}_ip") or ""
+            seen.add(ip)
             targets.append({
                 "targets": [ip],
                 "labels": {
-                    "ifIndex": str(ifindex),
-                    "port": port,
-                    "peer_ip": peer_ip,
                     "display_name": ip,
                 },
             })

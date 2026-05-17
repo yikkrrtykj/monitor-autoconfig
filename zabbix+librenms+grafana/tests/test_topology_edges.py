@@ -104,7 +104,12 @@ class TestNormalizePortName:
         assert gte.normalize_port_name("Te0/1") == "0/1"
 
     def test_no_path_returns_lowercase(self):
-        assert gte.normalize_port_name("LAG1") == "lag1"
+        assert gte.normalize_port_name("Ethernet 1") == "ethernet 1"
+
+    def test_port_channel_matches_short_form(self):
+        assert gte.normalize_port_name("Port-channel1") == "agg1"
+        assert gte.normalize_port_name("Po1") == "agg1"
+        assert gte.normalize_port_name("LAG1") == "agg1"
 
     def test_empty(self):
         assert gte.normalize_port_name("") == ""
@@ -128,6 +133,11 @@ class TestResolveIfindex:
         ifname = {1: "Gi1/0/1", 2: "Gi1/0/1"}
         loc_desc = {99: "GigabitEthernet1/0/1"}
         assert gte.resolve_ifindex(99, ifname, loc_desc) is None
+
+    def test_match_port_channel_active_uplink(self):
+        ifname = {5001: "Po1", 10101: "Gi1/0/1", 10102: "Gi1/0/2"}
+        loc_desc = {1: "Port-channel1"}
+        assert gte.resolve_ifindex(1, ifname, loc_desc) == 5001
 
 
 # ---- canonical_edge_key() ----
@@ -197,10 +207,11 @@ class TestBuildUplinkTargets:
             },
         ]
         targets = gte.build_uplink_targets(edges)
-        # one entry per (device, ifindex) -> 2 targets for one edge
+        # one entry per device, not per interface
         assert len(targets) == 2
-        labels_pairs = sorted([(t["targets"][0], t["labels"]["ifIndex"]) for t in targets])
-        assert labels_pairs == [("10.0.0.1", "24"), ("10.0.0.3", "49")]
+        devices = sorted(t["targets"][0] for t in targets)
+        assert devices == ["10.0.0.1", "10.0.0.3"]
+        assert all("ifIndex" not in t["labels"] for t in targets)
 
     def test_dedupes_when_same_endpoint_in_multiple_edges(self):
         edges = [
@@ -214,6 +225,32 @@ class TestBuildUplinkTargets:
             },
         ]
         targets = gte.build_uplink_targets(edges)
-        # 10.0.0.1:24 should appear only once
-        ones = [t for t in targets if t["targets"][0] == "10.0.0.1" and t["labels"]["ifIndex"] == "24"]
+        # 10.0.0.1 should be scraped only once even when it has multiple uplinks
+        ones = [t for t in targets if t["targets"][0] == "10.0.0.1"]
         assert len(ones) == 1
+
+    def test_remote_port_display_uses_resolved_ifname(self):
+        devices = {
+            "10.0.0.1": {
+                "ip": "10.0.0.1",
+                "sysname": "core-sw",
+                "ifname": {5001: "Po1"},
+                "loc_port_desc": {1: "Port-channel1"},
+                "rem_sys": {(0, 1, 1): "stage3"},
+                "rem_port_desc": {(0, 1, 1): "Port-channel10 active"},
+                "rem_port_id": {},
+            },
+            "10.0.0.3": {
+                "ip": "10.0.0.3",
+                "sysname": "stage3",
+                "ifname": {5010: "Po10"},
+                "loc_port_desc": {},
+                "rem_sys": {},
+                "rem_port_desc": {},
+                "rem_port_id": {},
+            },
+        }
+        edges, _ = gte.build_edges(devices, gte.build_name_index(devices))
+        assert edges[0]["from_ifindex"] == 5001
+        assert edges[0]["to_ifindex"] == 5010
+        assert edges[0]["to_port"] == "Po10"

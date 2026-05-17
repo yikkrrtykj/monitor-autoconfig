@@ -7,10 +7,12 @@ CORE_SWITCH_PING="${CORE_SWITCH_PING:-}"
 DIST_SWITCH_PING="${DIST_SWITCH_PING:-}"
 FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
+ISP_PING="${ISP_PING:-${BIGSCREEN_ISP_IPS:-}}"
 FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
 SNMP_AUTH="${SNMP_AUTH:-global}"
 PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
+UPLINK_SCRAPE_INTERVAL="${TOPOLOGY_UPLINK_SCRAPE_INTERVAL:-60s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 
 # Parse "NAME:IP" or "NAME:IP-START-IP-END" format.
@@ -237,6 +239,7 @@ scrape_configs:
 EOF
 
 # Infrastructure ping jobs
+write_ping_job "infra-isp-ping"   "$ISP_PING"
 write_ping_job "infra-core-ping"  "$CORE_SWITCH_PING"
 write_ping_job "infra-dist-ping"  "$DIST_SWITCH_PING"
 write_ping_job "infra-fw-ping"    "$FIREWALL_PING"
@@ -294,9 +297,10 @@ cat >> "$CONFIG_FILE" <<EOF
         replacement: blackbox-exporter:9115
 
   - job_name: "lldp-uplinks"
+    scrape_interval: ${UPLINK_SCRAPE_INTERVAL}
     metrics_path: /snmp
     params:
-      auth: [global]
+      auth: [${SNMP_AUTH}]
       module: [if_mib]
     file_sd_configs:
       - files:
@@ -307,8 +311,14 @@ cat >> "$CONFIG_FILE" <<EOF
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: target_ip
+      - source_labels: [display_name]
+        target_label: instance
       - target_label: __address__
         replacement: snmp-exporter:9116
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: "ifHCInOctets|ifHCOutOctets|ifName|ifDescr|ifAlias|ifOperStatus|ifHighSpeed|ifSpeed"
+        action: keep
 
   - job_name: "blackbox-exporter"
     static_configs:
@@ -320,6 +330,7 @@ echo "  Core:    ${CORE_SWITCH_PING:-none}"
 echo "  Dist:    ${DIST_SWITCH_PING:-none}"
 echo "  FW:      ${FIREWALL_PING:-none}"
 echo "  Server:  ${SERVER_PING:-none}"
+echo "  ISP:     ${ISP_PING:-none}"
 echo "  FW SNMP: ${FIREWALL_SNMP_TARGETS:-none}"
 echo "  Players: $PLAYER_TARGETS_FILE"
 

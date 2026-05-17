@@ -5,7 +5,8 @@
   const pingGaugeQuery = queries.pingGauge || "";
   const uptimeQuery = queries.uptime || "";
   const lossQuery = queries.loss || "";
-  const infraPingJobs = queries.infraPingJobs || "infra-core-ping|infra-dist-ping|infra-fw-ping";
+  const infraPingJobs = queries.infraPingJobs || "infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping";
+  const playerSnapshotWindow = "90s";
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
   const pages = window.BIGSCREEN_PAGES || [];
   let gaugeTimer = null;
@@ -845,6 +846,14 @@
     return `avg by (team,seat) (avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[3m]))`;
   }
 
+  function playerLatencySnapshotQuery(selector) {
+    return `avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[${playerSnapshotWindow}])`;
+  }
+
+  function playerSuccessSnapshotQuery(selector) {
+    return `max_over_time(probe_success{${selector}}[${playerSnapshotWindow}])`;
+  }
+
   function lineChartOptions() {
     return {
       axisFormatter: formatPingText,
@@ -964,8 +973,8 @@
     try {
       const selector = tournamentSelector(page);
       const [latencyItems, successItems, trendSeries] = await Promise.all([
-        prometheusInstant(`probe_icmp_duration_seconds{${selector},phase="rtt"}`),
-        prometheusInstant(`probe_success{${selector}}`),
+        prometheusInstant(playerLatencySnapshotQuery(selector)),
+        prometheusInstant(playerSuccessSnapshotQuery(selector)),
         prometheusRange(tournamentTrendQuery(page), (metric) => {
           return `${teamName(page, metric.team)} ${seatLabel(metric.seat || "?")}`;
         })
@@ -1027,8 +1036,8 @@
 
   async function fetchPlayerSnapshot(selector) {
     const [latencyItems, successItems] = await Promise.all([
-      prometheusInstant(`probe_icmp_duration_seconds{${selector},phase="rtt"}`),
-      prometheusInstant(`probe_success{${selector}}`)
+      prometheusInstant(playerLatencySnapshotQuery(selector)),
+      prometheusInstant(playerSuccessSnapshotQuery(selector))
     ]);
     return {
       latencyItems,
@@ -1680,8 +1689,8 @@
   async function queryIncidentData(win) {
     const playerLatencyQ = 'probe_icmp_duration_seconds{role="player",network="wired",phase="rtt"}';
     const playerSuccessQ = 'probe_success{role="player",network="wired"}';
-    const infraLatencyQ = 'probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping",phase="rtt"}';
-    const infraSuccessQ = 'probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping"}';
+    const infraLatencyQ = 'probe_icmp_duration_seconds{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping",phase="rtt"}';
+    const infraSuccessQ = 'probe_success{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping"}';
 
     const ispNames = await fetchIspNames();
     const ispPromises = ispNames.flatMap((name) => [
@@ -2269,7 +2278,7 @@
   }
 
   async function fetchTopologyTargets() {
-    const jobs = ["infra-fw-ping", "infra-core-ping", "infra-dist-ping", "infra-srv-ping"];
+    const jobs = ["infra-isp-ping", "infra-fw-ping", "infra-core-ping", "infra-dist-ping", "infra-srv-ping"];
     const filter = jobs.join("|");
     const [success, latency] = await Promise.all([
       prometheusInstant(`probe_success{job=~"${filter}"}`),
@@ -2305,12 +2314,51 @@
   function buildTopologyLayers(targets) {
     const ispNames = getIspNames();
     const ispIpMap = parseIspIps(config.ispIps);
-    const isps = ispNames.map((name) => ({
-      kind: "isp",
-      name,
-      ip: ispIpMap[name] || "",
-      level: "good"
-    }));
+    const ispTargets = targets.filter((t) => t.job === "infra-isp-ping");
+    const usedIspTargets = new Set();
+    const targetKey = (target) => `${target.job}|${target.targetIp || target.instance || target.displayName}`;
+    const findIspTarget = (name, ip) => {
+      const lowerName = String(name || "").toLowerCase();
+      return ispTargets.find((target) => {
+        if (usedIspTargets.has(targetKey(target))) return false;
+        return String(target.displayName || "").toLowerCase() === lowerName ||
+          String(target.instance || "").toLowerCase() === lowerName ||
+          (ip && target.targetIp === ip);
+      });
+    };
+    const isps = ispNames.map((name) => {
+      const configuredIp = ispIpMap[name] || "";
+      const target = findIspTarget(name, configuredIp);
+      if (target) {
+        usedIspTargets.add(targetKey(target));
+        return {
+          kind: "isp",
+          name,
+          ip: target.targetIp || configuredIp,
+          level: topologyNodeLevel(target),
+          latency: target.latency,
+          success: target.success
+        };
+      }
+      return {
+        kind: "isp",
+        name,
+        ip: configuredIp,
+        level: "good"
+      };
+    });
+    ispTargets.forEach((target) => {
+      if (usedIspTargets.has(targetKey(target))) return;
+      usedIspTargets.add(targetKey(target));
+      isps.push({
+        kind: "isp",
+        name: target.displayName,
+        ip: target.targetIp,
+        level: topologyNodeLevel(target),
+        latency: target.latency,
+        success: target.success
+      });
+    });
 
     const firewalls = targets.filter((t) => t.job === "infra-fw-ping").map((t) => ({
       kind: "firewall",
@@ -2425,8 +2473,28 @@
     fwRow.forEach((fw) => ispRow.forEach((isp) => pushCrossLink(isp, fw, fw.level)));
     coreRow.forEach((core) => fwRow.forEach((fw) => pushCrossLink(fw, core, core.level)));
     distRow.forEach((d) => coreRow.forEach((core) => pushCrossLink(core, d, d.level)));
-    serverRow.forEach((s) => coreRow.forEach((core) => pushCrossLink(core, s, s.level)));
+    if (!lldpLinks.length) {
+      serverRow.forEach((s) => coreRow.forEach((core) => pushCrossLink(core, s, s.level)));
+    }
     links.push(...lldpLinks);
+
+    const nodeKey = (node) => node.ip || `${node.kind}|${node.name}`;
+    const assignSlots = (side) => {
+      const groups = new Map();
+      links.forEach((link) => {
+        const key = nodeKey(link[side]);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(link);
+      });
+      groups.forEach((group) => {
+        group.forEach((link, idx) => {
+          link[`${side}Slot`] = idx;
+          link[`${side}SlotCount`] = group.length;
+        });
+      });
+    };
+    assignSlots("from");
+    assignSlots("to");
 
     const haBonds = [];
     if (fwRow.length === 2) {
@@ -2458,21 +2526,44 @@
     return `${Math.round(bps)} b/s`;
   }
 
+  function compactPortLabel(port) {
+    let text = String(port || "").trim();
+    text = text
+      .replace(/^GigabitEthernet/i, "Gi")
+      .replace(/^TenGigabitEthernet/i, "Te")
+      .replace(/^TwentyFiveGigE/i, "Twe")
+      .replace(/^FortyGigabitEthernet/i, "Fo")
+      .replace(/^HundredGigE/i, "Hu")
+      .replace(/^Port[\s-]*channel/i, "Po")
+      .replace(/^Bundle[\s-]*Ether/i, "BE")
+      .replace(/^Ethernet[\s-]*Trunk/i, "Eth-Trunk")
+      .replace(/\s+active$/i, "");
+    return text.length > 18 ? `${text.slice(0, 15)}...` : text;
+  }
+
   function renderTopologySvg(layout, canvasWidth) {
+    const anchorX = (node, slot, count) => {
+      if (!Number.isFinite(slot) || !Number.isFinite(count) || count <= 1) {
+        return node.x + node.w / 2;
+      }
+      const pad = 18;
+      return node.x + pad + ((node.w - pad * 2) * slot) / (count - 1);
+    };
+
     const linkPaths = layout.links.map((link) => {
-      const x1 = link.from.x + link.from.w / 2;
+      const x1 = anchorX(link.from, link.fromSlot, link.fromSlotCount);
       const y1 = link.from.y + link.from.h;
-      const x2 = link.to.x + link.to.w / 2;
+      const x2 = anchorX(link.to, link.toSlot, link.toSlotCount);
       const y2 = link.to.y;
       const midY = (y1 + y2) / 2;
       const midX = (x1 + x2) / 2;
       const d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
       const hasLldp = link.fromPort || link.toPort;
       const fromLabel = link.fromPort
-        ? `<text class="topology-link-port" x="${x1}" y="${y1 + 14}" text-anchor="middle">${escapeHtml(link.fromPort)}</text>`
+        ? `<text class="topology-link-port" x="${x1}" y="${y1 + 14 + (link.fromSlot % 3) * 10}" text-anchor="middle">${escapeHtml(compactPortLabel(link.fromPort))}</text>`
         : "";
       const toLabel = link.toPort
-        ? `<text class="topology-link-port" x="${x2}" y="${y2 - 6}" text-anchor="middle">${escapeHtml(link.toPort)}</text>`
+        ? `<text class="topology-link-port" x="${x2}" y="${y2 - 6 - (link.toSlot % 3) * 10}" text-anchor="middle">${escapeHtml(compactPortLabel(link.toPort))}</text>`
         : "";
       let rateBadge = "";
       if (hasLldp && (Number.isFinite(link.bpsDown) || Number.isFinite(link.bpsUp))) {
@@ -2614,7 +2705,7 @@
   async function refreshTopology() {
     const canvas = document.getElementById("topologyCanvas");
     if (!canvas) return;
-    const rateWindow = (config.topologyLinkRateWindow || "1m").trim();
+    const rateWindow = (config.topologyLinkRateWindow || "2m").trim();
     try {
       const [targets, edges, rates] = await Promise.all([
         fetchTopologyTargets(),
