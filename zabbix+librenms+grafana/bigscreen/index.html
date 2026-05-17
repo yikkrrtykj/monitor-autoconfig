@@ -121,6 +121,19 @@
         <div class="heatmap-grid" id="heatmapGrid"></div>
         <div class="heatmap-legend" id="heatmapLegend"></div>
       </section>
+      <section class="topology-panel" id="topologyPanel" aria-label="网络拓扑" hidden>
+        <div class="topology-toolbar">
+          <span class="topology-legend">
+            <i class="dot good"></i> 在线
+            <i class="dot warn"></i> 高延迟
+            <i class="dot bad"></i> 离线
+            <i class="dot none"></i> 无数据
+          </span>
+          <span class="topology-updated" id="topologyUpdated"></span>
+        </div>
+        <div class="topology-canvas" id="topologyCanvas"></div>
+        <aside class="topology-detail" id="topologyDetail"></aside>
+      </section>
       <section class="incident-panel" id="incidentPanel" aria-label="卡顿根因分析" hidden>
         <form class="incident-controls" id="incidentForm">
           <label>事发时间 <input id="incidentAt" type="datetime-local" /></label>

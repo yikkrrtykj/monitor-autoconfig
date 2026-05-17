@@ -974,3 +974,171 @@ body {
   padding: 4px 0;
 }
 .heatmap-error { color: #ff8a8a; }
+
+/* ============= Network topology ============= */
+.topology-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-rows: 40px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.topology-toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background: rgba(11, 18, 30, 0.7);
+  border: 1px solid rgba(105, 160, 255, 0.18);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #c9d4e8;
+}
+
+.topology-legend { display: flex; gap: 14px; align-items: center; }
+.topology-legend .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.dot.good  { background: #4ade80; box-shadow: 0 0 8px rgba(74, 222, 128, 0.65); }
+.dot.warn  { background: #fbbf24; box-shadow: 0 0 8px rgba(251, 191, 36, 0.65); }
+.dot.bad   { background: #f87171; box-shadow: 0 0 10px rgba(248, 113, 113, 0.7); }
+.dot.none  { background: #475569; }
+
+.topology-updated { color: #94a3b8; }
+
+.topology-canvas {
+  position: relative;
+  background: radial-gradient(ellipse at center, rgba(20, 30, 48, 0.85) 0%, rgba(8, 12, 22, 0.95) 80%);
+  border: 1px solid rgba(105, 160, 255, 0.18);
+  border-radius: 8px;
+  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+}
+
+.topology-svg {
+  width: 100%;
+  height: auto;
+  min-height: 100%;
+  display: block;
+}
+
+.topology-link {
+  fill: none;
+  stroke-width: 2;
+  opacity: 0.55;
+  transition: opacity 0.3s, stroke 0.3s;
+}
+.topology-link.link-good { stroke: #4ade80; }
+.topology-link.link-warn { stroke: #fbbf24; opacity: 0.75; }
+.topology-link.link-bad  { stroke: #f87171; opacity: 0.92; stroke-dasharray: 5 4; animation: link-pulse 1.4s ease-in-out infinite; }
+.topology-link.link-none { stroke: #475569; opacity: 0.35; stroke-dasharray: 3 3; }
+
+@keyframes link-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.topology-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.topology-node rect {
+  fill: rgba(15, 23, 39, 0.94);
+  stroke: rgba(105, 160, 255, 0.32);
+  stroke-width: 1.5;
+  transition: filter 0.25s, stroke 0.25s;
+}
+
+.topology-node.node-good rect { stroke: rgba(74, 222, 128, 0.85); }
+.topology-node.node-warn rect { stroke: rgba(251, 191, 36, 0.9); }
+.topology-node.node-bad  rect { stroke: rgba(248, 113, 113, 0.95); filter: drop-shadow(0 0 6px rgba(248, 113, 113, 0.55)); }
+.topology-node.node-none rect { stroke: rgba(71, 85, 105, 0.6); stroke-dasharray: 3 3; }
+
+.topology-node:hover rect,
+.topology-node:focus rect {
+  filter: drop-shadow(0 0 8px rgba(105, 160, 255, 0.6));
+  stroke-width: 2;
+}
+
+.topology-node-icon {
+  fill: #69a0ff;
+  font-size: 14px;
+  font-weight: 700;
+}
+.topology-node-name {
+  fill: #eaf2ff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.topology-node-kind {
+  fill: #94a3b8;
+  font-size: 10px;
+}
+.topology-node-latency {
+  fill: #c9d4e8;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.topology-detail {
+  background: rgba(11, 18, 30, 0.85);
+  border: 1px solid rgba(105, 160, 255, 0.2);
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-y: auto;
+  min-height: 0;
+  color: #c9d4e8;
+  font-size: 13px;
+}
+
+.topology-detail header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(105, 160, 255, 0.18);
+}
+.topology-detail header strong {
+  font-size: 15px;
+  color: #eaf2ff;
+}
+.topology-detail dl {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+}
+.topology-detail dt { color: #94a3b8; font-size: 11px; }
+.topology-detail dd { margin: 0; font-size: 13px; color: #eaf2ff; word-break: break-all; }
+.topology-detail .detail-link {
+  display: inline-block;
+  color: #69a0ff;
+  text-decoration: none;
+  font-size: 12px;
+  margin-top: 6px;
+}
+.topology-detail .detail-link:hover { text-decoration: underline; }
+.topology-empty {
+  color: #6c7993;
+  font-size: 12px;
+  font-style: italic;
+}
+.topology-error {
+  color: #ff8a8a;
+  font-size: 13px;
+  padding: 16px;
+}

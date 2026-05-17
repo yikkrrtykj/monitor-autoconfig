@@ -1529,6 +1529,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopTopologyRefresh();
     screen.className = "screen home-mode";
     setVisible("homePanel", true);
     setVisible("panelGrid", false);
@@ -1537,6 +1538,7 @@
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
     setVisible("heatmapPanel", false);
+    setVisible("topologyPanel", false);
     renderHomeCards();
   }
 
@@ -1544,6 +1546,7 @@
     const screen = document.querySelector(".screen");
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopTopologyRefresh();
     screen.className = "screen infra-mode";
     setVisible("homePanel", false);
     setVisible("panelGrid", true);
@@ -1552,12 +1555,14 @@
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
     setVisible("heatmapPanel", false);
+    setVisible("topologyPanel", false);
     startInfraRefresh();
   }
 
   function showTournament(page) {
     const screen = document.querySelector(".screen");
     stopOpsRefresh();
+    stopTopologyRefresh();
     screen.className = `screen tournament-mode ${page.kind === "match" ? "match-mode" : "multi-team-mode"} ${page.id}`;
     setVisible("homePanel", false);
     setVisible("panelGrid", true);
@@ -1566,6 +1571,7 @@
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
     setVisible("heatmapPanel", false);
+    setVisible("topologyPanel", false);
     document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
     startInfraRefresh();
     startTournamentRefresh(page);
@@ -1576,6 +1582,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopTopologyRefresh();
     screen.className = "screen evidence-mode";
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
@@ -1584,6 +1591,7 @@
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
     setVisible("heatmapPanel", false);
+    setVisible("topologyPanel", false);
     setupEvidencePanel();
   }
 
@@ -1591,6 +1599,7 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
+    stopTopologyRefresh();
     screen.className = `screen ops-mode ${page.id}-mode`;
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
@@ -1599,6 +1608,7 @@
     setVisible("opsPanel", true);
     setVisible("incidentPanel", false);
     setVisible("heatmapPanel", false);
+    setVisible("topologyPanel", false);
     startOpsRefresh(page);
   }
 
@@ -2010,6 +2020,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopTopologyRefresh();
     screen.className = "screen incident-mode";
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
@@ -2018,6 +2029,7 @@
     setVisible("opsPanel", false);
     setVisible("incidentPanel", true);
     setVisible("heatmapPanel", false);
+    setVisible("topologyPanel", false);
     setupIncidentPanel();
   }
 
@@ -2219,6 +2231,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopTopologyRefresh();
     screen.className = "screen heatmap-mode";
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
@@ -2227,7 +2240,251 @@
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
     setVisible("heatmapPanel", true);
+    setVisible("topologyPanel", false);
     setupHeatmapPanel();
+  }
+
+  // ---- Network topology ----
+
+  let topologyTimer = null;
+
+  function stopTopologyRefresh() {
+    if (topologyTimer) {
+      window.clearInterval(topologyTimer);
+      topologyTimer = null;
+    }
+  }
+
+  async function fetchTopologyTargets() {
+    const jobs = ["infra-fw-ping", "infra-core-ping", "infra-dist-ping", "infra-srv-ping"];
+    const filter = jobs.join("|");
+    const [success, latency] = await Promise.all([
+      prometheusInstant(`probe_success{job=~"${filter}"}`),
+      prometheusInstant(`probe_icmp_duration_seconds{job=~"${filter}",phase="rtt"}`)
+    ]);
+    const map = new Map();
+    success.forEach((item) => {
+      const key = `${item.metric.job}|${item.metric.target_ip || item.metric.instance}`;
+      map.set(key, {
+        job: item.metric.job,
+        instance: item.metric.instance || item.metric.target_ip,
+        targetIp: item.metric.target_ip || item.metric.instance,
+        displayName: item.metric.display_name || item.metric.instance,
+        success: item.value >= 1,
+        latency: null
+      });
+    });
+    latency.forEach((item) => {
+      const key = `${item.metric.job}|${item.metric.target_ip || item.metric.instance}`;
+      const node = map.get(key);
+      if (node) node.latency = item.value;
+    });
+    return Array.from(map.values());
+  }
+
+  function topologyNodeLevel(node) {
+    if (!node) return "none";
+    if (!node.success) return "bad";
+    if (Number.isFinite(node.latency) && node.latency >= 0.03) return "warn";
+    return "good";
+  }
+
+  function buildTopologyLayers(targets) {
+    const ispNames = getIspNames();
+    const isps = ispNames.map((name) => ({ kind: "isp", name, level: "good" }));
+
+    const firewalls = targets.filter((t) => t.job === "infra-fw-ping").map((t) => ({
+      kind: "firewall",
+      name: t.displayName,
+      ip: t.targetIp,
+      level: topologyNodeLevel(t),
+      latency: t.latency,
+      success: t.success
+    }));
+
+    const cores = targets.filter((t) => t.job === "infra-core-ping").map((t) => ({
+      kind: "core",
+      name: t.displayName,
+      ip: t.targetIp,
+      level: topologyNodeLevel(t),
+      latency: t.latency,
+      success: t.success
+    }));
+
+    const dists = targets.filter((t) => t.job === "infra-dist-ping").map((t) => ({
+      kind: "dist",
+      name: t.displayName,
+      ip: t.targetIp,
+      level: topologyNodeLevel(t),
+      latency: t.latency,
+      success: t.success
+    }));
+
+    const servers = targets.filter((t) => t.job === "infra-srv-ping").map((t) => ({
+      kind: "server",
+      name: t.displayName,
+      ip: t.targetIp,
+      level: topologyNodeLevel(t),
+      latency: t.latency,
+      success: t.success
+    }));
+
+    return { isps, firewalls, cores, dists, servers };
+  }
+
+  function topologyLayout(layers, canvasWidth) {
+    const NODE_W = 130;
+    const NODE_H = 64;
+    const layerGap = 96;
+    const rowY = (idx) => 40 + idx * (NODE_H + layerGap);
+
+    const placeRow = (items, y) => {
+      const total = items.length;
+      if (!total) return [];
+      const totalWidth = total * NODE_W + (total - 1) * 24;
+      const startX = Math.max(20, (canvasWidth - totalWidth) / 2);
+      return items.map((item, idx) => ({
+        ...item,
+        x: startX + idx * (NODE_W + 24),
+        y,
+        w: NODE_W,
+        h: NODE_H
+      }));
+    };
+
+    const ispRow = placeRow(layers.isps, rowY(0));
+    const fwRow = placeRow(layers.firewalls, rowY(1));
+    const coreRow = placeRow(layers.cores, rowY(2));
+    const distRow = placeRow(layers.dists, rowY(3));
+    const serverRow = placeRow(layers.servers, rowY(4));
+
+    const links = [];
+    fwRow.forEach((fw) => ispRow.forEach((isp) => links.push({ from: isp, to: fw, severity: fw.level })));
+    coreRow.forEach((core) => fwRow.forEach((fw) => links.push({ from: fw, to: core, severity: core.level })));
+    distRow.forEach((d) => coreRow.forEach((core) => links.push({ from: core, to: d, severity: d.level })));
+    serverRow.forEach((s) => coreRow.forEach((core) => links.push({ from: core, to: s, severity: s.level })));
+
+    return {
+      nodes: [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow],
+      links,
+      height: rowY(5)
+    };
+  }
+
+  function topologyNodeIcon(kind) {
+    return { isp: "🌐", firewall: "🛡", core: "★", dist: "▦", server: "⚙" }[kind] || "?";
+  }
+
+  function topologyNodeKindLabel(kind) {
+    return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", server: "服务器" }[kind] || kind;
+  }
+
+  function renderTopologySvg(layout, canvasWidth) {
+    const linkPaths = layout.links.map((link) => {
+      const x1 = link.from.x + link.from.w / 2;
+      const y1 = link.from.y + link.from.h;
+      const x2 = link.to.x + link.to.w / 2;
+      const y2 = link.to.y;
+      const midY = (y1 + y2) / 2;
+      const d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
+      return `<path class="topology-link link-${link.severity}" d="${d}" />`;
+    }).join("");
+
+    const nodes = layout.nodes.map((node, idx) => {
+      const latencyText = Number.isFinite(node.latency) ? formatPingText(node.latency) : "";
+      const dataAttrs = `data-idx="${idx}" data-kind="${escapeHtml(node.kind)}" data-name="${escapeHtml(node.name)}" data-ip="${escapeHtml(node.ip || "")}" data-level="${escapeHtml(node.level)}"`;
+      return `
+        <g class="topology-node node-${node.level}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
+          <rect width="${node.w}" height="${node.h}" rx="10" />
+          <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
+          <text class="topology-node-name" x="34" y="22">${escapeHtml(node.name || "?")}</text>
+          <text class="topology-node-kind" x="34" y="38">${escapeHtml(topologyNodeKindLabel(node.kind))}</text>
+          <text class="topology-node-latency" x="${node.w - 10}" y="${node.h - 8}" text-anchor="end">${escapeHtml(latencyText)}</text>
+        </g>
+      `;
+    }).join("");
+
+    return `
+      <svg class="topology-svg" viewBox="0 0 ${canvasWidth} ${layout.height}" preserveAspectRatio="xMidYMin meet" focusable="false">
+        <defs>
+          <filter id="topology-glow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="2.5" result="blur" />
+            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        ${linkPaths}
+        ${nodes}
+      </svg>
+    `;
+  }
+
+  function bindTopologyNodeEvents(nodes) {
+    const detail = document.getElementById("topologyDetail");
+    document.querySelectorAll(".topology-node").forEach((el) => {
+      const handler = () => {
+        const idx = Number(el.dataset.idx);
+        const node = nodes[idx];
+        if (!node) return;
+        detail.innerHTML = `
+          <header><strong>${escapeHtml(node.name)}</strong><span class="dot ${node.level}"></span></header>
+          <dl>
+            <dt>类型</dt><dd>${escapeHtml(topologyNodeKindLabel(node.kind))}</dd>
+            <dt>IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
+            <dt>状态</dt><dd>${node.success === undefined ? "无数据" : (node.success ? "在线" : "离线")}</dd>
+            <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
+          </dl>
+          ${node.ip ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(node.ip)}">在 /latency 查这个 IP →</a>` : ""}
+        `;
+      };
+      el.addEventListener("click", handler);
+      el.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          handler();
+        }
+      });
+    });
+  }
+
+  async function refreshTopology() {
+    const canvas = document.getElementById("topologyCanvas");
+    if (!canvas) return;
+    try {
+      const targets = await fetchTopologyTargets();
+      const layers = buildTopologyLayers(targets);
+      const width = Math.max(640, canvas.clientWidth || 1200);
+      const layout = topologyLayout(layers, width);
+      canvas.innerHTML = renderTopologySvg(layout, width);
+      bindTopologyNodeEvents(layout.nodes);
+      document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
+    } catch (error) {
+      console.error("Topology fetch failed:", error);
+      canvas.innerHTML = `<div class="topology-error">拓扑数据拉取失败: ${escapeHtml(error.message || "")}</div>`;
+    }
+  }
+
+  function startTopologyRefresh() {
+    stopTopologyRefresh();
+    refreshTopology();
+    topologyTimer = window.setInterval(refreshTopology, 10000);
+  }
+
+  function showTopology() {
+    const screen = document.querySelector(".screen");
+    stopInfraRefresh();
+    stopTournamentRefresh();
+    stopOpsRefresh();
+    screen.className = "screen topology-mode";
+    setVisible("homePanel", false);
+    setVisible("panelGrid", false);
+    setVisible("tournamentPanel", false);
+    setVisible("evidencePanel", false);
+    setVisible("opsPanel", false);
+    setVisible("incidentPanel", false);
+    setVisible("heatmapPanel", false);
+    setVisible("topologyPanel", true);
+    document.getElementById("topologyDetail").innerHTML = `<div class="topology-empty">点击任意节点查看详情</div>`;
+    startTopologyRefresh();
   }
 
   function renderPage() {
@@ -2246,6 +2503,8 @@
       showIncident();
     } else if (page.id === "heatmap") {
       showHeatmap();
+    } else if (page.id === "topology") {
+      showTopology();
     } else if (page.id === "wireless" || page.id === "seat-check") {
       showOps(page);
     } else if (page.kind) {

@@ -13,6 +13,7 @@
     { id: "evidence", path: "/latency", label: "延迟查询", title: "延迟查询", description: "按队伍座位查询延迟和断线" },
     { id: "incident", path: "/incident", label: "卡顿分析", title: "卡顿根因分析", description: "输入卡顿时间点，自动关联基础设施/同台选手/ISP 流量" },
     { id: "heatmap", path: "/heatmap", label: "质量热图", title: "选手连接质量热图", description: "按 (队伍, 座位) 显示选定时间段的离线率和平均延迟" },
+    { id: "topology", path: "/topology", label: "网络拓扑", title: "网络拓扑图", description: "ISP → 防火墙 → 核心 → 接入交换机的实时状态拓扑" },
     { id: "wireless", path: "/wireless", label: "无线总览", title: "无线异常总览", description: "查看当前 WiFi 连接和异常" },
     { id: "seat-check", path: "/seat-check", label: "座位核对", title: "赛前座位核对", description: "按赛制核对队伍座位在线" },
     { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "5v5 对战", description: "舞台左 vs 舞台右", kind: "match", teams: [1, 2], teamSize: 5, trendMode: "per-seat" },
