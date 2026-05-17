@@ -138,12 +138,11 @@ PLAYER_STATIC_NETWORK=wireless
 **拓扑链路流量**：
 
 ```bash
-TOPOLOGY_ENABLE_PROMETHEUS_UPLINKS=false  # 默认 false；链路流量由 topology-collector 精准 snmpget 上联口
-TOPOLOGY_UPLINK_SCRAPE_INTERVAL=60s       # 仅启用 Prometheus uplinks 时使用；核心 CPU 高时可调到 120s
-TOPOLOGY_LINK_RATE_WINDOW=2m              # Prometheus fallback 的 rate 窗口，应大于抓取周期
+# 默认关闭。/topology 只显示状态、延迟、LLDP 连接和上联摘要，不采集交换机接口流量。
+# 旧变量 TOPOLOGY_ENABLE_PROMETHEUS_UPLINKS / TOPOLOGY_UPLINK_SCRAPE_INTERVAL / TOPOLOGY_LINK_RATE_WINDOW 已废弃。
 ```
 
-默认链路流量只读取 LLDP 边上的候选上联口计数器：聚合口 (`Port-channel` / `Po` / `LAG`)、光口，以及每组物理口的最后两个口。这样不会为了看拓扑流量反复 walk 整台核心交换机的 ifTable。
+这样不会为了看拓扑反复读取核心交换机接口计数器；需要看吞吐时建议临时到交换机/LibreNMS/Grafana 单独查。
 
 **两种舞台交换机拓扑都支持：**
 

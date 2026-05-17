@@ -2434,12 +2434,12 @@
     return { isps, firewalls, cores, dists, servers };
   }
 
-  function topologyLayout(layers, canvasWidth, canvasHeight, lldpEdges, rates) {
-    const NODE_W = 124;
-    const NODE_H = 56;
-    const topPad = 18;
-    const bottomPad = 18;
-    const rowCount = 5;
+  function topologyLayout(layers, canvasWidth, canvasHeight, lldpEdges) {
+    const NODE_W = 128;
+    const NODE_H = 58;
+    const topPad = 22;
+    const bottomPad = 22;
+    const rowCount = 4;
     const usableHeight = Math.max(420, canvasHeight || 680);
     const layerGap = Math.max(36, (usableHeight - topPad - bottomPad - NODE_H * rowCount) / (rowCount - 1));
     const rowY = (idx) => topPad + idx * (NODE_H + layerGap);
@@ -2461,8 +2461,24 @@
     const ispRow = placeRow(layers.isps, rowY(0));
     const fwRow = placeRow(layers.firewalls, rowY(1));
     const coreRow = placeRow(layers.cores, rowY(2));
+    const serverRow = (() => {
+      if (!layers.servers.length || !coreRow.length) return [];
+      const primaryCore = coreRow[Math.floor(coreRow.length / 2)];
+      const gap = 32;
+      return layers.servers.map((server, idx) => {
+        const side = idx % 2 === 0 ? 1 : -1;
+        const ring = Math.floor(idx / 2) + 1;
+        const x = Math.max(
+          20,
+          Math.min(
+            canvasWidth - NODE_W - 20,
+            primaryCore.x + side * ring * (NODE_W + gap)
+          )
+        );
+        return { ...server, x, y: rowY(2), w: NODE_W, h: NODE_H };
+      });
+    })();
     const distRow = placeRow(layers.dists, rowY(3));
-    const serverRow = placeRow(layers.servers, rowY(4));
 
     const allNodes = [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow];
     const nodeByIp = new Map();
@@ -2475,15 +2491,22 @@
       }
     });
 
-    const lookupRate = (rateMap, instance, ifindex) => {
-      if (!rateMap || !instance || ifindex === null || ifindex === undefined) return null;
-      const value = rateMap.get(rateKey(instance, String(ifindex)));
-      return Number.isFinite(value) ? value : null;
+    const pairKeyFor = (a, b) => [a.ip || a.name, b.ip || b.name].sort().join("|");
+    const portSummary = (fromPorts, toPorts) => {
+      const unique = uniqueNames([...fromPorts, ...toPorts].map(compactPortLabel));
+      const aggregate = unique.find((port) => /^po\d+|^lag\d+|^trk\d+|^ae\d+|^be\d+|^eth-trunk\d+/i.test(port));
+      if (aggregate) return aggregate;
+      const fromUnique = uniqueNames(fromPorts.map(compactPortLabel)).filter(Boolean);
+      const toUnique = uniqueNames(toPorts.map(compactPortLabel)).filter(Boolean);
+      const physicalCount = Math.max(fromUnique.length, toUnique.length);
+      if (physicalCount > 1) return `${physicalCount} uplinks`;
+      return fromUnique[0] || toUnique[0] || "";
     };
 
     const lldpLinks = [];
     const lldpCoveredPairs = new Set();
     if (Array.isArray(lldpEdges) && lldpEdges.length) {
+      const groupedEdges = new Map();
       lldpEdges.forEach((edge) => {
         const fromNode = nodeByIp.get(edge.from_ip);
         const toNode = nodeByIp.get(edge.to_ip);
@@ -2492,42 +2515,75 @@
         const orientTo = fromNode.y <= toNode.y ? toNode : fromNode;
         const orientFromPort = orientFrom === fromNode ? edge.from_port : edge.to_port;
         const orientToPort = orientFrom === fromNode ? edge.to_port : edge.from_port;
-        const fromIfx = orientFrom === fromNode ? edge.from_ifindex : edge.to_ifindex;
-        const toIfx = orientFrom === fromNode ? edge.to_ifindex : edge.from_ifindex;
-        const fromIn = lookupRate(rates && rates.rateIn, orientFrom.ip, fromIfx);
-        const fromOut = lookupRate(rates && rates.rateOut, orientFrom.ip, fromIfx);
-        const toIn = lookupRate(rates && rates.rateIn, orientTo.ip, toIfx);
-        const toOut = lookupRate(rates && rates.rateOut, orientTo.ip, toIfx);
-        const bpsDown = Number.isFinite(fromOut) ? fromOut : toIn;
-        const bpsUp = Number.isFinite(fromIn) ? fromIn : toOut;
-        const severity = orientTo.level || "good";
-        lldpLinks.push({
+        const pairKey = pairKeyFor(orientFrom, orientTo);
+        const group = groupedEdges.get(pairKey) || {
           from: orientFrom,
           to: orientTo,
-          fromPort: orientFromPort,
-          toPort: orientToPort,
-          bpsDown,
-          bpsUp,
-          severity
+          fromPorts: [],
+          toPorts: [],
+          count: 0
+        };
+        group.fromPorts.push(orientFromPort);
+        group.toPorts.push(orientToPort);
+        group.count += 1;
+        groupedEdges.set(pairKey, group);
+      });
+      groupedEdges.forEach((group, pairKey) => {
+        const label = portSummary(group.fromPorts, group.toPorts);
+        lldpLinks.push({
+          from: group.from,
+          to: group.to,
+          label,
+          severity: group.to.level || "good",
+          logical: true
         });
-        const pairKey = [orientFrom.ip, orientTo.ip].sort().join("|");
         lldpCoveredPairs.add(pairKey);
       });
     }
 
     const links = [];
     const pushCrossLink = (from, to, severity) => {
-      const pairKey = [from.ip || from.name, to.ip || to.name].sort().join("|");
+      const pairKey = pairKeyFor(from, to);
       if (lldpCoveredPairs.has(pairKey)) return;
-      links.push({ from, to, severity });
+      links.push({ from, to, severity, fallback: true });
     };
     fwRow.forEach((fw) => ispRow.forEach((isp) => pushCrossLink(isp, fw, fw.level)));
     coreRow.forEach((core) => fwRow.forEach((fw) => pushCrossLink(fw, core, core.level)));
     distRow.forEach((d) => coreRow.forEach((core) => pushCrossLink(core, d, d.level)));
-    if (!lldpLinks.length) {
-      serverRow.forEach((s) => coreRow.forEach((core) => pushCrossLink(core, s, s.level)));
-    }
+    serverRow.forEach((s) => coreRow.forEach((core) => pushCrossLink(core, s, s.level)));
     links.push(...lldpLinks);
+
+    const isCoreDistLink = (link) => (
+      (link.from.kind === "core" && link.to.kind === "dist") ||
+      (link.from.kind === "dist" && link.to.kind === "core")
+    );
+    const severityRank = { bad: 4, warn: 3, none: 2, good: 1 };
+    const worstSeverity = (items) => items.reduce((worst, item) => (
+      (severityRank[item.severity] || 0) > (severityRank[worst] || 0) ? item.severity : worst
+    ), "good");
+    const coreDistLinks = links.filter(isCoreDistLink);
+    let coreBus = null;
+    if (coreDistLinks.length && coreRow.length && distRow.length) {
+      const primaryCore = coreRow[Math.floor(coreRow.length / 2)];
+      const coreX = primaryCore.x + primaryCore.w / 2;
+      const coreY = primaryCore.y + primaryCore.h;
+      const distCenters = distRow.map((node) => node.x + node.w / 2);
+      const busY = Math.min(
+        rowY(3) - 34,
+        coreY + Math.max(28, layerGap * 0.34)
+      );
+      coreBus = {
+        x1: Math.min(coreX, ...distCenters),
+        x2: Math.max(coreX, ...distCenters),
+        y: busY,
+        coreX,
+        coreY,
+        severity: worstSeverity(coreDistLinks)
+      };
+      coreDistLinks.forEach((link) => {
+        link.busLink = true;
+      });
+    }
 
     const nodeKey = (node) => node.ip || `${node.kind}|${node.name}`;
     const assignSlots = (side) => {
@@ -2556,6 +2612,7 @@
       nodes: allNodes,
       links,
       haBonds,
+      coreBus,
       height: usableHeight
     };
   }
@@ -2566,15 +2623,6 @@
 
   function topologyNodeKindLabel(kind) {
     return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", server: "服务器" }[kind] || kind;
-  }
-
-  function formatBpsShort(bps) {
-    if (!Number.isFinite(bps)) return "—";
-    const abs = Math.abs(bps);
-    if (abs >= 1e9) return `${(bps / 1e9).toFixed(2)} Gb/s`;
-    if (abs >= 1e6) return `${(bps / 1e6).toFixed(1)} Mb/s`;
-    if (abs >= 1e3) return `${(bps / 1e3).toFixed(1)} kb/s`;
-    return `${Math.round(bps)} b/s`;
   }
 
   function compactPortLabel(port) {
@@ -2593,6 +2641,8 @@
   }
 
   function renderTopologySvg(layout, canvasWidth) {
+    const nodeCenterX = (node) => node.x + node.w / 2;
+    const nodeCenterY = (node) => node.y + node.h / 2;
     const anchorX = (node, slot, count) => {
       if (!Number.isFinite(slot) || !Number.isFinite(count) || count <= 1) {
         return node.x + node.w / 2;
@@ -2601,39 +2651,47 @@
       return node.x + pad + ((node.w - pad * 2) * slot) / (count - 1);
     };
 
+    const coreBus = layout.coreBus
+      ? `<path class="topology-link topology-backbone link-${layout.coreBus.severity}" d="M ${layout.coreBus.coreX} ${layout.coreBus.coreY} L ${layout.coreBus.coreX} ${layout.coreBus.y} M ${layout.coreBus.x1} ${layout.coreBus.y} L ${layout.coreBus.x2} ${layout.coreBus.y}" />`
+      : "";
+
     const linkPaths = layout.links.map((link) => {
-      const x1 = anchorX(link.from, link.fromSlot, link.fromSlotCount);
-      const y1 = link.from.y + link.from.h;
-      const x2 = anchorX(link.to, link.toSlot, link.toSlotCount);
-      const y2 = link.to.y;
-      const midY = (y1 + y2) / 2;
-      const midX = (x1 + x2) / 2;
-      const d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
-      const hasLldp = link.fromPort || link.toPort;
-      const fromLabel = link.fromPort
-        ? `<text class="topology-link-port" x="${x1}" y="${y1 + 14 + (link.fromSlot % 3) * 10}" text-anchor="middle">${escapeHtml(compactPortLabel(link.fromPort))}</text>`
-        : "";
-      const toLabel = link.toPort
-        ? `<text class="topology-link-port" x="${x2}" y="${y2 - 6 - (link.toSlot % 3) * 10}" text-anchor="middle">${escapeHtml(compactPortLabel(link.toPort))}</text>`
-        : "";
-      let rateBadge = "";
-      if (hasLldp && (Number.isFinite(link.bpsDown) || Number.isFinite(link.bpsUp))) {
-        const downText = `↓ ${formatBpsShort(link.bpsDown)}`;
-        const upText = `↑ ${formatBpsShort(link.bpsUp)}`;
-        const badgeWidth = 96;
-        const badgeHeight = 28;
-        rateBadge = `
-          <g class="topology-link-rate" transform="translate(${midX - badgeWidth / 2},${midY - badgeHeight / 2})">
-            <rect width="${badgeWidth}" height="${badgeHeight}" rx="4" />
-            <text class="topology-link-rate-down" x="${badgeWidth / 2}" y="12" text-anchor="middle">${escapeHtml(downText)}</text>
-            <text class="topology-link-rate-up" x="${badgeWidth / 2}" y="23" text-anchor="middle">${escapeHtml(upText)}</text>
-          </g>
-        `;
+      let labelX;
+      let labelY;
+      let d;
+      if (link.busLink && layout.coreBus) {
+        const distNode = link.from.kind === "dist" ? link.from : link.to;
+        const x = nodeCenterX(distNode);
+        d = `M ${x} ${layout.coreBus.y} L ${x} ${distNode.y}`;
+        labelX = x;
+        labelY = layout.coreBus.y - 8;
+      } else if (Math.abs(link.from.y - link.to.y) < 4) {
+        const left = link.from.x <= link.to.x ? link.from : link.to;
+        const right = left === link.from ? link.to : link.from;
+        const x1 = left.x + left.w;
+        const x2 = right.x;
+        const y = nodeCenterY(left);
+        d = `M ${x1} ${y} L ${x2} ${y}`;
+        labelX = (x1 + x2) / 2;
+        labelY = y - 7;
+      } else {
+        const x1 = anchorX(link.from, link.fromSlot, link.fromSlotCount);
+        const y1 = link.from.y + link.from.h;
+        const x2 = anchorX(link.to, link.toSlot, link.toSlotCount);
+        const y2 = link.to.y;
+        const midY = (y1 + y2) / 2;
+        d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
+        labelX = (x1 + x2) / 2;
+        labelY = midY - 5;
       }
+      const linkLabel = link.label
+        ? `<text class="topology-link-label" x="${labelX}" y="${labelY}" text-anchor="middle">${escapeHtml(link.label)}</text>`
+        : "";
+      const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}`;
       return `
         <g class="topology-link-group">
-          <path class="topology-link link-${link.severity}" d="${d}" />
-          ${fromLabel}${toLabel}${rateBadge}
+          <path class="${linkClass}" d="${d}" />
+          ${linkLabel}
         </g>
       `;
     }).join("");
@@ -2680,6 +2738,7 @@
             <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
           </filter>
         </defs>
+        ${coreBus}
         ${linkPaths}
         ${haBonds}
         ${nodes}
@@ -2726,78 +2785,18 @@
     }
   }
 
-  function rateKey(instance, ifindex) {
-    return `${instance}|${ifindex}`;
-  }
-
-  function rateMapFromSeries(items) {
-    const map = new Map();
-    items.forEach((item) => {
-      const instance = item.metric.instance || item.metric.target_ip;
-      const ifindex = item.metric.ifIndex;
-      if (!instance || !ifindex) return;
-      map.set(rateKey(instance, ifindex), item.value);
-    });
-    return map;
-  }
-
-  function rateMapsFromSnapshot(items) {
-    const rateIn = new Map();
-    const rateOut = new Map();
-    if (!Array.isArray(items)) return { rateIn, rateOut };
-    items.forEach((item) => {
-      const instance = item.instance || item.target_ip;
-      const ifindex = item.ifIndex;
-      if (!instance || ifindex === undefined || ifindex === null) return;
-      const key = rateKey(instance, String(ifindex));
-      const inBps = Number(item.in_bps);
-      const outBps = Number(item.out_bps);
-      if (Number.isFinite(inBps)) rateIn.set(key, inBps);
-      if (Number.isFinite(outBps)) rateOut.set(key, outBps);
-    });
-    return { rateIn, rateOut };
-  }
-
-  async function fetchTopologyRateSnapshot() {
-    try {
-      const response = await fetch("/topology/rates.json", { cache: "no-store" });
-      if (!response.ok) return null;
-      const data = await response.json();
-      return Array.isArray(data) ? rateMapsFromSnapshot(data) : null;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  async function fetchTopologyRates(window) {
-    const snapshotRates = await fetchTopologyRateSnapshot();
-    if (snapshotRates) return snapshotRates;
-
-    try {
-      const [inSeries, outSeries] = await Promise.all([
-        prometheusInstant(`rate(ifHCInOctets{job="lldp-uplinks"}[${window}]) * 8`),
-        prometheusInstant(`rate(ifHCOutOctets{job="lldp-uplinks"}[${window}]) * 8`)
-      ]);
-      return { rateIn: rateMapFromSeries(inSeries), rateOut: rateMapFromSeries(outSeries) };
-    } catch (error) {
-      return { rateIn: new Map(), rateOut: new Map() };
-    }
-  }
-
   async function refreshTopology() {
     const canvas = document.getElementById("topologyCanvas");
     if (!canvas) return;
-    const rateWindow = (config.topologyLinkRateWindow || "2m").trim();
     try {
-      const [targets, edges, rates] = await Promise.all([
+      const [targets, edges] = await Promise.all([
         fetchTopologyTargets(),
-        fetchTopologyEdges(),
-        fetchTopologyRates(rateWindow)
+        fetchTopologyEdges()
       ]);
       const layers = buildTopologyLayers(targets);
       const width = Math.max(640, canvas.clientWidth || 1200);
       const height = Math.max(420, canvas.clientHeight || 680);
-      const layout = topologyLayout(layers, width, height, edges, rates);
+      const layout = topologyLayout(layers, width, height, edges);
       canvas.innerHTML = renderTopologySvg(layout, width);
       bindTopologyNodeEvents(layout.nodes);
       document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
@@ -2872,6 +2871,15 @@
       second: "2-digit",
       hour12: false
     }).format(now));
+  }
+
+  if (window.__BIGSCREEN_TEST_MODE__) {
+    window.__BIGSCREEN_TOPOLOGY_TESTS__ = {
+      buildTopologyLayers,
+      topologyLayout,
+      renderTopologySvg
+    };
+    return;
   }
 
   renderPage();

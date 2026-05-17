@@ -322,7 +322,6 @@ services:
       FIREWALL_SNMP_TARGETS: "${FIREWALL_SNMP_TARGETS:-}"
       SNMP_AUTH: "${SNMP_AUTH:-global}"
       PROMETHEUS_SCRAPE_INTERVAL: "${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
-      TOPOLOGY_UPLINK_SCRAPE_INTERVAL: "${TOPOLOGY_UPLINK_SCRAPE_INTERVAL:-60s}"
       PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
       PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
     volumes:
@@ -560,7 +559,6 @@ services:
       DIST_SWITCH_PING: "${DIST_SWITCH_PING:-}"
       FIREWALL_PING: "${FIREWALL_PING:-}"
       TOURNAMENT_SWITCHES: "${TOURNAMENT_SWITCHES:-}"
-      TOPOLOGY_ENABLE_PROMETHEUS_UPLINKS: "${TOPOLOGY_ENABLE_PROMETHEUS_UPLINKS:-false}"
     entrypoint:
       - /bin/sh
       - -c
@@ -578,7 +576,7 @@ services:
         }
 
         load_runtime_env() {
-          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES TOPOLOGY_REFRESH_INTERVAL TOPOLOGY_ENABLE_PROMETHEUS_UPLINKS; do
+          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES TOPOLOGY_REFRESH_INTERVAL; do
             load_env_key "$$key"
           done
         }
@@ -810,7 +808,6 @@ services:
       SERVER_PING: "${SERVER_PING:-}"
       BIGSCREEN_STAGE_DEVICE_FILTER: "${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}"
       BIGSCREEN_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
-      TOPOLOGY_LINK_RATE_WINDOW: "${TOPOLOGY_LINK_RATE_WINDOW:-2m}"
       GRAFANA_PORT: "${GRAFANA_PORT:-3000}"
     volumes:
       - ./bigscreen:/app:ro
@@ -844,8 +841,7 @@ services:
           ispMaxBandwidthMbps: "$${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}",
           serverTargets: "$${SERVER_PING:-}",
           stageDeviceFilter: "$${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}",
-          wanIfFilter: "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}",
-          topologyLinkRateWindow: "$${TOPOLOGY_LINK_RATE_WINDOW:-2m}"
+          wanIfFilter: "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
         };
         EOF
         cat > /etc/nginx/conf.d/default.conf <<'EOF'

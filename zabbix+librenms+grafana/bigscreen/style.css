@@ -977,11 +977,12 @@ body {
 
 /* ============= Network topology ============= */
 .topology-panel {
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 40px minmax(0, 1fr);
-  gap: 12px;
-  padding: 16px;
+  gap: 8px;
+  padding: 12px;
   width: 100%;
   height: 100%;
   overflow: hidden;
@@ -1035,9 +1036,24 @@ body {
 
 .topology-link {
   fill: none;
-  stroke-width: 2;
-  opacity: 0.55;
+  stroke-width: 2.2;
+  opacity: 0.62;
   transition: opacity 0.3s, stroke 0.3s;
+}
+.topology-link.link-logical {
+  stroke-width: 4;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 4px rgba(74, 222, 128, 0.35));
+}
+.topology-link.link-fallback {
+  opacity: 0.52;
+}
+.topology-backbone {
+  stroke-width: 4.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.58;
+  filter: drop-shadow(0 0 5px rgba(74, 222, 128, 0.22));
 }
 .topology-link.link-good { stroke: #4ade80; }
 .topology-link.link-warn { stroke: #fbbf24; opacity: 0.75; }
@@ -1114,34 +1130,24 @@ body {
   letter-spacing: 0.5px;
 }
 
-.topology-link-port {
-  fill: #94a3b8;
-  font-size: 9px;
+.topology-link-label {
+  fill: #eaf2ff;
+  stroke: rgba(7, 12, 22, 0.95);
+  stroke-width: 4px;
+  paint-order: stroke;
+  font-size: 10px;
+  font-weight: 800;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   pointer-events: none;
 }
 
-.topology-link-rate rect {
-  fill: rgba(11, 18, 30, 0.92);
-  stroke: rgba(105, 160, 255, 0.32);
-  stroke-width: 1;
-}
-
-.topology-link-rate-down {
-  fill: #73d17a;
-  font-size: 10px;
-  font-weight: 700;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-
-.topology-link-rate-up {
-  fill: #69a0ff;
-  font-size: 10px;
-  font-weight: 700;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-
 .topology-detail {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 3;
+  width: 260px;
+  max-height: 32%;
   background: rgba(11, 18, 30, 0.85);
   border: 1px solid rgba(105, 160, 255, 0.2);
   border-radius: 8px;

@@ -29,16 +29,6 @@ class TestStripStringValue:
         assert gte.strip_string_value("Hex-STRING: AA BB CC") == "AA BB CC"
 
 
-# ---- parse_numeric_value() ----
-
-class TestParseNumericValue:
-    def test_counter64_uses_value_not_type_width(self):
-        assert gte.parse_numeric_value("Counter64: 123456") == 123456
-
-    def test_gauge_value(self):
-        assert gte.parse_numeric_value("Gauge32: 42") == 42
-
-
 # ---- parse_ifname() ----
 
 class TestParseIfname:
@@ -150,28 +140,6 @@ class TestResolveIfindex:
         assert gte.resolve_ifindex(1, ifname, loc_desc) == 5001
 
 
-# ---- likely uplink candidates ----
-
-class TestLikelyUplinkCandidates:
-    def test_last_two_physical_ports_are_candidates(self):
-        ifname = {
-            1: "Gi1/0/1",
-            47: "Gi1/0/47",
-            48: "Gi1/0/48",
-            49: "Gi1/0/49",
-        }
-        assert gte.build_likely_uplink_ifindexes(ifname) == {48, 49}
-
-    def test_optical_and_aggregate_ports_are_candidates(self):
-        ifname = {
-            1: "Gi1/0/1",
-            48: "Gi1/0/48",
-            49: "Te1/1/1",
-            5001: "Po1",
-        }
-        assert {49, 5001}.issubset(gte.build_likely_uplink_ifindexes(ifname))
-
-
 # ---- canonical_edge_key() ----
 
 class TestCanonicalEdgeKey:
@@ -228,39 +196,7 @@ class TestBuildEdges:
         assert placeholders[0]["neighbor_name"] == "outsider"
 
 
-# ---- build_uplink_targets() ----
-
-class TestBuildUplinkTargets:
-    def test_each_endpoint_becomes_target(self):
-        edges = [
-            {
-                "from_ip": "10.0.0.1", "from_ifindex": 24, "from_port": "Gi1/0/24",
-                "to_ip": "10.0.0.3", "to_ifindex": 49, "to_port": "Gi1/0/49",
-            },
-        ]
-        targets = gte.build_uplink_targets(edges)
-        # one entry per device, not per interface
-        assert len(targets) == 2
-        devices = sorted(t["targets"][0] for t in targets)
-        assert devices == ["10.0.0.1", "10.0.0.3"]
-        assert all("ifIndex" not in t["labels"] for t in targets)
-
-    def test_dedupes_when_same_endpoint_in_multiple_edges(self):
-        edges = [
-            {
-                "from_ip": "10.0.0.1", "from_ifindex": 24, "from_port": "Gi1/0/24",
-                "to_ip": "10.0.0.3", "to_ifindex": 49, "to_port": "Gi1/0/49",
-            },
-            {
-                "from_ip": "10.0.0.1", "from_ifindex": 24, "from_port": "Gi1/0/24",
-                "to_ip": "10.0.0.4", "to_ifindex": 50, "to_port": "Gi1/0/50",
-            },
-        ]
-        targets = gte.build_uplink_targets(edges)
-        # 10.0.0.1 should be scraped only once even when it has multiple uplinks
-        ones = [t for t in targets if t["targets"][0] == "10.0.0.1"]
-        assert len(ones) == 1
-
+class TestPortChannelEdges:
     def test_remote_port_display_uses_resolved_ifname(self):
         devices = {
             "10.0.0.1": {
@@ -286,18 +222,3 @@ class TestBuildUplinkTargets:
         assert edges[0]["from_ifindex"] == 5001
         assert edges[0]["to_ifindex"] == 5010
         assert edges[0]["to_port"] == "Po10"
-
-
-class TestEdgeRateEndpoints:
-    def test_filters_non_uplink_access_ports(self):
-        devices = {
-            "10.0.0.1": {"ifname": {1: "Gi1/0/1", 47: "Gi1/0/47", 48: "Gi1/0/48"}},
-            "10.0.0.2": {"ifname": {1: "Gi1/0/1", 47: "Gi1/0/47", 48: "Gi1/0/48"}},
-        }
-        edges = [
-            {
-                "from_ip": "10.0.0.1", "from_ifindex": 1, "from_port": "Gi1/0/1",
-                "to_ip": "10.0.0.2", "to_ifindex": 48, "to_port": "Gi1/0/48",
-            },
-        ]
-        assert gte.edge_rate_endpoints(edges, devices) == {"10.0.0.2": {48}}

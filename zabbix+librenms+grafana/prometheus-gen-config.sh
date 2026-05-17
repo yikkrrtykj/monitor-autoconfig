@@ -12,7 +12,6 @@ FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
 SNMP_AUTH="${SNMP_AUTH:-global}"
 PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
-UPLINK_SCRAPE_INTERVAL="${TOPOLOGY_UPLINK_SCRAPE_INTERVAL:-60s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 
 # Parse "NAME:IP" or "NAME:IP-START-IP-END" format.
@@ -295,30 +294,6 @@ cat >> "$CONFIG_FILE" <<EOF
         replacement: '\${1}'
       - target_label: __address__
         replacement: blackbox-exporter:9115
-
-  - job_name: "lldp-uplinks"
-    scrape_interval: ${UPLINK_SCRAPE_INTERVAL}
-    metrics_path: /snmp
-    params:
-      auth: [${SNMP_AUTH}]
-      module: [if_mib]
-    file_sd_configs:
-      - files:
-          - "/etc/prometheus/targets/topology/uplink-targets.json"
-        refresh_interval: 60s
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: target_ip
-      - source_labels: [display_name]
-        target_label: instance
-      - target_label: __address__
-        replacement: snmp-exporter:9116
-    metric_relabel_configs:
-      - source_labels: [__name__]
-        regex: "ifHCInOctets|ifHCOutOctets|ifName|ifDescr|ifAlias|ifOperStatus|ifHighSpeed|ifSpeed"
-        action: keep
 
   - job_name: "blackbox-exporter"
     static_configs:
