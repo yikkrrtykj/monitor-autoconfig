@@ -527,10 +527,10 @@
   }
 
   function getIspNames() {
-    return String(config.ispNames || "ISP1,ISP2")
+    return uniqueNames(String(config.ispNames || "ISP1,ISP2")
       .split(",")
       .map((name) => name.trim())
-      .filter(Boolean)
+      .filter(Boolean))
       .slice(0, 4);
   }
 
@@ -2316,14 +2316,21 @@
     const ispIpMap = parseIspIps(config.ispIps);
     const ispTargets = targets.filter((t) => t.job === "infra-isp-ping");
     const usedIspTargets = new Set();
+    const configuredIspNames = new Set(ispNames.map((name) => String(name || "").toLowerCase()));
     const targetKey = (target) => `${target.job}|${target.targetIp || target.instance || target.displayName}`;
     const findIspTarget = (name, ip) => {
       const lowerName = String(name || "").toLowerCase();
+      if (ip) {
+        const exactIpTarget = ispTargets.find((target) => {
+          if (usedIspTargets.has(targetKey(target))) return false;
+          return target.targetIp === ip;
+        });
+        if (exactIpTarget) return exactIpTarget;
+      }
       return ispTargets.find((target) => {
         if (usedIspTargets.has(targetKey(target))) return false;
         return String(target.displayName || "").toLowerCase() === lowerName ||
-          String(target.instance || "").toLowerCase() === lowerName ||
-          (ip && target.targetIp === ip);
+          String(target.instance || "").toLowerCase() === lowerName;
       });
     };
     const isps = ispNames.map((name) => {
@@ -2349,6 +2356,7 @@
     });
     ispTargets.forEach((target) => {
       if (usedIspTargets.has(targetKey(target))) return;
+      if (configuredIspNames.has(String(target.displayName || target.instance || "").toLowerCase())) return;
       usedIspTargets.add(targetKey(target));
       isps.push({
         kind: "isp",
@@ -2360,6 +2368,7 @@
       });
     });
 
+    const infrastructureIps = new Set();
     const firewalls = targets.filter((t) => t.job === "infra-fw-ping").map((t) => ({
       kind: "firewall",
       name: t.displayName,
@@ -2368,6 +2377,7 @@
       latency: t.latency,
       success: t.success
     }));
+    firewalls.forEach((node) => { if (node.ip) infrastructureIps.add(node.ip); });
 
     const cores = targets.filter((t) => t.job === "infra-core-ping").map((t) => ({
       kind: "core",
@@ -2377,6 +2387,7 @@
       latency: t.latency,
       success: t.success
     }));
+    cores.forEach((node) => { if (node.ip) infrastructureIps.add(node.ip); });
 
     const dists = targets.filter((t) => t.job === "infra-dist-ping").map((t) => ({
       kind: "dist",
@@ -2386,24 +2397,32 @@
       latency: t.latency,
       success: t.success
     }));
+    dists.forEach((node) => { if (node.ip) infrastructureIps.add(node.ip); });
 
-    const servers = targets.filter((t) => t.job === "infra-srv-ping").map((t) => ({
-      kind: "server",
-      name: t.displayName,
-      ip: t.targetIp,
-      level: topologyNodeLevel(t),
-      latency: t.latency,
-      success: t.success
-    }));
+    const servers = targets
+      .filter((t) => t.job === "infra-srv-ping")
+      .filter((t) => !infrastructureIps.has(t.targetIp))
+      .map((t) => ({
+        kind: "server",
+        name: t.displayName,
+        ip: t.targetIp,
+        level: topologyNodeLevel(t),
+        latency: t.latency,
+        success: t.success
+      }));
 
     return { isps, firewalls, cores, dists, servers };
   }
 
-  function topologyLayout(layers, canvasWidth, lldpEdges, rates) {
-    const NODE_W = 130;
-    const NODE_H = 64;
-    const layerGap = 96;
-    const rowY = (idx) => 40 + idx * (NODE_H + layerGap);
+  function topologyLayout(layers, canvasWidth, canvasHeight, lldpEdges, rates) {
+    const NODE_W = 124;
+    const NODE_H = 56;
+    const topPad = 18;
+    const bottomPad = 18;
+    const rowCount = 5;
+    const usableHeight = Math.max(420, canvasHeight || 680);
+    const layerGap = Math.max(36, (usableHeight - topPad - bottomPad - NODE_H * rowCount) / (rowCount - 1));
+    const rowY = (idx) => topPad + idx * (NODE_H + layerGap);
 
     const placeRow = (items, y) => {
       const total = items.length;
@@ -2427,7 +2446,14 @@
 
     const allNodes = [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow];
     const nodeByIp = new Map();
-    allNodes.forEach((n) => { if (n.ip) nodeByIp.set(n.ip, n); });
+    const nodePriority = { isp: 1, firewall: 2, server: 3, dist: 4, core: 5 };
+    allNodes.forEach((n) => {
+      if (!n.ip) return;
+      const existing = nodeByIp.get(n.ip);
+      if (!existing || (nodePriority[n.kind] || 0) > (nodePriority[existing.kind] || 0)) {
+        nodeByIp.set(n.ip, n);
+      }
+    });
 
     const lookupRate = (rateMap, instance, ifindex) => {
       if (!rateMap || !instance || ifindex === null || ifindex === undefined) return null;
@@ -2510,7 +2536,7 @@
       nodes: allNodes,
       links,
       haBonds,
-      height: rowY(5)
+      height: usableHeight
     };
   }
 
@@ -2627,7 +2653,7 @@
     }).join("");
 
     return `
-      <svg class="topology-svg" viewBox="0 0 ${canvasWidth} ${layout.height}" preserveAspectRatio="xMidYMin meet" focusable="false">
+      <svg class="topology-svg" viewBox="0 0 ${canvasWidth} ${layout.height}" preserveAspectRatio="xMidYMid meet" focusable="false">
         <defs>
           <filter id="topology-glow" x="-20%" y="-20%" width="140%" height="140%">
             <feGaussianBlur stdDeviation="2.5" result="blur" />
@@ -2750,7 +2776,8 @@
       ]);
       const layers = buildTopologyLayers(targets);
       const width = Math.max(640, canvas.clientWidth || 1200);
-      const layout = topologyLayout(layers, width, edges, rates);
+      const height = Math.max(420, canvas.clientHeight || 680);
+      const layout = topologyLayout(layers, width, height, edges, rates);
       canvas.innerHTML = renderTopologySvg(layout, width);
       bindTopologyNodeEvents(layout.nodes);
       document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;

@@ -1021,16 +1021,15 @@ body {
   background: radial-gradient(ellipse at center, rgba(20, 30, 48, 0.85) 0%, rgba(8, 12, 22, 0.95) 80%);
   border: 1px solid rgba(105, 160, 255, 0.18);
   border-radius: 8px;
-  overflow: auto;
+  overflow: hidden;
   min-width: 0;
   min-height: 0;
-  padding: 12px;
+  padding: 8px;
 }
 
 .topology-svg {
   width: 100%;
-  height: auto;
-  min-height: 100%;
+  height: 100%;
   display: block;
 }
 
