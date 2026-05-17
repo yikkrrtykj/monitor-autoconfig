@@ -547,6 +547,19 @@
     return out;
   }
 
+  function parseConfiguredTargetIps(raw) {
+    const ips = new Set();
+    if (!raw) return ips;
+    String(raw).split(",").forEach((item) => {
+      const entry = item.trim();
+      if (!entry) return;
+      const value = entry.includes(":") ? entry.slice(entry.indexOf(":") + 1).trim() : entry;
+      const ip = value.split("-", 1)[0].trim();
+      if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip)) ips.add(ip);
+    });
+    return ips;
+  }
+
   function isIspAutoDiscoveryEnabled() {
     return ["1", "true", "yes", "on"].includes(String(config.ispAutoDiscovery || "").trim().toLowerCase());
   }
@@ -2321,11 +2334,10 @@
     const findIspTarget = (name, ip) => {
       const lowerName = String(name || "").toLowerCase();
       if (ip) {
-        const exactIpTarget = ispTargets.find((target) => {
+        return ispTargets.find((target) => {
           if (usedIspTargets.has(targetKey(target))) return false;
           return target.targetIp === ip;
         });
-        if (exactIpTarget) return exactIpTarget;
       }
       return ispTargets.find((target) => {
         if (usedIspTargets.has(targetKey(target))) return false;
@@ -2355,6 +2367,7 @@
       };
     });
     ispTargets.forEach((target) => {
+      if (!isIspAutoDiscoveryEnabled()) return;
       if (usedIspTargets.has(targetKey(target))) return;
       if (configuredIspNames.has(String(target.displayName || target.instance || "").toLowerCase())) return;
       usedIspTargets.add(targetKey(target));
@@ -2399,10 +2412,17 @@
     }));
     dists.forEach((node) => { if (node.ip) infrastructureIps.add(node.ip); });
 
-    const servers = targets
+    const configuredServerIps = parseConfiguredTargetIps(config.serverTargets);
+    const serversByName = new Map();
+    targets
       .filter((t) => t.job === "infra-srv-ping")
+      .filter((t) => !configuredServerIps.size || configuredServerIps.has(t.targetIp))
       .filter((t) => !infrastructureIps.has(t.targetIp))
-      .map((t) => ({
+      .forEach((t) => {
+        const key = String(t.displayName || t.targetIp || "").toLowerCase();
+        if (!serversByName.has(key)) serversByName.set(key, t);
+      });
+    const servers = Array.from(serversByName.values()).map((t) => ({
         kind: "server",
         name: t.displayName,
         ip: t.targetIp,
