@@ -2388,6 +2388,7 @@
     };
 
     const lldpLinks = [];
+    const lldpCoveredPairs = new Set();
     if (Array.isArray(lldpEdges) && lldpEdges.length) {
       lldpEdges.forEach((edge) => {
         const fromNode = nodeByIp.get(edge.from_ip);
@@ -2410,19 +2411,22 @@
           bpsUp,
           severity
         });
+        const pairKey = [orientFrom.ip, orientTo.ip].sort().join("|");
+        lldpCoveredPairs.add(pairKey);
       });
     }
 
     const links = [];
-    if (lldpLinks.length) {
-      links.push(...lldpLinks);
-      fwRow.forEach((fw) => ispRow.forEach((isp) => links.push({ from: isp, to: fw, severity: fw.level })));
-    } else {
-      fwRow.forEach((fw) => ispRow.forEach((isp) => links.push({ from: isp, to: fw, severity: fw.level })));
-      coreRow.forEach((core) => fwRow.forEach((fw) => links.push({ from: fw, to: core, severity: core.level })));
-      distRow.forEach((d) => coreRow.forEach((core) => links.push({ from: core, to: d, severity: d.level })));
-      serverRow.forEach((s) => coreRow.forEach((core) => links.push({ from: core, to: s, severity: s.level })));
-    }
+    const pushCrossLink = (from, to, severity) => {
+      const pairKey = [from.ip || from.name, to.ip || to.name].sort().join("|");
+      if (lldpCoveredPairs.has(pairKey)) return;
+      links.push({ from, to, severity });
+    };
+    fwRow.forEach((fw) => ispRow.forEach((isp) => pushCrossLink(isp, fw, fw.level)));
+    coreRow.forEach((core) => fwRow.forEach((fw) => pushCrossLink(fw, core, core.level)));
+    distRow.forEach((d) => coreRow.forEach((core) => pushCrossLink(core, d, d.level)));
+    serverRow.forEach((s) => coreRow.forEach((core) => pushCrossLink(core, s, s.level)));
+    links.push(...lldpLinks);
 
     const haBonds = [];
     if (fwRow.length === 2) {
@@ -2465,10 +2469,10 @@
       const d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
       const hasLldp = link.fromPort || link.toPort;
       const fromLabel = link.fromPort
-        ? `<text class="topology-link-port" x="${x1}" y="${y1 + 12}" text-anchor="middle">${escapeHtml(link.fromPort)}</text>`
+        ? `<text class="topology-link-port" x="${x1}" y="${y1 + 14}" text-anchor="middle">${escapeHtml(link.fromPort)}</text>`
         : "";
       const toLabel = link.toPort
-        ? `<text class="topology-link-port" x="${x2}" y="${y2 - 4}" text-anchor="middle">${escapeHtml(link.toPort)}</text>`
+        ? `<text class="topology-link-port" x="${x2}" y="${y2 - 6}" text-anchor="middle">${escapeHtml(link.toPort)}</text>`
         : "";
       let rateBadge = "";
       if (hasLldp && (Number.isFinite(link.bpsDown) || Number.isFinite(link.bpsUp))) {
@@ -2493,19 +2497,21 @@
     }).join("");
 
     const nodes = layout.nodes.map((node, idx) => {
-      const latencyText = Number.isFinite(node.latency) ? formatPingText(node.latency) : "";
+      const latencyText = Number.isFinite(node.latency)
+        ? formatPingText(node.latency)
+        : (node.kind === "isp" ? "在线" : "");
       const dataAttrs = `data-idx="${idx}" data-kind="${escapeHtml(node.kind)}" data-name="${escapeHtml(node.name)}" data-ip="${escapeHtml(node.ip || "")}" data-level="${escapeHtml(node.level)}"`;
       const subline = node.ip
-        ? `<text class="topology-node-ip" x="34" y="${node.h - 8}">${escapeHtml(node.ip)}</text>`
+        ? `<text class="topology-node-ip" x="14" y="${node.h - 8}">${escapeHtml(node.ip)}</text>`
         : "";
       return `
         <g class="topology-node node-${node.level}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
           <rect width="${node.w}" height="${node.h}" rx="10" />
           <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
           <text class="topology-node-name" x="34" y="22">${escapeHtml(node.name || "?")}</text>
+          <text class="topology-node-latency" x="${node.w - 10}" y="22" text-anchor="end">${escapeHtml(latencyText)}</text>
           <text class="topology-node-kind" x="34" y="38">${escapeHtml(topologyNodeKindLabel(node.kind))}</text>
           ${subline}
-          <text class="topology-node-latency" x="${node.w - 10}" y="${node.h - 8}" text-anchor="end">${escapeHtml(latencyText)}</text>
         </g>
       `;
     }).join("");

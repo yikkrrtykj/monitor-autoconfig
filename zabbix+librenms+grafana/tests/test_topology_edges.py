@@ -91,19 +91,43 @@ class TestNormalizeHostname:
         assert gte.normalize_hostname("") == ""
 
 
+# ---- normalize_port_name() ----
+
+class TestNormalizePortName:
+    def test_long_form(self):
+        assert gte.normalize_port_name("GigabitEthernet1/0/19") == "1/0/19"
+
+    def test_short_form(self):
+        assert gte.normalize_port_name("Gi1/0/19") == "1/0/19"
+
+    def test_two_segments(self):
+        assert gte.normalize_port_name("Te0/1") == "0/1"
+
+    def test_no_path_returns_lowercase(self):
+        assert gte.normalize_port_name("LAG1") == "lag1"
+
+    def test_empty(self):
+        assert gte.normalize_port_name("") == ""
+
+
 # ---- resolve_ifindex() ----
 
 class TestResolveIfindex:
     def test_identity_when_loc_port_in_ifname(self):
         assert gte.resolve_ifindex(10101, {10101: "Gi1/0/1"}, {}) == 10101
 
-    def test_match_via_port_desc(self):
-        ifname = {10101: "Gi1/0/1", 10102: "Gi1/0/2"}
-        loc_desc = {2: "Gi1/0/2"}
-        assert gte.resolve_ifindex(2, ifname, loc_desc) == 10102
+    def test_match_via_port_desc_long_vs_short(self):
+        ifname = {10119: "Gi1/0/19", 10120: "Gi1/0/20"}
+        loc_desc = {19: "GigabitEthernet1/0/19"}
+        assert gte.resolve_ifindex(19, ifname, loc_desc) == 10119
 
     def test_returns_none_when_no_match(self):
         assert gte.resolve_ifindex(99, {1: "Gi1/0/1"}, {99: "alien"}) is None
+
+    def test_returns_none_on_ambiguous_match(self):
+        ifname = {1: "Gi1/0/1", 2: "Gi1/0/1"}
+        loc_desc = {99: "GigabitEthernet1/0/1"}
+        assert gte.resolve_ifindex(99, ifname, loc_desc) is None
 
 
 # ---- canonical_edge_key() ----

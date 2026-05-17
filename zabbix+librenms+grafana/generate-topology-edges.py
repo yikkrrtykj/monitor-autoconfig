@@ -133,19 +133,42 @@ def normalize_hostname(name):
     return base
 
 
+def normalize_port_name(name):
+    """Reduce a Cisco port name to its slash-numeric tail.
+
+    "GigabitEthernet1/0/19" -> "1/0/19"
+    "Gi1/0/19"              -> "1/0/19"
+    "Te0/1"                 -> "0/1"
+    Anything without a digit/slash path returns the trimmed lowercase original.
+    """
+    if not name:
+        return ""
+    text = str(name).strip()
+    match = re.search(r"(\d+(?:/\d+)+)", text)
+    if match:
+        return match.group(1)
+    return text.lower()
+
+
 def resolve_ifindex(loc_port, ifname_map, loc_port_desc_map):
     """LLDP's local port number is usually ifIndex on Cisco, but some platforms
     use a separate bridge port id. Try identity first, then match the loc port
-    description against ifName values for a single hit.
+    description against ifName values (normalized) for a single hit.
     """
     if loc_port in ifname_map:
         return loc_port
 
     desc = loc_port_desc_map.get(loc_port)
-    if desc:
-        for ifindex, name in ifname_map.items():
-            if name == desc or name.endswith(desc) or desc.endswith(name):
-                return ifindex
+    if not desc:
+        return None
+
+    target = normalize_port_name(desc)
+    if not target:
+        return None
+    matches = [ifindex for ifindex, name in ifname_map.items()
+               if normalize_port_name(name) == target]
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 
@@ -236,10 +259,12 @@ def build_edges(devices, name_index):
             remote_ifindex = None
             remote = devices.get(neighbor_ip)
             if remote and remote_port_name:
-                for idx, name in remote["ifname"].items():
-                    if name == remote_port_name:
-                        remote_ifindex = idx
-                        break
+                target = normalize_port_name(remote_port_name)
+                if target:
+                    for idx, name in remote["ifname"].items():
+                        if normalize_port_name(name) == target:
+                            remote_ifindex = idx
+                            break
 
             edge = {
                 "from_ip": ip,
