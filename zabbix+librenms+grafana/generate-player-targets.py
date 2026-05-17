@@ -421,14 +421,14 @@ def parse_static_player_targets(raw, wired_nets, wireless_nets, default_network=
     return targets
 
 
-def ping_host(ip, timeout=1):
-    cmd = ["ping", "-c", "1", "-W", str(timeout), ip]
+def ping_host(ip, timeout=1, attempts=1):
+    cmd = ["ping", "-c", str(attempts), "-W", str(timeout), ip]
     try:
         result = subprocess.run(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=timeout + 1,
+            timeout=timeout * attempts + 1,
         )
         return result.returncode == 0
     except Exception:
@@ -770,7 +770,7 @@ def merge_dedup_targets(path_b_targets, path_a_targets):
     return merged
 
 
-def verify_targets_alive(targets, timeout=1, workers=64):
+def verify_targets_alive(targets, timeout=2, workers=64, attempts=3):
     """Drop targets whose IP doesn't respond to ICMP within `timeout` seconds.
 
     Filters stale entries left by switch-MAC aging (~5 min) and gateway-ARP
@@ -783,7 +783,7 @@ def verify_targets_alive(targets, timeout=1, workers=64):
 
     alive = set()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = {executor.submit(ping_host, ip, timeout): ip for ip in candidate_ips}
+        futures = {executor.submit(ping_host, ip, timeout, attempts): ip for ip in candidate_ips}
         for future in as_completed(futures):
             ip = futures[future]
             try:
