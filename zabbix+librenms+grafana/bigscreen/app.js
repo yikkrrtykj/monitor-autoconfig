@@ -2492,13 +2492,18 @@
     });
 
     const pairKeyFor = (a, b) => [a.ip || a.name, b.ip || b.name].sort().join("|");
-    const portSummary = (fromPorts, toPorts) => {
-      const unique = uniqueNames([...fromPorts, ...toPorts].map(compactPortLabel));
+    const isPortLikeLabel = (port) => (
+      /^(?:gi|te|twe|fo|hu|xe|xge|sfp|qsfp|fa|eth|ge|xgei|port|po|lag|trk|ae|be|eth-trunk)/i.test(port) ||
+      /^\d+(?:\/\d+)+$/.test(port)
+    );
+    const cleanPortNames = (ports) => uniqueNames(ports.map(compactPortLabel)).filter((port) => port && isPortLikeLabel(port));
+    const portSummary = (fromPorts, toPorts, maxPhysical = Infinity) => {
+      const fromUnique = cleanPortNames(fromPorts);
+      const toUnique = cleanPortNames(toPorts);
+      const unique = uniqueNames([...fromUnique, ...toUnique]);
       const aggregate = unique.find((port) => /^po\d+|^lag\d+|^trk\d+|^ae\d+|^be\d+|^eth-trunk\d+/i.test(port));
       if (aggregate) return aggregate;
-      const fromUnique = uniqueNames(fromPorts.map(compactPortLabel)).filter(Boolean);
-      const toUnique = uniqueNames(toPorts.map(compactPortLabel)).filter(Boolean);
-      const physicalCount = Math.max(fromUnique.length, toUnique.length);
+      const physicalCount = Math.min(maxPhysical, Math.max(fromUnique.length, toUnique.length));
       if (physicalCount > 1) return `${physicalCount} uplinks`;
       return fromUnique[0] || toUnique[0] || "";
     };
@@ -2529,7 +2534,11 @@
         groupedEdges.set(pairKey, group);
       });
       groupedEdges.forEach((group, pairKey) => {
-        const label = portSummary(group.fromPorts, group.toPorts);
+        const isCoreDist = (
+          (group.from.kind === "core" && group.to.kind === "dist") ||
+          (group.from.kind === "dist" && group.to.kind === "core")
+        );
+        const label = portSummary(group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
         lldpLinks.push({
           from: group.from,
           to: group.to,
@@ -2557,10 +2566,6 @@
       (link.from.kind === "core" && link.to.kind === "dist") ||
       (link.from.kind === "dist" && link.to.kind === "core")
     );
-    const severityRank = { bad: 4, warn: 3, none: 2, good: 1 };
-    const worstSeverity = (items) => items.reduce((worst, item) => (
-      (severityRank[item.severity] || 0) > (severityRank[worst] || 0) ? item.severity : worst
-    ), "good");
     const coreDistLinks = links.filter(isCoreDistLink);
     let coreBus = null;
     if (coreDistLinks.length && coreRow.length && distRow.length) {
@@ -2578,7 +2583,7 @@
         y: busY,
         coreX,
         coreY,
-        severity: worstSeverity(coreDistLinks)
+        severity: primaryCore.level || "good"
       };
       coreDistLinks.forEach((link) => {
         link.busLink = true;
@@ -2748,11 +2753,20 @@
 
   function bindTopologyNodeEvents(nodes) {
     const detail = document.getElementById("topologyDetail");
+    const canvas = document.getElementById("topologyCanvas");
+    if (canvas) {
+      canvas.onclick = (event) => {
+        if (event.target.closest && event.target.closest(".topology-node")) return;
+        detail.hidden = true;
+      };
+    }
     document.querySelectorAll(".topology-node").forEach((el) => {
-      const handler = () => {
+      const handler = (event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
         const idx = Number(el.dataset.idx);
         const node = nodes[idx];
         if (!node) return;
+        detail.hidden = false;
         detail.innerHTML = `
           <header><strong>${escapeHtml(node.name)}</strong><span class="dot ${node.level}"></span></header>
           <dl>
@@ -2768,7 +2782,7 @@
       el.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          handler();
+          handler(event);
         }
       });
     });
@@ -2826,7 +2840,9 @@
     setVisible("incidentPanel", false);
     setVisible("heatmapPanel", false);
     setVisible("topologyPanel", true);
-    document.getElementById("topologyDetail").innerHTML = `<div class="topology-empty">点击任意节点查看详情</div>`;
+    const detail = document.getElementById("topologyDetail");
+    detail.hidden = true;
+    detail.innerHTML = `<div class="topology-empty">点击任意节点查看详情</div>`;
     startTopologyRefresh();
   }
 

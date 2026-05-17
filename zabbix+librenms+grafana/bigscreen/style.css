@@ -1144,7 +1144,7 @@ body {
 .topology-detail {
   position: absolute;
   right: 20px;
-  bottom: 20px;
+  top: 64px;
   z-index: 3;
   width: 260px;
   max-height: 32%;
@@ -1156,6 +1156,10 @@ body {
   min-height: 0;
   color: #c9d4e8;
   font-size: 13px;
+}
+
+.topology-detail[hidden] {
+  display: none;
 }
 
 .topology-detail header {
