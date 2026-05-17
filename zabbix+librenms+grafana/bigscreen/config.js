@@ -7,6 +7,7 @@ window.BIGSCREEN_CONFIG = {
   prometheusBaseUrl: "",
   grafanaPort: "3000",
   ispNames: "ISP1,ISP2",
+  ispIps: "",
   ispAutoDiscovery: "false",
   ispMaxBandwidthMbps: "1000",
   stageDeviceFilter: "stage,wutai,舞台",

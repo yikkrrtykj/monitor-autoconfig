@@ -533,6 +533,19 @@
       .slice(0, 4);
   }
 
+  function parseIspIps(raw) {
+    const out = {};
+    if (!raw) return out;
+    String(raw).split(",").forEach((item) => {
+      const idx = item.indexOf(":");
+      if (idx <= 0) return;
+      const name = item.slice(0, idx).trim();
+      const ip = item.slice(idx + 1).trim();
+      if (name && ip) out[name] = ip;
+    });
+    return out;
+  }
+
   function isIspAutoDiscoveryEnabled() {
     return ["1", "true", "yes", "on"].includes(String(config.ispAutoDiscovery || "").trim().toLowerCase());
   }
@@ -2291,7 +2304,13 @@
 
   function buildTopologyLayers(targets) {
     const ispNames = getIspNames();
-    const isps = ispNames.map((name) => ({ kind: "isp", name, level: "good" }));
+    const ispIpMap = parseIspIps(config.ispIps);
+    const isps = ispNames.map((name) => ({
+      kind: "isp",
+      name,
+      ip: ispIpMap[name] || "",
+      level: "good"
+    }));
 
     const firewalls = targets.filter((t) => t.job === "infra-fw-ping").map((t) => ({
       kind: "firewall",
@@ -2364,9 +2383,15 @@
     distRow.forEach((d) => coreRow.forEach((core) => links.push({ from: core, to: d, severity: d.level })));
     serverRow.forEach((s) => coreRow.forEach((core) => links.push({ from: core, to: s, severity: s.level })));
 
+    const haBonds = [];
+    if (fwRow.length === 2) {
+      haBonds.push({ from: fwRow[0], to: fwRow[1] });
+    }
+
     return {
       nodes: [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow],
       links,
+      haBonds,
       height: rowY(5)
     };
   }
@@ -2393,13 +2418,31 @@
     const nodes = layout.nodes.map((node, idx) => {
       const latencyText = Number.isFinite(node.latency) ? formatPingText(node.latency) : "";
       const dataAttrs = `data-idx="${idx}" data-kind="${escapeHtml(node.kind)}" data-name="${escapeHtml(node.name)}" data-ip="${escapeHtml(node.ip || "")}" data-level="${escapeHtml(node.level)}"`;
+      const subline = node.ip
+        ? `<text class="topology-node-ip" x="34" y="${node.h - 8}">${escapeHtml(node.ip)}</text>`
+        : "";
       return `
         <g class="topology-node node-${node.level}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
           <rect width="${node.w}" height="${node.h}" rx="10" />
           <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
           <text class="topology-node-name" x="34" y="22">${escapeHtml(node.name || "?")}</text>
           <text class="topology-node-kind" x="34" y="38">${escapeHtml(topologyNodeKindLabel(node.kind))}</text>
+          ${subline}
           <text class="topology-node-latency" x="${node.w - 10}" y="${node.h - 8}" text-anchor="end">${escapeHtml(latencyText)}</text>
+        </g>
+      `;
+    }).join("");
+
+    const haBonds = (layout.haBonds || []).map((bond) => {
+      const x1 = bond.from.x + bond.from.w;
+      const x2 = bond.to.x;
+      const y = bond.from.y + bond.from.h / 2;
+      const midX = (x1 + x2) / 2;
+      return `
+        <g class="topology-ha-bond">
+          <line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" />
+          <rect x="${midX - 14}" y="${y - 8}" width="28" height="16" rx="4" />
+          <text x="${midX}" y="${y + 4}" text-anchor="middle">HA</text>
         </g>
       `;
     }).join("");
@@ -2413,6 +2456,7 @@
           </filter>
         </defs>
         ${linkPaths}
+        ${haBonds}
         ${nodes}
       </svg>
     `;
