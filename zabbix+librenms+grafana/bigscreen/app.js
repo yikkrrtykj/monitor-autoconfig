@@ -2351,7 +2351,7 @@
     return { isps, firewalls, cores, dists, servers };
   }
 
-  function topologyLayout(layers, canvasWidth) {
+  function topologyLayout(layers, canvasWidth, lldpEdges, rates) {
     const NODE_W = 130;
     const NODE_H = 64;
     const layerGap = 96;
@@ -2377,11 +2377,52 @@
     const distRow = placeRow(layers.dists, rowY(3));
     const serverRow = placeRow(layers.servers, rowY(4));
 
+    const allNodes = [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow];
+    const nodeByIp = new Map();
+    allNodes.forEach((n) => { if (n.ip) nodeByIp.set(n.ip, n); });
+
+    const lookupRate = (rateMap, instance, ifindex) => {
+      if (!rateMap || !instance || ifindex === null || ifindex === undefined) return null;
+      const value = rateMap.get(rateKey(instance, String(ifindex)));
+      return Number.isFinite(value) ? value : null;
+    };
+
+    const lldpLinks = [];
+    if (Array.isArray(lldpEdges) && lldpEdges.length) {
+      lldpEdges.forEach((edge) => {
+        const fromNode = nodeByIp.get(edge.from_ip);
+        const toNode = nodeByIp.get(edge.to_ip);
+        if (!fromNode || !toNode) return;
+        const orientFrom = fromNode.y <= toNode.y ? fromNode : toNode;
+        const orientTo = fromNode.y <= toNode.y ? toNode : fromNode;
+        const orientFromPort = orientFrom === fromNode ? edge.from_port : edge.to_port;
+        const orientToPort = orientFrom === fromNode ? edge.to_port : edge.from_port;
+        const fromIfx = orientFrom === fromNode ? edge.from_ifindex : edge.to_ifindex;
+        const bpsDown = lookupRate(rates && rates.rateIn, orientFrom.ip, fromIfx);
+        const bpsUp = lookupRate(rates && rates.rateOut, orientFrom.ip, fromIfx);
+        const severity = orientTo.level || "good";
+        lldpLinks.push({
+          from: orientFrom,
+          to: orientTo,
+          fromPort: orientFromPort,
+          toPort: orientToPort,
+          bpsDown,
+          bpsUp,
+          severity
+        });
+      });
+    }
+
     const links = [];
-    fwRow.forEach((fw) => ispRow.forEach((isp) => links.push({ from: isp, to: fw, severity: fw.level })));
-    coreRow.forEach((core) => fwRow.forEach((fw) => links.push({ from: fw, to: core, severity: core.level })));
-    distRow.forEach((d) => coreRow.forEach((core) => links.push({ from: core, to: d, severity: d.level })));
-    serverRow.forEach((s) => coreRow.forEach((core) => links.push({ from: core, to: s, severity: s.level })));
+    if (lldpLinks.length) {
+      links.push(...lldpLinks);
+      fwRow.forEach((fw) => ispRow.forEach((isp) => links.push({ from: isp, to: fw, severity: fw.level })));
+    } else {
+      fwRow.forEach((fw) => ispRow.forEach((isp) => links.push({ from: isp, to: fw, severity: fw.level })));
+      coreRow.forEach((core) => fwRow.forEach((fw) => links.push({ from: fw, to: core, severity: core.level })));
+      distRow.forEach((d) => coreRow.forEach((core) => links.push({ from: core, to: d, severity: d.level })));
+      serverRow.forEach((s) => coreRow.forEach((core) => links.push({ from: core, to: s, severity: s.level })));
+    }
 
     const haBonds = [];
     if (fwRow.length === 2) {
@@ -2389,7 +2430,7 @@
     }
 
     return {
-      nodes: [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow],
+      nodes: allNodes,
       links,
       haBonds,
       height: rowY(5)
@@ -2404,6 +2445,15 @@
     return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", server: "服务器" }[kind] || kind;
   }
 
+  function formatBpsShort(bps) {
+    if (!Number.isFinite(bps)) return "—";
+    const abs = Math.abs(bps);
+    if (abs >= 1e9) return `${(bps / 1e9).toFixed(2)} Gb/s`;
+    if (abs >= 1e6) return `${(bps / 1e6).toFixed(1)} Mb/s`;
+    if (abs >= 1e3) return `${(bps / 1e3).toFixed(1)} kb/s`;
+    return `${Math.round(bps)} b/s`;
+  }
+
   function renderTopologySvg(layout, canvasWidth) {
     const linkPaths = layout.links.map((link) => {
       const x1 = link.from.x + link.from.w / 2;
@@ -2411,8 +2461,35 @@
       const x2 = link.to.x + link.to.w / 2;
       const y2 = link.to.y;
       const midY = (y1 + y2) / 2;
+      const midX = (x1 + x2) / 2;
       const d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
-      return `<path class="topology-link link-${link.severity}" d="${d}" />`;
+      const hasLldp = link.fromPort || link.toPort;
+      const fromLabel = link.fromPort
+        ? `<text class="topology-link-port" x="${x1}" y="${y1 + 12}" text-anchor="middle">${escapeHtml(link.fromPort)}</text>`
+        : "";
+      const toLabel = link.toPort
+        ? `<text class="topology-link-port" x="${x2}" y="${y2 - 4}" text-anchor="middle">${escapeHtml(link.toPort)}</text>`
+        : "";
+      let rateBadge = "";
+      if (hasLldp && (Number.isFinite(link.bpsDown) || Number.isFinite(link.bpsUp))) {
+        const downText = `↓ ${formatBpsShort(link.bpsDown)}`;
+        const upText = `↑ ${formatBpsShort(link.bpsUp)}`;
+        const badgeWidth = 96;
+        const badgeHeight = 28;
+        rateBadge = `
+          <g class="topology-link-rate" transform="translate(${midX - badgeWidth / 2},${midY - badgeHeight / 2})">
+            <rect width="${badgeWidth}" height="${badgeHeight}" rx="4" />
+            <text class="topology-link-rate-down" x="${badgeWidth / 2}" y="12" text-anchor="middle">${escapeHtml(downText)}</text>
+            <text class="topology-link-rate-up" x="${badgeWidth / 2}" y="23" text-anchor="middle">${escapeHtml(upText)}</text>
+          </g>
+        `;
+      }
+      return `
+        <g class="topology-link-group">
+          <path class="topology-link link-${link.severity}" d="${d}" />
+          ${fromLabel}${toLabel}${rateBadge}
+        </g>
+      `;
     }).join("");
 
     const nodes = layout.nodes.map((node, idx) => {
@@ -2490,17 +2567,60 @@
     });
   }
 
+  async function fetchTopologyEdges() {
+    try {
+      const response = await fetch("/topology/edges.json", { cache: "no-store" });
+      if (!response.ok) return [];
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function rateKey(instance, ifindex) {
+    return `${instance}|${ifindex}`;
+  }
+
+  function rateMapFromSeries(items) {
+    const map = new Map();
+    items.forEach((item) => {
+      const instance = item.metric.instance || item.metric.target_ip;
+      const ifindex = item.metric.ifIndex;
+      if (!instance || !ifindex) return;
+      map.set(rateKey(instance, ifindex), item.value);
+    });
+    return map;
+  }
+
+  async function fetchTopologyRates(window) {
+    try {
+      const [inSeries, outSeries] = await Promise.all([
+        prometheusInstant(`rate(ifHCInOctets{job="lldp-uplinks"}[${window}]) * 8`),
+        prometheusInstant(`rate(ifHCOutOctets{job="lldp-uplinks"}[${window}]) * 8`)
+      ]);
+      return { rateIn: rateMapFromSeries(inSeries), rateOut: rateMapFromSeries(outSeries) };
+    } catch (error) {
+      return { rateIn: new Map(), rateOut: new Map() };
+    }
+  }
+
   async function refreshTopology() {
     const canvas = document.getElementById("topologyCanvas");
     if (!canvas) return;
+    const rateWindow = (config.topologyLinkRateWindow || "1m").trim();
     try {
-      const targets = await fetchTopologyTargets();
+      const [targets, edges, rates] = await Promise.all([
+        fetchTopologyTargets(),
+        fetchTopologyEdges(),
+        fetchTopologyRates(rateWindow)
+      ]);
       const layers = buildTopologyLayers(targets);
       const width = Math.max(640, canvas.clientWidth || 1200);
-      const layout = topologyLayout(layers, width);
+      const layout = topologyLayout(layers, width, edges, rates);
       canvas.innerHTML = renderTopologySvg(layout, width);
       bindTopologyNodeEvents(layout.nodes);
-      document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
+      document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
     } catch (error) {
       console.error("Topology fetch failed:", error);
       canvas.innerHTML = `<div class="topology-error">拓扑数据拉取失败: ${escapeHtml(error.message || "")}</div>`;

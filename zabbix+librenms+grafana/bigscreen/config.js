@@ -11,5 +11,6 @@ window.BIGSCREEN_CONFIG = {
   ispAutoDiscovery: "false",
   ispMaxBandwidthMbps: "1000",
   stageDeviceFilter: "stage,wutai,舞台",
-  wanIfFilter: "telecom,telcom,unicom,isp,WAN"
+  wanIfFilter: "telecom,telcom,unicom,isp,WAN",
+  topologyLinkRateWindow: "1m"
 };

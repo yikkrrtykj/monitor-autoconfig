@@ -293,6 +293,23 @@ cat >> "$CONFIG_FILE" <<EOF
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
+  - job_name: "lldp-uplinks"
+    metrics_path: /snmp
+    params:
+      auth: [global]
+      module: [if_mib]
+    file_sd_configs:
+      - files:
+          - "/etc/prometheus/targets/topology/uplink-targets.json"
+        refresh_interval: 60s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: target_ip
+      - target_label: __address__
+        replacement: snmp-exporter:9116
+
   - job_name: "blackbox-exporter"
     static_configs:
       - targets: ["blackbox-exporter:9115"]

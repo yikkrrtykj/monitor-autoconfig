@@ -1115,6 +1115,33 @@ body {
   letter-spacing: 0.5px;
 }
 
+.topology-link-port {
+  fill: #94a3b8;
+  font-size: 9px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  pointer-events: none;
+}
+
+.topology-link-rate rect {
+  fill: rgba(11, 18, 30, 0.92);
+  stroke: rgba(105, 160, 255, 0.32);
+  stroke-width: 1;
+}
+
+.topology-link-rate-down {
+  fill: #73d17a;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.topology-link-rate-up {
+  fill: #69a0ff;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
 .topology-detail {
   background: rgba(11, 18, 30, 0.85);
   border: 1px solid rgba(105, 160, 255, 0.2);

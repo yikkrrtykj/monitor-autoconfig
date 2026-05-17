@@ -325,6 +325,7 @@ services:
     volumes:
       - prometheus-data:/prometheus
       - player-targets-data:/etc/prometheus/targets
+      - topology-data:/etc/prometheus/targets/topology
       - ./prometheus-gen-config.sh:/etc/prometheus/prometheus-gen-config.sh:ro
       - ./prometheus-alert-rules.yml:/etc/prometheus/prometheus-alert-rules.yml:ro
       - /etc/localtime:/etc/localtime:ro
@@ -531,6 +532,59 @@ services:
             echo "[player-targets] $$line"
           done
           sleep 60
+        done
+
+  topology-collector:
+    image: python:3-alpine
+    container_name: topology-collector
+    restart: unless-stopped
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    networks:
+      - monitor
+    volumes:
+      - topology-data:/targets
+      - ./generate-topology-edges.py:/generate-topology-edges.py:ro
+      - ./.env:/config/.env:ro
+    environment:
+      TZ: Asia/Shanghai
+      SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
+      TOPOLOGY_DEVICES: "${TOPOLOGY_DEVICES:-}"
+      TOPOLOGY_SNMP_COMMUNITY: "${TOPOLOGY_SNMP_COMMUNITY:-}"
+      TOPOLOGY_OUTPUT_DIR: "/targets"
+      CORE_SWITCH_PING: "${CORE_SWITCH_PING:-}"
+      DIST_SWITCH_PING: "${DIST_SWITCH_PING:-}"
+      FIREWALL_PING: "${FIREWALL_PING:-}"
+      TOURNAMENT_SWITCHES: "${TOURNAMENT_SWITCHES:-}"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache net-snmp-tools
+        echo "[topology] starting LLDP collector loop"
+
+        load_env_key() {
+          key="$$1"
+          [ -f /config/.env ] || return 0
+          line="$$(grep -E "^[[:space:]]*$${key}[[:space:]]*=" /config/.env | tail -n 1 || true)"
+          [ -n "$$line" ] || return 0
+          value="$$(printf '%s' "$$line" | sed -E "s/^[[:space:]]*$${key}[[:space:]]*=[[:space:]]*//; s/[[:space:]]+#.*$$//; s/[[:space:]]*\r?$$//")"
+          export "$$key=$$value"
+        }
+
+        load_runtime_env() {
+          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES TOPOLOGY_REFRESH_INTERVAL; do
+            load_env_key "$$key"
+          done
+        }
+
+        while true; do
+          load_runtime_env
+          python3 /generate-topology-edges.py 2>&1 | while IFS= read -r line; do
+            echo "[topology] $$line"
+          done
+          sleep "$${TOPOLOGY_REFRESH_INTERVAL:-60}"
         done
 
   librenms:
@@ -751,9 +805,11 @@ services:
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       BIGSCREEN_STAGE_DEVICE_FILTER: "${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}"
       BIGSCREEN_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+      TOPOLOGY_LINK_RATE_WINDOW: "${TOPOLOGY_LINK_RATE_WINDOW:-1m}"
       GRAFANA_PORT: "${GRAFANA_PORT:-3000}"
     volumes:
       - ./bigscreen:/app:ro
+      - topology-data:/srv/topology:ro
     ports:
       - "${BIGSCREEN_PORT:-8088}:80"
     depends_on:
@@ -782,7 +838,8 @@ services:
           ispAutoDiscovery: "$${BIGSCREEN_ISP_AUTO_DISCOVER:-false}",
           ispMaxBandwidthMbps: "$${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}",
           stageDeviceFilter: "$${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}",
-          wanIfFilter: "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+          wanIfFilter: "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}",
+          topologyLinkRateWindow: "$${TOPOLOGY_LINK_RATE_WINDOW:-1m}"
         };
         EOF
         cat > /etc/nginx/conf.d/default.conf <<'EOF'
@@ -800,6 +857,12 @@ services:
 
           location /prometheus/ {
             proxy_pass http://prometheus:9090/;
+          }
+
+          location /topology/ {
+            alias /srv/topology/;
+            add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+            try_files $$uri =404;
           }
         }
         EOF
@@ -831,6 +894,7 @@ volumes:
   prometheus-data:
   alertmanager-data:
   player-targets-data:
+  topology-data:
   grafana-data:
   grafana-provisioning-rendered:
   mysql-data:
