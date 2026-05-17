@@ -2447,8 +2447,13 @@
         const orientFromPort = orientFrom === fromNode ? edge.from_port : edge.to_port;
         const orientToPort = orientFrom === fromNode ? edge.to_port : edge.from_port;
         const fromIfx = orientFrom === fromNode ? edge.from_ifindex : edge.to_ifindex;
-        const bpsDown = lookupRate(rates && rates.rateIn, orientFrom.ip, fromIfx);
-        const bpsUp = lookupRate(rates && rates.rateOut, orientFrom.ip, fromIfx);
+        const toIfx = orientFrom === fromNode ? edge.to_ifindex : edge.from_ifindex;
+        const fromIn = lookupRate(rates && rates.rateIn, orientFrom.ip, fromIfx);
+        const fromOut = lookupRate(rates && rates.rateOut, orientFrom.ip, fromIfx);
+        const toIn = lookupRate(rates && rates.rateIn, orientTo.ip, toIfx);
+        const toOut = lookupRate(rates && rates.rateOut, orientTo.ip, toIfx);
+        const bpsDown = Number.isFinite(fromOut) ? fromOut : toIn;
+        const bpsUp = Number.isFinite(fromIn) ? fromIn : toOut;
         const severity = orientTo.level || "good";
         lldpLinks.push({
           from: orientFrom,
@@ -2690,7 +2695,38 @@
     return map;
   }
 
+  function rateMapsFromSnapshot(items) {
+    const rateIn = new Map();
+    const rateOut = new Map();
+    if (!Array.isArray(items)) return { rateIn, rateOut };
+    items.forEach((item) => {
+      const instance = item.instance || item.target_ip;
+      const ifindex = item.ifIndex;
+      if (!instance || ifindex === undefined || ifindex === null) return;
+      const key = rateKey(instance, String(ifindex));
+      const inBps = Number(item.in_bps);
+      const outBps = Number(item.out_bps);
+      if (Number.isFinite(inBps)) rateIn.set(key, inBps);
+      if (Number.isFinite(outBps)) rateOut.set(key, outBps);
+    });
+    return { rateIn, rateOut };
+  }
+
+  async function fetchTopologyRateSnapshot() {
+    try {
+      const response = await fetch("/topology/rates.json", { cache: "no-store" });
+      if (!response.ok) return null;
+      const data = await response.json();
+      return Array.isArray(data) ? rateMapsFromSnapshot(data) : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
   async function fetchTopologyRates(window) {
+    const snapshotRates = await fetchTopologyRateSnapshot();
+    if (snapshotRates) return snapshotRates;
+
     try {
       const [inSeries, outSeries] = await Promise.all([
         prometheusInstant(`rate(ifHCInOctets{job="lldp-uplinks"}[${window}]) * 8`),

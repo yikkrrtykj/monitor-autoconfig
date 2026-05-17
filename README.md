@@ -138,9 +138,12 @@ PLAYER_STATIC_NETWORK=wireless
 **拓扑链路流量**：
 
 ```bash
-TOPOLOGY_UPLINK_SCRAPE_INTERVAL=60s  # LLDP 链路 if_mib 抓取周期；核心 CPU 高时可调到 120s
-TOPOLOGY_LINK_RATE_WINDOW=2m         # 前端计算链路流量的 rate 窗口，应大于抓取周期
+TOPOLOGY_ENABLE_PROMETHEUS_UPLINKS=false  # 默认 false；链路流量由 topology-collector 精准 snmpget 上联口
+TOPOLOGY_UPLINK_SCRAPE_INTERVAL=60s       # 仅启用 Prometheus uplinks 时使用；核心 CPU 高时可调到 120s
+TOPOLOGY_LINK_RATE_WINDOW=2m              # Prometheus fallback 的 rate 窗口，应大于抓取周期
 ```
+
+默认链路流量只读取 LLDP 边上的候选上联口计数器：聚合口 (`Port-channel` / `Po` / `LAG`)、光口，以及每组物理口的最后两个口。这样不会为了看拓扑流量反复 walk 整台核心交换机的 ifTable。
 
 **两种舞台交换机拓扑都支持：**
 

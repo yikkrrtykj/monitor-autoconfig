@@ -29,6 +29,16 @@ class TestStripStringValue:
         assert gte.strip_string_value("Hex-STRING: AA BB CC") == "AA BB CC"
 
 
+# ---- parse_numeric_value() ----
+
+class TestParseNumericValue:
+    def test_counter64_uses_value_not_type_width(self):
+        assert gte.parse_numeric_value("Counter64: 123456") == 123456
+
+    def test_gauge_value(self):
+        assert gte.parse_numeric_value("Gauge32: 42") == 42
+
+
 # ---- parse_ifname() ----
 
 class TestParseIfname:
@@ -138,6 +148,28 @@ class TestResolveIfindex:
         ifname = {5001: "Po1", 10101: "Gi1/0/1", 10102: "Gi1/0/2"}
         loc_desc = {1: "Port-channel1"}
         assert gte.resolve_ifindex(1, ifname, loc_desc) == 5001
+
+
+# ---- likely uplink candidates ----
+
+class TestLikelyUplinkCandidates:
+    def test_last_two_physical_ports_are_candidates(self):
+        ifname = {
+            1: "Gi1/0/1",
+            47: "Gi1/0/47",
+            48: "Gi1/0/48",
+            49: "Gi1/0/49",
+        }
+        assert gte.build_likely_uplink_ifindexes(ifname) == {48, 49}
+
+    def test_optical_and_aggregate_ports_are_candidates(self):
+        ifname = {
+            1: "Gi1/0/1",
+            48: "Gi1/0/48",
+            49: "Te1/1/1",
+            5001: "Po1",
+        }
+        assert {49, 5001}.issubset(gte.build_likely_uplink_ifindexes(ifname))
 
 
 # ---- canonical_edge_key() ----
@@ -254,3 +286,18 @@ class TestBuildUplinkTargets:
         assert edges[0]["from_ifindex"] == 5001
         assert edges[0]["to_ifindex"] == 5010
         assert edges[0]["to_port"] == "Po10"
+
+
+class TestEdgeRateEndpoints:
+    def test_filters_non_uplink_access_ports(self):
+        devices = {
+            "10.0.0.1": {"ifname": {1: "Gi1/0/1", 47: "Gi1/0/47", 48: "Gi1/0/48"}},
+            "10.0.0.2": {"ifname": {1: "Gi1/0/1", 47: "Gi1/0/47", 48: "Gi1/0/48"}},
+        }
+        edges = [
+            {
+                "from_ip": "10.0.0.1", "from_ifindex": 1, "from_port": "Gi1/0/1",
+                "to_ip": "10.0.0.2", "to_ifindex": 48, "to_port": "Gi1/0/48",
+            },
+        ]
+        assert gte.edge_rate_endpoints(edges, devices) == {"10.0.0.2": {48}}

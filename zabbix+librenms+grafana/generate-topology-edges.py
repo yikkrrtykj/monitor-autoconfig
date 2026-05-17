@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from ipaddress import IPv4Address
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
@@ -29,6 +30,8 @@ LLDP_LOC_PORT_DESC_OID = "1.0.8802.1.1.2.1.3.7.1.3"
 LLDP_REM_PORT_ID_OID = "1.0.8802.1.1.2.1.4.1.1.7"
 LLDP_REM_PORT_DESC_OID = "1.0.8802.1.1.2.1.4.1.1.8"
 LLDP_REM_SYS_NAME_OID = "1.0.8802.1.1.2.1.4.1.1.9"
+IF_HC_IN_OCTETS_OID = "1.3.6.1.2.1.31.1.1.1.6"
+IF_HC_OUT_OCTETS_OID = "1.3.6.1.2.1.31.1.1.1.10"
 
 
 def snmpwalk(host, community, oid, timeout=15):
@@ -49,6 +52,36 @@ def snmpget(host, community, oid, timeout=8):
     except Exception as exc:
         print(f"[WARN] snmpget {host} {oid}: {exc}", file=sys.stderr)
         return ""
+
+
+def parse_numeric_value(value):
+    text = value.strip()
+    if ":" in text:
+        _, _, text = text.partition(":")
+        text = text.strip()
+    match = re.search(r"(-?\d+)", text)
+    return int(match.group(1)) if match else None
+
+
+def snmpget_oids(host, community, oids, timeout=8):
+    if not oids:
+        return {}
+    cmd = ["snmpget", "-v2c", "-c", community, "-O", "n", "-t", str(timeout), host, *oids]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+    except Exception as exc:
+        print(f"[WARN] snmpget {host} {len(oids)} oid(s): {exc}", file=sys.stderr)
+        return {}
+
+    values = {}
+    for line in result.stdout.strip().split("\n"):
+        parts, value = parse_oid_value(line)
+        if not parts:
+            continue
+        parsed = parse_numeric_value(value)
+        if parsed is not None:
+            values[".".join(parts)] = parsed
+    return values
 
 
 def strip_string_value(value):
@@ -155,6 +188,47 @@ def normalize_port_name(name):
     if match:
         return match.group(1)
     return text
+
+
+def is_aggregate_port_name(name):
+    return normalize_port_name(name).startswith("agg")
+
+
+def is_optical_port_name(name):
+    text = str(name or "").strip().lower()
+    return bool(re.search(
+        r"^(?:te|twe|fo|hu|xe|xge|sfp|qsfp|ten|twenty|forty|hundred|fiber)",
+        text,
+    ))
+
+
+def physical_port_group(name):
+    text = str(name or "").strip().lower()
+    match = re.search(r"(\d+(?:/\d+)+)", text)
+    if not match:
+        return None
+    nums = tuple(int(part) for part in match.group(1).split("/"))
+    if len(nums) < 2:
+        return None
+    prefix = re.sub(r"[^a-z]+", "", text[:match.start()])
+    return prefix, nums[:-1], nums[-1]
+
+
+def build_likely_uplink_ifindexes(ifname_map):
+    candidates = set()
+    groups = {}
+    for ifindex, name in ifname_map.items():
+        if is_aggregate_port_name(name) or is_optical_port_name(name):
+            candidates.add(ifindex)
+        group = physical_port_group(name)
+        if group:
+            key = (group[0], group[1])
+            groups.setdefault(key, []).append((group[2], ifindex))
+
+    for ports in groups.values():
+        for _, ifindex in sorted(ports, reverse=True)[:2]:
+            candidates.add(ifindex)
+    return candidates
 
 
 def resolve_ifindex_by_name(port_name, ifname_map):
@@ -324,6 +398,103 @@ def build_uplink_targets(edges):
     return targets
 
 
+def env_bool(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def edge_rate_endpoints(edges, devices):
+    candidate_indexes = {
+        ip: build_likely_uplink_ifindexes(device.get("ifname", {}))
+        for ip, device in devices.items()
+    }
+    endpoints = {}
+    for edge in edges:
+        for side in ("from", "to"):
+            ip = edge.get(f"{side}_ip")
+            ifindex = edge.get(f"{side}_ifindex")
+            port = edge.get(f"{side}_port") or ""
+            if not ip or ifindex is None:
+                continue
+            candidates = candidate_indexes.get(ip, set())
+            if candidates and ifindex not in candidates and not (
+                is_aggregate_port_name(port) or is_optical_port_name(port)
+            ):
+                continue
+            endpoints.setdefault(ip, set()).add(int(ifindex))
+    return endpoints
+
+
+def load_rate_state(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def counter_rate(prev_value, value, elapsed):
+    if prev_value is None or value is None or elapsed <= 0:
+        return None
+    delta = value - prev_value
+    if delta < 0:
+        return None
+    return delta * 8.0 / elapsed
+
+
+def fetch_interface_counters(ip, community, ifindexes):
+    oids = []
+    for ifindex in sorted(ifindexes):
+        oids.append(f"{IF_HC_IN_OCTETS_OID}.{ifindex}")
+        oids.append(f"{IF_HC_OUT_OCTETS_OID}.{ifindex}")
+    raw = snmpget_oids(ip, community, oids)
+    counters = {}
+    for ifindex in ifindexes:
+        counters[ifindex] = {
+            "in": raw.get(f"{IF_HC_IN_OCTETS_OID}.{ifindex}"),
+            "out": raw.get(f"{IF_HC_OUT_OCTETS_OID}.{ifindex}"),
+        }
+    return counters
+
+
+def build_rate_samples(edges, devices, community, state_path):
+    endpoints = edge_rate_endpoints(edges, devices)
+    previous = load_rate_state(state_path)
+    now = time.time()
+    next_state = {}
+    samples = []
+
+    for ip, ifindexes in endpoints.items():
+        counters = fetch_interface_counters(ip, community, ifindexes)
+        for ifindex, values in counters.items():
+            key = f"{ip}|{ifindex}"
+            prev = previous.get(key, {})
+            elapsed = now - float(prev.get("ts", 0) or 0)
+            in_bps = counter_rate(prev.get("in"), values.get("in"), elapsed)
+            out_bps = counter_rate(prev.get("out"), values.get("out"), elapsed)
+            next_state[key] = {
+                "ts": now,
+                "in": values.get("in"),
+                "out": values.get("out"),
+            }
+            sample = {
+                "instance": ip,
+                "target_ip": ip,
+                "ifIndex": str(ifindex),
+            }
+            if in_bps is not None:
+                sample["in_bps"] = in_bps
+            if out_bps is not None:
+                sample["out_bps"] = out_bps
+            if "in_bps" in sample or "out_bps" in sample:
+                samples.append(sample)
+
+    return samples, next_state
+
+
 def atomic_write_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
@@ -341,6 +512,7 @@ def main():
         print("[INFO] TOPOLOGY_DEVICES empty and no infra ping envs set; nothing to poll", file=sys.stderr)
         atomic_write_json(os.path.join(output_dir, "edges.json"), [])
         atomic_write_json(os.path.join(output_dir, "uplink-targets.json"), [])
+        atomic_write_json(os.path.join(output_dir, "rates.json"), [])
         return 0
 
     print(f"[INFO] polling LLDP on {len(device_ips)} device(s) with community={community}", file=sys.stderr)
@@ -362,12 +534,20 @@ def main():
 
     name_index = build_name_index(devices)
     edges, placeholders = build_edges(devices, name_index)
-    uplink_targets = build_uplink_targets(edges)
+    rate_state_path = os.path.join(output_dir, "rate-state.json")
+    rate_samples, rate_state = build_rate_samples(edges, devices, community, rate_state_path)
+    uplink_targets = build_uplink_targets(edges) if env_bool("TOPOLOGY_ENABLE_PROMETHEUS_UPLINKS", False) else []
 
     atomic_write_json(os.path.join(output_dir, "edges.json"), edges)
     atomic_write_json(os.path.join(output_dir, "uplink-targets.json"), uplink_targets)
+    atomic_write_json(os.path.join(output_dir, "rates.json"), rate_samples)
+    atomic_write_json(rate_state_path, rate_state)
 
-    print(f"[INFO] wrote {len(edges)} edge(s), {len(uplink_targets)} uplink target(s)", file=sys.stderr)
+    print(
+        f"[INFO] wrote {len(edges)} edge(s), {len(rate_samples)} rate sample(s), "
+        f"{len(uplink_targets)} prometheus uplink target(s)",
+        file=sys.stderr,
+    )
     if placeholders:
         print(f"[WARN] {len(placeholders)} neighbor(s) could not be matched to a configured device IP:", file=sys.stderr)
         for entry in placeholders[:10]:
