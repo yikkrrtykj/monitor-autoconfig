@@ -2564,15 +2564,20 @@
       /^\d+(?:\/\d+)+$/.test(port)
     );
     const cleanPortNames = (ports) => uniqueNames(ports.map(compactPortLabel)).filter((port) => port && isPortLikeLabel(port));
+    const isAggPortName = (port) => /^(?:po|lag|trk|ae|be|eth-trunk)\s*\d+/i.test(port);
     const portSummary = (fromPorts, toPorts, maxPhysical = Infinity) => {
       const fromUnique = cleanPortNames(fromPorts);
       const toUnique = cleanPortNames(toPorts);
-      const unique = uniqueNames([...fromUnique, ...toUnique]);
-      const aggregate = unique.find((port) => /^po\d+|^lag\d+|^trk\d+|^ae\d+|^be\d+|^eth-trunk\d+/i.test(port));
-      if (aggregate) return aggregate;
-      const physicalCount = Math.min(maxPhysical, Math.max(fromUnique.length, toUnique.length));
+      // A port-channel interface name (Po4/LAG1…) is the bundle, not a member — so
+      // count the real member ports and always label bonded links uniformly as
+      // "N uplinks" (some switches advertise the Po, others the member ports).
+      const hasAgg = fromUnique.some(isAggPortName) || toUnique.some(isAggPortName);
+      const fromPhys = fromUnique.filter((port) => !isAggPortName(port));
+      const toPhys = toUnique.filter((port) => !isAggPortName(port));
+      let physicalCount = Math.min(maxPhysical, Math.max(fromPhys.length, toPhys.length));
+      if (hasAgg && physicalCount < 2) physicalCount = 2; // a bundle has ≥2 members
       if (physicalCount > 1) return `${physicalCount} uplinks`;
-      return fromUnique[0] || toUnique[0] || "";
+      return fromPhys[0] || toPhys[0] || fromUnique[0] || toUnique[0] || "";
     };
 
     const lldpLinks = [];
@@ -2612,9 +2617,9 @@
           label,
           severity: group.to.level || "good",
           logical: true,
-          // Bonded uplink (EtherChannel/LAG): more than one physical member, or a
-          // port-channel interface name. Drawn thicker so a single-link uplink stands out.
-          aggregated: group.count > 1 || /^(?:po|lag|trk|ae|be|eth-trunk)\s*\d+/i.test(label || "")
+          // Bonded uplink (EtherChannel/LAG): a "N uplinks" summary or >1 member edge.
+          // Drawn thicker so a single-link uplink stands out.
+          aggregated: group.count > 1 || /uplinks?/i.test(label || "")
         });
         lldpCoveredPairs.add(pairKey);
       });
