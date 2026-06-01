@@ -1028,6 +1028,8 @@ body {
   padding: 8px;
   cursor: grab;
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .topology-canvas.topology-grabbing {

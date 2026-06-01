@@ -2709,8 +2709,8 @@
           <rect width="${node.w}" height="${node.h}" rx="10" />
           <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
           <text class="topology-node-name" x="34" y="22">${escapeHtml(displayNodeName(node.name))}</text>
-          <text class="topology-node-latency" x="${node.w - 10}" y="22" text-anchor="end">${escapeHtml(latencyText)}</text>
           <text class="topology-node-kind" x="34" y="38">${escapeHtml(topologyNodeKindLabel(node.kind))}</text>
+          <text class="topology-node-latency" x="${node.w - 10}" y="38" text-anchor="end">${escapeHtml(latencyText)}</text>
           ${subline}
         </g>
       `;
@@ -2818,40 +2818,52 @@
     if (!canvas || canvas.dataset.panzoom === "1") return;
     canvas.dataset.panzoom = "1";
 
+    let pointerDown = false;
     let dragging = false;
     let moved = false;
     let startX = 0;
     let startY = 0;
     let originX = 0;
     let originY = 0;
+    let activePointer = null;
 
     canvas.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
-      dragging = true;
+      pointerDown = true;
+      dragging = false;
       moved = false;
       startX = event.clientX;
       startY = event.clientY;
       originX = topoView.x;
       originY = topoView.y;
-      canvas.classList.add("topology-grabbing");
-      try { canvas.setPointerCapture(event.pointerId); } catch (e) {}
+      activePointer = event.pointerId;
+      // Don't capture or preventDefault yet — a plain click must still reach the node.
     });
 
     canvas.addEventListener("pointermove", (event) => {
-      if (!dragging) return;
+      if (!pointerDown) return;
       const dx = event.clientX - startX;
       const dy = event.clientY - startY;
-      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+      if (!dragging && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+        dragging = true;
+        moved = true;
+        canvas.classList.add("topology-grabbing");
+        try { canvas.setPointerCapture(activePointer); } catch (e) {}
+      }
+      if (!dragging) return;
       topoView.x = originX + dx;
       topoView.y = originY + dy;
       applyTopoView();
     });
 
-    const endDrag = (event) => {
-      if (!dragging) return;
+    const endDrag = () => {
+      if (!pointerDown) return;
+      pointerDown = false;
+      if (dragging) {
+        canvas.classList.remove("topology-grabbing");
+        try { canvas.releasePointerCapture(activePointer); } catch (e) {}
+      }
       dragging = false;
-      canvas.classList.remove("topology-grabbing");
-      try { canvas.releasePointerCapture(event.pointerId); } catch (e) {}
     };
     canvas.addEventListener("pointerup", endDrag);
     canvas.addEventListener("pointercancel", endDrag);
