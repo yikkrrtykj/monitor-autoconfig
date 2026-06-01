@@ -2440,9 +2440,13 @@
     const topPad = 22;
     const bottomPad = 22;
     const rowCount = 4;
-    const usableHeight = Math.max(420, canvasHeight || 680);
+    const hasServers = !!(layers.servers && layers.servers.length);
+    const usableHeight = Math.max(420, canvasHeight || 680) + (hasServers ? 96 : 0);
     const layerGap = Math.max(36, (usableHeight - topPad - bottomPad - NODE_H * rowCount) / (rowCount - 1));
     const rowY = (idx) => topPad + idx * (NODE_H + layerGap);
+    // Servers sit on their own evenly-spaced row in the gap between the core and the
+    // access-switch (dist) row, so they never clamp/stack like the old flanking layout.
+    const serverRowY = rowY(2) + NODE_H + Math.max(20, (layerGap - NODE_H) / 2);
 
     const placeRow = (items, y) => {
       const total = items.length;
@@ -2461,23 +2465,9 @@
     const ispRow = placeRow(layers.isps, rowY(0));
     const fwRow = placeRow(layers.firewalls, rowY(1));
     const coreRow = placeRow(layers.cores, rowY(2));
-    const serverRow = (() => {
-      if (!layers.servers.length || !coreRow.length) return [];
-      const primaryCore = coreRow[Math.floor(coreRow.length / 2)];
-      const gap = 32;
-      return layers.servers.map((server, idx) => {
-        const side = idx % 2 === 0 ? 1 : -1;
-        const ring = Math.floor(idx / 2) + 1;
-        const x = Math.max(
-          20,
-          Math.min(
-            canvasWidth - NODE_W - 20,
-            primaryCore.x + side * ring * (NODE_W + gap)
-          )
-        );
-        return { ...server, x, y: rowY(2), w: NODE_W, h: NODE_H };
-      });
-    })();
+    const serverRow = (hasServers && coreRow.length)
+      ? placeRow(layers.servers, serverRowY)
+      : [];
     const distRow = placeRow(layers.dists, rowY(3));
 
     const allNodes = [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow];
@@ -2574,8 +2564,8 @@
       const coreY = primaryCore.y + primaryCore.h;
       const distCenters = distRow.map((node) => node.x + node.w / 2);
       const busY = Math.min(
-        rowY(3) - 34,
-        coreY + Math.max(28, layerGap * 0.34)
+        rowY(3) - 28,
+        hasServers ? serverRowY + NODE_H + 18 : coreY + Math.max(28, layerGap * 0.34)
       );
       coreBus = {
         x1: Math.min(coreX, ...distCenters),
@@ -2655,6 +2645,11 @@
       const pad = 18;
       return node.x + pad + ((node.w - pad * 2) * slot) / (count - 1);
     };
+    // Keep the node title from overrunning into the right-aligned latency text.
+    const displayNodeName = (name) => {
+      const s = String(name || "?");
+      return s.length > 15 ? `${s.slice(0, 14)}…` : s;
+    };
 
     const coreBus = layout.coreBus
       ? `<path class="topology-link topology-backbone link-${layout.coreBus.severity}" d="M ${layout.coreBus.coreX} ${layout.coreBus.coreY} L ${layout.coreBus.coreX} ${layout.coreBus.y} M ${layout.coreBus.x1} ${layout.coreBus.y} L ${layout.coreBus.x2} ${layout.coreBus.y}" />`
@@ -2713,7 +2708,7 @@
         <g class="topology-node node-${node.level}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
           <rect width="${node.w}" height="${node.h}" rx="10" />
           <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
-          <text class="topology-node-name" x="34" y="22">${escapeHtml(node.name || "?")}</text>
+          <text class="topology-node-name" x="34" y="22">${escapeHtml(displayNodeName(node.name))}</text>
           <text class="topology-node-latency" x="${node.w - 10}" y="22" text-anchor="end">${escapeHtml(latencyText)}</text>
           <text class="topology-node-kind" x="34" y="38">${escapeHtml(topologyNodeKindLabel(node.kind))}</text>
           ${subline}

@@ -65,8 +65,12 @@ assert.strictEqual(layout.coreBus.severity, "good");
 
 const serverNode = layout.nodes.find((node) => node.kind === "server");
 const coreNode = layout.nodes.find((node) => node.kind === "core");
+const distNode = layout.nodes.find((node) => node.kind === "dist");
 assert.ok(serverNode);
-assert.strictEqual(serverNode.y, coreNode.y);
+// Servers get their own row between the core and the access-switch (dist) row,
+// instead of flanking the core on the same line.
+assert.ok(serverNode.y > coreNode.y, "server row should sit below the core row");
+assert.ok(serverNode.y < distNode.y, "server row should sit above the access-switch row");
 assert.ok(layout.links.some((link) => (
   [link.from.kind, link.to.kind].includes("core") &&
   [link.from.kind, link.to.kind].includes("server")
