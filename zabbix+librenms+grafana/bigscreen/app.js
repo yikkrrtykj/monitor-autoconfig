@@ -2468,7 +2468,84 @@
     const serverRow = (hasServers && coreRow.length)
       ? placeRow(layers.servers, serverRowY)
       : [];
-    const distRow = placeRow(layers.dists, rowY(3));
+    // Build the access-switch (dist) layer as a tree from the discovered edges:
+    // switches that uplink to the core sit in the main row; a switch whose uplink
+    // lands on ANOTHER access switch is drawn in a layer below its parent
+    // (e.g. core -> FOH -> JIESHOU-RIGHT -> JIESHOU-LEFT).
+    const placeDistTree = () => {
+      const dists = layers.dists;
+      if (!dists.length) return { nodes: [], depthByIp: new Map() };
+      const distByIp = new Map();
+      dists.forEach((d) => { if (d.ip) distByIp.set(d.ip, d); });
+      const coreIps = new Set(coreRow.map((c) => c.ip).filter(Boolean));
+      const adj = new Map();
+      const addAdj = (a, b) => {
+        if (!adj.has(a)) adj.set(a, new Set());
+        adj.get(a).add(b);
+      };
+      const inGraph = (ip) => coreIps.has(ip) || distByIp.has(ip);
+      (Array.isArray(lldpEdges) ? lldpEdges : []).forEach((edge) => {
+        if (edge.from_ip && edge.to_ip && inGraph(edge.from_ip) && inGraph(edge.to_ip)) {
+          addAdj(edge.from_ip, edge.to_ip);
+          addAdj(edge.to_ip, edge.from_ip);
+        }
+      });
+      // BFS from the core: depth + parent for every reachable switch.
+      const depthByIp = new Map();
+      const parentByIp = new Map();
+      const queue = [];
+      coreIps.forEach((ip) => { depthByIp.set(ip, 0); queue.push(ip); });
+      while (queue.length) {
+        const ip = queue.shift();
+        (adj.get(ip) || []).forEach((nb) => {
+          if (!depthByIp.has(nb)) {
+            depthByIp.set(nb, depthByIp.get(ip) + 1);
+            parentByIp.set(nb, ip);
+            queue.push(nb);
+          }
+        });
+      }
+      const childrenOf = new Map();
+      dists.forEach((d) => {
+        const p = parentByIp.get(d.ip);
+        if (p && distByIp.has(p)) {
+          if (!childrenOf.has(p)) childrenOf.set(p, []);
+          childrenOf.get(p).push(d.ip);
+        }
+      });
+      // Top of the tree = directly under the core (depth 1) or never discovered.
+      const topLevel = dists.filter((d) => !depthByIp.has(d.ip) || depthByIp.get(d.ip) <= 1);
+      const placed = new Map();
+      const baseRow = placeRow(topLevel, rowY(3));
+      baseRow.forEach((n) => { if (n.ip) placed.set(n.ip, n); });
+      const childRowH = NODE_H + 30;
+      const placeChildren = (parentNode) => {
+        const kids = (childrenOf.get(parentNode.ip) || [])
+          .map((ip) => distByIp.get(ip))
+          .filter((kid) => kid && kid.ip && !placed.has(kid.ip));
+        const count = kids.length;
+        kids.forEach((kid, idx) => {
+          const x = Math.max(20, parentNode.x + (idx - (count - 1) / 2) * (NODE_W + 16));
+          const node = { ...kid, x, y: parentNode.y + childRowH, w: NODE_W, h: NODE_H };
+          placed.set(kid.ip, node);
+          placeChildren(node);
+        });
+      };
+      baseRow.forEach((n) => placeChildren(n));
+      // Safety net: anything not reached above still gets a slot in the main row.
+      dists.forEach((d, idx) => {
+        if (d.ip && !placed.has(d.ip)) {
+          placed.set(d.ip, { ...d, x: Math.max(20, 20 + idx * (NODE_W + 16)), y: rowY(3), w: NODE_W, h: NODE_H });
+        }
+      });
+      return {
+        nodes: dists.map((d) => (d.ip ? placed.get(d.ip) : null)).filter(Boolean),
+        depthByIp,
+      };
+    };
+    const distTree = placeDistTree();
+    const distRow = distTree.nodes;
+    const distDepthByIp = distTree.depthByIp;
 
     const allNodes = [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow];
     const nodeByIp = new Map();
@@ -2548,7 +2625,12 @@
     };
     fwRow.forEach((fw) => ispRow.forEach((isp) => pushCrossLink(isp, fw, fw.level)));
     coreRow.forEach((core) => fwRow.forEach((fw) => pushCrossLink(fw, core, core.level)));
-    distRow.forEach((d) => coreRow.forEach((core) => pushCrossLink(core, d, d.level)));
+    distRow.forEach((d) => {
+      // Skip the synthetic core->switch link when a real uplink was discovered
+      // (it's drawn via the core bus or via its parent switch instead).
+      if (distDepthByIp.has(d.ip)) return;
+      coreRow.forEach((core) => pushCrossLink(core, d, d.level));
+    });
     serverRow.forEach((s) => coreRow.forEach((core) => pushCrossLink(core, s, s.level)));
     links.push(...lldpLinks);
 
@@ -2608,7 +2690,7 @@
       links,
       haBonds,
       coreBus,
-      height: usableHeight
+      height: Math.max(usableHeight, allNodes.reduce((m, n) => Math.max(m, n.y + (n.h || 0)), 0) + bottomPad)
     };
   }
 

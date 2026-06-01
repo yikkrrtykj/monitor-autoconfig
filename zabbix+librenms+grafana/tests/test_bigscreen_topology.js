@@ -81,4 +81,23 @@ assert.ok(!svg.includes("topology-link-rate"));
 assert.ok(svg.includes("topology-backbone"));
 assert.ok(!svg.includes("/topology/rates.json"));
 
+// ---- dist hierarchy: a switch uplinked to ANOTHER switch sits in a layer below it ----
+const hierTargets = [
+  target("infra-core-ping", "PMGO-core", "172.25.10.254"),
+  target("infra-dist-ping", "PMGO-FOH", "172.25.10.24"),
+  target("infra-dist-ping", "PMGO-JIESHOU-RIGHT", "172.25.10.23"),
+];
+const hierEdges = [
+  { from_ip: "172.25.10.24", from_port: "Gi0/9", to_ip: "172.25.10.254", to_port: "Te2/1/7" },
+  { from_ip: "172.25.10.24", from_port: "Gi0/6", to_ip: "172.25.10.23", to_port: "Gi0/23" },
+];
+const hierLayout = topologyLayout(buildTopologyLayers(hierTargets), 1365, 620, hierEdges);
+const fohNode = hierLayout.nodes.find((n) => n.ip === "172.25.10.24");
+const jieNode = hierLayout.nodes.find((n) => n.ip === "172.25.10.23");
+assert.ok(fohNode && jieNode, "both access switches are placed");
+assert.ok(jieNode.y > fohNode.y, "child switch sits in a row below its parent");
+const coreToChild = hierLayout.links.some((l) =>
+  [l.from.ip, l.to.ip].includes("172.25.10.254") && [l.from.ip, l.to.ip].includes("172.25.10.23"));
+assert.ok(!coreToChild, "no synthetic core->child link when a real uplink exists");
+
 console.log("bigscreen topology tests passed");
