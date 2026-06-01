@@ -2892,6 +2892,9 @@
     }, { passive: false });
 
     canvas.addEventListener("dblclick", resetTopoView);
+    // Belt-and-suspenders: stop the browser from drag-selecting the SVG labels.
+    canvas.addEventListener("selectstart", (event) => event.preventDefault());
+    canvas.addEventListener("dragstart", (event) => event.preventDefault());
   }
 
   async function refreshTopology() {
