@@ -2611,7 +2611,10 @@
           to: group.to,
           label,
           severity: group.to.level || "good",
-          logical: true
+          logical: true,
+          // Bonded uplink (EtherChannel/LAG): more than one physical member, or a
+          // port-channel interface name. Drawn thicker so a single-link uplink stands out.
+          aggregated: group.count > 1 || /^(?:po|lag|trk|ae|be|eth-trunk)\s*\d+/i.test(label || "")
         });
         lldpCoveredPairs.add(pairKey);
       });
@@ -2727,10 +2730,14 @@
       const pad = 18;
       return node.x + pad + ((node.w - pad * 2) * slot) / (count - 1);
     };
-    // Keep the node title from overrunning into the right-aligned latency text.
-    const displayNodeName = (name) => {
-      const s = String(name || "?");
-      return s.length > 15 ? `${s.slice(0, 14)}…` : s;
+    // Estimate rendered title width (CJK glyphs are ~2x a Latin char) so an
+    // over-long switch name gets squeezed to fit the box instead of spilling out.
+    const estTextWidth = (text) => {
+      let w = 0;
+      for (const ch of String(text || "")) {
+        w += /[　-鿿＀-￯]/.test(ch) ? 13 : 7.3;
+      }
+      return w;
     };
 
     const coreBus = layout.coreBus
@@ -2769,7 +2776,7 @@
       const linkLabel = link.label
         ? `<text class="topology-link-label" x="${labelX}" y="${labelY}" text-anchor="middle">${escapeHtml(link.label)}</text>`
         : "";
-      const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}`;
+      const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}${link.aggregated ? " link-aggregated" : ""}`;
       return `
         <g class="topology-link-group">
           <path class="${linkClass}" d="${d}" />
@@ -2786,11 +2793,16 @@
       const subline = node.ip
         ? `<text class="topology-node-ip" x="14" y="${node.h - 8}">${escapeHtml(node.ip)}</text>`
         : "";
+      const nodeName = String(node.name || "?");
+      const nameMaxW = node.w - 42; // title starts at x=34, leave ~8px right padding
+      const nameFitAttr = estTextWidth(nodeName) > nameMaxW
+        ? ` textLength="${nameMaxW}" lengthAdjust="spacingAndGlyphs"`
+        : "";
       return `
         <g class="topology-node node-${node.level}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
           <rect width="${node.w}" height="${node.h}" rx="10" />
           <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
-          <text class="topology-node-name" x="34" y="22">${escapeHtml(displayNodeName(node.name))}</text>
+          <text class="topology-node-name" x="34" y="22"${nameFitAttr}>${escapeHtml(nodeName)}</text>
           <text class="topology-node-kind" x="34" y="38">${escapeHtml(topologyNodeKindLabel(node.kind))}</text>
           <text class="topology-node-latency" x="${node.w - 10}" y="38" text-anchor="end">${escapeHtml(latencyText)}</text>
           ${subline}

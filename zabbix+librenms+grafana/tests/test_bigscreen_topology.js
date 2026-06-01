@@ -61,6 +61,7 @@ assert.strictEqual(coreStageLinks.length, 1);
 assert.strictEqual(coreStageLinks[0].label, "2 uplinks");
 assert.strictEqual(coreStageLinks[0].severity, "warn");
 assert.ok(coreStageLinks[0].busLink);
+assert.ok(coreStageLinks[0].aggregated, "a multi-uplink bundle is flagged aggregated (drawn thicker)");
 assert.strictEqual(layout.coreBus.severity, "good");
 
 const serverNode = layout.nodes.find((node) => node.kind === "server");

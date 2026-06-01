@@ -1057,6 +1057,10 @@ body {
 .topology-link.link-fallback {
   opacity: 0.52;
 }
+/* Bonded uplink (EtherChannel/LAG) — thicker so a single-link uplink stands out. */
+.topology-link.link-aggregated {
+  stroke-width: 7;
+}
 .topology-backbone {
   stroke-width: 4.5;
   stroke-linecap: round;
