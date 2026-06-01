@@ -222,3 +222,79 @@ class TestPortChannelEdges:
         assert edges[0]["from_ifindex"] == 5001
         assert edges[0]["to_ifindex"] == 5010
         assert edges[0]["to_port"] == "Po10"
+
+
+# ---- hexstr_to_ipv4() ----
+
+class TestHexstrToIpv4:
+    def test_spaced_hex(self):
+        assert gte.hexstr_to_ipv4("C0 A8 0A 17") == "192.168.10.23"
+
+    def test_wrong_length(self):
+        assert gte.hexstr_to_ipv4("C0 A8 0A") is None
+
+    def test_non_hex(self):
+        assert gte.hexstr_to_ipv4("nope") is None
+
+
+# ---- parse_cdp_field() / parse_cdp_address() ----
+
+class TestParseCdp:
+    def test_field_two_part_index(self):
+        out = (
+            ".1.3.6.1.4.1.9.9.23.1.2.1.1.6.10101.1 = STRING: PMGO-JIESHOU-RIGHT\n"
+            ".1.3.6.1.4.1.9.9.23.1.2.1.1.6.10102.1 = STRING: PMGO-core"
+        )
+        assert gte.parse_cdp_field(out) == {
+            (10101, 1): "PMGO-JIESHOU-RIGHT",
+            (10102, 1): "PMGO-core",
+        }
+
+    def test_address_hex_to_ip(self):
+        out = ".1.3.6.1.4.1.9.9.23.1.2.1.1.4.10101.1 = Hex-STRING: C0 A8 0A 17"
+        assert gte.parse_cdp_address(out) == {(10101, 1): "192.168.10.23"}
+
+
+# ---- build_edges() via CDP (Cisco gear without LLDP) ----
+
+class TestBuildEdgesCdp:
+    def _devices(self):
+        # FOH <-> JIESHOU-RIGHT, discovered only through CDP.
+        return {
+            "192.168.10.24": {
+                "ip": "192.168.10.24", "sysname": "PMGO-FOH",
+                "ifname": {10101: "Gi1/0/1"}, "loc_port_desc": {},
+                "rem_sys": {}, "rem_port_desc": {}, "rem_port_id": {},
+                "cdp_device_id": {(10101, 1): "PMGO-JIESHOU-RIGHT"},
+                "cdp_device_port": {(10101, 1): "GigabitEthernet1/0/49"},
+                "cdp_address": {(10101, 1): "192.168.10.23"},
+            },
+            "192.168.10.23": {
+                "ip": "192.168.10.23", "sysname": "PMGO-JIESHOU-RIGHT",
+                "ifname": {10149: "Gi1/0/49"}, "loc_port_desc": {},
+                "rem_sys": {}, "rem_port_desc": {}, "rem_port_id": {},
+                "cdp_device_id": {(10149, 1): "PMGO-FOH"},
+                "cdp_device_port": {(10149, 1): "GigabitEthernet1/0/1"},
+                "cdp_address": {(10149, 1): "192.168.10.24"},
+            },
+        }
+
+    def test_cdp_builds_and_dedupes(self):
+        devices = self._devices()
+        edges, placeholders = gte.build_edges(devices, gte.build_name_index(devices))
+        assert placeholders == []
+        assert len(edges) == 1
+        edge = edges[0]
+        assert sorted([edge["from_ip"], edge["to_ip"]]) == ["192.168.10.23", "192.168.10.24"]
+        assert edge["from_ifindex"] is not None
+        assert edge["to_ifindex"] is not None
+
+    def test_cdp_neighbor_ip_via_address_when_name_unknown(self):
+        # deviceId is a hostname not in name_index, but cdpCacheAddress resolves it.
+        devices = self._devices()
+        devices["192.168.10.24"]["cdp_device_id"][(10101, 1)] = "weird-fqdn-not-in-index.local"
+        edges, placeholders = gte.build_edges(devices, gte.build_name_index(devices))
+        assert any(
+            sorted([e["from_ip"], e["to_ip"]]) == ["192.168.10.23", "192.168.10.24"]
+            for e in edges
+        )

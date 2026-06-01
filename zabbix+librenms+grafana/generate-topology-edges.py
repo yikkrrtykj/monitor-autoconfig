@@ -30,6 +30,12 @@ LLDP_REM_PORT_ID_OID = "1.0.8802.1.1.2.1.4.1.1.7"
 LLDP_REM_PORT_DESC_OID = "1.0.8802.1.1.2.1.4.1.1.8"
 LLDP_REM_SYS_NAME_OID = "1.0.8802.1.1.2.1.4.1.1.9"
 
+# CISCO-CDP-MIB cdpCacheEntry (row index = cdpCacheIfIndex.cdpCacheDeviceIndex).
+# Cisco gear that only runs CDP (not LLDP) is discovered through these.
+CDP_CACHE_ADDRESS_OID = "1.3.6.1.4.1.9.9.23.1.2.1.1.4"
+CDP_CACHE_DEVICE_ID_OID = "1.3.6.1.4.1.9.9.23.1.2.1.1.6"
+CDP_CACHE_DEVICE_PORT_OID = "1.3.6.1.4.1.9.9.23.1.2.1.1.7"
+
 
 def snmpwalk(host, community, oid, timeout=15):
     cmd = ["snmpwalk", "-v2c", "-c", community, "-O", "n", "-t", str(timeout), host, oid]
@@ -125,6 +131,61 @@ def parse_lldp_rem_field(output):
     return entries
 
 
+def hexstr_to_ipv4(text):
+    """CDP cdpCacheAddress hex ('C0 A8 0A 17') -> '192.168.10.23', else None."""
+    tokens = re.findall(r"[0-9a-fA-F]{1,2}", str(text).strip())
+    if len(tokens) != 4:
+        return None
+    try:
+        octets = [int(token, 16) for token in tokens]
+    except ValueError:
+        return None
+    if any(octet < 0 or octet > 255 for octet in octets):
+        return None
+    ip = ".".join(str(octet) for octet in octets)
+    try:
+        IPv4Address(ip)
+    except ValueError:
+        return None
+    return ip
+
+
+def parse_cdp_field(output):
+    """Generic CDP cache walk -> {(cdpCacheIfIndex, cdpCacheDeviceIndex): value}."""
+    entries = {}
+    for line in output.strip().split("\n"):
+        parts, value = parse_oid_value(line)
+        if not parts or len(parts) < 2:
+            continue
+        try:
+            if_index = int(parts[-2])
+            dev_index = int(parts[-1])
+        except ValueError:
+            continue
+        text = strip_string_value(value)
+        if text:
+            entries[(if_index, dev_index)] = text
+    return entries
+
+
+def parse_cdp_address(output):
+    """cdpCacheAddress walk -> {(cdpCacheIfIndex, cdpCacheDeviceIndex): neighbor_ip}."""
+    out = {}
+    for line in output.strip().split("\n"):
+        parts, value = parse_oid_value(line)
+        if not parts or len(parts) < 2:
+            continue
+        try:
+            if_index = int(parts[-2])
+            dev_index = int(parts[-1])
+        except ValueError:
+            continue
+        ip = hexstr_to_ipv4(strip_string_value(value))
+        if ip:
+            out[(if_index, dev_index)] = ip
+    return out
+
+
 def normalize_hostname(name):
     if not name:
         return ""
@@ -213,6 +274,9 @@ def poll_device(ip, community):
     rem_sys = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_SYS_NAME_OID))
     rem_port_desc = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_PORT_DESC_OID))
     rem_port_id = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_PORT_ID_OID))
+    cdp_device_id = parse_cdp_field(snmpwalk(ip, community, CDP_CACHE_DEVICE_ID_OID))
+    cdp_device_port = parse_cdp_field(snmpwalk(ip, community, CDP_CACHE_DEVICE_PORT_OID))
+    cdp_address = parse_cdp_address(snmpwalk(ip, community, CDP_CACHE_ADDRESS_OID))
     return {
         "ip": ip,
         "sysname": sysname,
@@ -221,6 +285,9 @@ def poll_device(ip, community):
         "rem_sys": rem_sys,
         "rem_port_desc": rem_port_desc,
         "rem_port_id": rem_port_id,
+        "cdp_device_id": cdp_device_id,
+        "cdp_device_port": cdp_device_port,
+        "cdp_address": cdp_address,
     }
 
 
@@ -243,6 +310,19 @@ def canonical_edge_key(edge):
     a = (edge["from_ip"] or "", edge["from_ifindex"] or 0)
     b = (edge["to_ip"] or "", edge["to_ifindex"] or 0)
     return tuple(sorted([a, b]))
+
+
+def merge_edge(edges_by_key, edge):
+    """Insert an edge, or backfill missing fields on an existing one (so an LLDP
+    and a CDP view of the same link, or both directions, collapse into one)."""
+    key = canonical_edge_key(edge)
+    existing = edges_by_key.get(key)
+    if existing is None:
+        edges_by_key[key] = edge
+        return
+    for field in ("from_port", "from_ifindex", "to_port", "to_ifindex"):
+        if not existing.get(field) and edge.get(field):
+            existing[field] = edge[field]
 
 
 def build_edges(devices, name_index):
@@ -284,14 +364,46 @@ def build_edges(devices, name_index):
                 "to_port": remote_port_name,
                 "to_ifindex": remote_ifindex,
             }
-            key = canonical_edge_key(edge)
-            existing = edges_by_key.get(key)
-            if existing is None:
-                edges_by_key[key] = edge
+            merge_edge(edges_by_key, edge)
+
+        # --- CDP neighbors (Cisco). cdpCacheIfIndex in the OID is the real local
+        # ifIndex, and cdpCacheAddress gives the neighbor's IP directly. ---
+        for (if_index, dev_index), neighbor_name in device.get("cdp_device_id", {}).items():
+            addr_ip = device.get("cdp_address", {}).get((if_index, dev_index))
+            if addr_ip and addr_ip in devices:
+                neighbor_ip = addr_ip
             else:
-                for field in ("from_port", "from_ifindex", "to_port", "to_ifindex"):
-                    if not existing.get(field) and edge.get(field):
-                        existing[field] = edge[field]
+                neighbor_ip = name_index.get((neighbor_name or "").strip().lower()) or \
+                              name_index.get(normalize_hostname(neighbor_name))
+            local_port_name = device.get("ifname", {}).get(if_index)
+            remote_port_name = device.get("cdp_device_port", {}).get((if_index, dev_index))
+
+            if neighbor_ip is None:
+                placeholder_neighbors.append({
+                    "from_ip": ip,
+                    "from_port": local_port_name,
+                    "neighbor_name": neighbor_name,
+                    "neighbor_port": remote_port_name,
+                })
+                continue
+
+            remote_ifindex = None
+            remote = devices.get(neighbor_ip)
+            if remote and remote_port_name:
+                remote_ifindex = resolve_ifindex_by_name(remote_port_name, remote["ifname"])
+                if remote_ifindex is not None:
+                    remote_port_name = remote["ifname"].get(remote_ifindex, remote_port_name)
+
+            merge_edge(edges_by_key, {
+                "from_ip": ip,
+                "from_sysname": device.get("sysname"),
+                "from_port": local_port_name,
+                "from_ifindex": if_index,
+                "to_ip": neighbor_ip,
+                "to_sysname": neighbor_name,
+                "to_port": remote_port_name,
+                "to_ifindex": remote_ifindex,
+            })
 
     return list(edges_by_key.values()), placeholder_neighbors
 
@@ -316,7 +428,7 @@ def main():
         atomic_write_json(os.path.join(output_dir, "rates.json"), [])
         return 0
 
-    print(f"[INFO] polling LLDP on {len(device_ips)} device(s) with community={community}", file=sys.stderr)
+    print(f"[INFO] polling LLDP+CDP on {len(device_ips)} device(s) with community={community}", file=sys.stderr)
     devices = {}
     with ThreadPoolExecutor(max_workers=min(16, len(device_ips))) as executor:
         futures = {executor.submit(poll_device, ip, community): ip for ip in device_ips}
@@ -328,10 +440,12 @@ def main():
                 print(f"[WARN] poll {ip} failed: {exc}", file=sys.stderr)
                 continue
             devices[ip] = result
-            if result["rem_sys"]:
-                print(f"[INFO] {ip}: sysname='{result['sysname']}' lldp_neighbors={len(result['rem_sys'])}", file=sys.stderr)
+            lldp_n = len(result.get("rem_sys", {}))
+            cdp_n = len(result.get("cdp_device_id", {}))
+            if lldp_n or cdp_n:
+                print(f"[INFO] {ip}: sysname='{result['sysname']}' neighbors lldp={lldp_n} cdp={cdp_n}", file=sys.stderr)
             else:
-                print(f"[WARN] {ip}: no LLDP neighbors (check 'lldp run' on the device)", file=sys.stderr)
+                print(f"[WARN] {ip}: no LLDP/CDP neighbors (check 'lldp run' or 'cdp run' and SNMP access)", file=sys.stderr)
 
     name_index = build_name_index(devices)
     edges, placeholders = build_edges(devices, name_index)
