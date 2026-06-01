@@ -1016,10 +1016,11 @@
       const isServerItem = (item) => (item.metric && item.metric.job) === "infra-srv-ping";
       const networkPing = pingItems.filter((item) => !isServerItem(item));
       const serverPing = pingItems.filter(isServerItem);
-      renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
+      // Network gauges + uptime span the full panel width on 2 rows.
+      renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping", 2);
       // Servers aren't stage devices (skip the stage filter); keep them on one row.
       renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
-      renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime");
+      renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime", 2);
     } catch (error) {
       renderGaugeGrid("pingGaugeGrid", [], "ping");
       renderGaugeGrid("pingServerGaugeGrid", [], "ping");
