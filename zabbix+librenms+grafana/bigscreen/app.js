@@ -80,7 +80,8 @@
     return payload.data.result
       .map((item) => ({
         name: metricName(item.metric),
-        value: Number(item.value[1])
+        value: Number(item.value[1]),
+        metric: item.metric || {}
       }))
       .filter((item) => Number.isFinite(item.value))
       .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
