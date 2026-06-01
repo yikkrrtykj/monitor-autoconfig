@@ -647,10 +647,15 @@ body {
   display: flex;
   flex-direction: column;
 }
-/* Split the Ping panel into 网络设备 (takes the remaining height, clipped so it
-   never bleeds into the label below) + 服务器 (a compact strip at its own size). */
+/* 网络设备 grid takes the remaining height (clipped, never bleeds into the
+   label below); 服务器 is a compact, height-capped strip so it can never crowd
+   the network grid out of the panel. */
 .ping-panel #pingGaugeGrid { flex: 1 1 0; min-height: 0; overflow: hidden; }
-.ping-panel #pingServerGaugeGrid { flex: 0 0 auto; }
+.ping-panel #pingServerGaugeGrid { flex: 0 0 auto; min-height: 0; max-height: 40%; overflow: hidden; }
+.ping-panel #pingServerGaugeGrid .gauge-visual { width: min(100%, 96px, 7.2vh); }
+.ping-panel #pingServerGaugeGrid .gauge-number strong { font-size: clamp(11px, 0.74vw, 15px); }
+.ping-panel #pingServerGaugeGrid .gauge-number span { font-size: clamp(8px, 0.44vw, 10px); }
+.ping-panel #pingServerGaugeGrid .gauge-name { font-size: clamp(10px, 0.6vw, 12px); }
 .gauge-subhead {
   flex: 0 0 auto;
   margin: 3px 0 0 2px;
