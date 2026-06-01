@@ -242,10 +242,12 @@
     return Math.max(0.03, Math.min(1, rawValue / max));
   }
 
-  function renderGaugeGrid(containerId, items, kind) {
+  function renderGaugeGrid(containerId, items, kind, forceRows) {
     const container = document.getElementById(containerId);
     const formatter = kind === "ping" ? formatPing : formatUptime;
-    const rows = Math.max(1, Math.min(items.length, items.length > 16 ? 4 : items.length > 8 ? 3 : 2));
+    const rows = forceRows
+      ? Math.max(1, Math.min(items.length, forceRows))
+      : Math.max(1, Math.min(items.length, items.length > 16 ? 4 : items.length > 8 ? 3 : 2));
     const columns = Math.max(1, Math.ceil(items.length / rows));
     container.dataset.rows = String(rows);
     container.style.setProperty("--gauge-columns", String(columns));
@@ -1015,8 +1017,8 @@
       const networkPing = pingItems.filter((item) => !isServerItem(item));
       const serverPing = pingItems.filter(isServerItem);
       renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
-      // Servers aren't stage devices, so they aren't subject to the stage filter.
-      renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping");
+      // Servers aren't stage devices (skip the stage filter); keep them on one row.
+      renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
       renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime");
     } catch (error) {
       renderGaugeGrid("pingGaugeGrid", [], "ping");
