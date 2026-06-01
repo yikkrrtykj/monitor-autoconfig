@@ -336,6 +336,24 @@ body {
   font-size: clamp(12px, 0.82vw, 16px);
 }
 
+/* Dense tier: many devices in one panel — smaller gauges so they fit cleanly. */
+.gauge-grid[data-rows="4"] {
+  gap: clamp(2px, 0.4vh, 5px) clamp(10px, 1.3vw, 20px);
+}
+.gauge-grid[data-rows="4"] .gauge-visual {
+  width: min(100%, 108px, 8.2vh);
+}
+.gauge-grid[data-rows="4"] .gauge-number strong {
+  font-size: clamp(12px, 0.8vw, 17px);
+}
+.gauge-grid[data-rows="4"] .gauge-number span {
+  font-size: clamp(8px, 0.48vw, 11px);
+}
+.gauge-grid[data-rows="4"] .gauge-name {
+  max-width: 140px;
+  font-size: clamp(10px, 0.66vw, 13px);
+}
+
 .empty-state {
   grid-column: 1 / -1;
   align-self: center;
@@ -629,9 +647,10 @@ body {
   display: flex;
   flex-direction: column;
 }
-/* Split the Ping panel into 网络设备 (most space) + 服务器 (a strip below). */
-.ping-panel #pingGaugeGrid { flex: 5 1 0; min-height: 0; }
-.ping-panel #pingServerGaugeGrid { flex: 2 1 0; min-height: 0; }
+/* Split the Ping panel into 网络设备 (takes the remaining height, clipped so it
+   never bleeds into the label below) + 服务器 (a compact strip at its own size). */
+.ping-panel #pingGaugeGrid { flex: 1 1 0; min-height: 0; overflow: hidden; }
+.ping-panel #pingServerGaugeGrid { flex: 0 0 auto; }
 .gauge-subhead {
   flex: 0 0 auto;
   margin: 3px 0 0 2px;

@@ -244,7 +244,7 @@
   function renderGaugeGrid(containerId, items, kind) {
     const container = document.getElementById(containerId);
     const formatter = kind === "ping" ? formatPing : formatUptime;
-    const rows = Math.max(1, Math.min(items.length, items.length > 8 ? 3 : 2));
+    const rows = Math.max(1, Math.min(items.length, items.length > 16 ? 4 : items.length > 8 ? 3 : 2));
     const columns = Math.max(1, Math.ceil(items.length / rows));
     container.dataset.rows = String(rows);
     container.style.setProperty("--gauge-columns", String(columns));
