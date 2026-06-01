@@ -739,7 +739,7 @@
   grid-column: 1;
   grid-row: 2;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  grid-template-rows: 0.52fr 0.72fr 0.62fr 0.9fr;
+  grid-template-rows: 0.56fr 0.8fr 0.4fr 0.96fr;
   gap: 7px;
 }
 
