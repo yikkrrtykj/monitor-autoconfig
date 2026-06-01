@@ -2794,6 +2794,94 @@
     }
   }
 
+  const topoView = { scale: 1, x: 0, y: 0 };
+
+  function applyTopoView() {
+    const canvas = document.getElementById("topologyCanvas");
+    const svg = canvas && canvas.querySelector(".topology-svg");
+    if (!svg) return;
+    svg.style.transformOrigin = "0 0";
+    svg.style.transform = `translate(${topoView.x}px, ${topoView.y}px) scale(${topoView.scale})`;
+  }
+
+  function resetTopoView() {
+    topoView.scale = 1;
+    topoView.x = 0;
+    topoView.y = 0;
+    applyTopoView();
+  }
+
+  // Drag to pan, wheel to zoom. Bound once on the canvas container so it
+  // survives the 10s re-render; the transform itself is re-applied each refresh.
+  function setupTopoPanZoom() {
+    const canvas = document.getElementById("topologyCanvas");
+    if (!canvas || canvas.dataset.panzoom === "1") return;
+    canvas.dataset.panzoom = "1";
+
+    let dragging = false;
+    let moved = false;
+    let startX = 0;
+    let startY = 0;
+    let originX = 0;
+    let originY = 0;
+
+    canvas.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      dragging = true;
+      moved = false;
+      startX = event.clientX;
+      startY = event.clientY;
+      originX = topoView.x;
+      originY = topoView.y;
+      canvas.classList.add("topology-grabbing");
+      try { canvas.setPointerCapture(event.pointerId); } catch (e) {}
+    });
+
+    canvas.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      const dx = event.clientX - startX;
+      const dy = event.clientY - startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+      topoView.x = originX + dx;
+      topoView.y = originY + dy;
+      applyTopoView();
+    });
+
+    const endDrag = (event) => {
+      if (!dragging) return;
+      dragging = false;
+      canvas.classList.remove("topology-grabbing");
+      try { canvas.releasePointerCapture(event.pointerId); } catch (e) {}
+    };
+    canvas.addEventListener("pointerup", endDrag);
+    canvas.addEventListener("pointercancel", endDrag);
+
+    // If the pointer actually dragged, swallow the trailing click so it neither
+    // clears the detail panel nor opens a node.
+    canvas.addEventListener("click", (event) => {
+      if (moved) {
+        event.stopPropagation();
+        moved = false;
+      }
+    }, true);
+
+    canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const cx = event.clientX - rect.left;
+      const cy = event.clientY - rect.top;
+      const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const next = Math.min(4, Math.max(0.3, topoView.scale * factor));
+      const ratio = next / topoView.scale;
+      topoView.x = cx - (cx - topoView.x) * ratio;
+      topoView.y = cy - (cy - topoView.y) * ratio;
+      topoView.scale = next;
+      applyTopoView();
+    }, { passive: false });
+
+    canvas.addEventListener("dblclick", resetTopoView);
+  }
+
   async function refreshTopology() {
     const canvas = document.getElementById("topologyCanvas");
     if (!canvas) return;
@@ -2803,12 +2891,21 @@
         fetchTopologyEdges()
       ]);
       const layers = buildTopologyLayers(targets);
-      const width = Math.max(640, canvas.clientWidth || 1200);
+      const containerWidth = Math.max(640, canvas.clientWidth || 1200);
       const height = Math.max(420, canvas.clientHeight || 680);
+      // Lay the graph out at its natural width so a long row of access switches
+      // doesn't get squeezed/overlapped; pan & zoom let you explore the rest.
+      const maxRow = Math.max(
+        layers.isps.length, layers.firewalls.length,
+        layers.cores.length, layers.servers.length, layers.dists.length, 1
+      );
+      const width = Math.max(containerWidth, maxRow * 152 + 48);
       const layout = topologyLayout(layers, width, height, edges);
       canvas.innerHTML = renderTopologySvg(layout, width);
       bindTopologyNodeEvents(layout.nodes);
-      document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
+      setupTopoPanZoom();
+      applyTopoView();
+      document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · 拖动平移·滚轮缩放·双击复位${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
     } catch (error) {
       console.error("Topology fetch failed:", error);
       canvas.innerHTML = `<div class="topology-error">拓扑数据拉取失败: ${escapeHtml(error.message || "")}</div>`;
@@ -2838,6 +2935,7 @@
     const detail = document.getElementById("topologyDetail");
     detail.hidden = true;
     detail.innerHTML = `<div class="topology-empty">点击任意节点查看详情</div>`;
+    resetTopoView();
     startTopologyRefresh();
   }
 
