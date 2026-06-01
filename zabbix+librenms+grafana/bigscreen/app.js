@@ -1010,10 +1010,16 @@
         prometheusQuery(pingGaugeQuery),
         prometheusQuery(uptimeQuery)
       ]);
-      renderGaugeGrid("pingGaugeGrid", visibleInfraItems(pingItems), "ping");
+      const isServerItem = (item) => (item.metric && item.metric.job) === "infra-srv-ping";
+      const networkPing = pingItems.filter((item) => !isServerItem(item));
+      const serverPing = pingItems.filter(isServerItem);
+      renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
+      // Servers aren't stage devices, so they aren't subject to the stage filter.
+      renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping");
       renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime");
     } catch (error) {
       renderGaugeGrid("pingGaugeGrid", [], "ping");
+      renderGaugeGrid("pingServerGaugeGrid", [], "ping");
       renderGaugeGrid("uptimeGaugeGrid", [], "uptime");
       console.error(error);
     }
