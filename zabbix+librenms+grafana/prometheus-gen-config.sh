@@ -13,6 +13,10 @@ SNMP_AUTH="${SNMP_AUTH:-global}"
 PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
+# 交换机/防火墙 uptime（运行时长）SNMP 单独的采集间隔。运行时长显示的是"天"，
+# 不需要跟随全局 5-10s 高频采集；拉长可减轻 2960 等弱 CPU 交换机的控制平面负担，
+# 避免其管理口 ICMP 被周期性 SNMP GET 推迟而出现 ping 尖峰。
+SNMP_UPTIME_SCRAPE_INTERVAL="${SNMP_UPTIME_SCRAPE_INTERVAL:-60s}"
 
 # Parse "NAME:IP" or "NAME:IP-START-IP-END" format.
 # Outputs Prometheus static_config target lines with display_name label.
@@ -185,15 +189,19 @@ write_snmp_job() {
   job_name="$1"
   targets="$2"
   module="${3:-if_mib}"
+  interval="${4:-}"
 
-  cat >> "$CONFIG_FILE" <<EOF
-  - job_name: "${job_name}"
-    metrics_path: /snmp
-    params:
-      auth: [${SNMP_AUTH}]
-      module: [${module}]
-    static_configs:
-EOF
+  {
+    echo "  - job_name: \"${job_name}\""
+    if [ -n "$interval" ]; then
+      echo "    scrape_interval: ${interval}"
+    fi
+    echo "    metrics_path: /snmp"
+    echo "    params:"
+    echo "      auth: [${SNMP_AUTH}]"
+    echo "      module: [${module}]"
+    echo "    static_configs:"
+  } >> "$CONFIG_FILE"
 
   if has_labeled_targets "$targets"; then
     write_labeled_targets "$targets" >> "$CONFIG_FILE"
@@ -247,8 +255,8 @@ write_ping_job "infra-srv-ping"   "$SERVER_PING"
 # Infrastructure SNMP jobs for device uptime
 SWITCH_SNMP_TARGETS="${CORE_SWITCH_PING}${CORE_SWITCH_PING:+,}${DIST_SWITCH_PING}"
 FIREWALL_SNMP_UPTIME_TARGETS="$(apply_reference_names "$FIREWALL_SNMP_TARGETS" "$FIREWALL_PING")"
-write_snmp_job "infra-switch-snmp" "$SWITCH_SNMP_TARGETS" "system_uptime"
-write_snmp_job "infra-fw-snmp"     "$FIREWALL_SNMP_UPTIME_TARGETS" "system_uptime"
+write_snmp_job "infra-switch-snmp" "$SWITCH_SNMP_TARGETS" "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
+write_snmp_job "infra-fw-snmp"     "$FIREWALL_SNMP_UPTIME_TARGETS" "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
 
 # Firewall SNMP
 cat >> "$CONFIG_FILE" <<EOF

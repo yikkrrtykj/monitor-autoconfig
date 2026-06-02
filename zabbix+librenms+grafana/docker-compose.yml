@@ -586,7 +586,7 @@ services:
           python3 /generate-topology-edges.py 2>&1 | while IFS= read -r line; do
             echo "[topology] $$line"
           done
-          sleep "$${TOPOLOGY_REFRESH_INTERVAL:-60}"
+          sleep "$${TOPOLOGY_REFRESH_INTERVAL:-300}"
         done
 
   librenms:
