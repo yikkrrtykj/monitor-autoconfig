@@ -323,6 +323,7 @@ services:
       SNMP_AUTH: "${SNMP_AUTH:-global}"
       PROMETHEUS_SCRAPE_INTERVAL: "${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
       PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
+      SNMP_UPTIME_SCRAPE_INTERVAL: "${SNMP_UPTIME_SCRAPE_INTERVAL:-60s}"
       PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
     volumes:
       - prometheus-data:/prometheus
