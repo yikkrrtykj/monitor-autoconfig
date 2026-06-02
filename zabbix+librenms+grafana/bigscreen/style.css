@@ -215,9 +215,10 @@ body {
   align-self: center;
   height: 100%;
   width: auto;
-  max-width: 100%;
-  /* Cap so few-device / tall cells (e.g. the match page) don't blow the gauge
-     up to a giant; small cells (many devices) still fill and shrink. */
+  /* Cap to the original size (by width AND height) so few-device / tall-or-wide
+     cells, e.g. the match page, can't blow the gauge up to a giant; small cells
+     (many devices) still fill and shrink. */
+  max-width: min(100%, 220px, 16.5vh);
   max-height: 11.5vh;
   aspect-ratio: 220 / 150;
   margin-inline: auto;
