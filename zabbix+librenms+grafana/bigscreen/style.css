@@ -134,7 +134,7 @@ body {
   min-width: 0;
   min-height: 0;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  grid-template-rows: 36fr 22fr 16fr 26fr;
+  grid-template-rows: 31fr 20fr 23fr 26fr;
   gap: 8px 10px;
 }
 
@@ -651,7 +651,7 @@ body {
    whole width, so cap their size (the data-rows=2 default is large). Scoped to
    infra so the match page keeps its own (tournament-mode) sizing. */
 .screen.infra-mode .ping-panel #pingGaugeGrid .gauge-visual,
-.screen.infra-mode .uptime-panel .gauge-visual { width: min(100%, 120px, 9.5vh); }
+.screen.infra-mode .uptime-panel .gauge-visual { width: min(100%, 104px, 8vh); }
 /* 网络设备 grid takes the remaining height (clipped, never bleeds into the
    label below); 服务器 is a compact, height-capped strip so it can never crowd
    the network grid out of the panel. */
