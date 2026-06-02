@@ -681,7 +681,7 @@
   }
 
   function isGatewayAddress(ip) {
-    return /\.(?:1|254)$/.test(String(ip || ""));
+    return /\.254$/.test(String(ip || ""));
   }
 
   function preferPlayer(prev, candidate) {
@@ -1141,7 +1141,7 @@
         { label: "无线目标", value: players.length, note: "当前识别到的无线选手" },
         { label: "在线", value: online, level: !players.length || online === players.length ? "good" : "warn", note: "当前可达" },
         { label: "高延迟", value: high, level: high ? "warn" : "good", note: ">= 80 ms" },
-        { label: "疑似网关", value: gatewayIps.size, level: gatewayIps.size ? "bad" : "good", note: ".1 / .254" },
+        { label: "疑似网关", value: gatewayIps.size, level: gatewayIps.size ? "bad" : "good", note: ".254" },
         { label: "最高延迟", value: Number.isFinite(maxLatency) ? formatPingText(maxLatency) : "-", level: maxLatency >= 0.08 ? "warn" : "good" }
       ]);
       renderWirelessBoard(players);
