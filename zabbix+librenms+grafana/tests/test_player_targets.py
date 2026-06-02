@@ -274,6 +274,7 @@ class TestWirelessScanExclusions:
 
     def test_gateway_like_ips_excludes_only_last_host(self):
         result = gpt.gateway_like_ips([IPv4Network("172.16.40.0/24")])
+        assert "172.16.40.1" not in result
         assert "172.16.40.254" in result
         assert "172.16.40.2" not in result
 
