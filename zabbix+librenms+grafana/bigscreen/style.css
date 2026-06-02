@@ -216,6 +216,9 @@ body {
   height: 100%;
   width: auto;
   max-width: 100%;
+  /* Cap so few-device / tall cells (e.g. the match page) don't blow the gauge
+     up to a giant; small cells (many devices) still fill and shrink. */
+  max-height: 11.5vh;
   aspect-ratio: 220 / 150;
   margin-inline: auto;
   filter: drop-shadow(0 14px 22px rgba(0, 0, 0, 0.48));
