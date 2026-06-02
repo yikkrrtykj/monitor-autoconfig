@@ -134,7 +134,7 @@ body {
   min-width: 0;
   min-height: 0;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  grid-template-rows: 31fr 20fr 23fr 26fr;
+  grid-template-rows: 35fr 24fr 28fr;
   gap: 8px 10px;
 }
 
@@ -642,16 +642,11 @@ body {
 }
 
 .ping-panel {
-  grid-column: 1 / 13;
+  grid-column: 1 / 7;
   grid-row: 1;
   display: flex;
   flex-direction: column;
 }
-/* Full-width Ping/运行时长 on the infra page: gauges sit on ~2 rows across the
-   whole width, so cap their size (the data-rows=2 default is large). Scoped to
-   infra so the match page keeps its own (tournament-mode) sizing. */
-.screen.infra-mode .ping-panel #pingGaugeGrid .gauge-visual,
-.screen.infra-mode .uptime-panel .gauge-visual { width: min(100%, 104px, 8vh); }
 /* 网络设备 grid takes the remaining height (clipped, never bleeds into the
    label below); 服务器 is a compact, height-capped strip so it can never crowd
    the network grid out of the panel. */
@@ -671,24 +666,24 @@ body {
 }
 
 .uptime-panel {
-  grid-column: 1 / 13;
-  grid-row: 2;
+  grid-column: 7 / 13;
+  grid-row: 1;
 }
 
 .trend-panel {
   grid-column: 1 / 9;
-  grid-row: 3;
+  grid-row: 2;
 }
 
 .loss-panel {
   grid-column: 9 / 13;
-  grid-row: 3;
+  grid-row: 2;
 }
 
 .isp-grid {
   display: grid;
   grid-column: 1 / 13;
-  grid-row: 4;
+  grid-row: 3;
   grid-template-columns: repeat(var(--isp-count, 2), minmax(0, 1fr));
   gap: 10px;
 }

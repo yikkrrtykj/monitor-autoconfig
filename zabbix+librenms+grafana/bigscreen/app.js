@@ -247,7 +247,7 @@
     const formatter = kind === "ping" ? formatPing : formatUptime;
     const rows = forceRows
       ? Math.max(1, Math.min(items.length, forceRows))
-      : Math.max(1, Math.min(items.length, items.length > 16 ? 4 : items.length > 8 ? 3 : 2));
+      : Math.max(1, Math.min(items.length, items.length > 8 ? 3 : 2));
     const columns = Math.max(1, Math.ceil(items.length / rows));
     container.dataset.rows = String(rows);
     container.style.setProperty("--gauge-columns", String(columns));
@@ -1016,11 +1016,10 @@
       const isServerItem = (item) => (item.metric && item.metric.job) === "infra-srv-ping";
       const networkPing = pingItems.filter((item) => !isServerItem(item));
       const serverPing = pingItems.filter(isServerItem);
-      // Network gauges + uptime span the full panel width on 2 rows.
-      renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping", 2);
+      renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
       // Servers aren't stage devices (skip the stage filter); keep them on one row.
       renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
-      renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime", 2);
+      renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime");
     } catch (error) {
       renderGaugeGrid("pingGaugeGrid", [], "ping");
       renderGaugeGrid("pingServerGaugeGrid", [], "ping");
