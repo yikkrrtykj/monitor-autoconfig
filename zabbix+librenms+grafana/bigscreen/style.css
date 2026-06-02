@@ -200,33 +200,31 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between; /* 撑满上下边缘 */
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
+  padding: 2px;
 }
 
 /* Sizes to fill its grid cell (height-driven) so more devices -> smaller cells
    -> smaller gauges, always fully visible, at any resolution. */
 .gauge-visual {
   position: relative;
-  align-self: center;
+  flex: 1 1 0%; /* 核心：允许图表随着容器高度变矮而自动等比例缩放 */
+  width: 100%;
   height: 100%;
-  width: auto;
-  /* Cap to the original size (by width AND height) so few-device / tall-or-wide
-     cells, e.g. the match page, can't blow the gauge up to a giant; small cells
-     (many devices) still fill and shrink. */
-  max-width: 140px; 
+  max-width: 130px; /* 给一个在 2K 缩放屏下最舒适的最大宽度上限 */
   aspect-ratio: 220 / 150;
-  margin-inline: auto;
+  margin: 0 auto;
   filter: drop-shadow(0 14px 22px rgba(0, 0, 0, 0.48));
 }
 
 .gauge-visual svg {
-  display: block;
   width: 100%;
   height: 100%;
-  overflow: visible;
 }
 
 .threshold,
@@ -291,38 +289,32 @@ body {
 .gauge-number {
   position: absolute;
   left: 50%;
-  top: 69%;
+  top: 65%;
+  transform: translate(-50%, -50%);
   display: flex;
   align-items: baseline;
-  gap: 4px;
-  color: #dbe5ff;
-  transform: translate(-50%, -50%);
+  gap: 2px;
   white-space: nowrap;
 }
 
 .gauge-number strong {
-  font-size: clamp(19px, 1.42vw, 29px);
-  font-weight: 520;
-  line-height: 1;
-  text-shadow: 0 0 10px rgba(117, 183, 255, 0.18);
+  font-size: clamp(14px, 1.2vw, 22px); 
+  font-weight: 600;
 }
 
 .gauge-number span {
-  font-size: clamp(10px, 0.72vw, 15px);
-  font-weight: 500;
+  font-size: 10px;
 }
 
 .gauge-name {
   width: 100%;
-  max-width: 240px;
-  overflow: hidden;
-  color: #c4d4f4;
-  font-size: clamp(14px, 0.95vw, 17px);
-  font-weight: 800;
-  line-height: 1.05;
+  font-size: clamp(11px, 0.8vw, 13px); 
+  font-weight: 700;
   text-align: center;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  margin-top: 2px;
 }
 
 .gauge-grid[data-rows="3"] .gauge-number strong {
