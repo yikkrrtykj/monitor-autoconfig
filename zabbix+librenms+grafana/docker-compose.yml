@@ -859,7 +859,13 @@ services:
           }
 
           location /prometheus/ {
-            proxy_pass http://prometheus:9090/;
+            # 用 Docker 内嵌 DNS（127.0.0.11）运行时解析 prometheus，避免其容器重建后
+            # 换了 IP、而 nginx 仍缓存旧 IP 导致 502。写死主机名的 proxy_pass 只在 nginx
+            # 启动时解析一次；用变量 + resolver 可强制每 30s 重新解析。
+            resolver 127.0.0.11 valid=30s ipv6=off;
+            set $$prom_upstream prometheus;
+            rewrite ^/prometheus/(.*)$$ /$$1 break;
+            proxy_pass http://$$prom_upstream:9090;
           }
 
           location /topology/ {
