@@ -792,10 +792,6 @@
   gap: 2px 6px;
 }
 
-.screen.tournament-mode .gauge-visual {
-  width: min(100%, 112px, 8.2vh);
-}
-
 .screen.tournament-mode .gauge-name {
   max-width: 120px;
   font-size: 11px;

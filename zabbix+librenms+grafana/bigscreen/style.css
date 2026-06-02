@@ -185,12 +185,11 @@ body {
   min-width: 0;
   min-height: 0;
   grid-template-columns: repeat(var(--gauge-columns, 3), minmax(0, 1fr));
-  grid-template-rows: repeat(var(--gauge-rows, 2), max-content);
-  grid-auto-rows: max-content;
-  align-content: center;
-  align-items: center;
-  justify-items: center;
-  gap: clamp(6px, 0.95vh, 12px) clamp(18px, 2.1vw, 34px);
+  grid-template-rows: repeat(var(--gauge-rows, 2), minmax(0, 1fr));
+  align-content: stretch;
+  align-items: stretch;
+  justify-items: stretch;
+  gap: clamp(4px, 0.7vh, 10px) clamp(12px, 1.6vw, 28px);
 }
 
 .gauge-grid[data-rows="3"] {
@@ -199,25 +198,27 @@ body {
 
 .gauge-item {
   display: grid;
-  grid-template-rows: auto 20px;
+  grid-template-rows: minmax(0, 1fr) auto;
   width: 100%;
-  height: auto;
+  height: 100%;
   min-width: 0;
-  align-content: center;
+  min-height: 0;
+  align-content: stretch;
   justify-items: center;
   gap: 1px;
 }
 
+/* Sizes to fill its grid cell (height-driven) so more devices -> smaller cells
+   -> smaller gauges, always fully visible, at any resolution. */
 .gauge-visual {
   position: relative;
   align-self: center;
-  width: min(100%, 220px, 16.5vh);
+  height: 100%;
+  width: auto;
+  max-width: 100%;
   aspect-ratio: 220 / 150;
+  margin-inline: auto;
   filter: drop-shadow(0 14px 22px rgba(0, 0, 0, 0.48));
-}
-
-.gauge-grid[data-rows="3"] .gauge-visual {
-  width: min(100%, 156px, 11.8vh);
 }
 
 .gauge-visual svg {
@@ -339,9 +340,6 @@ body {
 /* Dense tier: many devices in one panel — smaller gauges so they fit cleanly. */
 .gauge-grid[data-rows="4"] {
   gap: clamp(2px, 0.4vh, 5px) clamp(10px, 1.3vw, 20px);
-}
-.gauge-grid[data-rows="4"] .gauge-visual {
-  width: min(100%, 108px, 8.2vh);
 }
 .gauge-grid[data-rows="4"] .gauge-number strong {
   font-size: clamp(12px, 0.8vw, 17px);
@@ -651,8 +649,9 @@ body {
    label below); 服务器 is a compact, height-capped strip so it can never crowd
    the network grid out of the panel. */
 .ping-panel #pingGaugeGrid { flex: 1 1 0; min-height: 0; overflow: hidden; }
-.ping-panel #pingServerGaugeGrid { flex: 0 0 auto; min-height: 0; max-height: 40%; overflow: hidden; }
-.ping-panel #pingServerGaugeGrid .gauge-visual { width: min(100%, 96px, 7.2vh); }
+/* Fixed share (not content height) so the gauges' 1fr rows have a definite
+   height to fill; network grid above takes the rest. */
+.ping-panel #pingServerGaugeGrid { flex: 0 0 23%; min-height: 0; overflow: hidden; }
 .ping-panel #pingServerGaugeGrid .gauge-number strong { font-size: clamp(11px, 0.74vw, 15px); }
 .ping-panel #pingServerGaugeGrid .gauge-number span { font-size: clamp(8px, 0.44vw, 10px); }
 .ping-panel #pingServerGaugeGrid .gauge-name { font-size: clamp(10px, 0.6vw, 12px); }
