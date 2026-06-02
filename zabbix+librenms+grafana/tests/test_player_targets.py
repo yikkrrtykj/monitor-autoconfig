@@ -4,6 +4,7 @@ Pure functions only. Module is loaded via importlib because the script
 ships with hyphens in its filename (matching its container path).
 """
 import importlib.util
+import json
 import os
 import pathlib
 import sys
@@ -741,3 +742,41 @@ class TestRequireLinkUpFilter:
         targets, stats = gpt.join_gateway_arp_to_teams(arp, idx, [], require_link_up=True)
         assert len(targets) == 1
         assert stats["matched"] == 1
+
+
+# ---- atomic_write_json() ------------------------------------------
+
+class TestAtomicWriteJson:
+    def test_empty_list_writes_valid_empty_array(self, tmp_path):
+        # Regression: a plain open(path, "w") + json.dump truncated the file to
+        # 0 bytes before writing, so a Prometheus file_sd read landing in that
+        # window failed with "unexpected end of JSON input". Zero targets must
+        # still land as a valid "[]", never a 0-byte file.
+        out = tmp_path / "player_targets.json"
+        gpt.atomic_write_json(str(out), [])
+        text = out.read_text()
+        assert text.strip() != ""
+        assert json.loads(text) == []
+
+    def test_round_trips_targets(self, tmp_path):
+        out = tmp_path / "player_targets.json"
+        targets = [{
+            "targets": ["192.168.11.10"],
+            "labels": {"team": "1", "seat": "1", "switch": "static",
+                       "network": "wired", "role": "player"},
+        }]
+        gpt.atomic_write_json(str(out), targets)
+        assert json.loads(out.read_text()) == targets
+
+    def test_overwrites_existing_without_leaving_tmp(self, tmp_path):
+        out = tmp_path / "player_targets.json"
+        gpt.atomic_write_json(str(out), [{"targets": ["1.1.1.1"]}])
+        gpt.atomic_write_json(str(out), [])
+        assert json.loads(out.read_text()) == []
+        # The temp file used for the atomic swap must not linger.
+        assert not (tmp_path / "player_targets.json.tmp").exists()
+
+    def test_creates_missing_parent_dir(self, tmp_path):
+        out = tmp_path / "nested" / "dir" / "player_targets.json"
+        gpt.atomic_write_json(str(out), [])
+        assert json.loads(out.read_text()) == []

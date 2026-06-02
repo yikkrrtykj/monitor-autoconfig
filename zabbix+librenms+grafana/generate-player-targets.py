@@ -802,6 +802,27 @@ def verify_targets_alive(targets, timeout=1, workers=64):
     return kept
 
 
+def atomic_write_json(path, data):
+    """Write `data` as JSON to `path` atomically.
+
+    Prometheus file_sd watches this path with inotify and re-reads it on every
+    change. A plain open(path, "w") truncates the file to 0 bytes before
+    json.dump writes anything, so a read landing in that window fails with
+    "unexpected end of JSON input" (and spams Prometheus's logs every poll).
+
+    Writing to a temp file in the same directory and os.replace()-ing it onto
+    the final path makes the swap atomic: a reader sees either the old file or
+    the fully-written new one, never a half-written or empty file. An empty
+    list still serializes to a valid "[]", never a 0-byte file.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 def main():
     switches_raw = os.environ.get("TOURNAMENT_SWITCHES", "")
     community = os.environ.get("SNMP_COMMUNITY", "global")
@@ -930,9 +951,7 @@ def main():
         t["labels"]["network"],
     ))
 
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    with open(output_file, "w") as f:
-        json.dump(all_targets, f, indent=2)
+    atomic_write_json(output_file, all_targets)
 
     print(f"[INFO] generated {len(all_targets)} player targets -> {output_file}", file=sys.stderr)
     return 0
