@@ -323,7 +323,7 @@ services:
       SNMP_AUTH: "${SNMP_AUTH:-global}"
       PROMETHEUS_SCRAPE_INTERVAL: "${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
       PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
-      SNMP_UPTIME_SCRAPE_INTERVAL: "${SNMP_UPTIME_SCRAPE_INTERVAL:-60s}"
+      SNMP_UPTIME_SCRAPE_INTERVAL: "${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
       PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
     volumes:
       - prometheus-data:/prometheus
@@ -587,7 +587,7 @@ services:
           python3 /generate-topology-edges.py 2>&1 | while IFS= read -r line; do
             echo "[topology] $$line"
           done
-          sleep "$${TOPOLOGY_REFRESH_INTERVAL:-300}"
+          sleep "$${TOPOLOGY_REFRESH_INTERVAL:-600}"
         done
 
   librenms:
