@@ -39,7 +39,7 @@ Environment variables:
                          comma-separated IPs/ranges to exclude from wireless
                          scan (e.g. 192.168.12.220-254)
   PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS
-                         true/false, skip first and last host in each
+                         true/false, skip the last host in each
                          wireless subnet (default: true)
 """
 
@@ -490,7 +490,6 @@ def gateway_like_ips(subnets):
     for net in subnets:
         hosts = list(net.hosts())
         if len(hosts) > 2:
-            excluded.add(str(hosts[0]))
             excluded.add(str(hosts[-1]))
     return excluded
 
