@@ -58,11 +58,7 @@ const coreStageLinks = layout.links.filter((link) => (
   [link.from.kind, link.to.kind].includes("dist")
 ));
 assert.strictEqual(coreStageLinks.length, 1);
-// Real port names now shown on each end instead of a "N uplinks" summary:
-// access-switch uplink ports at the bottom, core downlink ports at the top.
-assert.ok(!("label" in coreStageLinks[0]), "old single 'N uplinks' label is gone");
-assert.strictEqual(coreStageLinks[0].toPortLabel, "Gi1/0/23,Gi1/0/24");
-assert.ok(coreStageLinks[0].fromPortLabel.includes("Gi1/0/25"), "core-side downlink ports are listed");
+assert.strictEqual(coreStageLinks[0].label, "2 uplinks");
 assert.strictEqual(coreStageLinks[0].severity, "warn");
 assert.ok(coreStageLinks[0].busLink);
 assert.ok(coreStageLinks[0].aggregated, "a multi-uplink bundle is flagged aggregated (drawn thicker)");
