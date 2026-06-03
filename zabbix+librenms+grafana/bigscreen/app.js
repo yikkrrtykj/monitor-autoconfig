@@ -2574,19 +2574,23 @@
     );
     const cleanPortNames = (ports) => uniqueNames(ports.map(compactPortLabel)).filter((port) => port && isPortLikeLabel(port));
     const isAggPortName = (port) => /^(?:po|lag|trk|ae|be|eth-trunk)\s*\d+/i.test(port);
-    const portSummary = (fromPorts, toPorts, maxPhysical = Infinity) => {
-      const fromUnique = cleanPortNames(fromPorts);
-      const toUnique = cleanPortNames(toPorts);
-      // A port-channel interface name (Po4/LAG1…) is the bundle, not a member — so
-      // count the real member ports and always label bonded links uniformly as
-      // "N uplinks" (some switches advertise the Po, others the member ports).
-      const hasAgg = fromUnique.some(isAggPortName) || toUnique.some(isAggPortName);
-      const fromPhys = fromUnique.filter((port) => !isAggPortName(port));
-      const toPhys = toUnique.filter((port) => !isAggPortName(port));
-      let physicalCount = Math.min(maxPhysical, Math.max(fromPhys.length, toPhys.length));
-      if (hasAgg && physicalCount < 2) physicalCount = 2; // a bundle has ≥2 members
-      if (physicalCount > 1) return `${physicalCount} uplinks`;
-      return fromPhys[0] || toPhys[0] || fromUnique[0] || toUnique[0] || "";
+    // Show the actual port name(s) for one end of a link (e.g. "Gi1/0/49,Gi1/0/50"
+    // or "Po1") instead of a "N uplinks" summary. Caps at 3 names + "+N" overflow.
+    const portList = (ports) => {
+      const clean = cleanPortNames(ports);
+      if (!clean.length) return "";
+      if (clean.length > 3) return `${clean.slice(0, 3).join(",")}+${clean.length - 3}`;
+      return clean.join(",");
+    };
+    // A link is "bonded" (EtherChannel/LAG → drawn thicker) when either end carries a
+    // Po/LAG bundle name or more than one physical member port.
+    const isBondedPorts = (fromPorts, toPorts) => {
+      const f = cleanPortNames(fromPorts);
+      const t = cleanPortNames(toPorts);
+      if (f.some(isAggPortName) || t.some(isAggPortName)) return true;
+      const fPhys = f.filter((p) => !isAggPortName(p)).length;
+      const tPhys = t.filter((p) => !isAggPortName(p)).length;
+      return Math.max(fPhys, tPhys) > 1;
     };
 
     const lldpLinks = [];
@@ -2615,20 +2619,18 @@
         groupedEdges.set(pairKey, group);
       });
       groupedEdges.forEach((group, pairKey) => {
-        const isCoreDist = (
-          (group.from.kind === "core" && group.to.kind === "dist") ||
-          (group.from.kind === "dist" && group.to.kind === "core")
-        );
-        const label = portSummary(group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
+        // from = upper device → its port is the 下联口 (downlink), labelled at the top
+        // end; to = lower device → its port is the 上联口 (uplink), labelled at the
+        // bottom end. Show real port names on both ends instead of "N uplinks".
         lldpLinks.push({
           from: group.from,
           to: group.to,
-          label,
+          fromPortLabel: portList(group.fromPorts),
+          toPortLabel: portList(group.toPorts),
           severity: group.to.level || "good",
           logical: true,
-          // Bonded uplink (EtherChannel/LAG): a "N uplinks" summary or >1 member edge.
-          // Drawn thicker so a single-link uplink stands out.
-          aggregated: group.count > 1 || /uplinks?/i.test(label || "")
+          // Bonded uplink (EtherChannel/LAG) drawn thicker so it stands out.
+          aggregated: group.count > 1 || isBondedPorts(group.fromPorts, group.toPorts)
         });
         lldpCoveredPairs.add(pairKey);
       });
@@ -2662,18 +2664,39 @@
       const coreX = primaryCore.x + primaryCore.w / 2;
       const coreY = primaryCore.y + primaryCore.h;
       const distCenters = distRow.map((node) => node.x + node.w / 2);
+      const sided = hasServers && serverRow.length > 0;
       const busY = Math.min(
-        rowY(3) - 28,
-        hasServers ? serverRowY + NODE_H + 18 : coreY + Math.max(28, layerGap * 0.34)
+        rowY(3) - 26,
+        sided ? serverRowY + NODE_H + 22 : coreY + Math.max(28, layerGap * 0.34)
       );
-      coreBus = {
-        x1: Math.min(coreX, ...distCenters),
-        x2: Math.max(coreX, ...distCenters),
-        y: busY,
-        coreX,
-        coreY,
-        severity: primaryCore.level || "good"
-      };
+      if (sided) {
+        // Servers sit directly under the core; route the access-switch trunk AROUND
+        // them: core drops to a short split rail, which fans out to two side risers
+        // that flank the server row, then a bus rail below the servers feeds the
+        // access switches. Keeps the trunk off the server boxes.
+        const serverLeft = Math.min(...serverRow.map((s) => s.x));
+        const serverRight = Math.max(...serverRow.map((s) => s.x + s.w));
+        const leftX = Math.min(coreX, serverLeft - 26);
+        const rightX = Math.max(coreX, serverRight + 26);
+        const splitY = coreY + Math.max(12, (serverRowY - coreY) * 0.4);
+        coreBus = {
+          sided: true,
+          coreX, coreY, splitY, leftX, rightX,
+          y: busY,
+          x1: Math.min(leftX, ...distCenters),
+          x2: Math.max(rightX, ...distCenters),
+          severity: primaryCore.level || "good"
+        };
+      } else {
+        coreBus = {
+          sided: false,
+          coreX, coreY,
+          y: busY,
+          x1: Math.min(coreX, ...distCenters),
+          x2: Math.max(coreX, ...distCenters),
+          severity: primaryCore.level || "good"
+        };
+      }
       coreDistLinks.forEach((link) => {
         link.busLink = true;
       });
@@ -2754,29 +2777,54 @@
       return w;
     };
 
-    const coreBus = layout.coreBus
-      ? `<path class="topology-link topology-backbone link-${layout.coreBus.severity}" d="M ${layout.coreBus.coreX} ${layout.coreBus.coreY} L ${layout.coreBus.coreX} ${layout.coreBus.y} M ${layout.coreBus.x1} ${layout.coreBus.y} L ${layout.coreBus.x2} ${layout.coreBus.y}" />`
-      : "";
-
-    const linkPaths = layout.links.map((link) => {
-      let labelX;
-      let labelY;
+    const coreBus = (() => {
+      const b = layout.coreBus;
+      if (!b) return "";
       let d;
+      if (b.sided) {
+        // ⊓ around the servers: core ↓ to split rail, rail out to two side risers,
+        // risers ↓ past the servers, bus rail across the bottom to the switches.
+        d = `M ${b.coreX} ${b.coreY} L ${b.coreX} ${b.splitY}`
+          + ` M ${b.leftX} ${b.splitY} L ${b.rightX} ${b.splitY}`
+          + ` M ${b.leftX} ${b.splitY} L ${b.leftX} ${b.y}`
+          + ` M ${b.rightX} ${b.splitY} L ${b.rightX} ${b.y}`
+          + ` M ${b.x1} ${b.y} L ${b.x2} ${b.y}`;
+      } else {
+        d = `M ${b.coreX} ${b.coreY} L ${b.coreX} ${b.y} M ${b.x1} ${b.y} L ${b.x2} ${b.y}`;
+      }
+      return `<path class="topology-link topology-backbone link-${b.severity}" d="${d}" />`;
+    })();
+
+    const portLabelTag = (text, x, y) => text
+      ? `<text class="topology-link-label" x="${x}" y="${y}" text-anchor="middle">${escapeHtml(text)}</text>`
+      : "";
+    const linkPaths = layout.links.map((link) => {
+      let d;
+      let topLabel = "";
+      let bottomLabel = "";
+      const fpl = link.fromPortLabel || "";
+      const tpl = link.toPortLabel || "";
       if (link.busLink && layout.coreBus) {
-        const distNode = link.from.kind === "dist" ? link.from : link.to;
+        const fromIsDist = link.from.kind === "dist";
+        const distNode = fromIsDist ? link.from : link.to;
+        const downlinkPort = fromIsDist ? tpl : fpl; // 核心下联口 → 顶端(靠主干)
+        const uplinkPort = fromIsDist ? fpl : tpl;   // 交换机上联口 → 底端(靠交换机)
         const x = nodeCenterX(distNode);
         d = `M ${x} ${layout.coreBus.y} L ${x} ${distNode.y}`;
-        labelX = x;
-        labelY = layout.coreBus.y - 8;
+        topLabel = portLabelTag(downlinkPort, x, layout.coreBus.y - 6);
+        bottomLabel = portLabelTag(uplinkPort, x, distNode.y - 6);
       } else if (Math.abs(link.from.y - link.to.y) < 4) {
-        const left = link.from.x <= link.to.x ? link.from : link.to;
-        const right = left === link.from ? link.to : link.from;
+        const fromIsLeft = link.from.x <= link.to.x;
+        const left = fromIsLeft ? link.from : link.to;
+        const right = fromIsLeft ? link.to : link.from;
+        const leftPort = fromIsLeft ? fpl : tpl;
+        const rightPort = fromIsLeft ? tpl : fpl;
         const x1 = left.x + left.w;
         const x2 = right.x;
         const y = nodeCenterY(left);
         d = `M ${x1} ${y} L ${x2} ${y}`;
-        labelX = (x1 + x2) / 2;
-        labelY = y - 7;
+        topLabel = portLabelTag(leftPort, x1 + 18, y - 7);
+        bottomLabel = portLabelTag(rightPort, x2 - 18, y - 7);
       } else {
         const x1 = anchorX(link.from, link.fromSlot, link.fromSlotCount);
         const y1 = link.from.y + link.from.h;
@@ -2784,17 +2832,15 @@
         const y2 = link.to.y;
         const midY = (y1 + y2) / 2;
         d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
-        labelX = (x1 + x2) / 2;
-        labelY = midY - 5;
+        topLabel = portLabelTag(fpl, x1, y1 + 12);   // 上层设备的下联口
+        bottomLabel = portLabelTag(tpl, x2, y2 - 6);  // 下层设备的上联口
       }
-      const linkLabel = link.label
-        ? `<text class="topology-link-label" x="${labelX}" y="${labelY}" text-anchor="middle">${escapeHtml(link.label)}</text>`
-        : "";
       const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}${link.aggregated ? " link-aggregated" : ""}`;
       return `
         <g class="topology-link-group">
           <path class="${linkClass}" d="${d}" />
-          ${linkLabel}
+          ${topLabel}
+          ${bottomLabel}
         </g>
       `;
     }).join("");
