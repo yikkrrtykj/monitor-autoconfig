@@ -17,6 +17,13 @@ RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 # 不需要跟随全局 5-10s 高频采集；拉长可减轻 2960 等弱 CPU 交换机的控制平面负担，
 # 避免其管理口 ICMP 被周期性 SNMP GET 推迟而出现 ping 尖峰。
 SNMP_UPTIME_SCRAPE_INTERVAL="${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
+# ISP 链路饱和告警的阈值按每条 ISP 带宽走（取自 BIGSCREEN_ISP_MAX_BANDWIDTH），
+# 触发点 = 带宽 × ISP_SATURATION_PERCENT%。规则在本脚本里动态生成到 ISP_RULES_FILE。
+BIGSCREEN_ISP_MAX_BANDWIDTH="${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
+BIGSCREEN_ISP_NAMES="${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
+ISP_SATURATION_PERCENT="$(printf '%s' "${ISP_SATURATION_PERCENT:-80}" | tr -cd '0-9')"
+[ -n "$ISP_SATURATION_PERCENT" ] || ISP_SATURATION_PERCENT=80
+ISP_RULES_FILE="${ISP_RULES_FILE:-/tmp/prometheus-isp-rules.yml}"
 
 # Parse "NAME:IP" or "NAME:IP-START-IP-END" format.
 # Outputs Prometheus static_config target lines with display_name label.
@@ -230,6 +237,7 @@ global:
 
 rule_files:
   - /etc/prometheus/prometheus-alert-rules.yml
+  - ${ISP_RULES_FILE}
 
 alerting:
   alertmanagers:
@@ -307,6 +315,77 @@ cat >> "$CONFIG_FILE" <<EOF
     static_configs:
       - targets: ["blackbox-exporter:9115"]
 EOF
+
+# ---- ISP link-saturation rules: one per ISP, threshold = % of its configured Mbps ----
+# Matches the WAN interface the same way the bigscreen does (ISP name vs
+# ifAlias / ifName / ifDescr), so the alert hits the exact same interfaces.
+isp_default_down=1000
+isp_default_up=1000
+case "$BIGSCREEN_ISP_MAX_BANDWIDTH" in
+  *[!0-9.]* | '' ) : ;;
+  * ) isp_default_down="${BIGSCREEN_ISP_MAX_BANDWIDTH%%.*}"; isp_default_up="$isp_default_down" ;;
+esac
+
+isp_bw_for() {
+  _want="$1"; _d="$isp_default_down"; _u="$isp_default_up"
+  _oifs=$IFS; IFS=','
+  for _it in $BIGSCREEN_ISP_MAX_BANDWIDTH; do
+    IFS=$_oifs
+    _it=$(printf '%s' "$_it" | tr -d '[:space:]')
+    case "$_it" in
+      "$_want":*)
+        _bw="${_it#*:}"
+        case "$_bw" in
+          */*) _d="${_bw%%/*}"; _u="${_bw#*/}" ;;
+          *)   _d="$_bw"; _u="$_bw" ;;
+        esac ;;
+    esac
+    IFS=','
+  done
+  IFS=$_oifs
+  _d=$(printf '%s' "$_d" | sed 's/\..*//; s/[^0-9]//g'); [ -n "$_d" ] || _d=1000
+  _u=$(printf '%s' "$_u" | sed 's/\..*//; s/[^0-9]//g'); [ -n "$_u" ] || _u=1000
+  printf '%s %s' "$_d" "$_u"
+}
+
+isp_names_all=$(
+  {
+    printf '%s\n' "$BIGSCREEN_ISP_MAX_BANDWIDTH" | tr ',' '\n' | sed -n 's/^[[:space:]]*\([^:[:space:]][^:]*\):.*/\1/p'
+    printf '%s\n' "$BIGSCREEN_ISP_NAMES" | tr ',' '\n'
+  } | sed 's/[[:space:]]//g' | awk 'NF && !seen[$0]++'
+)
+
+if [ -n "$isp_names_all" ]; then
+  {
+    echo "groups:"
+    echo "  - name: isp-saturation-generated"
+    echo "    interval: 30s"
+    echo "    rules:"
+  } > "$ISP_RULES_FILE"
+  for _name in $isp_names_all; do
+    [ -n "$_name" ] || continue
+    _pair=$(isp_bw_for "$_name"); _down="${_pair% *}"; _up="${_pair#* }"
+    _thin=$(( ISP_SATURATION_PERCENT * _down * 1000000 / 100 ))
+    _thout=$(( ISP_SATURATION_PERCENT * _up * 1000000 / 100 ))
+    {
+      echo "      - alert: ISPLinkSaturation"
+      echo "        expr: |"
+      echo "          (sum(rate(ifHCInOctets{job=\"firewall-snmp\",ifAlias=\"${_name}\"}[1m]) or rate(ifHCInOctets{job=\"firewall-snmp\",ifAlias=\"\",ifName=\"${_name}\"}[1m]) or rate(ifHCInOctets{job=\"firewall-snmp\",ifAlias=\"\",ifName=\"\",ifDescr=\"${_name}\"}[1m])) * 8 > ${_thin})"
+      echo "          or (sum(rate(ifHCOutOctets{job=\"firewall-snmp\",ifAlias=\"${_name}\"}[1m]) or rate(ifHCOutOctets{job=\"firewall-snmp\",ifAlias=\"\",ifName=\"${_name}\"}[1m]) or rate(ifHCOutOctets{job=\"firewall-snmp\",ifAlias=\"\",ifName=\"\",ifDescr=\"${_name}\"}[1m])) * 8 > ${_thout})"
+      echo "        for: 2m"
+      echo "        labels:"
+      echo "          severity: warning"
+      echo "          component: isp"
+      echo "          isp: \"${_name}\""
+      echo "        annotations:"
+      echo "          summary: \"ISP 链路接近饱和: ${_name}\""
+      echo "          description: \"${_name} 流量持续超过 ${ISP_SATURATION_PERCENT}%（下行上限 ${_down}Mbps / 上行 ${_up}Mbps）\""
+    } >> "$ISP_RULES_FILE"
+  done
+else
+  echo "groups: []" > "$ISP_RULES_FILE"
+fi
+echo "  ISP rules: ${BIGSCREEN_ISP_MAX_BANDWIDTH}  ->  ${isp_names_all}"
 
 echo "Generated Prometheus config:"
 echo "  Core:    ${CORE_SWITCH_PING:-none}"
