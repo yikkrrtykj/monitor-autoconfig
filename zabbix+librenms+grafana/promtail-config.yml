@@ -1,0 +1,27 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: device-syslog
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: syslog
+          __path__: /var/log/remote/syslog.log
+    pipeline_stages:
+      # rsyslog 每行写的是: "<来源IP> <严重级别> <消息>"
+      - regex:
+          expression: '^(?P<host>\S+) (?P<severity>\S+) (?P<message>.*)$'
+      - labels:
+          host:
+          severity:
+      # 存进 Loki 的正文只留消息本身（去掉前面的 IP/级别前缀）
+      - output:
+          source: message

@@ -913,21 +913,31 @@ services:
     networks:
       - monitor
 
-  alloy-syslog:
-    image: grafana/alloy:latest
-    container_name: alloy-syslog
+  rsyslog:
+    image: alpine:latest
+    container_name: rsyslog
     restart: unless-stopped
-    command:
-      - run
-      - --server.http.listen-addr=0.0.0.0:12345
-      - --storage.path=/tmp/alloy
-      - /etc/alloy/config.alloy
+    command: ["sh", "-c", "apk add --no-cache rsyslog && exec rsyslogd -n -f /etc/rsyslog.conf"]
     volumes:
-      - ./alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - ./rsyslog.conf:/etc/rsyslog.conf:ro
+      - syslog-spool:/var/log/remote
     ports:
-      - "${SYSLOG_PORT:-514}:1514/udp"
+      - "${SYSLOG_PORT:-514}:514/udp"
+      - "${SYSLOG_PORT:-514}:514/tcp"
+    networks:
+      - monitor
+
+  promtail-syslog:
+    image: grafana/promtail:2.9.8
+    container_name: promtail-syslog
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes:
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+      - syslog-spool:/var/log/remote:ro
     depends_on:
       - loki
+      - rsyslog
     networks:
       - monitor
 
@@ -937,6 +947,7 @@ networks:
 
 volumes:
   loki-data:
+  syslog-spool:
   prometheus-data:
   alertmanager-data:
   player-targets-data:

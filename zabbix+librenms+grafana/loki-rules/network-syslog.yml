@@ -55,7 +55,7 @@ groups:
       # 任意设备 error 及以上级别日志激增（兜底，含防火墙严重事件）
       - alert: HighRateErrorSyslog
         expr: |
-          sum by (host) (count_over_time({job="syslog", severity=~"emergency|alert|critical|error|err"} [5m])) > 30
+          sum by (host) (count_over_time({job="syslog", severity=~"emerg|alert|crit|err"} [5m])) > 30
         for: 2m
         labels:
           severity: warning
