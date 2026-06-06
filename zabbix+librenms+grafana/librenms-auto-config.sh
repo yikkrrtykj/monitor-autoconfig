@@ -250,9 +250,26 @@ try {
     $insertRequiredDefaults($columns, $insert, $values, $idColumn);
 
     $placeholders = implode(', ', array_fill(0, count($insert), '?'));
-    $sql = 'INSERT INTO users (' . implode(', ', $insert) . ') VALUES (' . $placeholders . ')';
+    // Upsert: if the (auth_type, username) row already exists, update the password
+    // and admin fields instead of failing on the unique constraint.
+    $updates = ['`password` = VALUES(`password`)'];
+    foreach (['email', 'realname', 'descr', 'auth_type', 'level', 'can_modify_passwd'] as $uc) {
+        if ($hasColumn($columns, $uc)) {
+            $updates[] = "`{$uc}` = VALUES(`{$uc}`)";
+        }
+    }
+    if ($hasColumn($columns, 'updated_at')) {
+        $updates[] = '`updated_at` = NOW()';
+    }
+    $sql = 'INSERT INTO users (' . implode(', ', $insert) . ') VALUES (' . $placeholders . ')'
+         . ' ON DUPLICATE KEY UPDATE ' . implode(', ', $updates);
     $pdo->prepare($sql)->execute($values);
-    $assignAdminRole($pdo->lastInsertId());
+
+    // lastInsertId() is 0 on a pure update, so re-resolve the id for role assignment.
+    $idStmt = $pdo->prepare("SELECT `{$idColumn}` FROM users WHERE username = ? LIMIT 1");
+    $idStmt->execute([$username]);
+    $resolvedId = $idStmt->fetchColumn();
+    $assignAdminRole($resolvedId ?: $pdo->lastInsertId());
 } catch (Throwable $e) {
     fwrite(STDERR, 'LibreNMS admin user upsert failed: ' . $e->getMessage() . PHP_EOL);
     exit(1);
