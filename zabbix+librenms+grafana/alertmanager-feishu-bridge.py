@@ -19,6 +19,11 @@ from urllib import error, request
 
 PORT = int(os.environ.get("FEISHU_BRIDGE_PORT", "5005"))
 TOKEN = os.environ.get("FEISHU_ROBOT_TOKEN", "").strip()
+# Accept either the bare token or a full webhook URL pasted in (a common mistake) —
+# keep only the token segment after "/hook/" so both forms work.
+if "/hook/" in TOKEN:
+    TOKEN = TOKEN.rsplit("/hook/", 1)[-1]
+TOKEN = TOKEN.strip().strip("/")
 DRY_RUN = os.environ.get("FEISHU_BRIDGE_DRY_RUN", "").lower() in ("1", "true", "yes", "on")
 
 SEVERITY_COLOR = {
