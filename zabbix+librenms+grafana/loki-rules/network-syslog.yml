@@ -1,0 +1,65 @@
+# 对设备 syslog 跑的关键字告警，命中 → Alertmanager → 飞书同事群。
+# 这些是常见 Cisco 日志模式的起步集合，阈值/关键字按你现场随时调。
+# 调完重建 loki 容器即可（loki 每分钟重读规则，改完一般无需重建，但首次挂载需要）。
+groups:
+  - name: network-syslog
+    rules:
+      # 接口反复 up/down —— 线路/端口/光模块有问题
+      - alert: InterfaceFlapping
+        expr: |
+          sum by (host) (count_over_time({job="syslog"} |~ `(?i)(%LINEPROTO-5-UPDOWN|%LINK-3-UPDOWN).*to down` [5m])) >= 4
+        for: 0m
+        labels:
+          severity: warning
+          component: syslog
+        annotations:
+          summary: "接口反复 up/down: {{ $labels.host }}"
+          description: "{{ $labels.host }} 5 分钟内出现 ≥4 次接口 down（线路/端口/光模块可疑）"
+
+      # 设备重启
+      - alert: DeviceRebooted
+        expr: |
+          sum by (host) (count_over_time({job="syslog"} |~ `(?i)(%SYS-5-RESTART|%SYS-6-BOOTTIME|System restarted|reload requested)` [10m])) >= 1
+        for: 0m
+        labels:
+          severity: critical
+          component: syslog
+        annotations:
+          summary: "设备重启: {{ $labels.host }}"
+          description: "{{ $labels.host }} 上报了系统重启/重载日志"
+
+      # 生成树异常 —— 环路、根桥变化、拓扑频繁变更
+      - alert: STPInstability
+        expr: |
+          sum by (host) (count_over_time({job="syslog"} |~ `(?i)%SPANTREE.*(LOOPGUARD|BLOCK|ROOTGUARD|New_root|root changed|TOPOTRAP)` [5m])) >= 1
+        for: 0m
+        labels:
+          severity: warning
+          component: syslog
+        annotations:
+          summary: "生成树异常: {{ $labels.host }}"
+          description: "{{ $labels.host }} 出现 STP 拓扑变更/环路/根桥变化"
+
+      # 硬件告警 —— 电源/风扇/温度
+      - alert: HardwareFault
+        expr: |
+          sum by (host) (count_over_time({job="syslog"} |~ `(?i)(power supply|PSU|FAN.?FAIL|fan.*fail|%PLATFORM.*(power|fan|temperature)|overheat|temperature.*(high|exceed|critical))` [10m])) >= 1
+        for: 0m
+        labels:
+          severity: critical
+          component: syslog
+        annotations:
+          summary: "硬件告警(电源/风扇/温度): {{ $labels.host }}"
+          description: "{{ $labels.host }} 上报了电源/风扇/温度相关故障日志"
+
+      # 任意设备 error 及以上级别日志激增（兜底，含防火墙严重事件）
+      - alert: HighRateErrorSyslog
+        expr: |
+          sum by (host) (count_over_time({job="syslog", severity=~"emergency|alert|critical|error|err"} [5m])) > 30
+        for: 2m
+        labels:
+          severity: warning
+          component: syslog
+        annotations:
+          summary: "错误日志激增: {{ $labels.host }}"
+          description: "{{ $labels.host }} 5 分钟内 >30 条 error 及以上级别日志"

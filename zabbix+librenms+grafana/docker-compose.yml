@@ -898,11 +898,45 @@ services:
       - ./grafana-setup.sh:/grafana-setup.sh:ro
     command: ["/bin/sh", "-c", "sleep 30 && /bin/sh /grafana-setup.sh"]
 
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: loki
+    restart: unless-stopped
+    user: "0"
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./loki-config.yml:/etc/loki/loki-config.yml:ro
+      - ./loki-rules:/etc/loki/rules/fake:ro
+      - loki-data:/loki
+    depends_on:
+      - alertmanager
+    networks:
+      - monitor
+
+  alloy-syslog:
+    image: grafana/alloy:latest
+    container_name: alloy-syslog
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/tmp/alloy
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy-config.alloy:/etc/alloy/config.alloy:ro
+    ports:
+      - "${SYSLOG_PORT:-514}:1514/udp"
+    depends_on:
+      - loki
+    networks:
+      - monitor
+
 networks:
   monitor:
     driver: bridge
 
 volumes:
+  loki-data:
   prometheus-data:
   alertmanager-data:
   player-targets-data:

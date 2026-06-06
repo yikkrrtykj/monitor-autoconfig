@@ -1,0 +1,41 @@
+// 收交换机/防火墙的 syslog（Cisco 默认 RFC3164 / UDP），打上标签后推给 Loki。
+// 监听 1514（容器内非特权口）；compose 把宿主机 514 映射到这里。
+
+loki.source.syslog "network" {
+  listener {
+    address       = "0.0.0.0:1514"
+    protocol      = "udp"
+    syslog_format = "rfc3164"
+    // 用收到的时间打戳，避免设备时钟不准/RFC3164 缺年份导致日志被 Loki 拒收。
+    use_incoming_timestamp = false
+    labels = {
+      job = "syslog",
+    }
+  }
+  forward_to = [loki.relabel.network.receiver]
+}
+
+// 把 syslog 解析出的主机名/严重级别/facility 提成正式标签，方便在 Grafana 里按设备筛、
+// 也让 Loki 告警规则能按 severity 过滤。
+loki.relabel "network" {
+  forward_to = [loki.write.default.receiver]
+
+  rule {
+    source_labels = ["__syslog_message_hostname"]
+    target_label  = "host"
+  }
+  rule {
+    source_labels = ["__syslog_message_severity"]
+    target_label  = "severity"
+  }
+  rule {
+    source_labels = ["__syslog_message_facility"]
+    target_label  = "facility"
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
