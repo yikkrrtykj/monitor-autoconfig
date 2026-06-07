@@ -59,8 +59,8 @@ const coreStageLinks = layout.links.filter((link) => (
 ));
 assert.strictEqual(coreStageLinks.length, 1);
 assert.deepStrictEqual(coreStageLinks[0].labelLines, [
-  "Core: Gi1/0/23, Gi1/0/24",
-  "stage1: Gi1/0/23, Gi1/0/24"
+  "Gi1/0/23, Gi1/0/24",
+  "Gi1/0/23, Gi1/0/24"
 ]);
 assert.strictEqual(coreStageLinks[0].severity, "warn");
 assert.ok(coreStageLinks[0].busLink);
@@ -112,8 +112,9 @@ assert.ok(multiServers.every((node) => (
 const svg = renderTopologySvg(layout, 1365);
 assert.ok(!svg.includes("topology-link-rate"));
 assert.ok(!svg.includes("uplinks"));
-assert.ok(svg.includes("Core: Gi1/0/23, Gi1/0/24"));
-assert.ok(svg.includes("stage1: Gi1/0/23, Gi1/0/24"));
+assert.ok(!svg.includes("Core: Gi1/0/23"));
+assert.ok(!svg.includes("stage1: Gi1/0/23"));
+assert.ok(svg.includes(">Gi1/0/23, Gi1/0/24</text>"));
 assert.ok(svg.includes("topology-backbone"));
 assert.ok(!svg.includes("/topology/rates.json"));
 

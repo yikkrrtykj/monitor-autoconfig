@@ -2601,12 +2601,12 @@
       const selected = physical.length ? physical.slice(0, maxPhysical) : aggregate.slice(0, Math.max(1, maxPhysical));
       return selected.length ? selected : unique.slice(0, Math.max(1, maxPhysical));
     };
-    const portDetail = (fromNode, toNode, fromPorts, toPorts, maxPhysical = Infinity) => {
+    const portDetail = (fromPorts, toPorts, maxPhysical = Infinity) => {
       const fromSelected = selectDisplayPorts(fromPorts, maxPhysical);
       const toSelected = selectDisplayPorts(toPorts, maxPhysical);
       const lines = [];
-      if (fromSelected.length) lines.push(`${fromNode.name || fromNode.ip}: ${fromSelected.join(", ")}`);
-      if (toSelected.length) lines.push(`${toNode.name || toNode.ip}: ${toSelected.join(", ")}`);
+      if (fromSelected.length) lines.push(fromSelected.join(", "));
+      if (toSelected.length) lines.push(toSelected.join(", "));
       const aggregated = Math.max(fromSelected.length, toSelected.length) > 1 ||
         [...fromPorts, ...toPorts].map(compactPortLabel).some(isAggPortName);
       return { lines, aggregated };
@@ -2642,7 +2642,7 @@
           (group.from.kind === "core" && group.to.kind === "dist") ||
           (group.from.kind === "dist" && group.to.kind === "core")
         );
-        const detail = portDetail(group.from, group.to, group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
+        const detail = portDetail(group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
         lldpLinks.push({
           from: group.from,
           to: group.to,
@@ -2783,6 +2783,7 @@
       let labelX;
       let labelY;
       let labelAnchor = "middle";
+      let labelPositions = null;
       let d;
       if (link.busLink && layout.coreBus) {
         const distNode = link.from.kind === "dist" ? link.from : link.to;
@@ -2791,6 +2792,12 @@
         labelX = x + 8;
         labelY = Math.max(layout.coreBus.y + 12, distNode.y - 34);
         labelAnchor = "start";
+        if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
+          labelPositions = [
+            { text: link.labelLines[0], x: x + 8, y: layout.coreBus.y - 9, anchor: "start" },
+            { text: link.labelLines[1], x: x + 8, y: Math.max(layout.coreBus.y + 16, distNode.y - 28), anchor: "start" }
+          ];
+        }
       } else if (Math.abs(link.from.y - link.to.y) < 4) {
         const left = link.from.x <= link.to.x ? link.from : link.to;
         const right = left === link.from ? link.to : link.from;
@@ -2828,9 +2835,12 @@
       const labelLines = Array.isArray(link.labelLines) && link.labelLines.length
         ? link.labelLines
         : (link.label ? [link.label] : []);
-      const linkLabel = labelLines.length
-        ? `<text class="topology-link-label${labelLines.length > 1 ? " topology-link-label-stack" : ""}" x="${labelX}" y="${labelY}" text-anchor="${labelAnchor}">${labelLines.map((line, idx) => `<tspan x="${labelX}" dy="${idx ? 12 : 0}">${escapeHtml(line)}</tspan>`).join("")}</text>`
+      const positionedLabels = labelPositions
+        ? labelPositions.filter((item) => item.text).map((item) => `<text class="topology-link-label topology-link-label-stack" x="${item.x}" y="${item.y}" text-anchor="${item.anchor}">${escapeHtml(item.text)}</text>`).join("")
         : "";
+      const linkLabel = positionedLabels || (labelLines.length
+        ? `<text class="topology-link-label${labelLines.length > 1 ? " topology-link-label-stack" : ""}" x="${labelX}" y="${labelY}" text-anchor="${labelAnchor}">${labelLines.map((line, idx) => `<tspan x="${labelX}" dy="${idx ? 12 : 0}">${escapeHtml(line)}</tspan>`).join("")}</text>`
+        : "");
       const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}${link.aggregated ? " link-aggregated" : ""}`;
       return `
         <g class="topology-link-group">
