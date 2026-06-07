@@ -135,6 +135,12 @@ const fohNode = hierLayout.nodes.find((n) => n.ip === "172.25.10.24");
 const jieNode = hierLayout.nodes.find((n) => n.ip === "172.25.10.23");
 assert.ok(fohNode && jieNode, "both access switches are placed");
 assert.ok(jieNode.y > fohNode.y, "child switch sits in a row below its parent");
+assert.ok(hierLayout.coreBus, "core bus exists for direct core child links");
+assert.strictEqual(
+  Math.round(jieNode.y - (fohNode.y + fohNode.h)),
+  Math.round(fohNode.y - hierLayout.coreBus.y),
+  "child link gap matches the core-bus link gap"
+);
 const coreToChild = hierLayout.links.some((l) =>
   [l.from.ip, l.to.ip].includes("172.25.10.254") && [l.from.ip, l.to.ip].includes("172.25.10.23"));
 assert.ok(!coreToChild, "no synthetic core->child link when a real uplink exists");

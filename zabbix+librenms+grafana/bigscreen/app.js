@@ -2447,6 +2447,7 @@
     const topPad = 22;
     const bottomPad = 22;
     const rowCount = 4;
+    const DIST_LINK_GAP = 42;
     const hasServers = !!(layers.servers && layers.servers.length);
     const usableHeight = Math.max(420, canvasHeight || 680) + (hasServers ? 96 : 0);
     const layerGap = Math.max(36, (usableHeight - topPad - bottomPad - NODE_H * rowCount) / (rowCount - 1));
@@ -2547,7 +2548,7 @@
       const placed = new Map();
       const baseRow = placeRow(topLevel, rowY(3));
       baseRow.forEach((n) => { if (n.ip) placed.set(n.ip, n); });
-      const childRowH = NODE_H + 30;
+      const childRowH = NODE_H + DIST_LINK_GAP;
       const placeChildren = (parentNode) => {
         const kids = (childrenOf.get(parentNode.ip) || [])
           .map((ip) => distByIp.get(ip))
@@ -2683,10 +2684,7 @@
       const coreX = primaryCore.x + primaryCore.w / 2;
       const coreY = primaryCore.y + primaryCore.h;
       const distCenters = distRow.map((node) => node.x + node.w / 2);
-      const busY = Math.min(
-        rowY(3) - 28,
-        hasServers ? serverRowY + NODE_H + 18 : coreY + Math.max(28, layerGap * 0.34)
-      );
+      const busY = rowY(3) - DIST_LINK_GAP;
       coreBus = {
         x1: Math.min(coreX, ...distCenters),
         x2: Math.max(coreX, ...distCenters),
@@ -2789,13 +2787,13 @@
         const distNode = link.from.kind === "dist" ? link.from : link.to;
         const x = nodeCenterX(distNode);
         d = `M ${x} ${layout.coreBus.y} L ${x} ${distNode.y}`;
-        labelX = x + 8;
+        labelX = x + 14;
         labelY = Math.max(layout.coreBus.y + 12, distNode.y - 34);
         labelAnchor = "start";
         if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
           labelPositions = [
-            { text: link.labelLines[0], x: x + 8, y: layout.coreBus.y - 9, anchor: "start" },
-            { text: link.labelLines[1], x: x + 8, y: distNode.y - 9, anchor: "start" }
+            { text: link.labelLines[0], x: x + 14, y: layout.coreBus.y - 8, anchor: "start" },
+            { text: link.labelLines[1], x: x + 14, y: distNode.y - 5, anchor: "start" }
           ];
         }
       } else if (Math.abs(link.from.y - link.to.y) < 4) {
@@ -2827,13 +2825,13 @@
         const y1 = link.from.y + link.from.h;
         const y2 = link.to.y;
         d = `M ${x} ${y1} L ${x} ${y2}`;
-        labelX = x + 8;
+        labelX = x + 14;
         labelY = (y1 + y2) / 2;
         labelAnchor = "start";
         if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
           labelPositions = [
-            { text: link.labelLines[0], x: x + 8, y: y1 + 12, anchor: "start" },
-            { text: link.labelLines[1], x: x + 8, y: y2 - 9, anchor: "start" }
+            { text: link.labelLines[0], x: x + 14, y: y1 + 13, anchor: "start" },
+            { text: link.labelLines[1], x: x + 14, y: y2 - 5, anchor: "start" }
           ];
         }
       } else {
