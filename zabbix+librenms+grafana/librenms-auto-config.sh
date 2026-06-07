@@ -321,6 +321,13 @@ run_lnms() {
   return 1
 }
 
+# Assign the LibreNMS 26.x "admin" role via Spatie. This is the only reliable way:
+# there is no role CLI, and a raw DB insert into model_has_roles wouldn't clear
+# Spatie's permission cache (so the role wouldn't take effect until cache expiry).
+assign_admin_role_lnms() {
+  run_lnms tinker --execute="\$u=\\App\\Models\\User::where('username','${LIBRENMS_ADMIN_USER}')->first(); if(\$u && !\$u->hasRole('admin')){\$u->assignRole('admin');}" >/dev/null 2>&1 || true
+}
+
 ensure_admin_user() {
   if ! has_lnms_cmd; then
     echo "  WARNING: lnms command not found, falling back to database admin user sync."
@@ -349,12 +356,14 @@ ensure_admin_user() {
 
     if echo "$output" | grep -qi "already"; then
       if upsert_admin_user; then
+        assign_admin_role_lnms
         echo "  Admin user '$LIBRENMS_ADMIN_USER' already exists; password and admin role synced from .env."
         return 0
       fi
     fi
 
     if upsert_admin_user >/dev/null 2>&1; then
+      assign_admin_role_lnms
       echo "  Admin user '$LIBRENMS_ADMIN_USER' is ready; password and admin role synced from .env."
       return 0
     fi
