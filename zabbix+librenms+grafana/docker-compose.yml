@@ -852,10 +852,14 @@ services:
         server {
           listen 80;
           server_name _;
-          root /usr/share/nginx/html;
+          root /app;
           add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
           add_header Pragma "no-cache" always;
           add_header Expires "0" always;
+
+          location = /config.js {
+            alias /usr/share/nginx/html/config.js;
+          }
 
           location / {
             try_files $$uri $$uri/ /index.html;
