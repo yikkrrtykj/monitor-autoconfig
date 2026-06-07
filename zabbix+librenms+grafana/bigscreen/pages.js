@@ -1,7 +1,7 @@
 (function () {
   window.BIGSCREEN_QUERIES = {
     infraPingJobs: 'infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping',
-    pingTrend: 'avg by (instance) (avg_over_time(probe_icmp_duration_seconds{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[3m]))',
+    pingTrend: 'avg by (instance) (quantile_over_time(0.5, probe_icmp_duration_seconds{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[1m]))',
     pingGauge: 'avg by (instance, job) (quantile_over_time(0.5, probe_icmp_duration_seconds{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping",phase="rtt"}[1m]))',
     uptime: 'max by (instance) (last_over_time(sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"}[25m]) / 100) or max by (instance) ((last_over_time(sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance=~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"}[25m]) / 100) unless on(target_ip) last_over_time(sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"}[25m]))',
     loss: 'max by (instance) (1 - probe_success{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping"})'

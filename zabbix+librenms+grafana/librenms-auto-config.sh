@@ -180,6 +180,15 @@ try {
         throw new RuntimeException('Unsupported users table schema');
     }
 
+    // Remove broken duplicate admins with NULL/empty auth_type left by earlier
+    // runs. The (auth_type, username) unique key treats NULL as distinct, so a
+    // stray NULL row slips in alongside the real "mysql" admin and makes LibreNMS
+    // find two "admin" rows at login -> 500. This script owns the admin as
+    // auth_type='mysql', so any NULL/empty one is stale and safe to drop.
+    if ($hasColumn($columns, 'auth_type')) {
+        $pdo->prepare("DELETE FROM users WHERE username = ? AND (auth_type IS NULL OR auth_type = '')")->execute([$username]);
+    }
+
     $hash = password_hash($password, PASSWORD_BCRYPT);
     $userStmt = $pdo->prepare("SELECT `{$idColumn}` FROM users WHERE username = ? LIMIT 1");
     $userStmt->execute([$username]);
