@@ -2795,7 +2795,7 @@
         if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
           labelPositions = [
             { text: link.labelLines[0], x: x + 8, y: layout.coreBus.y - 9, anchor: "start" },
-            { text: link.labelLines[1], x: x + 8, y: Math.max(layout.coreBus.y + 16, distNode.y - 28), anchor: "start" }
+            { text: link.labelLines[1], x: x + 8, y: distNode.y - 9, anchor: "start" }
           ];
         }
       } else if (Math.abs(link.from.y - link.to.y) < 4) {
@@ -2822,6 +2822,20 @@
         d = `M ${x1} ${y1} C ${x1} ${bendY} ${x2} ${bendY} ${x2} ${y2}`;
         labelX = (x1 + x2) / 2;
         labelY = bendY - 5;
+      } else if (Math.abs(nodeCenterX(link.from) - nodeCenterX(link.to)) < 14) {
+        const x = nodeCenterX(link.from);
+        const y1 = link.from.y + link.from.h;
+        const y2 = link.to.y;
+        d = `M ${x} ${y1} L ${x} ${y2}`;
+        labelX = x + 8;
+        labelY = (y1 + y2) / 2;
+        labelAnchor = "start";
+        if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
+          labelPositions = [
+            { text: link.labelLines[0], x: x + 8, y: y1 + 12, anchor: "start" },
+            { text: link.labelLines[1], x: x + 8, y: y2 - 9, anchor: "start" }
+          ];
+        }
       } else {
         const x1 = anchorX(link.from, link.fromSlot, link.fromSlotCount);
         const y1 = link.from.y + link.from.h;
@@ -2890,7 +2904,7 @@
     }).join("");
 
     return `
-      <svg class="topology-svg" viewBox="0 0 ${canvasWidth} ${layout.height}" preserveAspectRatio="xMidYMid meet" focusable="false">
+      <svg class="topology-svg" viewBox="0 0 ${canvasWidth} ${layout.height}" data-base-width="${canvasWidth}" data-base-height="${layout.height}" preserveAspectRatio="xMidYMid meet" focusable="false">
         <defs>
           <filter id="topology-glow" x="-20%" y="-20%" width="140%" height="140%">
             <feGaussianBlur stdDeviation="2.5" result="blur" />
@@ -2959,8 +2973,12 @@
     const canvas = document.getElementById("topologyCanvas");
     const svg = canvas && canvas.querySelector(".topology-svg");
     if (!svg) return;
-    svg.style.transformOrigin = "0 0";
-    svg.style.transform = `translate(${topoView.x}px, ${topoView.y}px) scale(${topoView.scale})`;
+    const baseWidth = Number(svg.dataset.baseWidth || 0);
+    const baseHeight = Number(svg.dataset.baseHeight || 0);
+    if (!baseWidth || !baseHeight) return;
+    const viewWidth = baseWidth / topoView.scale;
+    const viewHeight = baseHeight / topoView.scale;
+    svg.setAttribute("viewBox", `${topoView.x} ${topoView.y} ${viewWidth} ${viewHeight}`);
   }
 
   function resetTopoView() {
@@ -2984,6 +3002,7 @@
     let startY = 0;
     let originX = 0;
     let originY = 0;
+    let originScale = 1;
     let activePointer = null;
 
     canvas.addEventListener("pointerdown", (event) => {
@@ -2995,6 +3014,7 @@
       startY = event.clientY;
       originX = topoView.x;
       originY = topoView.y;
+      originScale = topoView.scale;
       activePointer = event.pointerId;
       // Don't capture or preventDefault yet — a plain click must still reach the node.
     });
@@ -3010,8 +3030,13 @@
         try { canvas.setPointerCapture(activePointer); } catch (e) {}
       }
       if (!dragging) return;
-      topoView.x = originX + dx;
-      topoView.y = originY + dy;
+      const svg = canvas.querySelector(".topology-svg");
+      const baseWidth = Number(svg && svg.dataset.baseWidth || 0);
+      const baseHeight = Number(svg && svg.dataset.baseHeight || 0);
+      const rect = canvas.getBoundingClientRect();
+      if (!baseWidth || !baseHeight || !rect.width || !rect.height) return;
+      topoView.x = originX - dx * (baseWidth / originScale) / rect.width;
+      topoView.y = originY - dy * (baseHeight / originScale) / rect.height;
       applyTopoView();
     });
 
@@ -3039,14 +3064,21 @@
     canvas.addEventListener("wheel", (event) => {
       event.preventDefault();
       const rect = canvas.getBoundingClientRect();
+      const svg = canvas.querySelector(".topology-svg");
+      const baseWidth = Number(svg && svg.dataset.baseWidth || 0);
+      const baseHeight = Number(svg && svg.dataset.baseHeight || 0);
+      if (!baseWidth || !baseHeight || !rect.width || !rect.height) return;
       const cx = event.clientX - rect.left;
       const cy = event.clientY - rect.top;
+      const viewWidth = baseWidth / topoView.scale;
+      const viewHeight = baseHeight / topoView.scale;
+      const focusX = topoView.x + (cx / rect.width) * viewWidth;
+      const focusY = topoView.y + (cy / rect.height) * viewHeight;
       const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
       const next = Math.min(4, Math.max(0.3, topoView.scale * factor));
-      const ratio = next / topoView.scale;
-      topoView.x = cx - (cx - topoView.x) * ratio;
-      topoView.y = cy - (cy - topoView.y) * ratio;
       topoView.scale = next;
+      topoView.x = focusX - (cx / rect.width) * (baseWidth / topoView.scale);
+      topoView.y = focusY - (cy / rect.height) * (baseHeight / topoView.scale);
       applyTopoView();
     }, { passive: false });
 

@@ -115,6 +115,8 @@ assert.ok(!svg.includes("uplinks"));
 assert.ok(!svg.includes("Core: Gi1/0/23"));
 assert.ok(!svg.includes("stage1: Gi1/0/23"));
 assert.ok(svg.includes(">Gi1/0/23, Gi1/0/24</text>"));
+assert.strictEqual((svg.match(/>Gi1\/0\/23, Gi1\/0\/24<\/text>/g) || []).length, 2);
+assert.ok(svg.includes('data-base-width="1365"'));
 assert.ok(svg.includes("topology-backbone"));
 assert.ok(!svg.includes("/topology/rates.json"));
 
