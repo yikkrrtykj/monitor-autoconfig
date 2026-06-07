@@ -4,20 +4,20 @@
 groups:
   - name: network-syslog
     rules:
-      # 同一个接口 5 分钟内反复 up/down 才报（线路/端口/光模块问题）。
+      # 同一个接口 1 分钟内反复 down ≥3 次才报（线路/端口/光模块问题）。
       # 不同接口各 down 一次（布场插拔）不会触发——按 (host, iface) 分组计数。
       - alert: InterfaceFlapping
         expr: |
           sum by (host, iface) (
-            count_over_time({job="syslog"} |~ `(?i)(%LINK-[0-9]-UPDOWN|%LINEPROTO-5-UPDOWN).*to down` | regexp `Interface (?P<iface>[^,]+),` [5m])
-          ) >= 4
+            count_over_time({job="syslog"} |~ `(?i)(%LINK-[0-9]-UPDOWN|%LINEPROTO-5-UPDOWN).*to down` | regexp `Interface (?P<iface>[^,]+),` [1m])
+          ) >= 3
         for: 0m
         labels:
           severity: warning
           component: syslog
         annotations:
           summary: "接口反复 up/down: {{ $labels.host }}"
-          description: "5 分钟内 up/down ≥4 次（线路/端口/光模块可疑）"
+          description: "1 分钟内 up/down ≥3 次（线路/端口/光模块可疑）"
 
       - alert: DeviceRebooted
         expr: |

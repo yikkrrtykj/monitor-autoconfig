@@ -3,7 +3,8 @@ server:
   grpc_listen_port: 0
 
 positions:
-  filename: /tmp/positions.yaml
+  # 放持久卷，否则容器重建后 positions 丢失 → 从头重读整个文件 → 历史日志被当成"现在"重复触发告警
+  filename: /promtail/positions.yaml
 
 clients:
   - url: http://loki:3100/loki/api/v1/push
@@ -16,13 +17,12 @@ scrape_configs:
           job: syslog
           __path__: /var/log/remote/syslog.log
     pipeline_stages:
-      # rsyslog 每行写的是: "<来源IP> <主机名> <严重级别> <消息>"
+      # rsyslog 每行写的是: "<来源IP> <严重级别> <消息>"，host 用来源 IP（可靠）
       - regex:
-          expression: '^(?P<ip>\S+) (?P<host>\S+) (?P<severity>\S+) (?P<message>.*)$'
+          expression: '^(?P<host>\S+) (?P<severity>\S+) (?P<message>.*)$'
       - labels:
           host:
-          ip:
           severity:
-      # 存进 Loki 的正文只留消息本身（去掉前面的前缀）
+      # 存进 Loki 的正文只留消息本身（去掉前面的 IP/级别前缀）
       - output:
           source: message
