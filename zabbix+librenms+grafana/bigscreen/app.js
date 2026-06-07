@@ -2594,19 +2594,22 @@
     );
     const cleanPortNames = (ports) => uniqueNames(ports.map(compactPortLabel)).filter((port) => port && isPortLikeLabel(port));
     const isAggPortName = (port) => /^(?:po|lag|trk|ae|be|eth-trunk)\s*\d+/i.test(port);
-    const portSummary = (fromPorts, toPorts, maxPhysical = Infinity) => {
-      const fromUnique = cleanPortNames(fromPorts);
-      const toUnique = cleanPortNames(toPorts);
-      // A port-channel interface name (Po4/LAG1…) is the bundle, not a member — so
-      // count the real member ports and always label bonded links uniformly as
-      // "N uplinks" (some switches advertise the Po, others the member ports).
-      const hasAgg = fromUnique.some(isAggPortName) || toUnique.some(isAggPortName);
-      const fromPhys = fromUnique.filter((port) => !isAggPortName(port));
-      const toPhys = toUnique.filter((port) => !isAggPortName(port));
-      let physicalCount = Math.min(maxPhysical, Math.max(fromPhys.length, toPhys.length));
-      if (hasAgg && physicalCount < 2) physicalCount = 2; // a bundle has ≥2 members
-      if (physicalCount > 1) return `${physicalCount} uplinks`;
-      return fromPhys[0] || toPhys[0] || fromUnique[0] || toUnique[0] || "";
+    const selectDisplayPorts = (ports, maxPhysical = Infinity) => {
+      const unique = cleanPortNames(ports);
+      const physical = unique.filter((port) => !isAggPortName(port));
+      const aggregate = unique.filter(isAggPortName);
+      const selected = physical.length ? physical.slice(0, maxPhysical) : aggregate.slice(0, Math.max(1, maxPhysical));
+      return selected.length ? selected : unique.slice(0, Math.max(1, maxPhysical));
+    };
+    const portDetail = (fromNode, toNode, fromPorts, toPorts, maxPhysical = Infinity) => {
+      const fromSelected = selectDisplayPorts(fromPorts, maxPhysical);
+      const toSelected = selectDisplayPorts(toPorts, maxPhysical);
+      const lines = [];
+      if (fromSelected.length) lines.push(`${fromNode.name || fromNode.ip}: ${fromSelected.join(", ")}`);
+      if (toSelected.length) lines.push(`${toNode.name || toNode.ip}: ${toSelected.join(", ")}`);
+      const aggregated = Math.max(fromSelected.length, toSelected.length) > 1 ||
+        [...fromPorts, ...toPorts].map(compactPortLabel).some(isAggPortName);
+      return { lines, aggregated };
     };
 
     const lldpLinks = [];
@@ -2639,16 +2642,14 @@
           (group.from.kind === "core" && group.to.kind === "dist") ||
           (group.from.kind === "dist" && group.to.kind === "core")
         );
-        const label = portSummary(group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
+        const detail = portDetail(group.from, group.to, group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
         lldpLinks.push({
           from: group.from,
           to: group.to,
-          label,
+          labelLines: detail.lines,
           severity: group.to.level || "good",
           logical: true,
-          // Bonded uplink (EtherChannel/LAG): a "N uplinks" summary or >1 member edge.
-          // Drawn thicker so a single-link uplink stands out.
-          aggregated: group.count > 1 || /uplinks?/i.test(label || "")
+          aggregated: detail.aggregated
         });
         lldpCoveredPairs.add(pairKey);
       });
@@ -2781,13 +2782,15 @@
     const linkPaths = layout.links.map((link) => {
       let labelX;
       let labelY;
+      let labelAnchor = "middle";
       let d;
       if (link.busLink && layout.coreBus) {
         const distNode = link.from.kind === "dist" ? link.from : link.to;
         const x = nodeCenterX(distNode);
         d = `M ${x} ${layout.coreBus.y} L ${x} ${distNode.y}`;
-        labelX = x;
-        labelY = layout.coreBus.y - 8;
+        labelX = x + 8;
+        labelY = Math.max(layout.coreBus.y + 12, distNode.y - 34);
+        labelAnchor = "start";
       } else if (Math.abs(link.from.y - link.to.y) < 4) {
         const left = link.from.x <= link.to.x ? link.from : link.to;
         const right = left === link.from ? link.to : link.from;
@@ -2822,8 +2825,11 @@
         labelX = (x1 + x2) / 2;
         labelY = midY - 5;
       }
-      const linkLabel = link.label
-        ? `<text class="topology-link-label" x="${labelX}" y="${labelY}" text-anchor="middle">${escapeHtml(link.label)}</text>`
+      const labelLines = Array.isArray(link.labelLines) && link.labelLines.length
+        ? link.labelLines
+        : (link.label ? [link.label] : []);
+      const linkLabel = labelLines.length
+        ? `<text class="topology-link-label${labelLines.length > 1 ? " topology-link-label-stack" : ""}" x="${labelX}" y="${labelY}" text-anchor="${labelAnchor}">${labelLines.map((line, idx) => `<tspan x="${labelX}" dy="${idx ? 12 : 0}">${escapeHtml(line)}</tspan>`).join("")}</text>`
         : "";
       const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}${link.aggregated ? " link-aggregated" : ""}`;
       return `

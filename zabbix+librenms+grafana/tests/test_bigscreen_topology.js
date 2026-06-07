@@ -58,10 +58,13 @@ const coreStageLinks = layout.links.filter((link) => (
   [link.from.kind, link.to.kind].includes("dist")
 ));
 assert.strictEqual(coreStageLinks.length, 1);
-assert.strictEqual(coreStageLinks[0].label, "2 uplinks");
+assert.deepStrictEqual(coreStageLinks[0].labelLines, [
+  "Core: Gi1/0/23, Gi1/0/24",
+  "stage1: Gi1/0/23, Gi1/0/24"
+]);
 assert.strictEqual(coreStageLinks[0].severity, "warn");
 assert.ok(coreStageLinks[0].busLink);
-assert.ok(coreStageLinks[0].aggregated, "a multi-uplink bundle is flagged aggregated (drawn thicker)");
+assert.ok(coreStageLinks[0].aggregated, "a multi-port bundle is flagged aggregated (drawn thicker)");
 assert.strictEqual(layout.coreBus.severity, "good");
 
 const serverNode = layout.nodes.find((node) => node.kind === "server");
@@ -108,6 +111,9 @@ assert.ok(multiServers.every((node) => (
 
 const svg = renderTopologySvg(layout, 1365);
 assert.ok(!svg.includes("topology-link-rate"));
+assert.ok(!svg.includes("uplinks"));
+assert.ok(svg.includes("Core: Gi1/0/23, Gi1/0/24"));
+assert.ok(svg.includes("stage1: Gi1/0/23, Gi1/0/24"));
 assert.ok(svg.includes("topology-backbone"));
 assert.ok(!svg.includes("/topology/rates.json"));
 

@@ -1086,7 +1086,7 @@ body {
 .topology-link.link-fallback {
   opacity: 0.52;
 }
-/* Bonded uplink (EtherChannel/LAG) — thicker so a single-link uplink stands out. */
+/* Bonded link (EtherChannel/LAG) — thicker so a single physical link stands out. */
 .topology-link.link-aggregated {
   stroke-width: 7;
 }
@@ -1181,6 +1181,11 @@ body {
   font-weight: 800;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   pointer-events: none;
+}
+
+.topology-link-label-stack {
+  font-size: 9px;
+  font-weight: 750;
 }
 
 .topology-detail {
