@@ -16,12 +16,13 @@ scrape_configs:
           job: syslog
           __path__: /var/log/remote/syslog.log
     pipeline_stages:
-      # rsyslog 每行写的是: "<来源IP> <严重级别> <消息>"
+      # rsyslog 每行写的是: "<来源IP> <主机名> <严重级别> <消息>"
       - regex:
-          expression: '^(?P<host>\S+) (?P<severity>\S+) (?P<message>.*)$'
+          expression: '^(?P<ip>\S+) (?P<host>\S+) (?P<severity>\S+) (?P<message>.*)$'
       - labels:
           host:
+          ip:
           severity:
-      # 存进 Loki 的正文只留消息本身（去掉前面的 IP/级别前缀）
+      # 存进 Loki 的正文只留消息本身（去掉前面的前缀）
       - output:
           source: message

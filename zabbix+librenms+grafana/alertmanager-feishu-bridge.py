@@ -40,74 +40,122 @@ def log(message):
     print(f"[{datetime.now().isoformat(timespec='seconds')}] {message}", file=sys.stderr, flush=True)
 
 
-def parse_iso_timestamp(raw):
+def parse_dt(raw):
     if not raw:
-        return ""
-    text = raw
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
+        return None
+    text = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
     try:
-        parsed = datetime.fromisoformat(text)
-        return parsed.astimezone().strftime("%H:%M:%S")
+        return datetime.fromisoformat(text).astimezone()
     except ValueError:
-        return raw
+        return None
 
 
-def format_alert(alert):
-    status = alert.get("status", "firing")
+def fmt_dt(dt):
+    return dt.strftime("%m-%d %H:%M:%S") if dt else "?"
+
+
+def humanize(seconds):
+    s = int(max(0, seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}h{m}m"
+    if m:
+        return f"{m}m"
+    return f"{sec}s"
+
+
+def cn_name(summary):
+    # The rule summary is "<中文名>: <设备>"; take the part before the colon.
+    for sep in ("：", ":"):
+        if sep in summary:
+            return summary.split(sep, 1)[0].strip()
+    return summary.strip() or "告警"
+
+
+def alert_fields(alert):
     labels = alert.get("labels", {}) or {}
-    annotations = alert.get("annotations", {}) or {}
-    alertname = labels.get("alertname", "?")
-    severity = labels.get("severity", "warning")
-    instance = labels.get("instance", "")
-    target = labels.get("target_ip", "")
-    summary = annotations.get("summary", "")
-    description = annotations.get("description", "")
-    starts_at = parse_iso_timestamp(alert.get("startsAt"))
-    ends_at = parse_iso_timestamp(alert.get("endsAt"))
-
-    icon = "✅" if status == "resolved" else ("🔴" if severity == "critical" else "⚠️")
-    lines = [f"{icon} **{alertname}** · `{severity}`"]
-    if summary:
-        lines.append(f"摘要：{summary}")
-    if description:
-        lines.append(f"详情：{description}")
-    if instance or target:
-        target_repr = " / ".join(filter(None, [instance, target]))
-        lines.append(f"实例：`{target_repr}`")
-    if status == "resolved":
-        lines.append(f"⏱ 起 {starts_at} · 止 {ends_at}（已恢复）")
+    ann = alert.get("annotations", {}) or {}
+    status = alert.get("status", "firing")
+    name = labels.get("instance") or labels.get("host") or labels.get("isp") or ""
+    ip = labels.get("target_ip") or labels.get("ip") or ""
+    if name and ip and name != ip:
+        device = f"{name}（{ip}）"
     else:
-        lines.append(f"⏱ 起 {starts_at}（持续中）")
+        device = name or ip or "?"
+    start = parse_dt(alert.get("startsAt"))
+    end = parse_dt(alert.get("endsAt"))
+    if status == "resolved":
+        dur = humanize((end - start).total_seconds()) if (start and end) else "?"
+    elif start:
+        dur = f"持续中（已 {humanize((datetime.now().astimezone() - start).total_seconds())}）"
+    else:
+        dur = "持续中"
+    return {
+        "status": status,
+        "device": device,
+        "iface": labels.get("iface") or "",
+        "desc": ann.get("description", "").strip(),
+        "start": start,
+        "end": end,
+        "dur": dur,
+    }
+
+
+def format_full(alert):
+    f = alert_fields(alert)
+    lines = [f"🖥 设备：{f['device']}"]
+    if f["iface"]:
+        lines.append(f"🔌 接口：{f['iface']}")
+    if f["desc"]:
+        lines.append(f"📝 详情：{f['desc']}")
+    if f["status"] == "resolved":
+        lines.append(f"⏰ 开始：{fmt_dt(f['start'])} · 恢复：{fmt_dt(f['end'])}")
+    else:
+        lines.append(f"⏰ 开始：{fmt_dt(f['start'])}")
+    lines.append(f"⏳ 持续：{f['dur']}")
     return "\n".join(lines)
 
 
-def derive_title_color(payload):
-    alerts = payload.get("alerts", []) or []
-    fires = [a for a in alerts if a.get("status") == "firing"]
-    resolves = [a for a in alerts if a.get("status") == "resolved"]
-    common_labels = payload.get("commonLabels", {}) or {}
-    severity = (common_labels.get("severity") or "warning").lower()
-    alertname = common_labels.get("alertname", "Alerts")
-
-    if not fires and resolves:
-        color = "green"
-        prefix = f"[RESOLVED · {len(resolves)}]"
-    elif fires:
-        color = SEVERITY_COLOR.get(severity, "yellow")
-        prefix = f"[{severity.upper()} · {len(fires)}{f' +{len(resolves)}已恢复' if resolves else ''}]"
+def format_compact(alert):
+    f = alert_fields(alert)
+    parts = [f"🖥 {f['device']}"]
+    if f["iface"]:
+        parts.append(f"🔌{f['iface']}")
+    if f["desc"]:
+        parts.append(f["desc"])
+    if f["status"] == "resolved":
+        parts.append(f"⏰ {fmt_dt(f['start'])}→{fmt_dt(f['end'])}｜{f['dur']}")
     else:
-        color = "grey"
-        prefix = "[INFO]"
+        parts.append(f"⏰ {fmt_dt(f['start'])} 起｜{f['dur']}")
+    return "｜".join(parts)
 
-    title = f"{prefix} {alertname}"
-    return title, color
+
+def derive_header(payload):
+    alerts = payload.get("alerts", []) or []
+    fires = [a for a in alerts if a.get("status") != "resolved"]
+    resolved = [a for a in alerts if a.get("status") == "resolved"]
+    sample = (fires or resolved or [{}])[0]
+    labels = sample.get("labels", {}) or {}
+    cn = cn_name((sample.get("annotations", {}) or {}).get("summary", ""))
+    dev = labels.get("instance") or labels.get("host") or labels.get("isp") or ""
+    count = len(fires) if fires else len(resolved)
+    suffix = f" 等{count}台" if count > 1 else ""
+    sep = " · " if dev else ""
+    if not fires and resolved:
+        return f"✅ {cn}（已恢复）{sep}{dev}{suffix}"[:148], "green"
+    sev = (payload.get("commonLabels", {}) or {}).get("severity") or labels.get("severity") or "warning"
+    emoji = "🔴" if sev in ("critical", "high", "disaster") else "🟡"
+    return f"{emoji} {cn}{sep}{dev}{suffix}"[:148], SEVERITY_COLOR.get(sev, "yellow")
 
 
 def build_card(payload):
-    title, color = derive_title_color(payload)
-    sections = [format_alert(alert) for alert in (payload.get("alerts", []) or [])]
-    body_md = "\n\n---\n\n".join(sections) or "(空告警包)"
+    title, color = derive_header(payload)
+    alerts = payload.get("alerts", []) or []
+    if len(alerts) <= 1:
+        body_md = format_full(alerts[0]) if alerts else "(空告警包)"
+    else:
+        body_md = "\n".join(format_compact(a) for a in alerts)
     return {
         "msg_type": "interactive",
         "card": {
@@ -191,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, b"invalid json")
 
         alerts = payload.get("alerts", []) or []
-        title, _ = derive_title_color(payload)
+        title, _ = derive_header(payload)
         log(f"received group: {len(alerts)} alert(s) · {title}")
 
         card = build_card(payload)

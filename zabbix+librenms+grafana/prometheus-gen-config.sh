@@ -379,7 +379,7 @@ if [ -n "$isp_names_all" ]; then
       echo "          isp: \"${_name}\""
       echo "        annotations:"
       echo "          summary: \"ISP 链路接近饱和: ${_name}\""
-      echo "          description: \"${_name} 流量持续超过 ${ISP_SATURATION_PERCENT}%（下行上限 ${_down}Mbps / 上行 ${_up}Mbps）\""
+      echo "          description: \"流量持续超过 ${ISP_SATURATION_PERCENT}%（下行上限 ${_down}Mbps / 上行 ${_up}Mbps）\""
     } >> "$ISP_RULES_FILE"
   done
 else

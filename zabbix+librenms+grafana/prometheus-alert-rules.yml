@@ -16,7 +16,7 @@ groups:
           component: isp
         annotations:
           summary: "ISP 链路离线: {{ $labels.instance }}"
-          description: "{{ $labels.instance }}（{{ $labels.target_ip }}）持续 2 分钟无 ICMP 响应"
+          description: "持续 2 分钟无 ICMP 响应"
 
       - alert: FirewallDown
         expr: probe_success{job="infra-fw-ping"} == 0
@@ -26,7 +26,7 @@ groups:
           component: firewall
         annotations:
           summary: "防火墙离线: {{ $labels.instance }}"
-          description: "{{ $labels.instance }}（{{ $labels.target_ip }}）持续 1 分钟无 ICMP 响应"
+          description: "持续 1 分钟无 ICMP 响应"
 
       - alert: CoreSwitchDown
         expr: probe_success{job="infra-core-ping"} == 0
@@ -36,7 +36,7 @@ groups:
           component: core
         annotations:
           summary: "核心交换机离线: {{ $labels.instance }}"
-          description: "{{ $labels.instance }}（{{ $labels.target_ip }}）持续 1 分钟无 ICMP 响应"
+          description: "持续 1 分钟无 ICMP 响应"
 
       - alert: AccessSwitchDown
         expr: probe_success{job="infra-dist-ping"} == 0
@@ -46,7 +46,7 @@ groups:
           component: access
         annotations:
           summary: "接入交换机离线: {{ $labels.instance }}"
-          description: "{{ $labels.instance }}（{{ $labels.target_ip }}）持续 1 分钟无 ICMP 响应"
+          description: "持续 1 分钟无 ICMP 响应"
 
       - alert: ServerDown
         expr: probe_success{job="infra-srv-ping"} == 0
@@ -56,4 +56,4 @@ groups:
           component: server
         annotations:
           summary: "服务器离线: {{ $labels.instance }}"
-          description: "{{ $labels.instance }}（{{ $labels.target_ip }}）持续 1 分钟无 ICMP 响应"
+          description: "持续 1 分钟无 ICMP 响应"
