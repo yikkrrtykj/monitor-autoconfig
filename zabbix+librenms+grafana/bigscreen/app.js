@@ -1042,9 +1042,7 @@
       renderLineChart("pingTrendChart", activePingSeries, {
         axisFormatter: formatPingText,
         valueFormatter: formatPingText,
-        minMax: 0.005,
-        smooth: true,
-        smoothWindow: 5
+        minMax: 0.005
       });
       renderHeatmap("lossHeatmap", activeLossSeries);
       renderIspPanels(ispTraffic);
