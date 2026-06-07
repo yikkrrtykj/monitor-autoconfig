@@ -375,7 +375,8 @@
     const minT = Math.min(...times);
     const maxT = Math.max(...times);
     const rawMax = Math.max(options.minMax || 0, ...series.flatMap((item) => item.values.map((point) => point.v)));
-    const maxV = niceMax(rawMax);
+    const fixedMax = Number(options.maxY);
+    const maxV = Number.isFinite(fixedMax) && fixedMax > 0 ? fixedMax : niceMax(rawMax);
     const axisFormatter = options.axisFormatter || ((value) => String(value));
     const valueFormatter = options.valueFormatter || axisFormatter;
 
@@ -652,6 +653,7 @@
         axisPadRight: 38,
         fill: true,
         legend: "bottom",
+        maxY: ispChartMaxBps(result.name),
         minMax: 1,
         calcs: ["last", "max"]
       });
@@ -1704,6 +1706,10 @@
     const entry = cfg.perIsp[name] || cfg.default;
     const mbps = direction === "in" ? entry.down : entry.up;
     return Math.max(1, Number(mbps) || 1000) * 1000 * 1000;
+  }
+
+  function ispChartMaxBps(name) {
+    return Math.max(ispCapacityBps(name, "in"), ispCapacityBps(name, "out"));
   }
 
   async function queryIncidentData(win) {
@@ -3190,7 +3196,9 @@
     window.__BIGSCREEN_TOPOLOGY_TESTS__ = {
       buildTopologyLayers,
       topologyLayout,
-      renderTopologySvg
+      renderTopologySvg,
+      ispChartMaxBps,
+      parseIspBandwidthConfig
     };
     return;
   }

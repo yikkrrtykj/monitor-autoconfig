@@ -5,6 +5,7 @@ global.window = {
   BIGSCREEN_CONFIG: {
     ispNames: "ISP1,ISP2",
     ispIps: "ISP1:203.170.210.114,ISP2:202.133.189.82",
+    ispMaxBandwidthMbps: "ISP1:500,ISP2:500,ISP3:300",
     ispAutoDiscovery: "false",
     serverTargets: "Server:172.25.12.252",
     stageDeviceFilter: "stage,aruba",
@@ -17,7 +18,21 @@ global.window = {
 
 require(path.resolve(__dirname, "../bigscreen/app.js"));
 
-const { buildTopologyLayers, topologyLayout, renderTopologySvg } = window.__BIGSCREEN_TOPOLOGY_TESTS__;
+const {
+  buildTopologyLayers,
+  topologyLayout,
+  renderTopologySvg,
+  ispChartMaxBps,
+  parseIspBandwidthConfig
+} = window.__BIGSCREEN_TOPOLOGY_TESTS__;
+
+assert.deepStrictEqual(parseIspBandwidthConfig("ISP1:500,ISP2:500,ISP3:300").perIsp.ISP3, { down: 300, up: 300 });
+assert.strictEqual(ispChartMaxBps("ISP1"), 500 * 1000 * 1000);
+assert.strictEqual(ispChartMaxBps("ISP3"), 300 * 1000 * 1000);
+window.BIGSCREEN_CONFIG.ispMaxBandwidthMbps = "ISP1:500/300,ISP2:800";
+assert.strictEqual(ispChartMaxBps("ISP1"), 500 * 1000 * 1000);
+assert.strictEqual(ispChartMaxBps("ISP2"), 800 * 1000 * 1000);
+window.BIGSCREEN_CONFIG.ispMaxBandwidthMbps = "ISP1:500,ISP2:500,ISP3:300";
 
 const target = (job, displayName, targetIp, success = true, latency = 0.002) => ({
   job,
