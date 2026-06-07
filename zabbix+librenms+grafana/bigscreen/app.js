@@ -2472,8 +2472,30 @@
     const ispRow = placeRow(layers.isps, rowY(0));
     const fwRow = placeRow(layers.firewalls, rowY(1));
     const coreRow = placeRow(layers.cores, rowY(2));
+    const placeServerRow = (items, y) => {
+      if (!items.length || !coreRow.length) return [];
+      const primaryCore = coreRow[Math.floor(coreRow.length / 2)];
+      const leftCount = Math.floor(items.length / 2);
+      const leftItems = items.slice(0, leftCount);
+      const rightItems = items.slice(leftCount);
+      const gapFromCore = 34;
+      const itemGap = 24;
+      const nodes = [];
+      const leftStart = primaryCore.x - gapFromCore - leftItems.length * NODE_W - Math.max(0, leftItems.length - 1) * itemGap;
+      leftItems.forEach((item, idx) => {
+        nodes.push({ ...item, x: leftStart + idx * (NODE_W + itemGap), y, w: NODE_W, h: NODE_H });
+      });
+      const rightStart = primaryCore.x + primaryCore.w + gapFromCore;
+      rightItems.forEach((item, idx) => {
+        nodes.push({ ...item, x: rightStart + idx * (NODE_W + itemGap), y, w: NODE_W, h: NODE_H });
+      });
+      const minX = Math.min(...nodes.map((n) => n.x));
+      const maxX = Math.max(...nodes.map((n) => n.x + n.w));
+      const shift = minX < 20 ? 20 - minX : (maxX > canvasWidth - 20 ? canvasWidth - 20 - maxX : 0);
+      return nodes.map((node) => ({ ...node, x: node.x + shift }));
+    };
     const serverRow = (hasServers && coreRow.length)
-      ? placeRow(layers.servers, serverRowY)
+      ? placeServerRow(layers.servers, serverRowY)
       : [];
     // Build the access-switch (dist) layer as a tree from the discovered edges:
     // switches that uplink to the core sit in the main row; a switch whose uplink
@@ -2775,6 +2797,21 @@
         d = `M ${x1} ${y} L ${x2} ${y}`;
         labelX = (x1 + x2) / 2;
         labelY = y - 7;
+      } else if (
+        (link.from.kind === "core" && link.to.kind === "server") ||
+        (link.from.kind === "server" && link.to.kind === "core")
+      ) {
+        const coreNode = link.from.kind === "core" ? link.from : link.to;
+        const serverNode = link.from.kind === "server" ? link.from : link.to;
+        const side = nodeCenterX(serverNode) < nodeCenterX(coreNode) ? -1 : 1;
+        const x1 = nodeCenterX(coreNode) + side * Math.min(42, coreNode.w * 0.34);
+        const y1 = coreNode.y + coreNode.h;
+        const x2 = nodeCenterX(serverNode);
+        const y2 = serverNode.y;
+        const bendY = y1 + Math.max(18, (y2 - y1) * 0.42);
+        d = `M ${x1} ${y1} C ${x1} ${bendY} ${x2} ${bendY} ${x2} ${y2}`;
+        labelX = (x1 + x2) / 2;
+        labelY = bendY - 5;
       } else {
         const x1 = anchorX(link.from, link.fromSlot, link.fromSlotCount);
         const y1 = link.from.y + link.from.h;

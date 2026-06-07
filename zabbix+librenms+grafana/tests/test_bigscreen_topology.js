@@ -67,15 +67,44 @@ assert.strictEqual(layout.coreBus.severity, "good");
 const serverNode = layout.nodes.find((node) => node.kind === "server");
 const coreNode = layout.nodes.find((node) => node.kind === "core");
 const distNode = layout.nodes.find((node) => node.kind === "dist");
+const centerX = (node) => node.x + node.w / 2;
 assert.ok(serverNode);
 // Servers get their own row between the core and the access-switch (dist) row,
 // instead of flanking the core on the same line.
 assert.ok(serverNode.y > coreNode.y, "server row should sit below the core row");
 assert.ok(serverNode.y < distNode.y, "server row should sit above the access-switch row");
+assert.ok(serverNode.x > coreNode.x + coreNode.w, "a single server sits to the right of core, leaving the center trunk clear");
 assert.ok(layout.links.some((link) => (
   [link.from.kind, link.to.kind].includes("core") &&
   [link.from.kind, link.to.kind].includes("server")
 )));
+
+window.BIGSCREEN_CONFIG.serverTargets = [
+  "server5:192.168.141.100",
+  "server4:192.168.141.18",
+  "server2:192.168.141.16",
+  "server3:192.168.141.17",
+  "server1:192.168.141.15"
+].join(",");
+const multiServerTargets = [
+  target("infra-core-ping", "PMGO-core", "192.168.10.254"),
+  target("infra-dist-ping", "stage1", "192.168.10.3"),
+  target("infra-srv-ping", "server5", "192.168.141.100"),
+  target("infra-srv-ping", "server4", "192.168.141.18"),
+  target("infra-srv-ping", "server2", "192.168.141.16"),
+  target("infra-srv-ping", "server3", "192.168.141.17"),
+  target("infra-srv-ping", "server1", "192.168.141.15")
+];
+const multiLayout = topologyLayout(buildTopologyLayers(multiServerTargets), 1365, 620, []);
+const multiCore = multiLayout.nodes.find((node) => node.kind === "core");
+const multiServers = multiLayout.nodes.filter((node) => node.kind === "server");
+assert.strictEqual(multiServers.length, 5);
+assert.ok(multiServers.some((node) => centerX(node) < multiCore.x), "server row uses the left side of core");
+assert.ok(multiServers.some((node) => centerX(node) > multiCore.x + multiCore.w), "server row uses the right side of core");
+assert.ok(multiServers.every((node) => (
+  node.x + node.w < multiCore.x - 8 ||
+  node.x > multiCore.x + multiCore.w + 8
+)), "no server is centered under the core trunk");
 
 const svg = renderTopologySvg(layout, 1365);
 assert.ok(!svg.includes("topology-link-rate"));
