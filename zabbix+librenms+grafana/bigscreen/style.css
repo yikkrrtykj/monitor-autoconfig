@@ -129,6 +129,16 @@ body {
   line-height: 1;
 }
 
+.clock span.data-freshness {
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffd14d;
+  background: rgba(255, 159, 67, 0.14);
+  border: 1px solid rgba(255, 159, 67, 0.4);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
 .panel-grid {
   display: grid;
   min-width: 0;

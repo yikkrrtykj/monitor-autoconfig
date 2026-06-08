@@ -22,6 +22,28 @@
   let stageDeviceRegexCache = null;
   let ispNamesCache = null;
   let ispNamesCachedAt = 0;
+  const renderSignatures = new Map();
+  let lastDataSuccessAt = 0;
+  const DATA_STALE_AFTER_MS = 20000;
+
+  // Skip re-rendering a chart when its data hasn't changed since last paint.
+  // Historical Prometheus samples are immutable, so a cheap per-series digest
+  // (count + first/last timestamp + last value) captures every real change.
+  function seriesSignature(seriesList) {
+    return seriesList.map((item) => {
+      const values = item.values || [];
+      const last = values.length ? values[values.length - 1] : null;
+      return `${item.name}#${values.length}#${values.length ? values[0].t : ""}#${last ? `${last.t}=${last.v}` : ""}`;
+    }).join("|");
+  }
+
+  function shouldRender(key, signature) {
+    if (renderSignatures.get(key) === signature) {
+      return false;
+    }
+    renderSignatures.set(key, signature);
+    return true;
+  }
 
   function setText(id, value) {
     const element = document.getElementById(id);
@@ -1034,9 +1056,13 @@
         .filter((player) => !page.teamSize || player.seat <= page.teamSize);
       renderTournamentSummary(page, players);
       renderTournamentBoard(page, players);
-      renderTournamentTrend(page, trendSeries);
+      if (shouldRender("tournamentTrend", seriesSignature(trendSeries))) {
+        renderTournamentTrend(page, trendSeries);
+      }
+      lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== tournamentSeq) return;
+      renderSignatures.delete("tournamentTrend");
       renderNoData(document.getElementById("tournamentBoard"), "暂无选手数据");
       renderNoData(document.getElementById("tournamentTrendChart"));
       console.error(error);
@@ -1058,6 +1084,7 @@
       // Servers aren't stage devices (skip the stage filter); keep them on one row.
       renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
       renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime");
+      lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== gaugeSeq) return;
       renderGaugeGrid("pingGaugeGrid", [], "ping");
@@ -1080,15 +1107,26 @@
       const activeNames = activeSeriesNames(visibleInfraItems(activeItems));
       const activePingSeries = visibleInfraSeries(filterSeriesByNames(pingSeries, activeNames));
       const activeLossSeries = visibleInfraSeries(filterSeriesByNames(lossSeries, activeNames));
-      renderLineChart("pingTrendChart", activePingSeries, {
-        axisFormatter: formatPingText,
-        valueFormatter: formatPingText,
-        minMax: 0.005
-      });
-      renderHeatmap("lossHeatmap", activeLossSeries);
-      renderIspPanels(ispTraffic);
+      if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
+        renderLineChart("pingTrendChart", activePingSeries, {
+          axisFormatter: formatPingText,
+          valueFormatter: formatPingText,
+          minMax: 0.005
+        });
+      }
+      if (shouldRender("lossHeatmap", seriesSignature(activeLossSeries))) {
+        renderHeatmap("lossHeatmap", activeLossSeries);
+      }
+      const ispSignature = ispTraffic.map((result) => `${result.name}:${seriesSignature([result.download, result.upload])}`).join("||");
+      if (shouldRender("ispGrid", ispSignature)) {
+        renderIspPanels(ispTraffic);
+      }
+      lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== chartSeq) return;
+      renderSignatures.delete("pingTrendChart");
+      renderSignatures.delete("lossHeatmap");
+      renderSignatures.delete("ispGrid");
       renderNoData(document.getElementById("pingTrendChart"));
       renderNoData(document.getElementById("lossHeatmap"));
       renderNoData(document.getElementById("ispGrid"));
@@ -1185,6 +1223,7 @@
         { label: "最高延迟", value: Number.isFinite(maxLatency) ? formatPingText(maxLatency) : "-", level: maxLatency >= 0.08 ? "warn" : "good" }
       ]);
       renderWirelessBoard(players);
+      lastDataSuccessAt = Date.now();
     } catch (error) {
       renderNoData(document.getElementById("opsSummary"), "查询失败");
       renderNoData(document.getElementById("opsBoard"));
@@ -1304,6 +1343,7 @@
         { label: "重复座位", value: duplicateSeats, level: duplicateSeats ? "bad" : "good", note: "同座位多个 IP" }
       ]);
       renderSeatCheckBoard(page, players);
+      lastDataSuccessAt = Date.now();
     } catch (error) {
       renderNoData(document.getElementById("opsSummary"), "查询失败");
       renderNoData(document.getElementById("opsBoard"));
@@ -1550,6 +1590,7 @@
 
   function startInfraRefresh() {
     if (gaugeTimer || chartTimer) return;
+    renderSignatures.clear();
     refreshGauges();
     refreshCharts();
     gaugeTimer = window.setInterval(refreshGauges, 5000);
@@ -1558,6 +1599,7 @@
 
   function startTournamentRefresh(page) {
     stopTournamentRefresh();
+    renderSignatures.clear();
     refreshTournament(page);
     tournamentTimer = window.setInterval(() => refreshTournament(page), 5000);
     const refreshBtn = document.getElementById("tournamentRefresh");
@@ -3157,6 +3199,7 @@
       setupTopoPanZoom();
       applyTopoView();
       document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · 拖动平移·滚轮缩放·双击复位${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
+      lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== topologySeq) return;
       console.error("Topology fetch failed:", error);
@@ -3218,6 +3261,26 @@
     }
   }
 
+  function anyRefreshActive() {
+    return Boolean(gaugeTimer || chartTimer || tournamentTimer || opsTimer || topologyTimer);
+  }
+
+  // Warn when the active page's polling loop hasn't produced fresh data for a
+  // while (network stall, Prometheus down, or a frozen refresh loop), so a
+  // stale screen is never mistaken for live data.
+  function updateFreshness() {
+    const badge = document.getElementById("dataFreshness");
+    if (!badge) return;
+    const stale = anyRefreshActive() && lastDataSuccessAt > 0 && (Date.now() - lastDataSuccessAt) > DATA_STALE_AFTER_MS;
+    if (!stale) {
+      badge.hidden = true;
+      return;
+    }
+    const since = new Date(lastDataSuccessAt).toLocaleTimeString("zh-CN", { hour12: false });
+    badge.textContent = `⚠ 数据可能过期 · 上次更新 ${since}`;
+    badge.hidden = false;
+  }
+
   function tick() {
     try {
       const now = new Date();
@@ -3233,6 +3296,7 @@
         second: "2-digit",
         hour12: false
       }).format(now));
+      updateFreshness();
     } catch (e) {
       // ignore — will retry next second
     }
@@ -3253,4 +3317,7 @@
   tick();
   window.setInterval(tick, 1000);
   window.addEventListener("popstate", renderPage);
+  // Charts are sized from the container, so a resize must force a full repaint
+  // even when the underlying data is unchanged.
+  window.addEventListener("resize", () => renderSignatures.clear());
 })();
