@@ -472,9 +472,7 @@
 
   function renderSparkline(containerId, seriesList) {
     const container = document.getElementById(containerId);
-    const series = seriesList
-      .filter((item) => item.values.length)
-      .map((item) => ({ ...item, values: smoothValues(item.values, 5) }));
+    const series = seriesList.filter((item) => item.values.length);
     if (!series.length) {
       renderNoData(container, "暂无趋势");
       return;
@@ -2997,7 +2995,7 @@
 
   async function fetchTopologyEdges() {
     try {
-      const response = await fetch("/topology/edges.json", { cache: "no-store" });
+      const response = await fetchWithTimeout("/topology/edges.json", { cache: "no-store" });
       if (!response.ok) return [];
       const data = await response.json();
       return Array.isArray(data) ? data : [];
