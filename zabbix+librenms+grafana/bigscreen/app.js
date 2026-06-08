@@ -15,6 +15,13 @@
   let opsTimer = null;
   let activePageId = "";
   let activeRoute = "";
+  let gaugeSeq = 0;
+  let chartSeq = 0;
+  let tournamentSeq = 0;
+  let topologySeq = 0;
+  let stageDeviceRegexCache = null;
+  let ispNamesCache = null;
+  let ispNamesCachedAt = 0;
 
   function setText(id, value) {
     const element = document.getElementById(id);
@@ -63,13 +70,19 @@
 
   function rangeWindow() {
     const end = Math.floor(Date.now() / 1000);
-    const start = end - 30 * 60;
-    return { start, end, step: 5 };
+    const start = end - 15 * 60;
+    return { start, end, step: 10 };
+  }
+
+  function fetchWithTimeout(url, options, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(id));
   }
 
   async function prometheusQuery(query) {
     const url = `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}`;
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await fetchWithTimeout(url, { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`Prometheus HTTP ${response.status}`);
     }
@@ -89,7 +102,7 @@
 
   async function prometheusInstant(query) {
     const url = `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}`;
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await fetchWithTimeout(url, { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`Prometheus HTTP ${response.status}`);
     }
@@ -110,7 +123,7 @@
       query,
       ...Object.fromEntries(Object.entries(window).map(([key, value]) => [key, String(value)]))
     });
-    const response = await fetch(`${prometheusBaseUrl()}/api/v1/query_range?${params.toString()}`, { cache: "no-store" });
+    const response = await fetchWithTimeout(`${prometheusBaseUrl()}/api/v1/query_range?${params.toString()}`, { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`Prometheus range HTTP ${response.status}`);
     }
@@ -156,7 +169,10 @@
   }
 
   function isStageDeviceName(name) {
-    return new RegExp(stageDevicePattern(), "i").test(String(name || ""));
+    if (!stageDeviceRegexCache) {
+      stageDeviceRegexCache = new RegExp(stageDevicePattern(), "i");
+    }
+    return stageDeviceRegexCache.test(String(name || ""));
   }
 
   function filterStageDeviceItems(items) {
@@ -596,13 +612,20 @@
       return configured;
     }
 
+    const now = Date.now();
+    if (ispNamesCache && now - ispNamesCachedAt < 60000) {
+      return ispNamesCache;
+    }
+
     try {
       const discovered = await prometheusInstant(ispDiscoveryQuery());
       const discoveredNames = uniqueNames(discovered.map((item) => item.metric.ifAlias || item.metric.ifName || item.metric.ifDescr));
       discoveredNames.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
       const names = configured.length ? uniqueNames([...configured, ...discoveredNames]) : discoveredNames;
       const limitedNames = names.slice(0, 4);
-      return limitedNames.length ? limitedNames : configured;
+      ispNamesCache = limitedNames.length ? limitedNames : configured;
+      ispNamesCachedAt = now;
+      return ispNamesCache;
     } catch (error) {
       console.warn("ISP discovery failed", error);
       return configured;
@@ -620,7 +643,7 @@
 
   async function fetchIspTraffic() {
     const names = await fetchIspNames();
-    return Promise.all(names.map(async (name) => {
+    const settled = await Promise.allSettled(names.map(async (name) => {
       const [download, upload] = await Promise.all([
         prometheusRange(ispTrafficQuery("ifHCInOctets", name)),
         prometheusRange(ispTrafficQuery("ifHCOutOctets", name))
@@ -631,6 +654,7 @@
         upload: { name: "上传", color: "#5b8ff9", values: upload[0] ? upload[0].values : [] }
       };
     }));
+    return settled.filter((r) => r.status === "fulfilled").map((r) => r.value);
   }
 
   function renderIspPanels(results) {
@@ -641,11 +665,15 @@
       renderNoData(ispGrid);
       return;
     }
+    const fragment = document.createDocumentFragment();
     results.forEach((result, index) => {
       const panel = document.createElement("section");
       panel.className = "chart-panel isp-panel";
       panel.innerHTML = `<h2>${escapeHtml(result.name)}</h2><div class="chart-body" id="ispChart${index}"></div>`;
-      ispGrid.appendChild(panel);
+      fragment.appendChild(panel);
+    });
+    ispGrid.appendChild(fragment);
+    results.forEach((result, index) => {
       renderLineChart(`ispChart${index}`, [result.download, result.upload], {
         axisFormatter: formatBits,
         valueFormatter: formatBits,
@@ -987,6 +1015,7 @@
   }
 
   async function refreshTournament(page) {
+    const seq = ++tournamentSeq;
     try {
       const selector = tournamentSelector(page);
       const [latencyItems, successItems, trendSeries] = await Promise.all([
@@ -996,12 +1025,14 @@
           return `${teamName(page, metric.team)} ${seatLabel(metric.seat || "?")}`;
         })
       ]);
+      if (seq !== tournamentSeq) return;
       const players = buildPlayers(latencyItems, successItems)
         .filter((player) => !page.teamSize || player.seat <= page.teamSize);
       renderTournamentSummary(page, players);
       renderTournamentBoard(page, players);
       renderTournamentTrend(page, trendSeries);
     } catch (error) {
+      if (seq !== tournamentSeq) return;
       renderNoData(document.getElementById("tournamentBoard"), "暂无选手数据");
       renderNoData(document.getElementById("tournamentTrendChart"));
       console.error(error);
@@ -1009,11 +1040,13 @@
   }
 
   async function refreshGauges() {
+    const seq = ++gaugeSeq;
     try {
       const [pingItems, uptimeItems] = await Promise.all([
         prometheusQuery(pingGaugeQuery),
         prometheusQuery(uptimeQuery)
       ]);
+      if (seq !== gaugeSeq) return;
       const isServerItem = (item) => (item.metric && item.metric.job) === "infra-srv-ping";
       const networkPing = pingItems.filter((item) => !isServerItem(item));
       const serverPing = pingItems.filter(isServerItem);
@@ -1022,6 +1055,7 @@
       renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
       renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime");
     } catch (error) {
+      if (seq !== gaugeSeq) return;
       renderGaugeGrid("pingGaugeGrid", [], "ping");
       renderGaugeGrid("pingServerGaugeGrid", [], "ping");
       renderGaugeGrid("uptimeGaugeGrid", [], "uptime");
@@ -1030,6 +1064,7 @@
   }
 
   async function refreshCharts() {
+    const seq = ++chartSeq;
     try {
       const [activeItems, pingSeries, lossSeries, ispTraffic] = await Promise.all([
         prometheusInstant(activeInfraPingQuery()),
@@ -1037,6 +1072,7 @@
         prometheusRange(lossQuery),
         fetchIspTraffic()
       ]);
+      if (seq !== chartSeq) return;
       const activeNames = activeSeriesNames(visibleInfraItems(activeItems));
       const activePingSeries = visibleInfraSeries(filterSeriesByNames(pingSeries, activeNames));
       const activeLossSeries = visibleInfraSeries(filterSeriesByNames(lossSeries, activeNames));
@@ -1048,6 +1084,7 @@
       renderHeatmap("lossHeatmap", activeLossSeries);
       renderIspPanels(ispTraffic);
     } catch (error) {
+      if (seq !== chartSeq) return;
       renderNoData(document.getElementById("pingTrendChart"));
       renderNoData(document.getElementById("lossHeatmap"));
       renderNoData(document.getElementById("ispGrid"));
@@ -3093,11 +3130,13 @@
   async function refreshTopology() {
     const canvas = document.getElementById("topologyCanvas");
     if (!canvas) return;
+    const seq = ++topologySeq;
     try {
       const [targets, edges] = await Promise.all([
         fetchTopologyTargets(),
         fetchTopologyEdges()
       ]);
+      if (seq !== topologySeq) return;
       const layers = buildTopologyLayers(targets);
       const containerWidth = Math.max(640, canvas.clientWidth || 1200);
       const height = Math.max(420, canvas.clientHeight || 680);
@@ -3115,6 +3154,7 @@
       applyTopoView();
       document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · 拖动平移·滚轮缩放·双击复位${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
     } catch (error) {
+      if (seq !== topologySeq) return;
       console.error("Topology fetch failed:", error);
       canvas.innerHTML = `<div class="topology-error">拓扑数据拉取失败: ${escapeHtml(error.message || "")}</div>`;
     }
@@ -3175,19 +3215,23 @@
   }
 
   function tick() {
-    const now = new Date();
-    setText("dateText", new Intl.DateTimeFormat("zh-CN", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      weekday: "short"
-    }).format(now));
-    setText("timeText", new Intl.DateTimeFormat("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false
-    }).format(now));
+    try {
+      const now = new Date();
+      setText("dateText", new Intl.DateTimeFormat("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        weekday: "short"
+      }).format(now));
+      setText("timeText", new Intl.DateTimeFormat("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      }).format(now));
+    } catch (e) {
+      // ignore — will retry next second
+    }
   }
 
   if (window.__BIGSCREEN_TEST_MODE__) {
