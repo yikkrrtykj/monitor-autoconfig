@@ -861,7 +861,7 @@
 
   function tournamentTrendQuery(page) {
     const selector = tournamentSelector(page);
-    return `avg by (team,seat) (avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[3m]))`;
+    return `avg by (team,seat) (probe_icmp_duration_seconds{${selector},phase="rtt"})`;
   }
 
   function playerLatencySnapshotQuery(selector) {
@@ -877,8 +877,7 @@
       axisFormatter: formatPingText,
       valueFormatter: formatPingText,
       minMax: 0.005,
-      smooth: true,
-      smoothWindow: 5
+      smooth: true
     };
   }
 
@@ -1415,7 +1414,6 @@
         valueFormatter: formatPingText,
         minMax: 0.005,
         smooth: true,
-        smoothWindow: 5,
         legend: "bottom"
       });
       renderLineChart("evidenceSuccessChart", successSeries.map((series) => ({ ...series, color: "#73d17a" })), {
