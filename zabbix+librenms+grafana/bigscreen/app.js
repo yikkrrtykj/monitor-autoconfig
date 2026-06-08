@@ -2028,7 +2028,7 @@
         <div class="incident-item ${stage.players.length >= 3 ? "warn" : "info"}">
           <strong>${escapeHtml(stage.switch)}</strong>
           <em>${stage.players.length} 个选手</em>
-          <span>${stage.players.slice(0, 8).map((player) => `T${player.team}S${player.seat}`).join("、")}${stage.players.length > 8 ? "…" : ""}</span>
+          <span>${stage.players.slice(0, 8).map((player) => `T${escapeHtml(player.team)}S${escapeHtml(player.seat)}`).join("、")}${stage.players.length > 8 ? "…" : ""}</span>
         </div>
       `).join("");
   }
