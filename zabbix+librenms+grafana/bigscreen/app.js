@@ -315,11 +315,17 @@
   }
 
   function formatTime(timestamp) {
+    const date = new Date(timestamp * 1000);
+    const now = new Date();
+    const sameDay = date.getFullYear() === now.getFullYear()
+      && date.getMonth() === now.getMonth()
+      && date.getDate() === now.getDate();
     return new Intl.DateTimeFormat("zh-CN", {
+      ...(sameDay ? {} : { month: "2-digit", day: "2-digit" }),
       hour: "2-digit",
       minute: "2-digit",
       hour12: false
-    }).format(new Date(timestamp * 1000));
+    }).format(date);
   }
 
   function renderNoData(container, message) {
