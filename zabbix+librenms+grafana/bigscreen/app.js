@@ -169,6 +169,82 @@
     return prometheusRangeFor(query, rangeWindow(), nameGetter);
   }
 
+  // Incremental range cache: the first call fetches the whole 15-minute window;
+  // every subsequent call only asks Prometheus for points newer than what we
+  // already hold, then merges + trims to the sliding window. Historical samples
+  // are immutable, so this is exact -- it just avoids re-downloading ~90 points
+  // each 5s tick. Safe for rate()/avg gauges since each returned point is
+  // self-contained (Prometheus looks back over its own window server-side).
+  const rangeCache = new Map();
+
+  function invalidateRangeCache() {
+    rangeCache.clear();
+  }
+
+  async function prometheusRangeCached(query, nameGetter = metricName) {
+    const win = rangeWindow();
+    const cacheKey = `${query}|${win.step}`;
+    const cached = rangeCache.get(cacheKey);
+
+    let fetchWin = win;
+    let existingMap = new Map();
+
+    if (cached && cached.fetchedUpTo > win.start) {
+      const fetchStart = cached.fetchedUpTo + win.step;
+      if (fetchStart > win.end) {
+        // No new sample is due yet -- trim the stale head and return as-is.
+        const result = [];
+        cached.seriesMap.forEach((item) => {
+          const trimmed = item.values.filter((point) => point.t >= win.start);
+          if (trimmed.length) result.push({ ...item, values: trimmed });
+        });
+        return result.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+      }
+      fetchWin = { start: fetchStart, end: win.end, step: win.step };
+      existingMap = cached.seriesMap;
+    }
+
+    const newSeries = await prometheusRangeFor(query, fetchWin, nameGetter);
+
+    // Advance the watermark to the newest real sample we actually received, not
+    // the requested end -- a point still in flight (scrape lag) is then re-tried
+    // next tick instead of skipped. Fall back to the requested end when the
+    // window came back empty so a dead query can't pin us in place forever.
+    let maxNewT = 0;
+    newSeries.forEach((item) => {
+      const last = item.values.length ? item.values[item.values.length - 1].t : 0;
+      if (last > maxNewT) maxNewT = last;
+    });
+    const fetchedUpTo = maxNewT > 0 ? Math.max(maxNewT, cached ? cached.fetchedUpTo : 0) : fetchWin.end;
+
+    const mergedMap = new Map(existingMap);
+    newSeries.forEach((item) => {
+      const prev = mergedMap.get(item.name);
+      if (prev) {
+        const lastT = prev.values.length ? prev.values[prev.values.length - 1].t : 0;
+        const appended = prev.values.concat(item.values.filter((point) => point.t > lastT));
+        mergedMap.set(item.name, { ...item, values: appended });
+      } else {
+        mergedMap.set(item.name, { ...item });
+      }
+    });
+
+    // Trim every series to the sliding window; drop series that aged out.
+    mergedMap.forEach((item, name) => {
+      const trimmed = item.values.filter((point) => point.t >= win.start);
+      if (trimmed.length) {
+        mergedMap.set(name, { ...item, values: trimmed });
+      } else {
+        mergedMap.delete(name);
+      }
+    });
+
+    rangeCache.set(cacheKey, { fetchedUpTo, seriesMap: mergedMap });
+
+    return Array.from(mergedMap.values())
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  }
+
   function activeInfraPingQuery() {
     return `up{job=~"${escapeLabel(infraPingJobs)}"}`;
   }
@@ -671,8 +747,8 @@
     const names = await fetchIspNames();
     const settled = await Promise.allSettled(names.map(async (name) => {
       const [download, upload] = await Promise.all([
-        prometheusRange(ispTrafficQuery("ifHCInOctets", name)),
-        prometheusRange(ispTrafficQuery("ifHCOutOctets", name))
+        prometheusRangeCached(ispTrafficQuery("ifHCInOctets", name)),
+        prometheusRangeCached(ispTrafficQuery("ifHCOutOctets", name))
       ]);
       return {
         name,
@@ -1047,7 +1123,7 @@
       const [latencyItems, successItems, trendSeries] = await Promise.all([
         prometheusInstant(playerLatencySnapshotQuery(selector)),
         prometheusInstant(playerSuccessSnapshotQuery(selector)),
-        prometheusRange(tournamentTrendQuery(page), (metric) => {
+        prometheusRangeCached(tournamentTrendQuery(page), (metric) => {
           return `${teamName(page, metric.team)} ${seatLabel(metric.seat || "?")}`;
         })
       ]);
@@ -1099,8 +1175,8 @@
     try {
       const [activeItems, pingSeries, lossSeries, ispTraffic] = await Promise.all([
         prometheusInstant(activeInfraPingQuery()),
-        prometheusRange(pingTrendQuery),
-        prometheusRange(lossQuery),
+        prometheusRangeCached(pingTrendQuery),
+        prometheusRangeCached(lossQuery),
         fetchIspTraffic()
       ]);
       if (seq !== chartSeq) return;
@@ -1591,6 +1667,7 @@
   function startInfraRefresh() {
     if (gaugeTimer || chartTimer) return;
     renderSignatures.clear();
+    invalidateRangeCache();
     refreshGauges();
     refreshCharts();
     gaugeTimer = window.setInterval(refreshGauges, 5000);
@@ -1600,6 +1677,7 @@
   function startTournamentRefresh(page) {
     stopTournamentRefresh();
     renderSignatures.clear();
+    invalidateRangeCache();
     refreshTournament(page);
     tournamentTimer = window.setInterval(() => refreshTournament(page), 5000);
     const refreshBtn = document.getElementById("tournamentRefresh");
