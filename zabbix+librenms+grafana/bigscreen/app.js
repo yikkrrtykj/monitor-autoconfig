@@ -18,7 +18,8 @@
     linePathFromPoints
   } = window.BSUtils;
   const {
-    prometheusBaseUrl, prometheusQuery, prometheusInstant, prometheusRangeFor,
+    prometheusBaseUrl, fetchWithTimeout,
+    prometheusQuery, prometheusInstant, prometheusRangeFor,
     prometheusRangeCached, invalidateRangeCache,
     activeInfraPingQuery, activeSeriesNames, filterSeriesByNames,
     fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
@@ -1843,7 +1844,7 @@
 
     const url = (query) => `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}&time=${win.end}`;
     const fetchOne = async (query) => {
-      const resp = await fetch(url(query), { cache: "no-store" });
+      const resp = await fetchWithTimeout(url(query), { cache: "no-store" });
       if (!resp.ok) throw new Error(`Prometheus HTTP ${resp.status}`);
       const payload = await resp.json();
       if (payload.status !== "success") throw new Error("Prometheus query failed");
@@ -2013,6 +2014,10 @@
   // ---- Network topology ----
 
   let topologyTimer = null;
+  // Latest laid-out nodes; the click handlers read from here so an in-place
+  // latency update (render skipped) still shows fresh numbers in the detail
+  // panel without rebinding events.
+  let topologyNodes = [];
 
   function stopTopologyRefresh() {
     if (topologyTimer) {
@@ -2021,7 +2026,7 @@
     }
   }
 
-  function bindTopologyNodeEvents(nodes) {
+  function bindTopologyNodeEvents() {
     const detail = document.getElementById("topologyDetail");
     const canvas = document.getElementById("topologyCanvas");
     if (canvas) {
@@ -2034,7 +2039,7 @@
       const handler = (event) => {
         if (event && event.stopPropagation) event.stopPropagation();
         const idx = Number(el.dataset.idx);
-        const node = nodes[idx];
+        const node = topologyNodes[idx];
         if (!node) return;
         detail.hidden = false;
         detail.innerHTML = `
@@ -2200,17 +2205,48 @@
       );
       const width = Math.max(containerWidth, maxRow * 152 + 48);
       const layout = topologyLayout(layers, width, height, edges);
-      canvas.innerHTML = renderTopologySvg(layout, width);
-      bindTopologyNodeEvents(layout.nodes);
-      setupTopoPanZoom();
-      applyTopoView();
+      topologyNodes = layout.nodes;
+      if (shouldRender("topology", topologySignature(layout, width, edges))) {
+        canvas.innerHTML = renderTopologySvg(layout, width);
+        bindTopologyNodeEvents();
+        setupTopoPanZoom();
+        applyTopoView();
+      } else {
+        // Same structure and status levels: refresh only the latency readouts
+        // in place, keeping the pan/zoom view and skipping the SVG rebuild.
+        updateTopologyLatencyTexts(canvas);
+      }
       document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · 拖动平移·滚轮缩放·双击复位${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
       lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== topologySeq) return;
+      // The error message replaces the SVG, so the next success must rebuild
+      // even when the data signature is unchanged.
+      renderSignatures.delete("topology");
       console.error("Topology fetch failed:", error);
       canvas.innerHTML = `<div class="topology-error">拓扑数据拉取失败: ${escapeHtml(error.message || "")}</div>`;
     }
+  }
+
+  // Skip the SVG rebuild when nothing the layout depends on changed: node set,
+  // kinds, names, status levels, the LLDP edge list and the canvas width. Raw
+  // latency is excluded on purpose -- it jitters every sample and is patched
+  // into the existing DOM by updateTopologyLatencyTexts instead.
+  function topologySignature(layout, width, edges) {
+    const nodesSig = layout.nodes.map((node) => `${node.kind}|${node.ip || ""}|${node.name}|${node.level}`).join("#");
+    const edgesSig = (edges || []).map((edge) => `${edge.from_ip}|${edge.from_port}|${edge.to_ip}|${edge.to_port}`).join("#");
+    return `${width}@${nodesSig}@@${edgesSig}`;
+  }
+
+  function updateTopologyLatencyTexts(canvas) {
+    canvas.querySelectorAll(".topology-node").forEach((el) => {
+      const node = topologyNodes[Number(el.dataset.idx)];
+      const text = el.querySelector(".topology-node-latency");
+      if (!node || !text) return;
+      text.textContent = Number.isFinite(node.latency)
+        ? formatPingText(node.latency)
+        : (node.kind === "isp" ? "在线" : "");
+    });
   }
 
   function startTopologyRefresh() {
@@ -2287,21 +2323,26 @@
     badge.hidden = false;
   }
 
+  // Intl.DateTimeFormat construction is comparatively heavy; build the clock
+  // formatters once instead of twice a second.
+  const clockDateFormat = new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short"
+  });
+  const clockTimeFormat = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+
   function tick() {
     try {
       const now = new Date();
-      setText("dateText", new Intl.DateTimeFormat("zh-CN", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        weekday: "short"
-      }).format(now));
-      setText("timeText", new Intl.DateTimeFormat("zh-CN", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false
-      }).format(now));
+      setText("dateText", clockDateFormat.format(now));
+      setText("timeText", clockTimeFormat.format(now));
       updateFreshness();
     } catch (e) {
       // ignore — will retry next second

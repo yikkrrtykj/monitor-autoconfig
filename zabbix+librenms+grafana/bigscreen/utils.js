@@ -61,18 +61,28 @@
     return `${Math.round(value)} b/s`;
   }
 
+  // Intl.DateTimeFormat construction is comparatively heavy and formatTime
+  // runs on every chart axis render -- build the two variants once.
+  const timeOnlyFormat = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+  const dateTimeFormat = new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+
   function formatTime(timestamp) {
     const date = new Date(timestamp * 1000);
     const now = new Date();
     const sameDay = date.getFullYear() === now.getFullYear()
       && date.getMonth() === now.getMonth()
       && date.getDate() === now.getDate();
-    return new Intl.DateTimeFormat("zh-CN", {
-      ...(sameDay ? {} : { month: "2-digit", day: "2-digit" }),
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false
-    }).format(date);
+    return (sameDay ? timeOnlyFormat : dateTimeFormat).format(date);
   }
 
   function niceMax(value) {
