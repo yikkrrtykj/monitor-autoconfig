@@ -9,6 +9,19 @@
   const playerSnapshotWindow = "90s";
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
   const pages = window.BIGSCREEN_PAGES || [];
+
+  // Pure helpers (format/escape/math/port-label) live in utils.js so they can be
+  // unit-tested and reused without dragging in the DOM-bound app code.
+  const utils = (typeof module !== "undefined" && module.exports)
+    ? require("./utils.js")
+    : window.BSUtils;
+  const {
+    escapeHtml, escapeRegex, escapeLabel, metricName, formatPing, formatPingText,
+    formatUptime, formatBits, formatTime, niceMax, average, uniqueNames,
+    networkLabel, seatLabel, gaugeColor, gaugePercent, smoothValues,
+    linePathFromPoints, parseIspBandwidthConfig, parseIspIps, parseConfiguredTargetIps,
+    compactPortLabel, isPortLikeLabel, isAggPortName
+  } = utils;
   let gaugeTimer = null;
   let chartTimer = null;
   let tournamentTimer = null;
@@ -52,16 +65,6 @@
     }
   }
 
-  function escapeHtml(value) {
-    return String(value).replace(/[&<>"']/g, (char) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;"
-    })[char]);
-  }
-
   function titleText() {
     if (config.title) {
       return config.title;
@@ -84,10 +87,6 @@
     if (path === "/index.html") return pages[0];
     if (path === "/evidence") return pages.find((page) => page.id === "evidence") || pages[0];
     return pages.find((page) => page.path === path) || pages[0];
-  }
-
-  function metricName(metric) {
-    return metric.instance || metric.display_name || metric.ifAlias || metric.ifName || metric.ifDescr || "unknown";
   }
 
   function rangeWindow() {
@@ -297,63 +296,8 @@
     return shouldFilterStageDevices() ? filterStageDeviceSeries(seriesList) : seriesList;
   }
 
-  function formatPing(seconds) {
-    if (seconds < 0.001) {
-      return { value: Math.round(seconds * 1000000), unit: "μs" };
-    }
-    return { value: (seconds * 1000).toFixed(1), unit: "ms" };
-  }
-
-  function formatPingText(seconds) {
-    const formatted = formatPing(seconds);
-    return `${formatted.value} ${formatted.unit}`;
-  }
-
-  function formatUptime(seconds) {
-    if (seconds < 3600) {
-      return { value: Math.max(1, Math.round(seconds / 60)), unit: "分钟" };
-    }
-    if (seconds < 86400) {
-      return { value: (seconds / 3600).toFixed(2), unit: "小时" };
-    }
-    return { value: (seconds / 86400).toFixed(2), unit: "天" };
-  }
-
-  function formatBits(value) {
-    const abs = Math.abs(value);
-    if (abs >= 1000000000) return `${(value / 1000000000).toFixed(2)} Gb/s`;
-    if (abs >= 1000000) return `${(value / 1000000).toFixed(1)} Mb/s`;
-    if (abs >= 1000) return `${(value / 1000).toFixed(1)} kb/s`;
-    return `${Math.round(value)} b/s`;
-  }
-
-  function networkLabel(network) {
-    if (network === "wired") return "有线";
-    if (network === "wireless") return "无线";
-    if (network === "all") return "全部";
-    return network || "-";
-  }
-
-  function seatLabel(seat) {
-    return `S${seat}`;
-  }
-
   function playerLabel(team, seat, network) {
     return `${teamName({ id: "" }, team)} ${seatLabel(seat)} ${networkLabel(network)}`;
-  }
-
-  function gaugeColor(kind, rawValue) {
-    if (kind === "ping") {
-      if (rawValue >= 0.02) return "#ff4d66";
-      if (rawValue >= 0.01) return "#ffe32d";
-      return "#73d17a";
-    }
-    return rawValue < 86400 ? "#ffe32d" : "#73d17a";
-  }
-
-  function gaugePercent(kind, rawValue) {
-    const max = kind === "ping" ? 0.02 : 2592000;
-    return Math.max(0.03, Math.min(1, rawValue / max));
   }
 
   function renderGaugeGrid(containerId, items, kind, forceRows) {
@@ -397,74 +341,8 @@
     });
   }
 
-  function niceMax(value) {
-    if (!Number.isFinite(value) || value <= 0) {
-      return 1;
-    }
-    const exponent = Math.floor(Math.log10(value));
-    const base = value / 10 ** exponent;
-    const niceBase = base <= 1 ? 1 : base <= 2 ? 2 : base <= 5 ? 5 : 10;
-    return niceBase * 10 ** exponent;
-  }
-
-  function average(values) {
-    const usable = values.filter((value) => Number.isFinite(value));
-    return usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : 0;
-  }
-
-  function formatTime(timestamp) {
-    const date = new Date(timestamp * 1000);
-    const now = new Date();
-    const sameDay = date.getFullYear() === now.getFullYear()
-      && date.getMonth() === now.getMonth()
-      && date.getDate() === now.getDate();
-    return new Intl.DateTimeFormat("zh-CN", {
-      ...(sameDay ? {} : { month: "2-digit", day: "2-digit" }),
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false
-    }).format(date);
-  }
-
   function renderNoData(container, message) {
     container.innerHTML = `<div class="no-data">${message || "暂无数据"}</div>`;
-  }
-
-  function linePathFromPoints(points, smooth) {
-    if (!points.length) return "";
-    if (!smooth || points.length < 3) {
-      return `M ${points.join(" L ")}`;
-    }
-
-    const coords = points.map((point) => {
-      const [x, y] = point.split(",").map(Number);
-      return { x, y };
-    });
-    const commands = [`M ${points[0]}`];
-    for (let index = 0; index < coords.length - 1; index += 1) {
-      const current = coords[index];
-      const next = coords[index + 1];
-      const previous = coords[index - 1] || current;
-      const afterNext = coords[index + 2] || next;
-      const cp1x = current.x + (next.x - previous.x) / 6;
-      const cp1y = current.y + (next.y - previous.y) / 6;
-      const cp2x = next.x - (afterNext.x - current.x) / 6;
-      const cp2y = next.y - (afterNext.y - current.y) / 6;
-      commands.push(`C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${next.x.toFixed(1)},${next.y.toFixed(1)}`);
-    }
-    return commands.join(" ");
-  }
-
-  function smoothValues(values, windowSize) {
-    if (!windowSize || windowSize < 2 || values.length < 3) {
-      return values;
-    }
-
-    return values.map((point, index) => {
-      const start = Math.max(0, index - windowSize + 1);
-      const window = values.slice(start, index + 1).map((item) => item.v);
-      return { ...point, v: average(window) };
-    });
   }
 
   function renderLineChart(containerId, seriesList, options) {
@@ -656,38 +534,8 @@
       .slice(0, 4);
   }
 
-  function parseIspIps(raw) {
-    const out = {};
-    if (!raw) return out;
-    String(raw).split(",").forEach((item) => {
-      const idx = item.indexOf(":");
-      if (idx <= 0) return;
-      const name = item.slice(0, idx).trim();
-      const ip = item.slice(idx + 1).trim();
-      if (name && ip) out[name] = ip;
-    });
-    return out;
-  }
-
-  function parseConfiguredTargetIps(raw) {
-    const ips = new Set();
-    if (!raw) return ips;
-    String(raw).split(",").forEach((item) => {
-      const entry = item.trim();
-      if (!entry) return;
-      const value = entry.includes(":") ? entry.slice(entry.indexOf(":") + 1).trim() : entry;
-      const ip = value.split("-", 1)[0].trim();
-      if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip)) ips.add(ip);
-    });
-    return ips;
-  }
-
   function isIspAutoDiscoveryEnabled() {
     return ["1", "true", "yes", "on"].includes(String(config.ispAutoDiscovery || "").trim().toLowerCase());
-  }
-
-  function escapeRegex(value) {
-    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   function wanFilterPattern() {
@@ -702,10 +550,6 @@
   function ispDiscoveryQuery() {
     const pattern = wanFilterPattern();
     return `group by (ifAlias) (ifHCInOctets{job="firewall-snmp",ifAlias=~".+",ifAlias=~"(?i).*(${pattern}).*"}) or group by (ifName) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName=~".+",ifName=~"(?i).*(${pattern}).*"}) or group by (ifDescr) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName="",ifDescr=~".+",ifDescr=~"(?i).*(${pattern}).*"})`;
-  }
-
-  function uniqueNames(names) {
-    return Array.from(new Set(names.map((name) => String(name || "").trim()).filter(Boolean)));
   }
 
   async function fetchIspNames() {
@@ -732,10 +576,6 @@
       console.warn("ISP discovery failed", error);
       return configured;
     }
-  }
-
-  function escapeLabel(value) {
-    return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
 
   function ispTrafficQuery(metric, name) {
@@ -1834,32 +1674,6 @@
     };
   }
 
-  function parseIspBandwidthConfig(raw) {
-    const result = { default: { down: 1000, up: 1000 }, perIsp: {} };
-    if (raw === undefined || raw === null) return result;
-    const text = String(raw).trim();
-    if (!text) return result;
-    if (/^\d+(\.\d+)?$/.test(text)) {
-      const value = Number(text);
-      result.default = { down: value, up: value };
-      return result;
-    }
-    text.split(",").forEach((item) => {
-      const trimmed = item.trim();
-      if (!trimmed) return;
-      const colonIdx = trimmed.lastIndexOf(":");
-      if (colonIdx <= 0) return;
-      const name = trimmed.slice(0, colonIdx).trim();
-      const bandwidth = trimmed.slice(colonIdx + 1).trim();
-      const parts = bandwidth.split("/").map((part) => Number(part.trim()));
-      const down = Number.isFinite(parts[0]) ? parts[0] : null;
-      if (down === null) return;
-      const up = Number.isFinite(parts[1]) ? parts[1] : down;
-      result.perIsp[name] = { down, up };
-    });
-    return result;
-  }
-
   function ispCapacityBps(name, direction) {
     const cfg = parseIspBandwidthConfig(config.ispMaxBandwidthMbps);
     const entry = cfg.perIsp[name] || cfg.default;
@@ -2754,12 +2568,7 @@
     });
 
     const pairKeyFor = (a, b) => [a.ip || a.name, b.ip || b.name].sort().join("|");
-    const isPortLikeLabel = (port) => (
-      /^(?:gi|te|twe|fo|hu|xe|xge|sfp|qsfp|fa|eth|ge|xgei|port|po|lag|trk|ae|be|eth-trunk)/i.test(port) ||
-      /^\d+(?:\/\d+)+$/.test(port)
-    );
     const cleanPortNames = (ports) => uniqueNames(ports.map(compactPortLabel)).filter((port) => port && isPortLikeLabel(port));
-    const isAggPortName = (port) => /^(?:po|lag|trk|ae|be|eth-trunk)\s*\d+/i.test(port);
     const selectDisplayPorts = (ports, maxPhysical = Infinity) => {
       const unique = cleanPortNames(ports);
       const physical = unique.filter((port) => !isAggPortName(port));
@@ -2901,21 +2710,6 @@
 
   function topologyNodeKindLabel(kind) {
     return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", server: "服务器" }[kind] || kind;
-  }
-
-  function compactPortLabel(port) {
-    let text = String(port || "").trim();
-    text = text
-      .replace(/^GigabitEthernet/i, "Gi")
-      .replace(/^TenGigabitEthernet/i, "Te")
-      .replace(/^TwentyFiveGigE/i, "Twe")
-      .replace(/^FortyGigabitEthernet/i, "Fo")
-      .replace(/^HundredGigE/i, "Hu")
-      .replace(/^Port[\s-]*channel/i, "Po")
-      .replace(/^Bundle[\s-]*Ether/i, "BE")
-      .replace(/^Ethernet[\s-]*Trunk/i, "Eth-Trunk")
-      .replace(/\s+active$/i, "");
-    return text.length > 18 ? `${text.slice(0, 15)}...` : text;
   }
 
   function renderTopologySvg(layout, canvasWidth) {
