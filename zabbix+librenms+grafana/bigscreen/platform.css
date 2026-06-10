@@ -1323,3 +1323,58 @@ a.seat-slot:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==================== 手机端适配 ====================
+   与 style.css 的窄屏块配套:首页卡片、比赛盘、核对页在手机上单列/双列滚动。 */
+@media (max-width: 820px) {
+  .screen,
+  .screen.home-mode,
+  .screen.infra-mode,
+  .screen.evidence-mode,
+  .screen.incident-mode,
+  .screen.heatmap-mode,
+  .screen.topology-mode,
+  .screen.ops-mode,
+  .screen.tournament-mode {
+    grid-template-rows: auto 1fr;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .screen.home-mode .topbar,
+  .screen.evidence-mode .topbar,
+  .screen.ops-mode .topbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mode-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 比赛页:队伍卡两列排,纵向滚动 */
+  .team-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .tournament-board,
+  .tournament-panel {
+    overflow: visible;
+  }
+
+  .team-trend-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .team-trend-stack-horizontal {
+    flex-direction: column;
+  }
+
+  /* 座位核对/无线总览:表格横向可滚,卡片单列 */
+  .ops-board {
+    overflow-x: auto;
+  }
+
+  .seat-check-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}

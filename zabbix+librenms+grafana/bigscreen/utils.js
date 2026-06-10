@@ -244,6 +244,24 @@
     return /^(?:po|lag|trk|ae|be|eth-trunk)\s*\d+/i.test(port);
   }
 
+  // "YYYY-MM-DD HH:mm:ss" in local time -- Excel parses this directly.
+  function formatTimestampFull(timestamp) {
+    const date = new Date(timestamp * 1000);
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+      `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  function csvField(value) {
+    const text = String(value == null ? "" : value);
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  // Leading BOM so Excel opens the Chinese series names with the right encoding.
+  function buildCsv(rows) {
+    return "\uFEFF" + rows.map((row) => row.map(csvField).join(",")).join("\r\n");
+  }
+
   const ns = {
     escapeHtml,
     escapeRegex,
@@ -266,6 +284,9 @@
     parseIspBandwidthConfig,
     parseIspIps,
     parseConfiguredTargetIps,
+    formatTimestampFull,
+    csvField,
+    buildCsv,
     compactPortLabel,
     isPortLikeLabel,
     isAggPortName
