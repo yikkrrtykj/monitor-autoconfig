@@ -379,26 +379,9 @@
     return commands.join(" ");
   }
 
-  function smoothValues(values, windowSize) {
-    if (!windowSize || windowSize < 2 || values.length < 3) {
-      return values;
-    }
-
-    return values.map((point, index) => {
-      const start = Math.max(0, index - windowSize + 1);
-      const window = values.slice(start, index + 1).map((item) => item.v);
-      return { ...point, v: average(window) };
-    });
-  }
-
   function renderLineChart(containerId, seriesList, options) {
     const container = document.getElementById(containerId);
-    const series = seriesList
-      .filter((item) => item.values.length)
-      .map((item) => ({
-        ...item,
-        values: smoothValues(item.values, options.smoothWindow)
-      }));
+    const series = seriesList.filter((item) => item.values.length);
     if (!series.length) {
       renderNoData(container);
       return;
@@ -924,15 +907,6 @@
 
   function playerSuccessSnapshotQuery(selector) {
     return `max_over_time(probe_success{${selector}}[${playerSnapshotWindow}])`;
-  }
-
-  function lineChartOptions() {
-    return {
-      axisFormatter: formatPingText,
-      valueFormatter: formatPingText,
-      minMax: 0.005,
-      smooth: true
-    };
   }
 
   function renderTournamentTrend(page, trendSeries) {
