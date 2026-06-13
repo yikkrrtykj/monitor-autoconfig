@@ -1,10 +1,12 @@
 #!/bin/sh
-# Patch nginx server_name and crond for LibreNMS validation.
-# Can be called both as a cont-init.d script (before nginx starts) and standalone.
-# When called as cont-init.d/99-librenms-patch, this runs AFTER LibreNMS's own
-# cont-init.d scripts that regenerate nginx.conf, so our server_name wins.
+# Patch nginx server_name and the scheduler crontab for LibreNMS validation.
+# Runs as the s6 cont-init.d script 99-librenms-patch, i.e. BEFORE the nginx /
+# php-fpm services start, and as root. It therefore only edits config FILES --
+# it must never run or signal nginx/php-fpm, because those services run as the
+# librenms user (uid 1000) and any pid/log/temp files we touch as root would
+# become root-owned and block the uid-1000 services from starting.
 
-# Remove the nginx default site that catches all requests with 404
+# Remove the nginx default site that catches all requests with 404.
 if [ -f /etc/nginx/http.d/default.conf ]; then
   rm -f /etc/nginx/http.d/default.conf
   echo "[librenms-init] removed nginx default.conf (404 catch-all)"
@@ -12,8 +14,7 @@ fi
 
 # Patch server_name on the LibreNMS server block so the webserver reports the real
 # IP (validate.php compares this against base_url, e.g. "192.168.40.251 localhost").
-# Done defensively: back up the file, edit it, then `nginx -t`; if the edit produced
-# an invalid config we revert, so the site always comes up even if the layout differs.
+# Edit the config FILE only; back up first and revert if the result looks wrong.
 if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
   # Locate the file that holds the block listening on 8000 (fall back to nginx.conf).
   target=$(grep -rls 'listen[^;]*8000' /etc/nginx 2>/dev/null | head -n1)
@@ -37,12 +38,14 @@ if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
       [ "$f" = "$target" ] && continue
       sed -i "s/^\([[:space:]]*\)server_name[[:space:]]*localhost;/\1server_name ${SERVER_IP};/" "$f" 2>/dev/null || true
     done
-    if nginx -t >/dev/null 2>&1; then
+    # Sanity check via file content only (no `nginx -t`, which would create
+    # root-owned log/pid files): our server_name landed and a listen still exists.
+    if grep -q "server_name ${SERVER_IP};" "$target" && grep -q 'listen' "$target"; then
       rm -f "$backup"
       echo "[librenms-init] nginx server_name set to ${SERVER_IP} in $target"
     else
       mv "$backup" "$target"
-      echo "[librenms-init] WARNING: server_name edit produced invalid nginx config -- reverted"
+      echo "[librenms-init] WARNING: server_name edit looked wrong -- reverted"
     fi
   fi
 fi
@@ -61,34 +64,14 @@ if [ -f /opt/librenms/bootstrap/cache/config.php ]; then
   echo "[librenms-init] Laravel config cache cleared"
 fi
 
-# Reload nginx if it is already running (standalone call), or skip if not yet started
-# (cont-init.d call — nginx will read the already-patched config on first start).
-if nginx -t >/dev/null 2>&1; then
-  nginx -s reload 2>/dev/null && echo "[librenms-init] nginx reloaded" || true
-fi
-
-# Restart PHP-FPM so it drops opcache and picks up the new .env.
-pkill -USR2 php-fpm 2>/dev/null || pkill php-fpm 2>/dev/null || true
-
-# Install crontab for the Laravel scheduler.
-# validate.php checks for this file (belt-and-suspenders alongside the s6 schedule:work service).
+# Install the scheduler crontab file. validate.php's cron check looks for this file;
+# the image's own cron service runs it, so we only drop the file (no daemon start).
 if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
-  mkdir -p /var/spool/cron/crontabs /etc/cron.d
+  mkdir -p /etc/cron.d
   sed "s|php /opt/librenms/artisan|su librenms -s /bin/sh -c \"php /opt/librenms/artisan\"|" \
     /opt/librenms/dist/librenms-scheduler.cron > /etc/cron.d/librenms 2>/dev/null || true
   chmod 644 /etc/cron.d/librenms 2>/dev/null || true
   echo "[librenms-init] scheduler crontab installed to /etc/cron.d/librenms"
-fi
-
-# Start crond so validate.php's cron-based check also passes.
-if pgrep crond >/dev/null 2>&1; then
-  echo "[librenms-init] crond already running"
-elif command -v crond >/dev/null 2>&1; then
-  crond -b -l 2 2>/dev/null || crond -l 2 2>/dev/null &
-  echo "[librenms-init] crond started"
-elif command -v cron >/dev/null 2>&1; then
-  cron 2>/dev/null &
-  echo "[librenms-init] cron started"
 fi
 
 # Always succeed: this runs as an s6 cont-init.d script, and a non-zero exit there
