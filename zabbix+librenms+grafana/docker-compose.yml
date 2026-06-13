@@ -509,7 +509,7 @@ services:
       PLAYER_WIRELESS_SCAN_MAX_HOSTS: "${PLAYER_WIRELESS_SCAN_MAX_HOSTS:-512}"
       PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS: "${PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS:-true}"
       PLAYER_WIRELESS_SCAN_EXCLUDE: "${PLAYER_WIRELESS_SCAN_EXCLUDE:-}"
-      PLAYER_TARGETS_REFRESH_INTERVAL: "${PLAYER_TARGETS_REFRESH_INTERVAL:-60}"
+      PLAYER_TARGETS_REFRESH_INTERVAL: "${PLAYER_TARGETS_REFRESH_INTERVAL:-300}"
       PLAYER_TARGETS_FILE: "/targets/player_targets.json"
     entrypoint:
       - /bin/sh
@@ -537,7 +537,7 @@ services:
         }
 
         wait_or_trigger() {
-          interval="$${PLAYER_TARGETS_REFRESH_INTERVAL:-60}"
+          interval="$${PLAYER_TARGETS_REFRESH_INTERVAL:-300}"
           elapsed=0
           while [ "$$elapsed" -lt "$$interval" ]; do
             sleep 1
