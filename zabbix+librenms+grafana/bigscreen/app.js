@@ -379,26 +379,9 @@
     return commands.join(" ");
   }
 
-  function smoothValues(values, windowSize) {
-    if (!windowSize || windowSize < 2 || values.length < 3) {
-      return values;
-    }
-
-    return values.map((point, index) => {
-      const start = Math.max(0, index - windowSize + 1);
-      const window = values.slice(start, index + 1).map((item) => item.v);
-      return { ...point, v: average(window) };
-    });
-  }
-
   function renderLineChart(containerId, seriesList, options) {
     const container = document.getElementById(containerId);
-    const series = seriesList
-      .filter((item) => item.values.length)
-      .map((item) => ({
-        ...item,
-        values: smoothValues(item.values, options.smoothWindow)
-      }));
+    const series = seriesList.filter((item) => item.values.length);
     if (!series.length) {
       renderNoData(container);
       return;
@@ -926,15 +909,6 @@
     return `max_over_time(probe_success{${selector}}[${playerSnapshotWindow}])`;
   }
 
-  function lineChartOptions() {
-    return {
-      axisFormatter: formatPingText,
-      valueFormatter: formatPingText,
-      minMax: 0.005,
-      smooth: true
-    };
-  }
-
   function renderTournamentTrend(page, trendSeries) {
     const container = document.getElementById("tournamentTrendChart");
 
@@ -1162,6 +1136,15 @@
     if (player.latency >= 0.08) return "高延迟";
     if (player.latency >= 0.04) return "轻微抖动";
     return "正常";
+  }
+
+  function triggerRescan(btn) {
+    btn.disabled = true;
+    btn.classList.add("spinning");
+    fetch("/player-targets/rescan", { method: "POST" })
+      .finally(() => {
+        setTimeout(() => { btn.disabled = false; btn.classList.remove("spinning"); }, 3000);
+      });
   }
 
   function renderWirelessControls() {
@@ -1619,6 +1602,14 @@
     const refresh = page.id === "wireless" ? refreshWirelessOverview : refreshSeatCheck;
     refresh();
     opsTimer = window.setInterval(refresh, 5000);
+    const rescanBtn = document.getElementById("opsRescan");
+    if (rescanBtn) {
+      rescanBtn.hidden = page.id === "wireless";
+      if (!rescanBtn.dataset.bound) {
+        rescanBtn.addEventListener("click", function () { triggerRescan(this); });
+        rescanBtn.dataset.bound = "1";
+      }
+    }
   }
 
   function setVisible(id, visible) {
