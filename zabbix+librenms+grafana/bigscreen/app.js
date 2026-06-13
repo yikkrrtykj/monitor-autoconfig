@@ -1603,9 +1603,12 @@
     refresh();
     opsTimer = window.setInterval(refresh, 5000);
     const rescanBtn = document.getElementById("opsRescan");
-    if (rescanBtn && !rescanBtn.dataset.bound) {
-      rescanBtn.addEventListener("click", function () { triggerRescan(this); });
-      rescanBtn.dataset.bound = "1";
+    if (rescanBtn) {
+      rescanBtn.hidden = page.id === "wireless";
+      if (!rescanBtn.dataset.bound) {
+        rescanBtn.addEventListener("click", function () { triggerRescan(this); });
+        rescanBtn.dataset.bound = "1";
+      }
     }
   }
 
