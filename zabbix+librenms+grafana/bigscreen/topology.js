@@ -62,7 +62,7 @@
         kind: "isp",
         name,
         ip: configuredIp,
-        level: "good"
+        level: "none"
       };
     });
     ispTargets.forEach((target) => {
@@ -537,7 +537,7 @@
     const nodes = layout.nodes.map((node, idx) => {
       const latencyText = Number.isFinite(node.latency)
         ? formatPingText(node.latency)
-        : (node.kind === "isp" ? "在线" : "");
+        : (node.kind === "isp" && node.success === true ? "在线" : "");
       const dataAttrs = `data-idx="${idx}" data-kind="${escapeHtml(node.kind)}" data-name="${escapeHtml(node.name)}" data-ip="${escapeHtml(node.ip || "")}" data-level="${escapeHtml(node.level)}"`;
       const subline = node.ip
         ? `<text class="topology-node-ip" x="14" y="${node.h - 8}">${escapeHtml(node.ip)}</text>`
