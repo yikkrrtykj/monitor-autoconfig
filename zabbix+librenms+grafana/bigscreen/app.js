@@ -2066,7 +2066,7 @@
       if (!node || !text) return;
       text.textContent = Number.isFinite(node.latency)
         ? formatPingText(node.latency)
-        : (node.kind === "isp" ? "在线" : "");
+        : (node.kind === "isp" && node.success === true ? "在线" : "");
     });
   }
 
