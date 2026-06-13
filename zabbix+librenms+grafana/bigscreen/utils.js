@@ -129,18 +129,6 @@
     return Math.max(0.03, Math.min(1, rawValue / max));
   }
 
-  function smoothValues(values, windowSize) {
-    if (!windowSize || windowSize < 2 || values.length < 3) {
-      return values;
-    }
-
-    return values.map((point, index) => {
-      const start = Math.max(0, index - windowSize + 1);
-      const window = values.slice(start, index + 1).map((item) => item.v);
-      return { ...point, v: average(window) };
-    });
-  }
-
   function linePathFromPoints(points, smooth) {
     if (!points.length) return "";
     if (!smooth || points.length < 3) {
@@ -279,7 +267,6 @@
     seatLabel,
     gaugeColor,
     gaugePercent,
-    smoothValues,
     linePathFromPoints,
     parseIspBandwidthConfig,
     parseIspIps,

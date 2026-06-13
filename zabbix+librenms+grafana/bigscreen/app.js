@@ -14,7 +14,7 @@
   const {
     escapeHtml, escapeRegex, escapeLabel, metricName, formatPing, formatPingText,
     formatUptime, formatBits, formatTime, niceMax, average,
-    networkLabel, seatLabel, gaugeColor, gaugePercent, smoothValues,
+    networkLabel, seatLabel, gaugeColor, gaugePercent,
     linePathFromPoints, buildCsv, formatTimestampFull
   } = window.BSUtils;
   const {
