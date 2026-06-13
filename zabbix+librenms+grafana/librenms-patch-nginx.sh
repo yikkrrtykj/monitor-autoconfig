@@ -10,14 +10,31 @@ if [ -f /etc/nginx/http.d/default.conf ]; then
   echo "[librenms-init] removed nginx default.conf (404 catch-all)"
 fi
 
-# Patch server_name in nginx.conf.
-# LibreNMS's cont-init.d generates nginx.conf with "server_name localhost;" --
-# replace it with the actual server IP so validate.php stops complaining.
+# Patch server_name across ALL nginx config files.
+# The validation reports both the base_url host and the webserver's reported
+# server name, e.g. "192.168.40.251 localhost". The stray "localhost" can live
+# in nginx.conf OR an included file under http.d/ / conf.d/, so we scrub every
+# server_name directive and then add exactly one (the real IP) to the block that
+# listens on 8000 -- this is what nginx reports as $server_name to PHP-FPM.
 if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
-  # Remove ALL existing server_name lines first, then add ours as the sole entry.
-  sed -i "/server_name /d" /etc/nginx/nginx.conf 2>/dev/null || true
-  sed -i "/listen \[::\]:8000;/a \        server_name ${SERVER_IP};" /etc/nginx/nginx.conf 2>/dev/null || true
-  echo "[librenms-init] nginx server_name set to: ${SERVER_IP}"
+  # 1) Strip every existing server_name directive from every nginx config file.
+  for f in $(grep -rls 'server_name' /etc/nginx 2>/dev/null); do
+    sed -i '/^[[:space:]]*server_name[[:space:]]/d' "$f" 2>/dev/null || true
+  done
+
+  # 2) Add server_name <IP> right after the listen-on-8000 directive in whichever
+  #    file holds the LibreNMS server block (fall back to nginx.conf).
+  target=$(grep -rls 'listen[^;]*8000' /etc/nginx 2>/dev/null | head -n1)
+  [ -z "$target" ] && target=/etc/nginx/nginx.conf
+  if [ -f "$target" ]; then
+    awk -v ip="$SERVER_IP" '
+      { print }
+      !added && $0 ~ /listen[^;]*8000/ { print "        server_name " ip ";"; added=1 }
+    ' "$target" > "$target.tmp" 2>/dev/null && mv "$target.tmp" "$target"
+    echo "[librenms-init] nginx server_name set to ${SERVER_IP} in $target"
+  else
+    echo "[librenms-init] WARNING: no nginx server block listening on 8000 found"
+  fi
 fi
 
 # Patch APP_URL in .env so front-end AJAX calls use the real server address.

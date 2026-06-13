@@ -20,10 +20,20 @@ fi
 # Install the nginx/env/cron patch as a cont-init.d script so it runs AFTER LibreNMS's
 # own cont-init.d scripts finish generating nginx.conf and .env. The "99-" prefix
 # ensures alphabetical order places us last, so our server_name patch is not overwritten.
+#
+# IMPORTANT: s6 cont-init.d scripts do not reliably inherit the container's environment,
+# so SERVER_IP/LIBRENMS_PORT would be empty there and the patch would silently skip.
+# We bake the actual values into the generated wrapper here (entrypoint has the real
+# env) and let the wrapper export them before running the patch logic.
 mkdir -p /etc/cont-init.d
-cp /librenms-patch-nginx.sh /etc/cont-init.d/99-librenms-patch
+cat > /etc/cont-init.d/99-librenms-patch <<EOF
+#!/bin/sh
+export SERVER_IP='${SERVER_IP:-}'
+export LIBRENMS_PORT='${LIBRENMS_PORT:-8002}'
+exec /librenms-patch-nginx.sh
+EOF
 chmod +x /etc/cont-init.d/99-librenms-patch
-echo "[librenms-entry] installed nginx/scheduler patch as /etc/cont-init.d/99-librenms-patch"
+echo "[librenms-entry] installed nginx/scheduler patch as /etc/cont-init.d/99-librenms-patch (SERVER_IP=${SERVER_IP:-unset})"
 
 # Register the Laravel scheduler as an s6 long-running service using schedule:work.
 # schedule:work keeps the artisan process alive in the process table, which is
