@@ -10,30 +10,40 @@ if [ -f /etc/nginx/http.d/default.conf ]; then
   echo "[librenms-init] removed nginx default.conf (404 catch-all)"
 fi
 
-# Patch server_name across ALL nginx config files.
-# The validation reports both the base_url host and the webserver's reported
-# server name, e.g. "192.168.40.251 localhost". The stray "localhost" can live
-# in nginx.conf OR an included file under http.d/ / conf.d/, so we scrub every
-# server_name directive and then add exactly one (the real IP) to the block that
-# listens on 8000 -- this is what nginx reports as $server_name to PHP-FPM.
+# Patch server_name on the LibreNMS server block so the webserver reports the real
+# IP (validate.php compares this against base_url, e.g. "192.168.40.251 localhost").
+# Done defensively: back up the file, edit it, then `nginx -t`; if the edit produced
+# an invalid config we revert, so the site always comes up even if the layout differs.
 if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
-  # 1) Strip every existing server_name directive from every nginx config file.
-  for f in $(grep -rls 'server_name' /etc/nginx 2>/dev/null); do
-    sed -i '/^[[:space:]]*server_name[[:space:]]/d' "$f" 2>/dev/null || true
-  done
-
-  # 2) Add server_name <IP> right after the listen-on-8000 directive in whichever
-  #    file holds the LibreNMS server block (fall back to nginx.conf).
+  # Locate the file that holds the block listening on 8000 (fall back to nginx.conf).
   target=$(grep -rls 'listen[^;]*8000' /etc/nginx 2>/dev/null | head -n1)
   [ -z "$target" ] && target=/etc/nginx/nginx.conf
   if [ -f "$target" ]; then
-    awk -v ip="$SERVER_IP" '
-      { print }
-      !added && $0 ~ /listen[^;]*8000/ { print "        server_name " ip ";"; added=1 }
-    ' "$target" > "$target.tmp" 2>/dev/null && mv "$target.tmp" "$target"
-    echo "[librenms-init] nginx server_name set to ${SERVER_IP} in $target"
-  else
-    echo "[librenms-init] WARNING: no nginx server block listening on 8000 found"
+    backup="$target.bak.$$"
+    cp "$target" "$backup"
+    if grep -q '^[[:space:]]*server_name' "$target"; then
+      # Replace the existing server_name value(s) in place -- a 1:1 line rewrite
+      # that cannot change the surrounding block structure.
+      sed -i "s/^\([[:space:]]*\)server_name[[:space:]].*/\1server_name ${SERVER_IP};/" "$target" 2>/dev/null || true
+    else
+      # No server_name yet: insert one right after the first listen-on-8000 line.
+      awk -v ip="$SERVER_IP" '
+        { print }
+        !added && $0 ~ /listen[^;]*8000/ { print "        server_name " ip ";"; added=1 }
+      ' "$target" > "$target.tmp" 2>/dev/null && mv "$target.tmp" "$target"
+    fi
+    # Rewrite any stray "server_name localhost" in OTHER included files too.
+    for f in $(grep -rls '^[[:space:]]*server_name[[:space:]]*localhost' /etc/nginx 2>/dev/null); do
+      [ "$f" = "$target" ] && continue
+      sed -i "s/^\([[:space:]]*\)server_name[[:space:]]*localhost;/\1server_name ${SERVER_IP};/" "$f" 2>/dev/null || true
+    done
+    if nginx -t >/dev/null 2>&1; then
+      rm -f "$backup"
+      echo "[librenms-init] nginx server_name set to ${SERVER_IP} in $target"
+    else
+      mv "$backup" "$target"
+      echo "[librenms-init] WARNING: server_name edit produced invalid nginx config -- reverted"
+    fi
   fi
 fi
 
@@ -80,3 +90,7 @@ elif command -v cron >/dev/null 2>&1; then
   cron 2>/dev/null &
   echo "[librenms-init] cron started"
 fi
+
+# Always succeed: this runs as an s6 cont-init.d script, and a non-zero exit there
+# halts the whole container. None of the steps above are fatal if they fail.
+exit 0
