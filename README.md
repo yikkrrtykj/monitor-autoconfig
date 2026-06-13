@@ -98,13 +98,13 @@ SWITCH_DISCOVERY_RANGE=192.168.10.1-100,192.168.10.254
 
 ```bash
 TOURNAMENT_SWITCHES=192.168.10.11,192.168.10.12   # 选手接入交换机 IP
-PLAYER_SUBNETS=192.168.11.0/24                    # 选手有线网段（分类提示，不再硬过滤）
+PLAYER_SUBNETS=192.168.11.0/24                    # 选手有线网段（用于有线 / 无线分类）
 WIRELESS_SUBNETS=192.168.12.0/24                  # 选手无线（备用，不用就留空）
 
 # 选手网关 IP（L3 设备，承载 player VLAN 网关 / ARP 表）
 # 舞台交换机是纯 L2 时必须设置：脚本会查这里的 ARP 表拿 IP→MAC，再用
 # 舞台交换机的 MAC 表反推到 team X-Y 端口
-# 留空则回退到 LIBRENMS_CORE_IP；都为空只走旧的“舞台直接 ARP”路径
+# 留空则回退到 LIBRENMS_CORE_IP；两者都为空时只查舞台本机的 ARP 表
 PLAYER_GATEWAYS=192.168.10.254
 # 网关 SNMP community 不同时在这里覆盖，否则用 SNMP_COMMUNITY
 PLAYER_GATEWAY_SNMP_COMMUNITY=
@@ -128,7 +128,7 @@ PLAYER_PING_SCRAPE_INTERVAL=5s
 # 端口 link-down 时跳过该 team 位（默认开）。交换机 MAC 老化要 5 分钟、网关 ARP
 # 老化要 4 小时，断开后这两个表里残留的条目会让脚本误以为有人，造成“挂着显示红色”。
 # 开启后下次脚本运行（默认 300 秒内，或手动重扫立即）就会自动清掉幻影 target。极少数
-# 老型号交换机不报 ifOperStatus，可改成 false 回退到旧行为
+# 老型号交换机不报 ifOperStatus，可改成 false 关闭这个检查
 PLAYER_REQUIRE_LINK_UP=true
 
 # 无线扫描：只按 WIRELESS_SUBNETS ping 扫在线 IP，生成 network=wireless 的选手 targets
@@ -150,7 +150,6 @@ PLAYER_STATIC_NETWORK=wireless
 
 ```bash
 # 默认关闭。/topology 只显示状态、延迟、LLDP 连接和上联摘要，不采集交换机接口流量。
-# 旧变量 TOPOLOGY_ENABLE_PROMETHEUS_UPLINKS / TOPOLOGY_UPLINK_SCRAPE_INTERVAL / TOPOLOGY_LINK_RATE_WINDOW 已废弃。
 ```
 
 这样不会为了看拓扑反复读取核心交换机接口计数器；需要看吞吐时建议临时到交换机 / LibreNMS / Grafana 单独查。
@@ -167,7 +166,7 @@ Cisco IOS / IOS-XE 的 BRIDGE-MIB 默认只暴露 VLAN 1 的 MAC 表，非 VLAN 
 
 **幻影 target 防护（默认开）**：
 
-选手拔掉网线后，stage 交换机 MAC 表里的 MAC 要 5 分钟才老化、核心 ARP 表里的 IP 要 4 小时才老化，期间 join 路径会以为还有人，大屏上挂着红色。`PLAYER_REQUIRE_LINK_UP=true`（默认）查 `ifOperStatus`，端口不是 up 就跳过，下次发现周期（默认 300 秒内）幻影自动消失；急用时到座位核对页点 **↻ 立即重扫** 秒级清掉。极少数老型号交换机不报 ifOperStatus，可改 `false` 回退。
+选手拔掉网线后，stage 交换机 MAC 表里的 MAC 要 5 分钟才老化、核心 ARP 表里的 IP 要 4 小时才老化，期间 join 路径会以为还有人，大屏上挂着红色。`PLAYER_REQUIRE_LINK_UP=true`（默认）查 `ifOperStatus`，端口不是 up 就跳过，下次发现周期（默认 300 秒内）幻影自动消失；急用时到座位核对页点 **↻ 立即重扫** 秒级清掉。极少数老型号交换机不报 ifOperStatus，可改 `false` 关闭这个检查。
 
 ### 3. 起服务
 
@@ -211,7 +210,7 @@ http://服务器IP:8088/latency
 
 按 `队伍 + 座位 + 网络 + 查询时间 + 窗口` 查询。延迟查询页会同时显示：
 
-- 延迟趋势：这个时间窗口内该选手的 ping 延迟趋势，**显示原始数据、不做平滑**，和 Grafana 一致——尖刺即时出现、即时恢复，不会有“缓慢爬升 + 突然下坠”的失真。
+- 延迟趋势：这个时间窗口内该选手的 ping 延迟，显示原始采样、和 Grafana 一致，尖刺即时出现、即时恢复。
 - 在线状态：`probe_success` 的在线 / 失败采样；在线率不是 100% 或失败时长大于 0，就说明这个窗口内确实有断线 / 探测失败。
 - 汇总卡片：自动汇总平均延迟、最高延迟、在线率、失败时长，适合截图给裁判 / 选手确认。
 - **导出 CSV**：把这段时间的延迟 / 在线原始采样导出存证，方便事后复盘或给裁判留底。
@@ -286,8 +285,7 @@ docker exec librenms snmpwalk -v2c -c public 192.168.10.254 sysName.0
 **改了 .env 后某些数据不更新**
 
 - 改 `TOURNAMENT_SWITCHES` / `PLAYER_GATEWAYS` / `PLAYER_SUBNETS` / `WIRELESS_SUBNETS` / `PLAYER_STATIC_TARGETS` / `PLAYER_WIRELESS_SCAN` → `player-targets` 每个发现周期（默认 300 秒）自动读取 `.env`；要立刻生效就到大屏 `/seat-check` 点 **↻ 立即重扫**
-- 第一次升级到支持自动读取 `.env` 的版本后，先执行一次 `docker compose up -d --force-recreate player-targets`，让容器挂载 `.env`
-- 之后日常改选手交换机、选手有线 / 无线网段、静态选手名单，不需要重建容器；看 `docker logs -f player-targets` 确认日志里的实际值
+- 日常改选手交换机、选手有线 / 无线网段、静态选手名单，不需要重建容器；看 `docker logs -f player-targets` 确认日志里的实际值
 - 改基础设施 Ping / 防火墙 SNMP / 选手 ping 间隔 / Prometheus 保留时间 → 重启 prometheus
 - 改大屏标题、时间、ISP 名称 / 过滤条件 / ISP 自动发现开关 / 舞台设备过滤，或大屏前端代码 → `docker compose up -d --force-recreate bigscreen`
 - 改 Grafana ISP 名单 / 自动发现开关 → `docker compose up -d --force-recreate grafana-provisioning-render grafana grafana-setup`
