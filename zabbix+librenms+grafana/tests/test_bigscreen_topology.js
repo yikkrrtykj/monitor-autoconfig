@@ -12,19 +12,16 @@ global.window = {
     wanIfFilter: "telecom,telcom,unicom,isp,WAN"
   },
   BIGSCREEN_QUERIES: {},
-  BIGSCREEN_PAGES: [],
-  __BIGSCREEN_TEST_MODE__: true
+  BIGSCREEN_PAGES: []
 };
 
-require(path.resolve(__dirname, "../bigscreen/app.js"));
-
+const { parseIspBandwidthConfig } = require(path.resolve(__dirname, "../bigscreen/utils.js"));
+const { ispChartMaxBps } = require(path.resolve(__dirname, "../bigscreen/api.js"));
 const {
   buildTopologyLayers,
   topologyLayout,
-  renderTopologySvg,
-  ispChartMaxBps,
-  parseIspBandwidthConfig
-} = window.__BIGSCREEN_TOPOLOGY_TESTS__;
+  renderTopologySvg
+} = require(path.resolve(__dirname, "../bigscreen/topology.js"));
 
 assert.deepStrictEqual(parseIspBandwidthConfig("ISP1:500,ISP2:500,ISP3:300").perIsp.ISP3, { down: 300, up: 300 });
 assert.strictEqual(ispChartMaxBps("ISP1"), 500 * 1000 * 1000);

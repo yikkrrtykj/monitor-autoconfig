@@ -5,10 +5,33 @@
   const pingGaugeQuery = queries.pingGauge || "";
   const uptimeQuery = queries.uptime || "";
   const lossQuery = queries.loss || "";
-  const infraPingJobs = queries.infraPingJobs || "infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping";
   const playerSnapshotWindow = "90s";
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
   const pages = window.BIGSCREEN_PAGES || [];
+
+  // Pure helpers live in utils.js, the Prometheus/data layer in api.js and the
+  // topology layout/SVG pipeline in topology.js (all loaded before this file).
+  const {
+    escapeHtml, escapeRegex, escapeLabel, metricName, formatPing, formatPingText,
+    formatUptime, formatBits, formatTime, niceMax, average,
+    networkLabel, seatLabel, gaugeColor, gaugePercent, smoothValues,
+    linePathFromPoints, buildCsv, formatTimestampFull
+  } = window.BSUtils;
+  const {
+    prometheusBaseUrl, fetchWithTimeout,
+    prometheusQuery, prometheusInstant, prometheusRangeFor,
+    prometheusRangeCached, invalidateRangeCache,
+    activeInfraPingQuery, activeSeriesNames, filterSeriesByNames,
+    fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
+    fetchTopologyTargets, fetchTopologyEdges
+  } = window.BSApi;
+  const {
+    buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel
+  } = window.BSTopology;
+  const {
+    isGatewayAddress, buildPlayers, latencyLevel, playerStatusText, groupPlayersBySeat
+  } = window.BSPlayers;
+  const { analyzeIncident } = window.BSIncident;
   let gaugeTimer = null;
   let chartTimer = null;
   let tournamentTimer = null;
@@ -20,8 +43,6 @@
   let tournamentSeq = 0;
   let topologySeq = 0;
   let stageDeviceRegexCache = null;
-  let ispNamesCache = null;
-  let ispNamesCachedAt = 0;
   const renderSignatures = new Map();
   let lastDataSuccessAt = 0;
   const DATA_STALE_AFTER_MS = 20000;
@@ -52,16 +73,6 @@
     }
   }
 
-  function escapeHtml(value) {
-    return String(value).replace(/[&<>"']/g, (char) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;"
-    })[char]);
-  }
-
   function titleText() {
     if (config.title) {
       return config.title;
@@ -72,113 +83,11 @@
     return "网络监控大屏";
   }
 
-  function prometheusBaseUrl() {
-    if (config.prometheusBaseUrl) {
-      return config.prometheusBaseUrl.replace(/\/$/, "");
-    }
-    return "/prometheus";
-  }
-
   function pageFromPath() {
     const path = window.location.pathname.replace(/\/+$/, "") || "/";
     if (path === "/index.html") return pages[0];
     if (path === "/evidence") return pages.find((page) => page.id === "evidence") || pages[0];
     return pages.find((page) => page.path === path) || pages[0];
-  }
-
-  function metricName(metric) {
-    return metric.instance || metric.display_name || metric.ifAlias || metric.ifName || metric.ifDescr || "unknown";
-  }
-
-  function rangeWindow() {
-    const end = Math.floor(Date.now() / 1000);
-    const start = end - 15 * 60;
-    return { start, end, step: 10 };
-  }
-
-  function fetchWithTimeout(url, options, timeoutMs = 15000) {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeoutMs);
-    return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(id));
-  }
-
-  async function prometheusQuery(query) {
-    const url = `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}`;
-    const response = await fetchWithTimeout(url, { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`Prometheus HTTP ${response.status}`);
-    }
-    const payload = await response.json();
-    if (payload.status !== "success") {
-      throw new Error("Prometheus query failed");
-    }
-    return payload.data.result
-      .map((item) => ({
-        name: metricName(item.metric),
-        value: Number(item.value[1]),
-        metric: item.metric || {}
-      }))
-      .filter((item) => Number.isFinite(item.value))
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-  }
-
-  async function prometheusInstant(query) {
-    const url = `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}`;
-    const response = await fetchWithTimeout(url, { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`Prometheus HTTP ${response.status}`);
-    }
-    const payload = await response.json();
-    if (payload.status !== "success") {
-      throw new Error("Prometheus query failed");
-    }
-    return payload.data.result
-      .map((item) => ({
-        metric: item.metric || {},
-        value: Number(item.value[1])
-      }))
-      .filter((item) => Number.isFinite(item.value));
-  }
-
-  async function prometheusRangeFor(query, window, nameGetter = metricName) {
-    const params = new URLSearchParams({
-      query,
-      ...Object.fromEntries(Object.entries(window).map(([key, value]) => [key, String(value)]))
-    });
-    const response = await fetchWithTimeout(`${prometheusBaseUrl()}/api/v1/query_range?${params.toString()}`, { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`Prometheus range HTTP ${response.status}`);
-    }
-    const payload = await response.json();
-    if (payload.status !== "success") {
-      throw new Error("Prometheus range query failed");
-    }
-    return payload.data.result
-      .map((item) => ({
-        name: nameGetter(item.metric || {}),
-        metric: item.metric || {},
-        values: item.values
-          .map(([timestamp, value]) => ({ t: Number(timestamp), v: Number(value) }))
-          .filter((point) => Number.isFinite(point.t) && Number.isFinite(point.v))
-      }))
-      .filter((item) => item.values.length)
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-  }
-
-  async function prometheusRange(query, nameGetter = metricName) {
-    return prometheusRangeFor(query, rangeWindow(), nameGetter);
-  }
-
-  function activeInfraPingQuery() {
-    return `up{job=~"${escapeLabel(infraPingJobs)}"}`;
-  }
-
-  function activeSeriesNames(items) {
-    return new Set(items.map((item) => metricName(item.metric)).filter(Boolean));
-  }
-
-  function filterSeriesByNames(seriesList, names) {
-    return seriesList.filter((item) => names.has(item.name));
   }
 
   function stageDevicePattern() {
@@ -221,63 +130,8 @@
     return shouldFilterStageDevices() ? filterStageDeviceSeries(seriesList) : seriesList;
   }
 
-  function formatPing(seconds) {
-    if (seconds < 0.001) {
-      return { value: Math.round(seconds * 1000000), unit: "μs" };
-    }
-    return { value: (seconds * 1000).toFixed(1), unit: "ms" };
-  }
-
-  function formatPingText(seconds) {
-    const formatted = formatPing(seconds);
-    return `${formatted.value} ${formatted.unit}`;
-  }
-
-  function formatUptime(seconds) {
-    if (seconds < 3600) {
-      return { value: Math.max(1, Math.round(seconds / 60)), unit: "分钟" };
-    }
-    if (seconds < 86400) {
-      return { value: (seconds / 3600).toFixed(2), unit: "小时" };
-    }
-    return { value: (seconds / 86400).toFixed(2), unit: "天" };
-  }
-
-  function formatBits(value) {
-    const abs = Math.abs(value);
-    if (abs >= 1000000000) return `${(value / 1000000000).toFixed(2)} Gb/s`;
-    if (abs >= 1000000) return `${(value / 1000000).toFixed(1)} Mb/s`;
-    if (abs >= 1000) return `${(value / 1000).toFixed(1)} kb/s`;
-    return `${Math.round(value)} b/s`;
-  }
-
-  function networkLabel(network) {
-    if (network === "wired") return "有线";
-    if (network === "wireless") return "无线";
-    if (network === "all") return "全部";
-    return network || "-";
-  }
-
-  function seatLabel(seat) {
-    return `S${seat}`;
-  }
-
   function playerLabel(team, seat, network) {
     return `${teamName({ id: "" }, team)} ${seatLabel(seat)} ${networkLabel(network)}`;
-  }
-
-  function gaugeColor(kind, rawValue) {
-    if (kind === "ping") {
-      if (rawValue >= 0.02) return "#ff4d66";
-      if (rawValue >= 0.01) return "#ffe32d";
-      return "#73d17a";
-    }
-    return rawValue < 86400 ? "#ffe32d" : "#73d17a";
-  }
-
-  function gaugePercent(kind, rawValue) {
-    const max = kind === "ping" ? 0.02 : 2592000;
-    return Math.max(0.03, Math.min(1, rawValue / max));
   }
 
   function renderGaugeGrid(containerId, items, kind, forceRows) {
@@ -321,62 +175,8 @@
     });
   }
 
-  function niceMax(value) {
-    if (!Number.isFinite(value) || value <= 0) {
-      return 1;
-    }
-    const exponent = Math.floor(Math.log10(value));
-    const base = value / 10 ** exponent;
-    const niceBase = base <= 1 ? 1 : base <= 2 ? 2 : base <= 5 ? 5 : 10;
-    return niceBase * 10 ** exponent;
-  }
-
-  function average(values) {
-    const usable = values.filter((value) => Number.isFinite(value));
-    return usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : 0;
-  }
-
-  function formatTime(timestamp) {
-    const date = new Date(timestamp * 1000);
-    const now = new Date();
-    const sameDay = date.getFullYear() === now.getFullYear()
-      && date.getMonth() === now.getMonth()
-      && date.getDate() === now.getDate();
-    return new Intl.DateTimeFormat("zh-CN", {
-      ...(sameDay ? {} : { month: "2-digit", day: "2-digit" }),
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false
-    }).format(date);
-  }
-
   function renderNoData(container, message) {
     container.innerHTML = `<div class="no-data">${message || "暂无数据"}</div>`;
-  }
-
-  function linePathFromPoints(points, smooth) {
-    if (!points.length) return "";
-    if (!smooth || points.length < 3) {
-      return `M ${points.join(" L ")}`;
-    }
-
-    const coords = points.map((point) => {
-      const [x, y] = point.split(",").map(Number);
-      return { x, y };
-    });
-    const commands = [`M ${points[0]}`];
-    for (let index = 0; index < coords.length - 1; index += 1) {
-      const current = coords[index];
-      const next = coords[index + 1];
-      const previous = coords[index - 1] || current;
-      const afterNext = coords[index + 2] || next;
-      const cp1x = current.x + (next.x - previous.x) / 6;
-      const cp1y = current.y + (next.y - previous.y) / 6;
-      const cp2x = next.x - (afterNext.x - current.x) / 6;
-      const cp2y = next.y - (afterNext.y - current.y) / 6;
-      commands.push(`C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${next.x.toFixed(1)},${next.y.toFixed(1)}`);
-    }
-    return commands.join(" ");
   }
 
   function renderLineChart(containerId, seriesList, options) {
@@ -555,117 +355,6 @@
     `;
   }
 
-  function getIspNames() {
-    return uniqueNames(String(config.ispNames || "ISP1,ISP2")
-      .split(",")
-      .map((name) => name.trim())
-      .filter(Boolean))
-      .slice(0, 4);
-  }
-
-  function parseIspIps(raw) {
-    const out = {};
-    if (!raw) return out;
-    String(raw).split(",").forEach((item) => {
-      const idx = item.indexOf(":");
-      if (idx <= 0) return;
-      const name = item.slice(0, idx).trim();
-      const ip = item.slice(idx + 1).trim();
-      if (name && ip) out[name] = ip;
-    });
-    return out;
-  }
-
-  function parseConfiguredTargetIps(raw) {
-    const ips = new Set();
-    if (!raw) return ips;
-    String(raw).split(",").forEach((item) => {
-      const entry = item.trim();
-      if (!entry) return;
-      const value = entry.includes(":") ? entry.slice(entry.indexOf(":") + 1).trim() : entry;
-      const ip = value.split("-", 1)[0].trim();
-      if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip)) ips.add(ip);
-    });
-    return ips;
-  }
-
-  function isIspAutoDiscoveryEnabled() {
-    return ["1", "true", "yes", "on"].includes(String(config.ispAutoDiscovery || "").trim().toLowerCase());
-  }
-
-  function escapeRegex(value) {
-    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-
-  function wanFilterPattern() {
-    return String(config.wanIfFilter || "telecom,telcom,unicom,isp,wan")
-      .split(",")
-      .map((name) => name.trim())
-      .filter(Boolean)
-      .map(escapeRegex)
-      .join("|") || "telecom|telcom|unicom|isp|wan";
-  }
-
-  function ispDiscoveryQuery() {
-    const pattern = wanFilterPattern();
-    return `group by (ifAlias) (ifHCInOctets{job="firewall-snmp",ifAlias=~".+",ifAlias=~"(?i).*(${pattern}).*"}) or group by (ifName) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName=~".+",ifName=~"(?i).*(${pattern}).*"}) or group by (ifDescr) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName="",ifDescr=~".+",ifDescr=~"(?i).*(${pattern}).*"})`;
-  }
-
-  function uniqueNames(names) {
-    return Array.from(new Set(names.map((name) => String(name || "").trim()).filter(Boolean)));
-  }
-
-  async function fetchIspNames() {
-    const configured = getIspNames();
-    if (!isIspAutoDiscoveryEnabled()) {
-      return configured;
-    }
-
-    const now = Date.now();
-    if (ispNamesCache && now - ispNamesCachedAt < 60000) {
-      return ispNamesCache;
-    }
-
-    try {
-      const discovered = await prometheusInstant(ispDiscoveryQuery());
-      const discoveredNames = uniqueNames(discovered.map((item) => item.metric.ifAlias || item.metric.ifName || item.metric.ifDescr));
-      discoveredNames.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
-      const names = configured.length ? uniqueNames([...configured, ...discoveredNames]) : discoveredNames;
-      const limitedNames = names.slice(0, 4);
-      ispNamesCache = limitedNames.length ? limitedNames : configured;
-      ispNamesCachedAt = now;
-      return ispNamesCache;
-    } catch (error) {
-      console.warn("ISP discovery failed", error);
-      return configured;
-    }
-  }
-
-  function escapeLabel(value) {
-    return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  }
-
-  function ispTrafficQuery(metric, name) {
-    const label = escapeLabel(name);
-    return `sum(rate(${metric}{job="firewall-snmp",ifAlias="${label}"}[1m]) or rate(${metric}{job="firewall-snmp",ifAlias="",ifName="${label}"}[1m]) or rate(${metric}{job="firewall-snmp",ifAlias="",ifName="",ifDescr="${label}"}[1m])) * 8`;
-  }
-
-  async function fetchIspTraffic() {
-    const names = await fetchIspNames();
-    const settled = await Promise.allSettled(names.map(async (name) => {
-      const [download, upload] = await Promise.all([
-        prometheusRange(ispTrafficQuery("ifHCInOctets", name)),
-        prometheusRange(ispTrafficQuery("ifHCOutOctets", name))
-      ]);
-      return {
-        name,
-        download: { name: "下载", color: "#73d17a", values: download[0] ? download[0].values : [] },
-        upload: { name: "上传", color: "#5b8ff9", values: upload[0] ? upload[0].values : [] }
-      };
-    }));
-    return settled.filter((r) => r.status === "fulfilled").map((r) => r.value);
-  }
-
   function renderIspPanels(results) {
     const ispGrid = document.getElementById("ispGrid");
     ispGrid.style.setProperty("--isp-count", String(Math.max(1, results.length)));
@@ -713,80 +402,6 @@
     const seatRegex = page.teamSize ? Array.from({ length: page.teamSize }, (_, index) => index + 1).join("|") : "";
     const seatFilter = seatRegex ? `,seat=~"${seatRegex}"` : "";
     return `role="player",${networkFilter}${teamFilter}${seatFilter}`;
-  }
-
-  function playerKey(metric) {
-    return [metric.team || "", metric.seat || "", metric.instance || "", metric.network || ""].join("|");
-  }
-
-  function isGatewayAddress(ip) {
-    return /\.254$/.test(String(ip || ""));
-  }
-
-  function preferPlayer(prev, candidate) {
-    if (candidate.success && !prev.success) return candidate;
-    if (!candidate.success && prev.success) return prev;
-    const candFinite = Number.isFinite(candidate.latency);
-    const prevFinite = Number.isFinite(prev.latency);
-    if (candFinite && !prevFinite) return candidate;
-    if (!candFinite && prevFinite) return prev;
-    if (candFinite && prevFinite && candidate.latency < prev.latency) return candidate;
-    return prev;
-  }
-
-  function dedupePlayersBySeat(players) {
-    // Switch MAC table caches a recently-aged entry alongside the live one,
-    // so the generator emits multiple (ip) targets per (team, seat, network).
-    // The bigscreen has one slot per seat -- keep the online entry; if both
-    // online, the lower-latency wins.
-    const seen = new Map();
-    for (const player of players) {
-      const key = `${player.team}|${player.seat}|${player.network}`;
-      const prev = seen.get(key);
-      seen.set(key, prev ? preferPlayer(prev, player) : player);
-    }
-    return Array.from(seen.values());
-  }
-
-  function buildPlayers(latencyItems, successItems) {
-    const byKey = new Map();
-    successItems.forEach((item) => {
-      if (isGatewayAddress(item.metric.instance)) return;
-      byKey.set(playerKey(item.metric), {
-        team: Number(item.metric.team || 0),
-        seat: Number(item.metric.seat || 0),
-        ip: item.metric.instance || "",
-        network: item.metric.network || "",
-        success: item.value >= 1,
-        latency: null
-      });
-    });
-    latencyItems.forEach((item) => {
-      if (isGatewayAddress(item.metric.instance)) return;
-      const key = playerKey(item.metric);
-      const player = byKey.get(key) || {
-        team: Number(item.metric.team || 0),
-        seat: Number(item.metric.seat || 0),
-        ip: item.metric.instance || "",
-        network: item.metric.network || "",
-        success: true,
-        latency: null
-      };
-      player.latency = item.value;
-      byKey.set(key, player);
-    });
-    const all = Array.from(byKey.values())
-      .filter((player) => player.team > 0 && player.seat > 0 && player.ip);
-    return dedupePlayersBySeat(all)
-      .sort((a, b) => a.team - b.team || a.seat - b.seat || a.ip.localeCompare(b.ip));
-  }
-
-  function latencyLevel(player) {
-    if (!player || !player.success) return "offline";
-    if (!Number.isFinite(player.latency)) return "unknown";
-    if (player.latency >= 0.08) return "bad";
-    if (player.latency >= 0.04) return "warn";
-    return "good";
   }
 
   function renderTournamentSummary(page, players) {
@@ -1021,7 +636,7 @@
       const [latencyItems, successItems, trendSeries] = await Promise.all([
         prometheusInstant(playerLatencySnapshotQuery(selector)),
         prometheusInstant(playerSuccessSnapshotQuery(selector)),
-        prometheusRange(tournamentTrendQuery(page), (metric) => {
+        prometheusRangeCached(tournamentTrendQuery(page), (metric) => {
           return `${teamName(page, metric.team)} ${seatLabel(metric.seat || "?")}`;
         })
       ]);
@@ -1073,8 +688,8 @@
     try {
       const [activeItems, pingSeries, lossSeries, ispTraffic] = await Promise.all([
         prometheusInstant(activeInfraPingQuery()),
-        prometheusRange(pingTrendQuery),
-        prometheusRange(lossQuery),
+        prometheusRangeCached(pingTrendQuery),
+        prometheusRangeCached(lossQuery),
         fetchIspTraffic()
       ]);
       if (seq !== chartSeq) return;
@@ -1128,14 +743,6 @@
         <em>${escapeHtml(item.note || "")}</em>
       </div>
     `).join("");
-  }
-
-  function playerStatusText(player) {
-    if (!player.success) return "离线";
-    if (!Number.isFinite(player.latency)) return "暂无延迟";
-    if (player.latency >= 0.08) return "高延迟";
-    if (player.latency >= 0.04) return "轻微抖动";
-    return "正常";
   }
 
   function triggerRescan(btn) {
@@ -1258,16 +865,6 @@
     refreshSeatCheck();
   }
 
-  function groupPlayersBySeat(players) {
-    const grouped = new Map();
-    players.forEach((player) => {
-      const key = `${player.team}|${player.seat}`;
-      if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key).push(player);
-    });
-    return grouped;
-  }
-
   function renderCheckSeat(team, seat, players) {
     if (!players.length) {
       return `<div class="check-seat missing"><span>${seatLabel(seat)}</span><strong>缺失</strong><em>-</em></div>`;
@@ -1337,6 +934,25 @@
   function dateTimeInputValue(date) {
     const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
     return local.toISOString().slice(0, 16);
+  }
+
+  // CSV export for the operator query pages (/latency and /heatmap) -- raw
+  // data to attach to dispute reports alongside screenshots. Not wired to
+  // any TV-facing page.
+  function downloadCsv(filename, rows) {
+    const blob = new Blob([buildCsv(rows)], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function csvStamp(timestamp) {
+    return formatTimestampFull(timestamp).replace(/[: ]/g, "-");
   }
 
   function evidenceWindow() {
@@ -1446,6 +1062,25 @@
     `;
   }
 
+  let lastEvidenceExport = null;
+
+  function exportEvidenceCsv() {
+    if (!lastEvidenceExport) return;
+    const { latencySeries, successSeries, queryWindow, slug } = lastEvidenceExport;
+    const rows = [["time", "series", "metric", "value"]];
+    latencySeries.forEach((series) => {
+      series.values.forEach((point) => {
+        rows.push([formatTimestampFull(point.t), series.name, "latency_ms", (point.v * 1000).toFixed(2)]);
+      });
+    });
+    successSeries.forEach((series) => {
+      series.values.forEach((point) => {
+        rows.push([formatTimestampFull(point.t), series.name, "online", String(point.v)]);
+      });
+    });
+    downloadCsv(`latency_${slug}_${csvStamp(queryWindow.start)}_${csvStamp(queryWindow.end)}.csv`, rows);
+  }
+
   async function queryEvidence() {
     const team = document.getElementById("evidenceTeam").value || "1";
     const seat = document.getElementById("evidenceSeat").value || "1";
@@ -1472,6 +1107,12 @@
         prometheusRangeFor(latencyQuery, queryWindow, evidenceSeriesName),
         prometheusRangeFor(successQuery, queryWindow, evidenceSeriesName)
       ]);
+      lastEvidenceExport = {
+        latencySeries,
+        successSeries,
+        queryWindow,
+        slug: ip || `T${team}S${seat}`
+      };
       renderEvidenceSummary({ label }, latencySeries, successSeries);
       renderLineChart("evidenceLatencyChart", latencySeries, {
         axisFormatter: formatPingText,
@@ -1522,6 +1163,11 @@
         queryEvidence();
       });
       form.dataset.bound = "1";
+    }
+    const exportBtn = document.getElementById("evidenceExport");
+    if (exportBtn && !exportBtn.dataset.bound) {
+      exportBtn.addEventListener("click", exportEvidenceCsv);
+      exportBtn.dataset.bound = "1";
     }
     queryEvidence();
   }
@@ -1574,6 +1220,7 @@
   function startInfraRefresh() {
     if (gaugeTimer || chartTimer) return;
     renderSignatures.clear();
+    invalidateRangeCache();
     refreshGauges();
     refreshCharts();
     gaugeTimer = window.setInterval(refreshGauges, 5000);
@@ -1583,6 +1230,7 @@
   function startTournamentRefresh(page) {
     stopTournamentRefresh();
     renderSignatures.clear();
+    invalidateRangeCache();
     refreshTournament(page);
     tournamentTimer = window.setInterval(() => refreshTournament(page), 5000);
     const refreshBtn = document.getElementById("tournamentRefresh");
@@ -1747,43 +1395,6 @@
     };
   }
 
-  function parseIspBandwidthConfig(raw) {
-    const result = { default: { down: 1000, up: 1000 }, perIsp: {} };
-    if (raw === undefined || raw === null) return result;
-    const text = String(raw).trim();
-    if (!text) return result;
-    if (/^\d+(\.\d+)?$/.test(text)) {
-      const value = Number(text);
-      result.default = { down: value, up: value };
-      return result;
-    }
-    text.split(",").forEach((item) => {
-      const trimmed = item.trim();
-      if (!trimmed) return;
-      const colonIdx = trimmed.lastIndexOf(":");
-      if (colonIdx <= 0) return;
-      const name = trimmed.slice(0, colonIdx).trim();
-      const bandwidth = trimmed.slice(colonIdx + 1).trim();
-      const parts = bandwidth.split("/").map((part) => Number(part.trim()));
-      const down = Number.isFinite(parts[0]) ? parts[0] : null;
-      if (down === null) return;
-      const up = Number.isFinite(parts[1]) ? parts[1] : down;
-      result.perIsp[name] = { down, up };
-    });
-    return result;
-  }
-
-  function ispCapacityBps(name, direction) {
-    const cfg = parseIspBandwidthConfig(config.ispMaxBandwidthMbps);
-    const entry = cfg.perIsp[name] || cfg.default;
-    const mbps = direction === "in" ? entry.down : entry.up;
-    return Math.max(1, Number(mbps) || 1000) * 1000 * 1000;
-  }
-
-  function ispChartMaxBps(name) {
-    return Math.max(ispCapacityBps(name, "in"), ispCapacityBps(name, "out"));
-  }
-
   async function queryIncidentData(win) {
     const playerLatencyQ = 'probe_icmp_duration_seconds{role="player",network="wired",phase="rtt"}';
     const playerSuccessQ = 'probe_success{role="player",network="wired"}';
@@ -1805,172 +1416,6 @@
     ]);
     const isp = ispArrays.flat();
     return { playerLatency, playerSuccess, infraLatency, infraSuccess, isp };
-  }
-
-  function seriesMaxValue(series) {
-    if (!series || !series.values || !series.values.length) return null;
-    let max = -Infinity;
-    for (const point of series.values) {
-      if (Number.isFinite(point.v) && point.v > max) max = point.v;
-    }
-    return max === -Infinity ? null : max;
-  }
-
-  function countOfflineRecoveries(values) {
-    // Recovery edges (0 -> 1) = completed disconnect events. Stale entries
-    // that stayed offline the whole window have no recoveries.
-    let recoveries = 0;
-    for (let i = 1; i < values.length; i += 1) {
-      const prev = values[i - 1].v;
-      const curr = values[i].v;
-      if (prev < 0.5 && curr >= 0.5) recoveries += 1;
-    }
-    return recoveries;
-  }
-
-  function analyzeIncident(data, threshold) {
-    const affectedPlayers = [];
-    const offlinePlayers = [];
-
-    data.playerLatency.forEach((series) => {
-      const max = seriesMaxValue(series);
-      if (max !== null && max >= threshold) {
-        affectedPlayers.push({
-          team: series.metric.team,
-          seat: series.metric.seat,
-          network: series.metric.network,
-          switch: series.metric.switch,
-          instance: series.metric.instance,
-          maxLatency: max
-        });
-      }
-    });
-
-    data.playerSuccess.forEach((series) => {
-      const recoveries = countOfflineRecoveries(series.values);
-      if (recoveries > 0) {
-        offlinePlayers.push({
-          team: series.metric.team,
-          seat: series.metric.seat,
-          network: series.metric.network,
-          instance: series.metric.instance,
-          recoveryCount: recoveries
-        });
-      }
-    });
-
-    const infraEvents = [];
-    data.infraLatency.forEach((series) => {
-      const max = seriesMaxValue(series);
-      if (max !== null && max >= threshold) {
-        infraEvents.push({
-          instance: series.metric.instance || series.metric.display_name,
-          targetIp: series.metric.target_ip,
-          job: series.metric.job,
-          maxLatency: max
-        });
-      }
-    });
-    data.infraSuccess.forEach((series) => {
-      const recoveries = countOfflineRecoveries(series.values);
-      if (recoveries > 0) {
-        infraEvents.push({
-          instance: series.metric.instance || series.metric.display_name,
-          targetIp: series.metric.target_ip,
-          job: series.metric.job,
-          offline: true,
-          recoveryCount: recoveries
-        });
-      }
-    });
-
-    const ispEvents = [];
-    data.isp.forEach((series) => {
-      const max = seriesMaxValue(series);
-      if (max === null) return;
-      const ifAlias = series._ispName || series.metric.ifAlias;
-      const direction = series._direction || (series.metric.direction || "in");
-      const capacityBps = ispCapacityBps(ifAlias, direction);
-      ispEvents.push({
-        ifAlias,
-        direction,
-        maxBps: max,
-        capacityBps,
-        utilization: capacityBps > 0 ? max / capacityBps : 0
-      });
-    });
-
-    const stageGroups = {};
-    [...affectedPlayers, ...offlinePlayers].forEach((player) => {
-      const sw = player.switch || "unknown";
-      if (sw === "static" || sw === "wireless-scan" || sw === "unknown") return;
-      if (!stageGroups[sw]) stageGroups[sw] = { switch: sw, players: new Map() };
-      const key = `${player.team}-${player.seat}-${player.network}`;
-      stageGroups[sw].players.set(key, player);
-    });
-    Object.values(stageGroups).forEach((group) => {
-      group.players = Array.from(group.players.values());
-    });
-
-    const verdict = computeIncidentVerdict(affectedPlayers, offlinePlayers, infraEvents, ispEvents, stageGroups);
-    return { affectedPlayers, offlinePlayers, infraEvents, ispEvents, stageGroups, verdict };
-  }
-
-  function computeIncidentVerdict(affected, offline, infra, isp, stageGroups) {
-    const totalAffected = affected.length + offline.length;
-
-    if (totalAffected === 0 && infra.length === 0) {
-      return { level: "good", text: "未检测到异常", detail: "这个时间窗口内没有任何选手或基础设施超过阈值。" };
-    }
-
-    const coreEvent = infra.find((event) => event.job === "infra-core-ping");
-    const fwOffline = infra.find((event) => event.job === "infra-fw-ping" && event.offline);
-    if (coreEvent || fwOffline) {
-      return {
-        level: "bad",
-        text: "核心层异常",
-        detail: `${coreEvent ? "核心交换机" : "防火墙"}在该时间窗口内有延迟尖峰或离线 — 所有选手可能都会受影响。`
-      };
-    }
-
-    const stageKeys = Object.keys(stageGroups);
-    if (stageKeys.length === 1 && stageGroups[stageKeys[0]].players.length >= 3) {
-      const sw = stageKeys[0];
-      const stageInfra = infra.find((event) => event.targetIp === sw || event.instance === sw);
-      return {
-        level: "warn",
-        text: `怀疑 ${sw} 接入交换机`,
-        detail: `${stageGroups[sw].players.length} 个选手集中卡顿，都接在这台 stage。${stageInfra ? "该交换机自身 ping 也抖动 — 高度怀疑该交换机问题。" : "该交换机自身 ping 正常 — 可能是它的上行链路或 VLAN 配置问题。"}`
-      };
-    }
-
-    const highIsp = isp.filter((event) => event.utilization >= 0.7);
-    if (highIsp.length > 0 && totalAffected >= 3) {
-      return {
-        level: "warn",
-        text: "ISP 链路接近饱和",
-        detail: `${highIsp.map((event) => `${event.ifAlias} ${event.direction === "in" ? "下载" : "上传"}=${formatBits(event.maxBps)}（${Math.round(event.utilization * 100)}% / ${formatBits(event.capacityBps)}）`).join("、")}。多个选手同时卡顿 — 怀疑该 ISP 链路被打满。`
-      };
-    }
-
-    if (totalAffected === 1) {
-      const player = affected[0] || offline[0];
-      return {
-        level: "warn",
-        text: "单选手问题",
-        detail: `仅 Team ${player.team} S${player.seat} 出现卡顿/离线 — 基础设施正常，怀疑该选手 PC / 网线 / 无线干扰等单点问题。`
-      };
-    }
-
-    if (totalAffected >= 2) {
-      return {
-        level: "warn",
-        text: "多选手卡顿",
-        detail: `${totalAffected} 个选手出现异常，但没有明显的基础设施 / ISP 关联 — 建议手工进 /latency 单独看每个选手的趋势。`
-      };
-    }
-
-    return { level: "warn", text: "基础设施异常未影响选手", detail: "检测到基础设施抖动但选手 ping 正常。" };
   }
 
   function renderIncidentVerdict(verdict) {
@@ -2197,7 +1642,7 @@
 
     const url = (query) => `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}&time=${win.end}`;
     const fetchOne = async (query) => {
-      const resp = await fetch(url(query), { cache: "no-store" });
+      const resp = await fetchWithTimeout(url(query), { cache: "no-store" });
       if (!resp.ok) throw new Error(`Prometheus HTTP ${resp.status}`);
       const payload = await resp.json();
       if (payload.status !== "success") throw new Error("Prometheus query failed");
@@ -2291,6 +1736,23 @@
     `;
   }
 
+  let lastHeatmapExport = null;
+
+  function exportHeatmapCsv() {
+    if (!lastHeatmapExport) return;
+    const { cells, win } = lastHeatmapExport;
+    const rows = [["team", "seat", "offline_ratio", "avg_latency_ms"]];
+    cells.forEach((cell) => {
+      rows.push([
+        String(cell.team),
+        String(cell.seat),
+        Number.isFinite(cell.offline) ? cell.offline.toFixed(4) : "",
+        Number.isFinite(cell.latency) ? (cell.latency * 1000).toFixed(2) : ""
+      ]);
+    });
+    downloadCsv(`heatmap_${csvStamp(win.start)}_${csvStamp(win.end)}.csv`, rows);
+  }
+
   async function runHeatmap() {
     const win = heatmapWindow();
     const teamCount = Math.max(1, Number(document.getElementById("heatmapTeams").value || 16));
@@ -2309,6 +1771,7 @@
     try {
       const data = await queryHeatmapData(win, teamCount);
       const cells = buildHeatmapCells(data, teamCount, seatCount);
+      lastHeatmapExport = { cells, win };
       renderHeatmapSummary(cells, win);
       renderHeatmapGrid(cells, teamCount, seatCount);
       renderHeatmapLegend();
@@ -2343,6 +1806,11 @@
       });
       form.dataset.bound = "1";
     }
+    const exportBtn = document.getElementById("heatmapExport");
+    if (exportBtn && !exportBtn.dataset.bound) {
+      exportBtn.addEventListener("click", exportHeatmapCsv);
+      exportBtn.dataset.bound = "1";
+    }
     runHeatmap();
   }
 
@@ -2367,6 +1835,10 @@
   // ---- Network topology ----
 
   let topologyTimer = null;
+  // Latest laid-out nodes; the click handlers read from here so an in-place
+  // latency update (render skipped) still shows fresh numbers in the detail
+  // panel without rebinding events.
+  let topologyNodes = [];
 
   function stopTopologyRefresh() {
     if (topologyTimer) {
@@ -2375,627 +1847,7 @@
     }
   }
 
-  async function fetchTopologyTargets() {
-    const jobs = ["infra-isp-ping", "infra-fw-ping", "infra-core-ping", "infra-dist-ping", "infra-srv-ping"];
-    const filter = jobs.join("|");
-    const [success, latency] = await Promise.all([
-      prometheusInstant(`probe_success{job=~"${filter}"}`),
-      prometheusInstant(`probe_icmp_duration_seconds{job=~"${filter}",phase="rtt"}`)
-    ]);
-    const map = new Map();
-    success.forEach((item) => {
-      const key = `${item.metric.job}|${item.metric.target_ip || item.metric.instance}`;
-      map.set(key, {
-        job: item.metric.job,
-        instance: item.metric.instance || item.metric.target_ip,
-        targetIp: item.metric.target_ip || item.metric.instance,
-        displayName: item.metric.display_name || item.metric.instance,
-        success: item.value >= 1,
-        latency: null
-      });
-    });
-    latency.forEach((item) => {
-      const key = `${item.metric.job}|${item.metric.target_ip || item.metric.instance}`;
-      const node = map.get(key);
-      if (node) node.latency = item.value;
-    });
-    return Array.from(map.values());
-  }
-
-  function topologyNodeLevel(node) {
-    if (!node) return "none";
-    if (!node.success) return "bad";
-    if (Number.isFinite(node.latency) && node.latency >= 0.03) return "warn";
-    return "good";
-  }
-
-  function buildTopologyLayers(targets) {
-    const ispNames = getIspNames();
-    const ispIpMap = parseIspIps(config.ispIps);
-    const ispTargets = targets.filter((t) => t.job === "infra-isp-ping");
-    const usedIspTargets = new Set();
-    const configuredIspNames = new Set(ispNames.map((name) => String(name || "").toLowerCase()));
-    const targetKey = (target) => `${target.job}|${target.targetIp || target.instance || target.displayName}`;
-    const findIspTarget = (name, ip) => {
-      const lowerName = String(name || "").toLowerCase();
-      if (ip) {
-        return ispTargets.find((target) => {
-          if (usedIspTargets.has(targetKey(target))) return false;
-          return target.targetIp === ip;
-        });
-      }
-      return ispTargets.find((target) => {
-        if (usedIspTargets.has(targetKey(target))) return false;
-        return String(target.displayName || "").toLowerCase() === lowerName ||
-          String(target.instance || "").toLowerCase() === lowerName;
-      });
-    };
-    const isps = ispNames.map((name) => {
-      const configuredIp = ispIpMap[name] || "";
-      const target = findIspTarget(name, configuredIp);
-      if (target) {
-        usedIspTargets.add(targetKey(target));
-        return {
-          kind: "isp",
-          name,
-          ip: target.targetIp || configuredIp,
-          level: topologyNodeLevel(target),
-          latency: target.latency,
-          success: target.success
-        };
-      }
-      return {
-        kind: "isp",
-        name,
-        ip: configuredIp,
-        level: "good"
-      };
-    });
-    ispTargets.forEach((target) => {
-      if (!isIspAutoDiscoveryEnabled()) return;
-      if (usedIspTargets.has(targetKey(target))) return;
-      if (configuredIspNames.has(String(target.displayName || target.instance || "").toLowerCase())) return;
-      usedIspTargets.add(targetKey(target));
-      isps.push({
-        kind: "isp",
-        name: target.displayName,
-        ip: target.targetIp,
-        level: topologyNodeLevel(target),
-        latency: target.latency,
-        success: target.success
-      });
-    });
-
-    const infrastructureIps = new Set();
-    const firewalls = targets.filter((t) => t.job === "infra-fw-ping").map((t) => ({
-      kind: "firewall",
-      name: t.displayName,
-      ip: t.targetIp,
-      level: topologyNodeLevel(t),
-      latency: t.latency,
-      success: t.success
-    }));
-    firewalls.forEach((node) => { if (node.ip) infrastructureIps.add(node.ip); });
-
-    const cores = targets.filter((t) => t.job === "infra-core-ping").map((t) => ({
-      kind: "core",
-      name: t.displayName,
-      ip: t.targetIp,
-      level: topologyNodeLevel(t),
-      latency: t.latency,
-      success: t.success
-    }));
-    cores.forEach((node) => { if (node.ip) infrastructureIps.add(node.ip); });
-
-    const dists = targets.filter((t) => t.job === "infra-dist-ping").map((t) => ({
-      kind: "dist",
-      name: t.displayName,
-      ip: t.targetIp,
-      level: topologyNodeLevel(t),
-      latency: t.latency,
-      success: t.success
-    }));
-    dists.forEach((node) => { if (node.ip) infrastructureIps.add(node.ip); });
-
-    const configuredServerIps = parseConfiguredTargetIps(config.serverTargets);
-    const serversByName = new Map();
-    targets
-      .filter((t) => t.job === "infra-srv-ping")
-      .filter((t) => !configuredServerIps.size || configuredServerIps.has(t.targetIp))
-      .filter((t) => !infrastructureIps.has(t.targetIp))
-      .forEach((t) => {
-        const key = String(t.displayName || t.targetIp || "").toLowerCase();
-        if (!serversByName.has(key)) serversByName.set(key, t);
-      });
-    const servers = Array.from(serversByName.values()).map((t) => ({
-        kind: "server",
-        name: t.displayName,
-        ip: t.targetIp,
-        level: topologyNodeLevel(t),
-        latency: t.latency,
-        success: t.success
-      }));
-
-    return { isps, firewalls, cores, dists, servers };
-  }
-
-  function topologyLayout(layers, canvasWidth, canvasHeight, lldpEdges) {
-    const NODE_W = 128;
-    const NODE_H = 58;
-    const topPad = 22;
-    const bottomPad = 22;
-    const rowCount = 4;
-    const DIST_LINK_GAP = 42;
-    const hasServers = !!(layers.servers && layers.servers.length);
-    const usableHeight = Math.max(420, canvasHeight || 680) + (hasServers ? 96 : 0);
-    const layerGap = Math.max(36, (usableHeight - topPad - bottomPad - NODE_H * rowCount) / (rowCount - 1));
-    const rowY = (idx) => topPad + idx * (NODE_H + layerGap);
-    // Servers sit on their own evenly-spaced row in the gap between the core and the
-    // access-switch (dist) row, so they never clamp/stack like the old flanking layout.
-    const serverRowY = rowY(2) + NODE_H + Math.max(20, (layerGap - NODE_H) / 2);
-
-    const placeRow = (items, y) => {
-      const total = items.length;
-      if (!total) return [];
-      const totalWidth = total * NODE_W + (total - 1) * 24;
-      const startX = Math.max(20, (canvasWidth - totalWidth) / 2);
-      return items.map((item, idx) => ({
-        ...item,
-        x: startX + idx * (NODE_W + 24),
-        y,
-        w: NODE_W,
-        h: NODE_H
-      }));
-    };
-
-    const ispRow = placeRow(layers.isps, rowY(0));
-    const fwRow = placeRow(layers.firewalls, rowY(1));
-    const coreRow = placeRow(layers.cores, rowY(2));
-    const placeServerRow = (items, y) => {
-      if (!items.length || !coreRow.length) return [];
-      const primaryCore = coreRow[Math.floor(coreRow.length / 2)];
-      const leftCount = Math.floor(items.length / 2);
-      const leftItems = items.slice(0, leftCount);
-      const rightItems = items.slice(leftCount);
-      const gapFromCore = 34;
-      const itemGap = 24;
-      const nodes = [];
-      const leftStart = primaryCore.x - gapFromCore - leftItems.length * NODE_W - Math.max(0, leftItems.length - 1) * itemGap;
-      leftItems.forEach((item, idx) => {
-        nodes.push({ ...item, x: leftStart + idx * (NODE_W + itemGap), y, w: NODE_W, h: NODE_H });
-      });
-      const rightStart = primaryCore.x + primaryCore.w + gapFromCore;
-      rightItems.forEach((item, idx) => {
-        nodes.push({ ...item, x: rightStart + idx * (NODE_W + itemGap), y, w: NODE_W, h: NODE_H });
-      });
-      const minX = Math.min(...nodes.map((n) => n.x));
-      const maxX = Math.max(...nodes.map((n) => n.x + n.w));
-      const shift = minX < 20 ? 20 - minX : (maxX > canvasWidth - 20 ? canvasWidth - 20 - maxX : 0);
-      return nodes.map((node) => ({ ...node, x: node.x + shift }));
-    };
-    const serverRow = (hasServers && coreRow.length)
-      ? placeServerRow(layers.servers, serverRowY)
-      : [];
-    // Build the access-switch (dist) layer as a tree from the discovered edges:
-    // switches that uplink to the core sit in the main row; a switch whose uplink
-    // lands on ANOTHER access switch is drawn in a layer below its parent
-    // (e.g. core -> FOH -> JIESHOU-RIGHT -> JIESHOU-LEFT).
-    const placeDistTree = () => {
-      const dists = layers.dists;
-      if (!dists.length) return { nodes: [], depthByIp: new Map() };
-      const distByIp = new Map();
-      dists.forEach((d) => { if (d.ip) distByIp.set(d.ip, d); });
-      const coreIps = new Set(coreRow.map((c) => c.ip).filter(Boolean));
-      const adj = new Map();
-      const addAdj = (a, b) => {
-        if (!adj.has(a)) adj.set(a, new Set());
-        adj.get(a).add(b);
-      };
-      const inGraph = (ip) => coreIps.has(ip) || distByIp.has(ip);
-      (Array.isArray(lldpEdges) ? lldpEdges : []).forEach((edge) => {
-        if (edge.from_ip && edge.to_ip && inGraph(edge.from_ip) && inGraph(edge.to_ip)) {
-          addAdj(edge.from_ip, edge.to_ip);
-          addAdj(edge.to_ip, edge.from_ip);
-        }
-      });
-      // BFS from the core: depth + parent for every reachable switch.
-      const depthByIp = new Map();
-      const parentByIp = new Map();
-      const queue = [];
-      coreIps.forEach((ip) => { depthByIp.set(ip, 0); queue.push(ip); });
-      while (queue.length) {
-        const ip = queue.shift();
-        (adj.get(ip) || []).forEach((nb) => {
-          if (!depthByIp.has(nb)) {
-            depthByIp.set(nb, depthByIp.get(ip) + 1);
-            parentByIp.set(nb, ip);
-            queue.push(nb);
-          }
-        });
-      }
-      const childrenOf = new Map();
-      dists.forEach((d) => {
-        const p = parentByIp.get(d.ip);
-        if (p && distByIp.has(p)) {
-          if (!childrenOf.has(p)) childrenOf.set(p, []);
-          childrenOf.get(p).push(d.ip);
-        }
-      });
-      // Top of the tree = directly under the core (depth 1) or never discovered.
-      const topLevel = dists.filter((d) => !depthByIp.has(d.ip) || depthByIp.get(d.ip) <= 1);
-      const placed = new Map();
-      const baseRow = placeRow(topLevel, rowY(3));
-      baseRow.forEach((n) => { if (n.ip) placed.set(n.ip, n); });
-      const childRowH = NODE_H + DIST_LINK_GAP;
-      const placeChildren = (parentNode) => {
-        const kids = (childrenOf.get(parentNode.ip) || [])
-          .map((ip) => distByIp.get(ip))
-          .filter((kid) => kid && kid.ip && !placed.has(kid.ip));
-        const count = kids.length;
-        kids.forEach((kid, idx) => {
-          const x = Math.max(20, parentNode.x + (idx - (count - 1) / 2) * (NODE_W + 16));
-          const node = { ...kid, x, y: parentNode.y + childRowH, w: NODE_W, h: NODE_H };
-          placed.set(kid.ip, node);
-          placeChildren(node);
-        });
-      };
-      baseRow.forEach((n) => placeChildren(n));
-      // Safety net: anything not reached above still gets a slot in the main row.
-      dists.forEach((d, idx) => {
-        if (d.ip && !placed.has(d.ip)) {
-          placed.set(d.ip, { ...d, x: Math.max(20, 20 + idx * (NODE_W + 16)), y: rowY(3), w: NODE_W, h: NODE_H });
-        }
-      });
-      return {
-        nodes: dists.map((d) => (d.ip ? placed.get(d.ip) : null)).filter(Boolean),
-        depthByIp,
-      };
-    };
-    const distTree = placeDistTree();
-    const distRow = distTree.nodes;
-    const distDepthByIp = distTree.depthByIp;
-
-    const allNodes = [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow];
-    const nodeByIp = new Map();
-    const nodePriority = { isp: 1, firewall: 2, server: 3, dist: 4, core: 5 };
-    allNodes.forEach((n) => {
-      if (!n.ip) return;
-      const existing = nodeByIp.get(n.ip);
-      if (!existing || (nodePriority[n.kind] || 0) > (nodePriority[existing.kind] || 0)) {
-        nodeByIp.set(n.ip, n);
-      }
-    });
-
-    const pairKeyFor = (a, b) => [a.ip || a.name, b.ip || b.name].sort().join("|");
-    const isPortLikeLabel = (port) => (
-      /^(?:gi|te|twe|fo|hu|xe|xge|sfp|qsfp|fa|eth|ge|xgei|port|po|lag|trk|ae|be|eth-trunk)/i.test(port) ||
-      /^\d+(?:\/\d+)+$/.test(port)
-    );
-    const cleanPortNames = (ports) => uniqueNames(ports.map(compactPortLabel)).filter((port) => port && isPortLikeLabel(port));
-    const isAggPortName = (port) => /^(?:po|lag|trk|ae|be|eth-trunk)\s*\d+/i.test(port);
-    const selectDisplayPorts = (ports, maxPhysical = Infinity) => {
-      const unique = cleanPortNames(ports);
-      const physical = unique.filter((port) => !isAggPortName(port));
-      const aggregate = unique.filter(isAggPortName);
-      const selected = physical.length ? physical.slice(0, maxPhysical) : aggregate.slice(0, Math.max(1, maxPhysical));
-      return selected.length ? selected : unique.slice(0, Math.max(1, maxPhysical));
-    };
-    const portDetail = (fromPorts, toPorts, maxPhysical = Infinity) => {
-      const fromSelected = selectDisplayPorts(fromPorts, maxPhysical);
-      const toSelected = selectDisplayPorts(toPorts, maxPhysical);
-      const lines = [];
-      if (fromSelected.length) lines.push(fromSelected.join(", "));
-      if (toSelected.length) lines.push(toSelected.join(", "));
-      const aggregated = Math.max(fromSelected.length, toSelected.length) > 1 ||
-        [...fromPorts, ...toPorts].map(compactPortLabel).some(isAggPortName);
-      return { lines, aggregated };
-    };
-
-    const lldpLinks = [];
-    const lldpCoveredPairs = new Set();
-    if (Array.isArray(lldpEdges) && lldpEdges.length) {
-      const groupedEdges = new Map();
-      lldpEdges.forEach((edge) => {
-        const fromNode = nodeByIp.get(edge.from_ip);
-        const toNode = nodeByIp.get(edge.to_ip);
-        if (!fromNode || !toNode) return;
-        const orientFrom = fromNode.y <= toNode.y ? fromNode : toNode;
-        const orientTo = fromNode.y <= toNode.y ? toNode : fromNode;
-        const orientFromPort = orientFrom === fromNode ? edge.from_port : edge.to_port;
-        const orientToPort = orientFrom === fromNode ? edge.to_port : edge.from_port;
-        const pairKey = pairKeyFor(orientFrom, orientTo);
-        const group = groupedEdges.get(pairKey) || {
-          from: orientFrom,
-          to: orientTo,
-          fromPorts: [],
-          toPorts: [],
-          count: 0
-        };
-        group.fromPorts.push(orientFromPort);
-        group.toPorts.push(orientToPort);
-        group.count += 1;
-        groupedEdges.set(pairKey, group);
-      });
-      groupedEdges.forEach((group, pairKey) => {
-        const isCoreDist = (
-          (group.from.kind === "core" && group.to.kind === "dist") ||
-          (group.from.kind === "dist" && group.to.kind === "core")
-        );
-        const detail = portDetail(group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
-        lldpLinks.push({
-          from: group.from,
-          to: group.to,
-          labelLines: detail.lines,
-          severity: group.to.level || "good",
-          logical: true,
-          aggregated: detail.aggregated
-        });
-        lldpCoveredPairs.add(pairKey);
-      });
-    }
-
-    const links = [];
-    const pushCrossLink = (from, to, severity) => {
-      const pairKey = pairKeyFor(from, to);
-      if (lldpCoveredPairs.has(pairKey)) return;
-      links.push({ from, to, severity, fallback: true });
-    };
-    fwRow.forEach((fw) => ispRow.forEach((isp) => pushCrossLink(isp, fw, fw.level)));
-    coreRow.forEach((core) => fwRow.forEach((fw) => pushCrossLink(fw, core, core.level)));
-    distRow.forEach((d) => {
-      // Skip the synthetic core->switch link when a real uplink was discovered
-      // (it's drawn via the core bus or via its parent switch instead).
-      if (distDepthByIp.has(d.ip)) return;
-      coreRow.forEach((core) => pushCrossLink(core, d, d.level));
-    });
-    serverRow.forEach((s) => coreRow.forEach((core) => pushCrossLink(core, s, s.level)));
-    links.push(...lldpLinks);
-
-    const isCoreDistLink = (link) => (
-      (link.from.kind === "core" && link.to.kind === "dist") ||
-      (link.from.kind === "dist" && link.to.kind === "core")
-    );
-    const coreDistLinks = links.filter(isCoreDistLink);
-    let coreBus = null;
-    if (coreDistLinks.length && coreRow.length && distRow.length) {
-      const primaryCore = coreRow[Math.floor(coreRow.length / 2)];
-      const coreX = primaryCore.x + primaryCore.w / 2;
-      const coreY = primaryCore.y + primaryCore.h;
-      const distCenters = distRow.map((node) => node.x + node.w / 2);
-      const busY = rowY(3) - DIST_LINK_GAP;
-      coreBus = {
-        x1: Math.min(coreX, ...distCenters),
-        x2: Math.max(coreX, ...distCenters),
-        y: busY,
-        coreX,
-        coreY,
-        severity: primaryCore.level || "good"
-      };
-      coreDistLinks.forEach((link) => {
-        link.busLink = true;
-      });
-    }
-
-    const nodeKey = (node) => node.ip || `${node.kind}|${node.name}`;
-    const assignSlots = (side) => {
-      const groups = new Map();
-      links.forEach((link) => {
-        const key = nodeKey(link[side]);
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(link);
-      });
-      groups.forEach((group) => {
-        group.forEach((link, idx) => {
-          link[`${side}Slot`] = idx;
-          link[`${side}SlotCount`] = group.length;
-        });
-      });
-    };
-    assignSlots("from");
-    assignSlots("to");
-
-    const haBonds = [];
-    if (fwRow.length === 2) {
-      haBonds.push({ from: fwRow[0], to: fwRow[1] });
-    }
-
-    return {
-      nodes: allNodes,
-      links,
-      haBonds,
-      coreBus,
-      height: Math.max(usableHeight, allNodes.reduce((m, n) => Math.max(m, n.y + (n.h || 0)), 0) + bottomPad)
-    };
-  }
-
-  function topologyNodeIcon(kind) {
-    return { isp: "🌐", firewall: "🛡", core: "★", dist: "▦", server: "⚙" }[kind] || "?";
-  }
-
-  function topologyNodeKindLabel(kind) {
-    return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", server: "服务器" }[kind] || kind;
-  }
-
-  function compactPortLabel(port) {
-    let text = String(port || "").trim();
-    text = text
-      .replace(/^GigabitEthernet/i, "Gi")
-      .replace(/^TenGigabitEthernet/i, "Te")
-      .replace(/^TwentyFiveGigE/i, "Twe")
-      .replace(/^FortyGigabitEthernet/i, "Fo")
-      .replace(/^HundredGigE/i, "Hu")
-      .replace(/^Port[\s-]*channel/i, "Po")
-      .replace(/^Bundle[\s-]*Ether/i, "BE")
-      .replace(/^Ethernet[\s-]*Trunk/i, "Eth-Trunk")
-      .replace(/\s+active$/i, "");
-    return text.length > 18 ? `${text.slice(0, 15)}...` : text;
-  }
-
-  function renderTopologySvg(layout, canvasWidth) {
-    const nodeCenterX = (node) => node.x + node.w / 2;
-    const nodeCenterY = (node) => node.y + node.h / 2;
-    const anchorX = (node, slot, count) => {
-      if (!Number.isFinite(slot) || !Number.isFinite(count) || count <= 1) {
-        return node.x + node.w / 2;
-      }
-      const pad = 18;
-      return node.x + pad + ((node.w - pad * 2) * slot) / (count - 1);
-    };
-    // Estimate rendered title width (CJK glyphs are ~2x a Latin char) so an
-    // over-long switch name gets squeezed to fit the box instead of spilling out.
-    const estTextWidth = (text) => {
-      let w = 0;
-      for (const ch of String(text || "")) {
-        w += /[　-鿿＀-￯]/.test(ch) ? 13 : 7.3;
-      }
-      return w;
-    };
-
-    const coreBus = layout.coreBus
-      ? `<path class="topology-link topology-backbone link-${layout.coreBus.severity}" d="M ${layout.coreBus.coreX} ${layout.coreBus.coreY} L ${layout.coreBus.coreX} ${layout.coreBus.y} M ${layout.coreBus.x1} ${layout.coreBus.y} L ${layout.coreBus.x2} ${layout.coreBus.y}" />`
-      : "";
-
-    const linkPaths = layout.links.map((link) => {
-      let labelX;
-      let labelY;
-      let labelAnchor = "middle";
-      let labelPositions = null;
-      let d;
-      if (link.busLink && layout.coreBus) {
-        const distNode = link.from.kind === "dist" ? link.from : link.to;
-        const x = nodeCenterX(distNode);
-        d = `M ${x} ${layout.coreBus.y} L ${x} ${distNode.y}`;
-        labelX = x + 14;
-        labelY = Math.max(layout.coreBus.y + 12, distNode.y - 34);
-        labelAnchor = "start";
-        if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
-          labelPositions = [
-            { text: link.labelLines[0], x: x + 14, y: layout.coreBus.y - 8, anchor: "start" },
-            { text: link.labelLines[1], x: x + 14, y: distNode.y - 5, anchor: "start" }
-          ];
-        }
-      } else if (Math.abs(link.from.y - link.to.y) < 4) {
-        const left = link.from.x <= link.to.x ? link.from : link.to;
-        const right = left === link.from ? link.to : link.from;
-        const x1 = left.x + left.w;
-        const x2 = right.x;
-        const y = nodeCenterY(left);
-        d = `M ${x1} ${y} L ${x2} ${y}`;
-        labelX = (x1 + x2) / 2;
-        labelY = y - 7;
-      } else if (
-        (link.from.kind === "core" && link.to.kind === "server") ||
-        (link.from.kind === "server" && link.to.kind === "core")
-      ) {
-        const coreNode = link.from.kind === "core" ? link.from : link.to;
-        const serverNode = link.from.kind === "server" ? link.from : link.to;
-        const side = nodeCenterX(serverNode) < nodeCenterX(coreNode) ? -1 : 1;
-        const x1 = nodeCenterX(coreNode) + side * Math.min(42, coreNode.w * 0.34);
-        const y1 = coreNode.y + coreNode.h;
-        const x2 = nodeCenterX(serverNode);
-        const y2 = serverNode.y;
-        const bendY = y1 + Math.max(18, (y2 - y1) * 0.42);
-        d = `M ${x1} ${y1} C ${x1} ${bendY} ${x2} ${bendY} ${x2} ${y2}`;
-        labelX = (x1 + x2) / 2;
-        labelY = bendY - 5;
-      } else if (Math.abs(nodeCenterX(link.from) - nodeCenterX(link.to)) < 14) {
-        const x = nodeCenterX(link.from);
-        const y1 = link.from.y + link.from.h;
-        const y2 = link.to.y;
-        d = `M ${x} ${y1} L ${x} ${y2}`;
-        labelX = x + 14;
-        labelY = (y1 + y2) / 2;
-        labelAnchor = "start";
-        if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
-          labelPositions = [
-            { text: link.labelLines[0], x: x + 14, y: y1 + 13, anchor: "start" },
-            { text: link.labelLines[1], x: x + 14, y: y2 - 5, anchor: "start" }
-          ];
-        }
-      } else {
-        const x1 = anchorX(link.from, link.fromSlot, link.fromSlotCount);
-        const y1 = link.from.y + link.from.h;
-        const x2 = anchorX(link.to, link.toSlot, link.toSlotCount);
-        const y2 = link.to.y;
-        const midY = (y1 + y2) / 2;
-        d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
-        labelX = (x1 + x2) / 2;
-        labelY = midY - 5;
-      }
-      const labelLines = Array.isArray(link.labelLines) && link.labelLines.length
-        ? link.labelLines
-        : (link.label ? [link.label] : []);
-      const positionedLabels = labelPositions
-        ? labelPositions.filter((item) => item.text).map((item) => `<text class="topology-link-label topology-link-label-stack" x="${item.x}" y="${item.y}" text-anchor="${item.anchor}">${escapeHtml(item.text)}</text>`).join("")
-        : "";
-      const linkLabel = positionedLabels || (labelLines.length
-        ? `<text class="topology-link-label${labelLines.length > 1 ? " topology-link-label-stack" : ""}" x="${labelX}" y="${labelY}" text-anchor="${labelAnchor}">${labelLines.map((line, idx) => `<tspan x="${labelX}" dy="${idx ? 12 : 0}">${escapeHtml(line)}</tspan>`).join("")}</text>`
-        : "");
-      const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}${link.aggregated ? " link-aggregated" : ""}`;
-      return `
-        <g class="topology-link-group">
-          <path class="${linkClass}" d="${d}" />
-          ${linkLabel}
-        </g>
-      `;
-    }).join("");
-
-    const nodes = layout.nodes.map((node, idx) => {
-      const latencyText = Number.isFinite(node.latency)
-        ? formatPingText(node.latency)
-        : (node.kind === "isp" ? "在线" : "");
-      const dataAttrs = `data-idx="${idx}" data-kind="${escapeHtml(node.kind)}" data-name="${escapeHtml(node.name)}" data-ip="${escapeHtml(node.ip || "")}" data-level="${escapeHtml(node.level)}"`;
-      const subline = node.ip
-        ? `<text class="topology-node-ip" x="14" y="${node.h - 8}">${escapeHtml(node.ip)}</text>`
-        : "";
-      const nodeName = String(node.name || "?");
-      const nameMaxW = node.w - 42; // title starts at x=34, leave ~8px right padding
-      const nameFitAttr = estTextWidth(nodeName) > nameMaxW
-        ? ` textLength="${nameMaxW}" lengthAdjust="spacingAndGlyphs"`
-        : "";
-      return `
-        <g class="topology-node node-${node.level}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
-          <rect width="${node.w}" height="${node.h}" rx="10" />
-          <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
-          <text class="topology-node-name" x="34" y="22"${nameFitAttr}>${escapeHtml(nodeName)}</text>
-          <text class="topology-node-kind" x="34" y="38">${escapeHtml(topologyNodeKindLabel(node.kind))}</text>
-          <text class="topology-node-latency" x="${node.w - 10}" y="38" text-anchor="end">${escapeHtml(latencyText)}</text>
-          ${subline}
-        </g>
-      `;
-    }).join("");
-
-    const haBonds = (layout.haBonds || []).map((bond) => {
-      const x1 = bond.from.x + bond.from.w;
-      const x2 = bond.to.x;
-      const y = bond.from.y + bond.from.h / 2;
-      const midX = (x1 + x2) / 2;
-      return `
-        <g class="topology-ha-bond">
-          <line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" />
-          <rect x="${midX - 14}" y="${y - 8}" width="28" height="16" rx="4" />
-          <text x="${midX}" y="${y + 4}" text-anchor="middle">HA</text>
-        </g>
-      `;
-    }).join("");
-
-    return `
-      <svg class="topology-svg" viewBox="0 0 ${canvasWidth} ${layout.height}" data-base-width="${canvasWidth}" data-base-height="${layout.height}" preserveAspectRatio="xMidYMid meet" focusable="false">
-        <defs>
-          <filter id="topology-glow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="2.5" result="blur" />
-            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
-        </defs>
-        ${coreBus}
-        ${linkPaths}
-        ${haBonds}
-        ${nodes}
-      </svg>
-    `;
-  }
-
-  function bindTopologyNodeEvents(nodes) {
+  function bindTopologyNodeEvents() {
     const detail = document.getElementById("topologyDetail");
     const canvas = document.getElementById("topologyCanvas");
     if (canvas) {
@@ -3008,7 +1860,7 @@
       const handler = (event) => {
         if (event && event.stopPropagation) event.stopPropagation();
         const idx = Number(el.dataset.idx);
-        const node = nodes[idx];
+        const node = topologyNodes[idx];
         if (!node) return;
         detail.hidden = false;
         detail.innerHTML = `
@@ -3030,17 +1882,6 @@
         }
       });
     });
-  }
-
-  async function fetchTopologyEdges() {
-    try {
-      const response = await fetchWithTimeout("/topology/edges.json", { cache: "no-store" });
-      if (!response.ok) return [];
-      const data = await response.json();
-      return Array.isArray(data) ? data : [];
-    } catch (error) {
-      return [];
-    }
   }
 
   const topoView = { scale: 1, x: 0, y: 0 };
@@ -3185,17 +2026,48 @@
       );
       const width = Math.max(containerWidth, maxRow * 152 + 48);
       const layout = topologyLayout(layers, width, height, edges);
-      canvas.innerHTML = renderTopologySvg(layout, width);
-      bindTopologyNodeEvents(layout.nodes);
-      setupTopoPanZoom();
-      applyTopoView();
+      topologyNodes = layout.nodes;
+      if (shouldRender("topology", topologySignature(layout, width, edges))) {
+        canvas.innerHTML = renderTopologySvg(layout, width);
+        bindTopologyNodeEvents();
+        setupTopoPanZoom();
+        applyTopoView();
+      } else {
+        // Same structure and status levels: refresh only the latency readouts
+        // in place, keeping the pan/zoom view and skipping the SVG rebuild.
+        updateTopologyLatencyTexts(canvas);
+      }
       document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · 拖动平移·滚轮缩放·双击复位${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
       lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== topologySeq) return;
+      // The error message replaces the SVG, so the next success must rebuild
+      // even when the data signature is unchanged.
+      renderSignatures.delete("topology");
       console.error("Topology fetch failed:", error);
       canvas.innerHTML = `<div class="topology-error">拓扑数据拉取失败: ${escapeHtml(error.message || "")}</div>`;
     }
+  }
+
+  // Skip the SVG rebuild when nothing the layout depends on changed: node set,
+  // kinds, names, status levels, the LLDP edge list and the canvas width. Raw
+  // latency is excluded on purpose -- it jitters every sample and is patched
+  // into the existing DOM by updateTopologyLatencyTexts instead.
+  function topologySignature(layout, width, edges) {
+    const nodesSig = layout.nodes.map((node) => `${node.kind}|${node.ip || ""}|${node.name}|${node.level}`).join("#");
+    const edgesSig = (edges || []).map((edge) => `${edge.from_ip}|${edge.from_port}|${edge.to_ip}|${edge.to_port}`).join("#");
+    return `${width}@${nodesSig}@@${edgesSig}`;
+  }
+
+  function updateTopologyLatencyTexts(canvas) {
+    canvas.querySelectorAll(".topology-node").forEach((el) => {
+      const node = topologyNodes[Number(el.dataset.idx)];
+      const text = el.querySelector(".topology-node-latency");
+      if (!node || !text) return;
+      text.textContent = Number.isFinite(node.latency)
+        ? formatPingText(node.latency)
+        : (node.kind === "isp" ? "在线" : "");
+    });
   }
 
   function startTopologyRefresh() {
@@ -3272,36 +2144,30 @@
     badge.hidden = false;
   }
 
+  // Intl.DateTimeFormat construction is comparatively heavy; build the clock
+  // formatters once instead of twice a second.
+  const clockDateFormat = new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short"
+  });
+  const clockTimeFormat = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+
   function tick() {
     try {
       const now = new Date();
-      setText("dateText", new Intl.DateTimeFormat("zh-CN", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        weekday: "short"
-      }).format(now));
-      setText("timeText", new Intl.DateTimeFormat("zh-CN", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false
-      }).format(now));
+      setText("dateText", clockDateFormat.format(now));
+      setText("timeText", clockTimeFormat.format(now));
       updateFreshness();
     } catch (e) {
       // ignore — will retry next second
     }
-  }
-
-  if (window.__BIGSCREEN_TEST_MODE__) {
-    window.__BIGSCREEN_TOPOLOGY_TESTS__ = {
-      buildTopologyLayers,
-      topologyLayout,
-      renderTopologySvg,
-      ispChartMaxBps,
-      parseIspBandwidthConfig
-    };
-    return;
   }
 
   renderPage();
@@ -3309,6 +2175,21 @@
   window.setInterval(tick, 1000);
   window.addEventListener("popstate", renderPage);
   // Charts are sized from the container, so a resize must force a full repaint
-  // even when the underlying data is unchanged.
-  window.addEventListener("resize", () => renderSignatures.clear());
+  // even when the underlying data is unchanged. Repaint right after the drag
+  // settles instead of waiting for the next 5s tick -- the range cache makes
+  // the extra refresh nearly free.
+  let resizeRepaintTimer = null;
+  window.addEventListener("resize", () => {
+    renderSignatures.clear();
+    if (resizeRepaintTimer) window.clearTimeout(resizeRepaintTimer);
+    resizeRepaintTimer = window.setTimeout(() => {
+      resizeRepaintTimer = null;
+      if (chartTimer) refreshCharts();
+      if (tournamentTimer) {
+        const current = activePage();
+        if (current && current.kind) refreshTournament(current);
+      }
+      if (topologyTimer) refreshTopology();
+    }, 200);
+  });
 })();

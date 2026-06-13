@@ -12,6 +12,9 @@ FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
 SNMP_AUTH="${SNMP_AUTH:-global}"
 PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
+# 选手 ICMP 单独的采集间隔：比全局更密（默认 5s），纠纷回查的时间分辨率翻倍。
+# blackbox 对几十个选手目标 5s 一轮的负载可以忽略，被探测的选手机器无感知。
+PLAYER_PING_SCRAPE_INTERVAL="${PLAYER_PING_SCRAPE_INTERVAL:-5s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 # 交换机/防火墙 uptime（运行时长）SNMP 单独的采集间隔。运行时长显示的是"天"，
 # 不需要跟随全局 5-10s 高频采集；拉长可减轻 2960 等弱 CPU 交换机的控制平面负担，
@@ -292,6 +295,7 @@ cat >> "$CONFIG_FILE" <<EOF
         replacement: snmp-exporter:9116
 
   - job_name: "player-ping"
+    scrape_interval: ${PLAYER_PING_SCRAPE_INTERVAL}
     metrics_path: /probe
     params:
       module: [icmp]

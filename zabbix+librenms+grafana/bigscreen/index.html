@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
-    <link rel="stylesheet" href="./style.css?v=20260611-cleanup" />
-    <link rel="stylesheet" href="./platform.css?v=20260611-cleanup" />
+    <link rel="stylesheet" href="./style.css?v=20260613" />
+    <link rel="stylesheet" href="./platform.css?v=20260613" />
   </head>
   <body>
     <main class="screen">
@@ -84,6 +84,7 @@
             </select>
           </label>
           <button type="submit">查询</button>
+          <button type="button" id="evidenceExport" title="把当前查询到的延迟/在线原始数据导出为 CSV">导出 CSV</button>
         </form>
         <div class="evidence-summary" id="evidenceSummary"></div>
         <section class="chart-panel evidence-latency-panel" aria-labelledby="evidenceLatencyTitle">
@@ -121,6 +122,7 @@
             </select>
           </label>
           <button type="submit">绘制</button>
+          <button type="button" id="heatmapExport" title="把当前热图的离线率/平均延迟导出为 CSV">导出 CSV</button>
         </form>
         <div class="heatmap-summary" id="heatmapSummary"></div>
         <div class="heatmap-grid" id="heatmapGrid"></div>
@@ -181,8 +183,13 @@
         </section>
       </section>
     </main>
-    <script src="./config.js?v=20260611-cleanup"></script>
-    <script src="./pages.js?v=20260611-cleanup"></script>
-    <script src="./app.js?v=20260611-cleanup"></script>
+    <script src="./config.js?v=20260613"></script>
+    <script src="./pages.js?v=20260613"></script>
+    <script src="./utils.js?v=20260613"></script>
+    <script src="./api.js?v=20260613"></script>
+    <script src="./players.js?v=20260613"></script>
+    <script src="./incident.js?v=20260613"></script>
+    <script src="./topology.js?v=20260613"></script>
+    <script src="./app.js?v=20260613"></script>
   </body>
 </html>
