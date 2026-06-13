@@ -1,37 +1,12 @@
 #!/bin/sh
-# Remove the nginx default site that returns 404, otherwise it will block LibreNMS
+# Remove the nginx default site that returns 404 (happens before /init, survives s6 init)
 if [ -f /etc/nginx/http.d/default.conf ]; then
   rm -f /etc/nginx/http.d/default.conf
   echo "[librenms-entry] removed nginx default.conf (404 catch-all)"
 fi
 
-# The LibreNMS Docker image's nginx.conf server block has no server_name directive,
-# which causes "ServerName is set incorrectly" validation error.
-# We must INSERT server_name after the listen directive, not try to replace it.
-if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
-  sed -i "/server_name /d" /etc/nginx/nginx.conf 2>/dev/null || true
-  sed -i "/listen \[::\]:8000;/a \        server_name ${SERVER_IP};" /etc/nginx/nginx.conf 2>/dev/null || true
-  echo "[librenms-entry] nginx server_name inserted: ${SERVER_IP}"
-fi
-
-mkdir -p /etc/services.d/scheduler
-cat > /etc/services.d/scheduler/run << 'S6EOF'
-#!/bin/sh
-exec s6-setuidgid librenms sh -c 'while true; do php /opt/librenms/artisan schedule:run --no-ansi --no-interaction > /dev/null 2>&1; sleep 60; done'
-S6EOF
-chmod +x /etc/services.d/scheduler/run
-
-# Fix APP_URL in .env before starting
-if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ] && [ -f /opt/librenms/.env ]; then
-  LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
-  sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}:${LIBRENMS_PORT}|" /opt/librenms/.env 2>/dev/null || true
-  echo "[librenms-entry] APP_URL patched to http://${SERVER_IP}:${LIBRENMS_PORT}"
-fi
-
-# Patch RrdCheck.php to comment out progress echo lines that break JSON API responses.
-# LibreNMS prints "Scanning X rrd files..." to stdout during web validate,
-# which corrupts the JSON response body and causes front-end parse failure.
-# We use line-number sed because regex fails on shell-escaping \033[\ etc.
+# Patch RrdCheck.php to suppress progress echo lines that corrupt JSON API responses.
+# Applied to source code before s6 starts so it survives cont-init.d regeneration.
 if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then
   sed -i "55s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
   sed -i "67s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
@@ -42,13 +17,24 @@ if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then
   echo "[librenms-entry] RrdCheck.php echo lines commented out"
 fi
 
-# Install crontab for scheduler — validate.php checks /etc/cron.d/ for scheduler validation
-if [ -f /opt/librenms/dist/librenms-scheduler.cron ]; then
-  mkdir -p /var/spool/cron/crontabs /etc/cron.d
-  sed "s|php /opt/librenms/artisan|su librenms -s /bin/sh -c \"php /opt/librenms/artisan\"|" \
-    /opt/librenms/dist/librenms-scheduler.cron > /etc/cron.d/librenms 2>/dev/null || true
-  chmod 644 /etc/cron.d/librenms 2>/dev/null || true
-  echo "[librenms-entry] scheduler crontab installed to /etc/cron.d/librenms"
-fi
+# Install the nginx/env/cron patch as a cont-init.d script so it runs AFTER LibreNMS's
+# own cont-init.d scripts finish generating nginx.conf and .env. The "99-" prefix
+# ensures alphabetical order places us last, so our server_name patch is not overwritten.
+mkdir -p /etc/cont-init.d
+cp /librenms-patch-nginx.sh /etc/cont-init.d/99-librenms-patch
+chmod +x /etc/cont-init.d/99-librenms-patch
+echo "[librenms-entry] installed nginx/scheduler patch as /etc/cont-init.d/99-librenms-patch"
+
+# Register the Laravel scheduler as an s6 long-running service using schedule:work.
+# schedule:work keeps the artisan process alive in the process table, which is
+# what LibreNMS's validate.php looks for when checking "Scheduler is running".
+# (The old schedule:run loop only appeared in ps aux during its 60-second window.)
+mkdir -p /etc/services.d/scheduler
+cat > /etc/services.d/scheduler/run << 'S6EOF'
+#!/bin/sh
+exec s6-setuidgid librenms php /opt/librenms/artisan schedule:work --no-ansi --no-interaction
+S6EOF
+chmod +x /etc/services.d/scheduler/run
+echo "[librenms-entry] scheduler s6 service registered (schedule:work)"
 
 exec /init
