@@ -1138,6 +1138,21 @@
     return "正常";
   }
 
+  function triggerRescan(btn) {
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "扫描中…";
+    fetch("/player-targets/rescan", { method: "POST" })
+      .then(() => {
+        btn.textContent = "已触发";
+        setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 4000);
+      })
+      .catch(() => {
+        btn.textContent = "失败";
+        setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 3000);
+      });
+  }
+
   function renderWirelessControls() {
     const controls = document.getElementById("opsControls");
     if (controls.dataset.mode === "wireless") return;
@@ -1147,7 +1162,9 @@
         <strong>无线异常总览</strong>
         <span>只统计无线选手，用来确认是否有人连入 WiFi，以及是否出现高延迟或离线。</span>
       </div>
+      <button type="button" id="rescanBtn" class="rescan-btn">立即重扫</button>
     `;
+    document.getElementById("rescanBtn").addEventListener("click", function () { triggerRescan(this); });
   }
 
   function renderWirelessBoard(players) {
@@ -1232,6 +1249,7 @@
           ${["wired", "wireless", "all"].map((item) => `<option value="${item}"${item === network ? " selected" : ""}>${networkLabel(item)}</option>`).join("")}
         </select>
       </label>
+      <button type="button" id="rescanBtn" class="rescan-btn">立即重扫</button>
       <div class="ops-title compact">
         <strong>赛前座位核对</strong>
         <span>缺失、重复、离线会直接标出。</span>
@@ -1239,6 +1257,7 @@
     `;
     document.getElementById("seatCheckLayout").addEventListener("change", updateSeatCheckUrl);
     document.getElementById("seatCheckNetwork").addEventListener("change", updateSeatCheckUrl);
+    document.getElementById("rescanBtn").addEventListener("click", function () { triggerRescan(this); });
   }
 
   function updateSeatCheckUrl() {

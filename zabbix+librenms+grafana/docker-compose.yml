@@ -485,6 +485,7 @@ services:
     volumes:
       - player-targets-data:/targets
       - ./generate-player-targets.py:/generate-player-targets.py:ro
+      - ./rescan-server.py:/rescan-server.py:ro
       - ./.env:/config/.env:ro
     environment:
       TZ: Asia/Shanghai
@@ -517,6 +518,9 @@ services:
         apk add --no-cache net-snmp-tools
         echo "[player-targets] starting target generator loop"
 
+        # Start rescan trigger API in background (POST /rescan → immediate re-scan)
+        python3 /rescan-server.py &
+
         load_env_key() {
           key="$$1"
           [ -f /config/.env ] || return 0
@@ -532,13 +536,27 @@ services:
           done
         }
 
+        wait_or_trigger() {
+          interval="$${PLAYER_TARGETS_REFRESH_INTERVAL:-60}"
+          elapsed=0
+          while [ "$$elapsed" -lt "$$interval" ]; do
+            sleep 1
+            elapsed=$$((elapsed + 1))
+            if [ -f /targets/rescan.trigger ]; then
+              rm -f /targets/rescan.trigger
+              echo "[player-targets] manual rescan triggered"
+              return
+            fi
+          done
+        }
+
         while true; do
           load_runtime_env
           echo "[player-targets] using TOURNAMENT_SWITCHES=$${TOURNAMENT_SWITCHES:-} PLAYER_GATEWAYS=$${PLAYER_GATEWAYS:-$${LIBRENMS_CORE_IP:-}} PLAYER_VLAN_IDS=$${PLAYER_VLAN_IDS:-} PLAYER_SUBNETS=$${PLAYER_SUBNETS:-} WIRELESS_SUBNETS=$${WIRELESS_SUBNETS:-} PLAYER_WIRELESS_SCAN=$${PLAYER_WIRELESS_SCAN:-true}"
           python3 /generate-player-targets.py 2>&1 | while IFS= read -r line; do
             echo "[player-targets] $$line"
           done
-          sleep "$${PLAYER_TARGETS_REFRESH_INTERVAL:-60}"
+          wait_or_trigger
         done
 
   topology-collector:
@@ -874,6 +892,14 @@ services:
             alias /srv/topology/;
             add_header Cache-Control "no-store, no-cache, must-revalidate" always;
             try_files $$uri =404;
+          }
+
+          location /player-targets/ {
+            resolver 127.0.0.11 valid=30s ipv6=off;
+            set $$pt_upstream player-targets;
+            rewrite ^/player-targets/(.*)$$ /$$1 break;
+            proxy_pass http://$$pt_upstream:9199;
+            proxy_read_timeout 5s;
           }
         }
         EOF

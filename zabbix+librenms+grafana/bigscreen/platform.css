@@ -480,6 +480,28 @@
   outline-offset: 1px;
 }
 
+.rescan-btn {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 8px;
+  background: var(--linear-surface-2);
+  color: var(--linear-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.rescan-btn:hover:not(:disabled) {
+  background: var(--linear-surface-3, #2a2a3a);
+}
+
+.rescan-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .ops-title {
   display: grid;
   align-content: center;
