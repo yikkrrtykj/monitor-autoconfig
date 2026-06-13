@@ -26,14 +26,32 @@ fi
 # We bake the actual values into the generated wrapper here (entrypoint has the real
 # env) and let the wrapper export them before running the patch logic.
 mkdir -p /etc/cont-init.d
+# Resolve the real server IP/host for the nginx server_name patch. SERVER_IP may be
+# unset while the address is only known via LIBRENMS_BASE_URL / APP_URL, so fall back
+# to parsing the host out of those. "localhost" is treated as "no real name".
+RESOLVED_IP="${SERVER_IP:-}"
+[ -z "$RESOLVED_IP" ] && RESOLVED_IP="${LIBRENMS_OWN_HOSTNAME:-}"
+if [ -z "$RESOLVED_IP" ] && [ -n "${LIBRENMS_BASE_URL:-}" ]; then
+  RESOLVED_IP=$(printf '%s' "$LIBRENMS_BASE_URL" | sed 's#^[a-z]*://##; s#[:/].*##')
+fi
+if [ -z "$RESOLVED_IP" ] && [ -n "${APP_URL:-}" ]; then
+  RESOLVED_IP=$(printf '%s' "$APP_URL" | sed 's#^[a-z]*://##; s#[:/].*##')
+fi
+[ "$RESOLVED_IP" = "localhost" ] && RESOLVED_IP=""
+
+# The patch script is bind-mounted read-only without an executable bit, so we run it
+# with `sh <script>` (no exec bit needed) and force a zero exit -- a non-zero exit from
+# an s6 cont-init.d script halts the whole container. We bake the resolved values in
+# because s6 cont-init.d scripts do not reliably inherit the container environment.
 cat > /etc/cont-init.d/99-librenms-patch <<EOF
 #!/bin/sh
-export SERVER_IP='${SERVER_IP:-}'
+export SERVER_IP='${RESOLVED_IP}'
 export LIBRENMS_PORT='${LIBRENMS_PORT:-8002}'
-exec /librenms-patch-nginx.sh
+sh /librenms-patch-nginx.sh || true
+exit 0
 EOF
 chmod +x /etc/cont-init.d/99-librenms-patch
-echo "[librenms-entry] installed nginx/scheduler patch as /etc/cont-init.d/99-librenms-patch (SERVER_IP=${SERVER_IP:-unset})"
+echo "[librenms-entry] installed nginx/scheduler patch as /etc/cont-init.d/99-librenms-patch (server_name=${RESOLVED_IP:-unset})"
 
 # Register the Laravel scheduler as an s6 long-running service using schedule:work.
 # schedule:work keeps the artisan process alive in the process table, which is
