@@ -58,6 +58,19 @@ if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ] && [ -f /opt/librenms/.env 
   echo "[librenms-init] APP_URL patched to http://${SERVER_IP}:${LIBRENMS_PORT}"
 fi
 
+# Set base_url in LibreNMS's database config table so the /validate ServerName
+# check passes. APP_URL in .env is a fallback; the DB config table wins when an
+# entry exists (typically written by LibreNMS's own cont-init scripts). Running
+# artisan config:set here overwrites any stale "localhost" value in the DB.
+# Runs as the librenms user so artisan doesn't create root-owned cache files.
+if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
+  LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
+  su librenms -s /bin/sh -c \
+    "php /opt/librenms/artisan config:set base_url 'http://${SERVER_IP}:${LIBRENMS_PORT}'" \
+    2>/dev/null || true
+  echo "[librenms-init] base_url set in DB to http://${SERVER_IP}:${LIBRENMS_PORT}"
+fi
+
 # Clear Laravel config cache so PHP picks up the new APP_URL on next request.
 if [ -f /opt/librenms/bootstrap/cache/config.php ]; then
   rm -f /opt/librenms/bootstrap/cache/config.php
