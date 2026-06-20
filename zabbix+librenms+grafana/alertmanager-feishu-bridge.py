@@ -105,11 +105,18 @@ def build_librenms_card(payload):
     dev_display = f"{hostname}（{ip}）" if hostname and ip and hostname != ip else hostname or ip or "?"
     title = f"{emoji} {rule_name} · {dev_display}"[:148]
 
-    lines = [f"🖥 设备：{dev_display}", f"📊 状态：{status_text}"]
+    uid = str(payload.get("uid") or "").strip()
+    elapsed = str(payload.get("elapsed") or "").strip()
 
+    lines = [f"🖥 设备：{dev_display}", f"📊 状态：{status_text}"]
+    if uid and uid not in ("0", ""):
+        lines.append(f"🆔 告警 ID：#{uid}")
     ts = payload.get("timestamp") or ""
     if ts:
         lines.append(f"⏰ 时间：{ts}")
+    if elapsed and elapsed not in ("0s", ""):
+        label = "离线时长" if recovered else "触发耗时"
+        lines.append(f"⏱ {label}：{elapsed}")
 
     return _make_card(title, "LibreNMS 告警", color, "\n".join(lines))
 
