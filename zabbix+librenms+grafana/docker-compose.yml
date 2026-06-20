@@ -1,33 +1,4 @@
 services:
-  mysql:
-    image: mariadb:10.5
-    container_name: mysql
-    restart: unless-stopped
-    command:
-      - "mysqld"
-      - "--innodb-file-per-table=1"
-      - "--lower-case-table-names=0"
-      - "--character-set-server=utf8mb4"
-      - "--collation-server=utf8mb4_bin"
-      - "--log-bin-trust-function-creators=1"
-    environment:
-      TZ: Asia/Shanghai
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: zabbix
-      MYSQL_USER: zabbix
-      MYSQL_PASSWORD: root
-    volumes:
-      - ./mysql-data:/var/lib/mysql
-      - ./mysql-init:/docker-entrypoint-initdb.d
-    networks:
-      - monitor
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
-      interval: 30s
-      timeout: 20s
-      retries: 10
-      start_period: 60s
-
   librenms-db:
     image: mariadb:10.5
     container_name: librenms-db
@@ -90,8 +61,6 @@ services:
     image: alpine:latest
     container_name: init-permissions
     volumes:
-      - ./mysql-data:/mysql-data
-      - ./zabbix-server-data:/zabbix-server-data
       - ./grafana-data:/grafana-data
       - ./prometheus-data:/prometheus-data
       - ./librenms-db-data:/librenms-db-data
@@ -100,212 +69,18 @@ services:
     command: |
       sh -c '
         echo "Setting up directory permissions..."
-        mkdir -p /mysql-data /zabbix-server-data /grafana-data /prometheus-data /librenms-db-data /librenms-data /librenms-data/rrd /librenms-rrdcached-journal
-        chown -R 999:999 /mysql-data /librenms-db-data
-        chown -R 1997:1997 /zabbix-server-data
+        mkdir -p /grafana-data /prometheus-data /librenms-db-data /librenms-data /librenms-data/rrd /librenms-rrdcached-journal
+        chown -R 999:999 /librenms-db-data
         chown -R 472:472 /grafana-data
         chown -R 65534:65534 /prometheus-data
         chown -R 1000:1000 /librenms-data /librenms-rrdcached-journal
-        chmod -R 755 /mysql-data /zabbix-server-data /grafana-data /prometheus-data /librenms-db-data /librenms-data
+        chmod -R 755 /grafana-data /prometheus-data /librenms-db-data /librenms-data
         chmod -R 775 /librenms-data/rrd /librenms-rrdcached-journal
         echo "Permissions set successfully"
       '
     networks:
       - monitor
     restart: "no"
-
-  zabbix-server:
-    image: zabbix/zabbix-server-mysql:7.0-ubuntu-latest
-    container_name: zabbix-server
-    hostname: zabbix-server
-    restart: unless-stopped
-    user: root
-    environment:
-      DB_SERVER_HOST: mysql
-      MYSQL_DATABASE: zabbix
-      MYSQL_USER: zabbix
-      MYSQL_PASSWORD: root
-      ZBX_ENABLE_SNMP_TRAPS: "true"
-      ZBX_STARTPOLLERS: 5
-      ZBX_STARTPOLLERSUNREACHABLE: 1
-      ZBX_STARTTRAPPERS: 5
-      ZBX_STARTPINGERS: 1
-      ZBX_STARTDISCOVERERS: 1
-      ZBX_STARTHTTPPOLLERS: 1
-      ZBX_TIMEOUT: 30
-      ZBX_UNREACHABLEPERIOD: 45
-      ZBX_UNAVAILABLEDELAY: 60
-    command: >
-      /bin/sh -c '
-        apt-get update &&
-        apt-get install -y python3 python3-requests &&
-        chmod +x /usr/lib/zabbix/alertscripts/feishu-robot.py &&
-        /usr/bin/docker-entrypoint.sh /usr/sbin/zabbix_server --foreground -c /etc/zabbix/zabbix_server.conf
-      '
-    depends_on:
-      init-permissions:
-        condition: service_completed_successfully
-      mysql:
-        condition: service_healthy
-    ports:
-      - "${ZABBIX_SERVER_PORT:-10051}:10051"
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - ./zabbix-server-data:/var/lib/zabbix
-      - ./feishu-robot.py:/usr/lib/zabbix/alertscripts/feishu-robot.py
-      - ./watchguard-firewall-zabbix7.0-template.yaml:/watchguard-firewall-zabbix7.0-template.yaml:ro
-      - ./hillstone-zabbix7.0-UnofficialV1.1.yaml:/hillstone-zabbix7.0-UnofficialV1.1.yaml:ro
-    networks:
-      - monitor
-    healthcheck:
-      test: ["CMD-SHELL", "ps aux | grep '[z]abbix_server' | grep -v grep || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-
-  zabbix-web:
-    image: zabbix/zabbix-web-nginx-mysql:7.0-ubuntu-latest
-    container_name: zabbix-web
-    restart: unless-stopped
-    environment:
-      DB_SERVER_HOST: mysql
-      MYSQL_DATABASE: zabbix
-      MYSQL_USER: zabbix
-      MYSQL_PASSWORD: root
-      PHP_TZ: Asia/Shanghai
-      ZBX_SERVER_HOST: zabbix-server
-      ZBX_SERVER_PORT: 10051
-      ZBX_POSTMAXSIZE: 64M
-      ZBX_UPLOADMAXFILESIZE: 2M
-      ZBX_MAXEXECUTIONTIME: 600
-      ZBX_DEFAULT_LANG: zh_CN
-      LANG: zh_CN.UTF-8
-      LC_ALL: zh_CN.UTF-8
-      TZ: Asia/Shanghai
-    depends_on:
-      zabbix-server:
-        condition: service_healthy
-    ports:
-      - "${ZABBIX_WEB_PORT:-8001}:8080"
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-    networks:
-      - monitor
-
-  zabbix-agent:
-    image: zabbix/zabbix-agent:7.0-ubuntu-latest
-    container_name: zabbix-agent
-    hostname: zabbix-agent
-    restart: unless-stopped
-    environment:
-      ZBX_HOSTNAME: "Zabbix server"
-      ZBX_SERVER_HOST: zabbix-server
-      ZBX_SERVER_PORT: 10051
-      ZBX_PASSIVE_ALLOW: "true"
-      ZBX_ACTIVE_ALLOW: "true"
-      ZBX_METADATA: "Linux"
-      ZBX_SERVER: zabbix-server
-      ZBX_SERVERACTIVE: zabbix-server:10051
-      ZBX_TIMEOUT: 30
-      ZBX_LISTENPORT: 10050
-      ZBX_LISTENIP: "0.0.0.0"
-    depends_on:
-      zabbix-server:
-        condition: service_healthy
-    ports:
-      - "${ZABBIX_AGENT_PORT:-10050}:10050"
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-    networks:
-      - monitor
-    healthcheck:
-      test: ["CMD-SHELL", "ps aux | grep '[z]abbix_agentd' | wc -l | grep -q '^[1-9]' || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-
-  zabbix-config:
-    image: alpine:latest
-    container_name: zabbix-config
-    depends_on:
-      zabbix-web:
-        condition: service_started
-      zabbix-server:
-        condition: service_healthy
-      zabbix-agent:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
-    volumes:
-      - ./zabbix-auto-config.sh:/zabbix-auto-config.sh:ro
-      - ./feishu-robot.py:/feishu-robot.py:ro
-      - ./hillstone-zabbix7.0-UnofficialV1.1.yaml:/hillstone-zabbix7.0-UnofficialV1.1.yaml:ro
-      - ./watchguard-firewall-zabbix7.0-template.yaml:/watchguard-firewall-zabbix7.0-template.yaml:ro
-    networks:
-      - monitor
-    restart: "no"
-    environment:
-      TZ: Asia/Shanghai
-      SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
-      SWITCH_DISCOVERY_RANGE: "${SWITCH_DISCOVERY_RANGE:-192.168.10.1-100,192.168.10.254}"
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        apk add --no-cache curl jq bash python3 py3-requests mysql-client
-        echo "Waiting for Zabbix services to be ready..."
-        sleep 60
-        echo "Checking Zabbix API availability..."
-        for i in $$(seq 1 60); do
-          if curl -s -f http://zabbix-web:8080/api_jsonrpc.php > /dev/null 2>&1; then
-            echo "Zabbix API is available"
-            break
-          fi
-          echo "Waiting for Zabbix API... (attempt $$i/60)"
-          sleep 5
-        done
-        echo "Ensuring database is fully initialized..."
-        sleep 30
-        # Immediate fix for Agent connection issues
-        for i in $$(seq 1 30); do
-          AUTH_TOKEN=$$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
-            -H "Content-Type: application/json" \
-            -d '{"jsonrpc":"2.0","method":"user.login","params":{"username":"Admin","password":"zabbix"},"id":1}' 2>/dev/null | \
-            jq -r '.result' 2>/dev/null)
-          if [ "$$AUTH_TOKEN" != "null" ] && [ -n "$$AUTH_TOKEN" ] && [ "$$AUTH_TOKEN" != "" ]; then
-            echo "Successfully authenticated with Zabbix API"
-            break
-          fi
-          sleep 5
-        done
-        if [ "$$AUTH_TOKEN" != "null" ] && [ -n "$$AUTH_TOKEN" ]; then
-          HOSTS_WITH_LOCALHOST=$$(curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
-            -H "Content-Type: application/json" \
-            -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.get\",\"params\":{\"selectInterfaces\":\"extend\",\"filter\":{\"status\":\"0\"}},\"auth\":\"$$AUTH_TOKEN\",\"id\":1}" | \
-            jq -r '.result[] | select(.interfaces[]?.ip == "127.0.0.1") | .hostid')
-          if [ -n "$$HOSTS_WITH_LOCALHOST" ]; then
-            for hostid in $$HOSTS_WITH_LOCALHOST; do
-              curl -s -X POST http://zabbix-web:8080/api_jsonrpc.php \
-                -H "Content-Type: application/json" \
-                -d "{\"jsonrpc\":\"2.0\",\"method\":\"host.update\",\"params\":{\"hostid\":\"$$hostid\",\"interfaces\":[{\"type\":1,\"main\":1,\"useip\":0,\"dns\":\"zabbix-agent\",\"port\":\"10050\"}]},\"auth\":\"$$AUTH_TOKEN\",\"id\":1}" > /dev/null
-              echo "Fixed host $$hostid interface to use zabbix-agent"
-            done
-          fi
-        fi
-        echo "Starting full Zabbix configuration..."
-        sleep 30
-        for attempt in $$(seq 1 3); do
-          echo "Running zabbix-auto-config.sh (attempt $$attempt/3)..."
-          if bash /zabbix-auto-config.sh; then
-            echo "Configuration completed successfully"
-            exit 0
-          else
-            sleep 30
-          fi
-        done
-        exit 1
 
   prometheus:
     image: prom/prometheus:latest
@@ -390,6 +165,7 @@ services:
       TZ: Asia/Shanghai
       FEISHU_BRIDGE_PORT: "5005"
       FEISHU_ROBOT_TOKEN: "${FEISHU_ROBOT_TOKEN:-}"
+      LIBRENMS_FEISHU_TOKEN: "${LIBRENMS_FEISHU_TOKEN:-}"
       FEISHU_BRIDGE_DRY_RUN: "${FEISHU_BRIDGE_DRY_RUN:-false}"
     command: ["python", "/app/bridge.py"]
     networks:
@@ -755,6 +531,9 @@ services:
       LIBRENMS_ADMIN_PASSWORD: "${LIBRENMS_ADMIN_PASSWORD:-librenms123}"
       LIBRENMS_ADMIN_EMAIL: "${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
       LIBRENMS_OWN_HOSTNAME: "${SERVER_IP:-}"
+      FIREWALL_DISCOVERY_RANGE: "${FIREWALL_DISCOVERY_RANGE:-}"
+      FIREWALL_SNMP_COMMUNITY: "${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
+      LIBRENMS_FEISHU_TOKEN: "${LIBRENMS_FEISHU_TOKEN:-}"
     entrypoint:
       - /bin/sh
       - -c
@@ -983,7 +762,5 @@ volumes:
   topology-data:
   grafana-data:
   grafana-provisioning-rendered:
-  mysql-data:
-  zabbix-server-data:
   librenms-db-data:
   librenms-data:
