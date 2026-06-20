@@ -98,11 +98,11 @@ def build_librenms_card(payload):
     if recovered:
         color = "green"
         emoji = "✅"
-        state_text = "上线"
+        state_text = "UP"
     else:
         color = SEVERITY_COLOR.get(severity, "yellow")
         emoji = "❌" if severity in ("critical", "disaster") else "🔴"
-        state_text = "下线"
+        state_text = "DOWN"
 
     title = f"#{uid}" if uid and uid != "0" else rule_name
 
