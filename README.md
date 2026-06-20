@@ -76,9 +76,9 @@ sudo mkdir -p /etc/docker
 sudo tee /etc/docker/daemon.json <<'EOF'
 {
   "registry-mirrors": [
+    "https://docker.m.daocloud.io",
     "https://dockerhub.icu",
-    "https://docker.nju.edu.cn",
-    "https://docker.1panel.live"
+    "https://docker.nju.edu.cn"
   ]
 }
 EOF
@@ -86,13 +86,12 @@ sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
 
-> 镜像节点会不定期限流或屏蔽某些镜像（如 DaoCloud 对 `librenms/librenms` 返回 403），
-> 遇到单个镜像拉不下来可单独手动拉再打 tag：
+> DaoCloud 速度快但对 `librenms/librenms` 返回 403，需要单独手动拉后再跑 `./deploy.sh`：
 > ```bash
-> docker pull docker.1panel.live/librenms/librenms:latest
-> docker tag docker.1panel.live/librenms/librenms:latest librenms/librenms:latest
+> docker pull dockerhub.icu/librenms/librenms:latest
+> docker tag dockerhub.icu/librenms/librenms:latest librenms/librenms:latest
 > ```
-> 然后再跑 `./deploy.sh`，已拉好的镜像会跳过。国外服务器不需要配镜像加速。
+> 已拉好的镜像 `./deploy.sh` 会跳过。国外服务器不需要配镜像加速。
 
 ## 二、部署 checklist
 
