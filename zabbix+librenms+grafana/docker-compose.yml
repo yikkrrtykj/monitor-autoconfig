@@ -139,7 +139,7 @@ services:
       FEISHU_BRIDGE_DRY_RUN: "${FEISHU_BRIDGE_DRY_RUN:-false}"
       LIBRENMS_URL: "http://librenms:8000"
       LIBRENMS_API_TOKEN: "${LIBRENMS_API_TOKEN:-}"
-      SWITCH_WATCH_INTERVAL: "${SWITCH_WATCH_INTERVAL:-120}"
+      SWITCH_WATCH_INTERVAL: "${SWITCH_WATCH_INTERVAL:-30}"
     command: ["python", "/app/bridge.py"]
     networks:
       - monitor
