@@ -94,9 +94,6 @@ services:
       SERVER_PING: "${SERVER_PING:-}"
       ISP_PING: "${ISP_PING:-}"
       BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
-      BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
-      BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
-      ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
       FIREWALL_SNMP_TARGETS: "${FIREWALL_SNMP_TARGETS:-}"
       SNMP_AUTH: "${SNMP_AUTH:-global}"
       PROMETHEUS_SCRAPE_INTERVAL: "${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
@@ -109,7 +106,6 @@ services:
       - player-targets-data:/etc/prometheus/targets
       - topology-data:/etc/prometheus/targets/topology
       - ./prometheus-gen-config.sh:/etc/prometheus/prometheus-gen-config.sh:ro
-      - ./prometheus-alert-rules.yml:/etc/prometheus/prometheus-alert-rules.yml:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - /bin/sh
@@ -128,32 +124,6 @@ services:
       retries: 3
       start_period: 30s
 
-  alertmanager:
-    image: prom/alertmanager:latest
-    container_name: alertmanager
-    restart: unless-stopped
-    volumes:
-      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - alertmanager-data:/alertmanager
-      - /etc/localtime:/etc/localtime:ro
-    command:
-      - --config.file=/etc/alertmanager/alertmanager.yml
-      - --storage.path=/alertmanager
-      - --web.listen-address=:9093
-    ports:
-      - "${ALERTMANAGER_BIND:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
-    depends_on:
-      alertmanager-feishu-bridge:
-        condition: service_started
-    networks:
-      - monitor
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9093/-/healthy || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-
   alertmanager-feishu-bridge:
     image: python:3.12-slim
     container_name: alertmanager-feishu-bridge
@@ -165,7 +135,6 @@ services:
       TZ: Asia/Shanghai
       FEISHU_BRIDGE_PORT: "5005"
       FEISHU_ROBOT_TOKEN: "${FEISHU_ROBOT_TOKEN:-}"
-      LIBRENMS_FEISHU_TOKEN: "${LIBRENMS_FEISHU_TOKEN:-}"
       FEISHU_BRIDGE_DRY_RUN: "${FEISHU_BRIDGE_DRY_RUN:-false}"
     command: ["python", "/app/bridge.py"]
     networks:
@@ -533,7 +502,12 @@ services:
       LIBRENMS_OWN_HOSTNAME: "${SERVER_IP:-}"
       FIREWALL_DISCOVERY_RANGE: "${FIREWALL_DISCOVERY_RANGE:-}"
       FIREWALL_SNMP_COMMUNITY: "${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
-      LIBRENMS_FEISHU_TOKEN: "${LIBRENMS_FEISHU_TOKEN:-}"
+      FEISHU_ROBOT_TOKEN: "${FEISHU_ROBOT_TOKEN:-}"
+      ISP_PING: "${ISP_PING:-}"
+      FIREWALL_PING: "${FIREWALL_PING:-}"
+      SERVER_PING: "${SERVER_PING:-}"
+      ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
+      FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       LIBRENMS_API_TOKEN: "${LIBRENMS_API_TOKEN:-}"
     entrypoint:
       - /bin/sh
@@ -712,10 +686,7 @@ services:
     command: ["-config.file=/etc/loki/loki-config.yml"]
     volumes:
       - ./loki-config.yml:/etc/loki/loki-config.yml:ro
-      - ./loki-rules:/etc/loki/rules/fake:ro
       - loki-data:/loki
-    depends_on:
-      - alertmanager
     networks:
       - monitor
 
@@ -758,7 +729,6 @@ volumes:
   syslog-spool:
   promtail-data:
   prometheus-data:
-  alertmanager-data:
   player-targets-data:
   topology-data:
   grafana-data:
