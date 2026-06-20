@@ -45,13 +45,24 @@ def log(message):
 
 
 def build_librenms_card(payload):
-    state = payload.get("state", 1)
+    # LibreNMS 的 API transport 走 SimpleTemplate（只支持扁平 {{ key }} 替换，
+    # 不支持循环），所以 api-body 模板发来的是扁平标量字段。为兼容历史的
+    # devices[] 嵌套格式，扁平字段缺失时回退取 devices[0]。
+    state = str(payload.get("state", "1"))
     rule_name = payload.get("name") or payload.get("rule") or "告警"
     severity = (payload.get("severity") or "warning").lower()
-    devices = payload.get("devices") or []
-    faults = payload.get("faults") or {}
 
-    if state == 0:
+    hostname = payload.get("hostname") or payload.get("sysName") or ""
+    ip = payload.get("ip") or ""
+    if not hostname and not ip:
+        devices = payload.get("devices") or []
+        if devices:
+            first = devices[0]
+            hostname = first.get("hostname") or first.get("sysName") or ""
+            ip = first.get("ip") or ""
+
+    recovered = state == "0"
+    if recovered:
         color = "green"
         emoji = "✅"
         status_text = "已恢复"
@@ -60,28 +71,10 @@ def build_librenms_card(payload):
         emoji = "🔴" if severity in ("critical", "disaster") else "🟡"
         status_text = "触发"
 
-    dev_count = len(devices)
-    first = devices[0] if devices else {}
-    hostname = first.get("hostname") or first.get("sysName") or ""
-    ip = first.get("ip") or ""
-    suffix = f" 等{dev_count}台" if dev_count > 1 else ""
     dev_display = f"{hostname}（{ip}）" if hostname and ip and hostname != ip else hostname or ip or "?"
-    title = f"{emoji} {rule_name} · {dev_display}{suffix}"[:148]
+    title = f"{emoji} {rule_name} · {dev_display}"[:148]
 
-    lines = []
-    for dev in devices:
-        h = dev.get("hostname") or dev.get("sysName") or ""
-        i = dev.get("ip") or ""
-        d = f"{h}（{i}）" if h and i and h != i else h or i or "?"
-        lines.append(f"🖥 设备：{d}")
-        if state != 0 and faults:
-            dev_id = str(dev.get("device_id") or "")
-            for fault in (faults.get(dev_id) or []):
-                msg = fault.get("string") or fault.get("value") or ""
-                if msg:
-                    lines.append(f"  📋 {msg}")
-    if not lines:
-        lines = [f"🖥 {status_text}"]
+    lines = [f"🖥 设备：{dev_display}", f"📊 状态：{status_text}"]
 
     ts = payload.get("timestamp") or ""
     if ts:
