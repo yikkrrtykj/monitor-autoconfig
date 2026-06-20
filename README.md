@@ -70,10 +70,22 @@ sudo usermod -aG docker $USER && newgrp docker
 
 ### 1. 拉代码
 
+**国外服务器**（直连 GitHub）：
+
 ```bash
 git clone https://github.com/yikkrrtykj/monitor-autoconfig.git
 cd monitor-autoconfig/zabbix+librenms+grafana
 ```
+
+**国内服务器**（GitHub 经常连不上，通过代理拉）：
+
+```bash
+git clone https://ghproxy.com/https://github.com/yikkrrtykj/monitor-autoconfig.git
+cd monitor-autoconfig/zabbix+librenms+grafana
+```
+
+> `ghproxy.com` 是国内免费加速节点，节点偶尔维护时换 `mirror.ghproxy.com`。
+> 如果代理也不稳，可在 [gitee.com](https://gitee.com) 把本仓库导入并从 Gitee 地址 clone。
 
 ### 2. 写 `.env`
 
