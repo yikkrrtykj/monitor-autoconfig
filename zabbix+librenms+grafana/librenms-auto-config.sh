@@ -502,6 +502,8 @@ if [ -z "$API_TOKEN" ]; then
   echo "  Fix: set LIBRENMS_API_TOKEN in .env, then rerun: docker compose up -d --force-recreate librenms-config"
 else
   echo "  API Token ready"
+  # 写到共享 volume，让 alertmanager-feishu-bridge 的 device watcher 读取（免手动配置）
+  echo "$API_TOKEN" > /data/librenms-api-token 2>/dev/null || true
 fi
 
 expand_targets() {
