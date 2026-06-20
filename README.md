@@ -66,32 +66,33 @@ sudo usermod -aG docker $USER && newgrp docker
 **国外服务器**（官方源）：把上面的 repo 换成
 `https://download.docker.com/linux/centos/docker-ce.repo`，其余命令不变。
 
-### 1.5 配置 Docker Hub 镜像加速（国内必做）
+### 1.5 解决 Docker Hub 国内拉取失败（国内必做）
 
-Docker Hub 在国内被墙，`docker pull` / `./deploy.sh` 会报 `i/o timeout`。
-Docker 装好后，配镜像加速再继续：
+Docker Hub 在国内被墙，`./deploy.sh` 会报 `i/o timeout`。推荐用本机 Clash 代理：
+
+**方法：让 Docker daemon 走代理**（Clash 开启「允许局域网」，把 `电脑IP:端口` 改成实际值）
 
 ```bash
-sudo mkdir -p /etc/docker
+# 清掉 registry-mirrors（用代理不需要）
 sudo tee /etc/docker/daemon.json <<'EOF'
-{
-  "registry-mirrors": [
-    "https://docker.m.daocloud.io",
-    "https://dockerhub.icu",
-    "https://docker.nju.edu.cn"
-  ]
-}
+{}
 EOF
+
+# 配 Docker daemon 走代理
+sudo mkdir -p /etc/systemd/system/docker.service.d
+sudo tee /etc/systemd/system/docker.service.d/http-proxy.conf <<'EOF'
+[Service]
+Environment="HTTP_PROXY=http://电脑IP:端口"
+Environment="HTTPS_PROXY=http://电脑IP:端口"
+Environment="NO_PROXY=localhost,127.0.0.1"
+EOF
+
 sudo systemctl daemon-reload
 sudo systemctl restart docker
+docker info | grep -i proxy   # 验证代理生效
 ```
 
-> DaoCloud 速度快但对 `librenms/librenms` 返回 403，需要单独手动拉后再跑 `./deploy.sh`：
-> ```bash
-> docker pull dockerhub.icu/librenms/librenms:latest
-> docker tag dockerhub.icu/librenms/librenms:latest librenms/librenms:latest
-> ```
-> 已拉好的镜像 `./deploy.sh` 会跳过。国外服务器不需要配镜像加速。
+> 用完后清代理：`sudo rm /etc/systemd/system/docker.service.d/http-proxy.conf && sudo systemctl daemon-reload && sudo systemctl restart docker`
 
 ## 二、部署 checklist
 
