@@ -29,7 +29,7 @@ jobs:
           python-version: "3.11"
       - run: |
           python -m py_compile zabbix+librenms+grafana/generate-player-targets.py
-          python -m py_compile zabbix+librenms+grafana/feishu-robot.py
+          python -m py_compile zabbix+librenms+grafana/alertmanager-feishu-bridge.py
 
   pytest:
     name: pytest
