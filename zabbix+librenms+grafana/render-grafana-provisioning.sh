@@ -12,10 +12,11 @@ is_true() {
 }
 
 csv_to_regex() {
-  printf '%s' "$1" | jq -Rr '
+  printf '%s' "${1:-}" | jq -Rr '
     split(",")
     | map(gsub("^\\s+|\\s+$"; ""))
     | map(select(length > 0))
+    | map(gsub("(?<c>[\\\\.+*?^$()\\[\\]{}|])"; "\\\(.c)"))
     | join("|")
   '
 }

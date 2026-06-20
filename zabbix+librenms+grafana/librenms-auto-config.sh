@@ -509,11 +509,10 @@ fi
 expand_targets() {
   old_ifs=$IFS
   IFS=','
-  for target in $DISCOVERY_TARGETS; do
+  for target in $1; do
     IFS=$old_ifs
     target=$(echo "$target" | tr -d '[:space:]')
     [ -z "$target" ] && continue
-
     case "$target" in
       *-*)
         start_ip=${target%-*}
@@ -521,9 +520,10 @@ expand_targets() {
         prefix=${start_ip%.*}
         start_octet=${start_ip##*.}
         end_octet=${end_part##*.}
-
-        for octet in $(seq "$start_octet" "$end_octet"); do
+        octet=$start_octet
+        while [ "$octet" -le "$end_octet" ]; do
           echo "$prefix.$octet"
+          octet=$((octet + 1))
         done
         ;;
       *)
@@ -622,7 +622,7 @@ echo "  SNMP Community: $SNMP_COMMUNITY"
 echo "  SNMP Probe: timeout ${SNMP_TIMEOUT}s, retries $SNMP_RETRIES"
 echo ""
 
-expand_targets | while read -r ip; do
+expand_targets "$DISCOVERY_TARGETS" | while read -r ip; do
   [ -z "$ip" ] && continue
   name=$(device_name "$ip")
 
