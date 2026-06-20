@@ -98,11 +98,11 @@ def build_librenms_card(payload):
     if recovered:
         color = "green"
         emoji = "✅"
-        state_text = "UP"
+        state_text = "上线"
     else:
         color = SEVERITY_COLOR.get(severity, "yellow")
         emoji = "❌" if severity in ("critical", "disaster") else "🔴"
-        state_text = "DOWN"
+        state_text = "下线"
 
     title = f"#{uid}" if uid and uid != "0" else rule_name
 
@@ -110,18 +110,15 @@ def build_librenms_card(payload):
     ip_str = f" ({ip})" if ip else ""
     lines = [f"{emoji} {dev_str}{ip_str} {state_text}"]
 
-    if location:
-        lines.append(location)
-
     if recovered:
         if elapsed and elapsed not in ("0s",):
-            lines.append(f"Offline for {elapsed}")
+            lines.append(f"离线时长：{elapsed}")
     else:
         if ts:
             lines.append(ts)
 
     if elapsed and elapsed not in ("0s",):
-        lines.append(f"alert took {elapsed}")
+        lines.append(f"告警耗时：{elapsed}")
 
     return _make_card(title, rule_name, color, "\n".join(lines))
 
