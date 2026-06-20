@@ -469,24 +469,30 @@ echo "[3/5] Creating API token..."
 API_TOKEN="$LIBRENMS_API_TOKEN"
 
 if [ -z "$API_TOKEN" ]; then
-  # 尝试通过 CLI 创建 token（新版 LibreNMS 推荐方式）
-  API_TOKEN=$(run_as_librenms php /opt/librenms/lnms user:api-token \
-    --user="$LIBRENMS_ADMIN_USER" --description="autoconfig" 2>/dev/null | \
-    grep -oE '[a-f0-9]{64}' | head -1 || true)
+  # 直接写数据库——不依赖 LibreNMS 版本，只要容器能访问 DB 就行
+  _db_host="${DB_HOST:-librenms-db}"
+  _db_user="${DB_USER:-librenms}"
+  _db_pass="${DB_PASSWORD:-${DB_PASS:-librenms}}"
+  _db_name="${DB_NAME:-librenms}"
+
+  _token=$(php -r "echo bin2hex(random_bytes(32));" 2>/dev/null || true)
+  _token_hash=$(php -r "echo hash('sha256', '$_token');" 2>/dev/null || true)
+  _user_id=$(mysql -h "$_db_host" -u "$_db_user" -p"$_db_pass" "$_db_name" \
+    -sN -e "SELECT user_id FROM users WHERE username='${LIBRENMS_ADMIN_USER}' LIMIT 1" 2>/dev/null || true)
+
+  if [ -n "$_token" ] && [ -n "$_token_hash" ] && [ -n "$_user_id" ]; then
+    mysql -h "$_db_host" -u "$_db_user" -p"$_db_pass" "$_db_name" -e \
+      "INSERT INTO api_tokens (user_id, token_hash, description, disabled)
+       VALUES ('$_user_id', '$_token_hash', 'autoconfig', 0)
+       ON DUPLICATE KEY UPDATE token_hash='$_token_hash'" 2>/dev/null && \
+      API_TOKEN="$_token" && echo "  API Token created via DB"
+  fi
 fi
 
 if [ -z "$API_TOKEN" ]; then
-  # 旧版 legacy-token 接口备选
-  API_TOKEN=$(curl -s -X POST "$LIBRENMS_URL/api/v0/auth/legacy-token" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"$LIBRENMS_ADMIN_USER\",\"password\":\"$LIBRENMS_ADMIN_PASSWORD\"}" 2>/dev/null | \
-    python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
-fi
-
-if [ -z "$API_TOKEN" ]; then
-  echo "  WARNING: Could not obtain API token."
+  echo "  WARNING: Could not create API token."
   echo "  Feishu transport will not be configured automatically."
-  echo "  Fix: set LIBRENMS_API_TOKEN in .env (LibreNMS → My Account → API Access → Create Token)"
+  echo "  Fix: set LIBRENMS_API_TOKEN in .env, then rerun: docker compose up -d --force-recreate librenms-config"
 else
   echo "  API Token ready"
 fi
