@@ -484,15 +484,14 @@ if [ -z "$API_TOKEN" ]; then
   _db_name="${DB_NAME:-librenms}"
 
   _token=$(php -r "echo bin2hex(random_bytes(32));" 2>/dev/null || true)
-  _token_hash=$(php -r "echo hash('sha256', '$_token');" 2>/dev/null || true)
   _user_id=$(mysql -h "$_db_host" -u "$_db_user" -p"$_db_pass" "$_db_name" \
     -sN -e "SELECT user_id FROM users WHERE username='${LIBRENMS_ADMIN_USER}' LIMIT 1" 2>/dev/null || true)
 
-  if [ -n "$_token" ] && [ -n "$_token_hash" ] && [ -n "$_user_id" ]; then
+  if [ -n "$_token" ] && [ -n "$_user_id" ]; then
     mysql -h "$_db_host" -u "$_db_user" -p"$_db_pass" "$_db_name" -e \
       "INSERT INTO api_tokens (user_id, token_hash, description, disabled)
-       VALUES ('$_user_id', '$_token_hash', 'autoconfig', 0)
-       ON DUPLICATE KEY UPDATE token_hash='$_token_hash'" 2>/dev/null && \
+       VALUES ('$_user_id', '$_token', 'autoconfig', 0)
+       ON DUPLICATE KEY UPDATE token_hash='$_token'" 2>/dev/null && \
       API_TOKEN="$_token" && echo "  API Token created via DB"
   fi
 fi
@@ -667,12 +666,17 @@ except Exception:
     return 0
   fi
 
-  curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
+  _resp=$(curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "$rule_payload" > /dev/null 2>&1 \
-    && echo "  Alert rule: $rule_name - created" \
-    || echo "  Alert rule: $rule_name - failed"
+    -d "$rule_payload" 2>/dev/null)
+  _status=$(echo "$_resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status',''))" 2>/dev/null || echo "")
+  if [ "$_status" = "ok" ]; then
+    echo "  Alert rule: $rule_name - created"
+  else
+    _msg=$(echo "$_resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message',''))" 2>/dev/null || echo "$_resp")
+    echo "  Alert rule: $rule_name - failed: $_msg"
+  fi
 }
 
 if [ -n "$API_TOKEN" ]; then
@@ -747,7 +751,7 @@ except Exception:
   fi
 
   # LibreNMS API transport: POST to alertmanager-feishu-bridge /librenms endpoint
-  curl -s -X POST "$LIBRENMS_URL/api/v0/alert-transports" \
+  _ft_resp=$(curl -s -X POST "$LIBRENMS_URL/api/v0/alert-transports" \
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
     -d "{
@@ -761,9 +765,15 @@ except Exception:
         \"headers\": \"\",
         \"body\": \"\"
       }
-    }" > /dev/null 2>&1 \
-    && echo "  Feishu transport created" \
-    || echo "  WARNING: Could not create Feishu transport (may need to add manually via web UI)"
+    }" 2>/dev/null)
+  _ft_status=$(echo "$_ft_resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status',''))" 2>/dev/null || echo "")
+  if [ "$_ft_status" = "ok" ]; then
+    echo "  Feishu transport created"
+  else
+    _ft_msg=$(echo "$_ft_resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message',''))" 2>/dev/null || echo "$_ft_resp")
+    echo "  WARNING: Could not create Feishu transport: $_ft_msg"
+    echo "  (May need to add manually via LibreNMS web UI: Alerts → Alert Transports)"
+  fi
 }
 
 configure_feishu_transport
