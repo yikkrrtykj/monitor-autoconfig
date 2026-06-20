@@ -771,7 +771,7 @@ try {
     $config = json_encode([
         'api-url'    => 'http://alertmanager-feishu-bridge:5005/librenms',
         'api-method' => 'POST',
-        'api-body'   => '{"state":"{{ state }}","name":"{{ name }}","severity":"{{ severity }}","hostname":"{{ hostname }}","sysName":"{{ sysName }}","ip":"{{ ip }}","timestamp":"{{ timestamp }}","uid":"{{ uid }}","elapsed":"{{ elapsed }}"}',
+        'api-body'   => '{"state":"{{ state }}","name":"{{ name }}","severity":"{{ severity }}","hostname":"{{ hostname }}","sysName":"{{ sysName }}","ip":"{{ ip }}","timestamp":"{{ timestamp }}","uid":"{{ uid }}","elapsed":"{{ elapsed }}","location":"{{ location }}"}',
     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
     if ($transportId) {

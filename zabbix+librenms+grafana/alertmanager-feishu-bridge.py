@@ -76,9 +76,6 @@ def fetch_librenms_devices(token):
 
 
 def build_librenms_card(payload):
-    # LibreNMS 的 API transport 走 SimpleTemplate（只支持扁平 {{ key }} 替换，
-    # 不支持循环），所以 api-body 模板发来的是扁平标量字段。为兼容历史的
-    # devices[] 嵌套格式，扁平字段缺失时回退取 devices[0]。
     state = str(payload.get("state", "1"))
     rule_name = payload.get("name") or payload.get("rule") or "告警"
     severity = (payload.get("severity") or "warning").lower()
@@ -92,30 +89,41 @@ def build_librenms_card(payload):
             hostname = first.get("hostname") or first.get("sysName") or ""
             ip = first.get("ip") or ""
 
+    uid = str(payload.get("uid") or "").strip()
+    elapsed = str(payload.get("elapsed") or "").strip()
+    location = str(payload.get("location") or "").strip()
+    ts = payload.get("timestamp") or ""
+
     recovered = state == "0"
     if recovered:
         color = "green"
         emoji = "✅"
-        status_text = "已恢复"
+        state_text = "UP"
     else:
         color = SEVERITY_COLOR.get(severity, "yellow")
-        emoji = "🔴" if severity in ("critical", "disaster") else "🟡"
-        status_text = "触发"
+        emoji = "❌" if severity in ("critical", "disaster") else "🔴"
+        state_text = "DOWN"
 
-    dev_display = f"{hostname}（{ip}）" if hostname and ip and hostname != ip else hostname or ip or "?"
-    title = f"{emoji} {rule_name} · {dev_display}"[:148]
+    title = f"#{uid}" if uid and uid != "0" else rule_name
 
-    elapsed = str(payload.get("elapsed") or "").strip()
+    dev_str = hostname or ip or "?"
+    ip_str = f" ({ip})" if ip else ""
+    lines = [f"{emoji} {dev_str}{ip_str} {state_text}"]
 
-    lines = [f"🖥 设备：{dev_display}"]
-    ts = payload.get("timestamp") or ""
-    if ts:
-        lines.append(f"⏰ 时间：{ts}")
-    if elapsed and elapsed not in ("0s", ""):
-        label = "离线时长" if recovered else "触发耗时"
-        lines.append(f"⏱ {label}：{elapsed}")
+    if location:
+        lines.append(location)
 
-    return _make_card(title, "LibreNMS 告警", color, "\n".join(lines))
+    if recovered:
+        if elapsed and elapsed not in ("0s",):
+            lines.append(f"Offline for {elapsed}")
+    else:
+        if ts:
+            lines.append(ts)
+
+    if elapsed and elapsed not in ("0s",):
+        lines.append(f"alert took {elapsed}")
+
+    return _make_card(title, rule_name, color, "\n".join(lines))
 
 
 def build_device_online_card(device):
