@@ -12,6 +12,9 @@ SNMP_RETRIES="${SNMP_RETRIES:-0}"
 CORE_IP="${LIBRENMS_CORE_IP:-192.168.10.254}"
 STAGE_START_OCTET="${LIBRENMS_STAGE_START_OCTET:-11}"
 DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
+FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"
+FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
+LIBRENMS_FEISHU_TOKEN="${LIBRENMS_FEISHU_TOKEN:-}"
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
 LIBRENMS_ADMIN_EMAIL="${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
@@ -419,6 +422,37 @@ configure_runtime() {
 
   run_lnms config:set service_poller_workers "${LIBRENMS_POLLER_WORKERS:-4}" >/dev/null 2>&1 || true
   run_lnms config:set service_discovery_workers "${LIBRENMS_DISCOVERY_WORKERS:-2}" >/dev/null 2>&1 || true
+
+  # --- 持续自动发现：网段扫描 ---
+  # 把 "192.168.10.1-100,192.168.10.254" 和防火墙范围转成 CIDR 列表写入 nets[]
+  configure_nets() {
+    idx=0
+    # 先清掉旧的 nets 配置（忽略报错）
+    run_lnms config:set nets '[]' >/dev/null 2>&1 || true
+
+    # 从 IP 范围提取 /24 网段（取第一个 IP 的前三段）
+    for target in $(echo "${DISCOVERY_TARGETS},${FIREWALL_DISCOVERY_RANGE}" | tr ',' '\n'); do
+      target=$(echo "$target" | tr -d '[:space:]')
+      [ -z "$target" ] && continue
+      base_ip=${target%%-*}      # 取 range 起始 IP，或单 IP
+      base_ip=${base_ip%%.*.*.*} # fallback: 取第一个字段（不生效，用下面的方法）
+      # 取前三段构成 /24
+      prefix=$(echo "$base_ip" | sed 's/\.[0-9]*$//')
+      cidr="${prefix}.0/24"
+      run_lnms config:set "nets.${idx}" "$cidr" >/dev/null 2>&1 && \
+        echo "  nets[$idx]: $cidr" || \
+        echo "  WARNING: Could not set nets[$idx]=$cidr"
+      idx=$((idx + 1))
+    done
+  }
+  configure_nets
+
+  # --- 开启 CDP/LLDP 邻居自动发现（从已知设备爬全网） ---
+  run_lnms config:set autodiscovery.xdp true >/dev/null 2>&1 && \
+    echo "  autodiscovery.xdp (CDP/LLDP): enabled" || \
+    echo "  WARNING: Could not enable xdp autodiscovery"
+  run_lnms config:set autodiscovery.nets true >/dev/null 2>&1 && \
+    echo "  autodiscovery.nets: enabled" || true
 }
 
 echo ""
@@ -608,6 +642,59 @@ if [ -n "$API_TOKEN" ]; then
   }'
 fi
 
+# Configure Feishu alert transport
+echo ""
+echo "[6/6] Setting up Feishu alert transport..."
+
+configure_feishu_transport() {
+  [ -z "$API_TOKEN" ] && return 0
+
+  # Check if transport already exists
+  existing_transports=$(curl -s -H "X-Auth-Token: $API_TOKEN" \
+    "$LIBRENMS_URL/api/v0/alert-transports" 2>/dev/null || echo '{"result":[]}')
+
+  feishu_exists=$(echo "$existing_transports" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    items = data if isinstance(data, list) else data.get('result', [])
+    print('yes' if any(t.get('transport_name') == 'Feishu' for t in items) else 'no')
+except Exception:
+    print('no')
+" 2>/dev/null)
+
+  if [ "$feishu_exists" = "yes" ]; then
+    echo "  Feishu transport already exists, skipping"
+    return 0
+  fi
+
+  if [ -z "$LIBRENMS_FEISHU_TOKEN" ]; then
+    echo "  LIBRENMS_FEISHU_TOKEN not set, skipping Feishu transport"
+    return 0
+  fi
+
+  # LibreNMS API transport: POST to alertmanager-feishu-bridge /librenms endpoint
+  curl -s -X POST "$LIBRENMS_URL/api/v0/alert-transports" \
+    -H "X-Auth-Token: $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"transport_name\": \"Feishu\",
+      \"transport_type\": \"api\",
+      \"is_default\": false,
+      \"transport_config\": {
+        \"url\": \"http://alertmanager-feishu-bridge:5005/librenms\",
+        \"method\": \"POST\",
+        \"content-type\": \"application/json\",
+        \"headers\": \"\",
+        \"body\": \"\"
+      }
+    }" > /dev/null 2>&1 \
+    && echo "  Feishu transport created" \
+    || echo "  WARNING: Could not create Feishu transport (may need to add manually via web UI)"
+}
+
+configure_feishu_transport
+
 echo ""
 echo "============================================"
 echo "  LibreNMS Discovery Complete!"
@@ -623,7 +710,11 @@ echo "  SNMP Community:    $SNMP_COMMUNITY"
 echo ""
 echo "  下一步:"
 echo "  1. 登录 LibreNMS 修改默认密码"
-echo "  2. 确认发现到的设备已开始采集"
-echo "  3. 添加 UniFi AP 或调整 LIBRENMS_DISCOVERY_TARGETS"
-echo "  4. 配置通知渠道 (飞书/邮件等)"
+echo "  2. 确认发现到的设备已开始采集（约 5 分钟后自动发现）"
+echo "  3. 添加 UniFi AP 或调整 LIBRENMS_DISCOVERY_TARGETS / FIREWALL_DISCOVERY_RANGE"
+if [ -z "$LIBRENMS_FEISHU_TOKEN" ]; then
+  echo "  4. 填写 LIBRENMS_FEISHU_TOKEN 后重启以启用飞书告警推送"
+else
+  echo "  4. 飞书告警已配置 → alertmanager-feishu-bridge:5005/librenms"
+fi
 echo ""
