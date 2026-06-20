@@ -16,7 +16,7 @@ global.window = {
 };
 
 const { parseIspBandwidthConfig } = require(path.resolve(__dirname, "../bigscreen/utils.js"));
-const { ispChartMaxBps } = require(path.resolve(__dirname, "../bigscreen/api.js"));
+const { ispChartMaxBps, getConfiguredIspNames, getIspNames } = require(path.resolve(__dirname, "../bigscreen/api.js"));
 const {
   buildTopologyLayers,
   topologyLayout,
@@ -30,6 +30,16 @@ window.BIGSCREEN_CONFIG.ispMaxBandwidthMbps = "ISP1:500/300,ISP2:800";
 assert.strictEqual(ispChartMaxBps("ISP1"), 500 * 1000 * 1000);
 assert.strictEqual(ispChartMaxBps("ISP2"), 800 * 1000 * 1000);
 window.BIGSCREEN_CONFIG.ispMaxBandwidthMbps = "ISP1:500,ISP2:500,ISP3:300";
+
+// ---- ISP name resolution: empty names must mean "pure auto-discover", not the
+//      ISP1,ISP2 default, so portable setups don't grow empty placeholder panels ----
+window.BIGSCREEN_CONFIG.ispNames = "";
+assert.deepStrictEqual(getConfiguredIspNames(), [], "empty ISP names = no explicit names (auto-discover only)");
+assert.deepStrictEqual(getIspNames(), ["ISP1", "ISP2"], "static/fallback path still defaults to ISP1,ISP2 when unset");
+window.BIGSCREEN_CONFIG.ispNames = "telcom,unicom";
+assert.deepStrictEqual(getConfiguredIspNames(), ["telcom", "unicom"], "explicit names are used verbatim");
+assert.deepStrictEqual(getIspNames(), ["telcom", "unicom"], "explicit names override the default");
+window.BIGSCREEN_CONFIG.ispNames = "ISP1,ISP2";
 
 const target = (job, displayName, targetIp, success = true, latency = 0.002) => ({
   job,
