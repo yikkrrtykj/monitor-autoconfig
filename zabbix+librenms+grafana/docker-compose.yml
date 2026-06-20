@@ -529,9 +529,9 @@ services:
     image: alpine:latest
     container_name: grafana-provisioning-render
     environment:
-      BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
+      BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-}"
       BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
-      BIGSCREEN_ISP_AUTO_DISCOVER: "${BIGSCREEN_ISP_AUTO_DISCOVER:-false}"
+      BIGSCREEN_ISP_AUTO_DISCOVER: "${BIGSCREEN_ISP_AUTO_DISCOVER:-true}"
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
     volumes:
@@ -583,9 +583,9 @@ services:
       BIGSCREEN_SUBTITLE: "${BIGSCREEN_SUBTITLE:-}"
       BIGSCREEN_LOGO_TEXT: "${BIGSCREEN_LOGO_TEXT:-}"
       BIGSCREEN_PROMETHEUS_BASE_URL: "${BIGSCREEN_PROMETHEUS_BASE_URL:-}"
-      BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}"
+      BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-}"
       BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
-      BIGSCREEN_ISP_AUTO_DISCOVER: "${BIGSCREEN_ISP_AUTO_DISCOVER:-false}"
+      BIGSCREEN_ISP_AUTO_DISCOVER: "${BIGSCREEN_ISP_AUTO_DISCOVER:-true}"
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       SERVER_PING: "${SERVER_PING:-}"
       BIGSCREEN_STAGE_DEVICE_FILTER: "${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}"
@@ -612,9 +612,9 @@ services:
           subtitle: "$${BIGSCREEN_SUBTITLE:-}",
           logoText: "$${BIGSCREEN_LOGO_TEXT:-}",
           prometheusBaseUrl: "$${BIGSCREEN_PROMETHEUS_BASE_URL:-}",
-          ispNames: "$${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}",
+          ispNames: "$${BIGSCREEN_ISP_NAMES:-}",
           ispIps: "$${BIGSCREEN_ISP_IPS:-}",
-          ispAutoDiscovery: "$${BIGSCREEN_ISP_AUTO_DISCOVER:-false}",
+          ispAutoDiscovery: "$${BIGSCREEN_ISP_AUTO_DISCOVER:-true}",
           ispMaxBandwidthMbps: "$${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}",
           serverTargets: "$${SERVER_PING:-}",
           stageDeviceFilter: "$${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}",
