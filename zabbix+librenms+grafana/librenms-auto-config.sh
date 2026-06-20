@@ -645,6 +645,21 @@ for combined in $(echo "${ISP_PING}${ISP_PING:+,}${FIREWALL_PING}${FIREWALL_PING
   ;; esac
 done
 
+# --- 防火墙 SNMP 设备（FIREWALL_SNMP_TARGETS）→ LibreNMS SNMP 监控 ---
+if [ -n "$FIREWALL_SNMP_TARGETS" ] && [ -n "$API_TOKEN" ]; then
+  echo ""
+  echo "  Adding firewall SNMP devices to LibreNMS..."
+  for combined in $(echo "$FIREWALL_SNMP_TARGETS" | tr ',' '\n'); do
+    combined=$(echo "$combined" | tr -d '[:space:]')
+    [ -z "$combined" ] && continue
+    case "$combined" in *:*)
+      name="${combined%%:*}"
+      ip="${combined#*:}"
+      add_device_api "$name" "$ip" "$FIREWALL_SNMP_COMMUNITY" || true
+    ;; esac
+  done
+fi
+
 # Configure alert rules
 echo ""
 echo "[5/5] Setting up alert rules..."
@@ -696,14 +711,6 @@ if [ -n "$API_TOKEN" ]; then
     "name": "高丢包告警",
     "devices": [-1],
     "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_up\",\"field\":\"macros.device_up\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"},{\"id\":\"device_perf_loss\",\"field\":\"device_perf_loss\",\"type\":\"text\",\"operator\":\"greater\",\"value\":\"10\"}],\"valid\":true}",
-    "severity": "warning",
-    "disabled": 0
-  }'
-
-  upsert_rule "接口 Down 告警" '{
-    "name": "接口 Down 告警",
-    "devices": [-1],
-    "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"ports.ifOperStatus\",\"field\":\"ports.ifOperStatus\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"equal\",\"value\":\"down\"},{\"id\":\"ports.ifAdminStatus\",\"field\":\"ports.ifAdminStatus\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"equal\",\"value\":\"up\"}],\"valid\":true}",
     "severity": "warning",
     "disabled": 0
   }'
