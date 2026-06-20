@@ -435,7 +435,6 @@ configure_runtime() {
       target=$(echo "$target" | tr -d '[:space:]')
       [ -z "$target" ] && continue
       base_ip=${target%%-*}      # 取 range 起始 IP，或单 IP
-      base_ip=${base_ip%%.*.*.*} # fallback: 取第一个字段（不生效，用下面的方法）
       # 取前三段构成 /24
       prefix=$(echo "$base_ip" | sed 's/\.[0-9]*$//')
       cidr="${prefix}.0/24"
