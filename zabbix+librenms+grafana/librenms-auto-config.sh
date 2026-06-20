@@ -15,6 +15,7 @@ DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254
 FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"
 FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
 LIBRENMS_FEISHU_TOKEN="${LIBRENMS_FEISHU_TOKEN:-}"
+LIBRENMS_API_TOKEN="${LIBRENMS_API_TOKEN:-}"
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
 LIBRENMS_ADMIN_EMAIL="${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
@@ -465,16 +466,29 @@ configure_runtime
 # Create API token
 echo ""
 echo "[3/5] Creating API token..."
-API_TOKEN=$(curl -s -X POST "$LIBRENMS_URL/api/v0/auth/legacy-token" \
-  -H "Content-Type: application/json" \
-  -d "{\"username\":\"$LIBRENMS_ADMIN_USER\",\"password\":\"$LIBRENMS_ADMIN_PASSWORD\"}" 2>/dev/null | \
-  python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+API_TOKEN="$LIBRENMS_API_TOKEN"
 
 if [ -z "$API_TOKEN" ]; then
-  echo "  WARNING: Could not create API token automatically."
-  echo "  Attempting CLI fallback for device addition..."
+  # 尝试通过 CLI 创建 token（新版 LibreNMS 推荐方式）
+  API_TOKEN=$(run_as_librenms php /opt/librenms/lnms user:api-token \
+    --user="$LIBRENMS_ADMIN_USER" --description="autoconfig" 2>/dev/null | \
+    grep -oE '[a-f0-9]{64}' | head -1 || true)
+fi
+
+if [ -z "$API_TOKEN" ]; then
+  # 旧版 legacy-token 接口备选
+  API_TOKEN=$(curl -s -X POST "$LIBRENMS_URL/api/v0/auth/legacy-token" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"$LIBRENMS_ADMIN_USER\",\"password\":\"$LIBRENMS_ADMIN_PASSWORD\"}" 2>/dev/null | \
+    python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+fi
+
+if [ -z "$API_TOKEN" ]; then
+  echo "  WARNING: Could not obtain API token."
+  echo "  Feishu transport will not be configured automatically."
+  echo "  Fix: set LIBRENMS_API_TOKEN in .env (LibreNMS → My Account → API Access → Create Token)"
 else
-  echo "  API Token created successfully"
+  echo "  API Token ready"
 fi
 
 expand_targets() {
