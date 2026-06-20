@@ -105,12 +105,9 @@ def build_librenms_card(payload):
     dev_display = f"{hostname}（{ip}）" if hostname and ip and hostname != ip else hostname or ip or "?"
     title = f"{emoji} {rule_name} · {dev_display}"[:148]
 
-    uid = str(payload.get("uid") or "").strip()
     elapsed = str(payload.get("elapsed") or "").strip()
 
-    lines = [f"🖥 设备：{dev_display}", f"📊 状态：{status_text}"]
-    if uid and uid not in ("0", ""):
-        lines.append(f"🆔 告警 ID：#{uid}")
+    lines = [f"🖥 设备：{dev_display}"]
     ts = payload.get("timestamp") or ""
     if ts:
         lines.append(f"⏰ 时间：{ts}")
