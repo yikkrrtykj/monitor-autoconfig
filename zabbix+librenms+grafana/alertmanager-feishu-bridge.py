@@ -121,7 +121,7 @@ def build_device_online_card(device):
     os_name = device.get("os") or ""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    title = f"🟢 新设备上线 · {name}"[:148]
+    title = "🟢 新设备上线"
     lines = [f"🖥 设备：{name}", f"🌐 IP：{ip}"]
     if hw:
         lines.append(f"🔧 型号：{hw}")
