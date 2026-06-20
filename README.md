@@ -77,15 +77,15 @@ git clone https://github.com/yikkrrtykj/monitor-autoconfig.git
 cd monitor-autoconfig/zabbix+librenms+grafana
 ```
 
-**国内服务器**（GitHub 经常连不上，通过代理拉）：
+**国内服务器**（GitHub 经常连不上，用 Gitee 镜像）：
 
 ```bash
-git clone https://ghproxy.com/https://github.com/yikkrrtykj/monitor-autoconfig.git
+git clone https://gitee.com/yikkrrtykj/monitor-autoconfig.git
 cd monitor-autoconfig/zabbix+librenms+grafana
 ```
 
-> `ghproxy.com` 是国内免费加速节点，节点偶尔维护时换 `mirror.ghproxy.com`。
-> 如果代理也不稳，可在 [gitee.com](https://gitee.com) 把本仓库导入并从 Gitee 地址 clone。
+> Gitee 仓库是 GitHub 的镜像，国内访问稳定。如果 Gitee 上不是最新代码，
+> 到 Gitee 仓库页面点「管理 → 仓库镜像管理」手动同步一次即可。
 
 ### 2. 写 `.env`
 
