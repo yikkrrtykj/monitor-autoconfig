@@ -66,6 +66,29 @@ sudo usermod -aG docker $USER && newgrp docker
 **国外服务器**（官方源）：把上面的 repo 换成
 `https://download.docker.com/linux/centos/docker-ce.repo`，其余命令不变。
 
+### 1.5 配置 Docker Hub 镜像加速（国内必做）
+
+Docker Hub 在国内被墙，`docker pull` / `./deploy.sh` 会报 `i/o timeout`。
+Docker 装好后，配镜像加速再继续：
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json <<'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://dockerhub.icu",
+    "https://docker.nju.edu.cn"
+  ]
+}
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+> 国内镜像节点会不定期失效，如果拉镜像仍然超时，可在上面列表里替换或追加新节点；
+> 国外服务器不需要这一步。
+
 ## 二、部署 checklist
 
 ### 1. 拉代码
