@@ -428,17 +428,20 @@ configure_runtime() {
   # 把 "192.168.10.1-100,192.168.10.254" 和防火墙范围转成 CIDR 列表写入 nets[]
   configure_nets() {
     idx=0
+    seen_cidrs=""
     # 先清掉旧的 nets 配置（忽略报错）
     run_lnms config:set nets '[]' >/dev/null 2>&1 || true
 
-    # 从 IP 范围提取 /24 网段（取第一个 IP 的前三段）
+    # 从 IP 范围提取 /24 网段（取第一个 IP 的前三段），去重
     for target in $(echo "${DISCOVERY_TARGETS},${FIREWALL_DISCOVERY_RANGE}" | tr ',' '\n'); do
       target=$(echo "$target" | tr -d '[:space:]')
       [ -z "$target" ] && continue
       base_ip=${target%%-*}      # 取 range 起始 IP，或单 IP
-      # 取前三段构成 /24
       prefix=$(echo "$base_ip" | sed 's/\.[0-9]*$//')
       cidr="${prefix}.0/24"
+      # 跳过重复
+      case "$seen_cidrs" in *"$cidr"*) continue ;; esac
+      seen_cidrs="$seen_cidrs $cidr"
       run_lnms config:set "nets.${idx}" "$cidr" >/dev/null 2>&1 && \
         echo "  nets[$idx]: $cidr" || \
         echo "  WARNING: Could not set nets[$idx]=$cidr"
@@ -699,7 +702,7 @@ except Exception:
     -d "{
       \"transport_name\": \"Feishu\",
       \"transport_type\": \"api\",
-      \"is_default\": false,
+      \"is_default\": true,
       \"transport_config\": {
         \"url\": \"http://alertmanager-feishu-bridge:5005/librenms\",
         \"method\": \"POST\",
