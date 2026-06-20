@@ -14,7 +14,12 @@ STAGE_START_OCTET="${LIBRENMS_STAGE_START_OCTET:-11}"
 DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
 FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"
 FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
-LIBRENMS_FEISHU_TOKEN="${LIBRENMS_FEISHU_TOKEN:-}"
+FEISHU_ROBOT_TOKEN="${FEISHU_ROBOT_TOKEN:-}"
+ISP_PING="${ISP_PING:-}"
+FIREWALL_PING="${FIREWALL_PING:-}"
+SERVER_PING="${SERVER_PING:-}"
+ISP_SATURATION_PERCENT="${ISP_SATURATION_PERCENT:-80}"
+FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
 LIBRENMS_API_TOKEN="${LIBRENMS_API_TOKEN:-}"
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
@@ -596,6 +601,17 @@ add_device_cli() {
     echo "  $name ($ip): Already exists or failed"
 }
 
+add_ping_device_api() {
+  name=$1; ip=$2
+  [ -z "$API_TOKEN" ] && return 0
+  result=$(curl -s -X POST "$LIBRENMS_URL/api/v0/devices" \
+    -H "X-Auth-Token: $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"hostname\":\"$ip\",\"display_name\":\"$name\",\"force_add\":true,\"version\":\"v2c\",\"community\":\"\"}" 2>/dev/null)
+  msg=$(echo "$result" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message',d.get('error','?')))" 2>/dev/null || echo "parse error")
+  echo "  $name ($ip): $msg"
+}
+
 echo ""
 echo "[4/5] Discovering SNMP devices..."
 echo "  Targets: $DISCOVERY_TARGETS"
@@ -613,6 +629,19 @@ expand_targets | while read -r ip; do
   else
     echo "  $name ($ip): No SNMP response, skipped"
   fi
+done
+
+echo ""
+echo "[4b/5] Adding ping-only devices (ISP / Firewall physical / Servers)..."
+for combined in $(echo "${ISP_PING}${ISP_PING:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${SERVER_PING}" | tr ',' '\n'); do
+  combined=$(echo "$combined" | tr -d '[:space:]')
+  [ -z "$combined" ] && continue
+  case "$combined" in *:*)
+    name="${combined%%:*}"
+    ip_part="${combined#*:}"
+    ip="${ip_part%%-*}"
+    [ -n "$ip" ] && add_ping_device_api "$name" "$ip"
+  ;; esac
 done
 
 # Configure alert rules
@@ -662,6 +691,28 @@ if [ -n "$API_TOKEN" ]; then
     "severity": "warning",
     "disabled": 0
   }'
+
+  upsert_rule "接口 Down 告警" '{
+    "name": "接口 Down 告警",
+    "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"ports.ifOperStatus\",\"field\":\"ports.ifOperStatus\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"equal\",\"value\":\"down\"},{\"id\":\"ports.ifAdminStatus\",\"field\":\"ports.ifAdminStatus\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"equal\",\"value\":\"up\"}],\"valid\":true}",
+    "severity": "warning",
+    "disabled": 0
+  }'
+
+  build_wan_or_rules() {
+    result=""
+    for kw in $(echo "$FIREWALL_WAN_IF_FILTER" | tr ',' '\n'); do
+      kw=$(echo "$kw" | tr -d '[:space:]')
+      [ -z "$kw" ] && continue
+      r="{\"id\":\"ports.ifAlias\",\"field\":\"ports.ifAlias\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"contains\",\"value\":\"${kw}\"}"
+      result="${result}${result:+,}${r}"
+    done
+    printf '%s' "$result"
+  }
+  wan_or=$(build_wan_or_rules)
+  isp_builder="{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.port_usage_perc\",\"field\":\"macros.port_usage_perc\",\"type\":\"double\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"${ISP_SATURATION_PERCENT}\"},{\"condition\":\"OR\",\"rules\":[${wan_or}]}],\"valid\":true}"
+  isp_builder_escaped=$(printf '%s' "$isp_builder" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')
+  upsert_rule "ISP 带宽饱和告警" "{\"name\":\"ISP 带宽饱和告警\",\"builder\":${isp_builder_escaped},\"severity\":\"warning\",\"disabled\":0}"
 fi
 
 # Configure Feishu alert transport
@@ -690,8 +741,8 @@ except Exception:
     return 0
   fi
 
-  if [ -z "$LIBRENMS_FEISHU_TOKEN" ]; then
-    echo "  LIBRENMS_FEISHU_TOKEN not set, skipping Feishu transport"
+  if [ -z "$FEISHU_ROBOT_TOKEN" ]; then
+    echo "  FEISHU_ROBOT_TOKEN not set, skipping Feishu transport"
     return 0
   fi
 
@@ -734,8 +785,8 @@ echo "  下一步:"
 echo "  1. 登录 LibreNMS 修改默认密码"
 echo "  2. 确认发现到的设备已开始采集（约 5 分钟后自动发现）"
 echo "  3. 添加 UniFi AP 或调整 LIBRENMS_DISCOVERY_TARGETS / FIREWALL_DISCOVERY_RANGE"
-if [ -z "$LIBRENMS_FEISHU_TOKEN" ]; then
-  echo "  4. 填写 LIBRENMS_FEISHU_TOKEN 后重启以启用飞书告警推送"
+if [ -z "$FEISHU_ROBOT_TOKEN" ]; then
+  echo "  4. 填写 FEISHU_ROBOT_TOKEN 后重启以启用飞书告警推送"
 else
   echo "  4. 飞书告警已配置 → alertmanager-feishu-bridge:5005/librenms"
 fi

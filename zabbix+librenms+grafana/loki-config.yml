@@ -41,16 +41,3 @@ compactor:
   compaction_interval: 10m
   retention_delete_delay: 2h
   shared_store: filesystem
-
-# 对日志跑 LogQL 告警规则，命中就发给 Alertmanager（→ feishu-bridge → 飞书）。
-# 规则文件挂在 /etc/loki/rules/fake/（auth 关闭时租户名是 fake）。
-ruler:
-  alertmanager_url: http://alertmanager:9093
-  enable_alertmanager_v2: true
-  evaluation_interval: 1m
-  poll_interval: 1m
-  storage:
-    type: local
-    local:
-      directory: /etc/loki/rules
-  rule_path: /loki/ruler-wal
