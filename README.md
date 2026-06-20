@@ -1,6 +1,6 @@
 # monitor-autoconfig
 
-Docker Compose 一键部署的赛事网络监控栈，**Zabbix + LibreNMS + Prometheus + Grafana** 自动发现 + 模板化告警，外加一套**无需登录的对外展示大屏**，专为短期出差赛事设计：clone → 改 IP → 起服务 → 自检 → 用一阵子 → 拆机回收。
+Docker Compose 一键部署的赛事网络监控栈，**LibreNMS + Prometheus + Grafana** 自动发现 + 飞书告警，外加一套**无需登录的对外展示大屏**，专为短期出差赛事设计：clone → 改 IP → 起服务 → 自检 → 用一阵子 → 拆机回收。
 
 ## 服务
 
@@ -8,8 +8,7 @@ Docker Compose 一键部署的赛事网络监控栈，**Zabbix + LibreNMS + Prom
 |---|---|---|---|
 | Grafana | 3000 | `admin / root` | 运维 dashboard，编辑面板、临时排查 |
 | 对外展示大屏 | 8088 | 无需登录（只读） | 现场电视 / 投屏，比赛中实时看 |
-| Zabbix | 8001 | `Admin / zabbix` | 防火墙告警 + 飞书推送 |
-| LibreNMS | 8002 | `admin / librenms123` | 交换机自动发现 + 拓扑图 |
+| LibreNMS | 8002 | `admin / librenms123` | 全网自动发现 + 拓扑图 + 飞书告警 |
 
 ### 默认凭据 / 改在哪
 
@@ -17,7 +16,6 @@ Docker Compose 一键部署的赛事网络监控栈，**Zabbix + LibreNMS + Prom
 |---|---|---|
 | Grafana 管理员 | `admin / root` | `.env` 里 `GRAFANA_PASSWORD`（首次起服务前改） |
 | LibreNMS 管理员 | `admin / librenms123` | `.env` 里 `LIBRENMS_ADMIN_PASSWORD` |
-| Zabbix 管理员 | `Admin / zabbix` | Zabbix UI 首次登录后立即改（`.env` 不管 Zabbix 默认账户） |
 | SNMP community | `public` | `.env` 里 `SNMP_COMMUNITY` + 交换机 / 防火墙 SNMP 配置同步改 |
 
 MariaDB 内部账户（`mysql root` 等）只在容器网络内可达，不暴露到宿主机端口，可以维持默认。
@@ -86,10 +84,17 @@ ISP_PING=                 # 可选；留空时自动使用 BIGSCREEN_ISP_IPS
 # 防火墙 SNMP（建议用 Name:IP；如果只写 IP，会优先继承 FIREWALL_PING 里同 IP 的名字）
 FIREWALL_SNMP_TARGETS=FW1:192.168.1.1,FW2:192.168.1.2
 
-# LibreNMS 自动发现
+# LibreNMS 自动发现（交换机）
 LIBRENMS_DISCOVERY_TARGETS=192.168.10.1-100,192.168.10.254
 LIBRENMS_CORE_IP=192.168.10.254
-SWITCH_DISCOVERY_RANGE=192.168.10.1-100,192.168.10.254
+
+# LibreNMS 自动发现（防火墙）
+FIREWALL_DISCOVERY_RANGE=172.25.9.2-253,192.168.9.1-254
+FIREWALL_SNMP_COMMUNITY=public   # 与 SNMP_COMMUNITY 不同时在此覆盖
+
+# 飞书告警 token
+FEISHU_ROBOT_TOKEN=              # Prometheus 告警 → 团队群（ISP 掉线 / 交换机离线）
+LIBRENMS_FEISHU_TOKEN=           # LibreNMS 告警 → 运维群（设备离线 / 接口 down / 高 CPU）
 ```
 
 > `SNMP_COMMUNITY` 默认 `public`，必须和交换机 / 防火墙上实际配置的 community 一致，否则 LibreNMS 发现 0 个设备、选手 MAC 表查不到。
@@ -252,10 +257,6 @@ docker compose ps
 docker compose logs --tail=100 <service-name>
 ```
 
-**Zabbix Web 502 / 连不上**
-
-等 mysql + zabbix-server healthy。首次 2-3 分钟。
-
 **LibreNMS 显示发现 0 个设备**
 
 ```bash
@@ -295,7 +296,7 @@ docker exec librenms snmpwalk -v2c -c public 192.168.10.254 sysName.0
 
 ```bash
 docker compose down -v
-rm -rf mysql-data zabbix-server-data grafana-data librenms-db-data librenms-data librenms-rrdcached-journal prometheus-data
+rm -rf grafana-data librenms-db-data librenms-data librenms-rrdcached-journal prometheus-data
 ./deploy.sh
 ```
 
@@ -310,15 +311,13 @@ docker compose down -v        # 停容器、删 monitor 网络、删命名卷
 docker system prune -a        # 删镜像（占空间最多）
 ```
 
-**bind mount 目录**（mysql、zabbix、librenms 数据落在仓库目录里）——`down -v` 不会删，要手动：
+**bind mount 目录**（librenms 数据落在仓库目录里）——`down -v` 不会删，要手动：
 
 ```bash
-sudo rm -rf mysql-data zabbix-server-data \
-            librenms-data librenms-db-data \
-            librenms-rrdcached-journal
+sudo rm -rf librenms-data librenms-db-data librenms-rrdcached-journal
 ```
 
-要 `sudo` 是因为 `init-permissions` 容器把这些目录 chown 给了容器内 UID（grafana=472、zabbix=1997 等），普通用户删不掉。
+要 `sudo` 是因为 `init-permissions` 容器把这些目录 chown 给了容器内 UID（librenms=1000、grafana=472 等），普通用户删不掉。
 
 **仓库本身也删**：
 
@@ -332,7 +331,6 @@ cd .. && rm -rf monitor-autoconfig
 
 ```bash
 tar czf monitor-backup-$(date +%Y%m%d).tar.gz \
-  mysql-data/ zabbix-server-data/ \
   librenms-data/ librenms-db-data/ \
   .env grafana-provisioning/
 ```
