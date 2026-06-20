@@ -140,7 +140,7 @@ hdr "1. Docker 容器状态"
 if ! command -v docker >/dev/null 2>&1; then
   fail "docker 命令不可用"
 else
-  for svc in prometheus grafana blackbox-exporter snmp-exporter player-targets zabbix-server librenms; do
+  for svc in prometheus grafana blackbox-exporter snmp-exporter player-targets librenms; do
     state=$(docker inspect -f '{{.State.Status}}' "$svc" 2>/dev/null || echo "missing")
     if [ "$state" = "running" ]; then ok "$svc 运行中"
     elif [ "$state" = "missing" ]; then warn "$svc 容器不存在（如果是该服务未启用，忽略）"
