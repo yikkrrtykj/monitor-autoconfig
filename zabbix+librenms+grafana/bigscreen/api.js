@@ -208,21 +208,28 @@
     return `group by (ifAlias) (ifHCInOctets{job="firewall-snmp",ifAlias=~".+",ifAlias=~"(?i).*(${pattern}).*"}) or group by (ifName) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName=~".+",ifName=~"(?i).*(${pattern}).*"}) or group by (ifDescr) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName="",ifDescr=~".+",ifDescr=~"(?i).*(${pattern}).*"})`;
   }
 
-  function getIspNames() {
-    return uniqueNames(String(config.ispNames || "ISP1,ISP2")
+  // 运维显式填写的 ISP 名字（不注入默认）。未填则为空数组。
+  function getConfiguredIspNames() {
+    return uniqueNames(String(config.ispNames || "")
       .split(",")
       .map((name) => name.trim())
       .filter(Boolean))
       .slice(0, 4);
   }
 
+  // 非自动发现 / 兜底时使用：有显式名字用显式的，否则回退 ISP1,ISP2 默认（保持旧行为）。
+  function getIspNames() {
+    const configured = getConfiguredIspNames();
+    return configured.length ? configured : ["ISP1", "ISP2"];
+  }
+
   let ispNamesCache = null;
   let ispNamesCachedAt = 0;
 
   async function fetchIspNames() {
-    const configured = getIspNames();
+    const configured = getConfiguredIspNames();
     if (!isIspAutoDiscoveryEnabled()) {
-      return configured;
+      return getIspNames();
     }
 
     const now = Date.now();
@@ -234,14 +241,14 @@
       const discovered = await prometheusInstant(ispDiscoveryQuery());
       const discoveredNames = uniqueNames(discovered.map((item) => item.metric.ifAlias || item.metric.ifName || item.metric.ifDescr));
       discoveredNames.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
-      const names = configured.length ? uniqueNames([...configured, ...discoveredNames]) : discoveredNames;
-      const limitedNames = names.slice(0, 4);
-      ispNamesCache = limitedNames.length ? limitedNames : configured;
+      // 显式名字 + 发现到的口合并；没填显式名字就只显示发现到的（换场地零改配置）。
+      const names = uniqueNames([...configured, ...discoveredNames]).slice(0, 4);
+      ispNamesCache = names.length ? names : getIspNames();
       ispNamesCachedAt = now;
       return ispNamesCache;
     } catch (error) {
       console.warn("ISP discovery failed", error);
-      return configured;
+      return getIspNames();
     }
   }
 
@@ -331,6 +338,7 @@
     isIspAutoDiscoveryEnabled,
     wanFilterPattern,
     ispDiscoveryQuery,
+    getConfiguredIspNames,
     getIspNames,
     fetchIspNames,
     ispTrafficQuery,
