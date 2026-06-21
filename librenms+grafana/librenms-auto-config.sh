@@ -980,7 +980,6 @@ if (! empty($bandwidth['per'])) {
             continue;
         }
         $rules[] = and_group([
-            port_up_rule(),
             or_group($match),
             or_group(rate_rules((float) $entry['down'], (float) $entry['up'], $percent)),
         ]);
@@ -996,7 +995,6 @@ if (! empty($bandwidth['per'])) {
         exit(1);
     }
     $builder = and_group([
-        port_up_rule(),
         or_group($match),
         or_group(rate_rules((float) $default['down'], (float) $default['up'], $percent)),
     ]);
@@ -1118,7 +1116,6 @@ try {
     $query = 'SELECT * FROM devices,ports WHERE devices.device_id = ?'
         . ' AND devices.device_id = ports.device_id'
         . ' AND ports.deleted = 0 AND ports.ignore = 0 AND ports.disabled = 0'
-        . ' AND ports.ifOperStatus = "up" AND ports.ifAdminStatus = "up"'
         . ' AND (' . implode(' OR ', $branches) . ')';
 
     $exists = $pdo->prepare('SELECT id FROM alert_rules WHERE name = ? LIMIT 1');
