@@ -36,7 +36,6 @@ write_labeled_targets() {
     [ -z "$name" ] && name="$ip_part"
     [ -z "$ip_part" ] && continue
 
-    echo "      - targets:"
     case "$ip_part" in
       *-*)
         start_ip=${ip_part%-*}
@@ -45,17 +44,23 @@ write_labeled_targets() {
         start_octet=${start_ip##*.}
         end_octet=${end_part##*.}
         octet=$start_octet
+        idx=1
         while [ "$octet" -le "$end_octet" ]; do
+          echo "      - targets:"
           echo "          - \"$prefix.$octet\""
+          echo "        labels:"
+          echo "          display_name: \"${name}${idx}\""
           octet=$((octet + 1))
+          idx=$((idx + 1))
         done
         ;;
       *)
+        echo "      - targets:"
         echo "          - \"$ip_part\""
+        echo "        labels:"
+        echo "          display_name: \"$name\""
         ;;
     esac
-    echo "        labels:"
-    echo "          display_name: \"$name\""
     IFS=','
   done
   IFS=$old_ifs

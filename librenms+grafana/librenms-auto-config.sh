@@ -880,8 +880,80 @@ try {
 PHP
 }
 
+ALERT_TRANSPORT_IDS=""
+
+configure_feishu_transport() {
+  echo ""
+  echo "[5/6] Setting up Feishu alert transport..."
+
+  if [ -z "$FEISHU_ROBOT_TOKEN" ]; then
+    echo "  FEISHU_ROBOT_TOKEN not set, alert rules will be created without push transport"
+    ALERT_TRANSPORT_IDS=""
+    return 0
+  fi
+
+  _ft_out=$(php <<'PHP'
+<?php
+try {
+    $host = getenv('DB_HOST') ?: 'librenms-db';
+    $database = getenv('DB_NAME') ?: 'librenms';
+    $dbUser = getenv('DB_USER') ?: 'librenms';
+    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
+
+    $pdo = new PDO(
+        "mysql:host={$host};dbname={$database};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+
+    $name = 'Feishu';
+    $exists = $pdo->prepare('SELECT transport_id FROM alert_transports WHERE transport_name = ? LIMIT 1');
+    $exists->execute([$name]);
+    $transportId = $exists->fetchColumn();
+
+    $config = json_encode([
+        'api-url'    => 'http://alertmanager-feishu-bridge:5005/librenms',
+        'api-method' => 'POST',
+        'api-body'   => '{"state":"{{ state }}","name":"{{ name }}","severity":"{{ severity }}","hostname":"{{ hostname }}","sysName":"{{ sysName }}","ip":"{{ ip }}","timestamp":"{{ timestamp }}","uid":"{{ uid }}","elapsed":"{{ elapsed }}","location":"{{ location }}"}',
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+    if ($transportId) {
+        $upd = $pdo->prepare('UPDATE alert_transports SET transport_type = ?, is_default = 1, transport_config = ? WHERE transport_id = ?');
+        $upd->execute(['api', $config, $transportId]);
+        echo "updated:{$transportId}";
+        exit(0);
+    }
+
+    $ins = $pdo->prepare('INSERT INTO alert_transports (transport_name, transport_type, is_default, transport_config) VALUES (?, ?, 1, ?)');
+    $ins->execute([$name, 'api', $config]);
+    echo 'created:' . $pdo->lastInsertId();
+    exit(0);
+} catch (Throwable $e) {
+    echo 'ERROR: ' . $e->getMessage();
+    exit(1);
+}
+PHP
+  ) || true
+
+  case "$_ft_out" in
+    created:*)
+      ALERT_TRANSPORT_IDS="${_ft_out#created:}"
+      echo "  Feishu transport created (id=$ALERT_TRANSPORT_IDS, → bridge /librenms)"
+      ;;
+    updated:*)
+      ALERT_TRANSPORT_IDS="${_ft_out#updated:}"
+      echo "  Feishu transport updated (id=$ALERT_TRANSPORT_IDS, → bridge /librenms)"
+      ;;
+    *)
+      ALERT_TRANSPORT_IDS=""
+      echo "  WARNING: Could not create Feishu transport: $_ft_out"
+      ;;
+  esac
+}
+
 echo ""
-echo "[4/5] Discovering SNMP devices..."
+echo "[4/6] Discovering SNMP devices..."
 echo "  Targets: $DISCOVERY_TARGETS"
 echo "  SNMP Community: $SNMP_COMMUNITY"
 echo "  SNMP Probe: timeout ${SNMP_TIMEOUT}s, retries $SNMP_RETRIES"
@@ -929,40 +1001,86 @@ fi
 
 discover_firewall_ports
 configure_isp_port_speed_overrides
+configure_feishu_transport
 
 # Configure alert rules
 echo ""
-echo "[5/5] Setting up alert rules..."
+echo "[6/6] Setting up alert rules..."
 
-# Idempotency: GET existing rules once, skip POST if name already exists.
-# Re-running this script no longer creates duplicate rule entries.
-upsert_rule() {
-  rule_name="$1"
-  rule_payload="$2"
-
-  if echo "$EXISTING_RULES" | python3 -c "
+rule_id_by_name() {
+  echo "$EXISTING_RULES" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
     rules = data if isinstance(data, list) else data.get('rules', [])
-    sys.exit(0 if any(r.get('name') == sys.argv[1] for r in rules) else 1)
+    for rule in rules:
+        if rule.get('name') == sys.argv[1]:
+            print(rule.get('id') or rule.get('rule_id') or '')
+            break
 except Exception:
-    sys.exit(1)
-" "$rule_name" 2>/dev/null; then
-    echo "  Alert rule: $rule_name - skipped (already exists)"
-    return 0
+    pass
+" "$1" 2>/dev/null || true
+}
+
+rule_payload_with_operations() {
+  python3 - "$1" "$ALERT_TRANSPORT_IDS" "${2:-}" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+rule_id = (sys.argv[3] or "").strip()
+if rule_id:
+    payload["rule_id"] = rule_id
+
+ids = []
+for part in (sys.argv[2] or "").split(","):
+    part = part.strip()
+    if part.isdigit():
+        ids.append(int(part))
+
+if ids:
+    payload["operations"] = [{
+        "name": "Feishu",
+        "operation_phase": "problem",
+        "escalation_step_from": 1,
+        "escalation_step_to": None,
+        "start_in_seconds": 0,
+        "step_duration_seconds": 300,
+        "transports": ids
+    }]
+
+print(json.dumps(payload, ensure_ascii=False))
+PY
+}
+
+# Idempotency: GET existing rules once and update them in place. Re-running this
+# script refreshes WAN matching and attaches the Feishu transport operation.
+upsert_rule() {
+  rule_name="$1"
+  rule_payload="$2"
+  rule_id="$(rule_id_by_name "$rule_name")"
+  rule_payload="$(rule_payload_with_operations "$rule_payload" "$rule_id")"
+
+  if [ -n "$rule_id" ]; then
+    _resp=$(curl -s -X PUT "$LIBRENMS_URL/api/v0/rules" \
+      -H "X-Auth-Token: $API_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "$rule_payload" 2>/dev/null)
+    _action="updated"
+  else
+    _resp=$(curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
+      -H "X-Auth-Token: $API_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "$rule_payload" 2>/dev/null)
+    _action="created"
   fi
 
-  _resp=$(curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
-    -H "X-Auth-Token: $API_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "$rule_payload" 2>/dev/null)
   _status=$(echo "$_resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status',''))" 2>/dev/null || echo "")
   if [ "$_status" = "ok" ]; then
-    echo "  Alert rule: $rule_name - created"
+    echo "  Alert rule: $rule_name - $_action"
   else
     _msg=$(echo "$_resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message',''))" 2>/dev/null || echo "$_resp")
-    echo "  Alert rule: $rule_name - failed: $_msg"
+    echo "  Alert rule: $rule_name - $_action failed: $_msg"
   fi
 }
 
@@ -990,83 +1108,22 @@ if [ -n "$API_TOKEN" ]; then
     for kw in $(echo "$FIREWALL_WAN_IF_FILTER" | tr ',' '\n'); do
       kw=$(echo "$kw" | tr -d '[:space:]')
       [ -z "$kw" ] && continue
-      r="{\"id\":\"ports.ifAlias\",\"field\":\"ports.ifAlias\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"contains\",\"value\":\"${kw}\"}"
-      result="${result}${result:+,}${r}"
+      for field in ports.ifAlias ports.ifName ports.ifDescr; do
+        r="{\"id\":\"${field}\",\"field\":\"${field}\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"contains\",\"value\":\"${kw}\"}"
+        result="${result}${result:+,}${r}"
+      done
     done
     printf '%s' "$result"
   }
   wan_or=$(build_wan_or_rules)
-  isp_builder="{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.port_usage_perc\",\"field\":\"macros.port_usage_perc\",\"type\":\"double\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"${ISP_SATURATION_PERCENT}\"},{\"condition\":\"OR\",\"rules\":[${wan_or}]}],\"valid\":true}"
-  isp_builder_escaped=$(printf '%s' "$isp_builder" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')
-  upsert_rule "ISP 带宽饱和告警" "{\"name\":\"ISP 带宽饱和告警\",\"devices\":[-1],\"builder\":${isp_builder_escaped},\"severity\":\"warning\",\"disabled\":0}"
-fi
-
-# Configure Feishu alert transport
-echo ""
-echo "[6/6] Setting up Feishu alert transport..."
-
-configure_feishu_transport() {
-  if [ -z "$FEISHU_ROBOT_TOKEN" ]; then
-    echo "  FEISHU_ROBOT_TOKEN not set, skipping Feishu transport"
-    return 0
+  if [ -n "$wan_or" ]; then
+    isp_builder="{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.port_usage_perc\",\"field\":\"macros.port_usage_perc\",\"type\":\"double\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"${ISP_SATURATION_PERCENT}\"},{\"condition\":\"OR\",\"rules\":[${wan_or}]}],\"valid\":true}"
+    isp_builder_escaped=$(printf '%s' "$isp_builder" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')
+    upsert_rule "ISP 带宽饱和告警" "{\"name\":\"ISP 带宽饱和告警\",\"devices\":[-1],\"builder\":${isp_builder_escaped},\"severity\":\"warning\",\"disabled\":0}"
+  else
+    echo "  Alert rule: ISP 带宽饱和告警 - skipped (FIREWALL_WAN_IF_FILTER is empty)"
   fi
-
-  # LibreNMS 没有创建 transport 的 API 路由（只有 GET），所以直接写 DB。
-  # 用 PHP PDO 绑定参数插入，json_encode 处理 transport_config 转义，无需手工转义。
-  # api transport 走 SimpleTemplate（扁平 {{ key }}），api-body 用安全标量字段拼
-  # 成 JSON 发给 bridge 的 /librenms 端点。hostname/ip/severity/state/timestamp
-  # 都不含引号或换行，拼出的 JSON 一定合法。
-  php <<'PHP'
-<?php
-try {
-    $host = getenv('DB_HOST') ?: 'librenms-db';
-    $database = getenv('DB_NAME') ?: 'librenms';
-    $dbUser = getenv('DB_USER') ?: 'librenms';
-    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
-
-    $pdo = new PDO(
-        "mysql:host={$host};dbname={$database};charset=utf8mb4",
-        $dbUser,
-        $dbPass,
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
-
-    $name = 'Feishu';
-    $exists = $pdo->prepare('SELECT transport_id FROM alert_transports WHERE transport_name = ? LIMIT 1');
-    $exists->execute([$name]);
-    $transportId = $exists->fetchColumn();
-
-    $config = json_encode([
-        'api-url'    => 'http://alertmanager-feishu-bridge:5005/librenms',
-        'api-method' => 'POST',
-        'api-body'   => '{"state":"{{ state }}","name":"{{ name }}","severity":"{{ severity }}","hostname":"{{ hostname }}","sysName":"{{ sysName }}","ip":"{{ ip }}","timestamp":"{{ timestamp }}","uid":"{{ uid }}","elapsed":"{{ elapsed }}","location":"{{ location }}"}',
-    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-    if ($transportId) {
-        $upd = $pdo->prepare('UPDATE alert_transports SET transport_type = ?, is_default = 1, transport_config = ? WHERE transport_id = ?');
-        $upd->execute(['api', $config, $transportId]);
-        fwrite(STDERR, 'updated');
-        exit(0);
-    }
-
-    $ins = $pdo->prepare('INSERT INTO alert_transports (transport_name, transport_type, is_default, transport_config) VALUES (?, ?, 1, ?)');
-    $ins->execute([$name, 'api', $config]);
-    fwrite(STDERR, 'created');
-    exit(0);
-} catch (Throwable $e) {
-    fwrite(STDERR, 'ERROR: ' . $e->getMessage());
-    exit(1);
-}
-PHP
-}
-
-_ft_out=$(configure_feishu_transport 2>&1) || true
-case "$_ft_out" in
-  *created*) echo "  Feishu transport created (default, → bridge /librenms)" ;;
-  *updated*) echo "  Feishu transport updated (default, → bridge /librenms)" ;;
-  *"not set"*) echo "$_ft_out" ;;
-  *) echo "  WARNING: Could not create Feishu transport: $_ft_out" ;;
-esac
+fi
 
 echo ""
 echo "============================================"

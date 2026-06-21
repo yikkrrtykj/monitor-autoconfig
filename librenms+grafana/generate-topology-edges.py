@@ -247,24 +247,61 @@ def resolve_ifindex(loc_port, ifname_map, loc_port_desc_map):
 def load_device_list():
     raw = os.environ.get("TOPOLOGY_DEVICES", "").strip()
     if raw:
-        return [item.strip() for item in raw.split(",") if item.strip()]
+        devices = []
+        seen = set()
+        for item in raw.split(","):
+            for ip in expand_device_entry(item):
+                if ip not in seen:
+                    devices.append(ip)
+                    seen.add(ip)
+        return devices
 
     union = []
     seen = set()
     for env_var in ("CORE_SWITCH_PING", "DIST_SWITCH_PING", "FIREWALL_PING", "TOURNAMENT_SWITCHES"):
         for entry in os.environ.get(env_var, "").split(","):
-            entry = entry.strip()
-            if not entry:
-                continue
-            ip = entry.split(":", 1)[1].strip() if ":" in entry else entry
-            if ip and ip not in seen:
-                try:
-                    IPv4Address(ip)
-                except ValueError:
+            for ip in expand_device_entry(entry):
+                if ip in seen:
                     continue
                 union.append(ip)
                 seen.add(ip)
     return union
+
+
+def expand_device_entry(entry):
+    entry = entry.strip()
+    if not entry:
+        return []
+    ip_part = entry.split(":", 1)[1].strip() if ":" in entry else entry
+    if not ip_part:
+        return []
+    if "-" not in ip_part:
+        try:
+            IPv4Address(ip_part)
+        except ValueError:
+            return []
+        return [ip_part]
+
+    start_ip, end_part = [part.strip() for part in ip_part.split("-", 1)]
+    try:
+        start = IPv4Address(start_ip)
+    except ValueError:
+        return []
+    if "." in end_part:
+        try:
+            end = IPv4Address(end_part)
+        except ValueError:
+            return []
+    else:
+        octets = start_ip.split(".")
+        octets[-1] = end_part
+        try:
+            end = IPv4Address(".".join(octets))
+        except ValueError:
+            return []
+    if int(end) < int(start):
+        return []
+    return [str(IPv4Address(value)) for value in range(int(start), int(end) + 1)]
 
 
 def poll_device(ip, community):
