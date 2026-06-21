@@ -22,7 +22,7 @@ import os
 import sys
 import threading
 import time
-from urllib import error, request
+from urllib import error, parse, request
 
 PORT = int(os.environ.get("FEISHU_BRIDGE_PORT", "5005"))
 DRY_RUN = os.environ.get("FEISHU_BRIDGE_DRY_RUN", "").lower() in ("1", "true", "yes", "on")
@@ -257,7 +257,28 @@ class Handler(BaseHTTPRequestHandler):
     def _read_json(self):
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length) if length > 0 else b"{}"
-        return json.loads(raw.decode("utf-8") or "{}")
+        text = raw.decode("utf-8", errors="replace").strip()
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except (ValueError, json.JSONDecodeError):
+            pass
+
+        form = parse.parse_qs(text, keep_blank_values=True) if ("=" in text or "&" in text) else {}
+        if form:
+            payload = {key: values[-1] if values else "" for key, values in form.items()}
+            body = payload.get("body")
+            if body:
+                try:
+                    nested = json.loads(body)
+                    if isinstance(nested, dict):
+                        payload.update(nested)
+                except (ValueError, json.JSONDecodeError):
+                    pass
+            return payload
+
+        return {"name": "LibreNMS transport test", "raw": text}
 
     def do_POST(self):
         if self.path == "/librenms":
@@ -265,12 +286,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, b"not found")
 
     def _handle_librenms(self):
-        try:
-            payload = self._read_json()
-        except (ValueError, json.JSONDecodeError) as exc:
-            log(f"[ERR] librenms invalid json: {exc}")
-            return self._send(400, b"invalid json")
-
+        payload = self._read_json()
         card = build_librenms_card(payload)
         rule_name = payload.get("name") or payload.get("rule") or "LibreNMS 告警"
         log(f"librenms alert: {rule_name} state={payload.get('state')}")
