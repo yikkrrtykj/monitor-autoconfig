@@ -1,3 +1,5 @@
+name: librenms-grafana
+
 services:
   librenms-db:
     image: mariadb:10.5
