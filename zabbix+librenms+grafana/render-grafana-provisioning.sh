@@ -8,6 +8,23 @@ set -eu
 src="${GRAFANA_PROVISIONING_SRC:-/grafana-provisioning-src}"
 out="${GRAFANA_PROVISIONING_OUT:-/grafana-provisioning-out}"
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "ERROR: python3 not found; cannot render Grafana provisioning" >&2
+  exit 1
+fi
+
+if [ ! -d "$src" ]; then
+  echo "ERROR: Grafana provisioning source not found: $src" >&2
+  exit 1
+fi
+
+case "$out" in
+  ""|"/"|".")
+    echo "ERROR: Refusing to render Grafana provisioning into unsafe path: ${out:-<empty>}" >&2
+    exit 1
+    ;;
+esac
+
 is_true() {
   case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on) return 0 ;;
@@ -24,8 +41,8 @@ print("|".join(re.escape(p) for p in parts))
 PY
 }
 
-rm -rf "$out"/*
 mkdir -p "$out"
+find "$out" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 cp -R "$src"/. "$out"/
 
 dashboard_file="$out/dashboard-json/event-infra.json"

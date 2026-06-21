@@ -8,6 +8,7 @@ librenms-data/
 
 # 每台服务器配置不同，不要提交
 zabbix+librenms+grafana/.env
+zabbix+librenms+grafana/grafana-provisioning-rendered/
 
 # 系统文件
 .DS_Store

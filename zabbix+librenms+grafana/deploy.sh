@@ -68,6 +68,29 @@ IMAGE_PULL_RETRY_DELAY="${IMAGE_PULL_RETRY_DELAY:-$(env_value IMAGE_PULL_RETRY_D
 IMAGE_PULL_RETRY_DELAY="${IMAGE_PULL_RETRY_DELAY:-20}"
 export COMPOSE_PARALLEL_LIMIT
 
+render_env_value() {
+  env_value "$1" 2>/dev/null || true
+}
+
+render_grafana_provisioning() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[deploy] ERROR: python3 is required to render Grafana provisioning." >&2
+    echo "[deploy] Install python3 on the host, then rerun ./deploy.sh." >&2
+    return 1
+  fi
+
+  export GRAFANA_PROVISIONING_SRC="$SCRIPT_DIR/grafana-provisioning"
+  export GRAFANA_PROVISIONING_OUT="$SCRIPT_DIR/grafana-provisioning-rendered"
+  export BIGSCREEN_ISP_NAMES="${BIGSCREEN_ISP_NAMES:-$(render_env_value BIGSCREEN_ISP_NAMES)}"
+  export BIGSCREEN_ISP_AUTO_DISCOVER="${BIGSCREEN_ISP_AUTO_DISCOVER:-$(render_env_value BIGSCREEN_ISP_AUTO_DISCOVER)}"
+  export BIGSCREEN_ISP_AUTO_DISCOVER="${BIGSCREEN_ISP_AUTO_DISCOVER:-true}"
+  export FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-$(render_env_value FIREWALL_WAN_IF_FILTER)}"
+  export FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+
+  echo "[deploy] Rendering Grafana provisioning..."
+  /bin/sh "$SCRIPT_DIR/render-grafana-provisioning.sh"
+}
+
 if ! docker compose version >/dev/null 2>&1; then
   echo "[deploy] ERROR: docker compose is not available. Install Docker Compose plugin first." >&2
   exit 1
@@ -95,9 +118,11 @@ pull_images() {
   return 1
 }
 
+render_grafana_provisioning
 pull_images
 
 echo "[deploy] Starting monitoring stack..."
+docker compose rm -sf grafana-provisioning-render >/dev/null 2>&1 || true
 docker compose up -d --remove-orphans
 
 echo "[deploy] Current service status:"

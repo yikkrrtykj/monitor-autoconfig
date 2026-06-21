@@ -528,22 +528,6 @@ services:
         echo ""
         echo "UniFi APs: Add via SNMP in LibreNMS web UI (http://localhost:8002)"
 
-  grafana-provisioning-render:
-    image: python:3-alpine
-    container_name: grafana-provisioning-render
-    environment:
-      BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-}"
-      BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
-      BIGSCREEN_ISP_AUTO_DISCOVER: "${BIGSCREEN_ISP_AUTO_DISCOVER:-true}"
-      BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
-      FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
-    volumes:
-      - ./grafana-provisioning:/grafana-provisioning-src:ro
-      - grafana-provisioning-rendered:/grafana-provisioning-out
-      - ./render-grafana-provisioning.sh:/render-grafana-provisioning.sh:ro
-    command: ["/bin/sh", "/render-grafana-provisioning.sh"]
-    restart: "no"
-
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
@@ -562,14 +546,12 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - grafana-data:/var/lib/grafana
-      - grafana-provisioning-rendered:/etc/grafana/provisioning:ro
+      - ./grafana-provisioning-rendered:/etc/grafana/provisioning:ro
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "${GRAFANA_PORT:-3000}:3000"
     depends_on:
       init-permissions:
-        condition: service_completed_successfully
-      grafana-provisioning-render:
         condition: service_completed_successfully
       prometheus:
         condition: service_healthy
@@ -741,6 +723,5 @@ volumes:
   player-targets-data:
   topology-data:
   grafana-data:
-  grafana-provisioning-rendered:
   librenms-db-data:
   librenms-data:

@@ -259,11 +259,11 @@
   "templating": {
     "list": [
       {
-        "current": { "text": "ISP1|ISP2", "value": "ISP1|ISP2" },
+        "current": { "text": "telecom|telcom|unicom|isp|WAN", "value": "telecom|telcom|unicom|isp|WAN" },
         "hide": 0,
         "label": "WAN 口过滤（正则）",
         "name": "wan_filter",
-        "query": "ISP1|ISP2",
+        "query": "telecom|telcom|unicom|isp|WAN",
         "type": "textbox"
       },
       {

@@ -353,7 +353,7 @@ docker exec librenms snmpwalk -v2c -c public 192.168.10.254 sysName.0
 - 日常改选手交换机、选手有线 / 无线网段、静态选手名单，不需要重建容器；看 `docker logs -f player-targets` 确认日志里的实际值
 - 改基础设施 Ping / 防火墙 SNMP / 选手 ping 间隔 / Prometheus 保留时间 → 重启 prometheus
 - 改大屏标题、时间、ISP 名称 / 过滤条件 / ISP 自动发现开关 / 舞台设备过滤，或大屏前端代码 → `docker compose up -d --force-recreate bigscreen`
-- 改 Grafana ISP 名单 / 自动发现开关 → `docker compose up -d --force-recreate grafana-provisioning-render grafana grafana-setup`
+- 改 Grafana ISP 名单 / 自动发现开关 → 重新运行 `./deploy.sh` 渲染 provisioning，然后 `docker compose restart grafana`
 - 改 dashboard JSON → Grafana 30 秒自动 reload，或 `docker compose restart grafana`
 
 **重置所有数据从头开始**
