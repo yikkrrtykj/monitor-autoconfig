@@ -17,6 +17,21 @@ env_value() {
   printf '%s' "$value"
 }
 
+# 探测本机主 IP：优先默认路由源 IP（ip route get），退而用 python UDP socket（不发包），再退 hostname -I。
+detect_host_ip() {
+  _ip=""
+  if command -v ip >/dev/null 2>&1; then
+    _ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+  fi
+  if [ -z "$_ip" ] && command -v python3 >/dev/null 2>&1; then
+    _ip=$(python3 -c 'import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.connect(("1.1.1.1",80)); print(s.getsockname()[0]); s.close()' 2>/dev/null)
+  fi
+  if [ -z "$_ip" ]; then
+    _ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -vE '^(127\.|169\.254\.|$)' | head -n 1)
+  fi
+  printf '%s' "$_ip"
+}
+
 if [ ! -f .env ]; then
   if [ -f .env.example ]; then
     cp .env.example .env
@@ -25,6 +40,23 @@ if [ ! -f .env ]; then
   else
     echo "[deploy] ERROR: .env and .env.example are both missing." >&2
     exit 1
+  fi
+fi
+
+# SERVER_IP 留空时自动探测本机 IP 并写回 .env（换场地清空 SERVER_IP= 即可重新探测）。
+if ! env_value SERVER_IP >/dev/null 2>&1; then
+  detected_ip=$(detect_host_ip)
+  if [ -n "$detected_ip" ]; then
+    if grep -qE '^SERVER_IP=' .env; then
+      tmp_env=$(mktemp)
+      sed "s|^SERVER_IP=.*|SERVER_IP=${detected_ip}|" .env > "$tmp_env" && mv "$tmp_env" .env
+    else
+      printf 'SERVER_IP=%s\n' "$detected_ip" >> .env
+    fi
+    export SERVER_IP="$detected_ip"
+    echo "[deploy] SERVER_IP 为空，已自动探测本机 IP -> ${detected_ip}（写入 .env）"
+  else
+    echo "[deploy] WARN: 未能自动探测本机 IP，请手动在 .env 设置 SERVER_IP。" >&2
   fi
 fi
 
