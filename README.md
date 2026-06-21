@@ -346,7 +346,8 @@ docker compose rm -sf grafana-provisioning-render
 4. `BIGSCREEN_ISP_MAX_BANDWIDTH` 是否写运营商真实带宽，比如 300M 就写 `300`。
 5. `ISP_SATURATION_PERCENT` 是否是你想要的阈值，比如 80 表示超过 240 Mbps 告警。
 6. 规则里应该看到 `ifInOctets_rate / ifOutOctets_rate`，而不是只看 `port_usage_perc`。
-7. 防火墙 WAN 口是否能被 `FIREWALL_WAN_IF_FILTER` 匹配到。
+7. `docker logs -f librenms-config` 里应该看到 `ISP bandwidth rule SQL synced`。
+8. 防火墙 WAN 口是否能被 `FIREWALL_WAN_IF_FILTER` 匹配到。
 
 改完后跑：
 

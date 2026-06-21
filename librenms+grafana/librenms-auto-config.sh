@@ -955,52 +955,22 @@ function port_match_rules(array $labels): array
     return $rules;
 }
 
-function rate_rules(string $ratePrefix, float $downMbps, float $upMbps, float $percent): array
+function rate_rules(float $downMbps, float $upMbps, float $percent): array
 {
     return [
-        alert_rule("{$ratePrefix}.ifInOctets_rate", 'greater_or_equal', mbps_to_octets_threshold($downMbps, $percent)),
-        alert_rule("{$ratePrefix}.ifOutOctets_rate", 'greater_or_equal', mbps_to_octets_threshold($upMbps, $percent)),
+        alert_rule('ports.ifInOctets_rate', 'greater_or_equal', mbps_to_octets_threshold($downMbps, $percent)),
+        alert_rule('ports.ifOutOctets_rate', 'greater_or_equal', mbps_to_octets_threshold($upMbps, $percent)),
     ];
 }
 
-function table_columns(PDO $pdo, string $table): array
+function port_up_rule(): array
 {
-    $cols = [];
-    try {
-        foreach ($pdo->query("SHOW COLUMNS FROM `{$table}`") as $column) {
-            $cols[$column['Field']] = true;
-        }
-    } catch (Throwable $e) {
-        return [];
-    }
-    return $cols;
+    return alert_rule('macros.port_up', 'equal', '1', 'boolean', 'radio');
 }
 
 $percent = is_numeric(getenv('ISP_SATURATION_PERCENT') ?: '') ? (float) getenv('ISP_SATURATION_PERCENT') : 80.0;
 $bandwidth = parse_bandwidth_config(getenv('BIGSCREEN_ISP_MAX_BANDWIDTH') ?: '1000');
 $wanKeywords = array_values(array_filter(array_map('trim', explode(',', getenv('FIREWALL_WAN_IF_FILTER') ?: 'telecom,telcom,unicom,isp,WAN'))));
-
-$ratePrefix = 'ports';
-try {
-    $host = getenv('DB_HOST') ?: 'librenms-db';
-    $database = getenv('DB_NAME') ?: 'librenms';
-    $dbUser = getenv('DB_USER') ?: 'librenms';
-    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
-    $pdo = new PDO(
-        "mysql:host={$host};dbname={$database};charset=utf8mb4",
-        $dbUser,
-        $dbPass,
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
-    $portsCols = table_columns($pdo, 'ports');
-    $statsCols = table_columns($pdo, 'ports_statistics');
-    if (! isset($portsCols['ifInOctets_rate'], $portsCols['ifOutOctets_rate']) &&
-        isset($statsCols['ifInOctets_rate'], $statsCols['ifOutOctets_rate'])) {
-        $ratePrefix = 'ports_statistics';
-    }
-} catch (Throwable $e) {
-    $ratePrefix = 'ports';
-}
 
 $rules = [];
 if (! empty($bandwidth['per'])) {
@@ -1010,8 +980,9 @@ if (! empty($bandwidth['per'])) {
             continue;
         }
         $rules[] = and_group([
+            port_up_rule(),
             or_group($match),
-            or_group(rate_rules($ratePrefix, (float) $entry['down'], (float) $entry['up'], $percent)),
+            or_group(rate_rules((float) $entry['down'], (float) $entry['up'], $percent)),
         ]);
     }
     if (empty($rules)) {
@@ -1025,12 +996,144 @@ if (! empty($bandwidth['per'])) {
         exit(1);
     }
     $builder = and_group([
+        port_up_rule(),
         or_group($match),
-        or_group(rate_rules($ratePrefix, (float) $default['down'], (float) $default['up'], $percent)),
+        or_group(rate_rules((float) $default['down'], (float) $default['up'], $percent)),
     ]);
 }
 $builder['valid'] = true;
 echo json_encode($builder, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+PHP
+}
+
+sync_isp_saturation_query_override() {
+  php <<'PHP'
+<?php
+function parse_bandwidth_config(string $raw): array
+{
+    $raw = trim($raw);
+    $cfg = ['default' => null, 'per' => []];
+    if ($raw === '') {
+        return $cfg;
+    }
+    if (preg_match('/^\d+(?:\.\d+)?$/', $raw)) {
+        $mbps = (float) $raw;
+        $cfg['default'] = ['down' => $mbps, 'up' => $mbps];
+        return $cfg;
+    }
+    foreach (explode(',', $raw) as $item) {
+        $item = trim($item);
+        if ($item === '' || ! str_contains($item, ':')) {
+            continue;
+        }
+        [$name, $bandwidth] = array_map('trim', explode(':', $item, 2));
+        $parts = array_map('trim', explode('/', $bandwidth));
+        $down = is_numeric($parts[0] ?? null) ? (float) $parts[0] : null;
+        if ($down === null) {
+            continue;
+        }
+        $up = is_numeric($parts[1] ?? null) ? (float) $parts[1] : $down;
+        $cfg['per'][] = ['label' => $name, 'down' => $down, 'up' => $up];
+    }
+    return $cfg;
+}
+
+function threshold_bps(float $mbps, float $percent): string
+{
+    return (string) max(1, (int) round($mbps * 1000000 * ($percent / 100)));
+}
+
+function sql_quote(PDO $pdo, string $value): string
+{
+    return $pdo->quote('%' . str_replace(['%', '_'], ['\\%', '\\_'], $value) . '%');
+}
+
+function port_match_sql(PDO $pdo, array $labels): string
+{
+    $parts = [];
+    foreach ($labels as $label) {
+        $label = trim((string) $label);
+        if ($label === '') {
+            continue;
+        }
+        $like = sql_quote($pdo, $label);
+        foreach (['ports.ifAlias', 'ports.ifName', 'ports.ifDescr'] as $field) {
+            $parts[] = "{$field} LIKE {$like}";
+        }
+    }
+    if (empty($parts)) {
+        return '';
+    }
+    return '(' . implode(' OR ', $parts) . ')';
+}
+
+function rate_sql(float $downMbps, float $upMbps, float $percent): string
+{
+    $down = threshold_bps($downMbps, $percent);
+    $up = threshold_bps($upMbps, $percent);
+    return "((ports.ifInOctets_rate * 8) >= {$down} OR (ports.ifOutOctets_rate * 8) >= {$up})";
+}
+
+try {
+    $host = getenv('DB_HOST') ?: 'librenms-db';
+    $database = getenv('DB_NAME') ?: 'librenms';
+    $dbUser = getenv('DB_USER') ?: 'librenms';
+    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
+    $pdo = new PDO(
+        "mysql:host={$host};dbname={$database};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+
+    $percent = is_numeric(getenv('ISP_SATURATION_PERCENT') ?: '') ? (float) getenv('ISP_SATURATION_PERCENT') : 80.0;
+    $bandwidth = parse_bandwidth_config(getenv('BIGSCREEN_ISP_MAX_BANDWIDTH') ?: '1000');
+    $wanKeywords = array_values(array_filter(array_map('trim', explode(',', getenv('FIREWALL_WAN_IF_FILTER') ?: 'telecom,telcom,unicom,isp,WAN'))));
+
+    $branches = [];
+    $summary = [];
+    if (! empty($bandwidth['per'])) {
+        foreach ($bandwidth['per'] as $entry) {
+            $match = port_match_sql($pdo, [$entry['label']]);
+            if ($match === '') {
+                continue;
+            }
+            $branches[] = "({$match} AND " . rate_sql((float) $entry['down'], (float) $entry['up'], $percent) . ')';
+            $summary[] = "{$entry['label']} down>=" . threshold_bps((float) $entry['down'], $percent) . "bps up>=" . threshold_bps((float) $entry['up'], $percent) . "bps";
+        }
+    } else {
+        $default = $bandwidth['default'] ?: ['down' => 1000.0, 'up' => 1000.0];
+        $match = port_match_sql($pdo, $wanKeywords);
+        if ($match !== '') {
+            $branches[] = "({$match} AND " . rate_sql((float) $default['down'], (float) $default['up'], $percent) . ')';
+            $summary[] = "all WAN down>=" . threshold_bps((float) $default['down'], $percent) . "bps up>=" . threshold_bps((float) $default['up'], $percent) . "bps";
+        }
+    }
+
+    if (empty($branches)) {
+        echo "  ISP bandwidth SQL override skipped: missing WAN labels or bandwidth config\n";
+        exit(0);
+    }
+
+    $query = 'SELECT * FROM devices,ports WHERE devices.device_id = ?'
+        . ' AND devices.device_id = ports.device_id'
+        . ' AND ports.deleted = 0 AND ports.ignore = 0 AND ports.disabled = 0'
+        . ' AND ports.ifOperStatus = "up" AND ports.ifAdminStatus = "up"'
+        . ' AND (' . implode(' OR ', $branches) . ')';
+
+    $exists = $pdo->prepare('SELECT id FROM alert_rules WHERE name = ? LIMIT 1');
+    $exists->execute(['ISP 带宽饱和告警']);
+    if (! $exists->fetchColumn()) {
+        echo "  ISP bandwidth rule SQL override skipped: alert rule not found yet\n";
+        exit(0);
+    }
+
+    $stmt = $pdo->prepare('UPDATE alert_rules SET query = ? WHERE name = ?');
+    $stmt->execute([$query, 'ISP 带宽饱和告警']);
+    echo '  ISP bandwidth rule SQL synced: ' . implode('; ', $summary) . "\n";
+} catch (Throwable $e) {
+    echo "  WARNING: ISP bandwidth SQL override failed: " . $e->getMessage() . "\n";
+}
 PHP
 }
 
@@ -1311,6 +1414,7 @@ if [ -n "$API_TOKEN" ]; then
   if [ -n "$isp_builder" ]; then
     isp_builder_escaped=$(printf '%s' "$isp_builder" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')
     upsert_rule "ISP 带宽饱和告警" "{\"name\":\"ISP 带宽饱和告警\",\"devices\":[-1],\"builder\":${isp_builder_escaped},\"severity\":\"warning\",\"disabled\":0}"
+    sync_isp_saturation_query_override
   else
     echo "  Alert rule: ISP 带宽饱和告警 - skipped (missing WAN filter or bandwidth config)"
   fi
