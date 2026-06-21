@@ -14,6 +14,15 @@ Env:
   LIBRENMS_TOKEN_FILE     path to token file written by librenms-config
                           (default /librenms-data/librenms-api-token)
   SWITCH_WATCH_INTERVAL   seconds between device-list polls (default 120)
+  PROMETHEUS_URL          Prometheus internal URL (default http://prometheus:9090)
+  ISP_ALERT_ENABLED       true = watch firewall WAN bandwidth (default true)
+  ISP_ALERT_FOR_SECONDS   seconds above threshold before alerting (default 10)
+  ISP_ALERT_POLL_INTERVAL seconds between checks (default 5)
+  ISP_ALERT_RATE_WINDOW   Prometheus irate() window (default 30s)
+  ISP_ALERT_RESOLVE_SECONDS seconds below threshold before recovery (default 30)
+  FIREWALL_WAN_IF_FILTER  WAN interface label keywords
+  BIGSCREEN_ISP_MAX_BANDWIDTH ISP bandwidth Mbps config
+  ISP_SATURATION_PERCENT  alert threshold percent of configured bandwidth
 """
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -31,6 +40,15 @@ LIBRENMS_URL = os.environ.get("LIBRENMS_URL", "").rstrip("/")
 LIBRENMS_API_TOKEN = os.environ.get("LIBRENMS_API_TOKEN", "")
 LIBRENMS_TOKEN_FILE = os.environ.get("LIBRENMS_TOKEN_FILE", "/librenms-data/librenms-api-token")
 SWITCH_WATCH_INTERVAL = int(os.environ.get("SWITCH_WATCH_INTERVAL", "30"))
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090").rstrip("/")
+ISP_ALERT_ENABLED = os.environ.get("ISP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+ISP_ALERT_FOR_SECONDS = int(os.environ.get("ISP_ALERT_FOR_SECONDS", "10"))
+ISP_ALERT_POLL_INTERVAL = int(os.environ.get("ISP_ALERT_POLL_INTERVAL", "5"))
+ISP_ALERT_RATE_WINDOW = os.environ.get("ISP_ALERT_RATE_WINDOW", "30s")
+ISP_ALERT_RESOLVE_SECONDS = int(os.environ.get("ISP_ALERT_RESOLVE_SECONDS", "30"))
+FIREWALL_WAN_IF_FILTER = os.environ.get("FIREWALL_WAN_IF_FILTER", "telecom,telcom,unicom,isp,WAN")
+BIGSCREEN_ISP_MAX_BANDWIDTH = os.environ.get("BIGSCREEN_ISP_MAX_BANDWIDTH", "1000")
+ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "80") or "80")
 
 
 def _clean_token(raw):
@@ -141,6 +159,33 @@ def build_device_online_card(device):
     return _make_card(title, "LibreNMS 设备发现", "green", "\n".join(lines))
 
 
+def format_bps(value):
+    value = float(value or 0)
+    units = ["bps", "Kbps", "Mbps", "Gbps", "Tbps"]
+    idx = 0
+    while abs(value) >= 1000 and idx < len(units) - 1:
+        value /= 1000.0
+        idx += 1
+    decimals = 1 if idx >= 2 else 0
+    return f"{value:.{decimals}f} {units[idx]}"
+
+
+def build_isp_bandwidth_card(event, recovered=False):
+    title = "ISP 带宽恢复" if recovered else "ISP 带宽饱和"
+    color = "green" if recovered else "red"
+    direction_text = "下载" if event["direction"] == "in" else "上传"
+    state_text = "恢复" if recovered else "超过阈值"
+    lines = [
+        f"链路：{event['label']}",
+        f"方向：{direction_text}",
+        f"当前：{format_bps(event['value_bps'])}",
+        f"阈值：{format_bps(event['threshold_bps'])}",
+        f"配置：{event['capacity_mbps']:g} Mbps × {event['percent']:g}%",
+        f"持续：{int(event['duration'])} 秒 {state_text}",
+    ]
+    return _make_card(title, "实时 ISP 带宽监控", color, "\n".join(lines))
+
+
 def _make_card(title, subtitle, color, body_md):
     return {
         "msg_type": "interactive",
@@ -201,6 +246,190 @@ def send_feishu(card):
     except Exception as exc:
         log(f"[ERR] unexpected: {exc}")
         return False
+
+
+def _norm_label(value):
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+
+def _parse_bandwidth_config(raw):
+    raw = str(raw or "").strip()
+    cfg = {"default": None, "per": []}
+    if not raw:
+        return cfg
+    try:
+        mbps = float(raw)
+        cfg["default"] = {"down": mbps, "up": mbps}
+        return cfg
+    except ValueError:
+        pass
+
+    for item in raw.split(","):
+        item = item.strip()
+        if not item or ":" not in item:
+            continue
+        label, bandwidth = [part.strip() for part in item.split(":", 1)]
+        parts = [part.strip() for part in bandwidth.split("/", 1)]
+        try:
+            down = float(parts[0])
+        except (TypeError, ValueError):
+            continue
+        try:
+            up = float(parts[1]) if len(parts) > 1 else down
+        except (TypeError, ValueError):
+            up = down
+        cfg["per"].append({
+            "label": label.lower(),
+            "norm": _norm_label(label),
+            "down": down,
+            "up": up,
+        })
+    return cfg
+
+
+def _wan_keywords():
+    return [part.strip().lower() for part in FIREWALL_WAN_IF_FILTER.split(",") if part.strip()]
+
+
+def _wan_label(metric):
+    return (metric.get("ifAlias") or metric.get("ifName") or metric.get("ifDescr") or "").strip()
+
+
+def _is_wan_port(label):
+    lower = label.lower()
+    return any(keyword in lower for keyword in _wan_keywords())
+
+
+def _bandwidth_for_label(label, direction, cfg):
+    lower = label.lower()
+    norm = _norm_label(label)
+    for entry in cfg["per"]:
+        if (entry["label"] and entry["label"] in lower) or (entry["norm"] and entry["norm"] in norm):
+            return entry["down"] if direction == "in" else entry["up"]
+    default = cfg["default"] or {"down": 1000.0, "up": 1000.0}
+    return default["down"] if direction == "in" else default["up"]
+
+
+def prometheus_query(query):
+    url = f"{PROMETHEUS_URL}/api/v1/query?{parse.urlencode({'query': query})}"
+    with request.urlopen(url, timeout=10) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if payload.get("status") != "success":
+        raise RuntimeError(payload.get("error") or "Prometheus query failed")
+    return payload.get("data", {}).get("result", [])
+
+
+def fetch_wan_rates():
+    results = []
+    for direction, metric in (("in", "ifHCInOctets"), ("out", "ifHCOutOctets")):
+        query = f'irate({metric}{{job="firewall-snmp"}}[{ISP_ALERT_RATE_WINDOW}]) * 8'
+        for item in prometheus_query(query):
+            metric_labels = item.get("metric") or {}
+            label = _wan_label(metric_labels)
+            if not label or not _is_wan_port(label):
+                continue
+            try:
+                value_bps = float((item.get("value") or [None, "nan"])[1])
+            except (TypeError, ValueError):
+                continue
+            if value_bps < 0:
+                continue
+            results.append({
+                "key": f"{label}|{direction}",
+                "label": label,
+                "direction": direction,
+                "value_bps": value_bps,
+                "target_ip": metric_labels.get("target_ip") or metric_labels.get("instance") or "",
+            })
+    return results
+
+
+def isp_bandwidth_watcher():
+    if not ISP_ALERT_ENABLED:
+        log("[ISP] realtime bandwidth watcher disabled")
+        return
+    time.sleep(30)
+    bandwidth_cfg = _parse_bandwidth_config(BIGSCREEN_ISP_MAX_BANDWIDTH)
+    states = {}
+    log(
+        "[ISP] realtime bandwidth watcher enabled "
+        f"(threshold={ISP_SATURATION_PERCENT:g}%, for={ISP_ALERT_FOR_SECONDS}s, "
+        f"poll={ISP_ALERT_POLL_INTERVAL}s, rate_window={ISP_ALERT_RATE_WINDOW}, prometheus={PROMETHEUS_URL})"
+    )
+
+    while True:
+        now = time.time()
+        try:
+            rates = fetch_wan_rates()
+        except Exception as exc:
+            log(f"[ISP] poll failed: {exc}")
+            time.sleep(ISP_ALERT_POLL_INTERVAL)
+            continue
+
+        seen = set()
+        for sample in rates:
+            seen.add(sample["key"])
+            capacity_mbps = _bandwidth_for_label(sample["label"], sample["direction"], bandwidth_cfg)
+            threshold_bps = capacity_mbps * 1000000 * (ISP_SATURATION_PERCENT / 100.0)
+            state = states.setdefault(sample["key"], {
+                "active_since": None,
+                "clear_since": None,
+                "alerting": False,
+                "last_value": 0.0,
+            })
+            state["last_value"] = sample["value_bps"]
+
+            if sample["value_bps"] >= threshold_bps:
+                if state["active_since"] is None:
+                    state["active_since"] = now
+                state["clear_since"] = None
+                duration = now - state["active_since"]
+                if not state["alerting"] and duration >= ISP_ALERT_FOR_SECONDS:
+                    state["alerting"] = True
+                    event = {
+                        **sample,
+                        "threshold_bps": threshold_bps,
+                        "capacity_mbps": capacity_mbps,
+                        "percent": ISP_SATURATION_PERCENT,
+                        "duration": duration,
+                    }
+                    log(
+                        f"[ISP] ALERT {sample['label']} {sample['direction']} "
+                        f"{format_bps(sample['value_bps'])} >= {format_bps(threshold_bps)}"
+                    )
+                    send_feishu(build_isp_bandwidth_card(event, recovered=False))
+            else:
+                state["active_since"] = None
+                if state["alerting"]:
+                    if state["clear_since"] is None:
+                        state["clear_since"] = now
+                    clear_duration = now - state["clear_since"]
+                    if clear_duration >= ISP_ALERT_RESOLVE_SECONDS:
+                        state["alerting"] = False
+                        event = {
+                            **sample,
+                            "threshold_bps": threshold_bps,
+                            "capacity_mbps": capacity_mbps,
+                            "percent": ISP_SATURATION_PERCENT,
+                            "duration": clear_duration,
+                        }
+                        log(
+                            f"[ISP] RECOVER {sample['label']} {sample['direction']} "
+                            f"{format_bps(sample['value_bps'])} < {format_bps(threshold_bps)}"
+                        )
+                        send_feishu(build_isp_bandwidth_card(event, recovered=True))
+                else:
+                    state["clear_since"] = None
+
+        for key, state in list(states.items()):
+            if key in seen:
+                continue
+            if state.get("alerting") and state.get("clear_since") is None:
+                state["clear_since"] = now
+            elif state.get("clear_since") and now - state["clear_since"] >= ISP_ALERT_RESOLVE_SECONDS:
+                states.pop(key, None)
+
+        time.sleep(ISP_ALERT_POLL_INTERVAL)
 
 
 def device_watcher():
@@ -312,6 +541,9 @@ def main():
         threading.Thread(target=device_watcher, daemon=True).start()
     else:
         log("[WATCHER] LIBRENMS_URL not set, device watcher disabled")
+
+    if PROMETHEUS_URL:
+        threading.Thread(target=isp_bandwidth_watcher, daemon=True).start()
 
     server = HTTPServer(("0.0.0.0", PORT), Handler)
     try:

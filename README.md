@@ -184,6 +184,7 @@ BIGSCREEN_ISP_AUTO_DISCOVER=true
 FIREWALL_WAN_IF_FILTER=telecom,telcom,unicom,isp,WAN
 BIGSCREEN_ISP_MAX_BANDWIDTH=300
 ISP_SATURATION_PERCENT=90
+ISP_ALERT_FOR_SECONDS=10
 ```
 
 这里的逻辑：
@@ -192,7 +193,8 @@ ISP_SATURATION_PERCENT=90
 2. `FIREWALL_WAN_IF_FILTER` 用来匹配 WAN 口的 `ifAlias / ifName / ifDescr`。
 3. `BIGSCREEN_ISP_MAX_BANDWIDTH=300` 表示这条 ISP 按 300 Mbps 算。
 4. `ISP_SATURATION_PERCENT=90` 表示 300M 的 90%，也就是实时入口或出口超过 270 Mbps 就告警。
-5. 这里不看 LibreNMS 页面上那个“物理口百分比”。哪怕防火墙口是 1G，只要你写 300，就按 300 算。
+5. `ISP_ALERT_FOR_SECONDS=10` 表示连续 10 秒超过阈值才推飞书。
+6. 这里不看 LibreNMS 页面上那个“物理口百分比”。哪怕防火墙口是 1G，只要你写 300，就按 300 算。
 
 多条 ISP 不同带宽：
 
@@ -206,7 +208,7 @@ BIGSCREEN_ISP_MAX_BANDWIDTH=telecom:300,unicom:500
 BIGSCREEN_ISP_MAX_BANDWIDTH=telecom:1000/100,unicom:500/50
 ```
 
-`./apply-env.sh` 会重建 LibreNMS 规则。告警只走 LibreNMS：规则会直接比较 WAN 口实时入口/出口速率和你写的带宽阈值，不走 Prometheus 推送。
+`./apply-env.sh` 会重建 LibreNMS transport，也会重启飞书 bridge。ISP 带宽饱和告警由 bridge 从 Prometheus 实时读取防火墙 WAN 口速率：连续超过 `BIGSCREEN_ISP_MAX_BANDWIDTH * ISP_SATURATION_PERCENT` 才推飞书。LibreNMS 仍负责设备离线、丢包等常规告警。
 
 ### 3.3 选手监控
 
@@ -342,12 +344,12 @@ docker compose rm -sf grafana-provisioning-render
 
 1. `.env` 里 `FEISHU_ROBOT_TOKEN` 是否填写。
 2. 跑过 `./apply-env.sh` 没有。
-3. LibreNMS 规则页里 `ISP 带宽饱和告警` 的 `Transports` 是否不是 `none`。
+3. `docker logs -f alertmanager-feishu-bridge` 里是否有 `[ISP] realtime bandwidth watcher enabled`。
 4. `BIGSCREEN_ISP_MAX_BANDWIDTH` 是否写运营商真实带宽，比如 300M 就写 `300`。
 5. `ISP_SATURATION_PERCENT` 是否是你想要的阈值，比如 80 表示超过 240 Mbps 告警。
-6. 规则里应该看到 `ifInOctets_rate / ifOutOctets_rate`，而不是只看 `port_usage_perc`。
-7. `docker logs -f librenms-config` 里应该看到 `ISP bandwidth rule SQL synced`。
-8. 防火墙 WAN 口是否能被 `FIREWALL_WAN_IF_FILTER` 匹配到。
+6. `ISP_ALERT_FOR_SECONDS` 是否是你想要的持续时间，比如 10。
+7. 防火墙 WAN 口是否能被 `FIREWALL_WAN_IF_FILTER` 匹配到。
+8. LibreNMS transport 的 Test 是否 OK；这只证明飞书通，不代表 ISP 实时阈值已经触发。
 
 改完后跑：
 
@@ -357,7 +359,7 @@ docker logs -f librenms-config
 docker logs -f alertmanager-feishu-bridge
 ```
 
-注意：LibreNMS poller 有周期，不是毫秒级触发。但规则页必须显示 Feishu transport，否则只会在 LibreNMS 内记录，不会推飞书。
+注意：ISP 实时带宽告警看的是 Prometheus 的 `firewall-snmp` 采集，默认每 5 秒检查一次；LibreNMS poller 不参与这条告警。
 
 ### 6.3 防火墙能 ping，拓扑还是红
 
