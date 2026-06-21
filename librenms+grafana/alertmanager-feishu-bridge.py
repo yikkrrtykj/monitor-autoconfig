@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-LibreNMS webhook -> Feishu bot bridge + device-online watcher.
+LibreNMS webhook -> Feishu bot bridge + device-online watcher + syslog watcher.
 
-Stdlib only (http.server + urllib + json + threading) so the container
+Stdlib only (http.server + urllib + json + threading + re) so the container
 runs on python:3-slim with no requirements.txt.
 
 Env:
@@ -24,11 +24,14 @@ Env:
   FIREWALL_WAN_IF_FILTER  WAN interface label keywords
   BIGSCREEN_ISP_MAX_BANDWIDTH ISP bandwidth Mbps config
   ISP_SATURATION_PERCENT  alert threshold percent of configured bandwidth
+  SYSLOG_WATCH_ENABLED    true = watch syslog file for security events (default true)
+  SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
 """
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -51,6 +54,10 @@ ISP_ALERT_STATUS_INTERVAL = int(os.environ.get("ISP_ALERT_STATUS_INTERVAL", "30"
 FIREWALL_WAN_IF_FILTER = os.environ.get("FIREWALL_WAN_IF_FILTER", "telecom,telcom,unicom,isp,WAN")
 BIGSCREEN_ISP_MAX_BANDWIDTH = os.environ.get("BIGSCREEN_ISP_MAX_BANDWIDTH", "1000")
 ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "80") or "80")
+SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
+
+_DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
 
 
 def _clean_token(raw):
@@ -468,6 +475,55 @@ def isp_bandwidth_watcher():
         time.sleep(ISP_ALERT_POLL_INTERVAL)
 
 
+def build_dhcp_snooping_card(host, message):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [f"🔴 来自：{host}", message.strip()[:200], f"⏰ {ts}"]
+    return _make_card("⚠️ DHCP Snooping 违规", "交换机安全告警", "orange", "\n".join(lines))
+
+
+def syslog_watcher():
+    log(f"[SYSLOG] watching {SYSLOG_FILE} for DHCP snooping violations")
+    _last_sent = {}
+    RATE_LIMIT = 60
+
+    while not os.path.exists(SYSLOG_FILE):
+        time.sleep(5)
+
+    try:
+        f = open(SYSLOG_FILE)
+        f.seek(0, 2)
+        current_ino = os.fstat(f.fileno()).st_ino
+    except OSError as exc:
+        log(f"[SYSLOG] cannot open {SYSLOG_FILE}: {exc}")
+        return
+
+    while True:
+        line = f.readline()
+        if not line:
+            time.sleep(0.5)
+            try:
+                if os.stat(SYSLOG_FILE).st_ino != current_ino:
+                    f.close()
+                    f = open(SYSLOG_FILE)
+                    current_ino = os.fstat(f.fileno()).st_ino
+                    log("[SYSLOG] log rotated, reopened file")
+            except OSError:
+                pass
+            continue
+
+        parts = line.split(" ", 2)
+        if len(parts) < 3:
+            continue
+        host, _severity, message = parts
+
+        if _DHCP_SNOOP_RE.search(message):
+            now = time.time()
+            if now - _last_sent.get(host, 0) >= RATE_LIMIT:
+                _last_sent[host] = now
+                log(f"[SYSLOG] DHCP snooping violation from {host}")
+                send_feishu(build_dhcp_snooping_card(host, message))
+
+
 def device_watcher():
     log(f"[WATCHER] starting, interval={SWITCH_WATCH_INTERVAL}s, url={LIBRENMS_URL}")
     time.sleep(60)  # 等 LibreNMS 就绪后再开始
@@ -580,6 +636,12 @@ def main():
 
     if PROMETHEUS_URL:
         threading.Thread(target=isp_bandwidth_watcher, daemon=True).start()
+
+    if SYSLOG_WATCH_ENABLED:
+        log(f"[SYSLOG] DHCP snooping watcher enabled (file={SYSLOG_FILE})")
+        threading.Thread(target=syslog_watcher, daemon=True).start()
+    else:
+        log("[SYSLOG] DHCP snooping watcher disabled")
 
     server = HTTPServer(("0.0.0.0", PORT), Handler)
     try:

@@ -134,6 +134,7 @@ services:
       - ./alertmanager-feishu-bridge.py:/app/bridge.py:ro
       - /etc/localtime:/etc/localtime:ro
       - ./librenms-data:/librenms-data:ro
+      - syslog-spool:/var/log/remote:ro
     environment:
       TZ: Asia/Shanghai
       FEISHU_BRIDGE_PORT: "5005"
@@ -152,6 +153,8 @@ services:
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
+      SYSLOG_WATCH_ENABLED: "${SYSLOG_WATCH_ENABLED:-true}"
+      SYSLOG_FILE: "/var/log/remote/syslog.log"
     command: ["python", "/app/bridge.py"]
     networks:
       - monitor

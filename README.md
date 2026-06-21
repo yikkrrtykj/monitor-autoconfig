@@ -239,7 +239,35 @@ PLAYER_STATIC_TARGETS=1-1=192.168.12.101,1-2=192.168.12.102,2-1=192.168.12.201
 PLAYER_STATIC_NETWORK=wireless
 ```
 
-### 3.4 新增设备不用每台手工加
+### 3.5 飞书告警
+
+系统自动配置三类告警，部署后无需手动建规则：
+
+| 告警 | 来源 | 速度 |
+|---|---|---|
+| 设备离线 / 恢复 | LibreNMS ICMP | ~10 秒 |
+| 高丢包（>10%） | LibreNMS ICMP | ~10 秒 |
+| ISP 带宽饱和 | Prometheus 实时 | 10 秒（可调） |
+| DHCP Snooping 违规 | syslog | 秒级 |
+
+DHCP Snooping 违规告警需要交换机配 syslog：
+
+```
+! Cisco IOS，全局配置模式
+logging host <监控服务器IP>
+```
+
+宿主机还需放行 514/UDP：
+
+```bash
+sudo ufw allow 514/udp    # Ubuntu
+# 或
+sudo firewall-cmd --add-port=514/udp --permanent && sudo firewall-cmd --reload  # CentOS
+```
+
+只有配了 `logging host` 的交换机的违规消息才能收到。目前只有核心交换机配了，其他接入层交换机如果也想告警，同样加一行 `logging host <监控服务器IP>`。
+
+### 3.6 新增设备不用每台手工加
 
 如果新交换机满足这些条件，通常不用去 LibreNMS 一台台 Add Device：
 
@@ -249,6 +277,8 @@ PLAYER_STATIC_NETWORK=wireless
 4. LLDP 开着，能被核心发现。
 
 如果新设备不在范围里，改 `.env` 后跑 `./apply-env.sh`。
+
+
 
 ## 4. 改完配置怎么生效
 
