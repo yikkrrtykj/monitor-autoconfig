@@ -1153,7 +1153,7 @@ if [ -n "$API_TOKEN" ]; then
   upsert_rule "高丢包告警" '{
     "name": "高丢包告警",
     "devices": [-1],
-    "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_up\",\"field\":\"macros.device_up\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"},{\"id\":\"device_perf_loss\",\"field\":\"device_perf_loss\",\"type\":\"text\",\"operator\":\"greater\",\"value\":\"10\"}],\"valid\":true}",
+    "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_up\",\"field\":\"macros.device_up\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"},{\"id\":\"device_perf.loss\",\"field\":\"device_perf.loss\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater\",\"value\":\"10\"}],\"valid\":true}",
     "severity": "warning",
     "disabled": 0
   }'
