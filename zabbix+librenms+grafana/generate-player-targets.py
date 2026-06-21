@@ -828,6 +828,12 @@ def main():
     gateways_raw = os.environ.get("PLAYER_GATEWAYS", "").strip()
     if not gateways_raw:
         gateways_raw = os.environ.get("LIBRENMS_CORE_IP", "").strip()
+    if not gateways_raw:
+        # Last resort: derive the core switch IP from CORE_SWITCH_PING ("Core:192.168.10.254")
+        core_first = os.environ.get("CORE_SWITCH_PING", "").strip().split(",")[0].strip()
+        if ":" in core_first:
+            core_first = core_first.split(":", 1)[1]
+        gateways_raw = core_first.split("-")[0].strip()
     gateways = [g.strip() for g in gateways_raw.split(",") if g.strip()]
     gateway_community = os.environ.get("PLAYER_GATEWAY_SNMP_COMMUNITY", "").strip() or community
     vlan_ids_raw = os.environ.get("PLAYER_VLAN_IDS", "").strip()
