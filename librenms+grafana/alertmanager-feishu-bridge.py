@@ -172,18 +172,28 @@ def format_bps(value):
     return f"{value:.{decimals}f} {units[idx]}"
 
 
+def format_duration(seconds):
+    seconds = max(0, int(seconds or 0))
+    if seconds < 60:
+        return f"{seconds} 秒"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes} 分 {sec} 秒" if sec else f"{minutes} 分"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} 小时 {minutes} 分" if minutes else f"{hours} 小时"
+
+
 def build_isp_bandwidth_card(event, recovered=False):
-    title = "ISP 带宽恢复" if recovered else "ISP 带宽饱和"
+    title = "🟢 ISP 带宽恢复" if recovered else "🔴 ISP 带宽饱和"
     color = "green" if recovered else "red"
     direction_text = "下载" if event["direction"] == "in" else "上传"
-    state_text = "恢复" if recovered else "超过阈值"
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
-        f"链路：{event['label']}",
-        f"方向：{direction_text}",
-        f"当前：{format_bps(event['value_bps'])}",
-        f"阈值：{format_bps(event['threshold_bps'])}",
-        f"配置：{event['capacity_mbps']:g} Mbps × {event['percent']:g}%",
-        f"持续：{int(event['duration'])} 秒 {state_text}",
+        f"🌐 ISP：{event['label']}",
+        f"📶 方向：{direction_text}",
+        f"📈 当前：{format_bps(event['value_bps'])}",
+        f"⏰ 时间：{ts}",
+        f"⏳ 持续：{format_duration(event['duration'])}",
     ]
     return _make_card(title, "实时 ISP 带宽监控", color, "\n".join(lines))
 
