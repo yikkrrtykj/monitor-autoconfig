@@ -161,6 +161,7 @@ BIGSCREEN_ISP_AUTO_DISCOVER=true
 FIREWALL_WAN_IF_FILTER=telecom,telcom,unicom,isp,WAN
 BIGSCREEN_ISP_MAX_BANDWIDTH=300
 ISP_SATURATION_PERCENT=90
+ISP_BANDWIDTH_ALERT_FOR_SECONDS=30
 ```
 
 默认推荐自动发现 ISP：脚本会从防火墙 WAN 口的接口名、描述、别名里匹配 `telecom/unicom/WAN` 这些词。你的端口描述已经写了 `telecom`、`unicom`，就不需要手动写 `BIGSCREEN_ISP_NAMES`。
@@ -171,7 +172,9 @@ ISP_SATURATION_PERCENT=90
 - `ISP_SATURATION_PERCENT=90`
 - 告警线就是 `300 Mbps * 90% = 270 Mbps`
 
-如果写 `1000`，告警线就是 `900 Mbps`。`apply-env.sh` 会把这个速率同步到 LibreNMS 的防火墙 WAN 口，LibreNMS 里的 `port_usage_perc` 才会按运营商带宽算。
+如果写 `1000`，告警线就是 `900 Mbps`。
+
+实时告警走 Prometheus，判断口径和 8088 大屏上的 ISP 曲线一致；默认超过阈值持续 30 秒推飞书，恢复 60 秒后推恢复。`apply-env.sh` 也会把这个速率同步到 LibreNMS 的防火墙 WAN 口，让 LibreNMS 里的 `port_usage_perc` 作为补充告警。
 
 多条 ISP 不同带宽也可以：
 
@@ -344,7 +347,7 @@ docker compose rm -sf grafana-provisioning-render
 
 按下面四项看：
 
-1. `.env` 里 `FEISHU_ROBOT_TOKEN` 有没有填。填完跑 `./apply-env.sh`，LibreNMS 规则页的 `Transports` 不应该是 `none`。
+1. `.env` 里 `FEISHU_ROBOT_TOKEN` 有没有填。填完跑 `./apply-env.sh`，`alertmanager-feishu-bridge` 才会推飞书。
 2. `BIGSCREEN_ISP_MAX_BANDWIDTH` 有没有写运营商真实带宽。300M 就写 `300`，不是看物理口 1G。
 3. `ISP_SATURATION_PERCENT` 是阈值。写 `90` 就是带宽的 90%。
 4. 防火墙 WAN 口有没有被匹配到。端口描述里写 `telecom`、`unicom` 最稳；如果没描述，就把真实端口名加进 `FIREWALL_WAN_IF_FILTER`。
@@ -354,9 +357,10 @@ docker compose rm -sf grafana-provisioning-render
 ```bash
 ./apply-env.sh
 docker logs -f librenms-config
+docker logs -f alertmanager-feishu-bridge
 ```
 
-LibreNMS poller 有周期，规则不是毫秒级触发，等一两个轮询周期再看。
+实时 ISP 告警看 `alertmanager-feishu-bridge` 日志；LibreNMS poller 仍然有周期，短峰值可能只被 Prometheus 抓到，LibreNMS 规则页不一定立刻显示。
 
 ### 防火墙明明能 ping，拓扑还是红
 
