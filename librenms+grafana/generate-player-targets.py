@@ -7,9 +7,9 @@ Usage (inside container):
   python3 generate-player-targets.py
 
 Environment variables:
-  TOURNAMENT_SWITCHES    comma-separated stage switch IPs (e.g. 192.168.10.11,192.168.10.12)
+  TOURNAMENT_SWITCHES    comma-separated stage switch IPs/ranges (e.g. 192.168.10.11-22)
   SNMP_COMMUNITY         SNMP v2c community string for stage switches
-  PLAYER_GATEWAYS        comma-separated L3 gateway IPs whose ARP table maps
+  PLAYER_GATEWAYS        comma-separated L3 gateway IPs/ranges whose ARP table maps
                          player IPs to MACs. Required when stage switches are
                          pure L2. Falls back to LIBRENMS_CORE_IP if unset.
   PLAYER_GATEWAY_SNMP_COMMUNITY
@@ -469,6 +469,28 @@ def parse_excluded_ip_item(item):
     return {str(IPv4Address(item))}
 
 
+def expand_ip_list(raw, label="IP list"):
+    items = []
+    seen = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            item = item.split(":", 1)[1].strip()
+        try:
+            values = expand_ip_range(item) if "-" in item else {str(IPv4Address(item))}
+        except ValueError:
+            print(f"[WARN] invalid {label} IP/range: {item}", file=sys.stderr)
+            continue
+        for ip in sorted(values, key=lambda value: int(IPv4Address(value))):
+            if ip in seen:
+                continue
+            seen.add(ip)
+            items.append(ip)
+    return items
+
+
 def load_excluded_ips(env_var):
     raw = os.environ.get(env_var, "")
     excluded = set()
@@ -834,7 +856,7 @@ def main():
         if ":" in core_first:
             core_first = core_first.split(":", 1)[1]
         gateways_raw = core_first.split("-")[0].strip()
-    gateways = [g.strip() for g in gateways_raw.split(",") if g.strip()]
+    gateways = expand_ip_list(gateways_raw, "PLAYER_GATEWAYS")
     gateway_community = os.environ.get("PLAYER_GATEWAY_SNMP_COMMUNITY", "").strip() or community
     vlan_ids_raw = os.environ.get("PLAYER_VLAN_IDS", "").strip()
     player_vlan_ids = []
@@ -894,58 +916,61 @@ def main():
     if not switches_raw:
         print("[INFO] TOURNAMENT_SWITCHES not set, skipping SNMP target discovery", file=sys.stderr)
     else:
-        switches = [s.strip() for s in switches_raw.split(",") if s.strip()]
+        switches = expand_ip_list(switches_raw, "TOURNAMENT_SWITCHES")
 
-        stage_index = build_stage_mac_index(switches, community, player_vlan_ids)
+        if not switches:
+            print("[WARN] TOURNAMENT_SWITCHES has no valid IPs, skipping SNMP target discovery", file=sys.stderr)
+        else:
+            stage_index = build_stage_mac_index(switches, community, player_vlan_ids)
 
-        path_a_targets = collect_direct_arp_targets(
-            switches, community, stage_index, wireless_nets, require_link_up
-        )
-        print(
-            f"[INFO] direct-ARP-on-stage produced {len(path_a_targets)} targets",
-            file=sys.stderr,
-        )
+            path_a_targets = collect_direct_arp_targets(
+                switches, community, stage_index, wireless_nets, require_link_up
+            )
+            print(
+                f"[INFO] direct-ARP-on-stage produced {len(path_a_targets)} targets",
+                file=sys.stderr,
+            )
 
-        path_b_targets = []
-        if gateways:
-            gateway_arp = {}
-            for gw in gateways:
-                arp_out = snmpwalk(gw, gateway_community, ARP_PHYSADDR_OID)
-                entries = parse_arp_macaddr(arp_out)
+            path_b_targets = []
+            if gateways:
+                gateway_arp = {}
+                for gw in gateways:
+                    arp_out = snmpwalk(gw, gateway_community, ARP_PHYSADDR_OID)
+                    entries = parse_arp_macaddr(arp_out)
+                    print(
+                        f"[INFO] gateway {gw}: ARP entries = {len(entries)}",
+                        file=sys.stderr,
+                    )
+                    for ip, mac in entries.items():
+                        # First gateway wins on conflict; for HA pairs list the
+                        # active one first so stale entries on the standby don't
+                        # mask live MACs.
+                        gateway_arp.setdefault(ip, mac)
+                path_b_targets, stats = join_gateway_arp_to_teams(
+                    gateway_arp, stage_index, wireless_nets, require_link_up
+                )
                 print(
-                    f"[INFO] gateway {gw}: ARP entries = {len(entries)}",
+                    f"[INFO] gateway-ARP join: matched {stats['matched']} IPs, "
+                    f"{stats['unmatched_macs']} MACs had no stage port, "
+                    f"{stats['skipped_link_down']} skipped (link down)",
                     file=sys.stderr,
                 )
-                for ip, mac in entries.items():
-                    # First gateway wins on conflict; for HA pairs list the
-                    # active one first so stale entries on the standby don't
-                    # mask live MACs.
-                    gateway_arp.setdefault(ip, mac)
-            path_b_targets, stats = join_gateway_arp_to_teams(
-                gateway_arp, stage_index, wireless_nets, require_link_up
-            )
-            print(
-                f"[INFO] gateway-ARP join: matched {stats['matched']} IPs, "
-                f"{stats['unmatched_macs']} MACs had no stage port, "
-                f"{stats['skipped_link_down']} skipped (link down)",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                "[INFO] PLAYER_GATEWAYS / LIBRENMS_CORE_IP not set; skipping gateway-ARP path",
-                file=sys.stderr,
-            )
+            else:
+                print(
+                    "[INFO] PLAYER_GATEWAYS / LIBRENMS_CORE_IP not set; skipping gateway-ARP path",
+                    file=sys.stderr,
+                )
 
-        merged = merge_dedup_targets(path_b_targets, path_a_targets)
+            merged = merge_dedup_targets(path_b_targets, path_a_targets)
 
-        per_team = {}
-        for target in merged:
-            key = (target["labels"]["team"], target["labels"]["network"])
-            per_team[key] = per_team.get(key, 0) + 1
-        for (team, net), count in sorted(per_team.items(), key=lambda kv: (int(kv[0][0]), kv[0][1])):
-            print(f"[INFO] team {team} {net}: {count} target(s)", file=sys.stderr)
+            per_team = {}
+            for target in merged:
+                key = (target["labels"]["team"], target["labels"]["network"])
+                per_team[key] = per_team.get(key, 0) + 1
+            for (team, net), count in sorted(per_team.items(), key=lambda kv: (int(kv[0][0]), kv[0][1])):
+                print(f"[INFO] team {team} {net}: {count} target(s)", file=sys.stderr)
 
-        all_targets.extend(merged)
+            all_targets.extend(merged)
 
     if env_bool("PLAYER_VERIFY_PING", default=True) and all_targets:
         all_targets = verify_targets_alive(all_targets)

@@ -98,41 +98,6 @@ EOF
 RELABEL
 }
 
-expand_targets() {
-  old_ifs=$IFS
-  IFS=','
-  for target in $1; do
-    IFS=$old_ifs
-    target=$(echo "$target" | tr -d '[:space:]')
-    [ -z "$target" ] && continue
-    case "$target" in
-      *-*)
-        start_ip=${target%-*}
-        end_part=${target#*-}
-        prefix=${start_ip%.*}
-        start_octet=${start_ip##*.}
-        end_octet=${end_part##*.}
-        octet=$start_octet
-        while [ "$octet" -le "$end_octet" ]; do
-          echo "$prefix.$octet"
-          octet=$((octet + 1))
-        done
-        ;;
-      *)
-        echo "$target"
-        ;;
-    esac
-    IFS=','
-  done
-  IFS=$old_ifs
-}
-
-write_static_targets() {
-  expand_targets "$1" | while read -r t; do
-    [ -n "$t" ] && echo "        - \"$t\""
-  done
-}
-
 find_label_for_target() {
   needle="$1"
   references="$2"

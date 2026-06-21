@@ -282,6 +282,30 @@ class TestWirelessScanExclusions:
         assert gpt.gateway_like_ips([IPv4Network("172.16.40.0/30")]) == set()
 
 
+class TestExpandIpList:
+    def test_expands_short_range_in_order(self):
+        assert gpt.expand_ip_list("192.168.10.11-13", "TEST") == [
+            "192.168.10.11",
+            "192.168.10.12",
+            "192.168.10.13",
+        ]
+
+    def test_dedupes_mixed_entries(self):
+        assert gpt.expand_ip_list("192.168.10.11,192.168.10.11-12", "TEST") == [
+            "192.168.10.11",
+            "192.168.10.12",
+        ]
+
+    def test_accepts_optional_name_prefix(self):
+        assert gpt.expand_ip_list("SW:192.168.10.11-12", "TEST") == [
+            "192.168.10.11",
+            "192.168.10.12",
+        ]
+
+    def test_skips_invalid_entries(self):
+        assert gpt.expand_ip_list("bad,192.168.10.20", "TEST") == ["192.168.10.20"]
+
+
 # ---- normalize_mac() ----------------------------------------------
 
 class TestNormalizeMac:

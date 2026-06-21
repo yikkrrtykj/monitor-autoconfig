@@ -166,7 +166,7 @@ LIBRENMS_FEISHU_TOKEN=           # LibreNMS 告警 → 运维群（设备离线 
 **赛事监控用**（不接选手就留空）：
 
 ```bash
-TOURNAMENT_SWITCHES=192.168.10.11,192.168.10.12   # 选手接入交换机 IP
+TOURNAMENT_SWITCHES=192.168.10.11-22   # 选手接入交换机 IP，支持范围
 PLAYER_SUBNETS=192.168.11.0/24                    # 选手有线网段（用于有线 / 无线分类）
 WIRELESS_SUBNETS=192.168.12.0/24                  # 选手无线（备用，不用就留空）
 
