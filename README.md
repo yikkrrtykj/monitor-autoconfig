@@ -190,8 +190,9 @@ ISP_SATURATION_PERCENT=90
 
 1. 防火墙 WAN 口描述里写 `telecom`、`unicom` 最稳。
 2. `FIREWALL_WAN_IF_FILTER` 用来匹配 WAN 口的 `ifAlias / ifName / ifDescr`。
-3. `BIGSCREEN_ISP_MAX_BANDWIDTH=300` 表示这条 ISP 按 300 Mbps 算，不按物理口 1G 算。
-4. `ISP_SATURATION_PERCENT=90` 表示 300M 的 90%，也就是 270 Mbps 告警。
+3. `BIGSCREEN_ISP_MAX_BANDWIDTH=300` 表示这条 ISP 按 300 Mbps 算。
+4. `ISP_SATURATION_PERCENT=90` 表示 300M 的 90%，也就是实时入口或出口超过 270 Mbps 就告警。
+5. 这里不看 LibreNMS 页面上那个“物理口百分比”。哪怕防火墙口是 1G，只要你写 300，就按 300 算。
 
 多条 ISP 不同带宽：
 
@@ -205,7 +206,7 @@ BIGSCREEN_ISP_MAX_BANDWIDTH=telecom:300,unicom:500
 BIGSCREEN_ISP_MAX_BANDWIDTH=telecom:1000/100,unicom:500/50
 ```
 
-`./apply-env.sh` 会把这个速率写进 LibreNMS 的 WAN 口，让 `port_usage_perc` 按运营商带宽算。告警也只走 LibreNMS，不走 Prometheus 推送。
+`./apply-env.sh` 会重建 LibreNMS 规则。告警只走 LibreNMS：规则会直接比较 WAN 口实时入口/出口速率和你写的带宽阈值，不走 Prometheus 推送。
 
 ### 3.3 选手监控
 
@@ -343,8 +344,9 @@ docker compose rm -sf grafana-provisioning-render
 2. 跑过 `./apply-env.sh` 没有。
 3. LibreNMS 规则页里 `ISP 带宽饱和告警` 的 `Transports` 是否不是 `none`。
 4. `BIGSCREEN_ISP_MAX_BANDWIDTH` 是否写运营商真实带宽，比如 300M 就写 `300`。
-5. `ISP_SATURATION_PERCENT` 是否是你想要的阈值，比如 90。
-6. 防火墙 WAN 口是否能被 `FIREWALL_WAN_IF_FILTER` 匹配到。
+5. `ISP_SATURATION_PERCENT` 是否是你想要的阈值，比如 80 表示超过 240 Mbps 告警。
+6. 规则里应该看到 `ifInOctets_rate / ifOutOctets_rate`，而不是只看 `port_usage_perc`。
+7. 防火墙 WAN 口是否能被 `FIREWALL_WAN_IF_FILTER` 匹配到。
 
 改完后跑：
 

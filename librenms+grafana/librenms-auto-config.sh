@@ -880,6 +880,160 @@ try {
 PHP
 }
 
+build_isp_saturation_builder() {
+  php <<'PHP'
+<?php
+function alert_rule(string $field, string $operator, string $value, string $type = 'double', string $input = 'number'): array
+{
+    return [
+        'id' => $field,
+        'field' => $field,
+        'type' => $type,
+        'input' => $input,
+        'operator' => $operator,
+        'value' => $value,
+    ];
+}
+
+function or_group(array $rules): array
+{
+    return ['condition' => 'OR', 'rules' => array_values($rules)];
+}
+
+function and_group(array $rules): array
+{
+    return ['condition' => 'AND', 'rules' => array_values($rules)];
+}
+
+function parse_bandwidth_config(string $raw): array
+{
+    $raw = trim($raw);
+    $cfg = ['default' => null, 'per' => []];
+    if ($raw === '') {
+        return $cfg;
+    }
+    if (preg_match('/^\d+(?:\.\d+)?$/', $raw)) {
+        $mbps = (float) $raw;
+        $cfg['default'] = ['down' => $mbps, 'up' => $mbps];
+        return $cfg;
+    }
+    foreach (explode(',', $raw) as $item) {
+        $item = trim($item);
+        if ($item === '' || ! str_contains($item, ':')) {
+            continue;
+        }
+        [$name, $bandwidth] = array_map('trim', explode(':', $item, 2));
+        $parts = array_map('trim', explode('/', $bandwidth));
+        $down = is_numeric($parts[0] ?? null) ? (float) $parts[0] : null;
+        if ($down === null) {
+            continue;
+        }
+        $up = is_numeric($parts[1] ?? null) ? (float) $parts[1] : $down;
+        $cfg['per'][] = ['label' => $name, 'down' => $down, 'up' => $up];
+    }
+    return $cfg;
+}
+
+function mbps_to_octets_threshold(float $mbps, float $percent): string
+{
+    // LibreNMS stores if*Octets_rate as octets/second. UI graphs multiply it by 8 for bps.
+    return (string) max(1, (int) round($mbps * 1000000 * ($percent / 100) / 8));
+}
+
+function port_match_rules(array $labels): array
+{
+    $rules = [];
+    foreach ($labels as $label) {
+        $label = trim((string) $label);
+        if ($label === '') {
+            continue;
+        }
+        foreach (['ports.ifAlias', 'ports.ifName', 'ports.ifDescr'] as $field) {
+            $rules[] = alert_rule($field, 'contains', $label, 'string', 'text');
+        }
+    }
+    return $rules;
+}
+
+function rate_rules(string $ratePrefix, float $downMbps, float $upMbps, float $percent): array
+{
+    return [
+        alert_rule("{$ratePrefix}.ifInOctets_rate", 'greater_or_equal', mbps_to_octets_threshold($downMbps, $percent)),
+        alert_rule("{$ratePrefix}.ifOutOctets_rate", 'greater_or_equal', mbps_to_octets_threshold($upMbps, $percent)),
+    ];
+}
+
+function table_columns(PDO $pdo, string $table): array
+{
+    $cols = [];
+    try {
+        foreach ($pdo->query("SHOW COLUMNS FROM `{$table}`") as $column) {
+            $cols[$column['Field']] = true;
+        }
+    } catch (Throwable $e) {
+        return [];
+    }
+    return $cols;
+}
+
+$percent = is_numeric(getenv('ISP_SATURATION_PERCENT') ?: '') ? (float) getenv('ISP_SATURATION_PERCENT') : 80.0;
+$bandwidth = parse_bandwidth_config(getenv('BIGSCREEN_ISP_MAX_BANDWIDTH') ?: '1000');
+$wanKeywords = array_values(array_filter(array_map('trim', explode(',', getenv('FIREWALL_WAN_IF_FILTER') ?: 'telecom,telcom,unicom,isp,WAN'))));
+
+$ratePrefix = 'ports';
+try {
+    $host = getenv('DB_HOST') ?: 'librenms-db';
+    $database = getenv('DB_NAME') ?: 'librenms';
+    $dbUser = getenv('DB_USER') ?: 'librenms';
+    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
+    $pdo = new PDO(
+        "mysql:host={$host};dbname={$database};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+    $portsCols = table_columns($pdo, 'ports');
+    $statsCols = table_columns($pdo, 'ports_statistics');
+    if (! isset($portsCols['ifInOctets_rate'], $portsCols['ifOutOctets_rate']) &&
+        isset($statsCols['ifInOctets_rate'], $statsCols['ifOutOctets_rate'])) {
+        $ratePrefix = 'ports_statistics';
+    }
+} catch (Throwable $e) {
+    $ratePrefix = 'ports';
+}
+
+$rules = [];
+if (! empty($bandwidth['per'])) {
+    foreach ($bandwidth['per'] as $entry) {
+        $match = port_match_rules([$entry['label']]);
+        if (empty($match)) {
+            continue;
+        }
+        $rules[] = and_group([
+            or_group($match),
+            or_group(rate_rules($ratePrefix, (float) $entry['down'], (float) $entry['up'], $percent)),
+        ]);
+    }
+    if (empty($rules)) {
+        exit(1);
+    }
+    $builder = or_group($rules);
+} else {
+    $default = $bandwidth['default'] ?: ['down' => 1000.0, 'up' => 1000.0];
+    $match = port_match_rules($wanKeywords);
+    if (empty($match)) {
+        exit(1);
+    }
+    $builder = and_group([
+        or_group($match),
+        or_group(rate_rules($ratePrefix, (float) $default['down'], (float) $default['up'], $percent)),
+    ]);
+}
+$builder['valid'] = true;
+echo json_encode($builder, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+PHP
+}
+
 ALERT_TRANSPORT_IDS=""
 
 configure_feishu_transport() {
@@ -1153,25 +1307,12 @@ if [ -n "$API_TOKEN" ]; then
     "disabled": 0
   }'
 
-  build_wan_or_rules() {
-    result=""
-    for kw in $(echo "$FIREWALL_WAN_IF_FILTER" | tr ',' '\n'); do
-      kw=$(echo "$kw" | tr -d '[:space:]')
-      [ -z "$kw" ] && continue
-      for field in ports.ifAlias ports.ifName ports.ifDescr; do
-        r="{\"id\":\"${field}\",\"field\":\"${field}\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"contains\",\"value\":\"${kw}\"}"
-        result="${result}${result:+,}${r}"
-      done
-    done
-    printf '%s' "$result"
-  }
-  wan_or=$(build_wan_or_rules)
-  if [ -n "$wan_or" ]; then
-    isp_builder="{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.port_usage_perc\",\"field\":\"macros.port_usage_perc\",\"type\":\"double\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"${ISP_SATURATION_PERCENT}\"},{\"condition\":\"OR\",\"rules\":[${wan_or}]}],\"valid\":true}"
+  isp_builder=$(build_isp_saturation_builder 2>/dev/null || true)
+  if [ -n "$isp_builder" ]; then
     isp_builder_escaped=$(printf '%s' "$isp_builder" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')
     upsert_rule "ISP 带宽饱和告警" "{\"name\":\"ISP 带宽饱和告警\",\"devices\":[-1],\"builder\":${isp_builder_escaped},\"severity\":\"warning\",\"disabled\":0}"
   else
-    echo "  Alert rule: ISP 带宽饱和告警 - skipped (FIREWALL_WAN_IF_FILTER is empty)"
+    echo "  Alert rule: ISP 带宽饱和告警 - skipped (missing WAN filter or bandwidth config)"
   fi
 fi
 
