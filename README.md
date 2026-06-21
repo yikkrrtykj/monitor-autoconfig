@@ -185,6 +185,7 @@ FIREWALL_WAN_IF_FILTER=telecom,telcom,unicom,isp,WAN
 BIGSCREEN_ISP_MAX_BANDWIDTH=300
 ISP_SATURATION_PERCENT=90
 ISP_ALERT_FOR_SECONDS=10
+ISP_ALERT_RATE_WINDOW=1m
 ```
 
 这里的逻辑：
@@ -194,7 +195,8 @@ ISP_ALERT_FOR_SECONDS=10
 3. `BIGSCREEN_ISP_MAX_BANDWIDTH=300` 表示这条 ISP 按 300 Mbps 算。
 4. `ISP_SATURATION_PERCENT=90` 表示 300M 的 90%，也就是实时入口或出口超过 270 Mbps 就告警。
 5. `ISP_ALERT_FOR_SECONDS=10` 表示连续 10 秒超过阈值才推飞书。
-6. 这里不看 LibreNMS 页面上那个“物理口百分比”。哪怕防火墙口是 1G，只要你写 300，就按 300 算。
+6. `ISP_ALERT_RATE_WINDOW=1m` 和大屏曲线一致，用 Prometheus 最近 1 分钟速率判断。
+7. 这里不看 LibreNMS 页面上那个“物理口百分比”。哪怕防火墙口是 1G，只要你写 300，就按 300 算。
 
 多条 ISP 不同带宽：
 
@@ -345,11 +347,12 @@ docker compose rm -sf grafana-provisioning-render
 1. `.env` 里 `FEISHU_ROBOT_TOKEN` 是否填写。
 2. 跑过 `./apply-env.sh` 没有。
 3. `docker logs -f alertmanager-feishu-bridge` 里是否有 `[ISP] realtime bandwidth watcher enabled`。
-4. `BIGSCREEN_ISP_MAX_BANDWIDTH` 是否写运营商真实带宽，比如 300M 就写 `300`。
-5. `ISP_SATURATION_PERCENT` 是否是你想要的阈值，比如 80 表示超过 240 Mbps 告警。
-6. `ISP_ALERT_FOR_SECONDS` 是否是你想要的持续时间，比如 10。
-7. 防火墙 WAN 口是否能被 `FIREWALL_WAN_IF_FILTER` 匹配到。
-8. LibreNMS transport 的 Test 是否 OK；这只证明飞书通，不代表 ISP 实时阈值已经触发。
+4. 日志里是否有 `[ISP] rates unicom in=333.0 Mbps/240.0 Mbps` 这种行。前面是当前速率，后面是阈值。
+5. `BIGSCREEN_ISP_MAX_BANDWIDTH` 是否写运营商真实带宽，比如 300M 就写 `300`。
+6. `ISP_SATURATION_PERCENT` 是否是你想要的阈值，比如 80 表示超过 240 Mbps 告警。
+7. `ISP_ALERT_FOR_SECONDS` 是否是你想要的持续时间，比如 10。
+8. 防火墙 WAN 口是否能被 `FIREWALL_WAN_IF_FILTER` 匹配到。
+9. LibreNMS transport 的 Test 是否 OK；这只证明飞书通，不代表 ISP 实时阈值已经触发。
 
 改完后跑：
 

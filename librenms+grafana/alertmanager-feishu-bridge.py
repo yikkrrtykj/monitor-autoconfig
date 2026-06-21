@@ -18,7 +18,8 @@ Env:
   ISP_ALERT_ENABLED       true = watch firewall WAN bandwidth (default true)
   ISP_ALERT_FOR_SECONDS   seconds above threshold before alerting (default 10)
   ISP_ALERT_POLL_INTERVAL seconds between checks (default 5)
-  ISP_ALERT_RATE_WINDOW   Prometheus irate() window (default 30s)
+  ISP_ALERT_RATE_WINDOW   Prometheus rate() window (default 1m)
+  ISP_ALERT_STATUS_INTERVAL seconds between status logs (default 30)
   ISP_ALERT_RESOLVE_SECONDS seconds below threshold before recovery (default 30)
   FIREWALL_WAN_IF_FILTER  WAN interface label keywords
   BIGSCREEN_ISP_MAX_BANDWIDTH ISP bandwidth Mbps config
@@ -44,8 +45,9 @@ PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090").rstr
 ISP_ALERT_ENABLED = os.environ.get("ISP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 ISP_ALERT_FOR_SECONDS = int(os.environ.get("ISP_ALERT_FOR_SECONDS", "10"))
 ISP_ALERT_POLL_INTERVAL = int(os.environ.get("ISP_ALERT_POLL_INTERVAL", "5"))
-ISP_ALERT_RATE_WINDOW = os.environ.get("ISP_ALERT_RATE_WINDOW", "30s")
+ISP_ALERT_RATE_WINDOW = os.environ.get("ISP_ALERT_RATE_WINDOW", "1m")
 ISP_ALERT_RESOLVE_SECONDS = int(os.environ.get("ISP_ALERT_RESOLVE_SECONDS", "30"))
+ISP_ALERT_STATUS_INTERVAL = int(os.environ.get("ISP_ALERT_STATUS_INTERVAL", "30"))
 FIREWALL_WAN_IF_FILTER = os.environ.get("FIREWALL_WAN_IF_FILTER", "telecom,telcom,unicom,isp,WAN")
 BIGSCREEN_ISP_MAX_BANDWIDTH = os.environ.get("BIGSCREEN_ISP_MAX_BANDWIDTH", "1000")
 ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "80") or "80")
@@ -322,7 +324,7 @@ def prometheus_query(query):
 def fetch_wan_rates():
     results = []
     for direction, metric in (("in", "ifHCInOctets"), ("out", "ifHCOutOctets")):
-        query = f'irate({metric}{{job="firewall-snmp"}}[{ISP_ALERT_RATE_WINDOW}]) * 8'
+        query = f'rate({metric}{{job="firewall-snmp"}}[{ISP_ALERT_RATE_WINDOW}]) * 8'
         for item in prometheus_query(query):
             metric_labels = item.get("metric") or {}
             label = _wan_label(metric_labels)
@@ -344,6 +346,26 @@ def fetch_wan_rates():
     return results
 
 
+def log_isp_status(rates, bandwidth_cfg):
+    if not rates:
+        log(
+            "[ISP] no WAN traffic series matched "
+            f"FIREWALL_WAN_IF_FILTER={FIREWALL_WAN_IF_FILTER!r}; "
+            "check Prometheus job=firewall-snmp labels ifAlias/ifName/ifDescr"
+        )
+        return
+
+    rows = []
+    for sample in sorted(rates, key=lambda item: item["value_bps"], reverse=True)[:6]:
+        capacity_mbps = _bandwidth_for_label(sample["label"], sample["direction"], bandwidth_cfg)
+        threshold_bps = capacity_mbps * 1000000 * (ISP_SATURATION_PERCENT / 100.0)
+        rows.append(
+            f"{sample['label']} {sample['direction']}="
+            f"{format_bps(sample['value_bps'])}/{format_bps(threshold_bps)}"
+        )
+    log("[ISP] rates " + "; ".join(rows))
+
+
 def isp_bandwidth_watcher():
     if not ISP_ALERT_ENABLED:
         log("[ISP] realtime bandwidth watcher disabled")
@@ -351,6 +373,7 @@ def isp_bandwidth_watcher():
     time.sleep(30)
     bandwidth_cfg = _parse_bandwidth_config(BIGSCREEN_ISP_MAX_BANDWIDTH)
     states = {}
+    last_status_log = 0.0
     log(
         "[ISP] realtime bandwidth watcher enabled "
         f"(threshold={ISP_SATURATION_PERCENT:g}%, for={ISP_ALERT_FOR_SECONDS}s, "
@@ -365,6 +388,10 @@ def isp_bandwidth_watcher():
             log(f"[ISP] poll failed: {exc}")
             time.sleep(ISP_ALERT_POLL_INTERVAL)
             continue
+
+        if now - last_status_log >= ISP_ALERT_STATUS_INTERVAL:
+            log_isp_status(rates, bandwidth_cfg)
+            last_status_log = now
 
         seen = set()
         for sample in rates:
