@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# 渲染 Grafana provisioning：把 ISP/WAN 过滤词注入仪表盘模板变量。
+# 用 python3（python:3-alpine 自带）而不是运行时 apk 装 jq——避免在弱网/被墙环境
+# 卡在 apk add，导致整个 deploy 一直起不来。
+
 src="${GRAFANA_PROVISIONING_SRC:-/grafana-provisioning-src}"
 out="${GRAFANA_PROVISIONING_OUT:-/grafana-provisioning-out}"
 
@@ -11,14 +15,13 @@ is_true() {
   esac
 }
 
+# CSV 关键词 -> 正则（逐个转义元字符，用 | 连接）。
 csv_to_regex() {
-  printf '%s' "${1:-}" | jq -Rr '
-    split(",")
-    | map(gsub("^\\s+|\\s+$"; ""))
-    | map(select(length > 0))
-    | map(gsub("(?<c>[\\\\.+*?^$()\\[\\]{}|])"; "\\\(.c)"))
-    | join("|")
-  '
+  python3 - "${1:-}" <<'PY'
+import sys, re
+parts = [p.strip() for p in sys.argv[1].split(",") if p.strip()]
+print("|".join(re.escape(p) for p in parts))
+PY
 }
 
 rm -rf "$out"/*
@@ -34,13 +37,21 @@ if [ -f "$dashboard_file" ]; then
   fi
   [ -n "$wan_filter" ] || wan_filter="ISP1|ISP2"
 
-  tmp_file="${dashboard_file}.tmp"
-  jq --arg wan_filter "$wan_filter" '
-    (.templating.list[] | select(.name == "wan_filter") | .current.text) = $wan_filter
-    | (.templating.list[] | select(.name == "wan_filter") | .current.value) = $wan_filter
-    | (.templating.list[] | select(.name == "wan_filter") | .query) = $wan_filter
-    | .version = ((.version // 0) + 1)
-  ' "$dashboard_file" > "$tmp_file" && mv "$tmp_file" "$dashboard_file"
+  python3 - "$dashboard_file" "$wan_filter" <<'PY'
+import sys, json
+path, wan = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    d = json.load(f)
+for v in d.get("templating", {}).get("list", []):
+    if v.get("name") == "wan_filter":
+        cur = v.setdefault("current", {})
+        cur["text"] = wan
+        cur["value"] = wan
+        v["query"] = wan
+d["version"] = (d.get("version") or 0) + 1
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(d, f, ensure_ascii=False, indent=2)
+PY
 
   echo "Event Infrastructure WAN filter: $wan_filter"
 fi

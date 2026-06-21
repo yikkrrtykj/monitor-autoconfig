@@ -672,12 +672,15 @@
       renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
       // Servers aren't stage devices (skip the stage filter); keep them on one row.
       renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
+      // 没有服务器 ping 数据就整段隐藏，不显示"服务器 暂无数据"。
+      setVisible("serverGaugesWrap", serverPing.length > 0);
       renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime");
       lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== gaugeSeq) return;
       renderGaugeGrid("pingGaugeGrid", [], "ping");
       renderGaugeGrid("pingServerGaugeGrid", [], "ping");
+      setVisible("serverGaugesWrap", false);
       renderGaugeGrid("uptimeGaugeGrid", [], "uptime");
       console.error(error);
     }

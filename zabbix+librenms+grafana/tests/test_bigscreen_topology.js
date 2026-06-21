@@ -65,6 +65,24 @@ const layers = buildTopologyLayers(targets);
 assert.deepStrictEqual(layers.isps.map((node) => node.ip), ["203.170.210.114", "202.133.189.82"]);
 assert.deepStrictEqual(layers.servers.map((node) => node.ip), ["172.25.12.252"]);
 
+// ---- auto-discover ISP: empty names must NOT inject ISP1/ISP2 placeholder nodes ----
+window.BIGSCREEN_CONFIG.ispNames = "";
+window.BIGSCREEN_CONFIG.ispAutoDiscovery = "true";
+window.BIGSCREEN_CONFIG.ispIps = "";
+const autoIspLayers = buildTopologyLayers([
+  target("infra-isp-ping", "telcom", "219.140.134.161"),
+  target("infra-isp-ping", "unicom", "113.57.164.49"),
+  target("infra-core-ping", "Core", "192.168.10.254")
+]);
+assert.deepStrictEqual(
+  autoIspLayers.isps.map((node) => node.name).sort(),
+  ["telcom", "unicom"],
+  "auto-discover shows only discovered ISPs, no ISP1/ISP2 placeholders"
+);
+window.BIGSCREEN_CONFIG.ispNames = "ISP1,ISP2";
+window.BIGSCREEN_CONFIG.ispAutoDiscovery = "false";
+window.BIGSCREEN_CONFIG.ispIps = "ISP1:203.170.210.114,ISP2:202.133.189.82";
+
 const noisyRawEdges = [
   { from_ip: "172.25.10.254", from_port: "Gi1/0/23", to_ip: "172.25.10.3", to_port: "Gi1/0/23" },
   { from_ip: "172.25.10.254", from_port: "Gi1/0/24", to_ip: "172.25.10.3", to_port: "Gi1/0/24" },

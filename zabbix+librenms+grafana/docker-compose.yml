@@ -528,7 +528,7 @@ services:
         echo "UniFi APs: Add via SNMP in LibreNMS web UI (http://localhost:8002)"
 
   grafana-provisioning-render:
-    image: alpine:latest
+    image: python:3-alpine
     container_name: grafana-provisioning-render
     environment:
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-}"
@@ -540,7 +540,7 @@ services:
       - ./grafana-provisioning:/grafana-provisioning-src:ro
       - grafana-provisioning-rendered:/grafana-provisioning-out
       - ./render-grafana-provisioning.sh:/render-grafana-provisioning.sh:ro
-    command: ["/bin/sh", "-c", "apk add --no-cache jq && /bin/sh /render-grafana-provisioning.sh"]
+    command: ["/bin/sh", "/render-grafana-provisioning.sh"]
     restart: "no"
 
   grafana:

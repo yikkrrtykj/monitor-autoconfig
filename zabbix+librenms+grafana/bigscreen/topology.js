@@ -12,7 +12,7 @@
     escapeHtml, formatPingText, uniqueNames, parseIspIps, parseConfiguredTargetIps,
     compactPortLabel, isPortLikeLabel, isAggPortName
   } = utils;
-  const { getIspNames, isIspAutoDiscoveryEnabled } = api;
+  const { getConfiguredIspNames, getIspNames, isIspAutoDiscoveryEnabled } = api;
 
   const config = (typeof window !== 'undefined' && window.BIGSCREEN_CONFIG) || {};
 
@@ -24,7 +24,9 @@
   }
 
   function buildTopologyLayers(targets) {
-    const ispNames = getIspNames();
+    // 自动发现时只用显式配置的名字（通常为空），不要回退 ISP1,ISP2 默认，
+    // 否则拓扑会多出两个永远连不通的 ISP1/ISP2 占位节点。
+    const ispNames = isIspAutoDiscoveryEnabled() ? getConfiguredIspNames() : getIspNames();
     const ispIpMap = parseIspIps(config.ispIps);
     const ispTargets = targets.filter((t) => t.job === "infra-isp-ping");
     const usedIspTargets = new Set();
