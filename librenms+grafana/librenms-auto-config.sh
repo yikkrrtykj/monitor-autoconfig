@@ -1039,6 +1039,7 @@ for part in (sys.argv[2] or "").split(","):
         ids.append(int(part))
 
 if ids:
+    payload["default_operation_step_duration"] = payload.get("default_operation_step_duration") or "5 m"
     payload["operations"] = [{
         "name": "Feishu",
         "operation_phase": "problem",
@@ -1053,21 +1054,55 @@ print(json.dumps(payload, ensure_ascii=False))
 PY
 }
 
+rule_has_operation() {
+  _rule_id="$1"
+  [ -n "$_rule_id" ] || return 1
+  _rule_json=$(curl -s -H "X-Auth-Token: $API_TOKEN" "$LIBRENMS_URL/api/v0/rules/$_rule_id" 2>/dev/null || echo "{}")
+  echo "$_rule_json" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+rule = data.get("rule") if isinstance(data, dict) else None
+if not rule and isinstance(data, dict):
+    rules = data.get("rules")
+    if isinstance(rules, list) and rules:
+        rule = rules[0]
+if not rule and isinstance(data, dict):
+    rule = data
+if not isinstance(rule, dict):
+    sys.exit(1)
+op_id = rule.get("alert_operation_id")
+ops = rule.get("operations") or []
+sys.exit(0 if op_id or ops else 1)
+' 2>/dev/null
+}
+
+rule_api_status() {
+  echo "$1" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status',''))" 2>/dev/null || echo ""
+}
+
+rule_api_message() {
+  echo "$1" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message',''))" 2>/dev/null || echo "$1"
+}
+
 # Idempotency: GET existing rules once and update them in place. Re-running this
 # script refreshes WAN matching and attaches the Feishu transport operation.
 upsert_rule() {
   rule_name="$1"
-  rule_payload="$2"
+  base_payload="$2"
   rule_id="$(rule_id_by_name "$rule_name")"
-  rule_payload="$(rule_payload_with_operations "$rule_payload" "$rule_id")"
 
   if [ -n "$rule_id" ]; then
+    rule_payload="$(rule_payload_with_operations "$base_payload" "$rule_id")"
     _resp=$(curl -s -X PUT "$LIBRENMS_URL/api/v0/rules" \
       -H "X-Auth-Token: $API_TOKEN" \
       -H "Content-Type: application/json" \
       -d "$rule_payload" 2>/dev/null)
     _action="updated"
   else
+    rule_payload="$(rule_payload_with_operations "$base_payload" "")"
     _resp=$(curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
       -H "X-Auth-Token: $API_TOKEN" \
       -H "Content-Type: application/json" \
@@ -1075,11 +1110,26 @@ upsert_rule() {
     _action="created"
   fi
 
-  _status=$(echo "$_resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status',''))" 2>/dev/null || echo "")
+  _status=$(rule_api_status "$_resp")
+  if [ "$_status" = "ok" ]; then
+    if [ -n "$rule_id" ] && [ -n "$ALERT_TRANSPORT_IDS" ] && ! rule_has_operation "$rule_id"; then
+      echo "  Alert rule: $rule_name - existing rule has no operation, recreating with Feishu transport"
+      curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$rule_id" \
+        -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
+      rule_payload="$(rule_payload_with_operations "$base_payload" "")"
+      _resp=$(curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
+        -H "X-Auth-Token: $API_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$rule_payload" 2>/dev/null)
+      _status=$(rule_api_status "$_resp")
+      _action="recreated"
+    fi
+  fi
+
   if [ "$_status" = "ok" ]; then
     echo "  Alert rule: $rule_name - $_action"
   else
-    _msg=$(echo "$_resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message',''))" 2>/dev/null || echo "$_resp")
+    _msg=$(rule_api_message "$_resp")
     echo "  Alert rule: $rule_name - $_action failed: $_msg"
   fi
 }
