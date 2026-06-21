@@ -918,7 +918,7 @@ try {
         'api-url' => 'http://alertmanager-feishu-bridge:5005/librenms',
         'api-options' => '',
         'api-headers' => 'Content-Type=application/json',
-        'api-body' => '{"state":"{{ state }}","name":"{{ name }}","severity":"{{ severity }}","hostname":"{{ hostname }}","sysName":"{{ sysName }}","ip":"{{ ip }}","timestamp":"{{ timestamp }}","uid":"{{ uid }}","elapsed":"{{ elapsed }}","location":"{{ location }}"}',
+        'api-body' => '{"state":"{{ state }}","name":"{{ name }}","severity":"{{ severity }}","hostname":"{{ hostname }}","sysName":"{{ sysName }}","ip":"{{ ip }}","timestamp":"{{ timestamp }}","uid":"{{ uid }}","elapsed":"{{ elapsed }}"}',
         'api-auth-username' => '',
         'api-auth-password' => '',
     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);

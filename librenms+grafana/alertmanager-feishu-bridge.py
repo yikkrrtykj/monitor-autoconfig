@@ -111,7 +111,6 @@ def build_librenms_card(payload):
 
     uid = str(payload.get("uid") or "").strip()
     elapsed = str(payload.get("elapsed") or "").strip()
-    location = str(payload.get("location") or "").strip()
     ts = payload.get("timestamp") or ""
 
     recovered = state == "0"
