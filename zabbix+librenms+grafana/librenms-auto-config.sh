@@ -27,6 +27,7 @@ FEISHU_ROBOT_TOKEN="${FEISHU_ROBOT_TOKEN:-}"
 ISP_PING="${ISP_PING:-}"
 FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
+BIGSCREEN_ISP_MAX_BANDWIDTH="${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
 ISP_SATURATION_PERCENT="${ISP_SATURATION_PERCENT:-80}"
 FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
 LIBRENMS_API_TOKEN="${LIBRENMS_API_TOKEN:-}"
@@ -624,6 +625,261 @@ add_ping_device_api() {
   echo "  $name ($ip): $msg"
 }
 
+firewall_snmp_targets() {
+  for combined in $(echo "$FIREWALL_SNMP_TARGETS" | tr ',' '\n'); do
+    combined=$(echo "$combined" | tr -d '[:space:]')
+    [ -z "$combined" ] && continue
+    case "$combined" in
+      *:*) echo "${combined%%:*}|${combined#*:}" ;;
+      *) echo "|$combined" ;;
+    esac
+  done
+}
+
+discover_firewall_ports() {
+  [ -n "$FIREWALL_SNMP_TARGETS" ] || return 0
+  [ -f /opt/librenms/discovery.php ] || return 0
+
+  echo ""
+  echo "  Discovering firewall WAN ports..."
+  firewall_snmp_targets | while IFS='|' read -r name ip; do
+    [ -n "$ip" ] || continue
+    if php /opt/librenms/discovery.php -h "$ip" -m ports >/dev/null 2>&1; then
+      echo "  ${name:-$ip} ($ip): ports discovered"
+    else
+      echo "  ${name:-$ip} ($ip): port discovery deferred"
+    fi
+  done
+}
+
+configure_isp_port_speed_overrides() {
+  [ -n "$FIREWALL_SNMP_TARGETS" ] || return 0
+  [ -n "$BIGSCREEN_ISP_MAX_BANDWIDTH" ] || return 0
+
+  echo ""
+  echo "  Applying ISP WAN port speed overrides from BIGSCREEN_ISP_MAX_BANDWIDTH..."
+  php <<'PHP'
+<?php
+try {
+    $host = getenv('DB_HOST') ?: 'librenms-db';
+    $database = getenv('DB_NAME') ?: 'librenms';
+    $dbUser = getenv('DB_USER') ?: 'librenms';
+    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
+
+    $pdo = new PDO(
+        "mysql:host={$host};dbname={$database};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+
+    $columns = function (string $table) use ($pdo): array {
+        $cols = [];
+        try {
+            foreach ($pdo->query("SHOW COLUMNS FROM `{$table}`") as $column) {
+                $cols[$column['Field']] = true;
+            }
+        } catch (Throwable $e) {
+            return [];
+        }
+        return $cols;
+    };
+    $has = fn(array $cols, string $name): bool => isset($cols[$name]);
+
+    $targets = [];
+    foreach (explode(',', getenv('FIREWALL_SNMP_TARGETS') ?: '') as $raw) {
+        $raw = trim($raw);
+        if ($raw === '') {
+            continue;
+        }
+        if (str_contains($raw, ':')) {
+            [$name, $ip] = array_map('trim', explode(':', $raw, 2));
+        } else {
+            $name = '';
+            $ip = $raw;
+        }
+        $ip = preg_replace('/-.*/', '', $ip);
+        if ($ip !== '') {
+            $targets[] = ['name' => $name, 'ip' => $ip];
+        }
+    }
+
+    $keywords = array_values(array_filter(array_map(
+        fn($v) => strtolower(trim($v)),
+        explode(',', getenv('FIREWALL_WAN_IF_FILTER') ?: 'telecom,telcom,unicom,isp,WAN')
+    )));
+
+    $parseSpeed = function (string $raw): array {
+        $raw = trim($raw);
+        $cfg = ['default' => null, 'per' => []];
+        if ($raw === '') {
+            return $cfg;
+        }
+        if (preg_match('/^\d+(?:\.\d+)?$/', $raw)) {
+            $cfg['default'] = (float) $raw;
+            return $cfg;
+        }
+        foreach (explode(',', $raw) as $item) {
+            $item = trim($item);
+            if ($item === '' || ! str_contains($item, ':')) {
+                continue;
+            }
+            [$name, $bandwidth] = array_map('trim', explode(':', $item, 2));
+            $parts = array_map('trim', explode('/', $bandwidth));
+            $down = is_numeric($parts[0] ?? null) ? (float) $parts[0] : null;
+            if ($down === null) {
+                continue;
+            }
+            $up = is_numeric($parts[1] ?? null) ? (float) $parts[1] : $down;
+            $cfg['per'][] = [
+                'label' => strtolower($name),
+                'norm' => preg_replace('/[^a-z0-9]+/', '', strtolower($name)),
+                'mbps' => max($down, $up),
+            ];
+        }
+        return $cfg;
+    };
+
+    $speedCfg = $parseSpeed(getenv('BIGSCREEN_ISP_MAX_BANDWIDTH') ?: '1000');
+    if (empty($targets) || empty($keywords)) {
+        echo "  WAN speed override skipped: missing FIREWALL_SNMP_TARGETS or FIREWALL_WAN_IF_FILTER\n";
+        exit(0);
+    }
+
+    $devicesCols = $columns('devices');
+    $portsCols = $columns('ports');
+    $attribCols = $columns('device_attribs');
+    if (! $has($devicesCols, 'device_id') || ! $has($portsCols, 'port_id')) {
+        echo "  WAN speed override skipped: unsupported LibreNMS schema\n";
+        exit(0);
+    }
+
+    $findDevice = function (array $target) use ($pdo, $devicesCols, $has): ?array {
+        $where = [];
+        $values = [];
+        foreach (['hostname' => $target['ip'], 'display' => $target['name'], 'sysName' => $target['name']] as $column => $value) {
+            if ($value !== '' && $has($devicesCols, $column)) {
+                $where[] = "`{$column}` = ?";
+                $values[] = $value;
+            }
+        }
+        if (empty($where)) {
+            return null;
+        }
+        $stmt = $pdo->prepare('SELECT * FROM devices WHERE ' . implode(' OR ', $where) . ' LIMIT 1');
+        $stmt->execute($values);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    };
+
+    $matchesWan = function (string $text) use ($keywords): bool {
+        $lower = strtolower($text);
+        foreach ($keywords as $kw) {
+            if ($kw !== '' && str_contains($lower, $kw)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    $portSpeed = function (string $text) use ($speedCfg): ?float {
+        $lower = strtolower($text);
+        $norm = preg_replace('/[^a-z0-9]+/', '', $lower);
+        foreach ($speedCfg['per'] as $entry) {
+            if (($entry['label'] !== '' && str_contains($lower, $entry['label'])) ||
+                ($entry['norm'] !== '' && str_contains($norm, $entry['norm']))) {
+                return $entry['mbps'];
+            }
+        }
+        return $speedCfg['default'];
+    };
+
+    $upsertAttrib = function (int $deviceId, string $type, string $value) use ($pdo, $attribCols, $has): void {
+        if (! $has($attribCols, 'device_id') || ! $has($attribCols, 'attrib_type') || ! $has($attribCols, 'attrib_value')) {
+            return;
+        }
+        $select = $pdo->prepare('SELECT attrib_id FROM device_attribs WHERE device_id = ? AND attrib_type = ? LIMIT 1');
+        $select->execute([$deviceId, $type]);
+        $attribId = $select->fetchColumn();
+        if ($attribId) {
+            $update = $pdo->prepare('UPDATE device_attribs SET attrib_value = ? WHERE attrib_id = ?');
+            $update->execute([$value, $attribId]);
+            return;
+        }
+        $insert = $pdo->prepare('INSERT INTO device_attribs (device_id, attrib_type, attrib_value) VALUES (?, ?, ?)');
+        $insert->execute([$deviceId, $type, $value]);
+    };
+
+    $updated = 0;
+    foreach ($targets as $target) {
+        $device = $findDevice($target);
+        if (! $device) {
+            echo "  {$target['name']} ({$target['ip']}): device not found yet\n";
+            continue;
+        }
+        $deviceId = (int) $device['device_id'];
+        $where = ['device_id = ?'];
+        $values = [$deviceId];
+        if ($has($portsCols, 'deleted')) {
+            $where[] = '(deleted = 0 OR deleted IS NULL)';
+        }
+        $stmt = $pdo->prepare('SELECT * FROM ports WHERE ' . implode(' AND ', $where));
+        $stmt->execute($values);
+        $matched = 0;
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $port) {
+            $labelParts = [];
+            foreach (['ifAlias', 'ifName', 'ifDescr'] as $column) {
+                if ($has($portsCols, $column) && ! empty($port[$column])) {
+                    $labelParts[] = $port[$column];
+                }
+            }
+            $label = trim(implode(' ', $labelParts));
+            if ($label === '' || ! $matchesWan($label)) {
+                continue;
+            }
+            $mbps = $portSpeed($label);
+            if ($mbps === null || $mbps <= 0) {
+                echo "  {$target['name']} ({$target['ip']}): {$label} matched WAN, but no bandwidth entry matched\n";
+                continue;
+            }
+            $bps = (string) (int) round($mbps * 1000000);
+            $ifName = (string) ($port['ifName'] ?? '');
+            if ($ifName !== '') {
+                $upsertAttrib($deviceId, "ifSpeed:{$ifName}", $bps);
+            }
+
+            $sets = [];
+            $params = [];
+            if ($has($portsCols, 'ifSpeed')) {
+                $sets[] = 'ifSpeed = ?';
+                $params[] = $bps;
+            }
+            if ($has($portsCols, 'ifHighSpeed')) {
+                $sets[] = 'ifHighSpeed = ?';
+                $params[] = (string) (int) round($mbps);
+            }
+            if ($sets) {
+                $params[] = (int) $port['port_id'];
+                $upd = $pdo->prepare('UPDATE ports SET ' . implode(', ', $sets) . ' WHERE port_id = ?');
+                $upd->execute($params);
+            }
+            $matched++;
+            $updated++;
+            echo "  {$target['name']} ({$target['ip']}): {$label} => {$mbps} Mbps\n";
+        }
+        if ($matched === 0) {
+            echo "  {$target['name']} ({$target['ip']}): no WAN ports matched FIREWALL_WAN_IF_FILTER\n";
+        }
+    }
+    if ($updated === 0) {
+        echo "  WAN speed override: no ports updated yet; rerun librenms-config after LibreNMS discovers firewall ports\n";
+    }
+} catch (Throwable $e) {
+    echo "  WARNING: WAN speed override failed: " . $e->getMessage() . "\n";
+}
+PHP
+}
+
 echo ""
 echo "[4/5] Discovering SNMP devices..."
 echo "  Targets: $DISCOVERY_TARGETS"
@@ -670,6 +926,9 @@ if [ -n "$FIREWALL_SNMP_TARGETS" ] && [ -n "$API_TOKEN" ]; then
     ;; esac
   done
 fi
+
+discover_firewall_ports
+configure_isp_port_speed_overrides
 
 # Configure alert rules
 echo ""
