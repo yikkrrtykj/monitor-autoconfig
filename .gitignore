@@ -1,14 +1,13 @@
 # Docker 数据目录（运行时生成）
 mysql-data/
-zabbix-server-data/
 grafana-data/
 prometheus-data/
 librenms-db-data/
 librenms-data/
 
 # 每台服务器配置不同，不要提交
-zabbix+librenms+grafana/.env
-zabbix+librenms+grafana/grafana-provisioning-rendered/
+librenms+grafana/.env
+librenms+grafana/grafana-provisioning-rendered/
 
 # 系统文件
 .DS_Store
@@ -19,6 +18,7 @@ Thumbs.db
 
 # Python 缓存
 __pycache__/
+.pytest_cache/
 *.py[cod]
 
 # Claude Code 本地配置

@@ -17,7 +17,7 @@ jobs:
         # Tighten to "warning" once the legacy scripts are cleaned up.
         run: |
           shellcheck --severity=error \
-            zabbix+librenms+grafana/*.sh
+            librenms+grafana/*.sh
 
   python-syntax:
     name: python-syntax
@@ -28,8 +28,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: |
-          python -m py_compile zabbix+librenms+grafana/generate-player-targets.py
-          python -m py_compile zabbix+librenms+grafana/alertmanager-feishu-bridge.py
+          python -m py_compile librenms+grafana/generate-player-targets.py
+          python -m py_compile librenms+grafana/alertmanager-feishu-bridge.py
 
   pytest:
     name: pytest
@@ -39,8 +39,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r zabbix+librenms+grafana/requirements-dev.txt
-      - run: pytest zabbix+librenms+grafana/tests/ -v
+      - run: pip install -r librenms+grafana/requirements-dev.txt
+      - run: pytest librenms+grafana/tests/ -v
 
   compose-config:
     name: compose-config
@@ -48,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate docker-compose.yml
-        working-directory: zabbix+librenms+grafana
+        working-directory: librenms+grafana
         run: |
           # Provide a dummy .env so interpolation doesn't fail.
           cp .env.example .env
@@ -64,7 +64,7 @@ jobs:
           python3 -c "
           import json, glob, sys
           fails = []
-          for f in glob.glob('zabbix+librenms+grafana/grafana-provisioning/dashboard-json/*.json'):
+          for f in glob.glob('librenms+grafana/grafana-provisioning/dashboard-json/*.json'):
               try:
                   with open(f, encoding='utf-8-sig') as fh:
                       json.load(fh)

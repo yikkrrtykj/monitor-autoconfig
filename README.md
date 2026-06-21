@@ -102,14 +102,14 @@ docker info | grep -i proxy   # 验证代理生效
 
 ```bash
 git clone https://github.com/yikkrrtykj/monitor-autoconfig.git
-cd monitor-autoconfig/zabbix+librenms+grafana
+cd monitor-autoconfig/librenms+grafana
 ```
 
 **国内服务器**（GitHub 经常连不上，用 Gitee 镜像）：
 
 ```bash
 git clone https://gitee.com/yikkrrtykj/monitor-autoconfig.git
-cd monitor-autoconfig/zabbix+librenms+grafana
+cd monitor-autoconfig/librenms+grafana
 ```
 
 > Gitee 仓库是 GitHub 的镜像，国内访问稳定。如果 Gitee 上不是最新代码，
@@ -420,7 +420,7 @@ tar czf monitor-backup-$(date +%Y%m%d).tar.gz \
 纯逻辑模块带单元测试，跑：
 
 ```bash
-cd zabbix+librenms+grafana
+cd librenms+grafana
 for t in tests/test_bigscreen_*.js; do node "$t"; done
 ```
 
