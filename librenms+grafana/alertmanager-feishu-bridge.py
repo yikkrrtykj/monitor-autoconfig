@@ -29,6 +29,7 @@ Env:
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
   ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
+  DEVICE_DOWN_REQUIRE_SEEN_UP true = alert only after target was discovered/up once
   DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 5)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
 """
@@ -64,6 +65,7 @@ SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
 ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
+DEVICE_DOWN_REQUIRE_SEEN_UP = os.environ.get("DEVICE_DOWN_REQUIRE_SEEN_UP", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "5"))
 DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
@@ -114,6 +116,37 @@ def fetch_librenms_devices(token):
     )
     with request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8")).get("devices", [])
+
+
+def _looks_like_ip(value):
+    return bool(re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", str(value or "")))
+
+
+def _device_name(dev):
+    return (
+        dev.get("display")
+        or dev.get("sysName")
+        or dev.get("hostname")
+        or dev.get("ip")
+        or ""
+    )
+
+
+def fetch_librenms_name_cache():
+    token = _librenms_token()
+    if not token or not LIBRENMS_URL:
+        return {}
+    devices = fetch_librenms_devices(token)
+    names = {}
+    for dev in devices:
+        name = _device_name(dev)
+        if not name:
+            continue
+        for field in ("ip", "hostname"):
+            value = dev.get(field)
+            if _looks_like_ip(value):
+                names[value] = name
+    return names
 
 
 def build_librenms_card(payload):
@@ -534,14 +567,24 @@ def device_down_watcher():
     time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
     states = {}
     last_status_log = 0.0
+    last_name_refresh = 0.0
+    librenms_names = {}
     log(
         "[DOWN] device-down watcher enabled "
         f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, "
-        f"isp_for={ISP_DOWN_FOR_SECONDS}s, poll={DEVICE_DOWN_POLL_INTERVAL}s)"
+        f"isp_for={ISP_DOWN_FOR_SECONDS}s, poll={DEVICE_DOWN_POLL_INTERVAL}s, "
+        f"require_seen_up={DEVICE_DOWN_REQUIRE_SEEN_UP})"
     )
 
     while True:
         now = time.time()
+        if now - last_name_refresh >= 60:
+            try:
+                librenms_names = fetch_librenms_name_cache()
+            except Exception as exc:
+                log(f"[DOWN] LibreNMS name refresh failed: {exc}")
+            last_name_refresh = now
+
         try:
             results = prometheus_query(query)
         except Exception as exc:
@@ -564,17 +607,30 @@ def device_down_watcher():
         for item in results:
             metric = item.get("metric") or {}
             job = metric.get("job", "")
-            name = metric.get("instance") or metric.get("target_ip") or "?"
             ip = metric.get("target_ip") or ""
-            key = f"{job}|{name}|{ip}"
+            prom_name = metric.get("instance") or ip or "?"
+            name = librenms_names.get(ip) or prom_name
+            key = f"{job}|{ip or prom_name}"
             try:
                 up = float((item.get("value") or [None, "1"])[1]) >= 1
             except (TypeError, ValueError):
                 continue
 
             down_for_seconds = ISP_DOWN_FOR_SECONDS if job == "infra-isp-ping" else DEVICE_DOWN_FOR_SECONDS
-            state = states.setdefault(key, {"down_since": None, "alerting": False})
+            known_by_librenms = bool(ip and ip in librenms_names)
+            state = states.setdefault(key, {
+                "down_since": None,
+                "alerting": False,
+                "seen_up": False,
+                "ignored_initial_down": False,
+            })
             if not up:
+                if DEVICE_DOWN_REQUIRE_SEEN_UP and not state["seen_up"] and not known_by_librenms:
+                    if not state["ignored_initial_down"]:
+                        log(f"[DOWN] waiting for first UP before alerting {job} {prom_name} ({ip})")
+                        state["ignored_initial_down"] = True
+                    state["down_since"] = None
+                    continue
                 if state["down_since"] is None:
                     state["down_since"] = now
                 if not state["alerting"] and now - state["down_since"] >= down_for_seconds:
@@ -582,6 +638,10 @@ def device_down_watcher():
                     log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN")
                     send_feishu(build_device_down_card(name, ip, recovered=False, job=job))
             else:
+                if not state["seen_up"]:
+                    state["seen_up"] = True
+                    state["ignored_initial_down"] = False
+                    log(f"[DOWN] armed {job} {name} ({ip}) after first UP")
                 if state["alerting"]:
                     offline = now - state["down_since"]
                     log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s")

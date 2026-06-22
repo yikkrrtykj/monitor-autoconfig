@@ -259,6 +259,8 @@ PLAYER_STATIC_NETWORK=wireless
 | ISP 带宽饱和 | Prometheus 实时 | 10 秒（可调） |
 | DHCP Snooping 违规 | syslog | 秒级 |
 
+`CORE_SWITCH_PING` / `DIST_SWITCH_PING` 里的范围只是候选目标。bridge 不会给一开始就是 down 的地址发离线告警；只有 LibreNMS 已发现的设备，或者运行期间至少 ping 成功过一次的目标，后续掉线才会推飞书。飞书卡片名称优先用 LibreNMS 里的设备名，所以交换机 SNMP 发现成功后会显示交换机自己的名字。
+
 DHCP Snooping 违规告警需要交换机配 syslog：
 
 ```
@@ -433,7 +435,17 @@ docker logs -f alertmanager-feishu-bridge
 
 多 ISP 一定要确认探测目标从对应出口出去。比如 `telecom:223.5.5.5` 要被防火墙策略路由到电信出口；否则断电信但探测从联通绕出去，系统会认为它还是通的。
 
-### 6.4 防火墙能 ping，拓扑还是红
+### 6.4 范围里的设备没上线却报警
+
+新版默认不会这样做。`SW:192.168.10.11-30` 只是候选池，bridge 看到目标第一次 UP 后才把它纳入离线告警。日志里如果出现下面这行，是正常的，表示这个地址还没上线，不会推飞书：
+
+```text
+[DOWN] waiting for first UP before alerting infra-dist-ping SW12 (192.168.10.22)
+```
+
+如果你确实想让“已在 LibreNMS 发现过但当前 down”的设备也立刻报警，保持默认即可；bridge 会用 LibreNMS 设备列表识别它，并用 LibreNMS 里的设备名显示。
+
+### 6.5 防火墙能 ping，拓扑还是红
 
 看 `.env` 里的 `FIREWALL_PING`。这里要写“监控服务器能 ping 通的物理防火墙地址”，不是 SNMP 逻辑地址，也不是旧网段地址。
 
@@ -444,7 +456,7 @@ FIREWALL_PING=FW1:192.168.11.2,FW2:192.168.11.3
 FIREWALL_SNMP_TARGETS=FW:192.168.11.4
 ```
 
-### 6.5 拓扑又出现占位 ISP 名称
+### 6.6 拓扑又出现占位 ISP 名称
 
 不要手动写 `BIGSCREEN_ISP_NAMES`，让它自动发现：
 
@@ -455,7 +467,7 @@ FIREWALL_WAN_IF_FILTER=telecom,telcom,unicom,isp,WAN
 
 接口描述里有 `telecom`、`unicom`，拓扑和大屏就会显示真实名字。
 
-### 6.6 LibreNMS 发现 0 个设备
+### 6.7 LibreNMS 发现 0 个设备
 
 先直接测 SNMP：
 
@@ -469,7 +481,7 @@ docker exec librenms snmpwalk -v2c -c public 192.168.10.254 sysName.0
 docker logs -f librenms-config
 ```
 
-### 6.7 选手页面 No data
+### 6.8 选手页面 No data
 
 先看生成了多少 target：
 
