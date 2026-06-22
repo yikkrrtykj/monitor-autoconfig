@@ -1142,13 +1142,16 @@ upsert_rule() {
 if [ -n "$API_TOKEN" ]; then
   EXISTING_RULES=$(curl -s -H "X-Auth-Token: $API_TOKEN" "$LIBRENMS_URL/api/v0/rules" 2>/dev/null || echo '{"rules":[]}')
 
-  upsert_rule "设备离线告警" '{
-    "name": "设备离线告警",
-    "devices": [-1],
-    "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_down\",\"field\":\"macros.device_down\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"}],\"valid\":true}",
-    "severity": "critical",
-    "disabled": 0
-  }'
+  # 设备离线改由 bridge 的实时 device-down watcher 处理（blackbox 每 5s ping，
+  # ~10s 告警，飞书卡片显示 名字(IP) + 离线时长），比 LibreNMS 分钟级轮询快得多。
+  down_rule_id="$(rule_id_by_name "设备离线告警")"
+  if [ -n "$down_rule_id" ]; then
+    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$down_rule_id" \
+      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
+    echo "  Alert rule: 设备离线告警 - removed (handled by realtime device-down watcher)"
+  else
+    echo "  Alert rule: 设备离线告警 - handled by realtime device-down watcher"
+  fi
 
   upsert_rule "高丢包告警" '{
     "name": "高丢包告警",

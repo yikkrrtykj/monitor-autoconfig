@@ -26,6 +26,10 @@ Env:
   ISP_SATURATION_PERCENT  alert threshold percent of configured bandwidth
   SYSLOG_WATCH_ENABLED    true = watch syslog file for security events (default true)
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
+  DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
+  DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
+  DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 5)
+  DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
 """
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -56,6 +60,13 @@ BIGSCREEN_ISP_MAX_BANDWIDTH = os.environ.get("BIGSCREEN_ISP_MAX_BANDWIDTH", "100
 ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "80") or "80")
 SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
+DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
+DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "5"))
+DEVICE_DOWN_JOBS = os.environ.get(
+    "DEVICE_DOWN_JOBS",
+    "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping",
+)
 
 _DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
 
@@ -202,6 +213,19 @@ def build_isp_bandwidth_card(event, recovered=False):
         f"⏳ 持续：{format_duration(event['duration'])}",
     ]
     return _make_card(title, "实时 ISP 带宽监控", color, "\n".join(lines))
+
+
+def build_device_down_card(name, ip, recovered, offline_seconds=0):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    dev = f"{name} ({ip})" if ip and ip != name else (name or ip or "?")
+    if recovered:
+        title, color, emoji, state_text = "🟢 设备恢复", "green", "✅", "UP"
+    else:
+        title, color, emoji, state_text = "🔴 设备离线", "red", "❌", "DOWN"
+    lines = [f"{emoji} {dev} {state_text}", f"⏰ 时间：{ts}"]
+    if recovered:
+        lines.append(f"⏳ 离线时长：{format_duration(offline_seconds)}")
+    return _make_card(title, "实时设备在线监测", color, "\n".join(lines))
 
 
 def _make_card(title, subtitle, color, body_md):
@@ -481,6 +505,65 @@ def isp_bandwidth_watcher():
         time.sleep(ISP_ALERT_POLL_INTERVAL)
 
 
+def device_down_watcher():
+    """Fast device-down alerts off Prometheus blackbox ICMP (probe_success).
+
+    Detects within ~DEVICE_DOWN_FOR_SECONDS instead of LibreNMS's minute-grained
+    poll. name/IP come from the target's instance/target_ip labels.
+    """
+    if not DEVICE_DOWN_ENABLED:
+        log("[DOWN] device-down watcher disabled")
+        return
+    jobs = [j.strip() for j in DEVICE_DOWN_JOBS.split(",") if j.strip()]
+    if not jobs:
+        log("[DOWN] no jobs configured, watcher disabled")
+        return
+    query = 'probe_success{job=~"%s"}' % "|".join(re.escape(j) for j in jobs)
+    time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
+    states = {}
+    log(
+        "[DOWN] device-down watcher enabled "
+        f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, poll={DEVICE_DOWN_POLL_INTERVAL}s)"
+    )
+
+    while True:
+        now = time.time()
+        try:
+            results = prometheus_query(query)
+        except Exception as exc:
+            log(f"[DOWN] poll failed: {exc}")
+            time.sleep(DEVICE_DOWN_POLL_INTERVAL)
+            continue
+
+        for item in results:
+            metric = item.get("metric") or {}
+            name = metric.get("instance") or metric.get("target_ip") or "?"
+            ip = metric.get("target_ip") or ""
+            key = f"{metric.get('job', '')}|{name}|{ip}"
+            try:
+                up = float((item.get("value") or [None, "1"])[1]) >= 1
+            except (TypeError, ValueError):
+                continue
+
+            state = states.setdefault(key, {"down_since": None, "alerting": False})
+            if not up:
+                if state["down_since"] is None:
+                    state["down_since"] = now
+                if not state["alerting"] and now - state["down_since"] >= DEVICE_DOWN_FOR_SECONDS:
+                    state["alerting"] = True
+                    log(f"[DOWN] ALERT {name} ({ip}) DOWN")
+                    send_feishu(build_device_down_card(name, ip, recovered=False))
+            else:
+                if state["alerting"]:
+                    offline = now - state["down_since"]
+                    log(f"[DOWN] RECOVER {name} ({ip}) offline={int(offline)}s")
+                    send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline))
+                state["alerting"] = False
+                state["down_since"] = None
+
+        time.sleep(DEVICE_DOWN_POLL_INTERVAL)
+
+
 def build_dhcp_snooping_card(host, message):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [f"🔴 来自：{host}", message.strip()[:200], f"⏰ {ts}"]
@@ -642,6 +725,7 @@ def main():
 
     if PROMETHEUS_URL:
         threading.Thread(target=isp_bandwidth_watcher, daemon=True).start()
+        threading.Thread(target=device_down_watcher, daemon=True).start()
 
     if SYSLOG_WATCH_ENABLED:
         log(f"[SYSLOG] DHCP snooping watcher enabled (file={SYSLOG_FILE})")
