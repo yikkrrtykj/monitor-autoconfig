@@ -418,6 +418,7 @@ def isp_bandwidth_watcher():
                 "active_since": None,
                 "clear_since": None,
                 "alerting": False,
+                "alert_started": None,
                 "last_value": 0.0,
             })
             state["last_value"] = sample["value_bps"]
@@ -429,6 +430,7 @@ def isp_bandwidth_watcher():
                 duration = now - state["active_since"]
                 if not state["alerting"] and duration >= ISP_ALERT_FOR_SECONDS:
                     state["alerting"] = True
+                    state["alert_started"] = state["active_since"]
                     event = {
                         **sample,
                         "threshold_bps": threshold_bps,
@@ -449,12 +451,16 @@ def isp_bandwidth_watcher():
                     clear_duration = now - state["clear_since"]
                     if clear_duration >= ISP_ALERT_RESOLVE_SECONDS:
                         state["alerting"] = False
+                        # 持续 = 整段饱和时长（首次越过阈值→恢复），不是 30 秒恢复防抖
+                        _start = state["alert_started"] if state["alert_started"] is not None else state["clear_since"]
+                        saturated_duration = now - _start
+                        state["alert_started"] = None
                         event = {
                             **sample,
                             "threshold_bps": threshold_bps,
                             "capacity_mbps": capacity_mbps,
                             "percent": ISP_SATURATION_PERCENT,
-                            "duration": clear_duration,
+                            "duration": saturated_duration,
                         }
                         log(
                             f"[ISP] RECOVER {sample['label']} {sample['direction']} "
