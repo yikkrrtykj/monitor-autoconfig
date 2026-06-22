@@ -34,6 +34,8 @@
   const { analyzeIncident } = window.BSIncident;
   let gaugeTimer = null;
   let chartTimer = null;
+  let seenUpTimer = null;
+  let infraSeenUp = null;  // Set of "deployed" (ever-online) infra instance names; null/empty = show all
   let tournamentTimer = null;
   let opsTimer = null;
   let activePageId = "";
@@ -658,6 +660,23 @@
     }
   }
 
+  // Refresh the slowly-changing "deployed" set on its own timer so the heavy
+  // max_over_time query doesn't run every 5s. Keeps the previous set on failure.
+  async function refreshInfraSeenUp() {
+    try {
+      infraSeenUp = activeSeriesNames(await prometheusInstant(activeInfraPingQuery()));
+    } catch (error) {
+      // transient failure: keep the previous set
+    }
+  }
+
+  // Drop infra items/series that have never been online (configured-but-absent
+  // ping targets). Falls back to showing all until the set is known or empty.
+  function filterDeployed(list, getName) {
+    if (!infraSeenUp || infraSeenUp.size === 0) return list;
+    return list.filter((entry) => infraSeenUp.has(getName(entry)));
+  }
+
   async function refreshGauges() {
     const seq = ++gaugeSeq;
     try {
@@ -667,8 +686,9 @@
       ]);
       if (seq !== gaugeSeq) return;
       const isServerItem = (item) => (item.metric && item.metric.job) === "infra-srv-ping";
-      const networkPing = pingItems.filter((item) => !isServerItem(item));
-      const serverPing = pingItems.filter(isServerItem);
+      const deployed = filterDeployed(pingItems, (item) => item.name);
+      const networkPing = deployed.filter((item) => !isServerItem(item));
+      const serverPing = deployed.filter(isServerItem);
       renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
       // Servers aren't stage devices (skip the stage filter); keep them on one row.
       renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
@@ -689,16 +709,14 @@
   async function refreshCharts() {
     const seq = ++chartSeq;
     try {
-      const [activeItems, pingSeries, lossSeries, ispTraffic] = await Promise.all([
-        prometheusInstant(activeInfraPingQuery()),
+      const [pingSeries, lossSeries, ispTraffic] = await Promise.all([
         prometheusRangeCached(pingTrendQuery),
         prometheusRangeCached(lossQuery),
         fetchIspTraffic()
       ]);
       if (seq !== chartSeq) return;
-      const activeNames = activeSeriesNames(visibleInfraItems(activeItems));
-      const activePingSeries = visibleInfraSeries(filterSeriesByNames(pingSeries, activeNames));
-      const activeLossSeries = visibleInfraSeries(filterSeriesByNames(lossSeries, activeNames));
+      const activePingSeries = visibleInfraSeries(filterDeployed(pingSeries, (s) => s.name));
+      const activeLossSeries = visibleInfraSeries(filterDeployed(lossSeries, (s) => s.name));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
         renderLineChart("pingTrendChart", activePingSeries, {
           axisFormatter: formatPingText,
@@ -1204,6 +1222,10 @@
       window.clearInterval(chartTimer);
       chartTimer = null;
     }
+    if (seenUpTimer) {
+      window.clearInterval(seenUpTimer);
+      seenUpTimer = null;
+    }
   }
 
   function stopTournamentRefresh() {
@@ -1224,10 +1246,12 @@
     if (gaugeTimer || chartTimer) return;
     renderSignatures.clear();
     invalidateRangeCache();
-    refreshGauges();
-    refreshCharts();
+    // Resolve the "deployed" set first so the first paint already hides
+    // never-online targets; then keep it fresh on a slow timer.
+    refreshInfraSeenUp().then(() => { refreshGauges(); refreshCharts(); });
     gaugeTimer = window.setInterval(refreshGauges, 5000);
     chartTimer = window.setInterval(refreshCharts, 5000);
+    seenUpTimer = window.setInterval(refreshInfraSeenUp, 30000);
   }
 
   function startTournamentRefresh(page) {
