@@ -236,7 +236,11 @@ def format_bps(value):
 
 
 def format_duration(seconds):
-    seconds = max(0, int(seconds or 0))
+    try:
+        seconds_float = float(seconds or 0)
+    except (TypeError, ValueError):
+        seconds_float = 0
+    seconds = max(0, int(seconds_float + 0.999)) if seconds_float > 0 else 0
     if seconds < 60:
         return f"{seconds} 秒"
     minutes, sec = divmod(seconds, 60)
@@ -247,15 +251,19 @@ def format_duration(seconds):
 
 
 def format_alert_duration(seconds, recovered=False):
-    if not recovered and int(seconds or 0) <= 0:
-        return "刚检测到断线"
+    if not recovered:
+        try:
+            if float(seconds or 0) <= 0:
+                return "1 秒"
+        except (TypeError, ValueError):
+            return "1 秒"
     return format_duration(seconds)
 
 
 def build_isp_bandwidth_card(event, recovered=False):
     color = "green" if recovered else "red"
     direction_text = "下载" if event["direction"] == "in" else "上传"
-    state_text = "UP" if recovered else "DOWN"
+    state_text = "已恢复" if recovered else "带宽超限"
     status_emoji = "✅" if recovered else "🔴"
     header_emoji = "🟢" if recovered else "🔴"
     duration_label = "恢复耗时" if recovered else "持续时间"
@@ -689,6 +697,7 @@ def device_down_watcher():
                 "alerting": False,
                 "seen_up": False,
                 "ignored_initial_down": False,
+                "last_up_at": None,
             })
             if not up:
                 if DEVICE_DOWN_REQUIRE_SEEN_UP and not state["seen_up"] and not known_by_librenms:
@@ -698,19 +707,21 @@ def device_down_watcher():
                     state["down_since"] = None
                     continue
                 if state["down_since"] is None:
-                    state["down_since"] = now
+                    state["down_since"] = state.get("last_up_at") or now
                 if not state["alerting"] and now - state["down_since"] >= down_for_seconds:
                     state["alerting"] = True
-                    offline = now - state["down_since"]
+                    offline = max(0, now - state["down_since"])
                     log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN")
                     send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job))
             else:
+                previous_down_since = state.get("down_since")
+                state["last_up_at"] = now
                 if not state["seen_up"]:
                     state["seen_up"] = True
                     state["ignored_initial_down"] = False
                     log(f"[DOWN] armed {job} {name} ({ip}) after first UP")
                 if state["alerting"]:
-                    offline = now - state["down_since"]
+                    offline = max(0, now - (previous_down_since or now))
                     log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s")
                     send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline, job=job))
                 state["alerting"] = False
