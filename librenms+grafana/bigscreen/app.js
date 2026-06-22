@@ -1544,7 +1544,7 @@
 
   async function runIncidentAnalysis() {
     const win = incidentWindow();
-    const threshold = Number(document.getElementById("incidentThreshold").value || 0.02);
+    const threshold = Number(document.getElementById("incidentThreshold").value || 0.05);
 
     const params = new URLSearchParams();
     const at = document.getElementById("incidentAt").value;
