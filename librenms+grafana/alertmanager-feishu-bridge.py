@@ -28,6 +28,7 @@ Env:
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
+  ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
   DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 5)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
 """
@@ -62,6 +63,7 @@ SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in
 SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
+ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "5"))
 DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
@@ -215,17 +217,22 @@ def build_isp_bandwidth_card(event, recovered=False):
     return _make_card(title, "实时 ISP 带宽监控", color, "\n".join(lines))
 
 
-def build_device_down_card(name, ip, recovered, offline_seconds=0):
+def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dev = f"{name} ({ip})" if ip and ip != name else (name or ip or "?")
+    is_isp = job == "infra-isp-ping"
     if recovered:
-        title, color, emoji, state_text = "🟢 设备恢复", "green", "✅", "UP"
+        title = "🟢 ISP 恢复" if is_isp else "🟢 设备恢复"
+        color, emoji, state_text = "green", "✅", "UP"
     else:
-        title, color, emoji, state_text = "🔴 设备离线", "red", "❌", "DOWN"
-    lines = [f"{emoji} {dev} {state_text}", f"⏰ 时间：{ts}"]
+        title = "🔴 ISP 断线" if is_isp else "🔴 设备离线"
+        color, emoji, state_text = "red", "❌", "DOWN"
+    label = "ISP" if is_isp else "设备"
+    subtitle = "实时 ISP 连通性监测" if is_isp else "实时设备在线监测"
+    lines = [f"{emoji} {label}：{dev} {state_text}", f"⏰ 时间：{ts}"]
     if recovered:
         lines.append(f"⏳ 离线时长：{format_duration(offline_seconds)}")
-    return _make_card(title, "实时设备在线监测", color, "\n".join(lines))
+    return _make_card(title, subtitle, color, "\n".join(lines))
 
 
 def _make_card(title, subtitle, color, body_md):
@@ -521,9 +528,11 @@ def device_down_watcher():
     query = 'probe_success{job=~"%s"}' % "|".join(re.escape(j) for j in jobs)
     time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
     states = {}
+    last_status_log = 0.0
     log(
         "[DOWN] device-down watcher enabled "
-        f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, poll={DEVICE_DOWN_POLL_INTERVAL}s)"
+        f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, "
+        f"isp_for={ISP_DOWN_FOR_SECONDS}s, poll={DEVICE_DOWN_POLL_INTERVAL}s)"
     )
 
     while True:
@@ -535,29 +544,43 @@ def device_down_watcher():
             time.sleep(DEVICE_DOWN_POLL_INTERVAL)
             continue
 
+        if now - last_status_log >= 60:
+            counts = {}
+            for item in results:
+                job = (item.get("metric") or {}).get("job", "")
+                counts[job] = counts.get(job, 0) + 1
+            if "infra-isp-ping" in jobs and counts.get("infra-isp-ping", 0) == 0:
+                log("[DOWN] no infra-isp-ping targets found; set ISP_PING and run ./apply-env.sh")
+            else:
+                summary = ", ".join(f"{job}={counts.get(job, 0)}" for job in jobs)
+                log(f"[DOWN] targets {summary}")
+            last_status_log = now
+
         for item in results:
             metric = item.get("metric") or {}
+            job = metric.get("job", "")
             name = metric.get("instance") or metric.get("target_ip") or "?"
             ip = metric.get("target_ip") or ""
-            key = f"{metric.get('job', '')}|{name}|{ip}"
+            key = f"{job}|{name}|{ip}"
             try:
                 up = float((item.get("value") or [None, "1"])[1]) >= 1
             except (TypeError, ValueError):
                 continue
 
+            down_for_seconds = ISP_DOWN_FOR_SECONDS if job == "infra-isp-ping" else DEVICE_DOWN_FOR_SECONDS
             state = states.setdefault(key, {"down_since": None, "alerting": False})
             if not up:
                 if state["down_since"] is None:
                     state["down_since"] = now
-                if not state["alerting"] and now - state["down_since"] >= DEVICE_DOWN_FOR_SECONDS:
+                if not state["alerting"] and now - state["down_since"] >= down_for_seconds:
                     state["alerting"] = True
-                    log(f"[DOWN] ALERT {name} ({ip}) DOWN")
-                    send_feishu(build_device_down_card(name, ip, recovered=False))
+                    log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN")
+                    send_feishu(build_device_down_card(name, ip, recovered=False, job=job))
             else:
                 if state["alerting"]:
                     offline = now - state["down_since"]
-                    log(f"[DOWN] RECOVER {name} ({ip}) offline={int(offline)}s")
-                    send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline))
+                    log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s")
+                    send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline, job=job))
                 state["alerting"] = False
                 state["down_since"] = None
 

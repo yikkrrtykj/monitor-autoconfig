@@ -210,7 +210,16 @@ BIGSCREEN_ISP_MAX_BANDWIDTH=telecom:300,unicom:500
 BIGSCREEN_ISP_MAX_BANDWIDTH=telecom:1000/100,unicom:500/50
 ```
 
-`./apply-env.sh` 会重建 LibreNMS transport，也会重启飞书 bridge。ISP 带宽饱和告警由 bridge 从 Prometheus 实时读取防火墙 WAN 口速率：连续超过 `BIGSCREEN_ISP_MAX_BANDWIDTH * ISP_SATURATION_PERCENT` 才推飞书。LibreNMS 仍负责设备离线、丢包等常规告警。
+`./apply-env.sh` 会重建 LibreNMS transport，也会重启飞书 bridge。ISP 带宽饱和告警由 bridge 从 Prometheus 实时读取防火墙 WAN 口速率：连续超过 `BIGSCREEN_ISP_MAX_BANDWIDTH * ISP_SATURATION_PERCENT` 才推飞书。
+
+ISP 断线不是靠 LibreNMS 丢包规则判断，而是看 `ISP_PING` 生成的 `infra-isp-ping`：
+
+```bash
+ISP_PING=telecom:223.5.5.5,telecom_gw:电信网关IP,unicom:119.29.29.29,unicom_gw:联通网关IP
+ISP_DOWN_FOR_SECONDS=0
+```
+
+`ISP_DOWN_FOR_SECONDS=0` 表示只要 Prometheus 采到这条 ISP ping 失败，就马上推飞书。多 ISP 时，公网探测目标要在防火墙上做 PBR 钉到对应出口，否则所有探测都走默认线路，断另一条线也可能看不出来。
 
 ### 3.3 选手监控
 
@@ -245,8 +254,8 @@ PLAYER_STATIC_NETWORK=wireless
 
 | 告警 | 来源 | 速度 |
 |---|---|---|
-| 设备离线 / 恢复 | LibreNMS ICMP | ~10 秒 |
-| 高丢包（>10%） | LibreNMS ICMP | ~10 秒 |
+| 设备离线 / 恢复 | Prometheus blackbox | 约一个 ping 采集周期 |
+| ISP 断线 / 恢复 | Prometheus blackbox | 约一个 ping 采集周期 |
 | ISP 带宽饱和 | Prometheus 实时 | 10 秒（可调） |
 | DHCP Snooping 违规 | syslog | 秒级 |
 
@@ -394,7 +403,37 @@ docker logs -f alertmanager-feishu-bridge
 
 注意：ISP 实时带宽告警看的是 Prometheus 的 `firewall-snmp` 采集，默认每 5 秒检查一次；LibreNMS poller 不参与这条告警。
 
-### 6.3 防火墙能 ping，拓扑还是红
+### 6.3 ISP 断线但没告警
+
+先看 bridge 是否真的在监控 ISP ping：
+
+```bash
+docker logs -f alertmanager-feishu-bridge
+```
+
+正常会看到：
+
+```text
+[DOWN] device-down watcher enabled (... isp_for=0s ...)
+[DOWN] targets ... infra-isp-ping=2 ...
+```
+
+如果看到：
+
+```text
+[DOWN] no infra-isp-ping targets found
+```
+
+说明 `.env` 里 `ISP_PING` 为空，或者改完没有跑 `./apply-env.sh`。填好后执行：
+
+```bash
+./apply-env.sh
+docker logs -f alertmanager-feishu-bridge
+```
+
+多 ISP 一定要确认探测目标从对应出口出去。比如 `telecom:223.5.5.5` 要被防火墙策略路由到电信出口；否则断电信但探测从联通绕出去，系统会认为它还是通的。
+
+### 6.4 防火墙能 ping，拓扑还是红
 
 看 `.env` 里的 `FIREWALL_PING`。这里要写“监控服务器能 ping 通的物理防火墙地址”，不是 SNMP 逻辑地址，也不是旧网段地址。
 
@@ -405,7 +444,7 @@ FIREWALL_PING=FW1:192.168.11.2,FW2:192.168.11.3
 FIREWALL_SNMP_TARGETS=FW:192.168.11.4
 ```
 
-### 6.4 拓扑又出现占位 ISP 名称
+### 6.5 拓扑又出现占位 ISP 名称
 
 不要手动写 `BIGSCREEN_ISP_NAMES`，让它自动发现：
 
@@ -416,7 +455,7 @@ FIREWALL_WAN_IF_FILTER=telecom,telcom,unicom,isp,WAN
 
 接口描述里有 `telecom`、`unicom`，拓扑和大屏就会显示真实名字。
 
-### 6.5 LibreNMS 发现 0 个设备
+### 6.6 LibreNMS 发现 0 个设备
 
 先直接测 SNMP：
 
@@ -430,7 +469,7 @@ docker exec librenms snmpwalk -v2c -c public 192.168.10.254 sysName.0
 docker logs -f librenms-config
 ```
 
-### 6.6 选手页面 No data
+### 6.7 选手页面 No data
 
 先看生成了多少 target：
 

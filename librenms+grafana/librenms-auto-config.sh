@@ -1153,13 +1153,14 @@ if [ -n "$API_TOKEN" ]; then
     echo "  Alert rule: 设备离线告警 - handled by realtime device-down watcher"
   fi
 
-  upsert_rule "高丢包告警" '{
-    "name": "高丢包告警",
-    "devices": [-1],
-    "builder": "{\"condition\":\"AND\",\"rules\":[{\"id\":\"macros.device_up\",\"field\":\"macros.device_up\",\"type\":\"boolean\",\"input\":\"radio\",\"operator\":\"equal\",\"value\":\"1\"},{\"id\":\"device_perf.loss\",\"field\":\"device_perf.loss\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater\",\"value\":\"10\"}],\"valid\":true}",
-    "severity": "warning",
-    "disabled": 0
-  }'
+  loss_rule_id="$(rule_id_by_name "高丢包告警")"
+  if [ -n "$loss_rule_id" ]; then
+    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$loss_rule_id" \
+      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
+    echo "  Alert rule: 高丢包告警 - removed (down alerts use realtime blackbox watcher)"
+  else
+    echo "  Alert rule: 高丢包告警 - disabled (down alerts use realtime blackbox watcher)"
+  fi
 
   isp_rule_id="$(rule_id_by_name "ISP 带宽饱和告警")"
   if [ -n "$isp_rule_id" ]; then
