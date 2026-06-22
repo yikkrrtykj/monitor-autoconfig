@@ -242,6 +242,12 @@ def format_duration(seconds):
     return f"{hours} 小时 {minutes} 分" if minutes else f"{hours} 小时"
 
 
+def format_alert_duration(seconds, recovered=False):
+    if not recovered and int(seconds or 0) <= 0:
+        return "刚刚"
+    return format_duration(seconds)
+
+
 def build_isp_bandwidth_card(event, recovered=False):
     color = "green" if recovered else "red"
     direction_text = "下载" if event["direction"] == "in" else "上传"
@@ -255,7 +261,7 @@ def build_isp_bandwidth_card(event, recovered=False):
         f"📶 方向：{direction_text}",
         f"{status_emoji} 状态：{state_text}",
         f"📈 当前：{format_bps(event['value_bps'])}",
-        f"⏳ {duration_label}：{format_duration(event['duration'])}",
+        f"⏳ {duration_label}：{format_alert_duration(event['duration'], recovered)}",
         f"⏰ 时间：{ts}",
     ]
     return _make_card(next_event_title(), f"{header_emoji} 外网 ISP 告警", color, "\n".join(lines))
@@ -280,7 +286,7 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
     lines = [
         f"{label_emoji} {label}：{dev}",
         f"{status_emoji} 状态：{state_text}",
-        f"⏳ {duration_label}：{format_duration(offline_seconds)}",
+        f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
         f"⏰ 时间：{ts}",
     ]
     return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
