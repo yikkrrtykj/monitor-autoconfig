@@ -473,6 +473,49 @@ configure_runtime() {
     echo "  autodiscovery.nets: enabled" || true
 }
 
+create_api_token_model() {
+  run_as_librenms php <<'PHP'
+<?php
+try {
+    require '/opt/librenms/vendor/autoload.php';
+    $app = require '/opt/librenms/bootstrap/app.php';
+    $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+    $kernel->bootstrap();
+
+    $username = getenv('LIBRENMS_ADMIN_USER') ?: 'admin';
+    $user = \App\Models\User::where('username', $username)->first();
+    if (!$user) {
+        fwrite(STDERR, "User not found: {$username}\n");
+        exit(1);
+    }
+
+    $token = \App\Models\ApiToken::where('user_id', $user->user_id)
+        ->where('description', 'autoconfig')
+        ->first();
+
+    if ($token) {
+        echo $token->rotateTokenHash();
+    } else {
+        echo \App\Models\ApiToken::generateToken($user, 'autoconfig')->token_hash;
+    }
+    exit(0);
+} catch (Throwable $e) {
+    fwrite(STDERR, 'API token model generation failed: ' . $e->getMessage() . PHP_EOL);
+    exit(1);
+}
+PHP
+}
+
+api_token_works() {
+  [ -n "$API_TOKEN" ] || return 1
+  _tmp="/tmp/librenms-api-token-check.$$"
+  _code=$(curl -s -o "$_tmp" -w "%{http_code}" \
+    -H "X-Auth-Token: $API_TOKEN" \
+    "$LIBRENMS_URL/api/v0/devices" 2>/dev/null || true)
+  rm -f "$_tmp" 2>/dev/null || true
+  [ "$_code" = "200" ]
+}
+
 echo ""
 echo "[2/5] Ensuring LibreNMS admin user..."
 ensure_admin_user
@@ -485,6 +528,15 @@ configure_runtime
 echo ""
 echo "[3/5] Creating API token..."
 API_TOKEN="$LIBRENMS_API_TOKEN"
+
+if [ -z "$API_TOKEN" ]; then
+  _model_token=$(create_api_token_model 2>/dev/null || true)
+  _model_token=$(printf '%s' "$_model_token" | tail -n 1 | tr -d '[:space:]')
+  if [ -n "$_model_token" ]; then
+    API_TOKEN="$_model_token"
+    echo "  API Token created via LibreNMS model"
+  fi
+fi
 
 if [ -z "$API_TOKEN" ]; then
   # 直接写数据库——不依赖 LibreNMS 版本，只要容器能访问 DB 就行
@@ -506,10 +558,20 @@ if [ -z "$API_TOKEN" ]; then
   fi
 fi
 
-if [ -z "$API_TOKEN" ]; then
+if [ -n "$API_TOKEN" ] && ! api_token_works; then
+  echo "  API Token failed validation; rotating via LibreNMS model..."
+  _model_token=$(create_api_token_model 2>/dev/null || true)
+  _model_token=$(printf '%s' "$_model_token" | tail -n 1 | tr -d '[:space:]')
+  if [ -n "$_model_token" ]; then
+    API_TOKEN="$_model_token"
+  fi
+fi
+
+if [ -z "$API_TOKEN" ] || ! api_token_works; then
   echo "  WARNING: Could not create API token."
-  echo "  Feishu transport will not be configured automatically."
+  echo "  LibreNMS API automation will be skipped; existing monitoring still runs."
   echo "  Fix: set LIBRENMS_API_TOKEN in .env, then rerun: docker compose up -d --force-recreate librenms-config"
+  API_TOKEN=""
 else
   echo "  API Token ready"
   # 写到共享 volume，让 alertmanager-feishu-bridge 的 device watcher 读取（免手动配置）
