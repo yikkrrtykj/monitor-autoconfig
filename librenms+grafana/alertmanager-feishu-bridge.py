@@ -93,9 +93,19 @@ SEVERITY_COLOR = {
     "disaster": "purple",
 }
 
+EVENT_ID_LOCK = threading.Lock()
+EVENT_ID = int(os.environ.get("FEISHU_BRIDGE_EVENT_ID_START", "0") or "0")
+
 
 def log(message):
     print(f"[{datetime.now().isoformat(timespec='seconds')}] {message}", file=sys.stderr, flush=True)
+
+
+def next_event_title():
+    global EVENT_ID
+    with EVENT_ID_LOCK:
+        EVENT_ID += 1
+        return f"#{EVENT_ID}"
 
 
 def _librenms_token():
@@ -165,33 +175,28 @@ def build_librenms_card(payload):
 
     uid = str(payload.get("uid") or "").strip()
     elapsed = str(payload.get("elapsed") or "").strip()
-    ts = payload.get("timestamp") or ""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     recovered = state == "0"
     if recovered:
         color = "green"
-        emoji = "✅"
         state_text = "UP"
     else:
         color = SEVERITY_COLOR.get(severity, "yellow")
-        emoji = "❌" if severity in ("critical", "disaster") else "🔴"
         state_text = "DOWN"
 
-    title = f"#{uid}" if uid and uid != "0" else rule_name
+    title = f"#{uid}" if uid and uid != "0" else next_event_title()
 
     dev_str = hostname or ip or "?"
     ip_str = f" ({ip})" if ip else ""
-    lines = [f"{emoji} {dev_str}{ip_str} {state_text}"]
-
-    if recovered:
-        if elapsed and elapsed not in ("0s",):
-            lines.append(f"离线时长：{elapsed}")
-    else:
-        if ts:
-            lines.append(ts)
-
+    lines = [
+        f"设备：{dev_str}{ip_str}",
+        f"状态：{state_text}",
+    ]
     if elapsed and elapsed not in ("0s",):
-        lines.append(f"告警耗时：{elapsed}")
+        label = "恢复耗时" if recovered else "断线时间"
+        lines.append(f"{label}：{elapsed}")
+    lines.append(f"时间：{ts}")
 
     return _make_card(title, rule_name, color, "\n".join(lines))
 
@@ -203,15 +208,14 @@ def build_device_online_card(device):
     os_name = device.get("os") or ""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    title = "🟢 新设备上线"
-    lines = [f"🖥 设备：{name}", f"🌐 IP：{ip}"]
+    lines = [f"设备：{name}", f"IP：{ip}", "状态：UP"]
     if hw:
-        lines.append(f"🔧 型号：{hw}")
+        lines.append(f"型号：{hw}")
     if os_name:
-        lines.append(f"💻 系统：{os_name}")
-    lines.append(f"⏰ 时间：{ts}")
+        lines.append(f"系统：{os_name}")
+    lines.append(f"时间：{ts}")
 
-    return _make_card(title, "LibreNMS 设备发现", "green", "\n".join(lines))
+    return _make_card(next_event_title(), "新设备上线", "green", "\n".join(lines))
 
 
 def format_bps(value):
@@ -237,18 +241,20 @@ def format_duration(seconds):
 
 
 def build_isp_bandwidth_card(event, recovered=False):
-    title = "🟢 ISP 带宽恢复" if recovered else "🔴 ISP 带宽饱和"
     color = "green" if recovered else "red"
     direction_text = "下载" if event["direction"] == "in" else "上传"
+    state_text = "UP" if recovered else "DOWN"
+    duration_label = "恢复耗时" if recovered else "持续时间"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
-        f"🌐 ISP：{event['label']}",
-        f"📶 方向：{direction_text}",
-        f"📈 当前：{format_bps(event['value_bps'])}",
-        f"⏰ 时间：{ts}",
-        f"⏳ 持续：{format_duration(event['duration'])}",
+        f"ISP：{event['label']}",
+        f"方向：{direction_text}",
+        f"状态：{state_text}",
+        f"当前：{format_bps(event['value_bps'])}",
+        f"{duration_label}：{format_duration(event['duration'])}",
+        f"时间：{ts}",
     ]
-    return _make_card(title, "实时 ISP 带宽监控", color, "\n".join(lines))
+    return _make_card(next_event_title(), "外网 ISP 告警", color, "\n".join(lines))
 
 
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
@@ -256,17 +262,19 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
     dev = f"{name} ({ip})" if ip and ip != name else (name or ip or "?")
     is_isp = job == "infra-isp-ping"
     if recovered:
-        title = "🟢 ISP 恢复" if is_isp else "🟢 设备恢复"
-        color, emoji, state_text = "green", "✅", "UP"
+        color, state_text = "green", "UP"
     else:
-        title = "🔴 ISP 断线" if is_isp else "🔴 设备离线"
-        color, emoji, state_text = "red", "❌", "DOWN"
+        color, state_text = "red", "DOWN"
     label = "ISP" if is_isp else "设备"
-    subtitle = "实时 ISP 连通性监测" if is_isp else "实时设备在线监测"
-    lines = [f"{emoji} {label}：{dev} {state_text}", f"⏰ 时间：{ts}"]
-    if recovered:
-        lines.append(f"⏳ 离线时长：{format_duration(offline_seconds)}")
-    return _make_card(title, subtitle, color, "\n".join(lines))
+    subtitle = "外网 ISP 告警" if is_isp else "设备离线告警"
+    duration_label = "恢复耗时" if recovered else "断线时间"
+    lines = [
+        f"{label}：{dev}",
+        f"状态：{state_text}",
+        f"{duration_label}：{format_duration(offline_seconds)}",
+        f"时间：{ts}",
+    ]
+    return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
 def _make_card(title, subtitle, color, body_md):
@@ -635,8 +643,9 @@ def device_down_watcher():
                     state["down_since"] = now
                 if not state["alerting"] and now - state["down_since"] >= down_for_seconds:
                     state["alerting"] = True
+                    offline = now - state["down_since"]
                     log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN")
-                    send_feishu(build_device_down_card(name, ip, recovered=False, job=job))
+                    send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job))
             else:
                 if not state["seen_up"]:
                     state["seen_up"] = True
@@ -654,8 +663,8 @@ def device_down_watcher():
 
 def build_dhcp_snooping_card(host, message):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines = [f"🔴 来自：{host}", message.strip()[:200], f"⏰ {ts}"]
-    return _make_card("⚠️ DHCP Snooping 违规", "交换机安全告警", "orange", "\n".join(lines))
+    lines = [f"来源：{host}", f"详情：{message.strip()[:200]}", f"时间：{ts}"]
+    return _make_card(next_event_title(), "DHCP Snooping 违规", "orange", "\n".join(lines))
 
 
 def syslog_watcher():
