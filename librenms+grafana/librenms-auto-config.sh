@@ -1114,7 +1114,7 @@ if ids:
         "name": "Feishu",
         "operation_phase": "problem",
         "escalation_step_from": 1,
-        "escalation_step_to": None,
+        "escalation_step_to": 1,
         "start_in_seconds": 0,
         "step_duration_seconds": 300,
         "transports": ids

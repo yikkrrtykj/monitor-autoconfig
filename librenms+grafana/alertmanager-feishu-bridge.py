@@ -168,16 +168,17 @@ def build_librenms_card(payload):
     rule_name = payload.get("name") or payload.get("rule") or "告警"
     severity = (payload.get("severity") or "warning").lower()
 
-    hostname = payload.get("hostname") or payload.get("sysName") or ""
+    sys_name = payload.get("sysName") or ""
+    hostname = payload.get("hostname") or ""
     ip = payload.get("ip") or ""
-    if not hostname and not ip:
+    if not sys_name and not hostname and not ip:
         devices = payload.get("devices") or []
         if devices:
             first = devices[0]
-            hostname = first.get("hostname") or first.get("sysName") or ""
+            sys_name = first.get("sysName") or ""
+            hostname = first.get("hostname") or ""
             ip = first.get("ip") or ""
 
-    uid = str(payload.get("uid") or "").strip()
     elapsed = str(payload.get("elapsed") or "").strip()
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -191,12 +192,13 @@ def build_librenms_card(payload):
         emoji = "❌" if severity in ("critical", "disaster") else "🔴"
         state_text = "DOWN"
 
-    title = f"#{uid}" if uid and uid != "0" else next_event_title()
+    title = next_event_title()
 
-    dev_str = hostname or ip or "?"
-    ip_str = f" ({ip})" if ip else ""
+    # 设备名优先 sysName（交换机名）/ 非 IP 的 hostname；避免出现 "IP (IP)"。
+    dev_name = sys_name or hostname or ip or "?"
+    ip_str = f" ({ip})" if ip and ip != dev_name else ""
     lines = [
-        f"🖥 设备：{dev_str}{ip_str}",
+        f"🖥 设备：{dev_name}{ip_str}",
         f"{emoji} 状态：{state_text}",
     ]
     if elapsed and elapsed not in ("0s",):
