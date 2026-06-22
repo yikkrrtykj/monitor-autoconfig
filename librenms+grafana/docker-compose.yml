@@ -540,6 +540,7 @@ services:
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+      UPLINK_IF_FILTER: "${UPLINK_IF_FILTER:-to-stage,to-core,to-dist,uplink}"
       LIBRENMS_API_TOKEN: "${LIBRENMS_API_TOKEN:-}"
     entrypoint:
       - /bin/sh

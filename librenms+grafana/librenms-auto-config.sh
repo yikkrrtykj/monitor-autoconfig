@@ -30,6 +30,9 @@ SERVER_PING="${SERVER_PING:-}"
 BIGSCREEN_ISP_MAX_BANDWIDTH="${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
 ISP_SATURATION_PERCENT="${ISP_SATURATION_PERCENT:-80}"
 FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+# 互联/上联口描述关键词（逗号分隔）。只对 ifAlias 含这些词的口做"断链"告警，
+# 其它口（选手口等）不报。把上联成员口统一描述成含这些词即可，如 description to-stage1。
+UPLINK_IF_FILTER="${UPLINK_IF_FILTER:-to-stage,to-core,to-dist,uplink}"
 LIBRENMS_API_TOKEN="${LIBRENMS_API_TOKEN:-}"
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
@@ -1251,6 +1254,22 @@ if [ -n "$API_TOKEN" ]; then
     "severity": "warning",
     "disabled": 0
   }'
+
+  # 互联口断链告警：只盯上联/PC 成员口（ifAlias 含 UPLINK_IF_FILTER 关键词，如 to-stage）
+  # 的 ifOperStatus=down 且 ifAdminStatus=up；选手口等无此描述的口不触发。双上联断一条
+  # （冗余降级、Po 仍 up、设备仍可达）就能抓到——这是设备离线告警看不到的盲区。
+  uplink_or=""
+  for kw in $(echo "$UPLINK_IF_FILTER" | tr ',' '\n'); do
+    kw=$(echo "$kw" | tr -d '[:space:]')
+    [ -z "$kw" ] && continue
+    r="{\"id\":\"ports.ifAlias\",\"field\":\"ports.ifAlias\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"contains\",\"value\":\"${kw}\"}"
+    uplink_or="${uplink_or}${uplink_or:+,}${r}"
+  done
+  if [ -n "$uplink_or" ]; then
+    uplink_builder="{\"condition\":\"AND\",\"rules\":[{\"id\":\"ports.ifOperStatus\",\"field\":\"ports.ifOperStatus\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"equal\",\"value\":\"down\"},{\"id\":\"ports.ifAdminStatus\",\"field\":\"ports.ifAdminStatus\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"equal\",\"value\":\"up\"},{\"condition\":\"OR\",\"rules\":[${uplink_or}]}],\"valid\":true}"
+    uplink_builder_escaped=$(printf '%s' "$uplink_builder" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')
+    upsert_rule "互联口断链告警" "{\"name\":\"互联口断链告警\",\"devices\":[-1],\"builder\":${uplink_builder_escaped},\"severity\":\"warning\",\"disabled\":0}"
+  fi
 fi
 
 echo ""
