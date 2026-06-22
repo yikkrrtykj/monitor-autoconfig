@@ -97,13 +97,14 @@ def log(message):
 
 
 def _librenms_token():
-    if LIBRENMS_API_TOKEN:
-        return LIBRENMS_API_TOKEN
     try:
         with open(LIBRENMS_TOKEN_FILE) as f:
-            return f.read().strip()
+            token = f.read().strip()
+            if token:
+                return token
     except OSError:
-        return ""
+        pass
+    return LIBRENMS_API_TOKEN
 
 
 def fetch_librenms_devices(token):
@@ -525,7 +526,11 @@ def device_down_watcher():
     if not jobs:
         log("[DOWN] no jobs configured, watcher disabled")
         return
-    query = 'probe_success{job=~"%s"}' % "|".join(re.escape(j) for j in jobs)
+    safe_jobs = [j for j in jobs if re.match(r"^[A-Za-z0-9_:.-]+$", j)]
+    if not safe_jobs:
+        log("[DOWN] no valid jobs configured, watcher disabled")
+        return
+    query = 'probe_success{job=~"%s"}' % "|".join(safe_jobs)
     time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
     states = {}
     last_status_log = 0.0
