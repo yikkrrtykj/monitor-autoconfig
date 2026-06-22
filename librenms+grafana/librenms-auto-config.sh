@@ -1232,6 +1232,25 @@ if [ -n "$API_TOKEN" ]; then
   else
     echo "  Alert rule: ISP 带宽饱和告警 - handled by realtime Feishu bridge"
   fi
+
+  # 接口错误（含 CRC/FCS）告警：任一方向错包速率 >= 1/秒（健康端口应为 0）。
+  # 字段在 ports 表（已在 LibreNMS 告警 builder 里确认）。想更灵敏把 1 调小，UI 里也能改。
+  upsert_rule "接口错误告警" '{
+    "name": "接口错误告警",
+    "devices": [-1],
+    "builder": "{\"condition\":\"OR\",\"rules\":[{\"id\":\"ports.ifInErrors_rate\",\"field\":\"ports.ifInErrors_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"1\"},{\"id\":\"ports.ifOutErrors_rate\",\"field\":\"ports.ifOutErrors_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"1\"}],\"valid\":true}",
+    "severity": "warning",
+    "disabled": 0
+  }'
+
+  # 接口丢弃告警：任一方向丢弃速率 >= 10/秒（拥塞时偶发，阈值给高防误报；UI 里可调）。
+  upsert_rule "接口丢弃告警" '{
+    "name": "接口丢弃告警",
+    "devices": [-1],
+    "builder": "{\"condition\":\"OR\",\"rules\":[{\"id\":\"ports.ifInDiscards_rate\",\"field\":\"ports.ifInDiscards_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"10\"},{\"id\":\"ports.ifOutDiscards_rate\",\"field\":\"ports.ifOutDiscards_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"10\"}],\"valid\":true}",
+    "severity": "warning",
+    "disabled": 0
+  }'
 fi
 
 echo ""
