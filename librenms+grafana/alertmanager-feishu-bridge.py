@@ -23,6 +23,8 @@ Env:
   ISP_ALERT_RESOLVE_SECONDS seconds below threshold before recovery (default 30)
   FIREWALL_WAN_IF_FILTER  WAN interface label keywords
   BIGSCREEN_ISP_MAX_BANDWIDTH ISP bandwidth Mbps config
+  BIGSCREEN_ISP_IPS     optional ISP display names, NAME:IP comma list
+  ISP_PING              ISP ping targets, NAME:IP comma list
   ISP_SATURATION_PERCENT  alert threshold percent of configured bandwidth
   SYSLOG_WATCH_ENABLED    true = watch syslog file for security events (default true)
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
@@ -59,6 +61,8 @@ ISP_ALERT_RESOLVE_SECONDS = int(os.environ.get("ISP_ALERT_RESOLVE_SECONDS", "30"
 ISP_ALERT_STATUS_INTERVAL = int(os.environ.get("ISP_ALERT_STATUS_INTERVAL", "30"))
 FIREWALL_WAN_IF_FILTER = os.environ.get("FIREWALL_WAN_IF_FILTER", "telecom,telcom,unicom,isp,WAN")
 BIGSCREEN_ISP_MAX_BANDWIDTH = os.environ.get("BIGSCREEN_ISP_MAX_BANDWIDTH", "1000")
+BIGSCREEN_ISP_IPS = os.environ.get("BIGSCREEN_ISP_IPS", "")
+ISP_PING = os.environ.get("ISP_PING", "")
 ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "80") or "80")
 SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
@@ -244,7 +248,7 @@ def format_duration(seconds):
 
 def format_alert_duration(seconds, recovered=False):
     if not recovered and int(seconds or 0) <= 0:
-        return "刚刚"
+        return "刚检测到断线"
     return format_duration(seconds)
 
 
@@ -391,6 +395,40 @@ def _parse_bandwidth_config(raw):
             "up": up,
         })
     return cfg
+
+
+def _parse_named_targets(raw):
+    names = {}
+    for item in str(raw or "").split(","):
+        item = item.strip().replace(" ", "")
+        if not item or ":" not in item:
+            continue
+        name, target = item.split(":", 1)
+        if not name or not target:
+            continue
+        if "-" not in target:
+            names[target] = name
+            continue
+
+        start_ip, end_part = target.rsplit("-", 1)
+        try:
+            prefix, start_octet = start_ip.rsplit(".", 1)
+            end_octet = end_part.rsplit(".", 1)[-1]
+            start = int(start_octet)
+            end = int(end_octet)
+        except ValueError:
+            continue
+        if start > end:
+            continue
+        for idx, octet in enumerate(range(start, end + 1), start=1):
+            names[f"{prefix}.{octet}"] = f"{name}{idx}"
+    return names
+
+
+def _isp_target_names():
+    names = _parse_named_targets(BIGSCREEN_ISP_IPS)
+    names.update(_parse_named_targets(ISP_PING))
+    return names
 
 
 def _wan_keywords():
@@ -592,6 +630,7 @@ def device_down_watcher():
     last_status_log = 0.0
     last_name_refresh = 0.0
     librenms_names = {}
+    isp_names = _isp_target_names()
     log(
         "[DOWN] device-down watcher enabled "
         f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, "
@@ -631,8 +670,12 @@ def device_down_watcher():
             metric = item.get("metric") or {}
             job = metric.get("job", "")
             ip = metric.get("target_ip") or ""
-            prom_name = metric.get("instance") or ip or "?"
-            name = librenms_names.get(ip) or prom_name
+            prom_name = metric.get("display_name") or metric.get("instance") or ip or "?"
+            env_name = isp_names.get(ip) or isp_names.get(prom_name)
+            if job == "infra-isp-ping":
+                name = env_name or (prom_name if prom_name != ip else "") or ip or "?"
+            else:
+                name = librenms_names.get(ip) or env_name or prom_name
             key = f"{job}|{ip or prom_name}"
             try:
                 up = float((item.get("value") or [None, "1"])[1]) >= 1

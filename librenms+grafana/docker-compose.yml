@@ -159,6 +159,8 @@ services:
       DEVICE_DOWN_JOBS: "${DEVICE_DOWN_JOBS:-infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping}"
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
+      BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
+      ISP_PING: "${ISP_PING:-}"
       ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
       SYSLOG_WATCH_ENABLED: "${SYSLOG_WATCH_ENABLED:-true}"
       SYSLOG_FILE: "/var/log/remote/syslog.log"
