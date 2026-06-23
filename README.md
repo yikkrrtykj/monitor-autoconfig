@@ -250,16 +250,22 @@ PLAYER_STATIC_NETWORK=wireless
 
 ### 3.5 飞书告警
 
-系统自动配置三类告警，部署后无需手动建规则：
+系统自动配置这些告警，部署后无需手动建规则：
 
 | 告警 | 来源 | 速度 |
 |---|---|---|
 | 设备离线 / 恢复 | Prometheus blackbox | 约一个 ping 采集周期 |
+| 新设备上线 | LibreNMS API + 候选目标 ping | 秒级到 30 秒 |
 | ISP 断线 / 恢复 | Prometheus blackbox | 约一个 ping 采集周期 |
 | ISP 带宽饱和 | Prometheus 实时 | 10 秒（可调） |
+| 互联口断链 / 恢复 | Prometheus SNMP `ifOperStatus` | 约 5-10 秒 |
 | DHCP Snooping 违规 | syslog | 秒级 |
 
-`CORE_SWITCH_PING` / `DIST_SWITCH_PING` 里的范围只是候选目标。bridge 不会给一开始就是 down 的地址发离线告警；只有 LibreNMS 已发现的设备，或者运行期间至少 ping 成功过一次的目标，后续掉线才会推飞书。飞书卡片名称优先用 LibreNMS 里的设备名，所以交换机 SNMP 发现成功后会显示交换机自己的名字。
+`CORE_SWITCH_PING` / `DIST_SWITCH_PING` 里的范围只是候选目标。bridge 不会给一开始就是 down 的地址发离线告警；候选目标第一次 ping 通会发“新设备上线”，之后才纳入离线告警。飞书卡片名称优先用 LibreNMS 里的设备名，所以交换机 SNMP 发现成功后会显示交换机自己的名字。
+
+互联口断链不是看“这台设备是否还有其它互联口 up”，而是逐个 `Port-channel / Po / Eth-Trunk / LAG` 看 `ifOperStatus`。任意一个聚合口 down 都会单独告警，卡片里会写具体接口名。默认只查核心交换机的聚合口，核心上已经能看到每条到下级交换机的互联链路；如需查其它已上线交换机，再填 `INTERCONNECT_SNMP_TARGETS`。
+
+飞书卡片编号保存在 `bridge-state` 卷里，更新代码或重建 bridge 后会继续递增。首次升级到这个版本时，如果想接着当前聊天窗口的编号走，可以临时设置 `FEISHU_BRIDGE_EVENT_ID_START=最后一个编号`，生成状态文件后就不用再改。
 
 DHCP Snooping 违规告警需要交换机配 syslog：
 
@@ -445,7 +451,26 @@ docker logs -f alertmanager-feishu-bridge
 
 如果你确实想让“已在 LibreNMS 发现过但当前 down”的设备也立刻报警，保持默认即可；bridge 会用 LibreNMS 设备列表识别它，并用 LibreNMS 里的设备名显示。
 
-### 6.5 防火墙能 ping，拓扑还是红
+候选目标第一次 ping 通时，会看到：
+
+```text
+[DOWN] online detected from ping: infra-dist-ping SW12 (192.168.10.22)
+```
+
+这时会推一条“新设备上线”。等 LibreNMS 通过 SNMP 发现到真实设备名后，后续告警会优先显示交换机自己的名字。
+
+### 6.5 互联口断了但没有具体接口
+
+互联口告警看的是 `infra-switch-ifmib` 里的 `ifOperStatus`，正常日志类似：
+
+```text
+[LINK] interconnect watcher enabled (...)
+[LINK] watched port-channels total=4 up=4 down=0
+```
+
+如果 `total=0`，说明 Prometheus 没采到 Port-channel/LAG 接口，先检查交换机 SNMP、`SWITCH_IFMIB_SCRAPE_INTERVAL`，以及接口名是否能被 `INTERCONNECT_PORT_FILTER` 匹配。
+
+### 6.6 防火墙能 ping，拓扑还是红
 
 看 `.env` 里的 `FIREWALL_PING`。这里要写“监控服务器能 ping 通的物理防火墙地址”，不是 SNMP 逻辑地址，也不是旧网段地址。
 
@@ -456,7 +481,7 @@ FIREWALL_PING=FW1:192.168.11.2,FW2:192.168.11.3
 FIREWALL_SNMP_TARGETS=FW:192.168.11.4
 ```
 
-### 6.6 拓扑又出现占位 ISP 名称
+### 6.7 拓扑又出现占位 ISP 名称
 
 不要手动写 `BIGSCREEN_ISP_NAMES`，让它自动发现：
 
@@ -467,7 +492,7 @@ FIREWALL_WAN_IF_FILTER=telecom,telcom,unicom,isp,WAN
 
 接口描述里有 `telecom`、`unicom`，拓扑和大屏就会显示真实名字。
 
-### 6.7 LibreNMS 发现 0 个设备
+### 6.8 LibreNMS 发现 0 个设备
 
 先直接测 SNMP：
 

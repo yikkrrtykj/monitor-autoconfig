@@ -92,6 +92,7 @@ services:
       TZ: Asia/Shanghai
       CORE_SWITCH_PING: "${CORE_SWITCH_PING:-}"
       DIST_SWITCH_PING: "${DIST_SWITCH_PING:-}"
+      INTERCONNECT_SNMP_TARGETS: "${INTERCONNECT_SNMP_TARGETS:-}"
       FIREWALL_PING: "${FIREWALL_PING:-}"
       SERVER_PING: "${SERVER_PING:-}"
       ISP_PING: "${ISP_PING:-}"
@@ -103,6 +104,7 @@ services:
       INFRA_PING_SCRAPE_INTERVAL: "${INFRA_PING_SCRAPE_INTERVAL:-5s}"
       PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
       SNMP_UPTIME_SCRAPE_INTERVAL: "${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
+      SWITCH_IFMIB_SCRAPE_INTERVAL: "${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
       PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
     volumes:
       - prometheus-data:/prometheus
@@ -135,12 +137,15 @@ services:
       - ./alertmanager-feishu-bridge.py:/app/bridge.py:ro
       - /etc/localtime:/etc/localtime:ro
       - ./librenms-data:/librenms-data:ro
+      - bridge-state:/bridge-state
       - syslog-spool:/var/log/remote:ro
     environment:
       TZ: Asia/Shanghai
       FEISHU_BRIDGE_PORT: "5005"
       FEISHU_ROBOT_TOKEN: "${FEISHU_ROBOT_TOKEN:-}"
       FEISHU_BRIDGE_DRY_RUN: "${FEISHU_BRIDGE_DRY_RUN:-false}"
+      FEISHU_BRIDGE_EVENT_ID_START: "${FEISHU_BRIDGE_EVENT_ID_START:-0}"
+      FEISHU_BRIDGE_STATE_DIR: "${FEISHU_BRIDGE_STATE_DIR:-/bridge-state}"
       LIBRENMS_URL: "http://librenms:8000"
       LIBRENMS_API_TOKEN: "${LIBRENMS_API_TOKEN:-}"
       SWITCH_WATCH_INTERVAL: "${SWITCH_WATCH_INTERVAL:-30}"
@@ -157,6 +162,12 @@ services:
       DEVICE_DOWN_REQUIRE_SEEN_UP: "${DEVICE_DOWN_REQUIRE_SEEN_UP:-true}"
       DEVICE_DOWN_POLL_INTERVAL: "${DEVICE_DOWN_POLL_INTERVAL:-5}"
       DEVICE_DOWN_JOBS: "${DEVICE_DOWN_JOBS:-infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping}"
+      DEVICE_ONLINE_FROM_PING: "${DEVICE_ONLINE_FROM_PING:-true}"
+      INTERCONNECT_ALERT_ENABLED: "${INTERCONNECT_ALERT_ENABLED:-true}"
+      INTERCONNECT_ALERT_FOR_SECONDS: "${INTERCONNECT_ALERT_FOR_SECONDS:-5}"
+      INTERCONNECT_ALERT_POLL_INTERVAL: "${INTERCONNECT_ALERT_POLL_INTERVAL:-5}"
+      INTERCONNECT_ALERT_JOBS: "${INTERCONNECT_ALERT_JOBS:-infra-switch-ifmib}"
+      INTERCONNECT_PORT_FILTER: "${INTERCONNECT_PORT_FILTER:-port-channel,portchannel,po,eth-trunk,bridge-aggregation,bundle-ether,lag,ae,be,trk}"
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
@@ -744,6 +755,7 @@ volumes:
   syslog-spool:
   promtail-data:
   prometheus-data:
+  bridge-state:
   player-targets-data:
   topology-data:
   grafana-data:

@@ -34,6 +34,12 @@ Env:
   DEVICE_DOWN_REQUIRE_SEEN_UP true = alert only after target was discovered/up once
   DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 5)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
+  DEVICE_ONLINE_FROM_PING true = send online card when a candidate first comes up
+  INTERCONNECT_ALERT_ENABLED true = watch Port-channel/LAG ifOperStatus
+  INTERCONNECT_ALERT_FOR_SECONDS seconds a link must be down before alerting
+  INTERCONNECT_ALERT_POLL_INTERVAL seconds between interconnect checks
+  INTERCONNECT_ALERT_JOBS comma list of SNMP jobs to watch
+  INTERCONNECT_PORT_FILTER comma list of interface keywords/prefixes
 """
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -75,6 +81,21 @@ DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
     "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping",
 )
+DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
+INTERCONNECT_ALERT_ENABLED = os.environ.get("INTERCONNECT_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+INTERCONNECT_ALERT_FOR_SECONDS = int(os.environ.get("INTERCONNECT_ALERT_FOR_SECONDS", "5"))
+INTERCONNECT_ALERT_POLL_INTERVAL = int(os.environ.get("INTERCONNECT_ALERT_POLL_INTERVAL", "5"))
+INTERCONNECT_ALERT_JOBS = os.environ.get("INTERCONNECT_ALERT_JOBS", "infra-switch-ifmib")
+INTERCONNECT_PORT_FILTER = os.environ.get(
+    "INTERCONNECT_PORT_FILTER",
+    "port-channel,portchannel,po,eth-trunk,bridge-aggregation,bundle-ether,lag,ae,be,trk",
+)
+BRIDGE_STATE_DIR = os.environ.get("FEISHU_BRIDGE_STATE_DIR", "/bridge-state")
+EVENT_ID_FILE = os.environ.get("FEISHU_BRIDGE_EVENT_ID_FILE", os.path.join(BRIDGE_STATE_DIR, "event-id"))
+DEVICE_ONLINE_STATE_FILE = os.environ.get(
+    "DEVICE_ONLINE_STATE_FILE",
+    os.path.join(BRIDGE_STATE_DIR, "notified-devices.json"),
+)
 
 _DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
 
@@ -98,7 +119,52 @@ SEVERITY_COLOR = {
 }
 
 EVENT_ID_LOCK = threading.Lock()
-EVENT_ID = int(os.environ.get("FEISHU_BRIDGE_EVENT_ID_START", "0") or "0")
+
+
+def _read_int_file(path, default=0):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return int((f.read() or "").strip() or default)
+    except (OSError, TypeError, ValueError):
+        return default
+
+
+def _atomic_write_text(path, text):
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
+def _load_json_set(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return {str(item) for item in data if item}
+        if isinstance(data, dict):
+            return {str(item) for item in data.get("items", []) if item}
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return set()
+
+
+def _save_json_set(path, values):
+    payload = json.dumps(sorted(values), ensure_ascii=False)
+    return _atomic_write_text(path, payload)
+
+
+EVENT_ID = max(
+    int(os.environ.get("FEISHU_BRIDGE_EVENT_ID_START", "0") or "0"),
+    _read_int_file(EVENT_ID_FILE, 0),
+)
 
 
 def log(message):
@@ -109,6 +175,7 @@ def next_event_title():
     global EVENT_ID
     with EVENT_ID_LOCK:
         EVENT_ID += 1
+        _atomic_write_text(EVENT_ID_FILE, str(EVENT_ID))
         return f"#{EVENT_ID}"
 
 
@@ -177,7 +244,6 @@ def build_librenms_card(payload):
             hostname = first.get("hostname") or first.get("sysName") or ""
             ip = first.get("ip") or ""
 
-    uid = str(payload.get("uid") or "").strip()
     elapsed = str(payload.get("elapsed") or "").strip()
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -191,7 +257,7 @@ def build_librenms_card(payload):
         emoji = "❌" if severity in ("critical", "disaster") else "🔴"
         state_text = "DOWN"
 
-    title = f"#{uid}" if uid and uid != "0" else next_event_title()
+    title = next_event_title()
 
     dev_str = hostname or ip or "?"
     ip_str = f" ({ip})" if ip else ""
@@ -302,6 +368,29 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
         f"⏰ 时间：{ts}",
     ]
     return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
+
+
+def build_interconnect_card(event, recovered=False):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    color = "green" if recovered else "red"
+    status_emoji = "✅" if recovered else "❌"
+    header_emoji = "🟢" if recovered else "🔴"
+    state_text = "UP" if recovered else "DOWN"
+    duration_label = "恢复耗时" if recovered else "断线时间"
+    device = event.get("device") or event.get("ip") or "?"
+    ip = event.get("ip") or ""
+    device_text = f"{device} ({ip})" if ip and ip != device else device
+    port = event.get("port") or "?"
+    alias = event.get("alias") or ""
+    port_text = f"{port} / {alias}" if alias and alias != port else port
+    lines = [
+        f"🖥 设备：{device_text}",
+        f"🔌 接口：{port_text}",
+        f"{status_emoji} 状态：{state_text}",
+        f"⏳ {duration_label}：{format_alert_duration(event.get('duration'), recovered)}",
+        f"⏰ 时间：{ts}",
+    ]
+    return _make_card(next_event_title(), f"{header_emoji} 互联口断链告警", color, "\n".join(lines))
 
 
 def _make_card(title, subtitle, color, body_md):
@@ -450,6 +539,52 @@ def _wan_label(metric):
 def _is_wan_port(label):
     lower = label.lower()
     return any(keyword in lower for keyword in _wan_keywords())
+
+
+def _interconnect_keywords():
+    return [part.strip().lower() for part in INTERCONNECT_PORT_FILTER.split(",") if part.strip()]
+
+
+def _port_label(metric):
+    for field in ("ifName", "ifDescr", "ifAlias"):
+        value = (metric.get(field) or "").strip()
+        if value:
+            return value
+    return metric.get("ifIndex") or "?"
+
+
+def _is_interconnect_port(metric):
+    fields = [
+        metric.get("ifName") or "",
+        metric.get("ifDescr") or "",
+        metric.get("ifAlias") or "",
+    ]
+    joined = " ".join(fields).lower()
+    norm = _norm_label(joined)
+    for keyword in _interconnect_keywords():
+        knorm = _norm_label(keyword)
+        if not knorm:
+            continue
+        if len(knorm) <= 3:
+            if norm.startswith(knorm):
+                return True
+            continue
+        if keyword in joined or norm.startswith(knorm):
+            return True
+    return False
+
+
+def _if_oper_is_up(metric, value):
+    status_label = (
+        metric.get("ifOperStatus")
+        or metric.get("ifOperStatus_label")
+        or metric.get("ifOperStatus_state")
+    )
+    if status_label:
+        if value < 0.5:
+            return None
+        return str(status_label).lower() == "up"
+    return int(value) == 1
 
 
 def _bandwidth_for_label(label, direction, cfg):
@@ -615,6 +750,116 @@ def isp_bandwidth_watcher():
         time.sleep(ISP_ALERT_POLL_INTERVAL)
 
 
+def fetch_interconnect_ports(jobs_regex):
+    query = f'ifOperStatus{{job=~"{jobs_regex}"}}'
+    ports = []
+    for item in prometheus_query(query):
+        metric = item.get("metric") or {}
+        if not _is_interconnect_port(metric):
+            continue
+        try:
+            value = float((item.get("value") or [None, "nan"])[1])
+        except (TypeError, ValueError):
+            continue
+        up = _if_oper_is_up(metric, value)
+        if up is None:
+            continue
+        ip = metric.get("target_ip") or metric.get("instance") or ""
+        port = _port_label(metric)
+        ports.append({
+            "key": "|".join([
+                metric.get("job", ""),
+                ip,
+                metric.get("ifIndex") or port,
+            ]),
+            "device": metric.get("display_name") or metric.get("instance") or ip or "?",
+            "ip": ip,
+            "port": port,
+            "alias": metric.get("ifAlias") or "",
+            "up": up,
+        })
+    return ports
+
+
+def interconnect_watcher():
+    if not INTERCONNECT_ALERT_ENABLED:
+        log("[LINK] interconnect watcher disabled")
+        return
+    jobs = [j.strip() for j in INTERCONNECT_ALERT_JOBS.split(",") if j.strip()]
+    safe_jobs = [j for j in jobs if re.match(r"^[A-Za-z0-9_:.-]+$", j)]
+    if not safe_jobs:
+        log("[LINK] no valid SNMP jobs configured, watcher disabled")
+        return
+
+    jobs_regex = "|".join(safe_jobs)
+    states = {}
+    last_status_log = 0.0
+    last_name_refresh = 0.0
+    librenms_names = {}
+    time.sleep(25)
+    log(
+        "[LINK] interconnect watcher enabled "
+        f"(jobs={','.join(safe_jobs)}, for={INTERCONNECT_ALERT_FOR_SECONDS}s, "
+        f"poll={INTERCONNECT_ALERT_POLL_INTERVAL}s, filter={INTERCONNECT_PORT_FILTER!r})"
+    )
+
+    while True:
+        now = time.time()
+        if now - last_name_refresh >= 60:
+            try:
+                librenms_names = fetch_librenms_name_cache()
+            except Exception as exc:
+                log(f"[LINK] LibreNMS name refresh failed: {exc}")
+            last_name_refresh = now
+
+        try:
+            ports = fetch_interconnect_ports(jobs_regex)
+        except Exception as exc:
+            log(f"[LINK] poll failed: {exc}")
+            time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
+            continue
+
+        if now - last_status_log >= 60:
+            up_count = sum(1 for port in ports if port["up"])
+            down_count = len(ports) - up_count
+            log(f"[LINK] watched port-channels total={len(ports)} up={up_count} down={down_count}")
+            last_status_log = now
+
+        for port in ports:
+            ip = port.get("ip") or ""
+            if ip in librenms_names:
+                port["device"] = librenms_names[ip]
+            state = states.setdefault(port["key"], {
+                "down_since": None,
+                "alerting": False,
+                "last_up_at": None,
+            })
+
+            if not port["up"]:
+                if state["down_since"] is None:
+                    state["down_since"] = state.get("last_up_at") or now
+                duration = max(0, now - state["down_since"])
+                if not state["alerting"] and duration >= INTERCONNECT_ALERT_FOR_SECONDS:
+                    state["alerting"] = True
+                    event = dict(port)
+                    event["duration"] = duration
+                    log(f"[LINK] ALERT {event['device']} {event['port']} DOWN")
+                    send_feishu(build_interconnect_card(event, recovered=False))
+            else:
+                previous_down_since = state.get("down_since")
+                state["last_up_at"] = now
+                if state["alerting"]:
+                    duration = max(0, now - (previous_down_since or now))
+                    event = dict(port)
+                    event["duration"] = duration
+                    log(f"[LINK] RECOVER {event['device']} {event['port']} offline={int(duration)}s")
+                    send_feishu(build_interconnect_card(event, recovered=True))
+                state["alerting"] = False
+                state["down_since"] = None
+
+        time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
+
+
 def device_down_watcher():
     """Fast device-down alerts off Prometheus blackbox ICMP (probe_success).
 
@@ -698,6 +943,7 @@ def device_down_watcher():
                 "seen_up": False,
                 "ignored_initial_down": False,
                 "last_up_at": None,
+                "online_sent": False,
             })
             if not up:
                 if DEVICE_DOWN_REQUIRE_SEEN_UP and not state["seen_up"] and not known_by_librenms:
@@ -716,10 +962,19 @@ def device_down_watcher():
             else:
                 previous_down_since = state.get("down_since")
                 state["last_up_at"] = now
+                first_up_after_candidate_down = (not state["seen_up"] and state.get("ignored_initial_down"))
                 if not state["seen_up"]:
                     state["seen_up"] = True
                     state["ignored_initial_down"] = False
                     log(f"[DOWN] armed {job} {name} ({ip}) after first UP")
+                    if first_up_after_candidate_down and DEVICE_ONLINE_FROM_PING and not state["online_sent"]:
+                        state["online_sent"] = True
+                        log(f"[DOWN] online detected from ping: {job} {name} ({ip})")
+                        send_feishu(build_device_online_card({
+                            "display": name,
+                            "ip": ip,
+                            "os": "Ping only",
+                        }))
                 if state["alerting"]:
                     offline = max(0, now - (previous_down_since or now))
                     log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s")
@@ -781,7 +1036,7 @@ def syslog_watcher():
 
 def device_watcher():
     log(f"[WATCHER] starting, interval={SWITCH_WATCH_INTERVAL}s, url={LIBRENMS_URL}")
-    time.sleep(60)  # 等 LibreNMS 就绪后再开始
+    time.sleep(10)  # Give LibreNMS/API token a short moment after container start.
 
     token = _librenms_token()
     if not token:
@@ -792,32 +1047,35 @@ def device_watcher():
             log("[WATCHER] still no token, watcher disabled")
             return
 
-    try:
-        initial = fetch_librenms_devices(token)
-        seen = {d.get("hostname") or d.get("ip") for d in initial if d.get("hostname") or d.get("ip")}
-        log(f"[WATCHER] initialized with {len(seen)} existing devices")
-    except Exception as exc:
-        log(f"[WATCHER] init failed: {exc}")
-        seen = set()
-
+    notified = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+    log(f"[WATCHER] loaded {len(notified)} notified devices")
     while True:
-        time.sleep(SWITCH_WATCH_INTERVAL)
         try:
             token = _librenms_token()
             if not token:
                 log("[WATCHER] token lost, skipping poll")
+                time.sleep(SWITCH_WATCH_INTERVAL)
                 continue
             devices = fetch_librenms_devices(token)
         except Exception as exc:
             log(f"[WATCHER] poll failed: {exc}")
+            time.sleep(SWITCH_WATCH_INTERVAL)
             continue
 
+        changed = False
         for dev in devices:
             key = dev.get("hostname") or dev.get("ip")
-            if key and key not in seen:
+            ip = dev.get("ip") or dev.get("hostname")
+            keys = {value for value in (key, ip) if value}
+            if keys and not (keys & notified):
                 log(f"[WATCHER] new device detected: {key}")
                 send_feishu(build_device_online_card(dev))
-                seen.add(key)
+                notified.update(keys)
+                changed = True
+
+        if changed:
+            _save_json_set(DEVICE_ONLINE_STATE_FILE, notified)
+        time.sleep(SWITCH_WATCH_INTERVAL)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -891,6 +1149,7 @@ def main():
 
     if PROMETHEUS_URL:
         threading.Thread(target=isp_bandwidth_watcher, daemon=True).start()
+        threading.Thread(target=interconnect_watcher, daemon=True).start()
         threading.Thread(target=device_down_watcher, daemon=True).start()
 
     if SYSLOG_WATCH_ENABLED:

@@ -1232,6 +1232,15 @@ if [ -n "$API_TOKEN" ]; then
   else
     echo "  Alert rule: ISP 带宽饱和告警 - handled by realtime Feishu bridge"
   fi
+
+  interconnect_rule_id="$(rule_id_by_name "互联口断链告警")"
+  if [ -n "$interconnect_rule_id" ]; then
+    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$interconnect_rule_id" \
+      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
+    echo "  Alert rule: 互联口断链告警 - removed (handled per port-channel by realtime Feishu bridge)"
+  else
+    echo "  Alert rule: 互联口断链告警 - handled per port-channel by realtime Feishu bridge"
+  fi
 fi
 
 echo ""

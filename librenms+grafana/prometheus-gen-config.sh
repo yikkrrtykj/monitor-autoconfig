@@ -5,6 +5,7 @@ set -eu
 CONFIG_FILE="${PROMETHEUS_CONFIG_FILE:-/tmp/prometheus.yml}"
 CORE_SWITCH_PING="${CORE_SWITCH_PING:-}"
 DIST_SWITCH_PING="${DIST_SWITCH_PING:-}"
+INTERCONNECT_SNMP_TARGETS="${INTERCONNECT_SNMP_TARGETS:-$CORE_SWITCH_PING}"
 FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
 ISP_PING="${ISP_PING:-${BIGSCREEN_ISP_IPS:-}}"
@@ -23,6 +24,9 @@ RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 # 不需要跟随全局 5-10s 高频采集；拉长可减轻 2960 等弱 CPU 交换机的控制平面负担，
 # 避免其管理口 ICMP 被周期性 SNMP GET 推迟而出现 ping 尖峰。
 SNMP_UPTIME_SCRAPE_INTERVAL="${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
+# Port-channel / LAG interconnect status needs ifOperStatus. Keep this separate
+# from uptime so the fast link watcher does not make all SNMP jobs heavy.
+SWITCH_IFMIB_SCRAPE_INTERVAL="${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
 
 # Parse "NAME:IP" or "NAME:IP-START-IP-END" format.
 # Outputs Prometheus static_config target lines with display_name label.
@@ -225,6 +229,7 @@ SWITCH_SNMP_TARGETS="${CORE_SWITCH_PING}${CORE_SWITCH_PING:+,}${DIST_SWITCH_PING
 FIREWALL_SNMP_UPTIME_TARGETS="$(apply_reference_names "$FIREWALL_SNMP_TARGETS" "$FIREWALL_PING")"
 write_snmp_job "infra-switch-snmp" "$SWITCH_SNMP_TARGETS" "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
 write_snmp_job "infra-fw-snmp"     "$FIREWALL_SNMP_UPTIME_TARGETS" "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
+write_snmp_job "infra-switch-ifmib" "$INTERCONNECT_SNMP_TARGETS" "if_mib" "$SWITCH_IFMIB_SCRAPE_INTERVAL"
 
 # Firewall SNMP
 cat >> "$CONFIG_FILE" <<EOF
@@ -280,6 +285,7 @@ EOF
 echo "Generated Prometheus config:"
 echo "  Core:    ${CORE_SWITCH_PING:-none}"
 echo "  Dist:    ${DIST_SWITCH_PING:-none}"
+echo "  Link IF: ${INTERCONNECT_SNMP_TARGETS:-none}"
 echo "  FW:      ${FIREWALL_PING:-none}"
 echo "  Server:  ${SERVER_PING:-none}"
 echo "  ISP:     ${ISP_PING:-none}"
