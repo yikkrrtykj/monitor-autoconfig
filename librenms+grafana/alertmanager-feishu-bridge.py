@@ -32,7 +32,7 @@ Env:
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
   ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
   DEVICE_DOWN_REQUIRE_SEEN_UP true = alert only after target was discovered/up once
-  DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 5)
+  DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 1)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
   DEVICE_ONLINE_FROM_PING true = send online card when a candidate first comes up
                             (default false; SNMP/LibreNMS online cards are preferred)
@@ -83,7 +83,7 @@ DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in (
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
 ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
 DEVICE_DOWN_REQUIRE_SEEN_UP = os.environ.get("DEVICE_DOWN_REQUIRE_SEEN_UP", "true").lower() in ("1", "true", "yes", "on")
-DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "5"))
+DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "1"))
 DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
     "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping",
@@ -1057,7 +1057,9 @@ def device_down_watcher():
                 name = librenms_names.get(ip) or env_name or prom_name
             key = f"{job}|{ip or prom_name}"
             try:
-                up = float((item.get("value") or [None, "1"])[1]) >= 1
+                sample = item.get("value") or [None, "1"]
+                sample_ts = float(sample[0]) if sample[0] is not None else now
+                up = float(sample[1]) >= 1
             except (TypeError, ValueError):
                 continue
 
@@ -1079,7 +1081,7 @@ def device_down_watcher():
                     state["down_since"] = None
                     continue
                 if state["down_since"] is None:
-                    state["down_since"] = state.get("last_up_at") or now
+                    state["down_since"] = sample_ts or now
                 if not state["alerting"] and now - state["down_since"] >= down_for_seconds:
                     state["alerting"] = True
                     offline = max(0, now - state["down_since"])
@@ -1087,7 +1089,7 @@ def device_down_watcher():
                     send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job))
             else:
                 previous_down_since = state.get("down_since")
-                state["last_up_at"] = now
+                state["last_up_at"] = sample_ts or now
                 first_up_after_candidate_down = (not state["seen_up"] and state.get("ignored_initial_down"))
                 if not state["seen_up"]:
                     state["seen_up"] = True
@@ -1111,7 +1113,7 @@ def device_down_watcher():
                             "os": "Ping only",
                         }))
                 if state["alerting"]:
-                    offline = max(0, now - (previous_down_since or now))
+                    offline = max(0, (sample_ts or now) - (previous_down_since or sample_ts or now))
                     log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s")
                     send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline, job=job))
                 state["alerting"] = False

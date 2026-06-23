@@ -16,9 +16,9 @@ SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
 # 选手 ICMP 单独的采集间隔：比全局更密（默认 5s），纠纷回查的时间分辨率翻倍。
 # blackbox 对几十个选手目标 5s 一轮的负载可以忽略，被探测的选手机器无感知。
 PLAYER_PING_SCRAPE_INTERVAL="${PLAYER_PING_SCRAPE_INTERVAL:-5s}"
-# 基础设施 ICMP（core/dist/fw/isp/srv）的采集间隔。默认 5s，配合 bridge 的
-# device-down watcher 可在 ~10s 内发现并告警设备离线。
-INFRA_PING_SCRAPE_INTERVAL="${INFRA_PING_SCRAPE_INTERVAL:-5s}"
+# 基础设施 ICMP（core/dist/fw/isp/srv）的采集间隔。默认 2s，配合 bridge 的
+# device-down watcher 可更贴近 10s 阈值发出离线告警。
+INFRA_PING_SCRAPE_INTERVAL="${INFRA_PING_SCRAPE_INTERVAL:-2s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 # 交换机/防火墙 uptime（运行时长）SNMP 单独的采集间隔。运行时长显示的是"天"，
 # 不需要跟随全局 5-10s 高频采集；拉长可减轻 2960 等弱 CPU 交换机的控制平面负担，
