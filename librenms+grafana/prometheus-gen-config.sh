@@ -27,6 +27,10 @@ SNMP_UPTIME_SCRAPE_INTERVAL="${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
 # Port-channel / LAG interconnect status needs ifOperStatus. Keep this separate
 # from uptime so the fast link watcher does not make all SNMP jobs heavy.
 SWITCH_IFMIB_SCRAPE_INTERVAL="${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
+# UniFi Poller（unpoller）抓取：仅在配置了控制器地址时启用。unpoller 默认每 30s 轮询
+# 一次控制器，scrape 比这更快没意义，所以默认 30s。
+UNIFI_CONTROLLER_URL="${UNIFI_CONTROLLER_URL:-}"
+UNIFI_SCRAPE_INTERVAL="${UNIFI_SCRAPE_INTERVAL:-30s}"
 
 # Parse "NAME:IP" or "NAME:IP-START-IP-END" format.
 # Outputs Prometheus static_config target lines with display_name label.
@@ -282,6 +286,19 @@ cat >> "$CONFIG_FILE" <<EOF
       - targets: ["blackbox-exporter:9115"]
 EOF
 
+# UniFi Poller —— 仅当配置了控制器地址时才抓取（unpoller 在 "unifi" profile 里，
+# 没配 UniFi 的部署根本没这个容器，也就别去抓它，免得 Prometheus 报无效 target）。
+if [ -n "$UNIFI_CONTROLLER_URL" ]; then
+  cat >> "$CONFIG_FILE" <<EOF
+
+  - job_name: "unifi"
+    scrape_interval: ${UNIFI_SCRAPE_INTERVAL}
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["unpoller:9130"]
+EOF
+fi
+
 echo "Generated Prometheus config:"
 echo "  Core:    ${CORE_SWITCH_PING:-none}"
 echo "  Dist:    ${DIST_SWITCH_PING:-none}"
@@ -290,6 +307,7 @@ echo "  FW:      ${FIREWALL_PING:-none}"
 echo "  Server:  ${SERVER_PING:-none}"
 echo "  ISP:     ${ISP_PING:-none}"
 echo "  FW SNMP: ${FIREWALL_SNMP_TARGETS:-none}"
+echo "  UniFi:   ${UNIFI_CONTROLLER_URL:-none}"
 echo "  Players: $PLAYER_TARGETS_FILE"
 
 exec /bin/prometheus \

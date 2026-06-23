@@ -30,6 +30,9 @@ SERVER_PING="${SERVER_PING:-}"
 BIGSCREEN_ISP_MAX_BANDWIDTH="${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
 ISP_SATURATION_PERCENT="${ISP_SATURATION_PERCENT:-80}"
 FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+# 互联/上联口描述关键词（逗号分隔）。只对 ifAlias 含这些词的口做"断链"告警，
+# 其它口（选手口等）不报。把上联成员口统一描述成含这些词即可，如 description to-stage1。
+UPLINK_IF_FILTER="${UPLINK_IF_FILTER:-to-stage,to-core,to-dist,uplink}"
 LIBRENMS_API_TOKEN="${LIBRENMS_API_TOKEN:-}"
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
@@ -1113,7 +1116,7 @@ if ids:
         "escalation_step_from": 1,
         "escalation_step_to": None,
         "start_in_seconds": 0,
-        "step_duration_seconds": 300,
+        "step_duration_seconds": 86400,
         "transports": ids
     }]
 
@@ -1215,13 +1218,14 @@ if [ -n "$API_TOKEN" ]; then
     echo "  Alert rule: 设备离线告警 - handled by realtime device-down watcher"
   fi
 
+  # 高丢包告警：device_perf 表已被 LibreNMS 上游移除（2024-04），这条规则永远不会触发；
+  # 丢包/掉线改由 bridge 的实时 blackbox watcher 负责。这里只做一次性清理——老部署里若还
+  # 残留这条死规则就删掉，正常新部署本就没有、静默跳过（不再打印误导性的 "disabled"）。
   loss_rule_id="$(rule_id_by_name "高丢包告警")"
   if [ -n "$loss_rule_id" ]; then
     curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$loss_rule_id" \
       -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
-    echo "  Alert rule: 高丢包告警 - removed (down alerts use realtime blackbox watcher)"
-  else
-    echo "  Alert rule: 高丢包告警 - disabled (down alerts use realtime blackbox watcher)"
+    echo "  Alert rule: 高丢包告警 - removed (legacy dead rule; loss handled by realtime watcher)"
   fi
 
   isp_rule_id="$(rule_id_by_name "ISP 带宽饱和告警")"
@@ -1233,6 +1237,27 @@ if [ -n "$API_TOKEN" ]; then
     echo "  Alert rule: ISP 带宽饱和告警 - handled by realtime Feishu bridge"
   fi
 
+  # 接口错误（含 CRC/FCS）告警：任一方向错包速率 >= 1/秒（健康端口应为 0）。
+  # 字段在 ports 表（已在 LibreNMS 告警 builder 里确认）。想更灵敏把 1 调小，UI 里也能改。
+  upsert_rule "接口错误告警" '{
+    "name": "接口错误告警",
+    "devices": [-1],
+    "builder": "{\"condition\":\"OR\",\"rules\":[{\"id\":\"ports.ifInErrors_rate\",\"field\":\"ports.ifInErrors_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"1\"},{\"id\":\"ports.ifOutErrors_rate\",\"field\":\"ports.ifOutErrors_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"1\"}],\"valid\":true}",
+    "severity": "warning",
+    "disabled": 0
+  }'
+
+  # 接口丢弃告警：任一方向丢弃速率 >= 10/秒（拥塞时偶发，阈值给高防误报；UI 里可调）。
+  upsert_rule "接口丢弃告警" '{
+    "name": "接口丢弃告警",
+    "devices": [-1],
+    "builder": "{\"condition\":\"OR\",\"rules\":[{\"id\":\"ports.ifInDiscards_rate\",\"field\":\"ports.ifInDiscards_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"10\"},{\"id\":\"ports.ifOutDiscards_rate\",\"field\":\"ports.ifOutDiscards_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"10\"}],\"valid\":true}",
+    "severity": "warning",
+    "disabled": 0
+  }'
+
+  # 互联口断链由 bridge 直接看 Prometheus ifOperStatus，按每个 Port-channel/LAG 单独告警。
+  # 删除旧 LibreNMS 设备级规则，避免重复推送且缺少具体接口。
   interconnect_rule_id="$(rule_id_by_name "互联口断链告警")"
   if [ -n "$interconnect_rule_id" ]; then
     curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$interconnect_rule_id" \

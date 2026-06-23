@@ -105,6 +105,8 @@ services:
       PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
       SNMP_UPTIME_SCRAPE_INTERVAL: "${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
       SWITCH_IFMIB_SCRAPE_INTERVAL: "${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
+      UNIFI_CONTROLLER_URL: "${UNIFI_CONTROLLER_URL:-}"
+      UNIFI_SCRAPE_INTERVAL: "${UNIFI_SCRAPE_INTERVAL:-30s}"
       PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
     volumes:
       - prometheus-data:/prometheus
@@ -168,6 +170,9 @@ services:
       INTERCONNECT_ALERT_POLL_INTERVAL: "${INTERCONNECT_ALERT_POLL_INTERVAL:-5}"
       INTERCONNECT_ALERT_JOBS: "${INTERCONNECT_ALERT_JOBS:-infra-switch-ifmib}"
       INTERCONNECT_PORT_FILTER: "${INTERCONNECT_PORT_FILTER:-port-channel,portchannel,po,eth-trunk,bridge-aggregation,bundle-ether,lag,ae,be,trk}"
+      UNIFI_AP_ALERT_ENABLED: "${UNIFI_AP_ALERT_ENABLED:-true}"
+      UNIFI_AP_DOWN_FOR_SECONDS: "${UNIFI_AP_DOWN_FOR_SECONDS:-90}"
+      UNIFI_AP_POLL_INTERVAL: "${UNIFI_AP_POLL_INTERVAL:-15}"
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
@@ -257,6 +262,33 @@ services:
               preferred_ip_protocol: ip4
         EOF
         exec /bin/blackbox_exporter --config.file=/etc/blackbox_exporter/config.yml
+
+  # UniFi Poller(unpoller)：从 UniFi 控制器 API 拉每台 AP/客户端/站点指标，吐成
+  # Prometheus metrics —— 替代新版 UniFi 砍掉的 SNMP，适合 AP 遍布多网段、无法 SNMP 的场景。
+  # 可选服务：放在 "unifi" profile 里，默认不启动，不用 UniFi 的赛事完全不受影响。
+  # 启用：.env 配好 UNIFI_CONTROLLER_* 且设 COMPOSE_PROFILES=unifi，再 docker compose up -d。
+  unpoller:
+    image: ${UNPOLLER_IMAGE:-ghcr.io/unpoller/unpoller:latest}
+    container_name: unpoller
+    restart: unless-stopped
+    profiles: ["unifi"]
+    environment:
+      TZ: Asia/Shanghai
+      UP_UNIFI_DEFAULT_URL: "${UNIFI_CONTROLLER_URL:-}"
+      UP_UNIFI_DEFAULT_USER: "${UNIFI_CONTROLLER_USER:-}"
+      UP_UNIFI_DEFAULT_PASS: "${UNIFI_CONTROLLER_PASS:-}"
+      UP_UNIFI_DEFAULT_SITES: "${UNIFI_CONTROLLER_SITES:-all}"
+      UP_UNIFI_DEFAULT_VERIFY_SSL: "${UNIFI_CONTROLLER_VERIFY_SSL:-false}"
+      UP_UNIFI_DEFAULT_SAVE_SITES: "true"
+      UP_UNIFI_DEFAULT_SAVE_DPI: "${UNIFI_SAVE_DPI:-false}"
+      UP_POLLER_DEBUG: "${UNPOLLER_DEBUG:-false}"
+      UP_PROMETHEUS_DISABLE: "false"
+      UP_PROMETHEUS_HTTP_LISTEN: "0.0.0.0:9130"
+      UP_INFLUXDB_DISABLE: "true"
+    ports:
+      - "${UNPOLLER_BIND:-127.0.0.1}:${UNPOLLER_PORT:-9130}:9130"
+    networks:
+      - monitor
 
   player-targets:
     image: python:3-alpine
@@ -551,6 +583,7 @@ services:
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+      UPLINK_IF_FILTER: "${UPLINK_IF_FILTER:-to-stage,to-core,to-dist,uplink}"
       LIBRENMS_API_TOKEN: "${LIBRENMS_API_TOKEN:-}"
     entrypoint:
       - /bin/sh

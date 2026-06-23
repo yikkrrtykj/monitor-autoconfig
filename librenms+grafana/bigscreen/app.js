@@ -34,6 +34,8 @@
   const { analyzeIncident } = window.BSIncident;
   let gaugeTimer = null;
   let chartTimer = null;
+  let seenUpTimer = null;
+  let infraSeenUp = null;  // Set of "deployed" (ever-online) infra instance names; null/empty = show all
   let tournamentTimer = null;
   let opsTimer = null;
   let activePageId = "";
@@ -658,6 +660,23 @@
     }
   }
 
+  // Refresh the slowly-changing "deployed" set on its own timer so the heavy
+  // max_over_time query doesn't run every 5s. Keeps the previous set on failure.
+  async function refreshInfraSeenUp() {
+    try {
+      infraSeenUp = activeSeriesNames(await prometheusInstant(activeInfraPingQuery()));
+    } catch (error) {
+      // transient failure: keep the previous set
+    }
+  }
+
+  // Drop infra items/series that have never been online (configured-but-absent
+  // ping targets). Falls back to showing all until the set is known or empty.
+  function filterDeployed(list, getName) {
+    if (!infraSeenUp || infraSeenUp.size === 0) return list;
+    return list.filter((entry) => infraSeenUp.has(getName(entry)));
+  }
+
   async function refreshGauges() {
     const seq = ++gaugeSeq;
     try {
@@ -667,8 +686,9 @@
       ]);
       if (seq !== gaugeSeq) return;
       const isServerItem = (item) => (item.metric && item.metric.job) === "infra-srv-ping";
-      const networkPing = pingItems.filter((item) => !isServerItem(item));
-      const serverPing = pingItems.filter(isServerItem);
+      const deployed = filterDeployed(pingItems, (item) => item.name);
+      const networkPing = deployed.filter((item) => !isServerItem(item));
+      const serverPing = deployed.filter(isServerItem);
       renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
       // Servers aren't stage devices (skip the stage filter); keep them on one row.
       renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
@@ -689,16 +709,14 @@
   async function refreshCharts() {
     const seq = ++chartSeq;
     try {
-      const [activeItems, pingSeries, lossSeries, ispTraffic] = await Promise.all([
-        prometheusInstant(activeInfraPingQuery()),
+      const [pingSeries, lossSeries, ispTraffic] = await Promise.all([
         prometheusRangeCached(pingTrendQuery),
         prometheusRangeCached(lossQuery),
         fetchIspTraffic()
       ]);
       if (seq !== chartSeq) return;
-      const activeNames = activeSeriesNames(visibleInfraItems(activeItems));
-      const activePingSeries = visibleInfraSeries(filterSeriesByNames(pingSeries, activeNames));
-      const activeLossSeries = visibleInfraSeries(filterSeriesByNames(lossSeries, activeNames));
+      const activePingSeries = visibleInfraSeries(filterDeployed(pingSeries, (s) => s.name));
+      const activeLossSeries = visibleInfraSeries(filterDeployed(lossSeries, (s) => s.name));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
         renderLineChart("pingTrendChart", activePingSeries, {
           axisFormatter: formatPingText,
@@ -795,10 +813,57 @@
     `;
   }
 
+  // UniFi AP 在线状态（来自 unpoller）。掉线的 AP 会从指标里消失，所以这里列出的都是
+  // 在线 AP；某台从列表消失即代表它掉线（飞书会单独推掉线告警）。无 UniFi 时返回空、不渲染。
+  async function fetchApStatus() {
+    let infos;
+    let stations;
+    try {
+      [infos, stations] = await Promise.all([
+        prometheusQuery('unpoller_device_info{type="uap"}'),
+        prometheusQuery('sum by (name) (unpoller_device_stations{type="uap"})')
+      ]);
+    } catch (error) {
+      return [];
+    }
+    const clients = {};
+    stations.forEach((s) => { clients[s.metric.name] = s.value; });
+    return infos
+      .map((i) => ({
+        name: i.metric.name || "?",
+        model: i.metric.model || "",
+        clients: clients[i.metric.name] != null ? clients[i.metric.name] : 0
+      }))
+      .filter((ap) => ap.name && ap.name !== "?")
+      .sort((a, b) => b.clients - a.clients || a.name.localeCompare(b.name, "zh-CN"));
+  }
+
+  function renderApStrip(aps) {
+    const board = document.getElementById("opsBoard");
+    if (!board || !aps.length) return;
+    const totalClients = aps.reduce((sum, ap) => sum + ap.clients, 0);
+    const chips = aps.map((ap) => `
+      <div class="ap-chip" title="${escapeHtml(ap.model)}">
+        <i class="dot"></i>
+        <span class="ap-name">${escapeHtml(ap.name)}</span>
+        <span class="ap-clients"><b>${ap.clients}</b> 人</span>
+      </div>
+    `).join("");
+    board.insertAdjacentHTML("afterbegin", `
+      <div class="ap-strip">
+        <div class="ap-strip-head">无线 AP：${aps.length} 台在线 · ${totalClients} 客户端</div>
+        <div class="ap-grid">${chips}</div>
+      </div>
+    `);
+  }
+
   async function refreshWirelessOverview() {
     renderWirelessControls();
     try {
-      const snapshot = await fetchPlayerSnapshot('role="player",network="wireless"');
+      const [snapshot, aps] = await Promise.all([
+        fetchPlayerSnapshot('role="player",network="wireless"'),
+        fetchApStatus()
+      ]);
       const rawItems = [...snapshot.latencyItems, ...snapshot.successItems];
       const gatewayIps = new Set(rawItems.map((item) => item.metric.instance).filter(isGatewayAddress));
       const players = snapshot.players;
@@ -816,6 +881,7 @@
         { label: "最高延迟", value: Number.isFinite(maxLatency) ? formatPingText(maxLatency) : "-", level: maxLatency >= 0.08 ? "warn" : "good" }
       ]);
       renderWirelessBoard(players);
+      renderApStrip(aps);
       lastDataSuccessAt = Date.now();
     } catch (error) {
       renderNoData(document.getElementById("opsSummary"), "查询失败");
@@ -1204,6 +1270,10 @@
       window.clearInterval(chartTimer);
       chartTimer = null;
     }
+    if (seenUpTimer) {
+      window.clearInterval(seenUpTimer);
+      seenUpTimer = null;
+    }
   }
 
   function stopTournamentRefresh() {
@@ -1224,10 +1294,12 @@
     if (gaugeTimer || chartTimer) return;
     renderSignatures.clear();
     invalidateRangeCache();
-    refreshGauges();
-    refreshCharts();
+    // Resolve the "deployed" set first so the first paint already hides
+    // never-online targets; then keep it fresh on a slow timer.
+    refreshInfraSeenUp().then(() => { refreshGauges(); refreshCharts(); });
     gaugeTimer = window.setInterval(refreshGauges, 5000);
     chartTimer = window.setInterval(refreshCharts, 5000);
+    seenUpTimer = window.setInterval(refreshInfraSeenUp, 30000);
   }
 
   function startTournamentRefresh(page) {
@@ -1520,7 +1592,7 @@
 
   async function runIncidentAnalysis() {
     const win = incidentWindow();
-    const threshold = Number(document.getElementById("incidentThreshold").value || 0.02);
+    const threshold = Number(document.getElementById("incidentThreshold").value || 0.05);
 
     const params = new URLSearchParams();
     const at = document.getElementById("incidentAt").value;
@@ -2013,11 +2085,15 @@
     if (!canvas) return;
     const seq = ++topologySeq;
     try {
-      const [targets, edges] = await Promise.all([
+      const [allTargets, edges, seenItems] = await Promise.all([
         fetchTopologyTargets(),
-        fetchTopologyEdges()
+        fetchTopologyEdges(),
+        prometheusInstant(activeInfraPingQuery()).catch(() => [])
       ]);
       if (seq !== topologySeq) return;
+      // 与网络总览一致：隐藏从没上线过的设备（按 instance 名匹配 seen-up 集合）。
+      const seenUp = activeSeriesNames(seenItems);
+      const targets = seenUp.size ? allTargets.filter((t) => seenUp.has(t.instance)) : allTargets;
       const layers = buildTopologyLayers(targets);
       const containerWidth = Math.max(640, canvas.clientWidth || 1200);
       const height = Math.max(420, canvas.clientHeight || 680);
