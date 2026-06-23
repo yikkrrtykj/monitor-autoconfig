@@ -1218,13 +1218,14 @@ if [ -n "$API_TOKEN" ]; then
     echo "  Alert rule: 设备离线告警 - handled by realtime device-down watcher"
   fi
 
+  # 高丢包告警：device_perf 表已被 LibreNMS 上游移除（2024-04），这条规则永远不会触发；
+  # 丢包/掉线改由 bridge 的实时 blackbox watcher 负责。这里只做一次性清理——老部署里若还
+  # 残留这条死规则就删掉，正常新部署本就没有、静默跳过（不再打印误导性的 "disabled"）。
   loss_rule_id="$(rule_id_by_name "高丢包告警")"
   if [ -n "$loss_rule_id" ]; then
     curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$loss_rule_id" \
       -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
-    echo "  Alert rule: 高丢包告警 - removed (down alerts use realtime blackbox watcher)"
-  else
-    echo "  Alert rule: 高丢包告警 - disabled (down alerts use realtime blackbox watcher)"
+    echo "  Alert rule: 高丢包告警 - removed (legacy dead rule; loss handled by realtime watcher)"
   fi
 
   isp_rule_id="$(rule_id_by_name "ISP 带宽饱和告警")"
