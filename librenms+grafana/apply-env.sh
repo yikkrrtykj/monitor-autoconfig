@@ -44,21 +44,38 @@ fi
 
 render_grafana_provisioning
 
-echo "[apply-env] Recreating services that read .env..."
-docker compose up -d --force-recreate \
-  prometheus \
-  snmp-exporter \
-  player-targets \
-  topology-collector \
-  blackbox-exporter \
-  alertmanager-feishu-bridge \
-  rsyslog \
-  librenms \
-  librenms-dispatcher \
-  librenms-config \
-  bigscreen \
-  grafana \
+SERVICES="
+  prometheus
+  snmp-exporter
+  player-targets
+  topology-collector
+  blackbox-exporter
+  alertmanager-feishu-bridge
+  rsyslog
+  librenms
+  librenms-dispatcher
+  librenms-config
+  bigscreen
+  grafana
   grafana-setup
+"
+
+compose_up() {
+  docker compose up -d --force-recreate $SERVICES
+}
+
+cleanup_conflicting_containers() {
+  echo "[apply-env] Recreate failed. Cleaning possibly half-recreated containers and retrying..."
+  for name in $SERVICES; do
+    docker rm -f "$name" >/dev/null 2>&1 || true
+  done
+}
+
+echo "[apply-env] Recreating services that read .env..."
+if ! compose_up; then
+  cleanup_conflicting_containers
+  compose_up
+fi
 
 echo "[apply-env] Done. Watch LibreNMS config progress with:"
 echo "  docker logs -f librenms-config"
