@@ -34,6 +34,7 @@ Env:
   DEVICE_DOWN_REQUIRE_SEEN_UP true = alert only after target was discovered/up once
   DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 1)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
+  DEVICE_DOWN_STATE_FILE  persisted active down alerts (default /bridge-state/device-down-alerts.json)
   DEVICE_ONLINE_FROM_PING true = send online card when a candidate first comes up
                             (default false; SNMP/LibreNMS online cards are preferred)
   DEVICE_AUTO_ADD_FROM_PING true = add newly reachable switch candidates to LibreNMS by SNMP
@@ -105,6 +106,10 @@ INTERCONNECT_PORT_FILTER = os.environ.get(
 )
 BRIDGE_STATE_DIR = os.environ.get("FEISHU_BRIDGE_STATE_DIR", "/bridge-state")
 EVENT_ID_FILE = os.environ.get("FEISHU_BRIDGE_EVENT_ID_FILE", os.path.join(BRIDGE_STATE_DIR, "event-id"))
+DEVICE_DOWN_STATE_FILE = os.environ.get(
+    "DEVICE_DOWN_STATE_FILE",
+    os.path.join(BRIDGE_STATE_DIR, "device-down-alerts.json"),
+)
 DEVICE_ONLINE_STATE_FILE = os.environ.get(
     "DEVICE_ONLINE_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "notified-devices.json"),
@@ -138,6 +143,7 @@ SEVERITY_COLOR = {
 
 EVENT_ID_LOCK = threading.Lock()
 DEVICE_ONLINE_STATE_LOCK = threading.Lock()
+DEVICE_DOWN_STATE_LOCK = threading.Lock()
 
 
 def _read_int_file(path, default=0):
@@ -180,6 +186,20 @@ def _save_json_set(path, values):
     return _atomic_write_text(path, payload)
 
 
+def _load_json_dict(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _save_json_dict(path, values):
+    payload = json.dumps(values, ensure_ascii=False, sort_keys=True)
+    return _atomic_write_text(path, payload)
+
+
 def mark_device_online_notified(*values):
     clean = {str(value).strip() for value in values if str(value or "").strip()}
     if not clean:
@@ -190,6 +210,53 @@ def mark_device_online_notified(*values):
             return
         items.update(clean)
         _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
+
+
+def _as_float(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_device_down_states():
+    loaded = {}
+    with DEVICE_DOWN_STATE_LOCK:
+        raw = _load_json_dict(DEVICE_DOWN_STATE_FILE)
+    for key, value in raw.items():
+        if not key or not isinstance(value, dict):
+            continue
+        loaded[str(key)] = {
+            "down_since": _as_float(value.get("down_since")),
+            "alerting": bool(value.get("alerting", True)),
+            "seen_up": bool(value.get("seen_up", True)),
+            "ignored_initial_down": False,
+            "last_up_at": _as_float(value.get("last_up_at")),
+            "online_sent": bool(value.get("online_sent", False)),
+            "name": str(value.get("name") or ""),
+            "ip": str(value.get("ip") or ""),
+            "job": str(value.get("job") or ""),
+        }
+    return loaded
+
+
+def save_device_down_states(states):
+    active = {}
+    for key, state in states.items():
+        if not state.get("alerting"):
+            continue
+        active[str(key)] = {
+            "down_since": state.get("down_since"),
+            "last_up_at": state.get("last_up_at"),
+            "seen_up": bool(state.get("seen_up", True)),
+            "online_sent": bool(state.get("online_sent", False)),
+            "name": state.get("name") or "",
+            "ip": state.get("ip") or "",
+            "job": state.get("job") or "",
+            "alerting": True,
+        }
+    with DEVICE_DOWN_STATE_LOCK:
+        _save_json_dict(DEVICE_DOWN_STATE_FILE, active)
 
 
 EVENT_ID = max(
@@ -1003,7 +1070,7 @@ def device_down_watcher():
         return
     query = 'probe_success{job=~"%s"}' % "|".join(safe_jobs)
     time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
-    states = {}
+    states = load_device_down_states()
     last_status_log = 0.0
     last_name_refresh = 0.0
     librenms_names = {}
@@ -1014,7 +1081,7 @@ def device_down_watcher():
         "[DOWN] device-down watcher enabled "
         f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, "
         f"isp_for={ISP_DOWN_FOR_SECONDS}s, poll={DEVICE_DOWN_POLL_INTERVAL}s, "
-        f"require_seen_up={DEVICE_DOWN_REQUIRE_SEEN_UP})"
+        f"require_seen_up={DEVICE_DOWN_REQUIRE_SEEN_UP}, active_loaded={len(states)})"
     )
 
     while True:
@@ -1065,16 +1132,25 @@ def device_down_watcher():
 
             down_for_seconds = ISP_DOWN_FOR_SECONDS if job == "infra-isp-ping" else DEVICE_DOWN_FOR_SECONDS
             known_by_librenms = bool(ip and ip in librenms_names)
-            state = states.setdefault(key, {
+            default_state = {
                 "down_since": None,
                 "alerting": False,
                 "seen_up": False,
                 "ignored_initial_down": False,
                 "last_up_at": None,
                 "online_sent": False,
-            })
+                "name": "",
+                "ip": "",
+                "job": "",
+            }
+            state = states.setdefault(key, default_state.copy())
+            for field, value in default_state.items():
+                state.setdefault(field, value)
+            state["name"] = name
+            state["ip"] = ip
+            state["job"] = job
             if not up:
-                if DEVICE_DOWN_REQUIRE_SEEN_UP and not state["seen_up"] and not known_by_librenms:
+                if DEVICE_DOWN_REQUIRE_SEEN_UP and not state["seen_up"] and not state["alerting"]:
                     if not state["ignored_initial_down"]:
                         log(f"[DOWN] waiting for first UP before alerting {job} {prom_name} ({ip})")
                         state["ignored_initial_down"] = True
@@ -1084,9 +1160,11 @@ def device_down_watcher():
                     state["down_since"] = sample_ts or now
                 if not state["alerting"] and now - state["down_since"] >= down_for_seconds:
                     state["alerting"] = True
+                    state["seen_up"] = True
                     offline = max(0, now - state["down_since"])
                     log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN")
                     send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job))
+                    save_device_down_states(states)
             else:
                 previous_down_since = state.get("down_since")
                 state["last_up_at"] = sample_ts or now
@@ -1116,8 +1194,12 @@ def device_down_watcher():
                     offline = max(0, (sample_ts or now) - (previous_down_since or sample_ts or now))
                     log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s")
                     send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline, job=job))
+                    state["alerting"] = False
+                    state["down_since"] = None
+                    save_device_down_states(states)
+                else:
+                    state["down_since"] = None
                 state["alerting"] = False
-                state["down_since"] = None
 
         time.sleep(DEVICE_DOWN_POLL_INTERVAL)
 
