@@ -738,10 +738,11 @@ try {
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
     );
 
-    $columns = function (string $table) use ($pdo): array {
+    $quoteIdent = fn(string $name): string => '`' . str_replace('`', '``', $name) . '`';
+    $columns = function (string $table) use ($pdo, $quoteIdent): array {
         $cols = [];
         try {
-            foreach ($pdo->query("SHOW COLUMNS FROM `{$table}`") as $column) {
+            foreach ($pdo->query("SHOW COLUMNS FROM " . $quoteIdent($table)) as $column) {
                 $cols[$column['Field']] = true;
             }
         } catch (Throwable $e) {
@@ -750,6 +751,15 @@ try {
         return $cols;
     };
     $has = fn(array $cols, string $name): bool => isset($cols[$name]);
+    $findAttribTable = function () use ($columns): array {
+        foreach (['device_attribs', 'devices_attribs'] as $table) {
+            $cols = $columns($table);
+            if (! empty($cols)) {
+                return [$table, $cols];
+            }
+        }
+        return [null, []];
+    };
 
     $targets = [];
     foreach (explode(',', getenv('FIREWALL_SNMP_TARGETS') ?: '') as $raw) {
@@ -813,7 +823,7 @@ try {
 
     $devicesCols = $columns('devices');
     $portsCols = $columns('ports');
-    $attribCols = $columns('device_attribs');
+    [$attribTable, $attribCols] = $findAttribTable();
     if (! $has($devicesCols, 'device_id') || ! $has($portsCols, 'port_id')) {
         echo "  WAN speed override skipped: unsupported LibreNMS schema\n";
         exit(0);
@@ -859,19 +869,21 @@ try {
         return $speedCfg['default'];
     };
 
-    $upsertAttrib = function (int $deviceId, string $type, string $value) use ($pdo, $attribCols, $has): void {
-        if (! $has($attribCols, 'device_id') || ! $has($attribCols, 'attrib_type') || ! $has($attribCols, 'attrib_value')) {
+    $upsertAttrib = function (int $deviceId, string $type, string $value) use ($pdo, $quoteIdent, $attribTable, $attribCols, $has): void {
+        if (! $attribTable || ! $has($attribCols, 'device_id') ||
+            ! $has($attribCols, 'attrib_type') || ! $has($attribCols, 'attrib_value')) {
             return;
         }
-        $select = $pdo->prepare('SELECT attrib_id FROM device_attribs WHERE device_id = ? AND attrib_type = ? LIMIT 1');
+        $tableSql = $quoteIdent($attribTable);
+        $select = $pdo->prepare("SELECT attrib_id FROM {$tableSql} WHERE device_id = ? AND attrib_type = ? LIMIT 1");
         $select->execute([$deviceId, $type]);
         $attribId = $select->fetchColumn();
         if ($attribId) {
-            $update = $pdo->prepare('UPDATE device_attribs SET attrib_value = ? WHERE attrib_id = ?');
+            $update = $pdo->prepare("UPDATE {$tableSql} SET attrib_value = ? WHERE attrib_id = ?");
             $update->execute([$value, $attribId]);
             return;
         }
-        $insert = $pdo->prepare('INSERT INTO device_attribs (device_id, attrib_type, attrib_value) VALUES (?, ?, ?)');
+        $insert = $pdo->prepare("INSERT INTO {$tableSql} (device_id, attrib_type, attrib_value) VALUES (?, ?, ?)");
         $insert->execute([$deviceId, $type, $value]);
     };
 
@@ -970,8 +982,13 @@ try {
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
     );
 
-    $columns = function (string $table) use ($pdo): array {
-        $stmt = $pdo->query("SHOW COLUMNS FROM `{$table}`");
+    $quoteIdent = fn(string $name): string => '`' . str_replace('`', '``', $name) . '`';
+    $columns = function (string $table) use ($pdo, $quoteIdent): array {
+        try {
+            $stmt = $pdo->query("SHOW COLUMNS FROM " . $quoteIdent($table));
+        } catch (Throwable $e) {
+            return [];
+        }
         $cols = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $cols[$row['Field']] = true;
@@ -979,10 +996,19 @@ try {
         return $cols;
     };
     $has = fn(array $cols, string $name): bool => isset($cols[$name]);
+    $findAttribTable = function () use ($columns): array {
+        foreach (['device_attribs', 'devices_attribs'] as $table) {
+            $cols = $columns($table);
+            if (! empty($cols)) {
+                return [$table, $cols];
+            }
+        }
+        return [null, []];
+    };
 
     $portsCols = $columns('ports');
     $devicesCols = $columns('devices');
-    $attribCols = $columns('device_attribs');
+    [$attribTable, $attribCols] = $findAttribTable();
 
     if (! $has($portsCols, 'port_id') || ! $has($portsCols, 'device_id') ||
         ! $has($portsCols, 'ignore') || ! $has($portsCols, 'ifOperStatus')) {
@@ -996,6 +1022,7 @@ try {
 
     $hasAttrib = $has($attribCols, 'attrib_id') && $has($attribCols, 'device_id') &&
         $has($attribCols, 'attrib_type') && $has($attribCols, 'attrib_value');
+    $attribTableSql = $hasAttrib && $attribTable ? $quoteIdent($attribTable) : '';
     $attrType = 'autoconfig_ignored_down_ports';
 
     $statusText = fn($raw): string => strtolower(trim((string) $raw));
@@ -1011,11 +1038,11 @@ try {
         return trim(implode(' ', array_unique($parts))) ?: ('port_id=' . ($port['port_id'] ?? '?'));
     };
 
-    $loadAuto = function (int $deviceId) use ($pdo, $hasAttrib, $attrType): array {
+    $loadAuto = function (int $deviceId) use ($pdo, $hasAttrib, $attribTableSql, $attrType): array {
         if (! $hasAttrib) {
             return [];
         }
-        $stmt = $pdo->prepare('SELECT attrib_value FROM device_attribs WHERE device_id = ? AND attrib_type = ? LIMIT 1');
+        $stmt = $pdo->prepare("SELECT attrib_value FROM {$attribTableSql} WHERE device_id = ? AND attrib_type = ? LIMIT 1");
         $stmt->execute([$deviceId, $attrType]);
         $raw = $stmt->fetchColumn();
         $items = json_decode((string) $raw, true);
@@ -1031,22 +1058,22 @@ try {
         return $map;
     };
 
-    $saveAuto = function (int $deviceId, array $auto) use ($pdo, $hasAttrib, $attrType): void {
+    $saveAuto = function (int $deviceId, array $auto) use ($pdo, $hasAttrib, $attribTableSql, $attrType): void {
         if (! $hasAttrib) {
             return;
         }
         $ids = array_values(array_map('intval', array_keys($auto)));
         sort($ids);
         $value = json_encode($ids);
-        $select = $pdo->prepare('SELECT attrib_id FROM device_attribs WHERE device_id = ? AND attrib_type = ? LIMIT 1');
+        $select = $pdo->prepare("SELECT attrib_id FROM {$attribTableSql} WHERE device_id = ? AND attrib_type = ? LIMIT 1");
         $select->execute([$deviceId, $attrType]);
         $attribId = $select->fetchColumn();
         if ($attribId) {
-            $update = $pdo->prepare('UPDATE device_attribs SET attrib_value = ? WHERE attrib_id = ?');
+            $update = $pdo->prepare("UPDATE {$attribTableSql} SET attrib_value = ? WHERE attrib_id = ?");
             $update->execute([$value, $attribId]);
             return;
         }
-        $insert = $pdo->prepare('INSERT INTO device_attribs (device_id, attrib_type, attrib_value) VALUES (?, ?, ?)');
+        $insert = $pdo->prepare("INSERT INTO {$attribTableSql} (device_id, attrib_type, attrib_value) VALUES (?, ?, ?)");
         $insert->execute([$deviceId, $attrType, $value]);
     };
 
