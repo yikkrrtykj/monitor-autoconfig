@@ -75,6 +75,11 @@ DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
     "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping",
 )
+# UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 unpoller_device_info{type="uap"}
+# 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
+UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "90"))
+UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "15"))
 
 _DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
 
@@ -304,6 +309,24 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
         f"⏰ 时间：{ts}",
     ]
     return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
+
+
+def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    tail = f" · {model}" if model else ""
+    dev = f"{name} ({ip}{tail})" if ip else (name or "?")
+    if recovered:
+        color, state_text, status_emoji, header_emoji = "green", "UP", "✅", "🟢"
+    else:
+        color, state_text, status_emoji, header_emoji = "red", "DOWN", "❌", "🔴"
+    duration_label = "恢复耗时" if recovered else "断线时长"
+    lines = [
+        f"📶 AP：{dev}",
+        f"{status_emoji} 状态：{state_text}",
+        f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
+        f"⏰ 时间：{ts}",
+    ]
+    return _make_card(next_event_title(), f"{header_emoji} AP 掉线告警", color, "\n".join(lines))
 
 
 def _make_card(title, subtitle, color, body_md):
@@ -732,6 +755,89 @@ def device_down_watcher():
         time.sleep(DEVICE_DOWN_POLL_INTERVAL)
 
 
+def unifi_ap_watcher():
+    """UniFi AP up/down alerts off UniFi Poller (unpoller) metrics in Prometheus.
+
+    A connected AP appears in unpoller_device_info{type="uap"}; when it
+    disconnects, unpoller drops the series entirely. So we remember APs we've
+    seen up and alert when a previously-seen AP stays gone for
+    >= UNIFI_AP_DOWN_FOR_SECONDS, then send a recovery card when it returns.
+    No UniFi configured => the query is empty => the watcher idles silently
+    (safe for events that don't use UniFi). APs already down at startup are not
+    alerted (never seen up), matching the infra device-down watcher's behaviour.
+    """
+    if not UNIFI_AP_ALERT_ENABLED:
+        log("[AP] UniFi AP watcher disabled")
+        return
+    query = 'unpoller_device_info{type="uap"}'
+    time.sleep(20)  # let Prometheus/unpoller settle after a (re)start
+    states = {}
+    last_status_log = 0.0
+    log(
+        "[AP] UniFi AP watcher enabled "
+        f"(for={UNIFI_AP_DOWN_FOR_SECONDS}s, poll={UNIFI_AP_POLL_INTERVAL}s)"
+    )
+
+    while True:
+        now = time.time()
+        try:
+            results = prometheus_query(query)
+        except Exception as exc:
+            log(f"[AP] poll failed: {exc}")
+            time.sleep(UNIFI_AP_POLL_INTERVAL)
+            continue
+
+        current = {}
+        for item in results:
+            metric = item.get("metric") or {}
+            name = metric.get("name") or metric.get("mac") or ""
+            if name:
+                current[name] = {
+                    "ip": metric.get("ip") or "",
+                    "model": metric.get("model") or "",
+                }
+
+        # Seen APs: refresh metadata, arm on first sight, recover if was down.
+        for name, info in current.items():
+            state = states.setdefault(name, {
+                "alerting": False, "down_since": None, "seen_up": False,
+                "last_seen": now, "ip": "", "model": "",
+            })
+            state["ip"] = info["ip"] or state["ip"]
+            state["model"] = info["model"] or state["model"]
+            state["last_seen"] = now
+            if not state["seen_up"]:
+                state["seen_up"] = True
+                log(f"[AP] armed {name} ({state['ip']}) after first seen")
+            if state["alerting"]:
+                offline = max(0, now - (state.get("down_since") or now))
+                log(f"[AP] RECOVER {name} ({state['ip']}) offline={int(offline)}s")
+                send_feishu(build_ap_down_card(name, state["ip"], state["model"],
+                                               recovered=True, offline_seconds=offline))
+            state["alerting"] = False
+            state["down_since"] = None
+
+        # Previously-seen APs now missing => down after debounce.
+        for name, state in states.items():
+            if name in current or not state.get("seen_up"):
+                continue
+            if state.get("down_since") is None:
+                state["down_since"] = state.get("last_seen") or now
+            if not state["alerting"] and now - state["down_since"] >= UNIFI_AP_DOWN_FOR_SECONDS:
+                state["alerting"] = True
+                offline = max(0, now - state["down_since"])
+                log(f"[AP] ALERT {name} ({state['ip']}) DOWN")
+                send_feishu(build_ap_down_card(name, state["ip"], state["model"],
+                                               recovered=False, offline_seconds=offline))
+
+        if now - last_status_log >= 60:
+            down = sum(1 for s in states.values() if s.get("alerting"))
+            log(f"[AP] {len(current)} online / {len(states)} known / {down} down")
+            last_status_log = now
+
+        time.sleep(UNIFI_AP_POLL_INTERVAL)
+
+
 def build_dhcp_snooping_card(host, message):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [f"🔴 来源：{host}", f"📋 详情：{message.strip()[:200]}", f"⏰ 时间：{ts}"]
@@ -894,6 +1000,7 @@ def main():
     if PROMETHEUS_URL:
         threading.Thread(target=isp_bandwidth_watcher, daemon=True).start()
         threading.Thread(target=device_down_watcher, daemon=True).start()
+        threading.Thread(target=unifi_ap_watcher, daemon=True).start()
 
     if SYSLOG_WATCH_ENABLED:
         log(f"[SYSLOG] DHCP snooping watcher enabled (file={SYSLOG_FILE})")
