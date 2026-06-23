@@ -1237,24 +1237,16 @@ if [ -n "$API_TOKEN" ]; then
     echo "  Alert rule: ISP 带宽饱和告警 - handled by realtime Feishu bridge"
   fi
 
-  # 接口错误（含 CRC/FCS）告警：任一方向错包速率 >= 1/秒（健康端口应为 0）。
-  # 字段在 ports 表（已在 LibreNMS 告警 builder 里确认）。想更灵敏把 1 调小，UI 里也能改。
-  upsert_rule "接口错误告警" '{
-    "name": "接口错误告警",
-    "devices": [-1],
-    "builder": "{\"condition\":\"OR\",\"rules\":[{\"id\":\"ports.ifInErrors_rate\",\"field\":\"ports.ifInErrors_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"1\"},{\"id\":\"ports.ifOutErrors_rate\",\"field\":\"ports.ifOutErrors_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"1\"}],\"valid\":true}",
-    "severity": "warning",
-    "disabled": 0
-  }'
-
-  # 接口丢弃告警：任一方向丢弃速率 >= 10/秒（拥塞时偶发，阈值给高防误报；UI 里可调）。
-  upsert_rule "接口丢弃告警" '{
-    "name": "接口丢弃告警",
-    "devices": [-1],
-    "builder": "{\"condition\":\"OR\",\"rules\":[{\"id\":\"ports.ifInDiscards_rate\",\"field\":\"ports.ifInDiscards_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"10\"},{\"id\":\"ports.ifOutDiscards_rate\",\"field\":\"ports.ifOutDiscards_rate\",\"type\":\"integer\",\"input\":\"number\",\"operator\":\"greater_or_equal\",\"value\":\"10\"}],\"valid\":true}",
-    "severity": "warning",
-    "disabled": 0
-  }'
+  # 老版本里可能残留接口错误/丢弃规则。不同 LibreNMS 版本的 ports *_rate 字段
+  # schema 不一致，字段不存在时会每 5 分钟写 SQL 错误日志；这里先清掉，避免误导。
+  for legacy_rule in "接口错误告警" "接口丢弃告警"; do
+    legacy_rule_id="$(rule_id_by_name "$legacy_rule")"
+    if [ -n "$legacy_rule_id" ]; then
+      curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$legacy_rule_id" \
+        -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
+      echo "  Alert rule: $legacy_rule - removed (legacy schema-dependent rule)"
+    fi
+  done
 
   # 互联口断链由 bridge 直接看 Prometheus ifOperStatus，按每个 Port-channel/LAG 单独告警。
   # 删除旧 LibreNMS 设备级规则，避免重复推送且缺少具体接口。
