@@ -255,13 +255,13 @@ PLAYER_STATIC_NETWORK=wireless
 | 告警 | 来源 | 速度 |
 |---|---|---|
 | 设备离线 / 恢复 | Prometheus blackbox | 约一个 ping 采集周期 |
-| 新设备上线 | LibreNMS API + 候选目标 ping | 秒级到 30 秒 |
+| 新设备上线 | LibreNMS SNMP 设备列表 | 秒级到 30 秒 |
 | ISP 断线 / 恢复 | Prometheus blackbox | 约一个 ping 采集周期 |
 | ISP 带宽饱和 | Prometheus 实时 | 10 秒（可调） |
 | 互联口断链 / 恢复 | Prometheus SNMP `ifOperStatus` | 约 5-10 秒 |
 | DHCP Snooping 违规 | syslog | 秒级 |
 
-`CORE_SWITCH_PING` / `DIST_SWITCH_PING` 里的范围只是候选目标。bridge 不会给一开始就是 down 的地址发离线告警；候选目标第一次 ping 通会发“新设备上线”，之后才纳入离线告警。飞书卡片名称优先用 LibreNMS 里的设备名，所以交换机 SNMP 发现成功后会显示交换机自己的名字。
+`CORE_SWITCH_PING` / `DIST_SWITCH_PING` 里的范围只是候选目标。bridge 不会给一开始就是 down 的地址发离线告警；候选目标第一次 ping 通后，只会尝试把它按 SNMP 加到 LibreNMS，并纳入后续离线监控。真正的“新设备上线”只等 LibreNMS 发现到 SNMP 设备后发送，所以卡片里显示的是交换机自己的 hostname，而不是 `SW14` 这种范围展开名，也不会显示 `Ping only`。
 
 互联口断链不是看“这台设备是否还有其它互联口 up”，而是逐个 `Port-channel / Po / Eth-Trunk / LAG` 看 `ifOperStatus`。任意一个聚合口 down 都会单独告警，卡片里会写具体接口名。默认只查核心交换机的聚合口，核心上已经能看到每条到下级交换机的互联链路；如需查其它已上线交换机，再填 `INTERCONNECT_SNMP_TARGETS`。
 
@@ -453,13 +453,13 @@ docker logs -f alertmanager-feishu-bridge
 
 如果你确实想让“已在 LibreNMS 发现过但当前 down”的设备也立刻报警，保持默认即可；bridge 会用 LibreNMS 设备列表识别它，并用 LibreNMS 里的设备名显示。
 
-候选目标第一次 ping 通时，会看到：
+候选目标第一次 ping 通且不在 LibreNMS 里时，会看到：
 
 ```text
-[DOWN] online detected from ping: infra-dist-ping SW12 (192.168.10.22)
+[WATCHER] SNMP auto-add requested for 192.168.10.22
 ```
 
-这时会推一条“新设备上线”。等 LibreNMS 通过 SNMP 发现到真实设备名后，后续告警会优先显示交换机自己的名字。
+如果它是交换机候选，bridge 会静默调用 LibreNMS API 按 SNMP 添加设备。等 LibreNMS 拿到真实 hostname 后，才会推一条“新设备上线”。
 
 ### 6.5 互联口断了但没有具体接口
 

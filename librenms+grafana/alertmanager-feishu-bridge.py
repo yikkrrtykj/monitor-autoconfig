@@ -35,6 +35,10 @@ Env:
   DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 5)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
   DEVICE_ONLINE_FROM_PING true = send online card when a candidate first comes up
+                            (default false; SNMP/LibreNMS online cards are preferred)
+  DEVICE_AUTO_ADD_FROM_PING true = add newly reachable switch candidates to LibreNMS by SNMP
+  DEVICE_AUTO_ADD_SNMP_JOBS comma list of ping jobs that may be SNMP devices
+  SNMP_COMMUNITY           default SNMP v2c community for auto-add
   INTERCONNECT_ALERT_ENABLED true = watch Port-channel/LAG ifOperStatus
   INTERCONNECT_ALERT_FOR_SECONDS seconds a link must be down before alerting
   INTERCONNECT_ALERT_POLL_INTERVAL seconds between interconnect checks
@@ -81,7 +85,10 @@ DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
     "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping",
 )
-DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
+DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "false").lower() in ("1", "true", "yes", "on")
+DEVICE_AUTO_ADD_FROM_PING = os.environ.get("DEVICE_AUTO_ADD_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
+DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-core-ping,infra-dist-ping")
+SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "public")
 INTERCONNECT_ALERT_ENABLED = os.environ.get("INTERCONNECT_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 INTERCONNECT_ALERT_FOR_SECONDS = int(os.environ.get("INTERCONNECT_ALERT_FOR_SECONDS", "5"))
 INTERCONNECT_ALERT_POLL_INTERVAL = int(os.environ.get("INTERCONNECT_ALERT_POLL_INTERVAL", "5"))
@@ -204,18 +211,91 @@ def fetch_librenms_devices(token):
         return json.loads(resp.read().decode("utf-8")).get("devices", [])
 
 
+def add_librenms_snmp_device(ip):
+    token = _librenms_token()
+    if not token or not LIBRENMS_URL or not ip:
+        return False
+    payload = {
+        "hostname": ip,
+        "version": "v2c",
+        "community": SNMP_COMMUNITY,
+        "port": 161,
+        "transport": "udp",
+    }
+    req = request.Request(
+        f"{LIBRENMS_URL}/api/v0/devices",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"X-Auth-Token": token, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        status = str(data.get("status") or "").lower()
+        message = data.get("message") or raw
+        if status == "ok":
+            log(f"[WATCHER] SNMP auto-add requested for {ip}")
+            return True
+        if "already" in str(message).lower():
+            log(f"[WATCHER] SNMP auto-add skipped for {ip}: already exists")
+            return True
+        log(f"[WATCHER] SNMP auto-add failed for {ip}: {str(message)[:160]}")
+        return False
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
+        if "already" in body.lower():
+            log(f"[WATCHER] SNMP auto-add skipped for {ip}: already exists")
+            return True
+        log(f"[WATCHER] SNMP auto-add HTTP {exc.code} for {ip}: {body[:160]}")
+        return False
+    except Exception as exc:
+        log(f"[WATCHER] SNMP auto-add failed for {ip}: {exc}")
+        return False
+
+
 def _looks_like_ip(value):
     return bool(re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", str(value or "")))
 
 
-def _device_name(dev):
+def _first_non_ip(*values):
+    for value in values:
+        value = str(value or "").strip()
+        if value and not _looks_like_ip(value):
+            return value
+    return ""
+
+
+def _best_device_name(dev):
     return (
-        dev.get("display")
-        or dev.get("sysName")
-        or dev.get("hostname")
+        _first_non_ip(dev.get("display"), dev.get("sysName"), dev.get("hostname"))
         or dev.get("ip")
+        or dev.get("hostname")
         or ""
     )
+
+
+def _has_meaningful_device_name(dev):
+    return bool(_first_non_ip(dev.get("display"), dev.get("sysName"), dev.get("hostname")))
+
+
+def _is_ping_only_device(dev):
+    values = [
+        dev.get("os"),
+        dev.get("type"),
+        dev.get("hardware"),
+        dev.get("platform"),
+        dev.get("device_os"),
+    ]
+    text = " ".join(str(value or "").lower() for value in values)
+    return "ping only" in text or re.search(r"(^|\W)ping($|\W)", text) is not None or "icmp" in text
+
+
+def _device_name(dev):
+    return _best_device_name(dev)
 
 
 def fetch_librenms_name_cache():
@@ -282,17 +362,14 @@ def build_librenms_card(payload):
 
 
 def build_device_online_card(device):
-    name = device.get("display") or device.get("sysName") or device.get("hostname") or "?"
+    name = _best_device_name(device) or "?"
     ip = device.get("ip") or device.get("hostname") or "?"
     hw = device.get("hardware") or ""
-    os_name = device.get("os") or ""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     lines = [f"🖥 设备：{name}", f"🌐 IP：{ip}", "✅ 状态：UP"]
     if hw:
         lines.append(f"🔧 型号：{hw}")
-    if os_name:
-        lines.append(f"💻 系统：{os_name}")
     lines.append(f"⏰ 时间：{ts}")
 
     return _make_card(next_event_title(), "🟢 新设备上线", "green", "\n".join(lines))
@@ -910,6 +987,8 @@ def device_down_watcher():
     last_name_refresh = 0.0
     librenms_names = {}
     isp_names = _isp_target_names()
+    auto_add_jobs = {j.strip() for j in DEVICE_AUTO_ADD_SNMP_JOBS.split(",") if j.strip()}
+    auto_add_attempted = set()
     log(
         "[DOWN] device-down watcher enabled "
         f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, "
@@ -993,6 +1072,15 @@ def device_down_watcher():
                     state["seen_up"] = True
                     state["ignored_initial_down"] = False
                     log(f"[DOWN] armed {job} {name} ({ip}) after first UP")
+                    if (
+                        DEVICE_AUTO_ADD_FROM_PING
+                        and job in auto_add_jobs
+                        and ip
+                        and not known_by_librenms
+                        and ip not in auto_add_attempted
+                    ):
+                        auto_add_attempted.add(ip)
+                        add_librenms_snmp_device(ip)
                     if first_up_after_candidate_down and DEVICE_ONLINE_FROM_PING and not state["online_sent"]:
                         state["online_sent"] = True
                         log(f"[DOWN] online detected from ping: {job} {name} ({ip})")
@@ -1158,6 +1246,7 @@ def device_watcher():
 
     notified = _load_json_set(DEVICE_ONLINE_STATE_FILE)
     log(f"[WATCHER] loaded {len(notified)} notified devices")
+    first_successful_poll = True
     while True:
         try:
             token = _librenms_token()
@@ -1172,12 +1261,36 @@ def device_watcher():
             continue
 
         changed = False
+        if first_successful_poll and not notified:
+            seeded = 0
+            for dev in devices:
+                if _is_ping_only_device(dev) or not _has_meaningful_device_name(dev):
+                    continue
+                key = dev.get("hostname") or dev.get("ip")
+                ip = dev.get("ip") or dev.get("hostname")
+                keys = {value for value in (key, ip) if value}
+                notified.update(keys)
+                seeded += 1
+            if seeded:
+                _save_json_set(DEVICE_ONLINE_STATE_FILE, notified)
+            log(f"[WATCHER] initialized baseline with {seeded} existing SNMP devices")
+            first_successful_poll = False
+            time.sleep(SWITCH_WATCH_INTERVAL)
+            continue
+
+        first_successful_poll = False
         for dev in devices:
+            if _is_ping_only_device(dev):
+                continue
+            if not _has_meaningful_device_name(dev):
+                key = dev.get("hostname") or dev.get("ip") or "?"
+                log(f"[WATCHER] waiting for SNMP name before online alert: {key}")
+                continue
             key = dev.get("hostname") or dev.get("ip")
             ip = dev.get("ip") or dev.get("hostname")
             keys = {value for value in (key, ip) if value}
             if keys and not (keys & notified):
-                log(f"[WATCHER] new device detected: {key}")
+                log(f"[WATCHER] new SNMP device detected: {_best_device_name(dev)} ({ip})")
                 send_feishu(build_device_online_card(dev))
                 notified.update(keys)
                 changed = True
