@@ -265,6 +265,8 @@ PLAYER_STATIC_NETWORK=wireless
 
 互联口断链不是看“这台设备是否还有其它互联口 up”，而是逐个 `Port-channel / Po / Eth-Trunk / LAG` 看 `ifOperStatus`。任意一个聚合口 down 都会单独告警，卡片里会写具体接口名。默认只查核心交换机的聚合口，核心上已经能看到每条到下级交换机的互联链路；如需查其它已上线交换机，再填 `INTERCONNECT_SNMP_TARGETS`。
 
+LibreNMS 设备列表里的黄色通常不是告警，而是“这台交换机有端口 admin-up 但 link-down”。现场很多没插线的口都会这样，所以部署脚本默认会把当前 down 的端口设为 LibreNMS ignore；这些口以后真的插上线，脚本会自动恢复。真正要盯的 ISP、设备在线、互联口断链都由 bridge 秒级告警，不靠这个黄灯。
+
 飞书卡片编号保存在 `bridge-state` 卷里，更新代码或重建 bridge 后会继续递增。首次升级到这个版本时，如果想接着当前聊天窗口的编号走，可以临时设置 `FEISHU_BRIDGE_EVENT_ID_START=最后一个编号`，生成状态文件后就不用再改。
 
 DHCP Snooping 违规告警需要交换机配 syslog：
@@ -470,7 +472,28 @@ docker logs -f alertmanager-feishu-bridge
 
 如果 `total=0`，说明 Prometheus 没采到 Port-channel/LAG 接口，先检查交换机 SNMP、`SWITCH_IFMIB_SCRAPE_INTERVAL`，以及接口名是否能被 `INTERCONNECT_PORT_FILTER` 匹配。
 
-### 6.6 防火墙能 ping，拓扑还是红
+### 6.6 LibreNMS 里还有旧的接口丢弃 SQL 错误
+
+这类日志一般是老版本规则还留在数据库里，比如 `接口丢弃告警` 引用了当前 LibreNMS 没有的 `ports.ifInDiscards_rate` 字段。最新脚本会删除这些旧规则，跑完后 `docker logs -f librenms-config` 应该能看到：
+
+```text
+Alert rule: 接口丢弃告警 - removed
+Alert rule: 接口错误告警 - removed
+```
+
+注意 LibreNMS 的 eventlog 是历史记录，旧日志不会自动消失；只要时间不再继续新增，就说明规则已经清掉了。如果日志里还是 `updated`，说明服务器没有拉到最新代码。
+
+### 6.7 交换机是黄色
+
+先点进设备详情看端口统计。如果像 `Total: 60 / Up: 8 / Down: 52 / Disabled: 0`，就是大量未接线端口没有 shutdown。脚本默认开启：
+
+```bash
+LIBRENMS_IGNORE_DOWN_PORTS=true
+```
+
+跑 `./apply-env.sh` 后会把这些 down 口设为 ignore，设备会回到绿色。互联口断链不会因此漏报，因为它走 `alertmanager-feishu-bridge` 的 `[LINK]` 秒级监控。
+
+### 6.8 防火墙能 ping，拓扑还是红
 
 看 `.env` 里的 `FIREWALL_PING`。这里要写“监控服务器能 ping 通的物理防火墙地址”，不是 SNMP 逻辑地址，也不是旧网段地址。
 
@@ -481,7 +504,7 @@ FIREWALL_PING=FW1:192.168.11.2,FW2:192.168.11.3
 FIREWALL_SNMP_TARGETS=FW:192.168.11.4
 ```
 
-### 6.7 拓扑又出现占位 ISP 名称
+### 6.9 拓扑又出现占位 ISP 名称
 
 不要手动写 `BIGSCREEN_ISP_NAMES`，让它自动发现：
 
@@ -492,7 +515,7 @@ FIREWALL_WAN_IF_FILTER=telecom,telcom,unicom,isp,WAN
 
 接口描述里有 `telecom`、`unicom`，拓扑和大屏就会显示真实名字。
 
-### 6.8 LibreNMS 发现 0 个设备
+### 6.10 LibreNMS 发现 0 个设备
 
 先直接测 SNMP：
 
@@ -506,7 +529,7 @@ docker exec librenms snmpwalk -v2c -c public 192.168.10.254 sysName.0
 docker logs -f librenms-config
 ```
 
-### 6.8 选手页面 No data
+### 6.11 选手页面 No data
 
 先看生成了多少 target：
 

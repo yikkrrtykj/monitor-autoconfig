@@ -945,6 +945,190 @@ try {
 PHP
 }
 
+configure_down_port_ignores() {
+  if [ "${LIBRENMS_IGNORE_DOWN_PORTS:-true}" != "true" ]; then
+    echo ""
+    echo "  LibreNMS down-port ignore skipped (LIBRENMS_IGNORE_DOWN_PORTS=false)"
+    return 0
+  fi
+
+  echo ""
+  echo "  Applying LibreNMS down-port ignore for unused ports..."
+
+  php <<'PHP'
+<?php
+try {
+    $host = getenv('DB_HOST') ?: 'librenms-db';
+    $database = getenv('DB_NAME') ?: 'librenms';
+    $dbUser = getenv('DB_USER') ?: 'librenms';
+    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
+
+    $pdo = new PDO(
+        "mysql:host={$host};dbname={$database};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+
+    $columns = function (string $table) use ($pdo): array {
+        $stmt = $pdo->query("SHOW COLUMNS FROM `{$table}`");
+        $cols = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $cols[$row['Field']] = true;
+        }
+        return $cols;
+    };
+    $has = fn(array $cols, string $name): bool => isset($cols[$name]);
+
+    $portsCols = $columns('ports');
+    $devicesCols = $columns('devices');
+    $attribCols = $columns('device_attribs');
+
+    if (! $has($portsCols, 'port_id') || ! $has($portsCols, 'device_id') ||
+        ! $has($portsCols, 'ignore') || ! $has($portsCols, 'ifOperStatus')) {
+        echo "  Down-port ignore skipped: unsupported LibreNMS ports schema\n";
+        exit(0);
+    }
+    if (! $has($devicesCols, 'device_id')) {
+        echo "  Down-port ignore skipped: unsupported LibreNMS devices schema\n";
+        exit(0);
+    }
+
+    $hasAttrib = $has($attribCols, 'attrib_id') && $has($attribCols, 'device_id') &&
+        $has($attribCols, 'attrib_type') && $has($attribCols, 'attrib_value');
+    $attrType = 'autoconfig_ignored_down_ports';
+
+    $statusText = fn($raw): string => strtolower(trim((string) $raw));
+    $isUp = fn(string $status): bool => in_array($status, ['up', '1'], true);
+    $isDown = fn(string $status): bool => in_array($status, ['down', '2', 'lowerlayerdown', '7', 'notpresent', '6', 'dormant', '5'], true);
+    $portLabel = function (array $port) use ($portsCols, $has): string {
+        $parts = [];
+        foreach (['ifName', 'ifDescr', 'ifAlias'] as $column) {
+            if ($has($portsCols, $column) && ! empty($port[$column])) {
+                $parts[] = (string) $port[$column];
+            }
+        }
+        return trim(implode(' ', array_unique($parts))) ?: ('port_id=' . ($port['port_id'] ?? '?'));
+    };
+
+    $loadAuto = function (int $deviceId) use ($pdo, $hasAttrib, $attrType): array {
+        if (! $hasAttrib) {
+            return [];
+        }
+        $stmt = $pdo->prepare('SELECT attrib_value FROM device_attribs WHERE device_id = ? AND attrib_type = ? LIMIT 1');
+        $stmt->execute([$deviceId, $attrType]);
+        $raw = $stmt->fetchColumn();
+        $items = json_decode((string) $raw, true);
+        if (! is_array($items)) {
+            return [];
+        }
+        $map = [];
+        foreach ($items as $id) {
+            if (is_numeric($id)) {
+                $map[(int) $id] = true;
+            }
+        }
+        return $map;
+    };
+
+    $saveAuto = function (int $deviceId, array $auto) use ($pdo, $hasAttrib, $attrType): void {
+        if (! $hasAttrib) {
+            return;
+        }
+        $ids = array_values(array_map('intval', array_keys($auto)));
+        sort($ids);
+        $value = json_encode($ids);
+        $select = $pdo->prepare('SELECT attrib_id FROM device_attribs WHERE device_id = ? AND attrib_type = ? LIMIT 1');
+        $select->execute([$deviceId, $attrType]);
+        $attribId = $select->fetchColumn();
+        if ($attribId) {
+            $update = $pdo->prepare('UPDATE device_attribs SET attrib_value = ? WHERE attrib_id = ?');
+            $update->execute([$value, $attribId]);
+            return;
+        }
+        $insert = $pdo->prepare('INSERT INTO device_attribs (device_id, attrib_type, attrib_value) VALUES (?, ?, ?)');
+        $insert->execute([$deviceId, $attrType, $value]);
+    };
+
+    $deviceLabel = function (array $device): string {
+        foreach (['display', 'sysName', 'hostname'] as $column) {
+            if (! empty($device[$column])) {
+                return (string) $device[$column];
+            }
+        }
+        return 'device_id=' . ($device['device_id'] ?? '?');
+    };
+
+    $devices = $pdo->query('SELECT DISTINCT d.* FROM devices d JOIN ports p ON p.device_id = d.device_id')->fetchAll(PDO::FETCH_ASSOC);
+    $updateIgnore = $pdo->prepare('UPDATE ports SET `ignore` = ? WHERE port_id = ?');
+
+    $ignoredTotal = 0;
+    $restoredTotal = 0;
+    foreach ($devices as $device) {
+        $deviceId = (int) $device['device_id'];
+        $auto = $loadAuto($deviceId);
+        $seen = [];
+        $where = ['device_id = ?'];
+        if ($has($portsCols, 'deleted')) {
+            $where[] = '(`deleted` = 0 OR `deleted` IS NULL)';
+        }
+        $stmt = $pdo->prepare('SELECT * FROM ports WHERE ' . implode(' AND ', $where));
+        $stmt->execute([$deviceId]);
+
+        $ignored = [];
+        $restored = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $port) {
+            $portId = (int) $port['port_id'];
+            $seen[$portId] = true;
+            $status = $statusText($port['ifOperStatus'] ?? '');
+            $currentlyIgnored = (int) ($port['ignore'] ?? 0) === 1;
+
+            if ($isUp($status)) {
+                if (isset($auto[$portId])) {
+                    if ($currentlyIgnored) {
+                        $updateIgnore->execute([0, $portId]);
+                        $restored[] = $portLabel($port);
+                        $restoredTotal++;
+                    }
+                    unset($auto[$portId]);
+                }
+                continue;
+            }
+
+            if ($isDown($status) && ! $currentlyIgnored) {
+                $updateIgnore->execute([1, $portId]);
+                $auto[$portId] = true;
+                $ignored[] = $portLabel($port);
+                $ignoredTotal++;
+            }
+        }
+
+        foreach (array_keys($auto) as $portId) {
+            if (! isset($seen[$portId])) {
+                unset($auto[$portId]);
+            }
+        }
+        $saveAuto($deviceId, $auto);
+
+        if ($ignored) {
+            $sample = implode(', ', array_slice($ignored, 0, 4));
+            $more = count($ignored) > 4 ? '...' : '';
+            echo "  " . $deviceLabel($device) . ": ignored " . count($ignored) . " down ports ({$sample}{$more})\n";
+        }
+        if ($restored) {
+            $sample = implode(', ', array_slice($restored, 0, 4));
+            $more = count($restored) > 4 ? '...' : '';
+            echo "  " . $deviceLabel($device) . ": restored " . count($restored) . " ports now up ({$sample}{$more})\n";
+        }
+    }
+
+    echo "  Down-port ignore complete: ignored={$ignoredTotal}, restored={$restoredTotal}\n";
+} catch (Throwable $e) {
+    echo "  WARNING: Down-port ignore failed: " . $e->getMessage() . "\n";
+}
+PHP
+}
+
 ALERT_TRANSPORT_IDS=""
 
 configure_feishu_transport() {
@@ -1071,6 +1255,7 @@ fi
 
 discover_firewall_ports
 configure_isp_port_speed_overrides
+configure_down_port_ignores
 configure_feishu_transport
 
 # Configure alert rules
