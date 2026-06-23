@@ -95,7 +95,7 @@ DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-c
 SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "public")
 UNIFI_AP_SNMP_AUTO_ADD = os.environ.get("UNIFI_AP_SNMP_AUTO_ADD", "true").lower() in ("1", "true", "yes", "on")
 UNIFI_AP_SNMP_COMMUNITY = os.environ.get("UNIFI_AP_SNMP_COMMUNITY", SNMP_COMMUNITY)
-UNIFI_AP_SNMP_ADD_RETRY_SECONDS = int(os.environ.get("UNIFI_AP_SNMP_ADD_RETRY_SECONDS", "3600"))
+UNIFI_AP_SNMP_ADD_RETRY_SECONDS = int(os.environ.get("UNIFI_AP_SNMP_ADD_RETRY_SECONDS", "300"))
 INTERCONNECT_ALERT_ENABLED = os.environ.get("INTERCONNECT_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 INTERCONNECT_ALERT_FOR_SECONDS = int(os.environ.get("INTERCONNECT_ALERT_FOR_SECONDS", "5"))
 INTERCONNECT_ALERT_POLL_INTERVAL = int(os.environ.get("INTERCONNECT_ALERT_POLL_INTERVAL", "5"))
@@ -299,12 +299,19 @@ def fetch_librenms_devices(token):
 
 def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"):
     token = _librenms_token()
-    if not token or not LIBRENMS_URL or not ip:
+    if not ip:
         return False
+    if not LIBRENMS_URL:
+        log(f"{log_prefix} SNMP auto-add postponed for {name or ip} ({ip}): LIBRENMS_URL not set")
+        return False
+    if not token:
+        log(f"{log_prefix} SNMP auto-add postponed for {name or ip} ({ip}): LibreNMS API token not ready")
+        return False
+    snmp_community = (community or SNMP_COMMUNITY or "public").strip()
     payload = {
         "hostname": ip,
         "version": "v2c",
-        "community": community or SNMP_COMMUNITY,
+        "community": snmp_community,
         "port": 161,
         "transport": "udp",
     }
@@ -1292,7 +1299,7 @@ def unifi_ap_watcher():
             if not name:
                 continue
             info = {
-                "ip": metric.get("ip") or "",
+                "ip": metric.get("ip") or metric.get("ip_address") or metric.get("address") or metric.get("host") or "",
                 "model": metric.get("model") or "",
             }
             known[name] = info

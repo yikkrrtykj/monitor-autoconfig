@@ -1233,6 +1233,128 @@ PHP
   esac
 }
 
+cleanup_legacy_alert_rules() {
+  echo ""
+  echo "  Cleaning legacy broken LibreNMS alert rules..."
+
+  php <<'PHP'
+<?php
+try {
+    $host = getenv('DB_HOST') ?: 'librenms-db';
+    $database = getenv('DB_NAME') ?: 'librenms';
+    $dbUser = getenv('DB_USER') ?: 'librenms';
+    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
+
+    $pdo = new PDO(
+        "mysql:host={$host};dbname={$database};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+
+    $quoteIdent = fn(string $name): string => '`' . str_replace('`', '``', $name) . '`';
+    $columns = function (string $table) use ($pdo, $quoteIdent): array {
+        try {
+            $stmt = $pdo->query("SHOW COLUMNS FROM " . $quoteIdent($table));
+        } catch (Throwable $e) {
+            return [];
+        }
+        $cols = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $cols[$row['Field']] = true;
+        }
+        return $cols;
+    };
+    $tableExists = function (string $table) use ($pdo): bool {
+        $stmt = $pdo->prepare('SHOW TABLES LIKE ?');
+        $stmt->execute([$table]);
+        return (bool) $stmt->fetchColumn();
+    };
+    $has = fn(array $cols, string $name): bool => isset($cols[$name]);
+
+    if (! $tableExists('alert_rules')) {
+        echo "  Legacy alert cleanup skipped: alert_rules table not found\n";
+        exit(0);
+    }
+
+    $ruleCols = $columns('alert_rules');
+    $idCol = $has($ruleCols, 'id') ? 'id' : ($has($ruleCols, 'rule_id') ? 'rule_id' : null);
+    if ($idCol === null) {
+        echo "  Legacy alert cleanup skipped: unsupported alert_rules schema\n";
+        exit(0);
+    }
+
+    $conditions = [];
+    $params = [];
+    if ($has($ruleCols, 'name')) {
+        foreach (['接口错误告警', '接口丢弃告警', '高丢包告警'] as $name) {
+            $conditions[] = $quoteIdent('name') . ' = ?';
+            $params[] = $name;
+        }
+    }
+    if ($has($ruleCols, 'rule')) {
+        foreach (['ifInDiscards_rate', 'ifOutDiscards_rate', 'ifInErrors_rate', 'ifOutErrors_rate', 'device_perf.loss'] as $token) {
+            $conditions[] = $quoteIdent('rule') . ' LIKE ?';
+            $params[] = '%' . $token . '%';
+        }
+    }
+
+    if (! $conditions) {
+        echo "  Legacy alert cleanup skipped: no name/rule columns\n";
+        exit(0);
+    }
+
+    $selectCols = [$quoteIdent($idCol)];
+    if ($has($ruleCols, 'name')) {
+        $selectCols[] = $quoteIdent('name');
+    }
+    if ($has($ruleCols, 'rule')) {
+        $selectCols[] = $quoteIdent('rule');
+    }
+    $stmt = $pdo->prepare(
+        'SELECT ' . implode(', ', $selectCols) .
+        ' FROM alert_rules WHERE ' . implode(' OR ', $conditions)
+    );
+    $stmt->execute($params);
+    $rules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if (! $rules) {
+        echo "  Legacy alert cleanup: no broken legacy rules found\n";
+        exit(0);
+    }
+
+    $ids = [];
+    $names = [];
+    foreach ($rules as $rule) {
+        $ids[] = (int) $rule[$idCol];
+        $name = trim((string) ($rule['name'] ?? ''));
+        $names[] = $name !== '' ? $name : ('rule_id=' . $rule[$idCol]);
+    }
+    $ids = array_values(array_unique($ids));
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+    foreach (['alert_device_map', 'alert_group_map', 'alert_location_map', 'alert_transport_map', 'alert_schedule', 'alert_template_map'] as $table) {
+        if (! $tableExists($table)) {
+            continue;
+        }
+        $cols = $columns($table);
+        foreach (['rule_id', 'alert_rule_id'] as $col) {
+            if ($has($cols, $col)) {
+                $del = $pdo->prepare('DELETE FROM ' . $quoteIdent($table) . ' WHERE ' . $quoteIdent($col) . " IN ({$placeholders})");
+                $del->execute($ids);
+                break;
+            }
+        }
+    }
+
+    $delRules = $pdo->prepare('DELETE FROM alert_rules WHERE ' . $quoteIdent($idCol) . " IN ({$placeholders})");
+    $delRules->execute($ids);
+    echo '  Legacy alert cleanup: removed ' . count($ids) . ' broken rule(s): ' . implode(', ', array_unique($names)) . "\n";
+} catch (Throwable $e) {
+    echo "  WARNING: Legacy alert cleanup failed: " . $e->getMessage() . "\n";
+}
+PHP
+}
+
 echo ""
 echo "[4/6] Discovering SNMP devices..."
 echo "  Targets: $DISCOVERY_TARGETS"
@@ -1288,6 +1410,7 @@ configure_feishu_transport
 # Configure alert rules
 echo ""
 echo "[6/6] Setting up alert rules..."
+cleanup_legacy_alert_rules
 
 rule_id_by_name() {
   echo "$EXISTING_RULES" | python3 -c "
