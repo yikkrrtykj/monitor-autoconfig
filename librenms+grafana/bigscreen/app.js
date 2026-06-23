@@ -813,10 +813,57 @@
     `;
   }
 
+  // UniFi AP 在线状态（来自 unpoller）。掉线的 AP 会从指标里消失，所以这里列出的都是
+  // 在线 AP；某台从列表消失即代表它掉线（飞书会单独推掉线告警）。无 UniFi 时返回空、不渲染。
+  async function fetchApStatus() {
+    let infos;
+    let stations;
+    try {
+      [infos, stations] = await Promise.all([
+        prometheusQuery('unpoller_device_info{type="uap"}'),
+        prometheusQuery('sum by (name) (unpoller_device_stations{type="uap"})')
+      ]);
+    } catch (error) {
+      return [];
+    }
+    const clients = {};
+    stations.forEach((s) => { clients[s.metric.name] = s.value; });
+    return infos
+      .map((i) => ({
+        name: i.metric.name || "?",
+        model: i.metric.model || "",
+        clients: clients[i.metric.name] != null ? clients[i.metric.name] : 0
+      }))
+      .filter((ap) => ap.name && ap.name !== "?")
+      .sort((a, b) => b.clients - a.clients || a.name.localeCompare(b.name, "zh-CN"));
+  }
+
+  function renderApStrip(aps) {
+    const board = document.getElementById("opsBoard");
+    if (!board || !aps.length) return;
+    const totalClients = aps.reduce((sum, ap) => sum + ap.clients, 0);
+    const chips = aps.map((ap) => `
+      <div class="ap-chip" title="${escapeHtml(ap.model)}">
+        <i class="dot"></i>
+        <span class="ap-name">${escapeHtml(ap.name)}</span>
+        <span class="ap-clients"><b>${ap.clients}</b> 人</span>
+      </div>
+    `).join("");
+    board.insertAdjacentHTML("afterbegin", `
+      <div class="ap-strip">
+        <div class="ap-strip-head">无线 AP：${aps.length} 台在线 · ${totalClients} 客户端</div>
+        <div class="ap-grid">${chips}</div>
+      </div>
+    `);
+  }
+
   async function refreshWirelessOverview() {
     renderWirelessControls();
     try {
-      const snapshot = await fetchPlayerSnapshot('role="player",network="wireless"');
+      const [snapshot, aps] = await Promise.all([
+        fetchPlayerSnapshot('role="player",network="wireless"'),
+        fetchApStatus()
+      ]);
       const rawItems = [...snapshot.latencyItems, ...snapshot.successItems];
       const gatewayIps = new Set(rawItems.map((item) => item.metric.instance).filter(isGatewayAddress));
       const players = snapshot.players;
@@ -834,6 +881,7 @@
         { label: "最高延迟", value: Number.isFinite(maxLatency) ? formatPingText(maxLatency) : "-", level: maxLatency >= 0.08 ? "warn" : "good" }
       ]);
       renderWirelessBoard(players);
+      renderApStrip(aps);
       lastDataSuccessAt = Date.now();
     } catch (error) {
       renderNoData(document.getElementById("opsSummary"), "查询失败");
