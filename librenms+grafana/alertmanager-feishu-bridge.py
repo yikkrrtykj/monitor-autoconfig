@@ -103,7 +103,7 @@ DEVICE_ONLINE_STATE_FILE = os.environ.get(
     "DEVICE_ONLINE_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "notified-devices.json"),
 )
-# UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 unpoller_device_info{type="uap"}
+# UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 controller 数据
 # 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
 UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "90"))
@@ -1099,13 +1099,58 @@ def device_down_watcher():
         time.sleep(DEVICE_DOWN_POLL_INTERVAL)
 
 
+def _ap_online_from_labels(metric):
+    for field in ("state", "status", "stat", "connected", "up", "disabled"):
+        raw = str(metric.get(field) or "").strip().lower()
+        if not raw:
+            continue
+        if field == "disabled" and raw in ("1", "true", "yes", "on", "disabled"):
+            return False
+        if re.search(r"offline|disconnect|disconnected|down|unknown|false|^0$", raw):
+            return False
+        if re.search(r"online|connected|active|adopted|true|^1$", raw):
+            return True
+    return None
+
+
+def _optional_prometheus_query(query):
+    try:
+        return prometheus_query(query)
+    except Exception:
+        return []
+
+
+def _ap_online_metric_map():
+    online = {}
+    queries = [
+        'max by (name) (unpoller_device_up{type="uap"})',
+        'max by (name) (unpoller_device_connected{type="uap"})',
+        'max by (name) (unpoller_device_state{type="uap"})',
+        'max by (name) (unpoller_device_status{type="uap"})',
+        'max by (name) (unpoller_device_uptime_seconds{type="uap"} > bool 0)',
+        'max by (name) (unpoller_device_uptime{type="uap"} > bool 0)',
+    ]
+    for query in queries:
+        for item in _optional_prometheus_query(query):
+            metric = item.get("metric") or {}
+            name = metric.get("name") or metric.get("mac") or ""
+            if not name:
+                continue
+            try:
+                value = float((item.get("value") or [None, "0"])[1])
+            except (TypeError, ValueError):
+                continue
+            online[name] = value > 0
+    return online
+
+
 def unifi_ap_watcher():
     """UniFi AP up/down alerts off UniFi Poller (unpoller) metrics in Prometheus.
 
-    A connected AP appears in unpoller_device_info{type="uap"}; when it
-    disconnects, unpoller drops the series entirely. So we remember APs we've
-    seen up and alert when a previously-seen AP stays gone for
-    >= UNIFI_AP_DOWN_FOR_SECONDS, then send a recovery card when it returns.
+    unpoller_device_info is identity metadata and can still exist for offline
+    APs, so the watcher first uses explicit up/connected/state/status/uptime
+    metrics when the exporter exposes them. If only info exists, it falls back
+    to the older behaviour where presence means online.
     No UniFi configured => the query is empty => the watcher idles silently
     (safe for events that don't use UniFi). APs already down at startup are not
     alerted (never seen up), matching the infra device-down watcher's behaviour.
@@ -1131,15 +1176,25 @@ def unifi_ap_watcher():
             time.sleep(UNIFI_AP_POLL_INTERVAL)
             continue
 
+        metric_online = _ap_online_metric_map()
         current = {}
+        known = {}
         for item in results:
             metric = item.get("metric") or {}
             name = metric.get("name") or metric.get("mac") or ""
-            if name:
-                current[name] = {
-                    "ip": metric.get("ip") or "",
-                    "model": metric.get("model") or "",
-                }
+            if not name:
+                continue
+            info = {
+                "ip": metric.get("ip") or "",
+                "model": metric.get("model") or "",
+            }
+            known[name] = info
+            label_online = _ap_online_from_labels(metric)
+            is_online = metric_online.get(name)
+            if is_online is None:
+                is_online = True if label_online is None else label_online
+            if is_online:
+                current[name] = info
 
         # Seen APs: refresh metadata, arm on first sight, recover if was down.
         for name, info in current.items():
@@ -1165,6 +1220,9 @@ def unifi_ap_watcher():
         for name, state in states.items():
             if name in current or not state.get("seen_up"):
                 continue
+            if name in known:
+                state["ip"] = known[name].get("ip") or state.get("ip") or ""
+                state["model"] = known[name].get("model") or state.get("model") or ""
             if state.get("down_since") is None:
                 state["down_since"] = state.get("last_seen") or now
             if not state["alerting"] and now - state["down_since"] >= UNIFI_AP_DOWN_FOR_SECONDS:
@@ -1176,7 +1234,7 @@ def unifi_ap_watcher():
 
         if now - last_status_log >= 60:
             down = sum(1 for s in states.values() if s.get("alerting"))
-            log(f"[AP] {len(current)} online / {len(states)} known / {down} down")
+            log(f"[AP] {len(current)} online / {len(known)} listed / {len(states)} known / {down} down")
             last_status_log = now
 
         time.sleep(UNIFI_AP_POLL_INTERVAL)

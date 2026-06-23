@@ -23,6 +23,7 @@
     prometheusRangeCached, invalidateRangeCache,
     activeInfraPingQuery, activeSeriesNames, filterSeriesByNames,
     fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
+    fetchInfraDeviceNames, renameListWithInfraMap,
     fetchTopologyTargets, fetchTopologyEdges
   } = window.BSApi;
   const {
@@ -684,17 +685,18 @@
         prometheusQuery(pingGaugeQuery),
         prometheusQuery(uptimeQuery)
       ]);
+      const nameMap = await fetchInfraDeviceNames();
       if (seq !== gaugeSeq) return;
       const isServerItem = (item) => (item.metric && item.metric.job) === "infra-srv-ping";
       const deployed = filterDeployed(pingItems, (item) => item.name);
-      const networkPing = deployed.filter((item) => !isServerItem(item));
-      const serverPing = deployed.filter(isServerItem);
+      const networkPing = renameListWithInfraMap(deployed.filter((item) => !isServerItem(item)), nameMap);
+      const serverPing = renameListWithInfraMap(deployed.filter(isServerItem), nameMap);
       renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
       // Servers aren't stage devices (skip the stage filter); keep them on one row.
       renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
       // 没有服务器 ping 数据就整段隐藏，不显示"服务器 暂无数据"。
       setVisible("serverGaugesWrap", serverPing.length > 0);
-      renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(uptimeItems), "uptime");
+      renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(renameListWithInfraMap(uptimeItems, nameMap)), "uptime");
       lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== gaugeSeq) return;
@@ -714,9 +716,10 @@
         prometheusRangeCached(lossQuery),
         fetchIspTraffic()
       ]);
+      const nameMap = await fetchInfraDeviceNames();
       if (seq !== chartSeq) return;
-      const activePingSeries = visibleInfraSeries(filterDeployed(pingSeries, (s) => s.name));
-      const activeLossSeries = visibleInfraSeries(filterDeployed(lossSeries, (s) => s.name));
+      const activePingSeries = visibleInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap));
+      const activeLossSeries = visibleInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
         renderLineChart("pingTrendChart", activePingSeries, {
           axisFormatter: formatPingText,
@@ -813,8 +816,37 @@
     `;
   }
 
-  // UniFi AP 在线状态（来自 unpoller）。掉线的 AP 会从指标里消失，所以这里列出的都是
-  // 在线 AP；某台从列表消失即代表它掉线（飞书会单独推掉线告警）。无 UniFi 时返回空、不渲染。
+  async function optionalPrometheusQuery(query) {
+    try {
+      return await prometheusQuery(query);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function apOnlineFromLabels(metric) {
+    const fields = ["state", "status", "stat", "connected", "up", "disabled"];
+    for (const field of fields) {
+      const raw = String(metric[field] || "").trim().toLowerCase();
+      if (!raw) continue;
+      if (field === "disabled" && ["1", "true", "yes"].includes(raw)) return false;
+      if (/offline|disconnect|disconnected|down|unknown|false|^0$/.test(raw)) return false;
+      if (/online|connected|active|adopted|true|^1$/.test(raw)) return true;
+    }
+    return null;
+  }
+
+  function mergeApOnlineMap(target, items) {
+    items.forEach((item) => {
+      const name = item.metric.name || item.name;
+      if (!name) return;
+      target.set(name, item.value > 0);
+    });
+  }
+
+  // UniFi AP 状态（来自 unpoller / UniFi 控制器 API）。
+  // device_info 可能包含离线 AP，所以不能把“有 info”直接当在线；优先看在线/uptime
+  // 指标或状态 label，最后才兜底为在线，避免无 UniFi 状态指标时整段空掉。
   async function fetchApStatus() {
     let infos;
     let stations;
@@ -828,30 +860,48 @@
     }
     const clients = {};
     stations.forEach((s) => { clients[s.metric.name] = s.value; });
+    const onlineMaps = await Promise.all([
+      optionalPrometheusQuery('max by (name) (unpoller_device_up{type="uap"})'),
+      optionalPrometheusQuery('max by (name) (unpoller_device_connected{type="uap"})'),
+      optionalPrometheusQuery('max by (name) (unpoller_device_state{type="uap"})'),
+      optionalPrometheusQuery('max by (name) (unpoller_device_status{type="uap"})'),
+      optionalPrometheusQuery('max by (name) (unpoller_device_uptime_seconds{type="uap"} > bool 0)'),
+      optionalPrometheusQuery('max by (name) (unpoller_device_uptime{type="uap"} > bool 0)')
+    ]);
+    const onlineByName = new Map();
+    onlineMaps.forEach((items) => mergeApOnlineMap(onlineByName, items));
+
     return infos
-      .map((i) => ({
-        name: i.metric.name || "?",
-        model: i.metric.model || "",
-        clients: clients[i.metric.name] != null ? clients[i.metric.name] : 0
-      }))
+      .map((i) => {
+        const name = i.metric.name || "?";
+        const labelState = apOnlineFromLabels(i.metric);
+        const online = onlineByName.has(name) ? onlineByName.get(name) : (labelState == null ? true : labelState);
+        return {
+          name,
+          model: i.metric.model || "",
+          online,
+          clients: online && clients[name] != null ? clients[name] : 0
+        };
+      })
       .filter((ap) => ap.name && ap.name !== "?")
-      .sort((a, b) => b.clients - a.clients || a.name.localeCompare(b.name, "zh-CN"));
+      .sort((a, b) => Number(b.online) - Number(a.online) || b.clients - a.clients || a.name.localeCompare(b.name, "zh-CN"));
   }
 
   function renderApStrip(aps) {
     const board = document.getElementById("opsBoard");
     if (!board || !aps.length) return;
-    const totalClients = aps.reduce((sum, ap) => sum + ap.clients, 0);
+    const onlineCount = aps.filter((ap) => ap.online).length;
+    const totalClients = aps.reduce((sum, ap) => sum + (ap.online ? ap.clients : 0), 0);
     const chips = aps.map((ap) => `
-      <div class="ap-chip" title="${escapeHtml(ap.model)}">
+      <div class="ap-chip ${ap.online ? "online" : "offline"}" title="${escapeHtml(`${ap.name} · ${ap.online ? "在线" : "离线"}${ap.model ? ` · ${ap.model}` : ""}`)}">
         <i class="dot"></i>
         <span class="ap-name">${escapeHtml(ap.name)}</span>
-        <span class="ap-clients"><b>${ap.clients}</b> 人</span>
+        <span class="ap-clients">${ap.online ? `<b>${ap.clients}</b> 人` : "离线"}</span>
       </div>
     `).join("");
     board.insertAdjacentHTML("afterbegin", `
       <div class="ap-strip">
-        <div class="ap-strip-head">无线 AP：${aps.length} 台在线 · ${totalClients} 客户端</div>
+        <div class="ap-strip-head">无线 AP：${onlineCount} 台在线 / ${aps.length} 台 · ${totalClients} 客户端</div>
         <div class="ap-grid">${chips}</div>
       </div>
     `);

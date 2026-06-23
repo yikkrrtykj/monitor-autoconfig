@@ -215,6 +215,7 @@ services:
           system_uptime:
             get:
               - 1.3.6.1.2.1.1.3.0
+              - 1.3.6.1.2.1.1.5.0
             max_repetitions: 25
             retries: 3
             timeout: 10s
@@ -223,6 +224,10 @@ services:
                 oid: 1.3.6.1.2.1.1.3
                 type: gauge
                 help: The time in hundredths of a second since the network management portion of the system was last re-initialized.
+              - name: sysName
+                oid: 1.3.6.1.2.1.1.5
+                type: DisplayString
+                help: The administratively-assigned name for this managed node.
         EOF
         exec /bin/snmp_exporter \
           --config.file=/etc/snmp_exporter/snmp.yml \
@@ -267,7 +272,7 @@ services:
         exec /bin/blackbox_exporter --config.file=/etc/blackbox_exporter/config.yml
 
   # UniFi Poller(unpoller)：从 UniFi 控制器 API 拉每台 AP/客户端/站点指标，吐成
-  # Prometheus metrics —— 替代新版 UniFi 砍掉的 SNMP，适合 AP 遍布多网段、无法 SNMP 的场景。
+  # Prometheus metrics。这里不依赖 AP 自身 SNMP，适合 AP 多网段、统一控制器管理的场景。
   # 可选服务：放在 "unifi" profile 里，默认不启动，不用 UniFi 的赛事完全不受影响。
   # 启用：.env 配好 UNIFI_CONTROLLER_* 且设 COMPOSE_PROFILES=unifi，再 docker compose up -d。
   unpoller:
@@ -598,7 +603,7 @@ services:
         echo "Running LibreNMS auto-configuration..."
         /bin/sh /librenms-auto-config.sh
         echo ""
-        echo "UniFi APs: Add via SNMP in LibreNMS web UI (http://localhost:8002)"
+        echo "UniFi APs: optional via unpoller/controller API; fill UNIFI_CONTROLLER_* and COMPOSE_PROFILES=unifi"
 
   grafana:
     image: grafana/grafana:latest

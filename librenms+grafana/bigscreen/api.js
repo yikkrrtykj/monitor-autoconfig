@@ -189,7 +189,80 @@
   }
 
   function activeSeriesNames(items) {
-    return new Set(items.map((item) => metricName(item.metric)).filter(Boolean));
+    const names = new Set();
+    items.forEach((item) => {
+      const metric = item.metric || {};
+      [metricName(metric), metric.target_ip, metric.display_name, metric.instance]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .forEach((value) => names.add(value));
+    });
+    return names;
+  }
+
+  function looksLikeIp(value) {
+    return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(value || ""));
+  }
+
+  function bestSysName(metric) {
+    const candidates = [
+      metric.sysName,
+      metric.system_name,
+      metric.systemName,
+      metric.display_name,
+      metric.instance
+    ];
+    for (const candidate of candidates) {
+      const value = String(candidate || "").trim();
+      if (value && !looksLikeIp(value)) return value;
+    }
+    return "";
+  }
+
+  let infraNameCache = null;
+  let infraNameCachedAt = 0;
+
+  async function fetchInfraDeviceNames() {
+    const now = Date.now();
+    if (infraNameCache && now - infraNameCachedAt < 60000) {
+      return infraNameCache;
+    }
+
+    const map = new Map();
+    try {
+      const items = await prometheusInstant('sysName{job=~"infra-switch-snmp|infra-fw-snmp"}');
+      items.forEach((item) => {
+        const metric = item.metric || {};
+        const name = bestSysName(metric);
+        if (!name) return;
+        [metric.target_ip, metric.instance, metric.display_name]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+          .forEach((key) => map.set(key, name));
+      });
+    } catch (error) {
+      // Older deployments may not have sysName in the lightweight SNMP module yet.
+    }
+    infraNameCache = map;
+    infraNameCachedAt = now;
+    return map;
+  }
+
+  function renameWithInfraMap(item, nameMap) {
+    const metric = item.metric || {};
+    const mapped = nameMap.get(metric.target_ip) || nameMap.get(metric.instance) || nameMap.get(item.name);
+    if (!mapped || mapped === item.name) {
+      return item;
+    }
+    return {
+      ...item,
+      originalName: item.originalName || item.name,
+      name: mapped
+    };
+  }
+
+  function renameListWithInfraMap(list, nameMap) {
+    return list.map((item) => renameWithInfraMap(item, nameMap));
   }
 
   function filterSeriesByNames(seriesList, names) {
@@ -293,18 +366,20 @@
   async function fetchTopologyTargets() {
     const jobs = ["infra-isp-ping", "infra-fw-ping", "infra-core-ping", "infra-dist-ping", "infra-srv-ping"];
     const filter = jobs.join("|");
-    const [success, latency] = await Promise.all([
+    const [success, latency, nameMap] = await Promise.all([
       prometheusInstant(`probe_success{job=~"${filter}"}`),
-      prometheusInstant(`probe_icmp_duration_seconds{job=~"${filter}",phase="rtt"}`)
+      prometheusInstant(`probe_icmp_duration_seconds{job=~"${filter}",phase="rtt"}`),
+      fetchInfraDeviceNames()
     ]);
     const map = new Map();
     success.forEach((item) => {
       const key = `${item.metric.job}|${item.metric.target_ip || item.metric.instance}`;
+      const displayName = nameMap.get(item.metric.target_ip) || nameMap.get(item.metric.instance) || item.metric.display_name || item.metric.instance;
       map.set(key, {
         job: item.metric.job,
         instance: item.metric.instance || item.metric.target_ip,
         targetIp: item.metric.target_ip || item.metric.instance,
-        displayName: item.metric.display_name || item.metric.instance,
+        displayName,
         success: item.value >= 1,
         latency: null
       });
@@ -351,6 +426,8 @@
     fetchIspTraffic,
     ispCapacityBps,
     ispChartMaxBps,
+    fetchInfraDeviceNames,
+    renameListWithInfraMap,
     fetchTopologyTargets,
     fetchTopologyEdges
   };
