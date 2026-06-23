@@ -209,8 +209,7 @@
       metric.sysName,
       metric.system_name,
       metric.systemName,
-      metric.display_name,
-      metric.instance
+      metric.snmp_sysName
     ];
     for (const candidate of candidates) {
       const value = String(candidate || "").trim();
@@ -221,30 +220,63 @@
 
   let infraNameCache = null;
   let infraNameCachedAt = 0;
+  const INFRA_NAME_STORAGE_KEY = "bigscreen.infraDeviceNames.v1";
+
+  function readStoredInfraDeviceNames() {
+    try {
+      const storage = typeof window !== "undefined" ? window.localStorage : null;
+      if (!storage) return new Map();
+      const entries = JSON.parse(storage.getItem(INFRA_NAME_STORAGE_KEY) || "[]");
+      if (!Array.isArray(entries)) return new Map();
+      return new Map(entries.filter(([key, value]) => key && value && !looksLikeIp(value)));
+    } catch (error) {
+      return new Map();
+    }
+  }
+
+  function writeStoredInfraDeviceNames(map) {
+    try {
+      const storage = typeof window !== "undefined" ? window.localStorage : null;
+      if (!storage) return;
+      storage.setItem(INFRA_NAME_STORAGE_KEY, JSON.stringify(Array.from(map.entries()).slice(-500)));
+    } catch (error) {
+      // Storage can be disabled in kiosk browsers; the in-memory cache is enough.
+    }
+  }
+
+  function rememberInfraName(map, metric, name) {
+    if (!name || looksLikeIp(name)) return;
+    [metric.target_ip, metric.instance, metric.display_name]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .forEach((key) => map.set(key, name));
+  }
 
   async function fetchInfraDeviceNames() {
     const now = Date.now();
-    if (infraNameCache && now - infraNameCachedAt < 60000) {
+    if (infraNameCache && now - infraNameCachedAt < 15000) {
       return infraNameCache;
     }
 
-    const map = new Map();
-    try {
-      const items = await prometheusInstant('sysName{job=~"infra-switch-snmp|infra-fw-snmp"}');
-      items.forEach((item) => {
-        const metric = item.metric || {};
-        const name = bestSysName(metric);
-        if (!name) return;
-        [metric.target_ip, metric.instance, metric.display_name]
-          .map((value) => String(value || "").trim())
-          .filter(Boolean)
-          .forEach((key) => map.set(key, name));
-      });
-    } catch (error) {
-      // Older deployments may not have sysName in the lightweight SNMP module yet.
+    const map = new Map(infraNameCache || readStoredInfraDeviceNames());
+    const queries = [
+      'max_over_time(sysName{job=~"infra-switch-snmp|infra-fw-snmp"}[12h])',
+      'sysName{job=~"infra-switch-snmp|infra-fw-snmp"}'
+    ];
+    for (const query of queries) {
+      try {
+        const items = await prometheusInstant(query);
+        items.forEach((item) => {
+          const metric = item.metric || {};
+          rememberInfraName(map, metric, bestSysName(metric));
+        });
+      } catch (error) {
+        // Older deployments may not have sysName in the lightweight SNMP module yet.
+      }
     }
     infraNameCache = map;
     infraNameCachedAt = now;
+    if (map.size) writeStoredInfraDeviceNames(map);
     return map;
   }
 

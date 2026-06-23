@@ -176,6 +176,9 @@ services:
       UNIFI_AP_ALERT_ENABLED: "${UNIFI_AP_ALERT_ENABLED:-true}"
       UNIFI_AP_DOWN_FOR_SECONDS: "${UNIFI_AP_DOWN_FOR_SECONDS:-90}"
       UNIFI_AP_POLL_INTERVAL: "${UNIFI_AP_POLL_INTERVAL:-15}"
+      UNIFI_AP_SNMP_AUTO_ADD: "${UNIFI_AP_SNMP_AUTO_ADD:-true}"
+      UNIFI_AP_SNMP_COMMUNITY: "${UNIFI_AP_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
+      UNIFI_AP_SNMP_ADD_RETRY_SECONDS: "${UNIFI_AP_SNMP_ADD_RETRY_SECONDS:-3600}"
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
@@ -603,7 +606,7 @@ services:
         echo "Running LibreNMS auto-configuration..."
         /bin/sh /librenms-auto-config.sh
         echo ""
-        echo "UniFi APs: optional via unpoller/controller API; fill UNIFI_CONTROLLER_* and COMPOSE_PROFILES=unifi"
+        echo "UniFi APs: optional via unpoller/controller API; bridge can auto-add online APs to LibreNMS by SNMP"
 
   grafana:
     image: grafana/grafana:latest

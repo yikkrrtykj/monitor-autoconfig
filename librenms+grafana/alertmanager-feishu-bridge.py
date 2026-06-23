@@ -39,6 +39,9 @@ Env:
   DEVICE_AUTO_ADD_FROM_PING true = add newly reachable switch candidates to LibreNMS by SNMP
   DEVICE_AUTO_ADD_SNMP_JOBS comma list of ping jobs that may be SNMP devices
   SNMP_COMMUNITY           default SNMP v2c community for auto-add
+  UNIFI_AP_SNMP_AUTO_ADD   true = add online UniFi APs to LibreNMS by SNMP
+  UNIFI_AP_SNMP_COMMUNITY  optional AP SNMP community (defaults to SNMP_COMMUNITY)
+  UNIFI_AP_SNMP_ADD_RETRY_SECONDS seconds before retrying a failed AP add
   INTERCONNECT_ALERT_ENABLED true = watch Port-channel/LAG ifOperStatus
   INTERCONNECT_ALERT_FOR_SECONDS seconds a link must be down before alerting
   INTERCONNECT_ALERT_POLL_INTERVAL seconds between interconnect checks
@@ -89,6 +92,9 @@ DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "false").low
 DEVICE_AUTO_ADD_FROM_PING = os.environ.get("DEVICE_AUTO_ADD_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-core-ping,infra-dist-ping")
 SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "public")
+UNIFI_AP_SNMP_AUTO_ADD = os.environ.get("UNIFI_AP_SNMP_AUTO_ADD", "true").lower() in ("1", "true", "yes", "on")
+UNIFI_AP_SNMP_COMMUNITY = os.environ.get("UNIFI_AP_SNMP_COMMUNITY", SNMP_COMMUNITY)
+UNIFI_AP_SNMP_ADD_RETRY_SECONDS = int(os.environ.get("UNIFI_AP_SNMP_ADD_RETRY_SECONDS", "3600"))
 INTERCONNECT_ALERT_ENABLED = os.environ.get("INTERCONNECT_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 INTERCONNECT_ALERT_FOR_SECONDS = int(os.environ.get("INTERCONNECT_ALERT_FOR_SECONDS", "5"))
 INTERCONNECT_ALERT_POLL_INTERVAL = int(os.environ.get("INTERCONNECT_ALERT_POLL_INTERVAL", "5"))
@@ -131,6 +137,7 @@ SEVERITY_COLOR = {
 }
 
 EVENT_ID_LOCK = threading.Lock()
+DEVICE_ONLINE_STATE_LOCK = threading.Lock()
 
 
 def _read_int_file(path, default=0):
@@ -173,6 +180,18 @@ def _save_json_set(path, values):
     return _atomic_write_text(path, payload)
 
 
+def mark_device_online_notified(*values):
+    clean = {str(value).strip() for value in values if str(value or "").strip()}
+    if not clean:
+        return
+    with DEVICE_ONLINE_STATE_LOCK:
+        items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+        if clean.issubset(items):
+            return
+        items.update(clean)
+        _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
+
+
 EVENT_ID = max(
     int(os.environ.get("FEISHU_BRIDGE_EVENT_ID_START", "0") or "0"),
     _read_int_file(EVENT_ID_FILE, 0),
@@ -211,17 +230,19 @@ def fetch_librenms_devices(token):
         return json.loads(resp.read().decode("utf-8")).get("devices", [])
 
 
-def add_librenms_snmp_device(ip):
+def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"):
     token = _librenms_token()
     if not token or not LIBRENMS_URL or not ip:
         return False
     payload = {
         "hostname": ip,
         "version": "v2c",
-        "community": SNMP_COMMUNITY,
+        "community": community or SNMP_COMMUNITY,
         "port": 161,
         "transport": "udp",
     }
+    if name:
+        payload["display_name"] = name
     req = request.Request(
         f"{LIBRENMS_URL}/api/v0/devices",
         data=json.dumps(payload).encode("utf-8"),
@@ -238,22 +259,22 @@ def add_librenms_snmp_device(ip):
         status = str(data.get("status") or "").lower()
         message = data.get("message") or raw
         if status == "ok":
-            log(f"[WATCHER] SNMP auto-add requested for {ip}")
+            log(f"{log_prefix} SNMP auto-add requested for {name or ip} ({ip})")
             return True
         if "already" in str(message).lower():
-            log(f"[WATCHER] SNMP auto-add skipped for {ip}: already exists")
+            log(f"{log_prefix} SNMP auto-add skipped for {name or ip} ({ip}): already exists")
             return True
-        log(f"[WATCHER] SNMP auto-add failed for {ip}: {str(message)[:160]}")
+        log(f"{log_prefix} SNMP auto-add failed for {name or ip} ({ip}): {str(message)[:160]}")
         return False
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
         if "already" in body.lower():
-            log(f"[WATCHER] SNMP auto-add skipped for {ip}: already exists")
+            log(f"{log_prefix} SNMP auto-add skipped for {name or ip} ({ip}): already exists")
             return True
-        log(f"[WATCHER] SNMP auto-add HTTP {exc.code} for {ip}: {body[:160]}")
+        log(f"{log_prefix} SNMP auto-add HTTP {exc.code} for {name or ip} ({ip}): {body[:160]}")
         return False
     except Exception as exc:
-        log(f"[WATCHER] SNMP auto-add failed for {ip}: {exc}")
+        log(f"{log_prefix} SNMP auto-add failed for {name or ip} ({ip}): {exc}")
         return False
 
 
@@ -1161,10 +1182,12 @@ def unifi_ap_watcher():
     query = 'unpoller_device_info{type="uap"}'
     time.sleep(20)  # let Prometheus/unpoller settle after a (re)start
     states = {}
+    snmp_add_attempted = {}
     last_status_log = 0.0
     log(
         "[AP] UniFi AP watcher enabled "
-        f"(for={UNIFI_AP_DOWN_FOR_SECONDS}s, poll={UNIFI_AP_POLL_INTERVAL}s)"
+        f"(for={UNIFI_AP_DOWN_FOR_SECONDS}s, poll={UNIFI_AP_POLL_INTERVAL}s, "
+        f"snmp_auto_add={UNIFI_AP_SNMP_AUTO_ADD})"
     )
 
     while True:
@@ -1198,6 +1221,18 @@ def unifi_ap_watcher():
 
         # Seen APs: refresh metadata, arm on first sight, recover if was down.
         for name, info in current.items():
+            ip = info.get("ip") or ""
+            if UNIFI_AP_SNMP_AUTO_ADD and ip:
+                last_attempt = snmp_add_attempted.get(ip, 0)
+                if now - last_attempt >= UNIFI_AP_SNMP_ADD_RETRY_SECONDS:
+                    snmp_add_attempted[ip] = now
+                    if add_librenms_snmp_device(
+                        ip,
+                        name=name,
+                        community=UNIFI_AP_SNMP_COMMUNITY,
+                        log_prefix="[AP]",
+                    ):
+                        mark_device_online_notified(name, ip)
             state = states.setdefault(name, {
                 "alerting": False, "down_since": None, "seen_up": False,
                 "last_seen": now, "ip": "", "model": "",
@@ -1302,7 +1337,8 @@ def device_watcher():
             log("[WATCHER] still no token, watcher disabled")
             return
 
-    notified = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+    with DEVICE_ONLINE_STATE_LOCK:
+        notified = _load_json_set(DEVICE_ONLINE_STATE_FILE)
     log(f"[WATCHER] loaded {len(notified)} notified devices")
     first_successful_poll = True
     while True:
@@ -1330,7 +1366,11 @@ def device_watcher():
                 notified.update(keys)
                 seeded += 1
             if seeded:
-                _save_json_set(DEVICE_ONLINE_STATE_FILE, notified)
+                with DEVICE_ONLINE_STATE_LOCK:
+                    current = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+                    current.update(notified)
+                    _save_json_set(DEVICE_ONLINE_STATE_FILE, current)
+                    notified = current
             log(f"[WATCHER] initialized baseline with {seeded} existing SNMP devices")
             first_successful_poll = False
             time.sleep(SWITCH_WATCH_INTERVAL)
@@ -1354,7 +1394,11 @@ def device_watcher():
                 changed = True
 
         if changed:
-            _save_json_set(DEVICE_ONLINE_STATE_FILE, notified)
+            with DEVICE_ONLINE_STATE_LOCK:
+                current = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+                current.update(notified)
+                _save_json_set(DEVICE_ONLINE_STATE_FILE, current)
+                notified = current
         time.sleep(SWITCH_WATCH_INTERVAL)
 
 
