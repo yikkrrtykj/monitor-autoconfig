@@ -462,6 +462,9 @@ services:
         condition: service_started
     environment:
       TZ: Asia/Shanghai
+      FONTCONFIG_PATH: /etc/fonts
+      FONTCONFIG_FILE: /etc/fonts/fonts.conf
+      XDG_CACHE_HOME: /tmp
       DB_HOST: librenms-db
       DB_NAME: librenms
       DB_USER: librenms

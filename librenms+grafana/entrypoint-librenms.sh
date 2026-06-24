@@ -5,6 +5,36 @@ if [ -f /etc/nginx/http.d/default.conf ]; then
   echo "[librenms-entry] removed nginx default.conf (404 catch-all)"
 fi
 
+# LibreNMS device pages render graphs through rrdtool. Some base images emit a
+# harmless Fontconfig warning on the first graph render; LibreNMS treats any
+# stderr as "Error Drawing Graph". Warm the font cache and filter only that
+# exact warning while preserving real rrdtool errors.
+export FONTCONFIG_PATH="${FONTCONFIG_PATH:-/etc/fonts}"
+export FONTCONFIG_FILE="${FONTCONFIG_FILE:-/etc/fonts/fonts.conf}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/tmp}"
+mkdir -p "$XDG_CACHE_HOME" 2>/dev/null || true
+if command -v fc-cache >/dev/null 2>&1; then
+  fc-cache -f >/dev/null 2>&1 || true
+  echo "[librenms-entry] fontconfig cache warmed"
+fi
+if [ -x /usr/bin/rrdtool ] && [ ! -x /usr/bin/rrdtool.real ]; then
+  mv /usr/bin/rrdtool /usr/bin/rrdtool.real
+  cat > /usr/bin/rrdtool <<'EOF'
+#!/bin/sh
+err_file=$(mktemp)
+trap 'rm -f "$err_file"' EXIT
+/usr/bin/rrdtool.real "$@" 2>"$err_file"
+status=$?
+grep -v 'Fontconfig warning: using without calling FcInit()' "$err_file" >&2 || true
+exit "$status"
+EOF
+  chmod +x /usr/bin/rrdtool
+  /usr/bin/rrdtool graph /tmp/librenms-font-warmup.png \
+    --start now-60 --end now --width 10 --height 10 HRULE:0#000000 >/dev/null 2>&1 || true
+  rm -f /tmp/librenms-font-warmup.png 2>/dev/null || true
+  echo "[librenms-entry] rrdtool fontconfig warning filter installed"
+fi
+
 # Patch RrdCheck.php to suppress progress echo lines that corrupt JSON API responses.
 # Applied to source code before s6 starts so it survives cont-init.d regeneration.
 if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then

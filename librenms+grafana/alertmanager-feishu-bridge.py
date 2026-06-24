@@ -410,7 +410,7 @@ def _looks_like_ip(value):
 def _first_non_ip(*values):
     for value in values:
         value = str(value or "").strip()
-        if value and not _looks_like_ip(value):
+        if value and not _looks_like_ip(value) and not re.fullmatch(r"\d+", value):
             return value
     return ""
 
@@ -438,6 +438,29 @@ def _is_ping_only_device(dev):
     ]
     text = " ".join(str(value or "").lower() for value in values)
     return "ping only" in text or re.search(r"(^|\W)ping($|\W)", text) is not None or "icmp" in text
+
+
+def _find_unifi_ap_by_ip(ip):
+    if not ip or not _unifi_controller_enabled():
+        return None
+    for ap in fetch_unifi_controller_aps_cached().values():
+        if ap.get("ip") == ip:
+            return ap
+    return None
+
+
+def _enrich_device_with_unifi(device):
+    ip = device.get("ip") or device.get("hostname") or ""
+    ap = _find_unifi_ap_by_ip(ip)
+    if not ap:
+        return device
+    enriched = dict(device)
+    if ap.get("name"):
+        enriched["display"] = ap["name"]
+        enriched["sysName"] = ap["name"]
+    if ap.get("model") and not enriched.get("hardware"):
+        enriched["hardware"] = ap["model"]
+    return enriched
 
 
 def _device_name(dev):
@@ -1357,9 +1380,9 @@ def _unifi_ap_online(device):
 
 
 def _best_unifi_ap_name(device):
-    for field in ("name", "display_name", "hostname", "mac"):
+    for field in ("name", "display_name", "hostname", "ap_name", "mac"):
         value = str(device.get(field) or "").strip()
-        if value:
+        if value and not _looks_like_ip(value) and not re.fullmatch(r"\d+", value):
             return value
     return ""
 
@@ -1393,7 +1416,14 @@ def _fetch_unifi_controller_aps():
                 "key": key,
                 "name": name,
                 "ip": ip,
-                "model": str(device.get("model") or device.get("model_display") or device.get("board_rev") or "").strip(),
+                "model": str(
+                    device.get("model_display")
+                    or device.get("model_name")
+                    or device.get("display_model")
+                    or device.get("model")
+                    or device.get("board_rev")
+                    or ""
+                ).strip(),
                 "online": _unifi_ap_online(device),
                 "source": "controller",
             }
@@ -1708,10 +1738,13 @@ def device_watcher():
         if first_successful_poll and not notified:
             seeded = 0
             for dev in devices:
-                if _is_ping_only_device(dev) or not _has_meaningful_device_name(dev):
+                if _is_ping_only_device(dev):
                     continue
-                key = dev.get("hostname") or dev.get("ip")
-                ip = dev.get("ip") or dev.get("hostname")
+                online_dev = _enrich_device_with_unifi(dev)
+                if not _has_meaningful_device_name(online_dev):
+                    continue
+                key = online_dev.get("hostname") or online_dev.get("ip")
+                ip = online_dev.get("ip") or online_dev.get("hostname")
                 keys = {value for value in (key, ip) if value}
                 notified.update(keys)
                 seeded += 1
@@ -1730,16 +1763,17 @@ def device_watcher():
         for dev in devices:
             if _is_ping_only_device(dev):
                 continue
-            if not _has_meaningful_device_name(dev):
-                key = dev.get("hostname") or dev.get("ip") or "?"
+            online_dev = _enrich_device_with_unifi(dev)
+            if not _has_meaningful_device_name(online_dev):
+                key = online_dev.get("hostname") or online_dev.get("ip") or "?"
                 log(f"[WATCHER] waiting for SNMP name before online alert: {key}")
                 continue
-            key = dev.get("hostname") or dev.get("ip")
-            ip = dev.get("ip") or dev.get("hostname")
+            key = online_dev.get("hostname") or online_dev.get("ip")
+            ip = online_dev.get("ip") or online_dev.get("hostname")
             keys = {value for value in (key, ip) if value}
             if keys and not (keys & notified):
-                log(f"[WATCHER] new SNMP device detected: {_best_device_name(dev)} ({ip})")
-                send_feishu(build_device_online_card(dev))
+                log(f"[WATCHER] new SNMP device detected: {_best_device_name(online_dev)} ({ip})")
+                send_feishu(build_device_online_card(online_dev))
                 notified.update(keys)
                 changed = True
 
