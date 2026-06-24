@@ -96,6 +96,53 @@ EOF
 chmod +x /etc/cont-init.d/99-librenms-patch
 echo "[librenms-entry] installed nginx/scheduler patch as /etc/cont-init.d/99-librenms-patch (server_name=${RESOLVED_IP:-unset})"
 
+valid_base_url() {
+  case "$1" in
+    http://*|https://*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *'${'*|*'}'*) return 1 ;;
+  esac
+  return 0
+}
+
+sql_quote() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+# If a previous deploy wrote a malformed base_url into the DB, LibreNMS can crash
+# during its own schema update before our cont-init patch gets a chance to run.
+# Best-effort repair it before handing control to /init.
+PREINIT_BASE_URL="${LIBRENMS_BASE_URL:-}"
+if ! valid_base_url "$PREINIT_BASE_URL"; then
+  PREINIT_BASE_URL=""
+fi
+if [ -z "$PREINIT_BASE_URL" ] && [ -n "${SERVER_IP:-}" ]; then
+  PREINIT_BASE_URL="http://${SERVER_IP}:${LIBRENMS_PORT:-8002}"
+fi
+if ! valid_base_url "$PREINIT_BASE_URL"; then
+  PREINIT_BASE_URL="http://localhost:${LIBRENMS_PORT:-8002}"
+fi
+
+MYSQL_BIN=""
+if command -v mariadb >/dev/null 2>&1; then
+  MYSQL_BIN="mariadb"
+elif command -v mysql >/dev/null 2>&1; then
+  MYSQL_BIN="mysql"
+fi
+if [ -n "$MYSQL_BIN" ] && [ -n "${DB_HOST:-}" ]; then
+  PREINIT_BASE_URL_SQL=$(sql_quote "$PREINIT_BASE_URL")
+  MYSQL_PWD="${DB_PASS:-}" "$MYSQL_BIN" \
+    -h "${DB_HOST}" \
+    -P "${DB_PORT:-3306}" \
+    -u "${DB_USER:-librenms}" \
+    "${DB_NAME:-librenms}" \
+    -e "UPDATE config SET config_value='${PREINIT_BASE_URL_SQL}' WHERE config_name='base_url';" \
+    >/dev/null 2>&1 && \
+    echo "[librenms-entry] pre-init base_url repaired to ${PREINIT_BASE_URL}" || true
+fi
+
 # Register the Laravel scheduler as an s6 long-running service using schedule:work.
 # schedule:work keeps the artisan process alive in the process table, which is
 # what LibreNMS's validate.php looks for when checking "Scheduler is running".
