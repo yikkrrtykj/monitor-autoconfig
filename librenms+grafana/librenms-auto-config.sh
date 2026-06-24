@@ -33,6 +33,7 @@ FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}
 # 互联/上联口描述关键词（逗号分隔）。只对 ifAlias 含这些词的口做"断链"告警，
 # 其它口（选手口等）不报。把上联成员口统一描述成含这些词即可，如 description to-stage1。
 UPLINK_IF_FILTER="${UPLINK_IF_FILTER:-to-stage,to-core,to-dist,uplink}"
+LIBRENMS_SUPPRESS_STP_EVENTS="${LIBRENMS_SUPPRESS_STP_EVENTS:-true}"
 LIBRENMS_API_TOKEN="${LIBRENMS_API_TOKEN:-}"
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
@@ -1156,6 +1157,59 @@ try {
 PHP
 }
 
+configure_stp_noise_suppression() {
+  if [ "$LIBRENMS_SUPPRESS_STP_EVENTS" != "true" ]; then
+    echo ""
+    echo "  LibreNMS STP event suppression skipped (LIBRENMS_SUPPRESS_STP_EVENTS=false)"
+    return 0
+  fi
+
+  echo ""
+  echo "  Suppressing LibreNMS STP topology-change noise..."
+  run_lnms config:set poller_modules.stp false >/dev/null 2>&1 && \
+    echo "  STP poller module: disabled" || \
+    echo "  WARNING: Could not disable STP poller module"
+  run_lnms config:set discovery_modules.stp false >/dev/null 2>&1 && \
+    echo "  STP discovery module: disabled" || true
+
+  php <<'PHP'
+<?php
+try {
+    $host = getenv('DB_HOST') ?: 'librenms-db';
+    $database = getenv('DB_NAME') ?: 'librenms';
+    $dbUser = getenv('DB_USER') ?: 'librenms';
+    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
+
+    $pdo = new PDO(
+        "mysql:host={$host};dbname={$database};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+
+    $exists = $pdo->prepare('SHOW TABLES LIKE ?');
+    $exists->execute(['eventlog']);
+    if (! $exists->fetchColumn()) {
+        echo "  STP event cleanup skipped: eventlog table not found\n";
+        exit(0);
+    }
+    $columns = [];
+    foreach ($pdo->query('SHOW COLUMNS FROM eventlog') as $column) {
+        $columns[$column['Field']] = true;
+    }
+    if (! isset($columns['type'])) {
+        echo "  STP event cleanup skipped: eventlog.type not found\n";
+        exit(0);
+    }
+    $stmt = $pdo->prepare("DELETE FROM eventlog WHERE type = 'stp'");
+    $stmt->execute();
+    echo "  STP event cleanup: removed " . $stmt->rowCount() . " old topology-change event(s)\n";
+} catch (Throwable $e) {
+    echo "  WARNING: STP event cleanup failed: " . $e->getMessage() . "\n";
+}
+PHP
+}
+
 ALERT_TRANSPORT_IDS=""
 
 configure_feishu_transport() {
@@ -1304,6 +1358,27 @@ try {
         exit(0);
     }
 
+    $cleanupLegacyEvents = function () use ($pdo, $tableExists, $columns, $has): int {
+        if (! $tableExists('eventlog')) {
+            return 0;
+        }
+        $eventCols = $columns('eventlog');
+        if (! $has($eventCols, 'message')) {
+            return 0;
+        }
+        $tokens = ['ifInDiscards_rate', 'ifOutDiscards_rate', 'ifInErrors_rate', 'ifOutErrors_rate', 'device_perf.loss', '接口错误告警', '接口丢弃告警', '高丢包告警'];
+        $where = [];
+        $params = [];
+        foreach ($tokens as $token) {
+            $where[] = '`message` LIKE ?';
+            $params[] = '%' . $token . '%';
+        }
+        $del = $pdo->prepare('DELETE FROM eventlog WHERE ' . implode(' OR ', $where));
+        $del->execute($params);
+        return $del->rowCount();
+    };
+    $removedEvents = $cleanupLegacyEvents();
+
     $selectCols = [$quoteIdent($idCol)];
     if ($has($ruleCols, 'name')) {
         $selectCols[] = $quoteIdent('name');
@@ -1319,6 +1394,9 @@ try {
     $rules = $stmt->fetchAll(PDO::FETCH_ASSOC);
     if (! $rules) {
         echo "  Legacy alert cleanup: no broken legacy rules found\n";
+        if ($removedEvents > 0) {
+            echo "  Legacy alert cleanup: removed {$removedEvents} old broken alert event(s)\n";
+        }
         exit(0);
     }
 
@@ -1349,6 +1427,9 @@ try {
     $delRules = $pdo->prepare('DELETE FROM alert_rules WHERE ' . $quoteIdent($idCol) . " IN ({$placeholders})");
     $delRules->execute($ids);
     echo '  Legacy alert cleanup: removed ' . count($ids) . ' broken rule(s): ' . implode(', ', array_unique($names)) . "\n";
+    if ($removedEvents > 0) {
+        echo "  Legacy alert cleanup: removed {$removedEvents} old broken alert event(s)\n";
+    }
 } catch (Throwable $e) {
     echo "  WARNING: Legacy alert cleanup failed: " . $e->getMessage() . "\n";
 }
@@ -1405,6 +1486,7 @@ fi
 discover_firewall_ports
 configure_isp_port_speed_overrides
 configure_down_port_ignores
+configure_stp_noise_suppression
 configure_feishu_transport
 
 # Configure alert rules

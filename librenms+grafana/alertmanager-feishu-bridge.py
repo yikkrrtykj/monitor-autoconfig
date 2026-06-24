@@ -43,6 +43,9 @@ Env:
   UNIFI_AP_SNMP_AUTO_ADD   true = add online UniFi APs to LibreNMS by SNMP
   UNIFI_AP_SNMP_COMMUNITY  optional AP SNMP community (defaults to SNMP_COMMUNITY)
   UNIFI_AP_SNMP_ADD_RETRY_SECONDS seconds before retrying a failed AP add
+  UNIFI_CONTROLLER_URL/USER/PASS optional direct UniFi API fallback for AP name/IP
+  UNIFI_CONTROLLER_SITES  comma sites or all (default all)
+  UNIFI_AP_NAME_SYNC_SECONDS seconds between LibreNMS display-name sync attempts
   INTERCONNECT_ALERT_ENABLED true = watch Port-channel/LAG ifOperStatus
   INTERCONNECT_ALERT_FOR_SECONDS seconds a link must be down before alerting
   INTERCONNECT_ALERT_POLL_INTERVAL seconds between interconnect checks
@@ -50,10 +53,12 @@ Env:
   INTERCONNECT_PORT_FILTER comma list of interface keywords/prefixes
 """
 from datetime import datetime
+from http.cookiejar import CookieJar
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 import re
+import ssl
 import sys
 import threading
 import time
@@ -96,6 +101,13 @@ SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "public")
 UNIFI_AP_SNMP_AUTO_ADD = os.environ.get("UNIFI_AP_SNMP_AUTO_ADD", "true").lower() in ("1", "true", "yes", "on")
 UNIFI_AP_SNMP_COMMUNITY = os.environ.get("UNIFI_AP_SNMP_COMMUNITY", SNMP_COMMUNITY)
 UNIFI_AP_SNMP_ADD_RETRY_SECONDS = int(os.environ.get("UNIFI_AP_SNMP_ADD_RETRY_SECONDS", "300"))
+UNIFI_CONTROLLER_URL = os.environ.get("UNIFI_CONTROLLER_URL", "").rstrip("/")
+UNIFI_CONTROLLER_USER = os.environ.get("UNIFI_CONTROLLER_USER", "")
+UNIFI_CONTROLLER_PASS = os.environ.get("UNIFI_CONTROLLER_PASS", "")
+UNIFI_CONTROLLER_SITES = os.environ.get("UNIFI_CONTROLLER_SITES", "all")
+UNIFI_CONTROLLER_VERIFY_SSL = os.environ.get("UNIFI_CONTROLLER_VERIFY_SSL", "false").lower() in ("1", "true", "yes", "on")
+UNIFI_CONTROLLER_REFRESH_SECONDS = int(os.environ.get("UNIFI_CONTROLLER_REFRESH_SECONDS", "60"))
+UNIFI_AP_NAME_SYNC_SECONDS = int(os.environ.get("UNIFI_AP_NAME_SYNC_SECONDS", "300"))
 INTERCONNECT_ALERT_ENABLED = os.environ.get("INTERCONNECT_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 INTERCONNECT_ALERT_FOR_SECONDS = int(os.environ.get("INTERCONNECT_ALERT_FOR_SECONDS", "5"))
 INTERCONNECT_ALERT_POLL_INTERVAL = int(os.environ.get("INTERCONNECT_ALERT_POLL_INTERVAL", "5"))
@@ -297,6 +309,42 @@ def fetch_librenms_devices(token):
         return json.loads(resp.read().decode("utf-8")).get("devices", [])
 
 
+def update_librenms_device_display(ip, name, log_prefix="[WATCHER]"):
+    token = _librenms_token()
+    name = str(name or "").strip()
+    if not token or not LIBRENMS_URL or not ip or not name or _looks_like_ip(name):
+        return False
+    payload = {"field": "display", "data": name}
+    encoded_ip = parse.quote(str(ip), safe="")
+    req = request.Request(
+        f"{LIBRENMS_URL}/api/v0/devices/{encoded_ip}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"X-Auth-Token": token, "Content-Type": "application/json"},
+        method="PATCH",
+    )
+    try:
+        with request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        status = str(data.get("status") or "").lower()
+        if status == "ok":
+            log(f"{log_prefix} LibreNMS display synced for {ip}: {name}")
+            return True
+        message = data.get("message") or raw
+        log(f"{log_prefix} LibreNMS display sync failed for {ip}: {str(message)[:160]}")
+        return False
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
+        log(f"{log_prefix} LibreNMS display sync HTTP {exc.code} for {ip}: {body[:160]}")
+        return False
+    except Exception as exc:
+        log(f"{log_prefix} LibreNMS display sync failed for {ip}: {exc}")
+        return False
+
+
 def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"):
     token = _librenms_token()
     if not ip:
@@ -334,9 +382,11 @@ def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"
         message = data.get("message") or raw
         if status == "ok":
             log(f"{log_prefix} SNMP auto-add requested for {name or ip} ({ip})")
+            update_librenms_device_display(ip, name, log_prefix=log_prefix)
             return True
         if "already" in str(message).lower():
             log(f"{log_prefix} SNMP auto-add skipped for {name or ip} ({ip}): already exists")
+            update_librenms_device_display(ip, name, log_prefix=log_prefix)
             return True
         log(f"{log_prefix} SNMP auto-add failed for {name or ip} ({ip}): {str(message)[:160]}")
         return False
@@ -344,6 +394,7 @@ def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"
         body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
         if "already" in body.lower():
             log(f"{log_prefix} SNMP auto-add skipped for {name or ip} ({ip}): already exists")
+            update_librenms_device_display(ip, name, log_prefix=log_prefix)
             return True
         log(f"{log_prefix} SNMP auto-add HTTP {exc.code} for {name or ip} ({ip}): {body[:160]}")
         return False
@@ -1232,27 +1283,185 @@ def _optional_prometheus_query(query):
         return []
 
 
+UNIFI_CONTROLLER_AP_CACHE = {"ts": 0.0, "items": {}}
+UNIFI_CONTROLLER_WARN_TS = 0.0
+
+
+def _unifi_controller_enabled():
+    return bool(UNIFI_CONTROLLER_URL and UNIFI_CONTROLLER_USER and UNIFI_CONTROLLER_PASS)
+
+
+def _unifi_request_json(opener, path, payload=None, method=None):
+    url = UNIFI_CONTROLLER_URL + path
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = request.Request(url, data=data, headers=headers, method=method or ("POST" if payload is not None else "GET"))
+    with opener.open(req, timeout=12) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+    return json.loads(raw or "{}")
+
+
+def _unifi_login():
+    jar = CookieJar()
+    handlers = [request.HTTPCookieProcessor(jar)]
+    if UNIFI_CONTROLLER_URL.startswith("https://") and not UNIFI_CONTROLLER_VERIFY_SSL:
+        handlers.append(request.HTTPSHandler(context=ssl._create_unverified_context()))
+    opener = request.build_opener(*handlers)
+    payload = {"username": UNIFI_CONTROLLER_USER, "password": UNIFI_CONTROLLER_PASS, "remember": True}
+    last_error = None
+    for path in ("/api/auth/login", "/api/login"):
+        try:
+            _unifi_request_json(opener, path, payload=payload, method="POST")
+            return opener
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"login failed: {last_error}")
+
+
+def _unifi_sites(opener):
+    configured = [part.strip() for part in UNIFI_CONTROLLER_SITES.split(",") if part.strip()]
+    if configured and configured != ["all"]:
+        return configured
+    for path in ("/proxy/network/api/self/sites", "/api/self/sites"):
+        try:
+            data = _unifi_request_json(opener, path)
+            sites = [
+                str(site.get("name") or "").strip()
+                for site in (data.get("data") or [])
+                if str(site.get("name") or "").strip()
+            ]
+            if sites:
+                return sites
+        except Exception:
+            continue
+    return ["default"]
+
+
+def _unifi_ap_online(device):
+    raw_state = device.get("state")
+    if raw_state is not None:
+        return str(raw_state).strip() == "1"
+    for field in ("connected", "up", "adopted"):
+        if field in device:
+            return bool(device.get(field))
+    raw_status = str(device.get("status") or "").strip().lower()
+    if raw_status:
+        if re.search(r"offline|disconnect|disconnected|down|unknown|false|^0$", raw_status):
+            return False
+        if re.search(r"online|connected|active|adopted|true|^1$", raw_status):
+            return True
+    return True
+
+
+def _best_unifi_ap_name(device):
+    for field in ("name", "display_name", "hostname", "mac"):
+        value = str(device.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _fetch_unifi_controller_aps():
+    opener = _unifi_login()
+    sites = _unifi_sites(opener)
+    aps = {}
+    prefixes = ("/proxy/network/api", "/api")
+    for site in sites:
+        site_enc = parse.quote(site, safe="")
+        site_devices = None
+        for prefix in prefixes:
+            try:
+                site_devices = _unifi_request_json(opener, f"{prefix}/s/{site_enc}/stat/device")
+                break
+            except Exception:
+                continue
+        if not site_devices:
+            continue
+        for device in site_devices.get("data") or []:
+            dev_type = str(device.get("type") or "").lower()
+            if dev_type and not dev_type.startswith("uap"):
+                continue
+            ip = str(device.get("ip") or device.get("last_ip") or device.get("fixed_ip") or "").strip()
+            name = _best_unifi_ap_name(device)
+            key = str(device.get("mac") or ip or name).strip()
+            if not key or not name:
+                continue
+            aps[key] = {
+                "key": key,
+                "name": name,
+                "ip": ip,
+                "model": str(device.get("model") or device.get("model_display") or device.get("board_rev") or "").strip(),
+                "online": _unifi_ap_online(device),
+                "source": "controller",
+            }
+    return aps
+
+
+def fetch_unifi_controller_aps_cached():
+    global UNIFI_CONTROLLER_WARN_TS
+    if not _unifi_controller_enabled():
+        return {}
+    now = time.time()
+    if now - UNIFI_CONTROLLER_AP_CACHE["ts"] < UNIFI_CONTROLLER_REFRESH_SECONDS:
+        return UNIFI_CONTROLLER_AP_CACHE["items"]
+    try:
+        items = _fetch_unifi_controller_aps()
+        UNIFI_CONTROLLER_AP_CACHE["ts"] = now
+        UNIFI_CONTROLLER_AP_CACHE["items"] = items
+        return items
+    except Exception as exc:
+        if now - UNIFI_CONTROLLER_WARN_TS >= 300:
+            log(f"[AP] UniFi controller API fetch failed: {exc}")
+            UNIFI_CONTROLLER_WARN_TS = now
+        return UNIFI_CONTROLLER_AP_CACHE["items"]
+
+
+def _ap_display_name(metric):
+    for field in ("display_name", "name", "hostname", "mac"):
+        value = str(metric.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _norm_ap_name(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _should_sync_ap_name(info):
+    name = str(info.get("name") or "").strip()
+    if not name or _looks_like_ip(name):
+        return False
+    if info.get("source") == "controller":
+        return True
+    model = str(info.get("model") or "").strip()
+    return not model or _norm_ap_name(name) != _norm_ap_name(model)
+
+
 def _ap_online_metric_map():
     online = {}
     queries = [
-        'max by (name) (unpoller_device_up{type="uap"})',
-        'max by (name) (unpoller_device_connected{type="uap"})',
-        'max by (name) (unpoller_device_state{type="uap"})',
-        'max by (name) (unpoller_device_status{type="uap"})',
-        'max by (name) (unpoller_device_uptime_seconds{type="uap"} > bool 0)',
-        'max by (name) (unpoller_device_uptime{type="uap"} > bool 0)',
+        'max by (name, mac) (unpoller_device_up{type="uap"})',
+        'max by (name, mac) (unpoller_device_connected{type="uap"})',
+        'max by (name, mac) (unpoller_device_state{type="uap"})',
+        'max by (name, mac) (unpoller_device_status{type="uap"})',
+        'max by (name, mac) (unpoller_device_uptime_seconds{type="uap"} > bool 0)',
+        'max by (name, mac) (unpoller_device_uptime{type="uap"} > bool 0)',
     ]
     for query in queries:
         for item in _optional_prometheus_query(query):
             metric = item.get("metric") or {}
-            name = metric.get("name") or metric.get("mac") or ""
-            if not name:
+            key = metric.get("mac") or metric.get("name") or ""
+            if not key:
                 continue
             try:
                 value = float((item.get("value") or [None, "0"])[1])
             except (TypeError, ValueError):
                 continue
-            online[name] = value > 0
+            online[key] = value > 0
     return online
 
 
@@ -1274,11 +1483,13 @@ def unifi_ap_watcher():
     time.sleep(20)  # let Prometheus/unpoller settle after a (re)start
     states = {}
     snmp_add_attempted = {}
+    name_sync_attempted = {}
     last_status_log = 0.0
     log(
         "[AP] UniFi AP watcher enabled "
         f"(for={UNIFI_AP_DOWN_FOR_SECONDS}s, poll={UNIFI_AP_POLL_INTERVAL}s, "
-        f"snmp_auto_add={UNIFI_AP_SNMP_AUTO_ADD})"
+        f"snmp_auto_add={UNIFI_AP_SNMP_AUTO_ADD}, "
+        f"controller_api={_unifi_controller_enabled()})"
     )
 
     while True:
@@ -1291,43 +1502,85 @@ def unifi_ap_watcher():
             continue
 
         metric_online = _ap_online_metric_map()
+        controller_aps = fetch_unifi_controller_aps_cached()
         current = {}
         known = {}
         for item in results:
             metric = item.get("metric") or {}
-            name = metric.get("name") or metric.get("mac") or ""
-            if not name:
+            key = metric.get("mac") or metric.get("name") or ""
+            name = _ap_display_name(metric)
+            if not key or not name:
+                continue
+            metric_ip = (
+                metric.get("ip")
+                or metric.get("ip_address")
+                or metric.get("address")
+                or metric.get("host")
+                or ""
+            )
+            controller_info = controller_aps.get(key) or {}
+            if not controller_info and controller_aps:
+                for ap_info in controller_aps.values():
+                    if (metric_ip and ap_info.get("ip") == metric_ip) or (name and ap_info.get("name") == name):
+                        controller_info = ap_info
+                        key = ap_info.get("key") or key
+                        break
+            if controller_aps and not controller_info and not metric_ip:
                 continue
             info = {
-                "ip": metric.get("ip") or metric.get("ip_address") or metric.get("address") or metric.get("host") or "",
-                "model": metric.get("model") or "",
+                "name": controller_info.get("name") or name,
+                "ip": controller_info.get("ip") or metric_ip,
+                "model": controller_info.get("model") or metric.get("model") or "",
+                "source": controller_info.get("source") or "prometheus",
             }
-            known[name] = info
+            known[key] = info
             label_online = _ap_online_from_labels(metric)
-            is_online = metric_online.get(name)
+            is_online = metric_online.get(key)
             if is_online is None:
                 is_online = True if label_online is None else label_online
             if is_online:
-                current[name] = info
+                current[key] = info
+
+        for key, controller_info in controller_aps.items():
+            info = known.get(key, {})
+            merged = {
+                "name": controller_info.get("name") or info.get("name") or key,
+                "ip": controller_info.get("ip") or info.get("ip") or "",
+                "model": controller_info.get("model") or info.get("model") or "",
+                "source": controller_info.get("source") or info.get("source") or "controller",
+            }
+            known[key] = merged
+            if controller_info.get("online"):
+                current[key] = merged
 
         # Seen APs: refresh metadata, arm on first sight, recover if was down.
-        for name, info in current.items():
+        for key, info in current.items():
+            name = info.get("name") or key
+            sync_name = name if _should_sync_ap_name(info) else ""
             ip = info.get("ip") or ""
+            add_attempted = False
             if UNIFI_AP_SNMP_AUTO_ADD and ip:
                 last_attempt = snmp_add_attempted.get(ip, 0)
                 if now - last_attempt >= UNIFI_AP_SNMP_ADD_RETRY_SECONDS:
                     snmp_add_attempted[ip] = now
+                    add_attempted = True
                     if add_librenms_snmp_device(
                         ip,
-                        name=name,
+                        name=sync_name,
                         community=UNIFI_AP_SNMP_COMMUNITY,
                         log_prefix="[AP]",
                     ):
                         mark_device_online_notified(name, ip)
-            state = states.setdefault(name, {
+            if ip and sync_name and not add_attempted:
+                last_sync = name_sync_attempted.get(ip, 0)
+                if now - last_sync >= UNIFI_AP_NAME_SYNC_SECONDS:
+                    name_sync_attempted[ip] = now
+                    update_librenms_device_display(ip, sync_name, log_prefix="[AP]")
+            state = states.setdefault(key, {
                 "alerting": False, "down_since": None, "seen_up": False,
-                "last_seen": now, "ip": "", "model": "",
+                "last_seen": now, "name": name, "ip": "", "model": "",
             })
+            state["name"] = name
             state["ip"] = info["ip"] or state["ip"]
             state["model"] = info["model"] or state["model"]
             state["last_seen"] = now
@@ -1343,24 +1596,30 @@ def unifi_ap_watcher():
             state["down_since"] = None
 
         # Previously-seen APs now missing => down after debounce.
-        for name, state in states.items():
-            if name in current or not state.get("seen_up"):
+        for key, state in states.items():
+            if key in current or not state.get("seen_up"):
                 continue
-            if name in known:
-                state["ip"] = known[name].get("ip") or state.get("ip") or ""
-                state["model"] = known[name].get("model") or state.get("model") or ""
+            if key in known:
+                state["name"] = known[key].get("name") or state.get("name") or key
+                state["ip"] = known[key].get("ip") or state.get("ip") or ""
+                state["model"] = known[key].get("model") or state.get("model") or ""
             if state.get("down_since") is None:
                 state["down_since"] = state.get("last_seen") or now
             if not state["alerting"] and now - state["down_since"] >= UNIFI_AP_DOWN_FOR_SECONDS:
                 state["alerting"] = True
                 offline = max(0, now - state["down_since"])
+                name = state.get("name") or key
                 log(f"[AP] ALERT {name} ({state['ip']}) DOWN")
                 send_feishu(build_ap_down_card(name, state["ip"], state["model"],
                                                recovered=False, offline_seconds=offline))
 
         if now - last_status_log >= 60:
             down = sum(1 for s in states.values() if s.get("alerting"))
-            log(f"[AP] {len(current)} online / {len(known)} listed / {len(states)} known / {down} down")
+            missing_ip = sum(1 for info in current.values() if not info.get("ip"))
+            log(
+                f"[AP] {len(current)} online / {len(known)} listed / {len(states)} known / "
+                f"{down} down / {missing_ip} online without IP"
+            )
             last_status_log = now
 
         time.sleep(UNIFI_AP_POLL_INTERVAL)
