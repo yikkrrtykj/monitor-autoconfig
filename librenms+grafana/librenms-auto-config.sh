@@ -434,6 +434,10 @@ configure_runtime() {
     echo "  distributed_poller: enabled for dispatcher service" || \
     echo "  WARNING: Could not enable distributed_poller"
 
+  run_lnms config:set uptime_warning "${LIBRENMS_UPTIME_WARNING_SECONDS:-0}" >/dev/null 2>&1 && \
+    echo "  uptime_warning: ${LIBRENMS_UPTIME_WARNING_SECONDS:-0}s" || \
+    echo "  WARNING: Could not set uptime_warning"
+
   for task in poller services discovery alerting billing ping; do
     run_lnms config:set "schedule_type.$task" dispatcher >/dev/null 2>&1 && \
       echo "  schedule_type.$task: dispatcher" || \
