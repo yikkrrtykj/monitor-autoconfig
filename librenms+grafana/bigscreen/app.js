@@ -335,10 +335,29 @@
     const minT = Math.min(...allTimes);
     const maxT = Math.max(...allTimes);
     const densityClass = series.length > 12 ? "compact-heatmap" : series.length > 8 ? "dense-heatmap" : "";
+    const bucketCount = 60;
+    const bucketize = (values) => {
+      const span = Math.max(1, maxT - minT);
+      const bucketSize = span / bucketCount;
+      const buckets = Array.from({ length: bucketCount }, (_, index) => ({
+        t: minT + bucketSize * (index + 0.5),
+        v: null,
+        count: 0
+      }));
+      values.forEach((point) => {
+        const index = Math.max(0, Math.min(bucketCount - 1, Math.floor((point.t - minT) / bucketSize)));
+        const bucket = buckets[index];
+        bucket.v = bucket.v === null ? point.v : Math.max(bucket.v, point.v);
+        bucket.count += 1;
+      });
+      return buckets;
+    };
     const rows = series.map((item) => {
-      const cells = item.values.map((point) => {
-        const level = point.v > 0.5 ? "bad" : point.v > 0 ? "warn" : "good";
-        return `<span class="heatmap-cell ${level}"></span>`;
+      const cells = bucketize(item.values).map((point) => {
+        const missing = point.count === 0 || point.v === null;
+        const level = missing ? "missing" : point.v > 0.5 ? "bad" : point.v > 0.01 ? "warn" : "good";
+        const title = missing ? `${formatTime(point.t)} 无数据` : `${formatTime(point.t)} 丢包 ${(point.v * 100).toFixed(1)}%`;
+        return `<span class="heatmap-cell ${level}" title="${escapeHtml(title)}"></span>`;
       }).join("");
       return `
         <div class="heatmap-row">

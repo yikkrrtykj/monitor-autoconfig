@@ -1044,6 +1044,34 @@ body {
 .heatmap-cell-pct { font-size: 16px; font-weight: 900; }
 .heatmap-cell-rtt { font-style: normal; font-size: 10px; opacity: 0.88; }
 
+#lossHeatmap .heatmap-cells {
+  gap: 0;
+}
+
+#lossHeatmap .heatmap-cell {
+  display: block;
+  padding: 0;
+  border-radius: 0;
+  color: inherit;
+  box-shadow: inset -1px 0 rgba(10, 20, 34, 0.32);
+}
+
+#lossHeatmap .heatmap-cell.good {
+  background: rgba(0, 140, 86, 0.28);
+}
+
+#lossHeatmap .heatmap-cell.warn {
+  background: rgba(255, 227, 45, 0.88);
+}
+
+#lossHeatmap .heatmap-cell.bad {
+  background: rgba(223, 23, 79, 0.92);
+}
+
+#lossHeatmap .heatmap-cell.missing {
+  background: rgba(96, 112, 132, 0.18);
+}
+
 .heatmap-legend {
   display: flex;
   flex-wrap: wrap;

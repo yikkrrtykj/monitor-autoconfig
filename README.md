@@ -253,6 +253,20 @@ PLAYER_STATIC_TARGETS=1-1=192.168.12.101,1-2=192.168.12.102,2-1=192.168.12.201
 PLAYER_STATIC_NETWORK=wireless
 ```
 
+### 3.4 UniFi AP 监控
+
+比赛现场默认启用 UniFi 采集。你只需要在 `.env` 里填控制器地址和一个只读账号：
+
+```bash
+COMPOSE_PROFILES=unifi
+UNIFI_CONTROLLER_URL=https://控制器IP
+UNIFI_CONTROLLER_USER=readonly
+UNIFI_CONTROLLER_PASS=只读账号密码
+UNIFI_CONTROLLER_SITES=all
+```
+
+UniFi OS 主机一般填 `https://控制器IP`；独立 Network 控制器一般是 `https://控制器IP:8443`。AP 在线、离线、客户端数这些都从控制器 API 来，不靠 AP 自身 SNMP。SNMP 只用于把在线 AP 自动补进 LibreNMS 设备列表；SNMP 不通不会影响大屏和 AP 掉线告警。
+
 ### 3.5 飞书告警
 
 系统自动配置这些告警，部署后无需手动建规则：

@@ -287,8 +287,8 @@ services:
 
   # UniFi Poller(unpoller)：从 UniFi 控制器 API 拉每台 AP/客户端/站点指标，吐成
   # Prometheus metrics。这里不依赖 AP 自身 SNMP，适合 AP 多网段、统一控制器管理的场景。
-  # 可选服务：放在 "unifi" profile 里，默认不启动，不用 UniFi 的赛事完全不受影响。
-  # 启用：.env 配好 UNIFI_CONTROLLER_* 且设 COMPOSE_PROFILES=unifi，再 docker compose up -d。
+  # 放在 "unifi" profile 里；.env.example 默认开启，因为赛事现场通常都有 UniFi。
+  # 如果某场完全不用 UniFi，把 COMPOSE_PROFILES 留空即可不启动。
   unpoller:
     image: ${UNPOLLER_IMAGE:-ghcr.io/unpoller/unpoller:latest}
     container_name: unpoller
