@@ -684,7 +684,7 @@ def build_device_online_card(device):
         lines.append(f"🔧 型号：{hw}")
     lines.append(f"⏰ 时间：{ts}")
 
-    return _make_card(next_event_title(), "🔵 新设备已发现", "blue", "\n".join(lines))
+    return _make_card(next_event_title(), "🔵 新设备部署", "blue", "\n".join(lines))
 
 
 def format_bps(value):
