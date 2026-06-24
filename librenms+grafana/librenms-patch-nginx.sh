@@ -16,6 +16,16 @@ url_host() {
   printf '%s' "$1" | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[:/].*##'
 }
 
+sed_replacement() {
+  printf '%s' "$1" | sed 's/[&|\\]/\\&/g'
+}
+
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
 LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
 EFFECTIVE_BASE_URL="${LIBRENMS_BASE_URL:-${APP_URL:-}}"
 if [ -z "$EFFECTIVE_BASE_URL" ] && [ -n "${SERVER_IP:-}" ]; then
@@ -70,7 +80,8 @@ fi
 # Patch APP_URL in .env so front-end AJAX calls use the real server address.
 # .env is created by LibreNMS's cont-init.d, so this must run after those scripts.
 if [ -n "${EFFECTIVE_BASE_URL:-}" ] && [ -f /opt/librenms/.env ]; then
-  sed -i "s|APP_URL=.*|APP_URL=${EFFECTIVE_BASE_URL}|" /opt/librenms/.env 2>/dev/null || true
+  EFFECTIVE_BASE_URL_SED=$(sed_replacement "$EFFECTIVE_BASE_URL")
+  sed -i "s|APP_URL=.*|APP_URL=${EFFECTIVE_BASE_URL_SED}|" /opt/librenms/.env 2>/dev/null || true
   echo "[librenms-init] APP_URL patched to ${EFFECTIVE_BASE_URL}"
 fi
 
@@ -80,8 +91,9 @@ fi
 # artisan config:set here overwrites any stale "localhost" value in the DB.
 # Runs as the librenms user so artisan doesn't create root-owned cache files.
 if [ -n "${EFFECTIVE_BASE_URL:-}" ]; then
+  EFFECTIVE_BASE_URL_Q=$(shell_quote "$EFFECTIVE_BASE_URL")
   su librenms -s /bin/sh -c \
-    "php /opt/librenms/artisan config:set base_url '${EFFECTIVE_BASE_URL}'" \
+    "php /opt/librenms/artisan config:set base_url ${EFFECTIVE_BASE_URL_Q}" \
     2>/dev/null || true
   echo "[librenms-init] base_url set in DB to ${EFFECTIVE_BASE_URL}"
 fi

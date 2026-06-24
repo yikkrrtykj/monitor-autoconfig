@@ -69,16 +69,27 @@ fi
 [ -z "$RESOLVED_IP" ] && RESOLVED_IP="${LIBRENMS_OWN_HOSTNAME:-}"
 [ "$RESOLVED_IP" = "localhost" ] && RESOLVED_IP=""
 
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+Q_SERVER_IP=$(shell_quote "$RESOLVED_IP")
+Q_LIBRENMS_PORT=$(shell_quote "${LIBRENMS_PORT:-8002}")
+Q_LIBRENMS_BASE_URL=$(shell_quote "${LIBRENMS_BASE_URL:-}")
+Q_APP_URL=$(shell_quote "${APP_URL:-}")
+
 # The patch script is bind-mounted read-only without an executable bit, so we run it
 # with `sh <script>` (no exec bit needed) and force a zero exit -- a non-zero exit from
 # an s6 cont-init.d script halts the whole container. We bake the resolved values in
 # because s6 cont-init.d scripts do not reliably inherit the container environment.
 cat > /etc/cont-init.d/99-librenms-patch <<EOF
 #!/bin/sh
-export SERVER_IP='${RESOLVED_IP}'
-export LIBRENMS_PORT='${LIBRENMS_PORT:-8002}'
-export LIBRENMS_BASE_URL='${LIBRENMS_BASE_URL:-}'
-export APP_URL='${APP_URL:-}'
+export SERVER_IP=${Q_SERVER_IP}
+export LIBRENMS_PORT=${Q_LIBRENMS_PORT}
+export LIBRENMS_BASE_URL=${Q_LIBRENMS_BASE_URL}
+export APP_URL=${Q_APP_URL}
 sh /librenms-patch-nginx.sh || true
 exit 0
 EOF
