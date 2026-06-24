@@ -19,6 +19,8 @@ PLAYER_PING_SCRAPE_INTERVAL="${PLAYER_PING_SCRAPE_INTERVAL:-5s}"
 # 基础设施 ICMP（core/dist/fw/isp/srv）的采集间隔。默认 2s，配合 bridge 的
 # device-down watcher 可更贴近 10s 阈值发出离线告警。
 INFRA_PING_SCRAPE_INTERVAL="${INFRA_PING_SCRAPE_INTERVAL:-2s}"
+# 外网 ISP 单独更密一些，方便抓“拔一下马上插回”的短闪断。
+ISP_PING_SCRAPE_INTERVAL="${ISP_PING_SCRAPE_INTERVAL:-1s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 # 交换机/防火墙 uptime（运行时长）SNMP 单独的采集间隔。运行时长显示的是"天"，
 # 不需要跟随全局 5-10s 高频采集；拉长可减轻 2960 等弱 CPU 交换机的控制平面负担，
@@ -81,10 +83,14 @@ write_labeled_targets() {
 write_ping_job() {
   job_name="$1"
   targets="$2"
+  interval="$INFRA_PING_SCRAPE_INTERVAL"
+  if [ "$job_name" = "infra-isp-ping" ]; then
+    interval="$ISP_PING_SCRAPE_INTERVAL"
+  fi
 
   cat >> "$CONFIG_FILE" <<EOF
   - job_name: "${job_name}"
-    scrape_interval: ${INFRA_PING_SCRAPE_INTERVAL}
+    scrape_interval: ${interval}
     metrics_path: /probe
     params:
       module: [icmp]

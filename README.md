@@ -30,7 +30,7 @@ Ubuntu 国内机器：
 ```bash
 curl -fsSL https://get.docker.com -o get-docker.sh
 sudo sh get-docker.sh --mirror Aliyun
-sudo apt-get install -y git
+sudo apt-get install -y git python3
 sudo usermod -aG docker $USER && newgrp docker
 ```
 
@@ -39,14 +39,14 @@ Ubuntu 国外机器：
 ```bash
 curl -fsSL https://get.docker.com -o get-docker.sh
 sudo sh get-docker.sh
-sudo apt-get install -y git
+sudo apt-get install -y git python3
 sudo usermod -aG docker $USER && newgrp docker
 ```
 
 CentOS 国内机器：
 
 ```bash
-sudo yum install -y yum-utils git
+sudo yum install -y yum-utils git python3
 sudo yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
 sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 sudo systemctl enable --now docker
@@ -217,9 +217,14 @@ ISP 断线不是靠 LibreNMS 丢包规则判断，而是看 `ISP_PING` 生成的
 ```bash
 ISP_PING=telecom:223.5.5.5,telecom_gw:电信网关IP,unicom:119.29.29.29,unicom_gw:联通网关IP
 ISP_DOWN_FOR_SECONDS=0
+ISP_PING_SCRAPE_INTERVAL=1s
+DEVICE_DOWN_SAMPLE_WINDOW_SECONDS=5
+BLACKBOX_ICMP_TIMEOUT=1s
 ```
 
-`ISP_DOWN_FOR_SECONDS=0` 表示只要 Prometheus 采到这条 ISP ping 失败，就马上推飞书。多 ISP 时，公网探测目标要在防火墙上做 PBR 钉到对应出口，否则所有探测都走默认线路，断另一条线也可能看不出来。
+`ISP_DOWN_FOR_SECONDS=0` 表示只要 Prometheus 采到这条 ISP ping 失败，就马上推飞书。`ISP_PING_SCRAPE_INTERVAL=1s` 是外网探测频率；`DEVICE_DOWN_SAMPLE_WINDOW_SECONDS=5` 会把最近 5 秒内的一次失败保留下来给 bridge 看到，专门用来抓“拔一下马上插回”的短闪断。再短到完全落在两次采样之间的瞬间抖动，ping 方式仍可能漏；要物理口一抖就知道，就让防火墙或交换机把 WAN 口 up/down syslog 发到监控服务器。
+
+多 ISP 时，公网探测目标要在防火墙上做 PBR 钉到对应出口，否则所有探测都走默认线路，断另一条线也可能看不出来。
 
 ### 3.3 选手监控
 

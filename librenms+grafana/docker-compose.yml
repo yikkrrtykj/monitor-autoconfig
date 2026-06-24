@@ -102,6 +102,7 @@ services:
       PROMETHEUS_SCRAPE_INTERVAL: "${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
       PLAYER_PING_SCRAPE_INTERVAL: "${PLAYER_PING_SCRAPE_INTERVAL:-5s}"
       INFRA_PING_SCRAPE_INTERVAL: "${INFRA_PING_SCRAPE_INTERVAL:-2s}"
+      ISP_PING_SCRAPE_INTERVAL: "${ISP_PING_SCRAPE_INTERVAL:-1s}"
       PROMETHEUS_RETENTION_TIME: "${PROMETHEUS_RETENTION_TIME:-15d}"
       SNMP_UPTIME_SCRAPE_INTERVAL: "${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
       SWITCH_IFMIB_SCRAPE_INTERVAL: "${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
@@ -163,6 +164,7 @@ services:
       ISP_DOWN_FOR_SECONDS: "${ISP_DOWN_FOR_SECONDS:-0}"
       DEVICE_DOWN_REQUIRE_SEEN_UP: "${DEVICE_DOWN_REQUIRE_SEEN_UP:-true}"
       DEVICE_DOWN_POLL_INTERVAL: "${DEVICE_DOWN_POLL_INTERVAL:-1}"
+      DEVICE_DOWN_SAMPLE_WINDOW_SECONDS: "${DEVICE_DOWN_SAMPLE_WINDOW_SECONDS:-5}"
       DEVICE_DOWN_JOBS: "${DEVICE_DOWN_JOBS:-infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping}"
       DEVICE_ONLINE_FROM_PING: "${DEVICE_ONLINE_FROM_PING:-false}"
       DEVICE_AUTO_ADD_FROM_PING: "${DEVICE_AUTO_ADD_FROM_PING:-true}"
@@ -259,15 +261,17 @@ services:
       - "${BLACKBOX_EXPORTER_BIND:-127.0.0.1}:${BLACKBOX_EXPORTER_PORT:-9115}:9115"
     networks:
       - monitor
+    environment:
+      BLACKBOX_ICMP_TIMEOUT: "${BLACKBOX_ICMP_TIMEOUT:-1s}"
     entrypoint:
       - /bin/sh
       - -c
       - |
-        cat > /etc/blackbox_exporter/config.yml << 'EOF'
+        cat > /etc/blackbox_exporter/config.yml << EOF
         modules:
           icmp:
             prober: icmp
-            timeout: 5s
+            timeout: $${BLACKBOX_ICMP_TIMEOUT:-1s}
             icmp:
               preferred_ip_protocol: ip4
           http_2xx:

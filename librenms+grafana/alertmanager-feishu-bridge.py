@@ -33,6 +33,7 @@ Env:
   ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
   DEVICE_DOWN_REQUIRE_SEEN_UP true = alert only after target was discovered/up once
   DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 1)
+  DEVICE_DOWN_SAMPLE_WINDOW_SECONDS recent probe window to catch short flaps (default 5)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
   DEVICE_DOWN_STATE_FILE  persisted active down alerts (default /bridge-state/device-down-alerts.json)
   DEVICE_ONLINE_FROM_PING true = send online card when a candidate first comes up
@@ -90,6 +91,7 @@ DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
 ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
 DEVICE_DOWN_REQUIRE_SEEN_UP = os.environ.get("DEVICE_DOWN_REQUIRE_SEEN_UP", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "1"))
+DEVICE_DOWN_SAMPLE_WINDOW_SECONDS = int(os.environ.get("DEVICE_DOWN_SAMPLE_WINDOW_SECONDS", "5"))
 DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
     "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping",
@@ -1292,7 +1294,8 @@ def device_down_watcher():
     if not safe_jobs:
         log("[DOWN] no valid jobs configured, watcher disabled")
         return
-    query = 'probe_success{job=~"%s"}' % "|".join(safe_jobs)
+    sample_window = max(1, DEVICE_DOWN_SAMPLE_WINDOW_SECONDS)
+    query = 'min_over_time(probe_success{job=~"%s"}[%ss])' % ("|".join(safe_jobs), sample_window)
     time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
     states = load_device_down_states()
     last_status_log = 0.0
@@ -1305,6 +1308,7 @@ def device_down_watcher():
         "[DOWN] device-down watcher enabled "
         f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, "
         f"isp_for={ISP_DOWN_FOR_SECONDS}s, poll={DEVICE_DOWN_POLL_INTERVAL}s, "
+        f"sample_window={sample_window}s, "
         f"require_seen_up={DEVICE_DOWN_REQUIRE_SEEN_UP}, active_loaded={len(states)})"
     )
 
