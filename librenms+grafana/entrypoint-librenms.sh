@@ -57,6 +57,10 @@ fi
 # env) and let the wrapper export them before running the patch logic.
 mkdir -p /etc/cont-init.d
 
+url_host() {
+  printf '%s' "$1" | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[:/].*##'
+}
+
 normalize_base_url() {
   raw=$(printf '%s' "${1:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   [ -z "$raw" ] && return 0
@@ -72,7 +76,7 @@ NORMALIZED_APP_URL=$(normalize_base_url "${APP_URL:-}")
 if [ -n "$NORMALIZED_LIBRENMS_BASE_URL" ]; then
   LIBRENMS_BASE_URL="$NORMALIZED_LIBRENMS_BASE_URL"
   APP_URL="$NORMALIZED_LIBRENMS_BASE_URL"
-elif [ -n "$NORMALIZED_APP_URL" ]; then
+elif [ -n "$NORMALIZED_APP_URL" ] && [ "$(url_host "$NORMALIZED_APP_URL")" != "localhost" ]; then
   APP_URL="$NORMALIZED_APP_URL"
 fi
 export LIBRENMS_BASE_URL APP_URL
@@ -81,10 +85,10 @@ export LIBRENMS_BASE_URL APP_URL
 # LibreNMS URL when present; SERVER_IP is only the fallback for LAN-only installs.
 RESOLVED_IP=""
 if [ -n "${LIBRENMS_BASE_URL:-}" ]; then
-  RESOLVED_IP=$(printf '%s' "$LIBRENMS_BASE_URL" | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[:/].*##')
+  RESOLVED_IP=$(url_host "$LIBRENMS_BASE_URL")
 fi
 if [ -z "$RESOLVED_IP" ] && [ -n "${APP_URL:-}" ]; then
-  RESOLVED_IP=$(printf '%s' "$APP_URL" | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[:/].*##')
+  RESOLVED_IP=$(url_host "$APP_URL")
 fi
 [ -z "$RESOLVED_IP" ] && RESOLVED_IP="${SERVER_IP:-}"
 [ -z "$RESOLVED_IP" ] && RESOLVED_IP="${LIBRENMS_OWN_HOSTNAME:-}"
@@ -117,17 +121,6 @@ EOF
 chmod +x /etc/cont-init.d/99-librenms-patch
 echo "[librenms-entry] installed nginx/scheduler patch as /etc/cont-init.d/99-librenms-patch (server_name=${RESOLVED_IP:-unset})"
 
-valid_base_url() {
-  case "$1" in
-    http://*|https://*) ;;
-    *) return 1 ;;
-  esac
-  case "$1" in
-    *'${'*|*'}'*) return 1 ;;
-  esac
-  return 0
-}
-
 sql_quote() {
   printf '%s' "$1" | sed "s/'/''/g"
 }
@@ -136,13 +129,16 @@ sql_quote() {
 # during its own schema update before our cont-init patch gets a chance to run.
 # Best-effort repair it before handing control to /init.
 PREINIT_BASE_URL="${LIBRENMS_BASE_URL:-}"
-if ! valid_base_url "$PREINIT_BASE_URL"; then
+if [ -z "$PREINIT_BASE_URL" ]; then
+  PREINIT_BASE_URL="${APP_URL:-}"
+fi
+if [ -n "$PREINIT_BASE_URL" ] && [ "$(url_host "$PREINIT_BASE_URL")" = "localhost" ]; then
   PREINIT_BASE_URL=""
 fi
 if [ -z "$PREINIT_BASE_URL" ] && [ -n "${SERVER_IP:-}" ]; then
   PREINIT_BASE_URL="http://${SERVER_IP}:${LIBRENMS_PORT:-8002}"
 fi
-if ! valid_base_url "$PREINIT_BASE_URL"; then
+if [ -z "$PREINIT_BASE_URL" ]; then
   PREINIT_BASE_URL="http://localhost:${LIBRENMS_PORT:-8002}"
 fi
 export APP_URL="$PREINIT_BASE_URL"

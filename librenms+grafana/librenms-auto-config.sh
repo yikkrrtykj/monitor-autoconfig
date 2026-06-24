@@ -38,7 +38,7 @@ LIBRENMS_API_TOKEN="${LIBRENMS_API_TOKEN:-}"
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
 LIBRENMS_ADMIN_EMAIL="${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
-LIBRENMS_BASE_URL="${LIBRENMS_BASE_URL:-http://localhost:8002}"
+LIBRENMS_BASE_URL="${LIBRENMS_BASE_URL:-}"
 LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
 SERVER_IP="${SERVER_IP:-}"
 RRDCACHED_SERVER="${RRDCACHED_SERVER:-}"
@@ -56,10 +56,11 @@ normalize_base_url() {
 
 LIBRENMS_BASE_URL=$(normalize_base_url "$LIBRENMS_BASE_URL")
 if [ -z "$LIBRENMS_BASE_URL" ]; then
-  LIBRENMS_BASE_URL="http://localhost:8002"
-fi
-if [ "$LIBRENMS_BASE_URL" = "http://localhost:8002" ] && [ -n "$SERVER_IP" ]; then
-  LIBRENMS_BASE_URL="http://$SERVER_IP:$LIBRENMS_PORT"
+  if [ -n "$SERVER_IP" ]; then
+    LIBRENMS_BASE_URL="http://$SERVER_IP:$LIBRENMS_PORT"
+  else
+    LIBRENMS_BASE_URL="http://localhost:8002"
+  fi
 fi
 
 echo "============================================"
