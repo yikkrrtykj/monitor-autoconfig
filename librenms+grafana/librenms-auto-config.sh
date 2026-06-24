@@ -44,6 +44,20 @@ SERVER_IP="${SERVER_IP:-}"
 RRDCACHED_SERVER="${RRDCACHED_SERVER:-}"
 LIBRENMS_OWN_HOSTNAME="${LIBRENMS_OWN_HOSTNAME:-}"
 
+normalize_base_url() {
+  raw=$(printf '%s' "${1:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ -z "$raw" ] && return 0
+  case "$raw" in
+    *'${'*|*'}'*) return 0 ;;
+    http://*|https://*) printf '%s' "$raw" ;;
+    *) printf 'http://%s' "$raw" ;;
+  esac
+}
+
+LIBRENMS_BASE_URL=$(normalize_base_url "$LIBRENMS_BASE_URL")
+if [ -z "$LIBRENMS_BASE_URL" ]; then
+  LIBRENMS_BASE_URL="http://localhost:8002"
+fi
 if [ "$LIBRENMS_BASE_URL" = "http://localhost:8002" ] && [ -n "$SERVER_IP" ]; then
   LIBRENMS_BASE_URL="http://$SERVER_IP:$LIBRENMS_PORT"
 fi

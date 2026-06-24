@@ -16,6 +16,16 @@ url_host() {
   printf '%s' "$1" | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[:/].*##'
 }
 
+normalize_base_url() {
+  raw=$(printf '%s' "${1:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ -z "$raw" ] && return 0
+  case "$raw" in
+    *'${'*|*'}'*) return 0 ;;
+    http://*|https://*) printf '%s' "$raw" ;;
+    *) printf 'http://%s' "$raw" ;;
+  esac
+}
+
 sed_replacement() {
   printf '%s' "$1" | sed 's/[&|\\]/\\&/g'
 }
@@ -27,7 +37,9 @@ shell_quote() {
 }
 
 LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
-EFFECTIVE_BASE_URL="${LIBRENMS_BASE_URL:-${APP_URL:-}}"
+NORMALIZED_LIBRENMS_BASE_URL=$(normalize_base_url "${LIBRENMS_BASE_URL:-}")
+NORMALIZED_APP_URL=$(normalize_base_url "${APP_URL:-}")
+EFFECTIVE_BASE_URL="${NORMALIZED_LIBRENMS_BASE_URL:-${NORMALIZED_APP_URL:-}}"
 if [ -z "$EFFECTIVE_BASE_URL" ] && [ -n "${SERVER_IP:-}" ]; then
   EFFECTIVE_BASE_URL="http://${SERVER_IP}:${LIBRENMS_PORT}"
 fi

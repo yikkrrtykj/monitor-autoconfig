@@ -56,6 +56,27 @@ fi
 # We bake the actual values into the generated wrapper here (entrypoint has the real
 # env) and let the wrapper export them before running the patch logic.
 mkdir -p /etc/cont-init.d
+
+normalize_base_url() {
+  raw=$(printf '%s' "${1:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ -z "$raw" ] && return 0
+  case "$raw" in
+    *'${'*|*'}'*) return 0 ;;
+    http://*|https://*) printf '%s' "$raw" ;;
+    *) printf 'http://%s' "$raw" ;;
+  esac
+}
+
+NORMALIZED_LIBRENMS_BASE_URL=$(normalize_base_url "${LIBRENMS_BASE_URL:-}")
+NORMALIZED_APP_URL=$(normalize_base_url "${APP_URL:-}")
+if [ -n "$NORMALIZED_LIBRENMS_BASE_URL" ]; then
+  LIBRENMS_BASE_URL="$NORMALIZED_LIBRENMS_BASE_URL"
+  APP_URL="$NORMALIZED_LIBRENMS_BASE_URL"
+elif [ -n "$NORMALIZED_APP_URL" ]; then
+  APP_URL="$NORMALIZED_APP_URL"
+fi
+export LIBRENMS_BASE_URL APP_URL
+
 # Resolve the public host for nginx server_name. Prefer the explicit external
 # LibreNMS URL when present; SERVER_IP is only the fallback for LAN-only installs.
 RESOLVED_IP=""
