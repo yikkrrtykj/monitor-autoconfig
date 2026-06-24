@@ -538,7 +538,7 @@ def parse_dhcp_snooping_message(message):
         event["mac_sa_hex"] = _normalize_mac_hex(match.group(1))
 
     if "MATCH_MAC_FAIL" in text or "chaddr doesn't match source mac" in text.lower():
-        event["reason"] = "chaddr 与源 MAC 不一致"
+        event["reason"] = "报文客户端 MAC 与实际源 MAC 不一致"
     else:
         match = re.search(r"%[^:]+:\s*(.+?)(?:,\s*message type:|$)", text)
         if match:
@@ -1819,7 +1819,7 @@ def build_dhcp_snooping_card(host, message, parsed=None):
     if port:
         lines.append(f"🔌 接口：{port}")
     else:
-        lines.append("🔌 接口：FDB 未查到该 MAC 所在接口，不猜接口")
+        lines.append("🔌 接口：未查到")
 
     if parsed.get("reason"):
         lines.append(f"📋 异常：{parsed['reason']}")
@@ -1830,7 +1830,7 @@ def build_dhcp_snooping_card(host, message, parsed=None):
     if parsed.get("chaddr"):
         lines.append(f"🧾 报文客户端 MAC：{parsed['chaddr']}")
     lines.append(f"⏰ 时间：{ts}")
-    return _make_card(next_event_title(), "⚠️ DHCP Snooping 违规", "orange", "\n".join(lines))
+    return _make_card(next_event_title(), "⚠️ DHCP Snooping 异常", "orange", "\n".join(lines))
 
 
 def syslog_watcher():
