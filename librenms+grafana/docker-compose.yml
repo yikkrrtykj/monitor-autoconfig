@@ -474,7 +474,8 @@ services:
       SERVER_IP: "${SERVER_IP:-}"
       LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
       LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-}"
-      APP_URL: "${LIBRENMS_BASE_URL:-}"
+      LIBRENMS_FORCE_BASE_URL: "${LIBRENMS_FORCE_BASE_URL:-false}"
+      APP_URL: "http://localhost:8002"
       CACHE_DRIVER: redis
       SESSION_DRIVER: redis
       QUEUE_CONNECTION: redis
@@ -537,7 +538,8 @@ services:
       SERVER_IP: "${SERVER_IP:-}"
       LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
       LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-}"
-      APP_URL: "${LIBRENMS_BASE_URL:-}"
+      LIBRENMS_FORCE_BASE_URL: "${LIBRENMS_FORCE_BASE_URL:-false}"
+      APP_URL: "http://localhost:8002"
       CACHE_DRIVER: redis
       SESSION_DRIVER: redis
       QUEUE_CONNECTION: redis
@@ -576,7 +578,8 @@ services:
       SERVER_IP: "${SERVER_IP:-}"
       LIBRENMS_PORT: "${LIBRENMS_PORT:-8002}"
       LIBRENMS_BASE_URL: "${LIBRENMS_BASE_URL:-}"
-      APP_URL: "${LIBRENMS_BASE_URL:-}"
+      LIBRENMS_FORCE_BASE_URL: "${LIBRENMS_FORCE_BASE_URL:-false}"
+      APP_URL: "http://localhost:8002"
       CACHE_DRIVER: redis
       SESSION_DRIVER: redis
       QUEUE_CONNECTION: redis

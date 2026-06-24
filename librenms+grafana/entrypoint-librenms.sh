@@ -71,20 +71,23 @@ normalize_base_url() {
   esac
 }
 
+LIBRENMS_FORCE_BASE_URL="${LIBRENMS_FORCE_BASE_URL:-false}"
 NORMALIZED_LIBRENMS_BASE_URL=$(normalize_base_url "${LIBRENMS_BASE_URL:-}")
 NORMALIZED_APP_URL=$(normalize_base_url "${APP_URL:-}")
-if [ -n "$NORMALIZED_LIBRENMS_BASE_URL" ]; then
+if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ] && [ -n "$NORMALIZED_LIBRENMS_BASE_URL" ]; then
   LIBRENMS_BASE_URL="$NORMALIZED_LIBRENMS_BASE_URL"
   APP_URL="$NORMALIZED_LIBRENMS_BASE_URL"
 elif [ -n "$NORMALIZED_APP_URL" ] && [ "$(url_host "$NORMALIZED_APP_URL")" != "localhost" ]; then
   APP_URL="$NORMALIZED_APP_URL"
+else
+  APP_URL="http://localhost:${LIBRENMS_PORT:-8002}"
 fi
-export LIBRENMS_BASE_URL APP_URL
+export LIBRENMS_BASE_URL APP_URL LIBRENMS_FORCE_BASE_URL
 
 # Resolve the public host for nginx server_name. Prefer the explicit external
 # LibreNMS URL when present; SERVER_IP is only the fallback for LAN-only installs.
 RESOLVED_IP=""
-if [ -n "${LIBRENMS_BASE_URL:-}" ]; then
+if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ] && [ -n "${LIBRENMS_BASE_URL:-}" ]; then
   RESOLVED_IP=$(url_host "$LIBRENMS_BASE_URL")
 fi
 if [ -z "$RESOLVED_IP" ] && [ -n "${APP_URL:-}" ]; then
@@ -104,6 +107,7 @@ Q_SERVER_IP=$(shell_quote "$RESOLVED_IP")
 Q_LIBRENMS_PORT=$(shell_quote "${LIBRENMS_PORT:-8002}")
 Q_LIBRENMS_BASE_URL=$(shell_quote "${LIBRENMS_BASE_URL:-}")
 Q_APP_URL=$(shell_quote "${APP_URL:-}")
+Q_LIBRENMS_FORCE_BASE_URL=$(shell_quote "${LIBRENMS_FORCE_BASE_URL:-false}")
 
 # The patch script is bind-mounted read-only without an executable bit, so we run it
 # with `sh <script>` (no exec bit needed) and force a zero exit -- a non-zero exit from
@@ -114,6 +118,7 @@ cat > /etc/cont-init.d/99-librenms-patch <<EOF
 export SERVER_IP=${Q_SERVER_IP}
 export LIBRENMS_PORT=${Q_LIBRENMS_PORT}
 export LIBRENMS_BASE_URL=${Q_LIBRENMS_BASE_URL}
+export LIBRENMS_FORCE_BASE_URL=${Q_LIBRENMS_FORCE_BASE_URL}
 export APP_URL=${Q_APP_URL}
 sh /librenms-patch-nginx.sh || true
 exit 0
@@ -128,20 +133,25 @@ sql_quote() {
 # If a previous deploy wrote a malformed base_url into the DB, LibreNMS can crash
 # during its own schema update before our cont-init patch gets a chance to run.
 # Best-effort repair it before handing control to /init.
-PREINIT_BASE_URL="${LIBRENMS_BASE_URL:-}"
-if [ -z "$PREINIT_BASE_URL" ]; then
+if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ]; then
+  PREINIT_BASE_URL="${LIBRENMS_BASE_URL:-}"
+else
+  PREINIT_BASE_URL=""
+fi
+if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ] && [ -z "$PREINIT_BASE_URL" ]; then
   PREINIT_BASE_URL="${APP_URL:-}"
 fi
 if [ -n "$PREINIT_BASE_URL" ] && [ "$(url_host "$PREINIT_BASE_URL")" = "localhost" ]; then
   PREINIT_BASE_URL=""
 fi
-if [ -z "$PREINIT_BASE_URL" ] && [ -n "${SERVER_IP:-}" ]; then
+if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ] && [ -z "$PREINIT_BASE_URL" ] && [ -n "${SERVER_IP:-}" ]; then
   PREINIT_BASE_URL="http://${SERVER_IP}:${LIBRENMS_PORT:-8002}"
 fi
-if [ -z "$PREINIT_BASE_URL" ]; then
+if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ] && [ -z "$PREINIT_BASE_URL" ]; then
   PREINIT_BASE_URL="http://localhost:${LIBRENMS_PORT:-8002}"
 fi
-export APP_URL="$PREINIT_BASE_URL"
+[ -z "${APP_URL:-}" ] && APP_URL="http://localhost:${LIBRENMS_PORT:-8002}"
+export APP_URL
 
 MYSQL_BIN=""
 if command -v mariadb >/dev/null 2>&1; then
@@ -151,27 +161,29 @@ elif command -v mysql >/dev/null 2>&1; then
 fi
 if [ -n "$MYSQL_BIN" ] && [ -n "${DB_HOST:-}" ]; then
   PREINIT_BASE_URL_SQL=$(sql_quote "$PREINIT_BASE_URL")
-  MYSQL_PWD="${DB_PASS:-}" "$MYSQL_BIN" \
-    -h "${DB_HOST}" \
-    -P "${DB_PORT:-3306}" \
-    -u "${DB_USER:-librenms}" \
-    "${DB_NAME:-librenms}" \
-    -e "UPDATE config SET config_value='${PREINIT_BASE_URL_SQL}' WHERE config_name='base_url';" \
-    >/dev/null 2>&1 && \
-    echo "[librenms-entry] pre-init base_url repaired to ${PREINIT_BASE_URL}" || true
+  if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ]; then
+    PREINIT_SQL="UPDATE config SET config_value='${PREINIT_BASE_URL_SQL}' WHERE config_name='base_url';"
+  else
+    PREINIT_SQL="DELETE FROM config WHERE config_name='base_url';"
+  fi
+  MYSQL_PWD="${DB_PASS:-}" "$MYSQL_BIN" -h "${DB_HOST}" -P "${DB_PORT:-3306}" \
+    -u "${DB_USER:-librenms}" "${DB_NAME:-librenms}" -e "$PREINIT_SQL" >/dev/null 2>&1 && \
+    echo "[librenms-entry] pre-init base_url force=${LIBRENMS_FORCE_BASE_URL}" || true
 fi
 if command -v php >/dev/null 2>&1 && [ -n "${DB_HOST:-}" ]; then
   export PREINIT_BASE_URL
+  export LIBRENMS_FORCE_BASE_URL
   cat > /tmp/librenms-repair-base-url.php <<'PHPEOF'
 <?php
 $url = getenv('PREINIT_BASE_URL') ?: '';
+$force = (getenv('LIBRENMS_FORCE_BASE_URL') ?: 'false') === 'true';
 $host = getenv('DB_HOST') ?: '';
 $port = getenv('DB_PORT') ?: '3306';
 $db = getenv('DB_NAME') ?: 'librenms';
 $user = getenv('DB_USER') ?: 'librenms';
 $pass = getenv('DB_PASS') ?: '';
 
-if ($url === '' || $host === '') {
+if (($force && $url === '') || $host === '') {
     exit(2);
 }
 
@@ -183,8 +195,12 @@ try {
     if ((int) $check->fetchColumn() < 1) {
         exit(3);
     }
-    $stmt = $pdo->prepare("UPDATE config SET config_value = ? WHERE config_name = 'base_url'");
-    $stmt->execute(array($url));
+    if ($force) {
+        $stmt = $pdo->prepare("UPDATE config SET config_value = ? WHERE config_name = 'base_url'");
+        $stmt->execute(array($url));
+    } else {
+        $pdo->exec("DELETE FROM config WHERE config_name = 'base_url'");
+    }
 } catch (Throwable $e) {
     fwrite(STDERR, $e->getMessage() . "\n");
     exit(1);
@@ -199,7 +215,11 @@ PHPEOF
     sleep 2
   done
   if [ "$repaired_base_url" = "1" ]; then
-    echo "[librenms-entry] pre-init base_url repaired through PHP to ${PREINIT_BASE_URL}"
+    if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ]; then
+      echo "[librenms-entry] pre-init base_url repaired through PHP to ${PREINIT_BASE_URL}"
+    else
+      echo "[librenms-entry] pre-init base_url cleared through PHP for dual-host access"
+    fi
   else
     echo "[librenms-entry] WARNING: pre-init base_url repair through PHP did not complete"
   fi

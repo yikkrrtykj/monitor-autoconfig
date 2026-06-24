@@ -37,9 +37,10 @@ shell_quote() {
 }
 
 LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
+LIBRENMS_FORCE_BASE_URL="${LIBRENMS_FORCE_BASE_URL:-false}"
 NORMALIZED_LIBRENMS_BASE_URL=$(normalize_base_url "${LIBRENMS_BASE_URL:-}")
 NORMALIZED_APP_URL=$(normalize_base_url "${APP_URL:-}")
-if [ -n "$NORMALIZED_LIBRENMS_BASE_URL" ]; then
+if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ] && [ -n "$NORMALIZED_LIBRENMS_BASE_URL" ]; then
   EFFECTIVE_BASE_URL="$NORMALIZED_LIBRENMS_BASE_URL"
 elif [ -n "$NORMALIZED_APP_URL" ] && [ "$(url_host "$NORMALIZED_APP_URL")" != "localhost" ]; then
   EFFECTIVE_BASE_URL="$NORMALIZED_APP_URL"
@@ -97,23 +98,29 @@ fi
 
 # Patch APP_URL in .env so front-end AJAX calls use the real server address.
 # .env is created by LibreNMS's cont-init.d, so this must run after those scripts.
-if [ -n "${EFFECTIVE_BASE_URL:-}" ] && [ -f /opt/librenms/.env ]; then
-  EFFECTIVE_BASE_URL_SED=$(sed_replacement "$EFFECTIVE_BASE_URL")
-  sed -i "s|APP_URL=.*|APP_URL=${EFFECTIVE_BASE_URL_SED}|" /opt/librenms/.env 2>/dev/null || true
-  echo "[librenms-init] APP_URL patched to ${EFFECTIVE_BASE_URL}"
+if [ -f /opt/librenms/.env ]; then
+  APP_ENV_URL="http://localhost:${LIBRENMS_PORT}"
+  if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ] && [ -n "${EFFECTIVE_BASE_URL:-}" ]; then
+    APP_ENV_URL="$EFFECTIVE_BASE_URL"
+  fi
+  APP_ENV_URL_SED=$(sed_replacement "$APP_ENV_URL")
+  sed -i "s|APP_URL=.*|APP_URL=${APP_ENV_URL_SED}|" /opt/librenms/.env 2>/dev/null || true
+  echo "[librenms-init] APP_URL patched to ${APP_ENV_URL}"
 fi
 
-# Set base_url in LibreNMS's database config table so the /validate ServerName
-# check passes. APP_URL in .env is a fallback; the DB config table wins when an
-# entry exists (typically written by LibreNMS's own cont-init scripts). Running
-# artisan config:set here overwrites any stale "localhost" value in the DB.
-# Runs as the librenms user so artisan doesn't create root-owned cache files.
-if [ -n "${EFFECTIVE_BASE_URL:-}" ]; then
+# By default, keep base_url dynamic so LAN and WAN users both stay on the
+# address they opened. Only force one canonical URL when explicitly requested.
+if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ] && [ -n "${EFFECTIVE_BASE_URL:-}" ]; then
   EFFECTIVE_BASE_URL_Q=$(shell_quote "$EFFECTIVE_BASE_URL")
   su librenms -s /bin/sh -c \
     "php /opt/librenms/artisan config:set base_url ${EFFECTIVE_BASE_URL_Q}" \
     2>/dev/null || true
   echo "[librenms-init] base_url set in DB to ${EFFECTIVE_BASE_URL}"
+else
+  su librenms -s /bin/sh -c \
+    "php /opt/librenms/artisan config:set base_url ''" \
+    2>/dev/null || true
+  echo "[librenms-init] base_url cleared for dual-host access"
 fi
 
 # Clear Laravel config cache so PHP picks up the new APP_URL on next request.

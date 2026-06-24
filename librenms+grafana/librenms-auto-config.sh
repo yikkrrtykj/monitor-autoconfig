@@ -39,6 +39,7 @@ LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
 LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
 LIBRENMS_ADMIN_EMAIL="${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
 LIBRENMS_BASE_URL="${LIBRENMS_BASE_URL:-}"
+LIBRENMS_FORCE_BASE_URL="${LIBRENMS_FORCE_BASE_URL:-false}"
 LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
 SERVER_IP="${SERVER_IP:-}"
 RRDCACHED_SERVER="${RRDCACHED_SERVER:-}"
@@ -429,9 +430,15 @@ configure_runtime() {
     echo "  auth_mechanism: mysql" || \
     echo "  WARNING: Could not set auth_mechanism"
 
-  run_lnms config:set base_url "$LIBRENMS_BASE_URL" >/dev/null 2>&1 && \
-    echo "  base_url: $LIBRENMS_BASE_URL" || \
-    echo "  WARNING: Could not set base_url"
+  if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ]; then
+    run_lnms config:set base_url "$LIBRENMS_BASE_URL" >/dev/null 2>&1 && \
+      echo "  base_url: $LIBRENMS_BASE_URL" || \
+      echo "  WARNING: Could not set base_url"
+  else
+    run_lnms config:set base_url "" >/dev/null 2>&1 && \
+      echo "  base_url: dynamic request host" || \
+      echo "  WARNING: Could not clear base_url"
+  fi
 
   if [ -n "$LIBRENMS_OWN_HOSTNAME" ]; then
     run_lnms config:set own_hostname "$LIBRENMS_OWN_HOSTNAME" >/dev/null 2>&1 && \
