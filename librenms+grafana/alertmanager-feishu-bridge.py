@@ -497,6 +497,21 @@ def _format_mac(value):
     return ":".join(mac[i:i + 2] for i in range(0, 12, 2))
 
 
+def _dhcp_message_type_text(value):
+    value = str(value or "").strip().upper()
+    labels = {
+        "DHCPDISCOVER": "发现",
+        "DHCPOFFER": "提供",
+        "DHCPREQUEST": "请求",
+        "DHCPDECLINE": "拒绝",
+        "DHCPACK": "确认",
+        "DHCPNAK": "拒绝确认",
+        "DHCPRELEASE": "释放地址",
+        "DHCPINFORM": "信息请求",
+    }
+    return labels.get(value, value)
+
+
 def parse_dhcp_snooping_message(message):
     text = str(message or "")
     event = {
@@ -534,11 +549,32 @@ def parse_dhcp_snooping_message(message):
 def _port_label_from_fdb(entry):
     if not entry:
         return ""
-    port = str(entry.get("ifName") or entry.get("ifDescr") or "").strip()
-    alias = str(entry.get("ifAlias") or "").strip()
-    if alias and port and alias != port:
-        return f"{port} / {alias}"
-    return port or alias
+    port = str(entry.get("ifName") or entry.get("ifDescr") or entry.get("ifAlias") or "").strip()
+    if not port:
+        return ""
+
+    def comparable(value):
+        text = re.sub(r"[\s_-]+", "", str(value or "").lower())
+        replacements = {
+            "tengigabitethernet": "te",
+            "twentyfivegigabitethernet": "twe",
+            "fortygigabitethernet": "fo",
+            "hundredgigabitethernet": "hu",
+            "gigabitethernet": "gi",
+            "fastethernet": "fa",
+            "portchannel": "po",
+            "ethernet": "eth",
+        }
+        for long_name, short_name in replacements.items():
+            text = text.replace(long_name, short_name)
+        return text
+
+    for extra in (entry.get("ifAlias"), entry.get("ifDescr")):
+        extra = str(extra or "").strip()
+        if not extra or extra == port or comparable(extra) == comparable(port):
+            continue
+        return f"{port} / {extra}"
+    return port
 
 
 def lookup_librenms_fdb_port(mac, host=""):
@@ -1662,7 +1698,7 @@ def unifi_ap_watcher():
                         controller_info = ap_info
                         key = ap_info.get("key") or key
                         break
-            if controller_aps and not controller_info and not metric_ip:
+            if controller_aps and not controller_info:
                 continue
             info = {
                 "name": controller_info.get("name") or name,
@@ -1673,7 +1709,9 @@ def unifi_ap_watcher():
             known[key] = info
             label_online = _ap_online_from_labels(metric)
             is_online = metric_online.get(key)
-            if is_online is None:
+            if controller_info:
+                is_online = bool(controller_info.get("online"))
+            elif is_online is None:
                 is_online = True if label_online is None else label_online
             if is_online:
                 current[key] = info
@@ -1733,8 +1771,12 @@ def unifi_ap_watcher():
             state["down_since"] = None
 
         # Previously-seen APs now missing => down after debounce.
-        for key, state in states.items():
+        for key, state in list(states.items()):
             if key in current or not state.get("seen_up"):
+                continue
+            if controller_aps and key not in known:
+                log(f"[AP] retired {state.get('name') or key}: removed from UniFi controller, no down alert")
+                states.pop(key, None)
                 continue
             if key in known:
                 state["name"] = known[key].get("name") or state.get("name") or key
@@ -1766,10 +1808,8 @@ def build_dhcp_snooping_card(host, message, parsed=None):
     parsed = parsed or parse_dhcp_snooping_message(message)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     fdb_entry = lookup_librenms_fdb_port(parsed.get("mac_sa_hex"), host)
-    matched_mac_label = "源 MAC"
     if not fdb_entry and parsed.get("chaddr_hex"):
         fdb_entry = lookup_librenms_fdb_port(parsed.get("chaddr_hex"), host)
-        matched_mac_label = "chaddr"
 
     device = _host_display_name(host, fdb_entry)
     dev_text = f"{device} ({host})" if host and host != device else device
@@ -1781,18 +1821,14 @@ def build_dhcp_snooping_card(host, message, parsed=None):
     else:
         lines.append("🔌 接口：FDB 未查到该 MAC 所在接口，不猜接口")
 
-    if parsed.get("message_type"):
-        lines.append(f"📨 类型：{parsed['message_type']}")
-    if parsed.get("mac_sa"):
-        lines.append(f"🔗 源 MAC：{parsed['mac_sa']}")
-    if parsed.get("chaddr"):
-        lines.append(f"🧾 chaddr：{parsed['chaddr']}")
-    if port:
-        lines.append(f"🔎 匹配：{matched_mac_label}")
     if parsed.get("reason"):
-        lines.append(f"📋 原因：{parsed['reason']}")
-    if fdb_entry and fdb_entry.get("last_seen"):
-        lines.append(f"🕒 FDB：{fdb_entry['last_seen']}")
+        lines.append(f"📋 异常：{parsed['reason']}")
+    if parsed.get("message_type"):
+        lines.append(f"📨 DHCP：{_dhcp_message_type_text(parsed['message_type'])}")
+    if parsed.get("mac_sa"):
+        lines.append(f"🔗 实际源 MAC：{parsed['mac_sa']}")
+    if parsed.get("chaddr"):
+        lines.append(f"🧾 报文客户端 MAC：{parsed['chaddr']}")
     lines.append(f"⏰ 时间：{ts}")
     return _make_card(next_event_title(), "⚠️ DHCP Snooping 违规", "orange", "\n".join(lines))
 
