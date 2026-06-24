@@ -12,10 +12,27 @@ if [ -f /etc/nginx/http.d/default.conf ]; then
   echo "[librenms-init] removed nginx default.conf (404 catch-all)"
 fi
 
+url_host() {
+  printf '%s' "$1" | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[:/].*##'
+}
+
+LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
+EFFECTIVE_BASE_URL="${LIBRENMS_BASE_URL:-${APP_URL:-}}"
+if [ -z "$EFFECTIVE_BASE_URL" ] && [ -n "${SERVER_IP:-}" ]; then
+  EFFECTIVE_BASE_URL="http://${SERVER_IP}:${LIBRENMS_PORT}"
+fi
+PUBLIC_HOST=""
+if [ -n "$EFFECTIVE_BASE_URL" ]; then
+  PUBLIC_HOST="$(url_host "$EFFECTIVE_BASE_URL")"
+fi
+if [ -z "$PUBLIC_HOST" ] || [ "$PUBLIC_HOST" = "localhost" ]; then
+  PUBLIC_HOST="${SERVER_IP:-}"
+fi
+
 # Patch server_name on the LibreNMS server block so the webserver reports the real
 # IP (validate.php compares this against base_url, e.g. "192.168.40.251 localhost").
 # Edit the config FILE only; back up first and revert if the result looks wrong.
-if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
+if [ -n "${PUBLIC_HOST:-}" ] && [ "$PUBLIC_HOST" != "" ]; then
   # Locate the file that holds the block listening on 8000 (fall back to nginx.conf).
   target=$(grep -rls 'listen[^;]*8000' /etc/nginx 2>/dev/null | head -n1)
   [ -z "$target" ] && target=/etc/nginx/nginx.conf
@@ -25,24 +42,24 @@ if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
     if grep -q '^[[:space:]]*server_name' "$target"; then
       # Replace the existing server_name value(s) in place -- a 1:1 line rewrite
       # that cannot change the surrounding block structure.
-      sed -i "s/^\([[:space:]]*\)server_name[[:space:]].*/\1server_name ${SERVER_IP};/" "$target" 2>/dev/null || true
+      sed -i "s/^\([[:space:]]*\)server_name[[:space:]].*/\1server_name ${PUBLIC_HOST};/" "$target" 2>/dev/null || true
     else
       # No server_name yet: insert one right after the first listen-on-8000 line.
-      awk -v ip="$SERVER_IP" '
+      awk -v host="$PUBLIC_HOST" '
         { print }
-        !added && $0 ~ /listen[^;]*8000/ { print "        server_name " ip ";"; added=1 }
+        !added && $0 ~ /listen[^;]*8000/ { print "        server_name " host ";"; added=1 }
       ' "$target" > "$target.tmp" 2>/dev/null && mv "$target.tmp" "$target"
     fi
     # Rewrite any stray "server_name localhost" in OTHER included files too.
     for f in $(grep -rls '^[[:space:]]*server_name[[:space:]]*localhost' /etc/nginx 2>/dev/null); do
       [ "$f" = "$target" ] && continue
-      sed -i "s/^\([[:space:]]*\)server_name[[:space:]]*localhost;/\1server_name ${SERVER_IP};/" "$f" 2>/dev/null || true
+      sed -i "s/^\([[:space:]]*\)server_name[[:space:]]*localhost;/\1server_name ${PUBLIC_HOST};/" "$f" 2>/dev/null || true
     done
     # Sanity check via file content only (no `nginx -t`, which would create
     # root-owned log/pid files): our server_name landed and a listen still exists.
-    if grep -q "server_name ${SERVER_IP};" "$target" && grep -q 'listen' "$target"; then
+    if grep -q "server_name ${PUBLIC_HOST};" "$target" && grep -q 'listen' "$target"; then
       rm -f "$backup"
-      echo "[librenms-init] nginx server_name set to ${SERVER_IP} in $target"
+      echo "[librenms-init] nginx server_name set to ${PUBLIC_HOST} in $target"
     else
       mv "$backup" "$target"
       echo "[librenms-init] WARNING: server_name edit looked wrong -- reverted"
@@ -52,10 +69,9 @@ fi
 
 # Patch APP_URL in .env so front-end AJAX calls use the real server address.
 # .env is created by LibreNMS's cont-init.d, so this must run after those scripts.
-if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ] && [ -f /opt/librenms/.env ]; then
-  LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
-  sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}:${LIBRENMS_PORT}|" /opt/librenms/.env 2>/dev/null || true
-  echo "[librenms-init] APP_URL patched to http://${SERVER_IP}:${LIBRENMS_PORT}"
+if [ -n "${EFFECTIVE_BASE_URL:-}" ] && [ -f /opt/librenms/.env ]; then
+  sed -i "s|APP_URL=.*|APP_URL=${EFFECTIVE_BASE_URL}|" /opt/librenms/.env 2>/dev/null || true
+  echo "[librenms-init] APP_URL patched to ${EFFECTIVE_BASE_URL}"
 fi
 
 # Set base_url in LibreNMS's database config table so the /validate ServerName
@@ -63,12 +79,11 @@ fi
 # entry exists (typically written by LibreNMS's own cont-init scripts). Running
 # artisan config:set here overwrites any stale "localhost" value in the DB.
 # Runs as the librenms user so artisan doesn't create root-owned cache files.
-if [ -n "${SERVER_IP:-}" ] && [ "$SERVER_IP" != "" ]; then
-  LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
+if [ -n "${EFFECTIVE_BASE_URL:-}" ]; then
   su librenms -s /bin/sh -c \
-    "php /opt/librenms/artisan config:set base_url 'http://${SERVER_IP}:${LIBRENMS_PORT}'" \
+    "php /opt/librenms/artisan config:set base_url '${EFFECTIVE_BASE_URL}'" \
     2>/dev/null || true
-  echo "[librenms-init] base_url set in DB to http://${SERVER_IP}:${LIBRENMS_PORT}"
+  echo "[librenms-init] base_url set in DB to ${EFFECTIVE_BASE_URL}"
 fi
 
 # Clear Laravel config cache so PHP picks up the new APP_URL on next request.

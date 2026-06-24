@@ -56,17 +56,17 @@ fi
 # We bake the actual values into the generated wrapper here (entrypoint has the real
 # env) and let the wrapper export them before running the patch logic.
 mkdir -p /etc/cont-init.d
-# Resolve the real server IP/host for the nginx server_name patch. SERVER_IP may be
-# unset while the address is only known via LIBRENMS_BASE_URL / APP_URL, so fall back
-# to parsing the host out of those. "localhost" is treated as "no real name".
-RESOLVED_IP="${SERVER_IP:-}"
-[ -z "$RESOLVED_IP" ] && RESOLVED_IP="${LIBRENMS_OWN_HOSTNAME:-}"
-if [ -z "$RESOLVED_IP" ] && [ -n "${LIBRENMS_BASE_URL:-}" ]; then
-  RESOLVED_IP=$(printf '%s' "$LIBRENMS_BASE_URL" | sed 's#^[a-z]*://##; s#[:/].*##')
+# Resolve the public host for nginx server_name. Prefer the explicit external
+# LibreNMS URL when present; SERVER_IP is only the fallback for LAN-only installs.
+RESOLVED_IP=""
+if [ -n "${LIBRENMS_BASE_URL:-}" ]; then
+  RESOLVED_IP=$(printf '%s' "$LIBRENMS_BASE_URL" | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[:/].*##')
 fi
 if [ -z "$RESOLVED_IP" ] && [ -n "${APP_URL:-}" ]; then
-  RESOLVED_IP=$(printf '%s' "$APP_URL" | sed 's#^[a-z]*://##; s#[:/].*##')
+  RESOLVED_IP=$(printf '%s' "$APP_URL" | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[:/].*##')
 fi
+[ -z "$RESOLVED_IP" ] && RESOLVED_IP="${SERVER_IP:-}"
+[ -z "$RESOLVED_IP" ] && RESOLVED_IP="${LIBRENMS_OWN_HOSTNAME:-}"
 [ "$RESOLVED_IP" = "localhost" ] && RESOLVED_IP=""
 
 # The patch script is bind-mounted read-only without an executable bit, so we run it
@@ -77,6 +77,8 @@ cat > /etc/cont-init.d/99-librenms-patch <<EOF
 #!/bin/sh
 export SERVER_IP='${RESOLVED_IP}'
 export LIBRENMS_PORT='${LIBRENMS_PORT:-8002}'
+export LIBRENMS_BASE_URL='${LIBRENMS_BASE_URL:-}'
+export APP_URL='${APP_URL:-}'
 sh /librenms-patch-nginx.sh || true
 exit 0
 EOF
