@@ -679,12 +679,12 @@ def build_device_online_card(device):
     hw = device.get("hardware") or ""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    lines = [f"🖥 设备：{name}", f"🌐 IP：{ip}", "✅ 状态：UP"]
+    lines = [f"🖥 设备：{name}", f"🌐 IP：{ip}"]
     if hw:
         lines.append(f"🔧 型号：{hw}")
     lines.append(f"⏰ 时间：{ts}")
 
-    return _make_card(next_event_title(), "🟢 新设备上线", "green", "\n".join(lines))
+    return _make_card(next_event_title(), "🔵 新设备已发现", "blue", "\n".join(lines))
 
 
 def format_bps(value):
