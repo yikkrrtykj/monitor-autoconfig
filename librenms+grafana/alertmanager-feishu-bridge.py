@@ -133,6 +133,7 @@ UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "90"
 UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "15"))
 
 _DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
+_MAC_RE = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}|[0-9A-Fa-f]{12}"
 
 
 def _clean_token(raw):
@@ -482,6 +483,112 @@ def fetch_librenms_name_cache():
             if _looks_like_ip(value):
                 names[value] = name
     return names
+
+
+def _normalize_mac_hex(value):
+    mac = re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).lower()
+    return mac if len(mac) == 12 else ""
+
+
+def _format_mac(value):
+    mac = _normalize_mac_hex(value)
+    if not mac:
+        return str(value or "").strip()
+    return ":".join(mac[i:i + 2] for i in range(0, 12, 2))
+
+
+def parse_dhcp_snooping_message(message):
+    text = str(message or "")
+    event = {
+        "message_type": "",
+        "chaddr": "",
+        "chaddr_hex": "",
+        "mac_sa": "",
+        "mac_sa_hex": "",
+        "reason": "",
+    }
+
+    match = re.search(r"message type:\s*([A-Za-z0-9_-]+)", text, re.IGNORECASE)
+    if match:
+        event["message_type"] = match.group(1).upper()
+
+    match = re.search(rf"\bchaddr:\s*({_MAC_RE})", text, re.IGNORECASE)
+    if match:
+        event["chaddr"] = _format_mac(match.group(1))
+        event["chaddr_hex"] = _normalize_mac_hex(match.group(1))
+
+    match = re.search(rf"\bMAC\s+sa:\s*({_MAC_RE})", text, re.IGNORECASE)
+    if match:
+        event["mac_sa"] = _format_mac(match.group(1))
+        event["mac_sa_hex"] = _normalize_mac_hex(match.group(1))
+
+    if "MATCH_MAC_FAIL" in text or "chaddr doesn't match source mac" in text.lower():
+        event["reason"] = "chaddr 与源 MAC 不一致"
+    else:
+        match = re.search(r"%[^:]+:\s*(.+?)(?:,\s*message type:|$)", text)
+        if match:
+            event["reason"] = match.group(1).strip()
+    return event
+
+
+def _port_label_from_fdb(entry):
+    if not entry:
+        return ""
+    port = str(entry.get("ifName") or entry.get("ifDescr") or "").strip()
+    alias = str(entry.get("ifAlias") or "").strip()
+    if alias and port and alias != port:
+        return f"{port} / {alias}"
+    return port or alias
+
+
+def lookup_librenms_fdb_port(mac, host=""):
+    token = _librenms_token()
+    mac_hex = _normalize_mac_hex(mac)
+    if not token or not LIBRENMS_URL or not mac_hex:
+        return None
+
+    url = f"{LIBRENMS_URL}/api/v0/resources/fdb/{mac_hex}/detail"
+    req = request.Request(url, headers={"X-Auth-Token": token})
+    try:
+        with request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+    except error.HTTPError as exc:
+        if exc.code != 404:
+            body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
+            log(f"[SYSLOG] FDB lookup HTTP {exc.code} for {_format_mac(mac_hex)}: {body[:160]}")
+        return None
+    except Exception as exc:
+        log(f"[SYSLOG] FDB lookup failed for {_format_mac(mac_hex)}: {exc}")
+        return None
+
+    entries = data.get("ports_fdb") or []
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list) or not entries:
+        return None
+
+    host_l = str(host or "").strip().lower()
+    for entry in entries:
+        candidates = [
+            str(entry.get("hostname") or "").strip().lower(),
+            str(entry.get("sysName") or "").strip().lower(),
+        ]
+        if host_l and host_l in candidates:
+            return entry
+    return entries[0]
+
+
+def _host_display_name(host, fdb_entry=None):
+    if fdb_entry:
+        name = _first_non_ip(fdb_entry.get("sysName"), fdb_entry.get("hostname"))
+        if name:
+            return name
+    try:
+        cache = fetch_librenms_name_cache()
+        return cache.get(host) or host
+    except Exception as exc:
+        log(f"[SYSLOG] device name lookup failed for {host}: {exc}")
+        return host
 
 
 def build_librenms_card(payload):
@@ -1655,9 +1762,38 @@ def unifi_ap_watcher():
         time.sleep(UNIFI_AP_POLL_INTERVAL)
 
 
-def build_dhcp_snooping_card(host, message):
+def build_dhcp_snooping_card(host, message, parsed=None):
+    parsed = parsed or parse_dhcp_snooping_message(message)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines = [f"🔴 来源：{host}", f"📋 详情：{message.strip()[:200]}", f"⏰ 时间：{ts}"]
+    fdb_entry = lookup_librenms_fdb_port(parsed.get("mac_sa_hex"), host)
+    matched_mac_label = "源 MAC"
+    if not fdb_entry and parsed.get("chaddr_hex"):
+        fdb_entry = lookup_librenms_fdb_port(parsed.get("chaddr_hex"), host)
+        matched_mac_label = "chaddr"
+
+    device = _host_display_name(host, fdb_entry)
+    dev_text = f"{device} ({host})" if host and host != device else device
+    port = _port_label_from_fdb(fdb_entry)
+
+    lines = [f"🖥 设备：{dev_text}"]
+    if port:
+        lines.append(f"🔌 接口：{port}")
+    else:
+        lines.append("🔌 接口：FDB 未查到该 MAC 所在接口，不猜接口")
+
+    if parsed.get("message_type"):
+        lines.append(f"📨 类型：{parsed['message_type']}")
+    if parsed.get("mac_sa"):
+        lines.append(f"🔗 源 MAC：{parsed['mac_sa']}")
+    if parsed.get("chaddr"):
+        lines.append(f"🧾 chaddr：{parsed['chaddr']}")
+    if port:
+        lines.append(f"🔎 匹配：{matched_mac_label}")
+    if parsed.get("reason"):
+        lines.append(f"📋 原因：{parsed['reason']}")
+    if fdb_entry and fdb_entry.get("last_seen"):
+        lines.append(f"🕒 FDB：{fdb_entry['last_seen']}")
+    lines.append(f"⏰ 时间：{ts}")
     return _make_card(next_event_title(), "⚠️ DHCP Snooping 违规", "orange", "\n".join(lines))
 
 
@@ -1697,11 +1833,23 @@ def syslog_watcher():
         host, _severity, message = parts
 
         if _DHCP_SNOOP_RE.search(message):
+            parsed = parse_dhcp_snooping_message(message)
+            dedupe_key = "|".join([
+                host,
+                parsed.get("message_type") or "",
+                parsed.get("mac_sa_hex") or "",
+                parsed.get("chaddr_hex") or "",
+                message[:120] if not (parsed.get("mac_sa_hex") or parsed.get("chaddr_hex")) else "",
+            ])
             now = time.time()
-            if now - _last_sent.get(host, 0) >= RATE_LIMIT:
-                _last_sent[host] = now
-                log(f"[SYSLOG] DHCP snooping violation from {host}")
-                send_feishu(build_dhcp_snooping_card(host, message))
+            if now - _last_sent.get(dedupe_key, 0) >= RATE_LIMIT:
+                _last_sent[dedupe_key] = now
+                log(
+                    f"[SYSLOG] DHCP snooping violation from {host} "
+                    f"type={parsed.get('message_type') or '-'} "
+                    f"mac_sa={parsed.get('mac_sa') or '-'} chaddr={parsed.get('chaddr') or '-'}"
+                )
+                send_feishu(build_dhcp_snooping_card(host, message, parsed))
 
 
 def device_watcher():
