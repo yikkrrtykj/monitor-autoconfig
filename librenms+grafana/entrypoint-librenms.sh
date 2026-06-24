@@ -124,6 +124,7 @@ fi
 if ! valid_base_url "$PREINIT_BASE_URL"; then
   PREINIT_BASE_URL="http://localhost:${LIBRENMS_PORT:-8002}"
 fi
+export APP_URL="$PREINIT_BASE_URL"
 
 MYSQL_BIN=""
 if command -v mariadb >/dev/null 2>&1; then
@@ -141,6 +142,51 @@ if [ -n "$MYSQL_BIN" ] && [ -n "${DB_HOST:-}" ]; then
     -e "UPDATE config SET config_value='${PREINIT_BASE_URL_SQL}' WHERE config_name='base_url';" \
     >/dev/null 2>&1 && \
     echo "[librenms-entry] pre-init base_url repaired to ${PREINIT_BASE_URL}" || true
+fi
+if command -v php >/dev/null 2>&1 && [ -n "${DB_HOST:-}" ]; then
+  export PREINIT_BASE_URL
+  cat > /tmp/librenms-repair-base-url.php <<'PHPEOF'
+<?php
+$url = getenv('PREINIT_BASE_URL') ?: '';
+$host = getenv('DB_HOST') ?: '';
+$port = getenv('DB_PORT') ?: '3306';
+$db = getenv('DB_NAME') ?: 'librenms';
+$user = getenv('DB_USER') ?: 'librenms';
+$pass = getenv('DB_PASS') ?: '';
+
+if ($url === '' || $host === '') {
+    exit(2);
+}
+
+try {
+    $dsn = "mysql:host={$host};port={$port};dbname={$db};charset=utf8mb4";
+    $pdo = new PDO($dsn, $user, $pass, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
+    $check = $pdo->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = 'config'");
+    $check->execute(array($db));
+    if ((int) $check->fetchColumn() < 1) {
+        exit(3);
+    }
+    $stmt = $pdo->prepare("UPDATE config SET config_value = ? WHERE config_name = 'base_url'");
+    $stmt->execute(array($url));
+} catch (Throwable $e) {
+    fwrite(STDERR, $e->getMessage() . "\n");
+    exit(1);
+}
+PHPEOF
+  repaired_base_url=""
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if php /tmp/librenms-repair-base-url.php >/dev/null 2>&1; then
+      repaired_base_url=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$repaired_base_url" = "1" ]; then
+    echo "[librenms-entry] pre-init base_url repaired through PHP to ${PREINIT_BASE_URL}"
+  else
+    echo "[librenms-entry] WARNING: pre-init base_url repair through PHP did not complete"
+  fi
+  rm -f /tmp/librenms-repair-base-url.php 2>/dev/null || true
 fi
 
 # Register the Laravel scheduler as an s6 long-running service using schedule:work.
