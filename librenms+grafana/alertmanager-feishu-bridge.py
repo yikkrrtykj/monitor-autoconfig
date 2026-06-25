@@ -102,7 +102,7 @@ DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-c
 SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "public")
 UNIFI_AP_SNMP_AUTO_ADD = os.environ.get("UNIFI_AP_SNMP_AUTO_ADD", "true").lower() in ("1", "true", "yes", "on")
 UNIFI_AP_SNMP_COMMUNITY = os.environ.get("UNIFI_AP_SNMP_COMMUNITY", SNMP_COMMUNITY)
-UNIFI_AP_SNMP_ADD_RETRY_SECONDS = int(os.environ.get("UNIFI_AP_SNMP_ADD_RETRY_SECONDS", "300"))
+UNIFI_AP_SNMP_ADD_RETRY_SECONDS = int(os.environ.get("UNIFI_AP_SNMP_ADD_RETRY_SECONDS", "60"))
 UNIFI_CONTROLLER_URL = os.environ.get("UNIFI_CONTROLLER_URL", "").rstrip("/")
 UNIFI_CONTROLLER_USER = os.environ.get("UNIFI_CONTROLLER_USER", "")
 UNIFI_CONTROLLER_PASS = os.environ.get("UNIFI_CONTROLLER_PASS", "")
@@ -218,13 +218,13 @@ def _save_json_dict(path, values):
 def mark_device_online_notified(*values):
     clean = {str(value).strip() for value in values if str(value or "").strip()}
     if not clean:
-        return
+        return False
     with DEVICE_ONLINE_STATE_LOCK:
         items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
         if clean.issubset(items):
-            return
+            return False
         items.update(clean)
-        _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
+        return _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
 
 
 def _as_float(value, default=None):
@@ -349,15 +349,20 @@ def update_librenms_device_display(ip, name, log_prefix="[WATCHER]"):
 
 
 def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"):
+    """Ensure an SNMP device exists in LibreNMS.
+
+    Returns "added" for a new add request, "exists" when LibreNMS already has
+    the device, and "" on failure. Existing callers only need truthiness.
+    """
     token = _librenms_token()
     if not ip:
-        return False
+        return ""
     if not LIBRENMS_URL:
         log(f"{log_prefix} SNMP auto-add postponed for {name or ip} ({ip}): LIBRENMS_URL not set")
-        return False
+        return ""
     if not token:
         log(f"{log_prefix} SNMP auto-add postponed for {name or ip} ({ip}): LibreNMS API token not ready")
-        return False
+        return ""
     snmp_community = (community or SNMP_COMMUNITY or "public").strip()
     payload = {
         "hostname": ip,
@@ -386,24 +391,24 @@ def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"
         if status == "ok":
             log(f"{log_prefix} SNMP auto-add requested for {name or ip} ({ip})")
             update_librenms_device_display(ip, name, log_prefix=log_prefix)
-            return True
+            return "added"
         if "already" in str(message).lower():
             log(f"{log_prefix} SNMP auto-add skipped for {name or ip} ({ip}): already exists")
             update_librenms_device_display(ip, name, log_prefix=log_prefix)
-            return True
+            return "exists"
         log(f"{log_prefix} SNMP auto-add failed for {name or ip} ({ip}): {str(message)[:160]}")
-        return False
+        return ""
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
         if "already" in body.lower():
             log(f"{log_prefix} SNMP auto-add skipped for {name or ip} ({ip}): already exists")
             update_librenms_device_display(ip, name, log_prefix=log_prefix)
-            return True
+            return "exists"
         log(f"{log_prefix} SNMP auto-add HTTP {exc.code} for {name or ip} ({ip}): {body[:160]}")
-        return False
+        return ""
     except Exception as exc:
         log(f"{log_prefix} SNMP auto-add failed for {name or ip} ({ip}): {exc}")
-        return False
+        return ""
 
 
 def _looks_like_ip(value):
@@ -1743,12 +1748,20 @@ def unifi_ap_watcher():
                 if now - last_attempt >= UNIFI_AP_SNMP_ADD_RETRY_SECONDS:
                     snmp_add_attempted[ip] = now
                     add_attempted = True
-                    if add_librenms_snmp_device(
+                    add_result = add_librenms_snmp_device(
                         ip,
                         name=sync_name,
                         community=UNIFI_AP_SNMP_COMMUNITY,
                         log_prefix="[AP]",
-                    ):
+                    )
+                    if add_result == "added" and mark_device_online_notified(name, ip):
+                        log(f"[AP] new SNMP AP deployed: {name} ({ip})")
+                        send_feishu(build_device_online_card({
+                            "display": name,
+                            "ip": ip,
+                            "hardware": info.get("model") or "",
+                        }))
+                    elif add_result:
                         mark_device_online_notified(name, ip)
             if ip and sync_name and not add_attempted:
                 last_sync = name_sync_attempted.get(ip, 0)
@@ -1921,6 +1934,11 @@ def device_watcher():
             log(f"[WATCHER] poll failed: {exc}")
             time.sleep(SWITCH_WATCH_INTERVAL)
             continue
+
+        with DEVICE_ONLINE_STATE_LOCK:
+            persisted_notified = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+        if persisted_notified:
+            notified.update(persisted_notified)
 
         changed = False
         if first_successful_poll and not notified:
