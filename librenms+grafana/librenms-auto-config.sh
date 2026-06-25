@@ -44,6 +44,13 @@ LIBRENMS_PORT="${LIBRENMS_PORT:-8002}"
 SERVER_IP="${SERVER_IP:-}"
 RRDCACHED_SERVER="${RRDCACHED_SERVER:-}"
 LIBRENMS_OWN_HOSTNAME="${LIBRENMS_OWN_HOSTNAME:-}"
+LIBRENMS_HOME_DASHBOARD_AUTO="${LIBRENMS_HOME_DASHBOARD_AUTO:-true}"
+LIBRENMS_HOME_DASHBOARD_NAME="${LIBRENMS_HOME_DASHBOARD_NAME:-赛事网络总览}"
+LIBRENMS_HOME_WAN_CARDS="${LIBRENMS_HOME_WAN_CARDS:-true}"
+LIBRENMS_HOME_WAN_CARD_LIMIT="${LIBRENMS_HOME_WAN_CARD_LIMIT:-8}"
+LIBRENMS_HOME_TOP_INTERFACES="${LIBRENMS_HOME_TOP_INTERFACES:-true}"
+LIBRENMS_HOME_TOP_DEVICES="${LIBRENMS_HOME_TOP_DEVICES:-true}"
+LIBRENMS_HOME_SERVER_STATS="${LIBRENMS_HOME_SERVER_STATS:-auto}"
 
 normalize_base_url() {
   raw=$(printf '%s' "${1:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -984,6 +991,362 @@ try {
 PHP
 }
 
+configure_home_dashboard() {
+  if [ "${LIBRENMS_HOME_DASHBOARD_AUTO:-true}" != "true" ]; then
+    echo ""
+    echo "  LibreNMS home dashboard skipped (LIBRENMS_HOME_DASHBOARD_AUTO=false)"
+    return 0
+  fi
+
+  echo ""
+  echo "  Configuring LibreNMS home dashboard..."
+
+  php <<'PHP'
+<?php
+try {
+    $host = getenv('DB_HOST') ?: 'librenms-db';
+    $database = getenv('DB_NAME') ?: 'librenms';
+    $dbUser = getenv('DB_USER') ?: 'librenms';
+    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
+
+    $pdo = new PDO(
+        "mysql:host={$host};dbname={$database};charset=utf8mb4",
+        $dbUser,
+        $dbPass,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+
+    $quoteIdent = fn(string $name): string => '`' . str_replace('`', '``', $name) . '`';
+    $columns = function (string $table) use ($pdo, $quoteIdent): array {
+        try {
+            $stmt = $pdo->query("SHOW COLUMNS FROM " . $quoteIdent($table));
+        } catch (Throwable $e) {
+            return [];
+        }
+        $cols = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $cols[$row['Field']] = true;
+        }
+
+        return $cols;
+    };
+    $has = fn(array $cols, string $name): bool => isset($cols[$name]);
+    $truthy = fn(string $name, string $default = 'true'): bool => in_array(
+        strtolower(trim((string) (getenv($name) !== false ? getenv($name) : $default))),
+        ['1', 'true', 'yes', 'on'],
+        true
+    );
+
+    $dashboardCols = $columns('dashboards');
+    $widgetCols = $columns('users_widgets');
+    $userCols = $columns('users');
+    $prefCols = $columns('users_prefs');
+    $deviceCols = $columns('devices');
+    $portCols = $columns('ports');
+
+    foreach ([
+        'dashboards' => $dashboardCols,
+        'users_widgets' => $widgetCols,
+        'users' => $userCols,
+    ] as $table => $cols) {
+        if (empty($cols)) {
+            echo "  Home dashboard skipped: table {$table} not found\n";
+            exit(0);
+        }
+    }
+    if (! $has($dashboardCols, 'dashboard_id') || ! $has($widgetCols, 'dashboard_id')) {
+        echo "  Home dashboard skipped: unsupported LibreNMS dashboard schema\n";
+        exit(0);
+    }
+
+    $dashboardName = trim(getenv('LIBRENMS_HOME_DASHBOARD_NAME') ?: '赛事网络总览');
+    $adminName = getenv('LIBRENMS_ADMIN_USER') ?: 'admin';
+    $userIdColumn = $has($userCols, 'user_id') ? 'user_id' : ($has($userCols, 'id') ? 'id' : null);
+    $userNameColumn = $has($userCols, 'username') ? 'username' : ($has($userCols, 'name') ? 'name' : null);
+    if (! $userIdColumn || ! $userNameColumn) {
+        echo "  Home dashboard skipped: unsupported users schema\n";
+        exit(0);
+    }
+
+    $stmt = $pdo->prepare("SELECT {$quoteIdent($userIdColumn)} FROM users WHERE {$quoteIdent($userNameColumn)} = ? LIMIT 1");
+    $stmt->execute([$adminName]);
+    $adminId = (int) $stmt->fetchColumn();
+    if ($adminId <= 0) {
+        echo "  Home dashboard skipped: admin user {$adminName} not found yet\n";
+        exit(0);
+    }
+
+    $stmt = $pdo->prepare('SELECT dashboard_id FROM dashboards WHERE user_id = ? AND dashboard_name = ? LIMIT 1');
+    $stmt->execute([$adminId, $dashboardName]);
+    $dashboardId = (int) $stmt->fetchColumn();
+    if ($dashboardId <= 0) {
+        $columnsToInsert = ['user_id', 'dashboard_name'];
+        $values = [$adminId, $dashboardName];
+        if ($has($dashboardCols, 'access')) {
+            $columnsToInsert[] = 'access';
+            $values[] = 0;
+        }
+        $sql = 'INSERT INTO dashboards (' . implode(', ', array_map($quoteIdent, $columnsToInsert)) . ') VALUES (' . implode(', ', array_fill(0, count($columnsToInsert), '?')) . ')';
+        $insert = $pdo->prepare($sql);
+        $insert->execute($values);
+        $dashboardId = (int) $pdo->lastInsertId();
+    }
+
+    if (! empty($prefCols) && $has($prefCols, 'user_id') && $has($prefCols, 'pref') && $has($prefCols, 'value')) {
+        $pref = $pdo->prepare('INSERT INTO users_prefs (user_id, pref, value) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)');
+        $pref->execute([$adminId, 'dashboard', (string) $dashboardId]);
+    }
+
+    $managed = 'monitor-autoconfig';
+    $selectWidgets = $pdo->prepare('SELECT user_widget_id, title, settings FROM users_widgets WHERE dashboard_id = ?');
+    $selectWidgets->execute([$dashboardId]);
+    $deleteIds = [];
+    $managedTitles = [
+        '设备摘要', '设备状态', '接口流量排名', '设备流量排名', '服务器状态',
+    ];
+    foreach ($selectWidgets->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $settings = [];
+        if (! empty($row['settings'])) {
+            $decoded = json_decode((string) $row['settings'], true);
+            if (is_array($decoded)) {
+                $settings = $decoded;
+            }
+        }
+        $title = (string) ($row['title'] ?? '');
+        if (($settings['autoconfig'] ?? '') === $managed ||
+            str_starts_with($title, 'WAN · ') ||
+            in_array($title, $managedTitles, true)) {
+            $deleteIds[] = (int) $row['user_widget_id'];
+        }
+    }
+    if ($deleteIds) {
+        $placeholders = implode(',', array_fill(0, count($deleteIds), '?'));
+        $delete = $pdo->prepare("DELETE FROM users_widgets WHERE user_widget_id IN ({$placeholders})");
+        $delete->execute($deleteIds);
+    }
+
+    $json = function (array $settings) use ($managed): string {
+        $settings = array_merge(['autoconfig' => $managed], $settings);
+
+        return json_encode($settings, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    };
+
+    $addWidget = function (string $widget, string $title, int $col, int $row, int $sizeX, int $sizeY, array $settings = []) use ($pdo, $adminId, $dashboardId, $json): void {
+        $stmt = $pdo->prepare(
+            'INSERT INTO users_widgets (user_id, widget, col, row, size_x, size_y, title, refresh, settings, dashboard_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            $adminId,
+            $widget,
+            $col,
+            $row,
+            $sizeX,
+            $sizeY,
+            $title,
+            (int) ($settings['refresh'] ?? 60),
+            $json($settings),
+            $dashboardId,
+        ]);
+    };
+
+    $deviceDisplay = function (array $device): string {
+        foreach (['display', 'sysName', 'hostname'] as $field) {
+            if (! empty($device[$field])) {
+                return (string) $device[$field];
+            }
+        }
+
+        return (string) ($device['device_id'] ?? 'device');
+    };
+
+    $targets = [];
+    foreach (explode(',', getenv('FIREWALL_SNMP_TARGETS') ?: '') as $raw) {
+        $raw = trim($raw);
+        if ($raw === '') {
+            continue;
+        }
+        if (str_contains($raw, ':')) {
+            [$name, $ip] = array_map('trim', explode(':', $raw, 2));
+        } else {
+            $name = '';
+            $ip = $raw;
+        }
+        $ip = preg_replace('/-.*/', '', $ip);
+        if ($ip !== '') {
+            $targets[] = ['name' => $name, 'ip' => $ip];
+        }
+    }
+
+    $keywords = array_values(array_filter(array_map(
+        fn($v) => strtolower(trim($v)),
+        explode(',', getenv('FIREWALL_WAN_IF_FILTER') ?: 'telecom,telcom,unicom,isp,WAN')
+    )));
+    $matchesWan = function (string $text) use ($keywords): bool {
+        $lower = strtolower($text);
+        foreach ($keywords as $kw) {
+            if ($kw !== '' && str_contains($lower, $kw)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    $findDevice = function (array $target) use ($pdo, $deviceCols, $has): ?array {
+        $where = [];
+        $values = [];
+        foreach (['hostname' => $target['ip'], 'display' => $target['name'], 'sysName' => $target['name']] as $column => $value) {
+            if ($value !== '' && $has($deviceCols, $column)) {
+                $where[] = "`{$column}` = ?";
+                $values[] = $value;
+            }
+        }
+        if (! $where) {
+            return null;
+        }
+        $stmt = $pdo->prepare('SELECT * FROM devices WHERE ' . implode(' OR ', $where) . ' LIMIT 1');
+        $stmt->execute($values);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row ?: null;
+    };
+
+    $wanCards = [];
+    if ($truthy('LIBRENMS_HOME_WAN_CARDS', 'true') &&
+        ! empty($targets) &&
+        ! empty($keywords) &&
+        ! empty($deviceCols) &&
+        ! empty($portCols) &&
+        $has($portCols, 'port_id') &&
+        $has($portCols, 'device_id')) {
+        foreach ($targets as $target) {
+            $device = $findDevice($target);
+            if (! $device) {
+                continue;
+            }
+            $where = ['device_id = ?'];
+            $values = [(int) $device['device_id']];
+            if ($has($portCols, 'deleted')) {
+                $where[] = '(deleted = 0 OR deleted IS NULL)';
+            }
+            $stmt = $pdo->prepare('SELECT * FROM ports WHERE ' . implode(' AND ', $where) . ' ORDER BY port_id');
+            $stmt->execute($values);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $port) {
+                $labelParts = [];
+                foreach (['ifAlias', 'ifName', 'ifDescr'] as $column) {
+                    if ($has($portCols, $column) && ! empty($port[$column])) {
+                        $value = trim((string) $port[$column]);
+                        if ($value !== '' && ! in_array($value, $labelParts, true)) {
+                            $labelParts[] = $value;
+                        }
+                    }
+                }
+                $label = trim(implode(' ', $labelParts));
+                if ($label === '' || ! $matchesWan($label)) {
+                    continue;
+                }
+                $friendly = '';
+                foreach (['ifAlias', 'ifName', 'ifDescr'] as $column) {
+                    if ($has($portCols, $column) && ! empty($port[$column])) {
+                        $friendly = trim((string) $port[$column]);
+                        break;
+                    }
+                }
+                $title = 'WAN · ' . $deviceDisplay($device) . ' · ' . ($friendly ?: ('port ' . $port['port_id']));
+                $wanCards[] = [
+                    'title' => $title,
+                    'port_id' => (int) $port['port_id'],
+                ];
+            }
+        }
+    }
+
+    $limit = max(0, (int) (getenv('LIBRENMS_HOME_WAN_CARD_LIMIT') ?: 8));
+    if ($limit > 0) {
+        $wanCards = array_slice($wanCards, 0, $limit);
+    }
+
+    $addWidget('device-summary-horiz', '设备摘要', 1, 1, 6, 2, [
+        'refresh' => 60,
+    ]);
+    $addWidget('availability-map', '设备状态', 7, 1, 6, 2, [
+        'refresh' => 60,
+    ]);
+
+    $row = 3;
+    foreach ($wanCards as $idx => $card) {
+        $col = ($idx % 2) === 0 ? 1 : 7;
+        $graphRow = $row + (int) floor($idx / 2) * 4;
+        $addWidget('generic-graph', $card['title'], $col, $graphRow, 6, 4, [
+            'title' => $card['title'],
+            'refresh' => 60,
+            'graph_type' => 'port_bits',
+            'graph_range' => 'day',
+            'graph_legend' => 'yes',
+            'graph_port' => (string) $card['port_id'],
+            'graph_device' => null,
+            'graph_application' => null,
+            'graph_munin' => null,
+            'graph_service' => null,
+            'graph_customoid' => null,
+            'graph_ports' => [],
+            'graph_sensors' => [],
+            'graph_stack' => 'no',
+            'graph_custom' => [],
+            'graph_manual' => null,
+            'graph_bill' => null,
+        ]);
+    }
+    if ($wanCards) {
+        $row += (int) ceil(count($wanCards) / 2) * 4;
+    }
+
+    if ($truthy('LIBRENMS_HOME_TOP_INTERFACES', 'true')) {
+        $addWidget('top-interfaces', '接口流量排名', 1, $row, 6, 3, [
+            'refresh' => 60,
+            'interface_count' => 8,
+            'time_interval' => 15,
+            'interface_filter' => null,
+            'device_group' => null,
+            'port_group' => null,
+        ]);
+    }
+    if ($truthy('LIBRENMS_HOME_TOP_DEVICES', 'true')) {
+        $addWidget('top-devices', '设备流量排名', 7, $row, 6, 3, [
+            'title' => '设备流量排名',
+            'refresh' => 60,
+            'top_query' => 'traffic',
+            'sort_order' => 'desc',
+            'device_count' => 8,
+            'time_interval' => 15,
+            'device_group' => null,
+        ]);
+    }
+    $row += 3;
+
+    $serverMode = strtolower(trim((string) (getenv('LIBRENMS_HOME_SERVER_STATS') ?: 'auto')));
+    $hasServerTargets = trim((string) (getenv('SERVER_PING') ?: '')) !== '';
+    if ($serverMode === 'true' || ($serverMode === 'auto' && $hasServerTargets)) {
+        $addWidget('server-stats', '服务器状态', 1, $row, 12, 3, [
+            'refresh' => 60,
+        ]);
+    }
+
+    $total = 2 + count($wanCards)
+        + ($truthy('LIBRENMS_HOME_TOP_INTERFACES', 'true') ? 1 : 0)
+        + ($truthy('LIBRENMS_HOME_TOP_DEVICES', 'true') ? 1 : 0)
+        + (($serverMode === 'true' || ($serverMode === 'auto' && $hasServerTargets)) ? 1 : 0);
+    echo "  Home dashboard '{$dashboardName}' ready (id={$dashboardId}, widgets={$total}, WAN cards=" . count($wanCards) . ")\n";
+    if (count($wanCards) === 0 && $truthy('LIBRENMS_HOME_WAN_CARDS', 'true')) {
+        echo "  Home dashboard: no WAN ports matched yet; rerun librenms-config after firewall port discovery if needed\n";
+    }
+} catch (Throwable $e) {
+    echo "  WARNING: Home dashboard setup failed: " . $e->getMessage() . "\n";
+}
+PHP
+}
+
 configure_down_port_ignores() {
   if [ "${LIBRENMS_IGNORE_DOWN_PORTS:-true}" != "true" ]; then
     echo ""
@@ -1511,6 +1874,7 @@ fi
 
 discover_firewall_ports
 configure_isp_port_speed_overrides
+configure_home_dashboard
 configure_down_port_ignores
 configure_stp_noise_suppression
 configure_feishu_transport
