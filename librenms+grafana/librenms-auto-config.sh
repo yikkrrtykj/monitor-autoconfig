@@ -1268,14 +1268,7 @@ try {
         $wanCards = array_slice($wanCards, 0, $limit);
     }
 
-    $addWidget('device-summary-horiz', '设备摘要', 1, 1, 6, 2, [
-        'refresh' => 60,
-    ]);
-    $addWidget('availability-map', '设备状态', 7, 1, 6, 2, [
-        'refresh' => 60,
-    ]);
-
-    $row = 3;
+    $row = 1;
     foreach ($wanCards as $idx => $card) {
         $col = ($idx % 2) === 0 ? 1 : 7;
         $graphRow = $row + (int) floor($idx / 2) * 4;
@@ -1302,6 +1295,14 @@ try {
     if ($wanCards) {
         $row += (int) ceil(count($wanCards) / 2) * 4;
     }
+
+    $addWidget('device-summary-horiz', '设备摘要', 1, $row, 6, 2, [
+        'refresh' => 60,
+    ]);
+    $addWidget('availability-map', '设备状态', 7, $row, 6, 2, [
+        'refresh' => 60,
+    ]);
+    $row += 2;
 
     if ($truthy('LIBRENMS_HOME_TOP_INTERFACES', 'true')) {
         $addWidget('top-interfaces', '接口流量排名', 1, $row, 6, 3, [
