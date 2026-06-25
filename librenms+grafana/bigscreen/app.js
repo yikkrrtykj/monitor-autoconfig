@@ -133,6 +133,67 @@
     return shouldFilterStageDevices() ? filterStageDeviceSeries(seriesList) : seriesList;
   }
 
+  function infraDisplayKey(item) {
+    const name = String(item.name || metricName(item.metric || {}) || "").trim();
+    if (name) return name;
+    return JSON.stringify(item.metric || {});
+  }
+
+  function preferItem(previous, current, mode) {
+    if (!previous) return current;
+    const previousValue = Number(previous.value);
+    const currentValue = Number(current.value);
+    if (!Number.isFinite(previousValue)) return current;
+    if (!Number.isFinite(currentValue)) return previous;
+    if (mode === "min") return currentValue < previousValue ? current : previous;
+    return currentValue > previousValue ? current : previous;
+  }
+
+  function dedupeInfraItems(items, mode) {
+    const byName = new Map();
+    items.forEach((item) => {
+      const key = infraDisplayKey(item);
+      byName.set(key, preferItem(byName.get(key), item, mode || "max"));
+    });
+    return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  }
+
+  function mergePointValues(left, right, mode) {
+    const points = new Map();
+    const choose = mode === "min"
+      ? (a, b) => (b.v < a.v ? b : a)
+      : (a, b) => (b.v > a.v ? b : a);
+    const put = (point) => {
+      const t = Number(point.t);
+      const v = Number(point.v);
+      if (!Number.isFinite(t) || !Number.isFinite(v)) return;
+      const key = String(t);
+      const normalized = { t, v };
+      const existing = points.get(key);
+      points.set(key, existing ? choose(existing, normalized) : normalized);
+    };
+    (left || []).forEach(put);
+    (right || []).forEach(put);
+    return Array.from(points.values()).sort((a, b) => a.t - b.t);
+  }
+
+  function mergeInfraSeries(seriesList, mode) {
+    const byName = new Map();
+    seriesList.forEach((item) => {
+      const key = infraDisplayKey(item);
+      const existing = byName.get(key);
+      if (!existing) {
+        byName.set(key, { ...item, values: [...(item.values || [])] });
+        return;
+      }
+      byName.set(key, {
+        ...existing,
+        values: mergePointValues(existing.values, item.values, mode || "max")
+      });
+    });
+    return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  }
+
   function playerLabel(team, seat, network) {
     return `${teamName({ id: "" }, team)} ${seatLabel(seat)} ${networkLabel(network)}`;
   }
@@ -708,14 +769,14 @@
       if (seq !== gaugeSeq) return;
       const isServerItem = (item) => (item.metric && item.metric.job) === "infra-srv-ping";
       const deployed = filterDeployed(pingItems, (item) => item.name);
-      const networkPing = renameListWithInfraMap(deployed.filter((item) => !isServerItem(item)), nameMap);
-      const serverPing = renameListWithInfraMap(deployed.filter(isServerItem), nameMap);
+      const networkPing = dedupeInfraItems(renameListWithInfraMap(deployed.filter((item) => !isServerItem(item)), nameMap), "max");
+      const serverPing = dedupeInfraItems(renameListWithInfraMap(deployed.filter(isServerItem), nameMap), "max");
       renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
       // Servers aren't stage devices (skip the stage filter); keep them on one row.
       renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
       // 没有服务器 ping 数据就整段隐藏，不显示"服务器 暂无数据"。
       setVisible("serverGaugesWrap", serverPing.length > 0);
-      renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(renameListWithInfraMap(uptimeItems, nameMap)), "uptime");
+      renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(dedupeInfraItems(renameListWithInfraMap(uptimeItems, nameMap), "max")), "uptime");
       lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== gaugeSeq) return;
@@ -737,8 +798,8 @@
       ]);
       const nameMap = await fetchInfraDeviceNames();
       if (seq !== chartSeq) return;
-      const activePingSeries = visibleInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap));
-      const activeLossSeries = visibleInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap));
+      const activePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
+      const activeLossSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap), "max"));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
         renderLineChart("pingTrendChart", activePingSeries, {
           axisFormatter: formatPingText,
