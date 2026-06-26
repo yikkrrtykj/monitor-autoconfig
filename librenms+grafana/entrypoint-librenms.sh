@@ -47,6 +47,210 @@ if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then
   echo "[librenms-entry] RrdCheck.php echo lines commented out"
 fi
 
+# LibreNMS's stock top widgets mostly show tiny graphs. On the event home
+# dashboard, numeric values are easier to scan, so add current values while
+# keeping the sparklines for trend context.
+if command -v php >/dev/null 2>&1; then
+  cat > /tmp/librenms-patch-dashboard-widgets.php <<'PHPEOF'
+<?php
+function replace_once(string $code, string $search, string $replace, string $label): string
+{
+    if (str_contains($code, $replace)) {
+        return $code;
+    }
+    if (str_contains($code, $search)) {
+        return str_replace($search, $replace, $code);
+    }
+
+    $crlfSearch = str_replace("\n", "\r\n", $search);
+    if (str_contains($code, $crlfSearch)) {
+        return str_replace($crlfSearch, str_replace("\n", "\r\n", $replace), $code);
+    }
+
+    fwrite(STDERR, "[librenms-entry] WARNING: widget patch skipped {$label}; source changed\n");
+
+    return $code;
+}
+
+function save_if_changed(string $file, string $old, string $new): void
+{
+    if ($old !== $new) {
+        file_put_contents($file, $new);
+    }
+}
+
+$topDevicesController = '/opt/librenms/app/Http/Controllers/Widgets/TopDevicesController.php';
+if (is_file($topDevicesController)) {
+    $old = file_get_contents($topDevicesController);
+    $code = $old;
+
+    $helperSearch = <<<'CODE'
+    /**
+     * @param  Device  $device
+CODE;
+    $helperReplace = <<<'CODE'
+    // monitor-autoconfig numeric widget patch
+    private function formatBitsPerSecond($octetsPerSecond): string
+    {
+        return \LibreNMS\Util\Number::formatSi(max(0, (float) $octetsPerSecond) * 8, 2, 0, 'bps');
+    }
+
+    /**
+     * @param  Device  $device
+CODE;
+    $code = replace_once($code, $helperSearch, $helperReplace, 'top-devices rate formatter');
+
+    $code = replace_once(
+        $code,
+        <<<'CODE'
+            ->select('device_id')
+            ->groupBy('device_id')
+CODE,
+        <<<'CODE'
+            ->select('device_id')
+            ->selectRaw('SUM(ifInOctets_rate + ifOutOctets_rate) as total_rate')
+            ->groupBy('device_id')
+CODE,
+        'top-devices traffic total'
+    );
+
+    $code = replace_once(
+        $code,
+        <<<'CODE'
+        $results = $query->get()->map(fn ($port) => $this->standardRow($port->device, 'device_bits'));
+
+        return $this->formatData('Traffic', $results);
+CODE,
+        <<<'CODE'
+        $results = $query->get()->map(function ($port) {
+            $row = $this->standardRow($port->device, 'device_bits');
+            array_splice($row, 1, 0, [$this->formatBitsPerSecond($port->total_rate ?? 0)]);
+
+            return $row;
+        });
+
+        return $this->formatData(['当前', '趋势'], $results);
+CODE,
+        'top-devices traffic value'
+    );
+
+    $code = replace_once(
+        $code,
+        <<<'CODE'
+        $query = $this->withDeviceQuery(Processor::hasAccess(Auth::user()), (new Processor)->getTable())
+            ->orderByRaw('AVG(`processor_usage`) ' . $sort)
+            ->limit($settings['device_count']);
+CODE,
+        <<<'CODE'
+        $query = $this->withDeviceQuery(Processor::hasAccess(Auth::user()), (new Processor)->getTable())
+            ->selectRaw('AVG(`processor_usage`) as avg_processor_usage')
+            ->orderByRaw('AVG(`processor_usage`) ' . $sort)
+            ->limit($settings['device_count']);
+CODE,
+        'top-devices cpu average'
+    );
+
+    $code = replace_once(
+        $code,
+        <<<'CODE'
+        $results = $query->get()->map(fn ($port) => $this->standardRow($port->device, 'device_processor', ['tab' => 'health', 'metric' => 'processor']));
+
+        return $this->formatData('CPU Load', $results);
+CODE,
+        <<<'CODE'
+        $results = $query->get()->map(function ($processor) {
+            $row = $this->standardRow($processor->device, 'device_processor', ['tab' => 'health', 'metric' => 'processor']);
+            array_splice($row, 1, 0, [number_format((float) ($processor->avg_processor_usage ?? 0), 1) . '%']);
+
+            return $row;
+        });
+
+        return $this->formatData(['CPU', '趋势'], $results);
+CODE,
+        'top-devices cpu value'
+    );
+
+    save_if_changed($topDevicesController, $old, $code);
+}
+
+$topDevicesView = '/opt/librenms/resources/views/widgets/top-devices.blade.php';
+if (is_file($topDevicesView)) {
+    $old = file_get_contents($topDevicesView);
+    $code = replace_once(
+        $old,
+        '<th class="text-left">Device</th>',
+        '<th class="text-left">设备</th>',
+        'top-devices device header'
+    );
+    save_if_changed($topDevicesView, $old, $code);
+}
+
+$topInterfacesController = '/opt/librenms/app/Http/Controllers/Widgets/TopInterfacesController.php';
+if (is_file($topInterfacesController)) {
+    $old = file_get_contents($topInterfacesController);
+    $code = replace_once(
+        $old,
+        <<<'CODE'
+            ->select(['port_id', 'device_id', 'ifName', 'ifDescr', 'ifAlias'])
+            ->groupBy('port_id', 'device_id', 'ifName', 'ifDescr', 'ifAlias')
+CODE,
+        <<<'CODE'
+            ->select(['port_id', 'device_id', 'ifName', 'ifDescr', 'ifAlias'])
+            ->selectRaw('SUM(COALESCE(ifInOctets_rate, 0)) as in_octets_rate')
+            ->selectRaw('SUM(COALESCE(ifOutOctets_rate, 0)) as out_octets_rate')
+            ->selectRaw('SUM(COALESCE(ifInOctets_rate, 0) + COALESCE(ifOutOctets_rate, 0)) as total_octets_rate')
+            ->groupBy('port_id', 'device_id', 'ifName', 'ifDescr', 'ifAlias')
+CODE,
+        'top-interfaces current rates'
+    );
+    save_if_changed($topInterfacesController, $old, $code);
+}
+
+$topInterfacesView = '/opt/librenms/resources/views/widgets/top-interfaces.blade.php';
+if (is_file($topInterfacesView) && ! str_contains((string) file_get_contents($topInterfacesView), 'monitor-autoconfig numeric interface widget')) {
+    file_put_contents($topInterfacesView, <<<'BLADE'
+@php
+    // monitor-autoconfig numeric interface widget
+    $formatBps = fn($octetsPerSecond) => \LibreNMS\Util\Number::formatSi(max(0, (float) $octetsPerSecond) * 8, 2, 0, 'bps');
+@endphp
+<h4>最近 {{ $time_interval }} 分钟接口流量 Top {{ $interface_count }}</h4>
+<div class="table-responsive">
+    <table class="table table-hover table-condensed table-striped bootgrid-table">
+        <thead>
+            <tr>
+                <th class="text-left">设备</th>
+                <th class="text-left">接口</th>
+                <th class="text-left">下载</th>
+                <th class="text-left">上传</th>
+                <th class="text-left">合计</th>
+                <th class="text-left">趋势</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach($ports as $port)
+            <tr>
+                <td class="text-left"><x-device-link :device="$port->device">{{$port->device->shortDisplayName() }}</x-device-link></td>
+                <td class="text-left"><x-port-link :port="$port">{{ $port->getShortLabel() }}</x-port-link></td>
+                <td class="text-left">{{ $formatBps($port->in_octets_rate ?? 0) }}</td>
+                <td class="text-left">{{ $formatBps($port->out_octets_rate ?? 0) }}</td>
+                <td class="text-left">{{ $formatBps($port->total_octets_rate ?? 0) }}</td>
+                <td class="text-left"><x-port-link :port="$port"><x-graph :port="$port" type="port_bits" width="150" height="21"></x-graph></x-port-link></td>
+            </tr>
+        @endforeach
+        </tbody>
+    </table>
+</div>
+BLADE);
+}
+PHPEOF
+  if php /tmp/librenms-patch-dashboard-widgets.php; then
+    echo "[librenms-entry] dashboard ranking widget numeric patch applied"
+  else
+    echo "[librenms-entry] WARNING: dashboard ranking widget numeric patch failed"
+  fi
+  rm -f /tmp/librenms-patch-dashboard-widgets.php 2>/dev/null || true
+fi
+
 # Install the nginx/env/cron patch as a cont-init.d script so it runs AFTER LibreNMS's
 # own cont-init.d scripts finish generating nginx.conf and .env. The "99-" prefix
 # ensures alphabetical order places us last, so our server_name patch is not overwritten.

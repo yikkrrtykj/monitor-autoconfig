@@ -1103,7 +1103,7 @@ try {
     $selectWidgets->execute([$dashboardId]);
     $deleteIds = [];
     $managedTitles = [
-        '设备摘要', '设备状态', '接口流量排名', '设备流量排名', '交换机 CPU 排名', '服务器状态',
+        '设备摘要', '设备状态', '设备在线数', '接口流量排名', '设备流量排名', '交换机 CPU 排名', '服务器状态',
     ];
     foreach ($selectWidgets->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $settings = [];
@@ -1296,10 +1296,7 @@ try {
         $row += (int) ceil(count($wanCards) / 2) * 4;
     }
 
-    $addWidget('device-summary-horiz', '设备摘要', 1, $row, 6, 2, [
-        'refresh' => 60,
-    ]);
-    $addWidget('availability-map', '设备状态', 7, $row, 6, 2, [
+    $addWidget('availability-map', '设备在线数', 1, $row, 12, 2, [
         'refresh' => 60,
     ]);
     $row += 2;
@@ -1348,7 +1345,7 @@ try {
         ]);
     }
 
-    $total = 2 + count($wanCards)
+    $total = 1 + count($wanCards)
         + ($truthy('LIBRENMS_HOME_TOP_INTERFACES', 'true') ? 1 : 0)
         + ($truthy('LIBRENMS_HOME_TOP_DEVICES', 'true') ? 1 : 0)
         + ($truthy('LIBRENMS_HOME_SWITCH_CPU', 'true') ? 1 : 0)
