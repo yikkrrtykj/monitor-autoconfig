@@ -19,7 +19,6 @@ else
   _core="${_core%%-*}"
   CORE_IP="${_core:-192.168.10.254}"
 fi
-STAGE_START_OCTET="${LIBRENMS_STAGE_START_OCTET:-11}"
 DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
 FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"
 FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
@@ -645,22 +644,6 @@ expand_targets() {
   IFS=$old_ifs
 }
 
-device_name() {
-  ip=$1
-  if [ "$ip" = "$CORE_IP" ]; then
-    echo "Core"
-    return
-  fi
-
-  last_octet=${ip##*.}
-  if [ "$last_octet" -ge "$STAGE_START_OCTET" ] 2>/dev/null; then
-    stage_no=$((last_octet - STAGE_START_OCTET + 1))
-    echo "Stage$stage_no"
-  else
-    echo "Device-$ip"
-  fi
-}
-
 snmp_reachable() {
   ip=$1
 
@@ -680,12 +663,21 @@ add_device_api() {
 
   [ -z "$API_TOKEN" ] && return 1
 
+  # display_name 留空时不下发，让 LibreNMS 轮询后用设备自身的 sysName/hostname
+  # 作为显示名（例如交换机里配置的 hostname douyu-stage-1），而不是脚本按 IP 末位
+  # 编造的 Stage/Device 名——那会盖掉真实主机名。
+  if [ -n "$name" ]; then
+    _display_field="\"display_name\": \"$name\","
+  else
+    _display_field=""
+  fi
+
   result=$(curl -s -X POST "$LIBRENMS_URL/api/v0/devices" \
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
     -d "{
       \"hostname\": \"$ip\",
-      \"display_name\": \"$name\",
+      $_display_field
       \"version\": \"$SNMP_VERSION\",
       \"community\": \"$community\",
       \"port\": 161,
@@ -696,7 +688,7 @@ add_device_api() {
 
   msg=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message', d.get('error', 'unknown')))" 2>/dev/null || echo "parse error")
   status=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status', ''))" 2>/dev/null || true)
-  echo "  $name ($ip): $msg"
+  echo "  ${name:-$ip} ($ip): $msg"
 
   [ "$status" = "ok" ]
 }
@@ -708,8 +700,8 @@ add_device_cli() {
 
   php /opt/librenms/addhost.php \
     "$ip" "$SNMP_VERSION" "$community" 2>/dev/null && \
-    echo "  $name ($ip): Added via CLI" || \
-    echo "  $name ($ip): Already exists or failed"
+    echo "  ${name:-$ip} ($ip): Added via CLI" || \
+    echo "  ${name:-$ip} ($ip): Already exists or failed"
 }
 
 add_ping_device_api() {
@@ -1921,13 +1913,13 @@ echo ""
 
 expand_targets "$DISCOVERY_TARGETS" | while read -r ip; do
   [ -z "$ip" ] && continue
-  name=$(device_name "$ip")
 
+  # 不再按 IP 末位编造名字；留空让 LibreNMS 用设备真实 sysName/hostname。
   if snmp_reachable "$ip"; then
-    add_device_api "$name" "$ip" "$SNMP_COMMUNITY" || \
-      add_device_cli "$name" "$ip" "$SNMP_COMMUNITY"
+    add_device_api "" "$ip" "$SNMP_COMMUNITY" || \
+      add_device_cli "" "$ip" "$SNMP_COMMUNITY"
   else
-    echo "  $name ($ip): No SNMP response, skipped"
+    echo "  $ip: No SNMP response, skipped"
   fi
 done
 
@@ -1986,117 +1978,6 @@ except Exception:
 " "$1" 2>/dev/null || true
 }
 
-rule_payload_with_operations() {
-  python3 - "$1" "$ALERT_TRANSPORT_IDS" "${2:-}" <<'PY'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-rule_id = (sys.argv[3] or "").strip()
-if rule_id:
-    payload["rule_id"] = rule_id
-
-ids = []
-for part in (sys.argv[2] or "").split(","):
-    part = part.strip()
-    if part.isdigit():
-        ids.append(int(part))
-
-if ids:
-    payload["default_operation_step_duration"] = payload.get("default_operation_step_duration") or "5 m"
-    payload["operations"] = [{
-        "name": "Feishu",
-        "operation_phase": "problem",
-        "escalation_step_from": 1,
-        "escalation_step_to": None,
-        "start_in_seconds": 0,
-        "step_duration_seconds": 86400,
-        "transports": ids
-    }]
-
-print(json.dumps(payload, ensure_ascii=False))
-PY
-}
-
-rule_has_operation() {
-  _rule_id="$1"
-  [ -n "$_rule_id" ] || return 1
-  _rule_json=$(curl -s -H "X-Auth-Token: $API_TOKEN" "$LIBRENMS_URL/api/v0/rules/$_rule_id" 2>/dev/null || echo "{}")
-  echo "$_rule_json" | python3 -c '
-import sys, json
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-rule = data.get("rule") if isinstance(data, dict) else None
-if not rule and isinstance(data, dict):
-    rules = data.get("rules")
-    if isinstance(rules, list) and rules:
-        rule = rules[0]
-if not rule and isinstance(data, dict):
-    rule = data
-if not isinstance(rule, dict):
-    sys.exit(1)
-op_id = rule.get("alert_operation_id")
-ops = rule.get("operations") or []
-sys.exit(0 if op_id or ops else 1)
-' 2>/dev/null
-}
-
-rule_api_status() {
-  echo "$1" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status',''))" 2>/dev/null || echo ""
-}
-
-rule_api_message() {
-  echo "$1" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message',''))" 2>/dev/null || echo "$1"
-}
-
-# Idempotency: GET existing rules once and update them in place. Re-running this
-# script refreshes WAN matching and attaches the Feishu transport operation.
-upsert_rule() {
-  rule_name="$1"
-  base_payload="$2"
-  rule_id="$(rule_id_by_name "$rule_name")"
-
-  if [ -n "$rule_id" ]; then
-    rule_payload="$(rule_payload_with_operations "$base_payload" "$rule_id")"
-    _resp=$(curl -s -X PUT "$LIBRENMS_URL/api/v0/rules" \
-      -H "X-Auth-Token: $API_TOKEN" \
-      -H "Content-Type: application/json" \
-      -d "$rule_payload" 2>/dev/null)
-    _action="updated"
-  else
-    rule_payload="$(rule_payload_with_operations "$base_payload" "")"
-    _resp=$(curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
-      -H "X-Auth-Token: $API_TOKEN" \
-      -H "Content-Type: application/json" \
-      -d "$rule_payload" 2>/dev/null)
-    _action="created"
-  fi
-
-  _status=$(rule_api_status "$_resp")
-  if [ "$_status" = "ok" ]; then
-    if [ -n "$rule_id" ] && [ -n "$ALERT_TRANSPORT_IDS" ] && ! rule_has_operation "$rule_id"; then
-      echo "  Alert rule: $rule_name - existing rule has no operation, recreating with Feishu transport"
-      curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$rule_id" \
-        -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
-      rule_payload="$(rule_payload_with_operations "$base_payload" "")"
-      _resp=$(curl -s -X POST "$LIBRENMS_URL/api/v0/rules" \
-        -H "X-Auth-Token: $API_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "$rule_payload" 2>/dev/null)
-      _status=$(rule_api_status "$_resp")
-      _action="recreated"
-    fi
-  fi
-
-  if [ "$_status" = "ok" ]; then
-    echo "  Alert rule: $rule_name - $_action"
-  else
-    _msg=$(rule_api_message "$_resp")
-    echo "  Alert rule: $rule_name - $_action failed: $_msg"
-  fi
-}
 
 if [ -n "$API_TOKEN" ]; then
   EXISTING_RULES=$(curl -s -H "X-Auth-Token: $API_TOKEN" "$LIBRENMS_URL/api/v0/rules" 2>/dev/null || echo '{"rules":[]}')
@@ -2151,6 +2032,18 @@ if [ -n "$API_TOKEN" ]; then
     echo "  Alert rule: 互联口断链告警 - removed (handled per port-channel by realtime Feishu bridge)"
   else
     echo "  Alert rule: 互联口断链告警 - handled per port-channel by realtime Feishu bridge"
+  fi
+
+  # sysName 变更告警改由 bridge 自己轮询 /api/v0/devices 对比 sysName 实现，
+  # 卡片能显示 旧→新（webhook 只带当前值，做不到）。LibreNMS 告警规则也没有可靠的
+  # "changed" 算子。这里清理早期版本可能创建的该规则，避免重复/失效告警。
+  sysname_rule_id="$(rule_id_by_name "sysName 变更告警")"
+  if [ -n "$sysname_rule_id" ]; then
+    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$sysname_rule_id" \
+      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
+    echo "  Alert rule: sysName 变更告警 - removed (handled by realtime sysName watcher in Feishu bridge)"
+  else
+    echo "  Alert rule: sysName 变更告警 - handled by realtime sysName watcher in Feishu bridge"
   fi
 fi
 

@@ -130,11 +130,19 @@ DEVICE_ONLINE_STATE_FILE = os.environ.get(
     "DEVICE_ONLINE_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "notified-devices.json"),
 )
+SYSNAME_STATE_FILE = os.environ.get(
+    "SYSNAME_STATE_FILE",
+    os.path.join(BRIDGE_STATE_DIR, "device-sysnames.json"),
+)
 # UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 controller 数据
 # 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
 UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "10"))
 UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "5"))
+# sysName 变更告警：bridge 自己轮询 LibreNMS 设备列表，对比每台设备的 sysName，
+# 变化时推送 旧→新 飞书卡片（LibreNMS 没有可靠的 "changed" 告警算子，webhook 也只带当前值）。
+SYSNAME_CHANGE_ALERT_ENABLED = os.environ.get("SYSNAME_CHANGE_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+SYSNAME_CHANGE_POLL_INTERVAL = int(os.environ.get("SYSNAME_CHANGE_POLL_INTERVAL", "60"))
 
 _MAC_RE = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}|[0-9A-Fa-f]{12}"
 _DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
@@ -702,6 +710,20 @@ def build_librenms_card(payload):
     lines.append(f"⏰ 时间：{ts}")
 
     return _make_card(title, f"{emoji} {rule_name}", color, "\n".join(lines))
+
+
+def build_sysname_change_card(old_name, new_name, ip="", hostname=""):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    dev = new_name or hostname or ip or "?"
+    ip_str = f" ({ip})" if ip and ip != dev else ""
+    old_name = old_name or "?"
+    new_name = new_name or "?"
+    lines = [
+        f"🖥 设备：{dev}{ip_str}",
+        f"✏️ sysName：{old_name} → {new_name}",
+        f"⏰ 时间：{ts}",
+    ]
+    return _make_card(next_event_title(), "✏️ sysName 变更告警", "yellow", "\n".join(lines))
 
 
 def build_device_online_card(device):
@@ -2172,6 +2194,71 @@ def device_watcher():
         time.sleep(SWITCH_WATCH_INTERVAL)
 
 
+def sysname_change_watcher():
+    """Alert on switch sysName (hostname) changes, with old -> new.
+
+    LibreNMS alert rules have no reliable "changed" operator, and the alert
+    webhook only carries the current sysName, so neither can show old -> new.
+    Instead the bridge tracks each device's sysName itself by polling
+    /api/v0/devices and persisting a snapshot; when a device's sysName differs
+    from the stored value it pushes a Feishu card showing old -> new.
+
+    A fresh deploy (no snapshot) seeds the baseline silently to avoid an alert
+    storm on first run. The snapshot is replaced each poll so a removed/re-added
+    device (new device_id) does not false-alert.
+    """
+    if not SYSNAME_CHANGE_ALERT_ENABLED:
+        log("[SYSNAME] sysName change watcher disabled")
+        return
+    if not LIBRENMS_URL:
+        log("[SYSNAME] LIBRENMS_URL not set, sysName change watcher disabled")
+        return
+
+    time.sleep(30)  # let LibreNMS/API token settle after a (re)start
+    snapshot = _load_json_dict(SYSNAME_STATE_FILE)
+    seeded = bool(snapshot)
+    log(
+        "[SYSNAME] sysName change watcher enabled "
+        f"(poll={SYSNAME_CHANGE_POLL_INTERVAL}s, tracked={len(snapshot)})"
+    )
+
+    while True:
+        token = _librenms_token()
+        if not token:
+            log("[SYSNAME] no API token yet, retrying...")
+            time.sleep(SYSNAME_CHANGE_POLL_INTERVAL)
+            continue
+        try:
+            devices = fetch_librenms_devices(token)
+        except Exception as exc:
+            log(f"[SYSNAME] poll failed: {exc}")
+            time.sleep(SYSNAME_CHANGE_POLL_INTERVAL)
+            continue
+
+        current = {}
+        for dev in devices:
+            device_id = str(dev.get("device_id") or "")
+            sys_name = str(dev.get("sysName") or "").strip()
+            if not device_id or not sys_name:
+                continue
+            ip = str(dev.get("ip") or dev.get("hostname") or "").strip()
+            hostname = str(dev.get("hostname") or "").strip()
+            current[device_id] = {"sysName": sys_name, "ip": ip, "hostname": hostname}
+
+            prev_name = str((snapshot.get(device_id) or {}).get("sysName") or "").strip()
+            if seeded and prev_name and prev_name != sys_name:
+                log(f"[SYSNAME] CHANGE device_id={device_id} {prev_name} -> {sys_name} ({ip})")
+                send_feishu(build_sysname_change_card(prev_name, sys_name, ip=ip, hostname=hostname))
+
+        snapshot = current
+        _save_json_dict(SYSNAME_STATE_FILE, snapshot)
+        if not seeded:
+            seeded = True
+            log(f"[SYSNAME] baseline recorded for {len(snapshot)} device(s)")
+
+        time.sleep(SYSNAME_CHANGE_POLL_INTERVAL)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "feishu-bridge/1.0"
 
@@ -2238,6 +2325,7 @@ def main():
     if LIBRENMS_URL:
         log(f"[WATCHER] device watcher enabled (librenms_url={LIBRENMS_URL})")
         threading.Thread(target=device_watcher, daemon=True).start()
+        threading.Thread(target=sysname_change_watcher, daemon=True).start()
     else:
         log("[WATCHER] LIBRENMS_URL not set, device watcher disabled")
 
