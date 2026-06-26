@@ -9,6 +9,19 @@
         "iconColor": "rgba(0, 211, 255, 1)",
         "name": "Annotations & Alerts",
         "type": "dashboard"
+      },
+      {
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "enable": true,
+        "expr": "probe_success{job=\"infra-isp-ping\"} == 0",
+        "hide": false,
+        "iconColor": "red",
+        "name": "ISP 断线",
+        "step": "60s",
+        "titleFormat": "ISP 断线",
+        "tagKeys": "instance",
+        "textFormat": "{{instance}} 离线",
+        "type": "dashboard"
       }
     ]
   },
@@ -222,6 +235,62 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "fillOpacity": 75,
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 0,
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": { "color": "red", "index": 0, "text": "断线" },
+                "1": { "color": "green", "index": 1, "text": "在线" }
+              },
+              "type": "value"
+            }
+          ],
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 14 },
+      "id": 401,
+      "options": {
+        "alignValue": "left",
+        "legend": { "showLegend": true, "placement": "right", "displayMode": "list" },
+        "mergeValues": true,
+        "rowHeight": 0.7,
+        "showValue": "auto",
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "max by (instance) (probe_success{job=\"infra-isp-ping\"} and on(instance) (max_over_time(probe_success{job=\"infra-isp-ping\"}[6h]) >= 1))",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "ISP 在线状态",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
           "color": { "mode": "palette-classic" },
           "custom": {
             "axisBorderShow": false,
@@ -247,7 +316,7 @@
           { "matcher": { "id": "byName", "options": "上传" }, "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] }
         ]
       },
-      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 14 },
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 17 },
       "id": 400,
       "options": {
         "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true },
