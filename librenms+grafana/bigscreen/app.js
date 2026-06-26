@@ -1166,7 +1166,8 @@
     return {
       start: start <= end ? start : Math.max(0, end - minutes * 60),
       end,
-      step: 5
+      // Evidence pages are used after a dispute, so keep short ISP flaps visible.
+      step: 1
     };
   }
 
