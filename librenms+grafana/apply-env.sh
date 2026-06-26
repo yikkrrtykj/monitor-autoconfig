@@ -19,6 +19,26 @@ render_env_value() {
   env_value "$1" 2>/dev/null || true
 }
 
+migrate_env_default() {
+  key=$1
+  old=$2
+  new=$3
+  [ -f .env ] || return 0
+  current=$(sed -n "s/^${key}=//p" .env | tail -n 1)
+  if [ "$current" = "$old" ]; then
+    tmp_env=$(mktemp)
+    sed "s|^${key}=.*|${key}=${new}|" .env > "$tmp_env" && mv "$tmp_env" .env
+    echo "[apply-env] Migrated old default ${key}: ${old} -> ${new}"
+  fi
+}
+
+migrate_legacy_defaults() {
+  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 90 10
+  migrate_env_default UNIFI_AP_POLL_INTERVAL 15 5
+  migrate_env_default UNIFI_CONTROLLER_REFRESH_SECONDS 60 10
+  migrate_env_default UNIFI_SCRAPE_INTERVAL 30s 10s
+}
+
 render_grafana_provisioning() {
   if ! command -v python3 >/dev/null 2>&1; then
     echo "[apply-env] ERROR: python3 is required to render Grafana provisioning." >&2
@@ -42,6 +62,7 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+migrate_legacy_defaults
 render_grafana_provisioning
 
 SERVICES="

@@ -108,7 +108,7 @@ UNIFI_CONTROLLER_USER = os.environ.get("UNIFI_CONTROLLER_USER", "")
 UNIFI_CONTROLLER_PASS = os.environ.get("UNIFI_CONTROLLER_PASS", "")
 UNIFI_CONTROLLER_SITES = os.environ.get("UNIFI_CONTROLLER_SITES", "all")
 UNIFI_CONTROLLER_VERIFY_SSL = os.environ.get("UNIFI_CONTROLLER_VERIFY_SSL", "false").lower() in ("1", "true", "yes", "on")
-UNIFI_CONTROLLER_REFRESH_SECONDS = int(os.environ.get("UNIFI_CONTROLLER_REFRESH_SECONDS", "60"))
+UNIFI_CONTROLLER_REFRESH_SECONDS = int(os.environ.get("UNIFI_CONTROLLER_REFRESH_SECONDS", "10"))
 UNIFI_AP_NAME_SYNC_SECONDS = int(os.environ.get("UNIFI_AP_NAME_SYNC_SECONDS", "300"))
 INTERCONNECT_ALERT_ENABLED = os.environ.get("INTERCONNECT_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 INTERCONNECT_ALERT_FOR_SECONDS = int(os.environ.get("INTERCONNECT_ALERT_FOR_SECONDS", "5"))
@@ -131,8 +131,8 @@ DEVICE_ONLINE_STATE_FILE = os.environ.get(
 # UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 controller 数据
 # 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
 UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "90"))
-UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "15"))
+UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "10"))
+UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "5"))
 
 _DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
 _MAC_RE = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}|[0-9A-Fa-f]{12}"
@@ -1687,6 +1687,7 @@ def unifi_ap_watcher():
         controller_aps = fetch_unifi_controller_aps_cached()
         current = {}
         known = {}
+        explicit_online = {}
         for item in results:
             metric = item.get("metric") or {}
             key = metric.get("mac") or metric.get("name") or ""
@@ -1718,10 +1719,14 @@ def unifi_ap_watcher():
             known[key] = info
             label_online = _ap_online_from_labels(metric)
             is_online = metric_online.get(key)
-            if controller_info:
+            if is_online is None and label_online is not None:
+                is_online = label_online
+            if is_online is not None:
+                explicit_online[key] = is_online
+            elif controller_info:
                 is_online = bool(controller_info.get("online"))
-            elif is_online is None:
-                is_online = True if label_online is None else label_online
+            else:
+                is_online = True
             if is_online:
                 current[key] = info
 
@@ -1734,7 +1739,10 @@ def unifi_ap_watcher():
                 "source": controller_info.get("source") or info.get("source") or "controller",
             }
             known[key] = merged
-            if controller_info.get("online"):
+            if key in explicit_online:
+                if explicit_online[key]:
+                    current[key] = merged
+            elif controller_info.get("online"):
                 current[key] = merged
 
         # Seen APs: refresh metadata, arm on first sight, recover if was down.

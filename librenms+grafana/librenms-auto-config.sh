@@ -1101,33 +1101,41 @@ try {
     $managed = 'monitor-autoconfig';
     $selectWidgets = $pdo->prepare('SELECT user_widget_id, widget, title, settings FROM users_widgets WHERE dashboard_id = ?');
     $selectWidgets->execute([$dashboardId]);
-    $deleteIds = [];
+    $existingWidgets = $selectWidgets->fetchAll(PDO::FETCH_ASSOC);
     $managedTitles = [
         '设备摘要', '设备状态', '设备在线数', '接口流量排名', '设备流量排名', '交换机 CPU 排名', '服务器状态',
     ];
-    foreach ($selectWidgets->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $settings = [];
-        if (! empty($row['settings'])) {
-            $decoded = json_decode((string) $row['settings'], true);
-            if (is_array($decoded)) {
-                $settings = $decoded;
+    $legacyDefaultTitleSet = array_fill_keys($managedTitles, true);
+    $titleKeyForWidget = function (string $widget, array $settings): string {
+        if (! empty($settings['autoconfig_key'])) {
+            return (string) $settings['autoconfig_key'];
+        }
+        if ($widget === 'generic-graph' &&
+            (string) ($settings['graph_type'] ?? '') === 'port_bits' &&
+            (string) ($settings['graph_port'] ?? '') !== '') {
+            return 'wan_port_' . (string) $settings['graph_port'];
+        }
+        if ($widget === 'availability-map') {
+            return 'availability';
+        }
+        if ($widget === 'top-interfaces') {
+            return 'top_interfaces';
+        }
+        if ($widget === 'top-devices') {
+            $query = (string) ($settings['top_query'] ?? '');
+            if ($query === 'traffic') {
+                return 'top_devices_traffic';
+            }
+            if ($query === 'cpu') {
+                return 'top_devices_cpu';
             }
         }
-        $title = (string) ($row['title'] ?? '');
-        $widget = (string) ($row['widget'] ?? '');
-        $graphType = (string) ($settings['graph_type'] ?? '');
-        if (($settings['autoconfig'] ?? '') === $managed ||
-            ($widget === 'generic-graph' && $graphType === 'port_bits') ||
-            str_starts_with($title, 'WAN · ') ||
-            in_array($title, $managedTitles, true)) {
-            $deleteIds[] = (int) $row['user_widget_id'];
+        if ($widget === 'server-stats') {
+            return 'server_stats';
         }
-    }
-    if ($deleteIds) {
-        $placeholders = implode(',', array_fill(0, count($deleteIds), '?'));
-        $delete = $pdo->prepare("DELETE FROM users_widgets WHERE user_widget_id IN ({$placeholders})");
-        $delete->execute($deleteIds);
-    }
+
+        return '';
+    };
 
     $json = function (array $settings) use ($managed): string {
         $settings = array_merge(['autoconfig' => $managed], $settings);
@@ -1271,12 +1279,63 @@ try {
         $wanCards = array_slice($wanCards, 0, $limit);
     }
 
+    $defaultTitleByKey = [
+        'availability' => '设备在线数',
+        'top_interfaces' => '接口流量排名',
+        'top_devices_traffic' => '设备流量排名',
+        'top_devices_cpu' => '交换机 CPU 排名',
+        'server_stats' => '服务器状态',
+    ];
+    foreach ($wanCards as $card) {
+        $defaultTitleByKey['wan_port_' . $card['port_id']] = $card['title'];
+    }
+
+    $preservedTitles = [];
+    $deleteIds = [];
+    foreach ($existingWidgets as $row) {
+        $settings = [];
+        if (! empty($row['settings'])) {
+            $decoded = json_decode((string) $row['settings'], true);
+            if (is_array($decoded)) {
+                $settings = $decoded;
+            }
+        }
+        $title = trim((string) ($row['title'] ?? ''));
+        $widget = (string) ($row['widget'] ?? '');
+        $key = $titleKeyForWidget($widget, $settings);
+        $isCurrentWanGraph = str_starts_with($key, 'wan_port_') && isset($defaultTitleByKey[$key]);
+        if ($key !== '' &&
+            $title !== '' &&
+            ! isset($legacyDefaultTitleSet[$title]) &&
+            ! str_starts_with($title, 'WAN · ') &&
+            (($defaultTitleByKey[$key] ?? '') !== $title)) {
+            $preservedTitles[$key] = $title;
+        }
+        if (($settings['autoconfig'] ?? '') === $managed ||
+            $isCurrentWanGraph ||
+            str_starts_with($title, 'WAN · ') ||
+            in_array($title, $managedTitles, true)) {
+            $deleteIds[] = (int) $row['user_widget_id'];
+        }
+    }
+    if ($deleteIds) {
+        $placeholders = implode(',', array_fill(0, count($deleteIds), '?'));
+        $delete = $pdo->prepare("DELETE FROM users_widgets WHERE user_widget_id IN ({$placeholders})");
+        $delete->execute($deleteIds);
+    }
+    $titleFor = function (string $key, string $default) use (&$preservedTitles): string {
+        return $preservedTitles[$key] ?? $default;
+    };
+
     $row = 1;
     foreach ($wanCards as $idx => $card) {
+        $key = 'wan_port_' . $card['port_id'];
+        $title = $titleFor($key, $card['title']);
         $col = ($idx % 2) === 0 ? 1 : 7;
         $graphRow = $row + (int) floor($idx / 2) * 4;
-        $addWidget('generic-graph', $card['title'], $col, $graphRow, 6, 4, [
-            'title' => $card['title'],
+        $addWidget('generic-graph', $title, $col, $graphRow, 6, 4, [
+            'autoconfig_key' => $key,
+            'title' => $title,
             'refresh' => 60,
             'graph_type' => 'port_bits',
             'graph_range' => 'day',
@@ -1299,13 +1358,17 @@ try {
         $row += (int) ceil(count($wanCards) / 2) * 4;
     }
 
-    $addWidget('availability-map', '设备在线数', 1, $row, 12, 2, [
+    $key = 'availability';
+    $addWidget('availability-map', $titleFor($key, '设备在线数'), 1, $row, 12, 2, [
+        'autoconfig_key' => $key,
         'refresh' => 60,
     ]);
     $row += 2;
 
     if ($truthy('LIBRENMS_HOME_TOP_INTERFACES', 'true')) {
-        $addWidget('top-interfaces', '接口流量排名', 1, $row, 6, 3, [
+        $key = 'top_interfaces';
+        $addWidget('top-interfaces', $titleFor($key, '接口流量排名'), 1, $row, 6, 3, [
+            'autoconfig_key' => $key,
             'refresh' => 60,
             'interface_count' => 8,
             'time_interval' => 15,
@@ -1315,8 +1378,11 @@ try {
         ]);
     }
     if ($truthy('LIBRENMS_HOME_TOP_DEVICES', 'true')) {
-        $addWidget('top-devices', '设备流量排名', 7, $row, 6, 3, [
-            'title' => '设备流量排名',
+        $key = 'top_devices_traffic';
+        $title = $titleFor($key, '设备流量排名');
+        $addWidget('top-devices', $title, 7, $row, 6, 3, [
+            'autoconfig_key' => $key,
+            'title' => $title,
             'refresh' => 60,
             'top_query' => 'traffic',
             'sort_order' => 'desc',
@@ -1328,8 +1394,11 @@ try {
     $row += 3;
 
     if ($truthy('LIBRENMS_HOME_SWITCH_CPU', 'true')) {
-        $addWidget('top-devices', '交换机 CPU 排名', 1, $row, 12, 3, [
-            'title' => '交换机 CPU 排名',
+        $key = 'top_devices_cpu';
+        $title = $titleFor($key, '交换机 CPU 排名');
+        $addWidget('top-devices', $title, 1, $row, 12, 3, [
+            'autoconfig_key' => $key,
+            'title' => $title,
             'refresh' => 60,
             'top_query' => 'cpu',
             'sort_order' => 'desc',
@@ -1343,7 +1412,9 @@ try {
     $serverMode = strtolower(trim((string) (getenv('LIBRENMS_HOME_SERVER_STATS') ?: 'auto')));
     $hasServerTargets = trim((string) (getenv('SERVER_PING') ?: '')) !== '';
     if ($serverMode === 'true' || ($serverMode === 'auto' && $hasServerTargets)) {
-        $addWidget('server-stats', '服务器状态', 1, $row, 12, 3, [
+        $key = 'server_stats';
+        $addWidget('server-stats', $titleFor($key, '服务器状态'), 1, $row, 12, 3, [
+            'autoconfig_key' => $key,
             'refresh' => 60,
         ]);
     }

@@ -17,6 +17,26 @@ env_value() {
   printf '%s' "$value"
 }
 
+migrate_env_default() {
+  key=$1
+  old=$2
+  new=$3
+  [ -f .env ] || return 0
+  current=$(sed -n "s/^${key}=//p" .env | tail -n 1)
+  if [ "$current" = "$old" ]; then
+    tmp_env=$(mktemp)
+    sed "s|^${key}=.*|${key}=${new}|" .env > "$tmp_env" && mv "$tmp_env" .env
+    echo "[deploy] Migrated old default ${key}: ${old} -> ${new}"
+  fi
+}
+
+migrate_legacy_defaults() {
+  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 90 10
+  migrate_env_default UNIFI_AP_POLL_INTERVAL 15 5
+  migrate_env_default UNIFI_CONTROLLER_REFRESH_SECONDS 60 10
+  migrate_env_default UNIFI_SCRAPE_INTERVAL 30s 10s
+}
+
 # 探测本机主 IP：优先默认路由源 IP（ip route get），退而用 python UDP socket（不发包），再退 hostname -I。
 detect_host_ip() {
   _ip=""
@@ -42,6 +62,8 @@ if [ ! -f .env ]; then
     exit 1
   fi
 fi
+
+migrate_legacy_defaults
 
 # SERVER_IP 留空时自动探测本机 IP 并写回 .env（换场地清空 SERVER_IP= 即可重新探测）。
 if ! env_value SERVER_IP >/dev/null 2>&1; then

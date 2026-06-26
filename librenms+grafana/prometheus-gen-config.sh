@@ -29,10 +29,10 @@ SNMP_UPTIME_SCRAPE_INTERVAL="${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
 # Port-channel / LAG interconnect status needs ifOperStatus. Keep this separate
 # from uptime so the fast link watcher does not make all SNMP jobs heavy.
 SWITCH_IFMIB_SCRAPE_INTERVAL="${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
-# UniFi Poller（unpoller）抓取：仅在配置了控制器地址时启用。unpoller 默认每 30s 轮询
-# 一次控制器，scrape 比这更快没意义，所以默认 30s。
+# UniFi Poller（unpoller）抓取：仅在配置了控制器地址时启用。AP 掉线告警默认
+# 10s 确认，Prometheus 这里也保持 10s 抓取，避免控制器状态更新后还多等一轮。
 UNIFI_CONTROLLER_URL="${UNIFI_CONTROLLER_URL:-}"
-UNIFI_SCRAPE_INTERVAL="${UNIFI_SCRAPE_INTERVAL:-30s}"
+UNIFI_SCRAPE_INTERVAL="${UNIFI_SCRAPE_INTERVAL:-10s}"
 
 # Parse "NAME:IP" or "NAME:IP-START-IP-END" format.
 # Outputs Prometheus static_config target lines with display_name label.
