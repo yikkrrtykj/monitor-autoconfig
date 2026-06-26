@@ -634,10 +634,18 @@ def _host_display_name(host, fdb_entry=None):
         return host
 
 
+def _is_sysname_change_alert(rule_name):
+    lower = rule_name.lower()
+    return "sysname" in lower and ("变更" in rule_name or "change" in lower)
+
+
 def build_librenms_card(payload):
     state = str(payload.get("state", "1"))
     rule_name = payload.get("name") or payload.get("rule") or "告警"
     severity = (payload.get("severity") or "warning").lower()
+
+    if _is_sysname_change_alert(rule_name):
+        return build_sysname_change_card(payload)
 
     sys_name = payload.get("sysName") or ""
     hostname = payload.get("hostname") or ""
@@ -678,6 +686,23 @@ def build_librenms_card(payload):
     lines.append(f"⏰ 时间：{ts}")
 
     return _make_card(title, f"{emoji} {rule_name}", color, "\n".join(lines))
+
+
+def build_sysname_change_card(payload):
+    sys_name = payload.get("sysName") or ""
+    hostname = payload.get("hostname") or ""
+    ip = payload.get("ip") or ""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    dev_name = sys_name or hostname or ip or "?"
+    ip_str = f" ({ip})" if ip and ip != dev_name else ""
+
+    lines = [
+        f"🖥 设备：{dev_name}{ip_str}",
+        f"✏️ sysName 已变更为：{dev_name}",
+        f"⏰ 时间：{ts}",
+    ]
+    return _make_card(next_event_title(), "✏️ sysName 变更告警", "yellow", "\n".join(lines))
 
 
 def build_device_online_card(device):

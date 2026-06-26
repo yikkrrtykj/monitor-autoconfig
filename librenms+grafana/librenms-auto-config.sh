@@ -2152,6 +2152,11 @@ if [ -n "$API_TOKEN" ]; then
   else
     echo "  Alert rule: 互联口断链告警 - handled per port-channel by realtime Feishu bridge"
   fi
+
+  # sysName 变更告警：LibreNMS 每次轮询若检测到交换机 sysName 发生变化即触发，
+  # 推送飞书卡片，方便现场工程师确认交换机名字改动是否符合预期。
+  upsert_rule "sysName 变更告警" \
+    '{"name":"sysName 变更告警","builder":"{\"condition\":\"AND\",\"rules\":[{\"id\":\"devices.sysName\",\"field\":\"devices.sysName\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"changed\",\"value\":\"\"}]}","severity":"warning","count":-1,"delay":0,"interval":5,"invert":false,"enabled":true}'
 fi
 
 echo ""
