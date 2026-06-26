@@ -19,7 +19,6 @@ else
   _core="${_core%%-*}"
   CORE_IP="${_core:-192.168.10.254}"
 fi
-STAGE_START_OCTET="${LIBRENMS_STAGE_START_OCTET:-11}"
 DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
 FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"
 FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
@@ -645,22 +644,6 @@ expand_targets() {
   IFS=$old_ifs
 }
 
-device_name() {
-  ip=$1
-  if [ "$ip" = "$CORE_IP" ]; then
-    echo "Core"
-    return
-  fi
-
-  last_octet=${ip##*.}
-  if [ "$last_octet" -ge "$STAGE_START_OCTET" ] 2>/dev/null; then
-    stage_no=$((last_octet - STAGE_START_OCTET + 1))
-    echo "Stage$stage_no"
-  else
-    echo "Device-$ip"
-  fi
-}
-
 snmp_reachable() {
   ip=$1
 
@@ -680,12 +663,21 @@ add_device_api() {
 
   [ -z "$API_TOKEN" ] && return 1
 
+  # display_name 留空时不下发，让 LibreNMS 轮询后用设备自身的 sysName/hostname
+  # 作为显示名（例如交换机里配置的 hostname douyu-stage-1），而不是脚本按 IP 末位
+  # 编造的 Stage/Device 名——那会盖掉真实主机名。
+  if [ -n "$name" ]; then
+    _display_field="\"display_name\": \"$name\","
+  else
+    _display_field=""
+  fi
+
   result=$(curl -s -X POST "$LIBRENMS_URL/api/v0/devices" \
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
     -d "{
       \"hostname\": \"$ip\",
-      \"display_name\": \"$name\",
+      $_display_field
       \"version\": \"$SNMP_VERSION\",
       \"community\": \"$community\",
       \"port\": 161,
@@ -696,7 +688,7 @@ add_device_api() {
 
   msg=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message', d.get('error', 'unknown')))" 2>/dev/null || echo "parse error")
   status=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status', ''))" 2>/dev/null || true)
-  echo "  $name ($ip): $msg"
+  echo "  ${name:-$ip} ($ip): $msg"
 
   [ "$status" = "ok" ]
 }
@@ -708,8 +700,8 @@ add_device_cli() {
 
   php /opt/librenms/addhost.php \
     "$ip" "$SNMP_VERSION" "$community" 2>/dev/null && \
-    echo "  $name ($ip): Added via CLI" || \
-    echo "  $name ($ip): Already exists or failed"
+    echo "  ${name:-$ip} ($ip): Added via CLI" || \
+    echo "  ${name:-$ip} ($ip): Already exists or failed"
 }
 
 add_ping_device_api() {
@@ -1921,13 +1913,13 @@ echo ""
 
 expand_targets "$DISCOVERY_TARGETS" | while read -r ip; do
   [ -z "$ip" ] && continue
-  name=$(device_name "$ip")
 
+  # 不再按 IP 末位编造名字；留空让 LibreNMS 用设备真实 sysName/hostname。
   if snmp_reachable "$ip"; then
-    add_device_api "$name" "$ip" "$SNMP_COMMUNITY" || \
-      add_device_cli "$name" "$ip" "$SNMP_COMMUNITY"
+    add_device_api "" "$ip" "$SNMP_COMMUNITY" || \
+      add_device_cli "" "$ip" "$SNMP_COMMUNITY"
   else
-    echo "  $name ($ip): No SNMP response, skipped"
+    echo "  $ip: No SNMP response, skipped"
   fi
 done
 
@@ -2153,10 +2145,17 @@ if [ -n "$API_TOKEN" ]; then
     echo "  Alert rule: 互联口断链告警 - handled per port-channel by realtime Feishu bridge"
   fi
 
-  # sysName 变更告警：LibreNMS 每次轮询若检测到交换机 sysName 发生变化即触发，
-  # 推送飞书卡片，方便现场工程师确认交换机名字改动是否符合预期。
-  upsert_rule "sysName 变更告警" \
-    '{"name":"sysName 变更告警","builder":"{\"condition\":\"AND\",\"rules\":[{\"id\":\"devices.sysName\",\"field\":\"devices.sysName\",\"type\":\"string\",\"input\":\"text\",\"operator\":\"changed\",\"value\":\"\"}]}","severity":"warning","count":-1,"delay":0,"interval":5,"invert":false,"enabled":true}'
+  # sysName 变更告警改由 bridge 自己轮询 /api/v0/devices 对比 sysName 实现，
+  # 卡片能显示 旧→新（webhook 只带当前值，做不到）。LibreNMS 告警规则也没有可靠的
+  # "changed" 算子。这里清理早期版本可能创建的该规则，避免重复/失效告警。
+  sysname_rule_id="$(rule_id_by_name "sysName 变更告警")"
+  if [ -n "$sysname_rule_id" ]; then
+    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$sysname_rule_id" \
+      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
+    echo "  Alert rule: sysName 变更告警 - removed (handled by realtime sysName watcher in Feishu bridge)"
+  else
+    echo "  Alert rule: sysName 变更告警 - handled by realtime sysName watcher in Feishu bridge"
+  fi
 fi
 
 echo ""
