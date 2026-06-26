@@ -135,7 +135,7 @@
             "pointSize": 5,
             "scaleDistribution": { "type": "linear" },
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": false
           },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
@@ -154,7 +154,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "max by (instance) (label_replace(((avg by (instance,target_ip) (probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) * on(target_ip) group_left(snmp_name) label_replace(max by (target_ip,sysName) (sysName{job=~\"infra-switch-snmp|infra-fw-snmp\",sysName=~\".+\"}), \"snmp_name\", \"$1\", \"sysName\", \"(.+)\")), \"instance\", \"$1\", \"snmp_name\", \"(.+)\") or ((avg by (instance,target_ip) (probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) unless on(target_ip) max by (target_ip) (sysName{job=~\"infra-switch-snmp|infra-fw-snmp\",sysName=~\".+\"})))",
+          "expr": "max by (instance,target_ip) (label_replace(((avg by (instance,target_ip) (probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) * on(target_ip) group_left(snmp_name) label_replace(max by (target_ip,sysName) (sysName{job=~\"infra-switch-snmp|infra-fw-snmp\",sysName=~\".+\"}), \"snmp_name\", \"$1\", \"sysName\", \"(.+)\")), \"instance\", \"$1\", \"snmp_name\", \"(.+)\") or ((avg by (instance,target_ip) (probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) unless on(target_ip) max by (target_ip) (sysName{job=~\"infra-switch-snmp|infra-fw-snmp\",sysName=~\".+\"})))",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
@@ -166,46 +166,57 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
+          "color": { "mode": "thresholds" },
           "custom": {
+            "fillOpacity": 75,
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "scaleDistribution": { "type": "linear" }
-          }
+            "lineWidth": 0,
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": { "color": "green", "text": "正常" },
+                "1": { "color": "red", "text": "丢包/断线" }
+              },
+              "type": "value"
+            }
+          ],
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.01 }
+            ]
+          },
+          "unit": "short"
         },
         "overrides": []
       },
       "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
       "id": 300,
       "options": {
-        "calculate": false,
-        "cellGap": 2,
-        "color": {
-          "exponent": 0.5,
-          "fill": "dark-orange",
-          "mode": "scheme",
-          "reverse": false,
-          "scale": "exponential",
-          "scheme": "RdYlGn",
-          "steps": 2
-        },
-        "exemplars": { "color": "rgba(255,0,255,0.7)" },
-        "filterValues": { "le": -1 },
-        "legend": { "show": false },
-        "rowsFrame": { "layout": "auto" },
-        "tooltip": { "maxHeight": 600, "mode": "single", "showColorScale": false, "yHistogram": false },
-        "yAxis": { "axisPlacement": "left", "reverse": true, "unit": "percentunit" }
+        "alignValue": "left",
+        "legend": { "showLegend": false },
+        "mergeValues": true,
+        "rowHeight": 0.8,
+        "showValue": "never",
+        "tooltip": { "mode": "single", "sort": "none" }
       },
       "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "max by (instance) (label_replace(((max by (instance,target_ip) (1 - avg_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[30s])) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) * on(target_ip) group_left(snmp_name) label_replace(max by (target_ip,sysName) (sysName{job=~\"infra-switch-snmp|infra-fw-snmp\",sysName=~\".+\"}), \"snmp_name\", \"$1\", \"sysName\", \"(.+)\")), \"instance\", \"$1\", \"snmp_name\", \"(.+)\") or ((max by (instance,target_ip) (1 - avg_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[30s])) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) unless on(target_ip) max by (target_ip) (sysName{job=~\"infra-switch-snmp|infra-fw-snmp\",sysName=~\".+\"})))",
+          "expr": "max by (instance,target_ip) (label_replace(((max by (instance,target_ip) (1 - avg_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[30s])) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) * on(target_ip) group_left(snmp_name) label_replace(max by (target_ip,sysName) (sysName{job=~\"infra-switch-snmp|infra-fw-snmp\",sysName=~\".+\"}), \"snmp_name\", \"$1\", \"sysName\", \"(.+)\")), \"instance\", \"$1\", \"snmp_name\", \"(.+)\") or ((max by (instance,target_ip) (1 - avg_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[30s])) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) unless on(target_ip) max by (target_ip) (sysName{job=~\"infra-switch-snmp|infra-fw-snmp\",sysName=~\".+\"})))",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
       "title": "丢包热力图",
-      "type": "heatmap"
+      "type": "state-timeline"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },

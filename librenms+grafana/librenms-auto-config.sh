@@ -1099,7 +1099,7 @@ try {
     }
 
     $managed = 'monitor-autoconfig';
-    $selectWidgets = $pdo->prepare('SELECT user_widget_id, title, settings FROM users_widgets WHERE dashboard_id = ?');
+    $selectWidgets = $pdo->prepare('SELECT user_widget_id, widget, title, settings FROM users_widgets WHERE dashboard_id = ?');
     $selectWidgets->execute([$dashboardId]);
     $deleteIds = [];
     $managedTitles = [
@@ -1114,7 +1114,10 @@ try {
             }
         }
         $title = (string) ($row['title'] ?? '');
+        $widget = (string) ($row['widget'] ?? '');
+        $graphType = (string) ($settings['graph_type'] ?? '');
         if (($settings['autoconfig'] ?? '') === $managed ||
+            ($widget === 'generic-graph' && $graphType === 'port_bits') ||
             str_starts_with($title, 'WAN · ') ||
             in_array($title, $managedTitles, true)) {
             $deleteIds[] = (int) $row['user_widget_id'];
@@ -2085,7 +2088,18 @@ echo "============================================"
 echo "  LibreNMS Discovery Complete!"
 echo "============================================"
 echo ""
-echo "  Web UI:    $LIBRENMS_BASE_URL"
+if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ]; then
+  echo "  Web UI:    $LIBRENMS_BASE_URL"
+else
+  if [ -n "$SERVER_IP" ]; then
+    echo "  Web UI:    dynamic request host (LAN: http://$SERVER_IP:$LIBRENMS_PORT)"
+  else
+    echo "  Web UI:    dynamic request host"
+  fi
+  if [ -n "$LIBRENMS_BASE_URL" ] && [ "$LIBRENMS_BASE_URL" != "http://localhost:8002" ]; then
+    echo "             external hint: $LIBRENMS_BASE_URL"
+  fi
+fi
 echo "  Username:  $LIBRENMS_ADMIN_USER"
 echo "  Password:  $LIBRENMS_ADMIN_PASSWORD"
 echo ""
