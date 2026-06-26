@@ -28,6 +28,7 @@ Env:
   ISP_SATURATION_PERCENT  alert threshold percent of configured bandwidth
   SYSLOG_WATCH_ENABLED    true = watch syslog file for security events (default true)
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
+  SYSLOG_EVENT_RATE_LIMIT seconds to suppress duplicate syslog event cards (default 60)
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
   ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
@@ -86,6 +87,7 @@ ISP_PING = os.environ.get("ISP_PING", "")
 ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "80") or "80")
 SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
+SYSLOG_EVENT_RATE_LIMIT = int(os.environ.get("SYSLOG_EVENT_RATE_LIMIT", "60"))
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
 ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
@@ -134,10 +136,32 @@ UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower(
 UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "10"))
 UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "5"))
 
-_DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
 _MAC_RE = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}|[0-9A-Fa-f]{12}"
-
-
+_DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
+_MACFLAP_RE = re.compile(
+    rf"MACFLAP_NOTIF:\s+Host\s+({_MAC_RE})\s+in\s+vlan\s+(\d+)\s+is\s+flapping\s+between\s+port\s+(\S+)\s+and\s+port\s+(\S+)",
+    re.IGNORECASE,
+)
+_NATIVE_VLAN_RE = re.compile(
+    r"NATIVE_VLAN_MISMATCH:\s+Native VLAN mismatch discovered on\s+(\S+)\s+\((\d+)\),\s+with\s+(.+?)\s+(\S+)\s+\((\d+)\)",
+    re.IGNORECASE,
+)
+_ERRDISABLE_RE = re.compile(
+    r"ERR_?DISABLE:\s+(.+?)\s+error detected on\s+(\S+),\s+putting\s+\S+\s+in err-disable state",
+    re.IGNORECASE,
+)
+_BPDUGUARD_RE = re.compile(
+    r"(?:BPDUGUARD|BPDU Guard).*?(?:port|interface)\s+(\S+)",
+    re.IGNORECASE,
+)
+_STORM_RE = re.compile(
+    r"(?:STORM_CONTROL|storm-control|storm control).*?(?:on|interface)\s+(\S+)",
+    re.IGNORECASE,
+)
+_LOOPBACK_RE = re.compile(
+    r"LOOP_BACK_DETECTED.*?(?:on|interface)\s+(\S+)",
+    re.IGNORECASE,
+)
 def _clean_token(raw):
     t = raw.strip()
     if "/hook/" in t:
@@ -1858,10 +1882,145 @@ def build_dhcp_snooping_card(host, message, parsed=None):
     return _make_card(next_event_title(), "⚠️ DHCP Snooping 异常", "orange", "\n".join(lines))
 
 
+def _clean_iface_token(value):
+    return str(value or "").strip().rstrip(".,;:")
+
+
+def parse_network_syslog_event(message):
+    text = str(message or "").strip()
+
+    match = _NATIVE_VLAN_RE.search(text)
+    if match:
+        local_port, local_vlan, peer_device, peer_port, peer_vlan = match.groups()
+        local_port = _clean_iface_token(local_port)
+        peer_port = _clean_iface_token(peer_port)
+        return {
+            "kind": "native_vlan_mismatch",
+            "title": "🚨 接入口疑似串线",
+            "color": "red",
+            "local_port": local_port,
+            "local_vlan": local_vlan,
+            "peer_device": peer_device.strip(),
+            "peer_port": peer_port,
+            "peer_vlan": peer_vlan,
+            "dedupe": f"native|{local_port}|{local_vlan}|{peer_device.strip()}|{peer_port}|{peer_vlan}",
+            "hint": "两个 access/native VLAN 不一致的端口互相收到了 CDP，常见于跳线、小交换机、AP 第二网口把两个口桥在一起。",
+        }
+
+    match = _MACFLAP_RE.search(text)
+    if match:
+        mac, vlan, port_a, port_b = match.groups()
+        port_a = _clean_iface_token(port_a)
+        port_b = _clean_iface_token(port_b)
+        return {
+            "kind": "mac_flap",
+            "title": "🚨 MAC 地址漂移",
+            "color": "red",
+            "mac": _format_mac(mac),
+            "vlan": vlan,
+            "port_a": port_a,
+            "port_b": port_b,
+            "dedupe": f"macflap|{_normalize_mac_hex(mac)}|{vlan}|{port_a}|{port_b}",
+            "hint": "同一个 MAC 在两个端口之间反复学习，通常是二层环路、无线桥接、AP Mesh/第二网口或错误跳线。",
+        }
+
+    match = _ERRDISABLE_RE.search(text)
+    if match:
+        reason, port = match.groups()
+        reason = reason.strip()
+        port = _clean_iface_token(port)
+        return {
+            "kind": "errdisable",
+            "title": "🛑 接口被保护关闭",
+            "color": "orange",
+            "port": port,
+            "reason": reason,
+            "dedupe": f"errdisable|{port}|{reason.lower()}",
+            "hint": "交换机已把接口放入 err-disabled；按原因检查 BPDU、风暴、环路或链路抖动。",
+        }
+
+    if "BPDUGUARD" in text.upper() or "BPDU Guard" in text:
+        match = _BPDUGUARD_RE.search(text)
+        port = _clean_iface_token(match.group(1)) if match else ""
+        return {
+            "kind": "bpduguard",
+            "title": "🛑 接入口收到 BPDU",
+            "color": "orange",
+            "port": port,
+            "dedupe": f"bpduguard|{port}|{text[:100]}",
+            "hint": "普通终端/AP 接入口不应该收到 BPDU；后面可能接了交换机、桥接设备或形成环路。",
+        }
+
+    if "STORM_CONTROL" in text.upper() or "storm-control" in text.lower() or "storm control" in text.lower():
+        match = _STORM_RE.search(text)
+        port = _clean_iface_token(match.group(1)) if match else ""
+        return {
+            "kind": "storm_control",
+            "title": "🛑 广播/组播风暴",
+            "color": "orange",
+            "port": port,
+            "dedupe": f"storm|{port}|{text[:100]}",
+            "hint": "广播或组播流量超过阈值，端口可能已被 storm-control 关闭。",
+        }
+
+    if "LOOP_BACK_DETECTED" in text.upper():
+        match = _LOOPBACK_RE.search(text)
+        port = _clean_iface_token(match.group(1)) if match else ""
+        return {
+            "kind": "loopback",
+            "title": "🛑 端口检测到回环",
+            "color": "red",
+            "port": port,
+            "dedupe": f"loopback|{port}|{text[:100]}",
+            "hint": "接口检测到二层回环，优先查该口后面的跳线、AP 第二网口或小交换机。",
+        }
+
+    return None
+
+
+def build_network_syslog_card(host, message, event):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    device = _host_display_name(host)
+    dev_text = f"{device} ({host})" if host and host != device else device
+
+    lines = [f"🖥 设备：{dev_text}"]
+    kind = event.get("kind")
+
+    if kind == "native_vlan_mismatch":
+        lines.extend([
+            f"🔌 本地接口：{event.get('local_port')} / VLAN {event.get('local_vlan')}",
+            f"🔁 对端：{event.get('peer_device')} {event.get('peer_port')} / VLAN {event.get('peer_vlan')}",
+            f"📋 判断：{event.get('hint')}",
+        ])
+    elif kind == "mac_flap":
+        lines.extend([
+            f"🔗 MAC：{event.get('mac')}",
+            f"🏷 VLAN：{event.get('vlan')}",
+            f"🔌 端口：{event.get('port_a')} ↔ {event.get('port_b')}",
+            f"📋 判断：{event.get('hint')}",
+        ])
+    elif kind == "errdisable":
+        lines.extend([
+            f"🔌 接口：{event.get('port') or '未知'}",
+            f"📋 原因：{event.get('reason') or '未知'}",
+            f"🛡 动作：接口已进入 err-disabled",
+            f"🔎 建议：{event.get('hint')}",
+        ])
+    else:
+        lines.extend([
+            f"🔌 接口：{event.get('port') or '未解析到'}",
+            f"📋 判断：{event.get('hint')}",
+        ])
+
+    lines.append(f"⏰ 时间：{ts}")
+    lines.append(f"🧾 原始日志：{message[:260]}")
+    return _make_card(next_event_title(), event.get("title") or "⚠️ 网络安全事件", event.get("color") or "orange", "\n".join(lines))
+
+
 def syslog_watcher():
-    log(f"[SYSLOG] watching {SYSLOG_FILE} for DHCP snooping violations")
+    log(f"[SYSLOG] watching {SYSLOG_FILE} for network security events")
     _last_sent = {}
-    RATE_LIMIT = 60
+    rate_limit = max(1, SYSLOG_EVENT_RATE_LIMIT)
 
     while not os.path.exists(SYSLOG_FILE):
         time.sleep(5)
@@ -1903,7 +2062,7 @@ def syslog_watcher():
                 message[:120] if not (parsed.get("mac_sa_hex") or parsed.get("chaddr_hex")) else "",
             ])
             now = time.time()
-            if now - _last_sent.get(dedupe_key, 0) >= RATE_LIMIT:
+            if now - _last_sent.get(dedupe_key, 0) >= rate_limit:
                 _last_sent[dedupe_key] = now
                 log(
                     f"[SYSLOG] DHCP snooping violation from {host} "
@@ -1911,6 +2070,19 @@ def syslog_watcher():
                     f"mac_sa={parsed.get('mac_sa') or '-'} chaddr={parsed.get('chaddr') or '-'}"
                 )
                 send_feishu(build_dhcp_snooping_card(host, message, parsed))
+            continue
+
+        event = parse_network_syslog_event(message)
+        if event:
+            dedupe_key = "|".join([host, event.get("dedupe") or event.get("kind") or message[:120]])
+            now = time.time()
+            if now - _last_sent.get(dedupe_key, 0) >= rate_limit:
+                _last_sent[dedupe_key] = now
+                log(
+                    f"[SYSLOG] {event.get('kind')} from {host} "
+                    f"port={event.get('local_port') or event.get('port') or '-'}"
+                )
+                send_feishu(build_network_syslog_card(host, message, event))
 
 
 def device_watcher():
@@ -2076,10 +2248,10 @@ def main():
         threading.Thread(target=unifi_ap_watcher, daemon=True).start()
 
     if SYSLOG_WATCH_ENABLED:
-        log(f"[SYSLOG] DHCP snooping watcher enabled (file={SYSLOG_FILE})")
+        log(f"[SYSLOG] security watcher enabled (file={SYSLOG_FILE}, rate_limit={SYSLOG_EVENT_RATE_LIMIT}s)")
         threading.Thread(target=syslog_watcher, daemon=True).start()
     else:
-        log("[SYSLOG] DHCP snooping watcher disabled")
+        log("[SYSLOG] security watcher disabled")
 
     server = HTTPServer(("0.0.0.0", PORT), Handler)
     try:

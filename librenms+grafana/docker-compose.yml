@@ -194,6 +194,7 @@ services:
       ISP_PING: "${ISP_PING:-}"
       ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
       SYSLOG_WATCH_ENABLED: "${SYSLOG_WATCH_ENABLED:-true}"
+      SYSLOG_EVENT_RATE_LIMIT: "${SYSLOG_EVENT_RATE_LIMIT:-60}"
       SYSLOG_FILE: "/var/log/remote/syslog.log"
     command: ["python", "/app/bridge.py"]
     networks:
