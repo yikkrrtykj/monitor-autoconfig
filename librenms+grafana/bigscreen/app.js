@@ -1199,6 +1199,16 @@
     return `${seat} ${ip}${network}`.trim() || "选手";
   }
 
+  function formatOnlineAxis(value) {
+    if (value <= 0.01) return "离线";
+    if (value >= 0.99) return "在线";
+    return "";
+  }
+
+  function formatOnlineState(value) {
+    return value >= 0.5 ? "在线" : "离线";
+  }
+
   function flattenSeriesValues(seriesList) {
     return seriesList.flatMap((series) => series.values.map((point) => point.v)).filter((value) => Number.isFinite(value));
   }
@@ -1322,8 +1332,9 @@
         legend: "bottom"
       });
       renderLineChart("evidenceSuccessChart", successSeries.map((series) => ({ ...series, color: "#73d17a" })), {
-        axisFormatter: (value) => `${Math.round(value * 100)}%`,
-        valueFormatter: (value) => `${Math.round(value * 100)}%`,
+        axisFormatter: formatOnlineAxis,
+        valueFormatter: formatOnlineState,
+        calcs: ["last", "min"],
         minMax: 1,
         smooth: false,
         fill: true,
