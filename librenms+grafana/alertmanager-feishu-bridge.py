@@ -31,6 +31,7 @@ Env:
   SYSLOG_EVENT_RATE_LIMIT seconds to suppress duplicate syslog event cards (default 60)
   SYSLOG_ALERT_TYPES      comma list of syslog cards to push
                           (default native_vlan_mismatch,errdisable,loopback,dhcp_snooping)
+  SYSLOG_CORRELATION_SECONDS seconds to collapse native-vlan + errdisable on same port
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
   ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
@@ -98,6 +99,7 @@ SYSLOG_ALERT_TYPES = {
     ).split(",")
     if part.strip()
 }
+SYSLOG_CORRELATION_SECONDS = int(os.environ.get("SYSLOG_CORRELATION_SECONDS", "10"))
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
 ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
@@ -1971,21 +1973,14 @@ def parse_network_syslog_event(message):
         reason, port = match.groups()
         reason = reason.strip()
         port = _clean_iface_token(port)
-        reason_lower = reason.lower()
-        reason_detail = ""
-        hint = "交换机已把接口放入 err-disabled；按原因检查 BPDU、风暴、环路或链路抖动。"
-        if "bpdu" in reason_lower:
-            reason_detail = "BPDU Guard：接入口收到了 BPDU，交换机判断后面可能接了交换机、桥接设备或形成二层环路。"
-            hint = "先查该接口后面的跳线、AP 第二网口/Mesh、小交换机；确认无环路后再恢复端口。"
         return {
             "kind": "errdisable",
             "title": "🛑 接口被保护关闭",
             "color": "orange",
             "port": port,
             "reason": reason,
-            "reason_detail": reason_detail,
             "dedupe": f"errdisable|{port}|{reason.lower()}",
-            "hint": hint,
+            "hint": "交换机已把接口放入 err-disabled；按原因检查 BPDU、风暴、环路或链路抖动。",
         }
 
     if "BPDUGUARD" in text.upper() or "BPDU Guard" in text:
@@ -2039,41 +2034,80 @@ def build_network_syslog_card(host, message, event):
         lines.extend([
             f"🔌 本地接口：{event.get('local_port')} / VLAN {event.get('local_vlan')}",
             f"🔁 对端：{event.get('peer_device')} {event.get('peer_port')} / VLAN {event.get('peer_vlan')}",
-            f"📋 判断：{event.get('hint')}",
         ])
     elif kind == "mac_flap":
         lines.extend([
             f"🔗 MAC：{event.get('mac')}",
             f"🏷 VLAN：{event.get('vlan')}",
             f"🔌 端口：{event.get('port_a')} ↔ {event.get('port_b')}",
-            f"📋 判断：{event.get('hint')}",
         ])
     elif kind == "errdisable":
         lines.extend([
             f"🔌 接口：{event.get('port') or '未知'}",
             f"📋 原因：{event.get('reason') or '未知'}",
         ])
-        if event.get("reason_detail"):
-            lines.append(f"📡 BPDU：{event.get('reason_detail')}")
-        lines.extend([
-            f"🛡 动作：接口已进入 err-disabled",
-            f"🔎 建议：{event.get('hint')}",
-        ])
     else:
         lines.extend([
             f"🔌 接口：{event.get('port') or '未解析到'}",
-            f"📋 判断：{event.get('hint')}",
         ])
 
     lines.append(f"⏰ 时间：{ts}")
-    lines.append(f"🧾 原始日志：{message[:260]}")
     return _make_card(next_event_title(), event.get("title") or "⚠️ 网络安全事件", event.get("color") or "orange", "\n".join(lines))
 
 
 def syslog_watcher():
     log(f"[SYSLOG] watching {SYSLOG_FILE} for network security events")
     _last_sent = {}
+    _recent_native_ports = {}
+    _pending_errdisable = {}
     rate_limit = max(1, SYSLOG_EVENT_RATE_LIMIT)
+    correlation_window = max(0, SYSLOG_CORRELATION_SECONDS)
+
+    def _port_key(host, port):
+        return "|".join([str(host or ""), _clean_iface_token(port).lower()])
+
+    def _purge_recent_native(now):
+        if correlation_window <= 0:
+            _recent_native_ports.clear()
+            return
+        cutoff = now - correlation_window
+        for key, ts in list(_recent_native_ports.items()):
+            if ts < cutoff:
+                _recent_native_ports.pop(key, None)
+
+    def _has_recent_native(host, port, now):
+        if not port or correlation_window <= 0:
+            return False
+        _purge_recent_native(now)
+        ts = _recent_native_ports.get(_port_key(host, port), 0)
+        return bool(ts and now - ts <= correlation_window)
+
+    def _send_network_event(host, message, event, now):
+        dedupe_key = "|".join([host, event.get("dedupe") or event.get("kind") or message[:120]])
+        if now - _last_sent.get(dedupe_key, 0) >= rate_limit:
+            _last_sent[dedupe_key] = now
+            log(
+                f"[SYSLOG] {event.get('kind')} from {host} "
+                f"port={event.get('local_port') or event.get('port') or '-'}"
+            )
+            send_feishu(build_network_syslog_card(host, message, event))
+
+    def _drop_pending_errdisable_for(host, port):
+        key = _port_key(host, port)
+        _pending_errdisable.pop(key, None)
+
+    def _flush_pending_errdisable(now):
+        for key, pending in list(_pending_errdisable.items()):
+            if now < pending["due"]:
+                continue
+            _pending_errdisable.pop(key, None)
+            if _has_recent_native(pending["host"], pending["event"].get("port"), now):
+                log(
+                    f"[SYSLOG] suppressed errdisable from {pending['host']} "
+                    f"port={pending['event'].get('port') or '-'} after native_vlan_mismatch"
+                )
+                continue
+            _send_network_event(pending["host"], pending["message"], pending["event"], now)
 
     while not os.path.exists(SYSLOG_FILE):
         time.sleep(5)
@@ -2087,8 +2121,10 @@ def syslog_watcher():
         return
 
     while True:
+        _flush_pending_errdisable(time.time())
         line = f.readline()
         if not line:
+            _flush_pending_errdisable(time.time())
             time.sleep(0.5)
             try:
                 if os.stat(SYSLOG_FILE).st_ino != current_ino:
@@ -2131,15 +2167,28 @@ def syslog_watcher():
         if event:
             if not _syslog_event_enabled(event.get("kind")):
                 continue
-            dedupe_key = "|".join([host, event.get("dedupe") or event.get("kind") or message[:120]])
             now = time.time()
-            if now - _last_sent.get(dedupe_key, 0) >= rate_limit:
-                _last_sent[dedupe_key] = now
-                log(
-                    f"[SYSLOG] {event.get('kind')} from {host} "
-                    f"port={event.get('local_port') or event.get('port') or '-'}"
-                )
-                send_feishu(build_network_syslog_card(host, message, event))
+            kind = event.get("kind")
+            if kind == "native_vlan_mismatch":
+                _recent_native_ports[_port_key(host, event.get("local_port"))] = now
+                _drop_pending_errdisable_for(host, event.get("local_port"))
+                _send_network_event(host, message, event, now)
+                continue
+            if kind == "errdisable" and correlation_window > 0:
+                if _has_recent_native(host, event.get("port"), now):
+                    log(
+                        f"[SYSLOG] suppressed errdisable from {host} "
+                        f"port={event.get('port') or '-'} after native_vlan_mismatch"
+                    )
+                    continue
+                _pending_errdisable[_port_key(host, event.get("port"))] = {
+                    "host": host,
+                    "message": message,
+                    "event": event,
+                    "due": now + correlation_window,
+                }
+                continue
+            _send_network_event(host, message, event, now)
 
 
 def device_watcher():
@@ -2374,7 +2423,8 @@ def main():
         log(
             f"[SYSLOG] security watcher enabled "
             f"(file={SYSLOG_FILE}, rate_limit={SYSLOG_EVENT_RATE_LIMIT}s, "
-            f"types={','.join(sorted(SYSLOG_ALERT_TYPES)) or '-'})"
+            f"types={','.join(sorted(SYSLOG_ALERT_TYPES)) or '-'}, "
+            f"correlation={SYSLOG_CORRELATION_SECONDS}s)"
         )
         threading.Thread(target=syslog_watcher, daemon=True).start()
     else:

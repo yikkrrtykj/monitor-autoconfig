@@ -197,6 +197,7 @@ services:
       SYSLOG_WATCH_ENABLED: "${SYSLOG_WATCH_ENABLED:-true}"
       SYSLOG_EVENT_RATE_LIMIT: "${SYSLOG_EVENT_RATE_LIMIT:-60}"
       SYSLOG_ALERT_TYPES: "${SYSLOG_ALERT_TYPES:-native_vlan_mismatch,errdisable,loopback,dhcp_snooping}"
+      SYSLOG_CORRELATION_SECONDS: "${SYSLOG_CORRELATION_SECONDS:-10}"
       SYSLOG_FILE: "/var/log/remote/syslog.log"
     command: ["python", "/app/bridge.py"]
     networks:
