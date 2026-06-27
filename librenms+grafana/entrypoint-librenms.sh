@@ -51,7 +51,7 @@ fi
 # dashboard, numeric values are easier to scan, so add current values while
 # keeping the sparklines for trend context.
 if command -v php >/dev/null 2>&1; then
-  cat > /tmp/librenms-patch-dashboard-widgets.php <<'PHPEOF'
+  cat > /usr/local/bin/monitor-autoconfig-dashboard-widgets.php <<'PHPEOF'
 <?php
 function replace_once(string $code, string $search, string $replace, string $label): string
 {
@@ -70,6 +70,11 @@ function replace_once(string $code, string $search, string $replace, string $lab
     fwrite(STDERR, "[librenms-entry] WARNING: widget patch skipped {$label}; source changed\n");
 
     return $code;
+}
+
+function log_patch(string $message): void
+{
+    fwrite(STDOUT, "[librenms-entry] widget patch: {$message}\n");
 }
 
 function save_if_changed(string $file, string $old, string $new): void
@@ -171,6 +176,9 @@ CODE,
     );
 
     save_if_changed($topDevicesController, $old, $code);
+    log_patch('checked top-devices controller');
+} else {
+    log_patch('top-devices controller not found');
 }
 
 $topDevicesView = '/opt/librenms/resources/views/widgets/top-devices.blade.php';
@@ -183,6 +191,9 @@ if (is_file($topDevicesView)) {
         'top-devices device header'
     );
     save_if_changed($topDevicesView, $old, $code);
+    log_patch('checked top-devices view');
+} else {
+    log_patch('top-devices view not found');
 }
 
 $topInterfacesController = '/opt/librenms/app/Http/Controllers/Widgets/TopInterfacesController.php';
@@ -204,10 +215,13 @@ CODE,
         'top-interfaces current rates'
     );
     save_if_changed($topInterfacesController, $old, $code);
+    log_patch('checked top-interfaces controller');
+} else {
+    log_patch('top-interfaces controller not found');
 }
 
 $topInterfacesView = '/opt/librenms/resources/views/widgets/top-interfaces.blade.php';
-if (is_file($topInterfacesView) && ! str_contains((string) file_get_contents($topInterfacesView), 'monitor-autoconfig numeric interface widget')) {
+if (is_file($topInterfacesView)) {
     file_put_contents($topInterfacesView, <<<'BLADE'
 @php
     // monitor-autoconfig numeric interface widget
@@ -241,14 +255,33 @@ if (is_file($topInterfacesView) && ! str_contains((string) file_get_contents($to
     </table>
 </div>
 BLADE);
+    log_patch('replaced top-interfaces view');
+} else {
+    log_patch('top-interfaces view not found');
 }
 PHPEOF
-  if php /tmp/librenms-patch-dashboard-widgets.php; then
+  if php /usr/local/bin/monitor-autoconfig-dashboard-widgets.php; then
     echo "[librenms-entry] dashboard ranking widget numeric patch applied"
   else
     echo "[librenms-entry] WARNING: dashboard ranking widget numeric patch failed"
   fi
-  rm -f /tmp/librenms-patch-dashboard-widgets.php 2>/dev/null || true
+
+  # Run the same patch again after LibreNMS's own cont-init scripts. Some image
+  # versions rebuild generated assets during /init, and Blade views are cached
+  # aggressively, so patching only before /init can leave the old widget HTML.
+  mkdir -p /etc/cont-init.d
+  cat > /etc/cont-init.d/98-dashboard-widgets <<'S6EOF'
+#!/bin/sh
+set -eu
+if command -v php >/dev/null 2>&1 && [ -f /usr/local/bin/monitor-autoconfig-dashboard-widgets.php ]; then
+  php /usr/local/bin/monitor-autoconfig-dashboard-widgets.php || echo "[librenms-entry] WARNING: dashboard widget patch failed during cont-init"
+  cd /opt/librenms 2>/dev/null || exit 0
+  php artisan view:clear >/dev/null 2>&1 || true
+  php artisan cache:clear >/dev/null 2>&1 || true
+  echo "[librenms-entry] dashboard widget cache cleared"
+fi
+S6EOF
+  chmod +x /etc/cont-init.d/98-dashboard-widgets
 fi
 
 # Install the nginx/env/cron patch as a cont-init.d script so it runs AFTER LibreNMS's
