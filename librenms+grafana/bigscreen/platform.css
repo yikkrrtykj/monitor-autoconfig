@@ -764,7 +764,7 @@
 
 .control-config-editor-card {
   grid-column: span 2;
-  grid-template-rows: 28px 210px 34px minmax(0, 1fr);
+  grid-template-rows: 28px minmax(360px, 1fr) 34px minmax(0, 0.45fr);
 }
 
 .readiness-meter {
@@ -989,6 +989,159 @@
 .control-textarea:focus {
   outline: 2px solid rgba(94, 106, 210, 0.48);
   outline-offset: 1px;
+}
+
+.control-form {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.config-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 10px;
+  background: #07080b;
+}
+
+.config-section h3 {
+  margin: 0;
+  color: var(--linear-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.config-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.config-field,
+.config-list-row label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.config-field-wide {
+  grid-column: span 2;
+}
+
+.config-field span,
+.config-list-row span {
+  overflow: hidden;
+  color: var(--linear-ink-subtle);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-field input,
+.config-field select,
+.config-field textarea,
+.config-list-row input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 7px;
+  background: var(--linear-surface-2);
+  color: var(--linear-ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.config-field input,
+.config-field select,
+.config-list-row input {
+  height: 30px;
+  padding: 0 9px;
+}
+
+.config-field textarea {
+  min-height: 54px;
+  resize: vertical;
+  padding: 8px 9px;
+  line-height: 1.35;
+}
+
+.config-field input:focus,
+.config-field select:focus,
+.config-field textarea:focus,
+.config-list-row input:focus {
+  outline: 2px solid rgba(94, 106, 210, 0.45);
+  outline-offset: 1px;
+}
+
+.config-field-check {
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 7px;
+  background: var(--linear-surface-2);
+}
+
+.config-field-check input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
+.config-list {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.config-list-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) 58px;
+  align-items: end;
+  gap: 7px;
+  min-width: 0;
+}
+
+.config-list[data-config-list="servers"] .config-list-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) 58px;
+}
+
+.config-list[data-config-list="isp"] .config-list-row {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) 58px;
+}
+
+.config-list-row button,
+.config-add-row {
+  height: 30px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 7px;
+  background: var(--linear-surface-2);
+  color: var(--linear-ink-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.config-list-row button:hover,
+.config-add-row:hover {
+  border-color: var(--linear-hairline-strong);
+  background: var(--linear-surface-3);
+  color: var(--linear-ink);
+}
+
+.config-add-row {
+  justify-self: start;
+  padding: 0 12px;
+  color: var(--linear-ink);
 }
 
 .control-button-row,
@@ -1876,6 +2029,17 @@ a.seat-slot:hover {
   }
 
   .control-config-editor-card {
+    grid-column: auto;
+  }
+
+  .config-fields,
+  .config-list-row,
+  .config-list[data-config-list="servers"] .config-list-row,
+  .config-list[data-config-list="isp"] .config-list-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .config-field-wide {
     grid-column: auto;
   }
 

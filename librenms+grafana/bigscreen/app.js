@@ -58,6 +58,7 @@
   let lastDataSuccessAt = 0;
   let lastControlReport = null;
   let lastPlatformConfig = null;
+  let lastEditableConfig = null;
   let lastIncidents = [];
   let lastDeliveryManifest = null;
   const DATA_STALE_AFTER_MS = 20000;
@@ -1557,11 +1558,252 @@
     })).join("");
   }
 
+  function cloneControlConfig(configValue) {
+    return JSON.parse(JSON.stringify(configValue || {}));
+  }
+
+  function asConfigArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function csvText(value) {
+    if (Array.isArray(value)) return value.join("\n");
+    return value == null ? "" : String(value);
+  }
+
+  function splitConfigList(value) {
+    return String(value || "")
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function controlConfigDefaults(configValue) {
+    const value = cloneControlConfig(configValue);
+    value.event = { mode: "rehearsal", default_layout: "tournament-64-2layer", security_mode: "internal", ...(value.event || {}) };
+    value.networks = { player_vlan: 40, wireless_vlan: 41, ...(value.networks || {}) };
+    value.devices = { switches: [], servers: [], ...(value.devices || {}) };
+    value.devices.core = { name: "core", ...(value.devices.core || {}) };
+    value.devices.firewall = { name: "firewall", ...(value.devices.firewall || {}) };
+    value.devices.switches = asConfigArray(value.devices.switches);
+    value.devices.servers = asConfigArray(value.devices.servers);
+    value.isp = { auto_discovery: true, max_bandwidth_mbps: 1000, links: [], ...(value.isp || {}) };
+    value.isp.links = asConfigArray(value.isp.links);
+    value.unifi = { enabled: false, sites: "all", ...(value.unifi || {}) };
+    value.alerts = {
+      mode: value.event.mode || "rehearsal",
+      syslog_alert_types: "native_vlan_mismatch,errdisable,loopback,dhcp_snooping",
+      ...(value.alerts || {})
+    };
+    value.security = { grafana_anonymous: true, public_enabled: false, allowed_cidrs: [], ...(value.security || {}) };
+    return value;
+  }
+
+  function configPathGet(object, path) {
+    return path.split(".").reduce((current, key) => current && current[key], object);
+  }
+
+  function configPathSet(object, path, value) {
+    const parts = path.split(".");
+    let current = object;
+    parts.slice(0, -1).forEach((key) => {
+      if (!current[key] || typeof current[key] !== "object") current[key] = {};
+      current = current[key];
+    });
+    current[parts[parts.length - 1]] = value;
+  }
+
+  function configInput(path, label, options = {}) {
+    const value = configPathGet(lastEditableConfig || {}, path);
+    const id = `cfg-${path.replace(/[^a-z0-9]+/gi, "-")}`;
+    const common = `id="${escapeHtml(id)}" data-config-path="${escapeHtml(path)}"${options.number ? ' data-config-number="1"' : ""}`;
+    if (options.type === "checkbox") {
+      return `
+        <label class="config-field config-field-check" for="${escapeHtml(id)}">
+          <input ${common} type="checkbox"${value ? " checked" : ""} />
+          <span>${escapeHtml(label)}</span>
+        </label>
+      `;
+    }
+    if (options.type === "select") {
+      return `
+        <label class="config-field" for="${escapeHtml(id)}">
+          <span>${escapeHtml(label)}</span>
+          <select ${common}>
+            ${(options.choices || []).map((item) => `<option value="${escapeHtml(item.value)}"${String(value || "") === String(item.value) ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+          </select>
+        </label>
+      `;
+    }
+    if (options.type === "textarea") {
+      return `
+        <label class="config-field config-field-wide" for="${escapeHtml(id)}">
+          <span>${escapeHtml(label)}</span>
+          <textarea ${common} rows="${options.rows || 2}" placeholder="${escapeHtml(options.placeholder || "")}">${escapeHtml(csvText(value))}</textarea>
+        </label>
+      `;
+    }
+    return `
+      <label class="config-field" for="${escapeHtml(id)}">
+        <span>${escapeHtml(label)}</span>
+        <input ${common} type="${options.number ? "number" : "text"}" value="${escapeHtml(value == null ? "" : value)}" placeholder="${escapeHtml(options.placeholder || "")}" />
+      </label>
+    `;
+  }
+
+  function configListRows(name, rows, columns) {
+    return `
+      <div class="config-list" data-config-list="${escapeHtml(name)}">
+        ${rows.map((row, index) => `
+          <div class="config-list-row" data-index="${index}">
+            ${columns.map((column) => `
+              <label>
+                <span>${escapeHtml(column.label)}</span>
+                <input data-config-key="${escapeHtml(column.key)}"${column.number ? ' data-config-number="1"' : ""} type="${column.number ? "number" : "text"}" value="${escapeHtml(row[column.key] == null ? "" : row[column.key])}" placeholder="${escapeHtml(column.placeholder || "")}" />
+              </label>
+            `).join("")}
+            <button type="button" data-config-remove="${escapeHtml(name)}" data-index="${index}">删除</button>
+          </div>
+        `).join("")}
+        <button class="config-add-row" type="button" data-config-add="${escapeHtml(name)}">添加${name === "switches" ? "交换机" : name === "servers" ? "服务器" : "ISP"}</button>
+      </div>
+    `;
+  }
+
+  function renderControlConfigForm(configValue) {
+    const form = document.getElementById("controlConfigForm");
+    if (!form) return;
+    const matchPages = pages.filter((item) => item.kind);
+    lastEditableConfig = controlConfigDefaults(configValue);
+    const modeChoices = [
+      { value: "setup", label: "搭建模式" },
+      { value: "rehearsal", label: "彩排模式" },
+      { value: "match", label: "正赛模式" },
+      { value: "incident", label: "故障模式" }
+    ];
+    form.innerHTML = `
+      <section class="config-section">
+        <h3>赛事</h3>
+        <div class="config-fields">
+          ${configInput("event.name", "赛事名称", { placeholder: "武汉斗鱼嘉年华" })}
+          ${configInput("event.mode", "告警模式", { type: "select", choices: modeChoices })}
+          ${configInput("event.default_layout", "默认赛制", { type: "select", choices: matchPages.map((item) => ({ value: item.id, label: item.label })) })}
+          ${configInput("event.public_base_url", "公网地址", { placeholder: "https://monitor.example.com" })}
+        </div>
+      </section>
+      <section class="config-section">
+        <h3>网络</h3>
+        <div class="config-fields">
+          ${configInput("networks.player_vlan", "选手 VLAN", { number: true })}
+          ${configInput("networks.wireless_vlan", "无线 VLAN", { number: true })}
+          ${configInput("networks.player_subnets", "选手网段", { type: "textarea", placeholder: "192.168.40.0/24" })}
+          ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", placeholder: "192.168.41.0/24" })}
+          ${configInput("networks.player_gateways", "选手网关", { type: "textarea", placeholder: "192.168.10.254" })}
+        </div>
+      </section>
+      <section class="config-section">
+        <h3>核心/防火墙</h3>
+        <div class="config-fields">
+          ${configInput("devices.core.name", "核心名称")}
+          ${configInput("devices.core.ip", "核心 IP")}
+          ${configInput("devices.firewall.name", "防火墙名称")}
+          ${configInput("devices.firewall.ip", "防火墙 IP")}
+          ${configInput("devices.firewall.snmp", "防火墙 SNMP IP")}
+        </div>
+      </section>
+      <section class="config-section">
+        <h3>接入交换机</h3>
+        ${configListRows("switches", lastEditableConfig.devices.switches, [
+          { key: "name", label: "名称", placeholder: "stage-1" },
+          { key: "ip", label: "IP", placeholder: "192.168.10.11" },
+          { key: "role", label: "角色", placeholder: "access" }
+        ])}
+      </section>
+      <section class="config-section">
+        <h3>服务器</h3>
+        ${configListRows("servers", lastEditableConfig.devices.servers, [
+          { key: "name", label: "名称", placeholder: "grafana" },
+          { key: "ip", label: "IP", placeholder: "192.168.41.253" }
+        ])}
+      </section>
+      <section class="config-section">
+        <h3>ISP</h3>
+        <div class="config-fields">
+          ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox" })}
+          ${configInput("isp.max_bandwidth_mbps", "默认带宽 Mbps", { number: true })}
+        </div>
+        ${configListRows("isp", lastEditableConfig.isp.links, [
+          { key: "name", label: "名称", placeholder: "telecom" },
+          { key: "ping", label: "探测 IP", placeholder: "223.5.5.5" },
+          { key: "gateway", label: "网关 IP" },
+          { key: "bandwidth_mbps", label: "带宽", number: true }
+        ])}
+      </section>
+      <section class="config-section">
+        <h3>UniFi / 告警 / 安全</h3>
+        <div class="config-fields">
+          ${configInput("unifi.enabled", "启用 UniFi", { type: "checkbox" })}
+          ${configInput("unifi.controller_url", "UniFi 地址", { placeholder: "https://控制器IP" })}
+          ${configInput("unifi.user", "UniFi 用户")}
+          ${configInput("unifi.sites", "UniFi Sites", { placeholder: "all" })}
+          ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
+          ${configInput("alerts.syslog_alert_types", "Syslog 告警类型")}
+          ${configInput("security.grafana_anonymous", "Grafana 匿名访问", { type: "checkbox" })}
+          ${configInput("security.public_enabled", "公网模式", { type: "checkbox" })}
+          ${configInput("security.allowed_cidrs", "公网白名单", { type: "textarea", placeholder: "1.2.3.4/32" })}
+        </div>
+      </section>
+    `;
+  }
+
+  function collectControlConfigForm() {
+    const form = document.getElementById("controlConfigForm");
+    const value = controlConfigDefaults(lastEditableConfig);
+    if (!form) return value;
+    form.querySelectorAll("[data-config-path]").forEach((input) => {
+      let nextValue;
+      if (input.type === "checkbox") {
+        nextValue = input.checked;
+      } else if (input.tagName === "TEXTAREA") {
+        nextValue = splitConfigList(input.value);
+      } else if (input.dataset.configNumber) {
+        nextValue = input.value === "" ? "" : Number(input.value);
+      } else {
+        nextValue = input.value.trim();
+      }
+      configPathSet(value, input.dataset.configPath, nextValue);
+    });
+    const listMappings = {
+      switches: ["devices", "switches"],
+      servers: ["devices", "servers"],
+      isp: ["isp", "links"]
+    };
+    Object.entries(listMappings).forEach(([name, path]) => {
+      const list = form.querySelector(`[data-config-list="${name}"]`);
+      const rows = [];
+      if (list) {
+        list.querySelectorAll(".config-list-row").forEach((row) => {
+          const item = {};
+          row.querySelectorAll("[data-config-key]").forEach((input) => {
+            item[input.dataset.configKey] = input.dataset.configNumber
+              ? (input.value === "" ? "" : Number(input.value))
+              : input.value.trim();
+          });
+          if (Object.values(item).some((entry) => String(entry || "").trim())) rows.push(item);
+        });
+      }
+      value[path[0]][path[1]] = rows;
+    });
+    value.alerts.mode = value.event.mode;
+    lastEditableConfig = value;
+    return value;
+  }
+
   function renderConfigEditor(platformConfig) {
-    const textarea = document.getElementById("controlConfigText");
-    if (!textarea) return;
-    if (platformConfig && platformConfig.ok && !textarea.dataset.dirty) {
-      textarea.value = platformConfig.text || platformConfig.normalizedText || "";
+    const form = document.getElementById("controlConfigForm");
+    if (!form) return;
+    if (platformConfig && platformConfig.ok && !form.dataset.dirty) {
+      renderControlConfigForm(platformConfig.config || {});
     }
     if (platformConfig && !platformConfig.ok) {
       renderConfigResult(platformConfig);
@@ -1571,9 +1813,9 @@
   }
 
   async function runConfigAction(action) {
-    const textarea = document.getElementById("controlConfigText");
-    const text = textarea ? textarea.value : "";
-    const payload = { text, actor: "web", note: action };
+    const form = document.getElementById("controlConfigForm");
+    const configPayload = collectControlConfigForm();
+    const payload = { text: JSON.stringify(configPayload, null, 2), actor: "web", note: action };
     try {
       let result;
       if (action === "validate") {
@@ -1586,9 +1828,9 @@
         result = await postPlatform("/config/rollback", { actor: "web", note: "rollback from control" });
       }
       lastPlatformConfig = result;
-      if (result && result.text && textarea) {
-        textarea.value = result.text;
-        delete textarea.dataset.dirty;
+      if (result && result.config && form) {
+        delete form.dataset.dirty;
+        renderControlConfigForm(result.config);
       }
       renderConfigResult(result);
       refreshControlPanel();
@@ -1604,16 +1846,24 @@
 
   function bindConfigImportFile() {
     const fileInput = document.getElementById("controlConfigImportFile");
-    const textarea = document.getElementById("controlConfigText");
-    if (!fileInput || !textarea || fileInput.dataset.bound) return;
+    const form = document.getElementById("controlConfigForm");
+    if (!fileInput || !form || fileInput.dataset.bound) return;
     fileInput.addEventListener("change", async () => {
       const file = fileInput.files && fileInput.files[0];
       if (!file) return;
       const text = await file.text();
-      textarea.value = text;
-      textarea.dataset.dirty = "1";
       fileInput.value = "";
-      runConfigAction("validate");
+      try {
+        const result = await postPlatform("/config/validate", { text, actor: "web", note: "import" });
+        lastPlatformConfig = result;
+        if (result && result.config) {
+          renderControlConfigForm(result.config);
+          form.dataset.dirty = "1";
+        }
+        renderConfigResult(result);
+      } catch (error) {
+        renderConfigResult({ ok: false, error: error.message || "导入失败" });
+      }
     });
     fileInput.dataset.bound = "1";
   }
@@ -1884,10 +2134,33 @@
       lintInput.addEventListener("input", renderControlLint);
       lintInput.dataset.bound = "1";
     }
-    const configText = document.getElementById("controlConfigText");
-    if (configText && !configText.dataset.bound) {
-      configText.addEventListener("input", () => { configText.dataset.dirty = "1"; });
-      configText.dataset.bound = "1";
+    const configForm = document.getElementById("controlConfigForm");
+    if (configForm && !configForm.dataset.bound) {
+      const markDirty = () => { configForm.dataset.dirty = "1"; };
+      configForm.addEventListener("input", markDirty);
+      configForm.addEventListener("change", markDirty);
+      configForm.addEventListener("click", (event) => {
+        const addButton = event.target.closest("[data-config-add]");
+        const removeButton = event.target.closest("[data-config-remove]");
+        if (!addButton && !removeButton) return;
+        const next = collectControlConfigForm();
+        if (addButton) {
+          const listName = addButton.dataset.configAdd;
+          if (listName === "switches") next.devices.switches.push({ name: "", ip: "", role: "access" });
+          if (listName === "servers") next.devices.servers.push({ name: "", ip: "" });
+          if (listName === "isp") next.isp.links.push({ name: "", ping: "", gateway: "", bandwidth_mbps: "" });
+        }
+        if (removeButton) {
+          const listName = removeButton.dataset.configRemove;
+          const index = Number(removeButton.dataset.index);
+          if (listName === "switches") next.devices.switches.splice(index, 1);
+          if (listName === "servers") next.devices.servers.splice(index, 1);
+          if (listName === "isp") next.isp.links.splice(index, 1);
+        }
+        renderControlConfigForm(next);
+        configForm.dataset.dirty = "1";
+      });
+      configForm.dataset.bound = "1";
     }
     [
       ["controlConfigValidate", "validate"],
