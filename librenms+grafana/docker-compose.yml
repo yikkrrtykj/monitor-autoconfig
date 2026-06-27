@@ -177,7 +177,7 @@ services:
       INTERCONNECT_ALERT_JOBS: "${INTERCONNECT_ALERT_JOBS:-infra-switch-ifmib}"
       INTERCONNECT_PORT_FILTER: "${INTERCONNECT_PORT_FILTER:-port-channel,portchannel,po,eth-trunk,bridge-aggregation,bundle-ether,lag,ae,be,trk}"
       UNIFI_AP_ALERT_ENABLED: "${UNIFI_AP_ALERT_ENABLED:-true}"
-      UNIFI_AP_DOWN_FOR_SECONDS: "${UNIFI_AP_DOWN_FOR_SECONDS:-10}"
+      UNIFI_AP_DOWN_FOR_SECONDS: "${UNIFI_AP_DOWN_FOR_SECONDS:-180}"
       UNIFI_AP_POLL_INTERVAL: "${UNIFI_AP_POLL_INTERVAL:-5}"
       UNIFI_AP_SNMP_AUTO_ADD: "${UNIFI_AP_SNMP_AUTO_ADD:-true}"
       UNIFI_AP_SNMP_COMMUNITY: "${UNIFI_AP_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
@@ -196,6 +196,7 @@ services:
       ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
       SYSLOG_WATCH_ENABLED: "${SYSLOG_WATCH_ENABLED:-true}"
       SYSLOG_EVENT_RATE_LIMIT: "${SYSLOG_EVENT_RATE_LIMIT:-60}"
+      SYSLOG_ALERT_TYPES: "${SYSLOG_ALERT_TYPES:-native_vlan_mismatch,errdisable,loopback,dhcp_snooping}"
       SYSLOG_FILE: "/var/log/remote/syslog.log"
     command: ["python", "/app/bridge.py"]
     networks:

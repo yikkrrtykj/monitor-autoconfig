@@ -29,6 +29,8 @@ Env:
   SYSLOG_WATCH_ENABLED    true = watch syslog file for security events (default true)
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
   SYSLOG_EVENT_RATE_LIMIT seconds to suppress duplicate syslog event cards (default 60)
+  SYSLOG_ALERT_TYPES      comma list of syslog cards to push
+                          (default native_vlan_mismatch,errdisable,loopback,dhcp_snooping)
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
   ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
@@ -88,6 +90,14 @@ ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "80") or
 SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
 SYSLOG_EVENT_RATE_LIMIT = int(os.environ.get("SYSLOG_EVENT_RATE_LIMIT", "60"))
+SYSLOG_ALERT_TYPES = {
+    part.strip().lower()
+    for part in os.environ.get(
+        "SYSLOG_ALERT_TYPES",
+        "native_vlan_mismatch,errdisable,loopback,dhcp_snooping",
+    ).split(",")
+    if part.strip()
+}
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
 ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
@@ -137,7 +147,7 @@ SYSNAME_STATE_FILE = os.environ.get(
 # UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 controller 数据
 # 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
 UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "10"))
+UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "180"))
 UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "5"))
 # sysName 变更告警：bridge 自己轮询 LibreNMS 设备列表，对比每台设备的 sysName，
 # 变化时推送 旧→新 飞书卡片（LibreNMS 没有可靠的 "changed" 告警算子，webhook 也只带当前值）。
@@ -1914,6 +1924,10 @@ def _clean_iface_token(value):
     return str(value or "").strip().rstrip(".,;:")
 
 
+def _syslog_event_enabled(kind):
+    return "all" in SYSLOG_ALERT_TYPES or str(kind or "").lower() in SYSLOG_ALERT_TYPES
+
+
 def parse_network_syslog_event(message):
     text = str(message or "").strip()
 
@@ -1957,14 +1971,21 @@ def parse_network_syslog_event(message):
         reason, port = match.groups()
         reason = reason.strip()
         port = _clean_iface_token(port)
+        reason_lower = reason.lower()
+        reason_detail = ""
+        hint = "交换机已把接口放入 err-disabled；按原因检查 BPDU、风暴、环路或链路抖动。"
+        if "bpdu" in reason_lower:
+            reason_detail = "BPDU Guard：接入口收到了 BPDU，交换机判断后面可能接了交换机、桥接设备或形成二层环路。"
+            hint = "先查该接口后面的跳线、AP 第二网口/Mesh、小交换机；确认无环路后再恢复端口。"
         return {
             "kind": "errdisable",
             "title": "🛑 接口被保护关闭",
             "color": "orange",
             "port": port,
             "reason": reason,
+            "reason_detail": reason_detail,
             "dedupe": f"errdisable|{port}|{reason.lower()}",
-            "hint": "交换机已把接口放入 err-disabled；按原因检查 BPDU、风暴、环路或链路抖动。",
+            "hint": hint,
         }
 
     if "BPDUGUARD" in text.upper() or "BPDU Guard" in text:
@@ -2031,6 +2052,10 @@ def build_network_syslog_card(host, message, event):
         lines.extend([
             f"🔌 接口：{event.get('port') or '未知'}",
             f"📋 原因：{event.get('reason') or '未知'}",
+        ])
+        if event.get("reason_detail"):
+            lines.append(f"📡 BPDU：{event.get('reason_detail')}")
+        lines.extend([
             f"🛡 动作：接口已进入 err-disabled",
             f"🔎 建议：{event.get('hint')}",
         ])
@@ -2081,6 +2106,8 @@ def syslog_watcher():
         host, _severity, message = parts
 
         if _DHCP_SNOOP_RE.search(message):
+            if not _syslog_event_enabled("dhcp_snooping"):
+                continue
             parsed = parse_dhcp_snooping_message(message)
             dedupe_key = "|".join([
                 host,
@@ -2102,6 +2129,8 @@ def syslog_watcher():
 
         event = parse_network_syslog_event(message)
         if event:
+            if not _syslog_event_enabled(event.get("kind")):
+                continue
             dedupe_key = "|".join([host, event.get("dedupe") or event.get("kind") or message[:120]])
             now = time.time()
             if now - _last_sent.get(dedupe_key, 0) >= rate_limit:
@@ -2342,7 +2371,11 @@ def main():
         threading.Thread(target=unifi_ap_watcher, daemon=True).start()
 
     if SYSLOG_WATCH_ENABLED:
-        log(f"[SYSLOG] security watcher enabled (file={SYSLOG_FILE}, rate_limit={SYSLOG_EVENT_RATE_LIMIT}s)")
+        log(
+            f"[SYSLOG] security watcher enabled "
+            f"(file={SYSLOG_FILE}, rate_limit={SYSLOG_EVENT_RATE_LIMIT}s, "
+            f"types={','.join(sorted(SYSLOG_ALERT_TYPES)) or '-'})"
+        )
         threading.Thread(target=syslog_watcher, daemon=True).start()
     else:
         log("[SYSLOG] security watcher disabled")
