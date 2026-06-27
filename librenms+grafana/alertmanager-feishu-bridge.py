@@ -32,6 +32,7 @@ Env:
   SYSLOG_ALERT_TYPES      comma list of syslog cards to push
                           (default native_vlan_mismatch,errdisable,loopback,dhcp_snooping)
   SYSLOG_CORRELATION_SECONDS seconds to collapse native-vlan + errdisable on same port
+  SYSLOG_RECOVERY_ENABLED true = send recovery cards when an alerted port comes back up
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
   ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
@@ -100,6 +101,7 @@ SYSLOG_ALERT_TYPES = {
     if part.strip()
 }
 SYSLOG_CORRELATION_SECONDS = int(os.environ.get("SYSLOG_CORRELATION_SECONDS", "10"))
+SYSLOG_RECOVERY_ENABLED = os.environ.get("SYSLOG_RECOVERY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
 ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
@@ -180,6 +182,12 @@ _STORM_RE = re.compile(
 )
 _LOOPBACK_RE = re.compile(
     r"LOOP_BACK_DETECTED.*?(?:on|interface)\s+(\S+)",
+    re.IGNORECASE,
+)
+_LINK_STATE_RE = re.compile(
+    r"(?:LINK-\d+-\w+|LINEPROTO-\d+-UPDOWN):\s+"
+    r"(?:Line protocol on\s+)?Interface\s+(\S+),\s+changed state to\s+"
+    r"(administratively down|up|down)",
     re.IGNORECASE,
 )
 def _clean_token(raw):
@@ -1926,8 +1934,53 @@ def _clean_iface_token(value):
     return str(value or "").strip().rstrip(".,;:")
 
 
+def _normalize_iface_key(value):
+    token = _clean_iface_token(value).lower().replace(" ", "")
+    replacements = [
+        ("hundredgigabitethernet", "hu"),
+        ("twentyfivegigabitethernet", "twe"),
+        ("fortygigabitethernet", "fo"),
+        ("tengigabitethernet", "te"),
+        ("gigabitethernet", "gi"),
+        ("fastethernet", "fa"),
+        ("port-channel", "po"),
+        ("portchannel", "po"),
+    ]
+    for full, short in replacements:
+        if token.startswith(full):
+            return short + token[len(full):]
+    return token
+
+
 def _syslog_event_enabled(kind):
     return "all" in SYSLOG_ALERT_TYPES or str(kind or "").lower() in SYSLOG_ALERT_TYPES
+
+
+def _network_event_port(event):
+    if not event:
+        return ""
+    if event.get("kind") == "native_vlan_mismatch":
+        return event.get("local_port") or ""
+    return event.get("port") or ""
+
+
+def _network_event_priority(kind):
+    return {
+        "native_vlan_mismatch": 3,
+        "loopback": 2,
+        "errdisable": 1,
+    }.get(str(kind or ""), 0)
+
+
+def parse_link_state_event(message):
+    match = _LINK_STATE_RE.search(str(message or ""))
+    if not match:
+        return None
+    port, state = match.groups()
+    return {
+        "port": _clean_iface_token(port),
+        "state": state.lower(),
+    }
 
 
 def parse_network_syslog_event(message):
@@ -2022,7 +2075,7 @@ def parse_network_syslog_event(message):
     return None
 
 
-def build_network_syslog_card(host, message, event):
+def build_network_syslog_card(host, message, event, recovered=False, duration=0):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     device = _host_display_name(host)
     dev_text = f"{device} ({host})" if host and host != device else device
@@ -2051,36 +2104,69 @@ def build_network_syslog_card(host, message, event):
             f"🔌 接口：{event.get('port') or '未解析到'}",
         ])
 
+    if recovered:
+        lines.append("✅ 状态：已恢复")
+        lines.append(f"⏳ 恢复耗时：{format_alert_duration(duration, recovered=True)}")
     lines.append(f"⏰ 时间：{ts}")
+
+    if recovered:
+        recovery_titles = {
+            "native_vlan_mismatch": "🟢 接入口疑似串线恢复",
+            "loopback": "🟢 端口回环恢复",
+            "errdisable": "🟢 接口保护恢复",
+        }
+        return _make_card(
+            next_event_title(),
+            recovery_titles.get(kind, "🟢 网络安全事件恢复"),
+            "green",
+            "\n".join(lines),
+        )
+
     return _make_card(next_event_title(), event.get("title") or "⚠️ 网络安全事件", event.get("color") or "orange", "\n".join(lines))
 
 
 def syslog_watcher():
     log(f"[SYSLOG] watching {SYSLOG_FILE} for network security events")
     _last_sent = {}
-    _recent_native_ports = {}
-    _pending_errdisable = {}
+    _recent_priority_ports = {}
+    _pending_events = {}
+    _active_events = {}
     rate_limit = max(1, SYSLOG_EVENT_RATE_LIMIT)
     correlation_window = max(0, SYSLOG_CORRELATION_SECONDS)
 
     def _port_key(host, port):
-        return "|".join([str(host or ""), _clean_iface_token(port).lower()])
+        return "|".join([str(host or ""), _normalize_iface_key(port)])
 
-    def _purge_recent_native(now):
+    def _purge_recent_priority(now):
         if correlation_window <= 0:
-            _recent_native_ports.clear()
+            _recent_priority_ports.clear()
             return
         cutoff = now - correlation_window
-        for key, ts in list(_recent_native_ports.items()):
-            if ts < cutoff:
-                _recent_native_ports.pop(key, None)
+        for key, entry in list(_recent_priority_ports.items()):
+            if entry.get("ts", 0) < cutoff:
+                _recent_priority_ports.pop(key, None)
 
-    def _has_recent_native(host, port, now):
+    def _has_recent_higher_priority(host, port, kind, now):
         if not port or correlation_window <= 0:
             return False
-        _purge_recent_native(now)
-        ts = _recent_native_ports.get(_port_key(host, port), 0)
-        return bool(ts and now - ts <= correlation_window)
+        _purge_recent_priority(now)
+        entry = _recent_priority_ports.get(_port_key(host, port))
+        if not entry:
+            return False
+        return entry.get("priority", 0) > _network_event_priority(kind)
+
+    def _remember_recent_event(host, event, now):
+        priority = _network_event_priority(event.get("kind"))
+        if priority <= 0 or correlation_window <= 0:
+            return
+        port = _network_event_port(event)
+        if not port:
+            return
+        _recent_priority_ports[_port_key(host, port)] = {
+            "kind": event.get("kind"),
+            "priority": priority,
+            "ts": now,
+        }
 
     def _send_network_event(host, message, event, now):
         dedupe_key = "|".join([host, event.get("dedupe") or event.get("kind") or message[:120]])
@@ -2090,24 +2176,81 @@ def syslog_watcher():
                 f"[SYSLOG] {event.get('kind')} from {host} "
                 f"port={event.get('local_port') or event.get('port') or '-'}"
             )
-            send_feishu(build_network_syslog_card(host, message, event))
+            sent = send_feishu(build_network_syslog_card(host, message, event))
+            port = _network_event_port(event)
+            if sent and SYSLOG_RECOVERY_ENABLED and _network_event_priority(event.get("kind")) > 0 and port:
+                _active_events[_port_key(host, port)] = {
+                    "host": host,
+                    "message": message,
+                    "event": event,
+                    "started": now,
+                }
+        _remember_recent_event(host, event, now)
 
-    def _drop_pending_errdisable_for(host, port):
+    def _drop_pending_lower_for(host, port, priority):
         key = _port_key(host, port)
-        _pending_errdisable.pop(key, None)
+        pending = _pending_events.get(key)
+        if pending and _network_event_priority(pending["event"].get("kind")) < priority:
+            _pending_events.pop(key, None)
 
-    def _flush_pending_errdisable(now):
-        for key, pending in list(_pending_errdisable.items()):
+    def _queue_pending_event(host, message, event, now):
+        port = _network_event_port(event)
+        key = _port_key(host, port)
+        priority = _network_event_priority(event.get("kind"))
+        pending = _pending_events.get(key)
+        if pending and _network_event_priority(pending["event"].get("kind")) >= priority:
+            log(
+                f"[SYSLOG] suppressed {event.get('kind')} from {host} "
+                f"port={port or '-'} after pending higher/equal priority event"
+            )
+            return
+        _pending_events[key] = {
+            "host": host,
+            "message": message,
+            "event": event,
+            "due": now + correlation_window,
+        }
+
+    def _flush_pending_events(now):
+        for key, pending in list(_pending_events.items()):
             if now < pending["due"]:
                 continue
-            _pending_errdisable.pop(key, None)
-            if _has_recent_native(pending["host"], pending["event"].get("port"), now):
+            _pending_events.pop(key, None)
+            if _has_recent_higher_priority(
+                pending["host"],
+                _network_event_port(pending["event"]),
+                pending["event"].get("kind"),
+                now,
+            ):
                 log(
-                    f"[SYSLOG] suppressed errdisable from {pending['host']} "
-                    f"port={pending['event'].get('port') or '-'} after native_vlan_mismatch"
+                    f"[SYSLOG] suppressed {pending['event'].get('kind')} from {pending['host']} "
+                    f"port={_network_event_port(pending['event']) or '-'} after higher priority event"
                 )
                 continue
             _send_network_event(pending["host"], pending["message"], pending["event"], now)
+
+    def _send_recovery_if_active(host, port, now):
+        if not SYSLOG_RECOVERY_ENABLED:
+            return False
+        key = _port_key(host, port)
+        active = _active_events.pop(key, None)
+        _pending_events.pop(key, None)
+        if not active:
+            return False
+        duration = max(0, now - active.get("started", now))
+        event = active["event"]
+        log(
+            f"[SYSLOG] RECOVER {event.get('kind')} from {host} "
+            f"port={_network_event_port(event) or port} duration={int(duration)}s"
+        )
+        send_feishu(build_network_syslog_card(
+            active["host"],
+            active["message"],
+            event,
+            recovered=True,
+            duration=duration,
+        ))
+        return True
 
     while not os.path.exists(SYSLOG_FILE):
         time.sleep(5)
@@ -2121,10 +2264,10 @@ def syslog_watcher():
         return
 
     while True:
-        _flush_pending_errdisable(time.time())
+        _flush_pending_events(time.time())
         line = f.readline()
         if not line:
-            _flush_pending_errdisable(time.time())
+            _flush_pending_events(time.time())
             time.sleep(0.5)
             try:
                 if os.stat(SYSLOG_FILE).st_ino != current_ino:
@@ -2140,6 +2283,12 @@ def syslog_watcher():
         if len(parts) < 3:
             continue
         host, _severity, message = parts
+        now = time.time()
+
+        link_state = parse_link_state_event(message)
+        if link_state and link_state.get("state") == "up":
+            _send_recovery_if_active(host, link_state.get("port"), now)
+            continue
 
         if _DHCP_SNOOP_RE.search(message):
             if not _syslog_event_enabled("dhcp_snooping"):
@@ -2167,26 +2316,32 @@ def syslog_watcher():
         if event:
             if not _syslog_event_enabled(event.get("kind")):
                 continue
-            now = time.time()
             kind = event.get("kind")
             if kind == "native_vlan_mismatch":
-                _recent_native_ports[_port_key(host, event.get("local_port"))] = now
-                _drop_pending_errdisable_for(host, event.get("local_port"))
+                _drop_pending_lower_for(host, _network_event_port(event), _network_event_priority(kind))
                 _send_network_event(host, message, event, now)
                 continue
-            if kind == "errdisable" and correlation_window > 0:
-                if _has_recent_native(host, event.get("port"), now):
+            if kind == "loopback":
+                if _has_recent_higher_priority(host, _network_event_port(event), kind, now):
                     log(
-                        f"[SYSLOG] suppressed errdisable from {host} "
-                        f"port={event.get('port') or '-'} after native_vlan_mismatch"
+                        f"[SYSLOG] suppressed loopback from {host} "
+                        f"port={_network_event_port(event) or '-'} after higher priority event"
                     )
                     continue
-                _pending_errdisable[_port_key(host, event.get("port"))] = {
-                    "host": host,
-                    "message": message,
-                    "event": event,
-                    "due": now + correlation_window,
-                }
+                _drop_pending_lower_for(host, _network_event_port(event), _network_event_priority(kind))
+                if correlation_window > 0:
+                    _queue_pending_event(host, message, event, now)
+                else:
+                    _send_network_event(host, message, event, now)
+                continue
+            if kind == "errdisable" and correlation_window > 0:
+                if _has_recent_higher_priority(host, event.get("port"), kind, now):
+                    log(
+                        f"[SYSLOG] suppressed errdisable from {host} "
+                        f"port={event.get('port') or '-'} after higher priority event"
+                    )
+                    continue
+                _queue_pending_event(host, message, event, now)
                 continue
             _send_network_event(host, message, event, now)
 
@@ -2424,7 +2579,8 @@ def main():
             f"[SYSLOG] security watcher enabled "
             f"(file={SYSLOG_FILE}, rate_limit={SYSLOG_EVENT_RATE_LIMIT}s, "
             f"types={','.join(sorted(SYSLOG_ALERT_TYPES)) or '-'}, "
-            f"correlation={SYSLOG_CORRELATION_SECONDS}s)"
+            f"correlation={SYSLOG_CORRELATION_SECONDS}s, "
+            f"recovery={SYSLOG_RECOVERY_ENABLED})"
         )
         threading.Thread(target=syslog_watcher, daemon=True).start()
     else:
