@@ -5,15 +5,12 @@
   // and unit tests. DOM rendering and Prometheus queries stay in app.js.
 
   const MODE_DEFS = {
-    setup: { id: "setup", label: "搭建", tone: "info", note: "布线、上电、发现设备" },
-    rehearsal: { id: "rehearsal", label: "联调", tone: "warn", note: "核对座位、链路和告警" },
-    match: { id: "match", label: "比赛", tone: "good", note: "只保留关键告警和证据" },
-    incident: { id: "incident", label: "故障", tone: "bad", note: "定位根因、导出证据" }
+    monitor: { id: "monitor", label: "监控", tone: "good", note: "固定告警策略" }
   };
 
   function normalizeEventMode(mode) {
     const value = String(mode || "").trim().toLowerCase();
-    return MODE_DEFS[value] ? value : "rehearsal";
+    return MODE_DEFS[value] ? value : "monitor";
   }
 
   function modeDefinition(mode) {

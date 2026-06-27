@@ -1,6 +1,5 @@
 event:
   name:
-  mode: rehearsal
   default_layout: tournament-64-2layer
   security_mode: internal
   public_base_url:
@@ -57,7 +56,6 @@ unifi:
   sites: all
 
 alerts:
-  mode: rehearsal
   feishu_robot_token:
   syslog_alert_types: native_vlan_mismatch,errdisable,loopback,dhcp_snooping
 

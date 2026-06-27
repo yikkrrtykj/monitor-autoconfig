@@ -107,11 +107,10 @@
       <section class="control-panel" id="controlPanel" aria-label="赛事控制台" hidden>
         <div class="control-toolbar">
           <div class="control-title">
-            <strong id="controlModeTitle">联调模式</strong>
-            <span id="controlModeNote">核对座位、链路和告警</span>
+            <strong>赛事控制台</strong>
+            <span>基础配置、赛前检查、事故和交付</span>
           </div>
           <div class="control-actions">
-            <div class="mode-segment" id="controlModeSwitch" role="group" aria-label="事件模式"></div>
             <button type="button" id="controlRescan" title="立即重扫座位目标">重扫</button>
             <button type="button" id="controlRefresh" title="刷新控制台">刷新</button>
             <button type="button" id="controlExport" title="导出当前控制台报告">导出</button>
@@ -126,10 +125,6 @@
             <h2>赛前检查</h2>
             <div class="control-list" id="controlChecklist"></div>
           </article>
-          <article class="control-card">
-            <h2>配置中心</h2>
-            <div class="control-config" id="controlConfig"></div>
-          </article>
           <article class="control-card control-config-editor-card">
             <h2>基础配置</h2>
             <div class="control-form" id="controlConfigForm"></div>
@@ -143,6 +138,10 @@
               <input id="controlConfigImportFile" type="file" accept=".yml,.yaml,.json,text/yaml,application/json" hidden />
             </div>
             <div class="control-list" id="controlConfigResult"></div>
+          </article>
+          <article class="control-card">
+            <h2>配置中心</h2>
+            <div class="control-config" id="controlConfig"></div>
           </article>
           <article class="control-card">
             <h2>拓扑诊断</h2>

@@ -35,7 +35,7 @@
   } = window.BSPlayers;
   const { analyzeIncident } = window.BSIncident;
   const {
-    MODE_DEFS, normalizeEventMode, modeDefinition, readinessScore,
+    readinessScore,
     summarizePlayers, summarizeTargets, summarizeServices,
     buildConfigRisks, buildTopologyFindings, buildReadinessChecks,
     lintSwitchConfig
@@ -62,7 +62,6 @@
   let lastIncidents = [];
   let lastDeliveryManifest = null;
   const DATA_STALE_AFTER_MS = 20000;
-  const CONTROL_MODE_STORAGE_KEY = "bigscreen.eventMode.v1";
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
   const CONTROL_NETWORK_STORAGE_KEY = "bigscreen.controlNetwork.v1";
 
@@ -1401,25 +1400,6 @@
 
   // ---- Event platform control ----
 
-  function storedControlMode() {
-    try {
-      const stored = window.localStorage.getItem(CONTROL_MODE_STORAGE_KEY);
-      return normalizeEventMode(stored || config.eventMode);
-    } catch (error) {
-      return normalizeEventMode(config.eventMode);
-    }
-  }
-
-  function setStoredControlMode(mode) {
-    const normalized = normalizeEventMode(mode);
-    try {
-      window.localStorage.setItem(CONTROL_MODE_STORAGE_KEY, normalized);
-    } catch (error) {
-      // Kiosk browsers may disable storage; the current render still uses the value.
-    }
-    return normalized;
-  }
-
   function storedControlLayout() {
     const fallback = config.defaultLayout || "tournament-64-2layer";
     try {
@@ -1448,24 +1428,6 @@
       page,
       network: ["wired", "wireless", "all"].includes(network) ? network : "wired"
     };
-  }
-
-  function renderControlModeSwitch(mode) {
-    const modeInfo = modeDefinition(mode);
-    const title = document.getElementById("controlModeTitle");
-    const note = document.getElementById("controlModeNote");
-    title.textContent = `${modeInfo.label}模式`;
-    note.textContent = modeInfo.note;
-    const switcher = document.getElementById("controlModeSwitch");
-    switcher.innerHTML = Object.values(MODE_DEFS).map((item) => `
-      <button type="button" class="${item.id === modeInfo.id ? "active" : ""}" data-mode="${escapeHtml(item.id)}">${escapeHtml(item.label)}</button>
-    `).join("");
-    switcher.querySelectorAll("button").forEach((button) => {
-      button.addEventListener("click", () => {
-        setStoredControlMode(button.dataset.mode);
-        refreshControlPanel();
-      });
-    });
   }
 
   function controlItemHtml(item) {
@@ -1587,7 +1549,7 @@
 
   function controlConfigDefaults(configValue) {
     const value = cloneControlConfig(configValue);
-    value.event = { mode: "rehearsal", default_layout: "tournament-64-2layer", security_mode: "internal", ...(value.event || {}) };
+    value.event = { default_layout: "tournament-64-2layer", security_mode: "internal", ...(value.event || {}) };
     value.networks = { player_vlan: 40, wireless_vlan: 41, ...(value.networks || {}) };
     value.devices = { switches: [], servers: [], ...(value.devices || {}) };
     value.devices.core = { name: "core", ...(value.devices.core || {}) };
@@ -1625,10 +1587,11 @@
     value.isp.links = asConfigArray(value.isp.links);
     value.unifi = { enabled: false, sites: "all", ...(value.unifi || {}) };
     value.alerts = {
-      mode: value.event.mode || "rehearsal",
       syslog_alert_types: "native_vlan_mismatch,errdisable,loopback,dhcp_snooping",
       ...(value.alerts || {})
     };
+    delete value.event.mode;
+    delete value.alerts.mode;
     value.security = { grafana_anonymous: true, public_enabled: false, allowed_cidrs: [], ...(value.security || {}) };
     return value;
   }
@@ -1709,18 +1672,11 @@
     if (!form) return;
     const matchPages = pages.filter((item) => item.kind);
     lastEditableConfig = controlConfigDefaults(configValue);
-    const modeChoices = [
-      { value: "setup", label: "搭建模式" },
-      { value: "rehearsal", label: "联调模式" },
-      { value: "match", label: "比赛模式" },
-      { value: "incident", label: "故障模式" }
-    ];
     form.innerHTML = `
       <section class="config-section">
         <h3>赛事</h3>
         <div class="config-fields">
           ${configInput("event.name", "赛事名称", { placeholder: "武汉斗鱼嘉年华" })}
-          ${configInput("event.mode", "告警模式", { type: "select", choices: modeChoices })}
           ${configInput("event.default_layout", "默认赛制", { type: "select", choices: matchPages.map((item) => ({ value: item.id, label: item.label })) })}
           ${configInput("event.public_base_url", "公网地址", { placeholder: "需要公网访问时再填" })}
         </div>
@@ -1828,7 +1784,6 @@
       if (name === "switches") rows.forEach((item) => { item.role = item.role || "access"; });
       value[path[0]][path[1]] = rows;
     });
-    value.alerts.mode = value.event.mode;
     lastEditableConfig = value;
     return value;
   }
@@ -1946,7 +1901,7 @@
 
   async function createControlIncident() {
     const input = document.getElementById("controlIncidentTitle");
-    const title = (input && input.value.trim()) || (lastControlReport ? `现场检查 ${modeDefinition(lastControlReport.mode).label}` : "现场事故");
+    const title = (input && input.value.trim()) || "现场事故";
     const related = lastControlReport ? {
       readiness: lastControlReport.readiness,
       checks: lastControlReport.checks.filter((item) => item.level === "bad" || item.level === "warn").slice(0, 8)
@@ -2027,7 +1982,6 @@
   }
 
   async function collectControlSnapshot() {
-    const mode = storedControlMode();
     const { page, network } = controlPageAndNetwork();
     const expectedSeats = page ? (page.teams || []).length * page.teamSize : 0;
     const selector = page ? tournamentSelector(page, network) : 'role="player"';
@@ -2052,7 +2006,7 @@
     const checks = buildReadinessChecks({ seatSummary, targetSummary, serviceSummary, configRisks, topologyFindings });
     const readiness = readinessScore(checks);
     return {
-      mode,
+      mode: "monitor",
       page,
       network,
       players,
@@ -2102,7 +2056,6 @@
   }
 
   function renderControlPanel(snapshot) {
-    renderControlModeSwitch(snapshot.mode);
     renderControlReadiness(snapshot.readiness);
     renderControlChecklist(snapshot.checks);
     renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
@@ -2136,7 +2089,7 @@
   function exportControlReport() {
     if (!lastControlReport) return;
     const rows = [["time", "mode", "section", "item", "level", "value", "note"]];
-    const mode = modeDefinition(lastControlReport.mode).label;
+    const mode = "监控";
     const now = formatTimestampFull(Math.floor(Date.now() / 1000));
     lastControlReport.checks.forEach((item) => {
       rows.push([now, mode, item.section, item.label, item.level, item.value, item.note || ""]);

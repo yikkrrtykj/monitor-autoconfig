@@ -55,7 +55,7 @@ def test_parse_validate_render_env():
     assert not [item for item in issues if item["level"] == "bad"]
     env = platform_config.render_env(config, {"FEISHU_ROBOT_TOKEN": "keep-secret"})
     assert env["EVENT_NAME"] == "Test Event"
-    assert env["BIGSCREEN_EVENT_MODE"] == "match"
+    assert env["BIGSCREEN_EVENT_MODE"] == "monitor"
     assert env["CORE_SWITCH_PING"] == "core:192.168.10.254"
     assert env["DIST_SWITCH_PING"] == "stage-1:192.168.10.11,stage-2:192.168.10.12"
     assert env["ISP_PING"] == "telecom:223.5.5.5"

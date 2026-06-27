@@ -15,31 +15,19 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_ALERT_PROFILE = {
+    "UNIFI_AP_DOWN_FOR_SECONDS": "180",
+    "SYSLOG_EVENT_RATE_LIMIT": "60",
+    "DEVICE_DOWN_FOR_SECONDS": "10",
+    "INTERCONNECT_ALERT_FOR_SECONDS": "5",
+}
+
 MODE_PROFILES = {
-    "setup": {
-        "UNIFI_AP_DOWN_FOR_SECONDS": "30",
-        "SYSLOG_EVENT_RATE_LIMIT": "15",
-        "DEVICE_DOWN_FOR_SECONDS": "5",
-        "INTERCONNECT_ALERT_FOR_SECONDS": "3",
-    },
-    "rehearsal": {
-        "UNIFI_AP_DOWN_FOR_SECONDS": "90",
-        "SYSLOG_EVENT_RATE_LIMIT": "30",
-        "DEVICE_DOWN_FOR_SECONDS": "10",
-        "INTERCONNECT_ALERT_FOR_SECONDS": "5",
-    },
-    "match": {
-        "UNIFI_AP_DOWN_FOR_SECONDS": "180",
-        "SYSLOG_EVENT_RATE_LIMIT": "60",
-        "DEVICE_DOWN_FOR_SECONDS": "10",
-        "INTERCONNECT_ALERT_FOR_SECONDS": "5",
-    },
-    "incident": {
-        "UNIFI_AP_DOWN_FOR_SECONDS": "30",
-        "SYSLOG_EVENT_RATE_LIMIT": "10",
-        "DEVICE_DOWN_FOR_SECONDS": "3",
-        "INTERCONNECT_ALERT_FOR_SECONDS": "2",
-    },
+    "monitor": DEFAULT_ALERT_PROFILE,
+    "setup": DEFAULT_ALERT_PROFILE,
+    "rehearsal": DEFAULT_ALERT_PROFILE,
+    "match": DEFAULT_ALERT_PROFILE,
+    "incident": DEFAULT_ALERT_PROFILE,
 }
 
 
@@ -288,9 +276,6 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
 
     if not event.get("name"):
         issues.append({"level": "warn", "path": "event.name", "message": "建议填写赛事名称"})
-    mode = str(event.get("mode") or config["alerts"].get("mode") or "rehearsal").lower()
-    if mode not in MODE_PROFILES:
-        issues.append({"level": "bad", "path": "event.mode", "message": "模式必须是 setup/rehearsal/match/incident"})
     if not (devices.get("core") or {}).get("ip"):
         issues.append({"level": "bad", "path": "devices.core.ip", "message": "核心交换机 IP 必填"})
     if not devices.get("switches"):
@@ -310,8 +295,8 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
 def alert_profile(config: dict[str, Any]) -> dict[str, str]:
     event = config.get("event") or {}
     alerts = config.get("alerts") or {}
-    mode = str(alerts.get("mode") or event.get("mode") or "rehearsal").lower()
-    return MODE_PROFILES.get(mode, MODE_PROFILES["rehearsal"])
+    mode = str(alerts.get("mode") or event.get("mode") or "monitor").lower()
+    return MODE_PROFILES.get(mode, DEFAULT_ALERT_PROFILE)
 
 
 def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -> dict[str, str]:
@@ -330,11 +315,10 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     switches = devices.get("switches") or []
     servers = devices.get("servers") or []
     isp_links = isp.get("links") or []
-    mode = str(alerts.get("mode") or event.get("mode") or "rehearsal").lower()
 
     env = {
         "EVENT_NAME": event.get("name", ""),
-        "BIGSCREEN_EVENT_MODE": mode,
+        "BIGSCREEN_EVENT_MODE": "monitor",
         "BIGSCREEN_DEFAULT_LAYOUT": event.get("default_layout", "tournament-64-2layer"),
         "BIGSCREEN_SECURITY_MODE": event.get("security_mode", "internal"),
         "BIGSCREEN_PUBLIC_BASE_URL": event.get("public_base_url", ""),
@@ -417,7 +401,7 @@ def merge_env_file(path: Path, updates: dict[str, str]) -> str:
 def default_config_text(example_path: Path) -> str:
     if example_path.exists():
         return example_path.read_text(encoding="utf-8")
-    return dump_simple_yaml({"event": {"name": "", "mode": "rehearsal"}}) + "\n"
+    return dump_simple_yaml({"event": {"name": ""}}) + "\n"
 
 
 def stamp() -> str:
