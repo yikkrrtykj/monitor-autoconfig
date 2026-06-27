@@ -1711,7 +1711,9 @@ def unifi_ap_watcher():
     time.sleep(20)  # let Prometheus/unpoller settle after a (re)start
     states = {}
     snmp_add_attempted = {}
+    snmp_confirmed_exists = set()  # IPs confirmed in LibreNMS — skip future add retries
     name_sync_attempted = {}
+    name_last_synced = {}  # last display name successfully synced per IP
     last_status_log = 0.0
     log(
         "[AP] UniFi AP watcher enabled "
@@ -1797,7 +1799,7 @@ def unifi_ap_watcher():
             sync_name = name if _should_sync_ap_name(info) else ""
             ip = info.get("ip") or ""
             add_attempted = False
-            if UNIFI_AP_SNMP_AUTO_ADD and ip:
+            if UNIFI_AP_SNMP_AUTO_ADD and ip and ip not in snmp_confirmed_exists:
                 last_attempt = snmp_add_attempted.get(ip, 0)
                 if now - last_attempt >= UNIFI_AP_SNMP_ADD_RETRY_SECONDS:
                     snmp_add_attempted[ip] = now
@@ -1808,6 +1810,8 @@ def unifi_ap_watcher():
                         community=UNIFI_AP_SNMP_COMMUNITY,
                         log_prefix="[AP]",
                     )
+                    if add_result == "exists":
+                        snmp_confirmed_exists.add(ip)
                     if add_result == "added" and mark_device_online_notified(name, ip):
                         log(f"[AP] new SNMP AP deployed: {name} ({ip})")
                         send_feishu(build_device_online_card({
@@ -1821,7 +1825,9 @@ def unifi_ap_watcher():
                 last_sync = name_sync_attempted.get(ip, 0)
                 if now - last_sync >= UNIFI_AP_NAME_SYNC_SECONDS:
                     name_sync_attempted[ip] = now
-                    update_librenms_device_display(ip, sync_name, log_prefix="[AP]")
+                    if name_last_synced.get(ip) != sync_name:
+                        name_last_synced[ip] = sync_name
+                        update_librenms_device_display(ip, sync_name, log_prefix="[AP]")
             state = states.setdefault(key, {
                 "alerting": False, "down_since": None, "seen_up": False,
                 "last_seen": now, "name": name, "ip": "", "model": "",

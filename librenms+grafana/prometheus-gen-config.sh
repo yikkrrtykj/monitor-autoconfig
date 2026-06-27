@@ -10,6 +10,11 @@ FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
 ISP_PING="${ISP_PING:-${BIGSCREEN_ISP_IPS:-}}"
 FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
+# Per-unit SNMP for HA firewall physical nodes (health/uptime per box).
+# Separate from FIREWALL_SNMP_TARGETS because WAN traffic data must come
+# from the logical VIP (always active node); physical IPs only give per-unit
+# hardware health.
+FIREWALL_UNIT_SNMP_TARGETS="${FIREWALL_UNIT_SNMP_TARGETS:-}"
 SNMP_AUTH="${SNMP_AUTH:-global}"
 PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
@@ -237,9 +242,10 @@ write_ping_job "infra-srv-ping"   "$SERVER_PING"
 # Infrastructure SNMP jobs for device uptime
 SWITCH_SNMP_TARGETS="${CORE_SWITCH_PING}${CORE_SWITCH_PING:+,}${DIST_SWITCH_PING}"
 FIREWALL_SNMP_UPTIME_TARGETS="$(apply_reference_names "$FIREWALL_SNMP_TARGETS" "$FIREWALL_PING")"
-write_snmp_job "infra-switch-snmp" "$SWITCH_SNMP_TARGETS" "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
-write_snmp_job "infra-fw-snmp"     "$FIREWALL_SNMP_UPTIME_TARGETS" "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
-write_snmp_job "infra-switch-ifmib" "$INTERCONNECT_SNMP_TARGETS" "if_mib" "$SWITCH_IFMIB_SCRAPE_INTERVAL"
+write_snmp_job "infra-switch-snmp"   "$SWITCH_SNMP_TARGETS"           "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
+write_snmp_job "infra-fw-snmp"       "$FIREWALL_SNMP_UPTIME_TARGETS"  "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
+write_snmp_job "infra-fw-unit-snmp"  "$FIREWALL_UNIT_SNMP_TARGETS"    "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
+write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     "if_mib"        "$SWITCH_IFMIB_SCRAPE_INTERVAL"
 
 # Firewall SNMP
 cat >> "$CONFIG_FILE" <<EOF
@@ -313,6 +319,7 @@ echo "  FW:      ${FIREWALL_PING:-none}"
 echo "  Server:  ${SERVER_PING:-none}"
 echo "  ISP:     ${ISP_PING:-none}"
 echo "  FW SNMP: ${FIREWALL_SNMP_TARGETS:-none}"
+echo "  FW Unit: ${FIREWALL_UNIT_SNMP_TARGETS:-none}"
 echo "  UniFi:   ${UNIFI_CONTROLLER_URL:-none}"
 echo "  Players: $PLAYER_TARGETS_FILE"
 

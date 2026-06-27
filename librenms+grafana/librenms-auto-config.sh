@@ -1924,8 +1924,13 @@ expand_targets "$DISCOVERY_TARGETS" | while read -r ip; do
 done
 
 echo ""
-echo "[4b/5] Adding ping-only devices (ISP / Firewall physical / Servers)..."
-for combined in $(echo "${ISP_PING}${ISP_PING:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${SERVER_PING}" | tr ',' '\n'); do
+echo "[4b/5] Adding ping-only devices (ISP / Firewall / Servers)..."
+# HA 场景：FIREWALL_UNIT_SNMP_TARGETS 已设 → 物理 IP 由后面的 SNMP 块处理，
+#           VIP（FIREWALL_SNMP_TARGETS）在此加为 ping-only。
+# 单机场景：FIREWALL_UNIT_SNMP_TARGETS 未设 → 物理 IP 来自 FIREWALL_PING 加 ping-only，
+#           VIP 不单独在此 ping（后面 SNMP 块处理）。
+_fw_vip_ping="${FIREWALL_UNIT_SNMP_TARGETS:+${FIREWALL_SNMP_TARGETS}}"
+for combined in $(echo "${ISP_PING}${ISP_PING:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}" | tr ',' '\n'); do
   combined=$(echo "$combined" | tr -d '[:space:]')
   [ -z "$combined" ] && continue
   case "$combined" in *:*)
@@ -1936,11 +1941,14 @@ for combined in $(echo "${ISP_PING}${ISP_PING:+,}${FIREWALL_PING}${FIREWALL_PING
   ;; esac
 done
 
-# --- 防火墙 SNMP 设备（FIREWALL_SNMP_TARGETS）→ LibreNMS SNMP 监控 ---
-if [ -n "$FIREWALL_SNMP_TARGETS" ] && [ -n "$API_TOKEN" ]; then
+# --- 防火墙 SNMP 设备 → LibreNMS ---
+# HA 场景（FIREWALL_UNIT_SNMP_TARGETS 已设）：用物理 IP 做 SNMP（能看到每台硬件详情）。
+# 单机场景（FIREWALL_UNIT_SNMP_TARGETS 未设）：回退到 FIREWALL_SNMP_TARGETS（向后兼容）。
+_fw_librenms_snmp="${FIREWALL_UNIT_SNMP_TARGETS:-$FIREWALL_SNMP_TARGETS}"
+if [ -n "$_fw_librenms_snmp" ] && [ -n "$API_TOKEN" ]; then
   echo ""
   echo "  Adding firewall SNMP devices to LibreNMS..."
-  for combined in $(echo "$FIREWALL_SNMP_TARGETS" | tr ',' '\n'); do
+  for combined in $(echo "$_fw_librenms_snmp" | tr ',' '\n'); do
     combined=$(echo "$combined" | tr -d '[:space:]')
     [ -z "$combined" ] && continue
     case "$combined" in *:*)
