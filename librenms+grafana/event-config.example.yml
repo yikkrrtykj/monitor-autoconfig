@@ -1,5 +1,5 @@
 event:
-  name: 武汉斗鱼嘉年华
+  name:
   mode: rehearsal
   default_layout: tournament-64-2layer
   security_mode: internal
@@ -10,7 +10,7 @@ networks:
   wireless_vlan: 41
   player_subnets: 192.168.40.0/24
   wireless_subnets: 192.168.41.0/24
-  player_gateways: 192.168.10.254
+  player_gateways:
 
 devices:
   core:
@@ -27,7 +27,15 @@ devices:
     - name: stage-2
       ip: 192.168.10.12
       role: access
-  servers: []
+    - name: stage-3
+      ip: 192.168.10.13
+      role: access
+    - name: stage-4
+      ip: 192.168.10.14
+      role: access
+  servers:
+    - name: game server
+      ip:
 
 isp:
   auto_discovery: true

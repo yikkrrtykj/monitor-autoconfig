@@ -73,8 +73,34 @@ def test_merge_env_preserves_unknown_keys(tmp_path):
     assert "CORE_SWITCH_PING=core:1.1.1.1" in rendered
 
 
+def test_blank_yaml_values_are_empty_strings_and_gateway_falls_back():
+    config = platform_config.parse_simple_yaml("""
+event:
+  name:
+  public_base_url:
+networks:
+  player_gateways:
+devices:
+  core:
+    ip: 192.168.10.254
+  switches:
+    - name: stage-1
+      ip: 192.168.10.11
+isp:
+  links:
+    - name: telecom
+      gateway:
+""")
+    assert config["event"]["name"] == ""
+    assert config["event"]["public_base_url"] == ""
+    assert config["isp"]["links"][0]["gateway"] == ""
+    env = platform_config.render_env(config)
+    assert env["PLAYER_GATEWAYS"] == "192.168.10.254"
+
+
 if __name__ == "__main__":
     test_parse_validate_render_env()
+    test_blank_yaml_values_are_empty_strings_and_gateway_falls_back()
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         test_merge_env_preserves_unknown_keys(Path(tmp))

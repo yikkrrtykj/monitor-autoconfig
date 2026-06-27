@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import time
 import zipfile
@@ -239,7 +240,9 @@ def delivery_manifest() -> dict:
         for line in compose.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped.startswith("image:"):
-                images.append(stripped.split(":", 1)[1].strip().strip('"'))
+                image = stripped.split(":", 1)[1].strip().strip('"')
+                match = re.fullmatch(r"\$\{[^:}]+:-([^}]+)\}", image)
+                images.append(match.group(1) if match else image)
     return {
         "ok": True,
         "images": sorted(set(images)),

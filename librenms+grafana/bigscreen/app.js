@@ -1566,9 +1566,16 @@
     return Array.isArray(value) ? value : [];
   }
 
+  function configScalar(value) {
+    if (value == null) return "";
+    if (Array.isArray(value)) return value.join("\n");
+    if (typeof value === "object") return "";
+    return String(value);
+  }
+
   function csvText(value) {
     if (Array.isArray(value)) return value.join("\n");
-    return value == null ? "" : String(value);
+    return configScalar(value);
   }
 
   function splitConfigList(value) {
@@ -1585,8 +1592,35 @@
     value.devices = { switches: [], servers: [], ...(value.devices || {}) };
     value.devices.core = { name: "core", ...(value.devices.core || {}) };
     value.devices.firewall = { name: "firewall", ...(value.devices.firewall || {}) };
+    if (String(value.networks.player_gateways || "") === String(value.devices.core.ip || "")) {
+      value.networks.player_gateways = "";
+    }
     value.devices.switches = asConfigArray(value.devices.switches);
     value.devices.servers = asConfigArray(value.devices.servers);
+    if (!value.devices.switches.length) {
+      value.devices.switches = [1, 2, 3, 4].map((num) => ({
+        name: `stage-${num}`,
+        ip: `192.168.10.${10 + num}`,
+        role: "access"
+      }));
+    } else if (value.devices.switches.every((item) => /^stage-[1-4]$/.test(String(item.name || "")))) {
+      const byName = new Map(value.devices.switches.map((item) => [String(item.name || ""), item]));
+      [1, 2, 3, 4].forEach((num) => {
+        const name = `stage-${num}`;
+        if (!byName.has(name)) {
+          value.devices.switches.push({ name, ip: `192.168.10.${10 + num}`, role: "access" });
+        }
+      });
+    }
+    if (!value.devices.servers.length) {
+      value.devices.servers = [{ name: "game server", ip: "" }];
+    } else if (
+      value.devices.servers.length === 1
+      && String(value.devices.servers[0].name || "").toLowerCase() === "grafana"
+      && String(value.devices.servers[0].ip || "") === "192.168.41.253"
+    ) {
+      value.devices.servers = [{ name: "game server", ip: "" }];
+    }
     value.isp = { auto_discovery: true, max_bandwidth_mbps: 1000, links: [], ...(value.isp || {}) };
     value.isp.links = asConfigArray(value.isp.links);
     value.unifi = { enabled: false, sites: "all", ...(value.unifi || {}) };
@@ -1646,7 +1680,7 @@
     return `
       <label class="config-field" for="${escapeHtml(id)}">
         <span>${escapeHtml(label)}</span>
-        <input ${common} type="${options.number ? "number" : "text"}" value="${escapeHtml(value == null ? "" : value)}" placeholder="${escapeHtml(options.placeholder || "")}" />
+        <input ${common} type="${options.number ? "number" : "text"}" value="${escapeHtml(configScalar(value))}" placeholder="${escapeHtml(options.placeholder || "")}" />
       </label>
     `;
   }
@@ -1659,7 +1693,7 @@
             ${columns.map((column) => `
               <label>
                 <span>${escapeHtml(column.label)}</span>
-                <input data-config-key="${escapeHtml(column.key)}"${column.number ? ' data-config-number="1"' : ""} type="${column.number ? "number" : "text"}" value="${escapeHtml(row[column.key] == null ? "" : row[column.key])}" placeholder="${escapeHtml(column.placeholder || "")}" />
+                <input data-config-key="${escapeHtml(column.key)}"${column.number ? ' data-config-number="1"' : ""} type="${column.number ? "number" : "text"}" value="${escapeHtml(configScalar(row[column.key]))}" placeholder="${escapeHtml(column.placeholder || "")}" />
               </label>
             `).join("")}
             <button type="button" data-config-remove="${escapeHtml(name)}" data-index="${index}">删除</button>
@@ -1677,8 +1711,8 @@
     lastEditableConfig = controlConfigDefaults(configValue);
     const modeChoices = [
       { value: "setup", label: "搭建模式" },
-      { value: "rehearsal", label: "彩排模式" },
-      { value: "match", label: "正赛模式" },
+      { value: "rehearsal", label: "联调模式" },
+      { value: "match", label: "比赛模式" },
       { value: "incident", label: "故障模式" }
     ];
     form.innerHTML = `
@@ -1688,7 +1722,7 @@
           ${configInput("event.name", "赛事名称", { placeholder: "武汉斗鱼嘉年华" })}
           ${configInput("event.mode", "告警模式", { type: "select", choices: modeChoices })}
           ${configInput("event.default_layout", "默认赛制", { type: "select", choices: matchPages.map((item) => ({ value: item.id, label: item.label })) })}
-          ${configInput("event.public_base_url", "公网地址", { placeholder: "https://monitor.example.com" })}
+          ${configInput("event.public_base_url", "公网地址", { placeholder: "需要公网访问时再填" })}
         </div>
       </section>
       <section class="config-section">
@@ -1698,7 +1732,7 @@
           ${configInput("networks.wireless_vlan", "无线 VLAN", { number: true })}
           ${configInput("networks.player_subnets", "选手网段", { type: "textarea", placeholder: "192.168.40.0/24" })}
           ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", placeholder: "192.168.41.0/24" })}
-          ${configInput("networks.player_gateways", "选手网关", { type: "textarea", placeholder: "192.168.10.254" })}
+          ${configInput("networks.player_gateways", "选手网关", { type: "textarea", placeholder: "留空则复用核心 IP" })}
         </div>
       </section>
       <section class="config-section">
@@ -1707,16 +1741,15 @@
           ${configInput("devices.core.name", "核心名称")}
           ${configInput("devices.core.ip", "核心 IP")}
           ${configInput("devices.firewall.name", "防火墙名称")}
-          ${configInput("devices.firewall.ip", "防火墙 IP")}
-          ${configInput("devices.firewall.snmp", "防火墙 SNMP IP")}
+          ${configInput("devices.firewall.ip", "防火墙管理 IP")}
+          ${configInput("devices.firewall.snmp", "防火墙 SNMP 目标 IP")}
         </div>
       </section>
       <section class="config-section">
         <h3>接入交换机</h3>
         ${configListRows("switches", lastEditableConfig.devices.switches, [
           { key: "name", label: "名称", placeholder: "stage-1" },
-          { key: "ip", label: "IP", placeholder: "192.168.10.11" },
-          { key: "role", label: "角色", placeholder: "access" }
+          { key: "ip", label: "IP", placeholder: "192.168.10.11" }
         ])}
       </section>
       <section class="config-section">
@@ -1730,13 +1763,13 @@
         <h3>ISP</h3>
         <div class="config-fields">
           ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox" })}
-          ${configInput("isp.max_bandwidth_mbps", "默认带宽 Mbps", { number: true })}
+          ${configInput("isp.max_bandwidth_mbps", "兜底带宽 Mbps", { number: true })}
         </div>
         ${configListRows("isp", lastEditableConfig.isp.links, [
           { key: "name", label: "名称", placeholder: "telecom" },
           { key: "ping", label: "探测 IP", placeholder: "223.5.5.5" },
-          { key: "gateway", label: "网关 IP" },
-          { key: "bandwidth_mbps", label: "带宽", number: true }
+          { key: "gateway", label: "网关 IP", placeholder: "可留空" },
+          { key: "bandwidth_mbps", label: "单链路带宽", number: true }
         ])}
       </section>
       <section class="config-section">
@@ -1792,6 +1825,7 @@
           if (Object.values(item).some((entry) => String(entry || "").trim())) rows.push(item);
         });
       }
+      if (name === "switches") rows.forEach((item) => { item.role = item.role || "access"; });
       value[path[0]][path[1]] = rows;
     });
     value.alerts.mode = value.event.mode;

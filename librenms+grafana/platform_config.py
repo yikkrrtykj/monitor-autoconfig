@@ -131,8 +131,12 @@ def parse_simple_yaml(text: str) -> Any:
                             obj[ckey.strip()] = _scalar(cvalue)
                             index += 1
                         else:
-                            value, index = parse_block(index + 1, child_indent + 2)
-                            obj[ckey.strip()] = value
+                            if index + 1 < len(rows) and rows[index + 1][0] > child_indent:
+                                value, index = parse_block(index + 1, child_indent + 2)
+                                obj[ckey.strip()] = value
+                            else:
+                                obj[ckey.strip()] = ""
+                                index += 1
                     result.append(obj)
                 else:
                     result.append(_scalar(item))
@@ -153,8 +157,12 @@ def parse_simple_yaml(text: str) -> Any:
                 result[key] = _scalar(raw_value)
                 index += 1
             else:
-                value, index = parse_block(index + 1, indent + 2)
-                result[key] = value
+                if index + 1 < len(rows) and rows[index + 1][0] > row_indent:
+                    value, index = parse_block(index + 1, indent + 2)
+                    result[key] = value
+                else:
+                    result[key] = ""
+                    index += 1
         return result, index
 
     parsed, pos = parse_block(0, rows[0][0] if rows else 0)
@@ -231,6 +239,8 @@ def format_scalar(value: Any) -> str:
 def csv(items: Any) -> str:
     if items is None:
         return ""
+    if isinstance(items, dict):
+        return ""
     if isinstance(items, str):
         return items
     if isinstance(items, (int, float)):
@@ -243,6 +253,8 @@ def csv(items: Any) -> str:
 def named_targets(items: list[dict[str, Any]], key: str = "ip") -> str:
     targets = []
     for item in items or []:
+        if not isinstance(item, dict):
+            continue
         value = str(item.get(key) or item.get("target") or "").strip()
         if not value:
             continue
@@ -334,7 +346,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "SERVER_PING": named_targets(servers),
         "PLAYER_SUBNETS": csv(networks.get("player_subnets")),
         "WIRELESS_SUBNETS": csv(networks.get("wireless_subnets")),
-        "PLAYER_GATEWAYS": csv(networks.get("player_gateways")),
+        "PLAYER_GATEWAYS": csv(networks.get("player_gateways") or core.get("ip")),
         "PLAYER_VLAN_IDS": csv(networks.get("player_vlan")),
         "BIGSCREEN_ISP_AUTO_DISCOVER": str(bool(isp.get("auto_discovery", True))).lower(),
         "BIGSCREEN_ISP_NAMES": ",".join(str(item.get("name")) for item in isp_links if item.get("name")),
