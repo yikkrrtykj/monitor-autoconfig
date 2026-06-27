@@ -104,6 +104,47 @@
         <div class="ops-summary" id="opsSummary"></div>
         <div class="ops-board" id="opsBoard"></div>
       </section>
+      <section class="control-panel" id="controlPanel" aria-label="赛事控制台" hidden>
+        <div class="control-toolbar">
+          <div class="control-title">
+            <strong id="controlModeTitle">联调模式</strong>
+            <span id="controlModeNote">核对座位、链路和告警</span>
+          </div>
+          <div class="control-actions">
+            <div class="mode-segment" id="controlModeSwitch" role="group" aria-label="事件模式"></div>
+            <button type="button" id="controlRescan" title="立即重扫座位目标">重扫</button>
+            <button type="button" id="controlRefresh" title="刷新控制台">刷新</button>
+            <button type="button" id="controlExport" title="导出当前控制台报告">导出</button>
+          </div>
+        </div>
+        <div class="control-grid">
+          <article class="control-card control-readiness-card">
+            <h2>就绪度</h2>
+            <div class="readiness-meter" id="controlReadiness"></div>
+          </article>
+          <article class="control-card">
+            <h2>赛前检查</h2>
+            <div class="control-list" id="controlChecklist"></div>
+          </article>
+          <article class="control-card">
+            <h2>配置中心</h2>
+            <div class="control-config" id="controlConfig"></div>
+          </article>
+          <article class="control-card">
+            <h2>拓扑诊断</h2>
+            <div class="control-list" id="controlTopology"></div>
+          </article>
+          <article class="control-card">
+            <h2>事故流转</h2>
+            <div class="control-flow" id="controlIncidentFlow"></div>
+          </article>
+          <article class="control-card control-lint-card">
+            <h2>交换机配置巡检</h2>
+            <textarea id="controlSwitchConfig" spellcheck="false" placeholder="粘贴 show run 片段"></textarea>
+            <div class="control-list" id="controlLintResult"></div>
+          </article>
+        </div>
+      </section>
       <section class="topology-panel" id="topologyPanel" aria-label="网络拓扑" hidden>
         <div class="topology-toolbar">
           <span class="topology-legend">
@@ -166,6 +207,7 @@
     <script src="./players.js?v=20260623a"></script>
     <script src="./incident.js?v=20260623a"></script>
     <script src="./topology.js?v=20260623a"></script>
+    <script src="./platform.js?v=20260627a"></script>
     <script src="./app.js?v=20260625a"></script>
   </body>
 </html>

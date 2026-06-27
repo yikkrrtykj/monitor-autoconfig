@@ -435,6 +435,18 @@
     }
   }
 
+  async function fetchRuntimeStatus() {
+    try {
+      const response = await fetchWithTimeout("/player-targets/status", { cache: "no-store" }, 5000);
+      if (!response.ok) {
+        return { ok: false, error: `HTTP ${response.status}` };
+      }
+      return await response.json();
+    } catch (error) {
+      return { ok: false, error: error.message || "runtime status unavailable" };
+    }
+  }
+
   const ns = {
     prometheusBaseUrl,
     rangeWindow,
@@ -461,7 +473,8 @@
     fetchInfraDeviceNames,
     renameListWithInfraMap,
     fetchTopologyTargets,
-    fetchTopologyEdges
+    fetchTopologyEdges,
+    fetchRuntimeStatus
   };
 
   if (typeof module !== 'undefined' && module.exports) {

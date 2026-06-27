@@ -24,7 +24,7 @@
     activeInfraPingQuery, activeSeriesNames, filterSeriesByNames,
     fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap,
-    fetchTopologyTargets, fetchTopologyEdges
+    fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus
   } = window.BSApi;
   const {
     buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel
@@ -33,12 +33,19 @@
     isGatewayAddress, buildPlayers, latencyLevel, playerStatusText, groupPlayersBySeat
   } = window.BSPlayers;
   const { analyzeIncident } = window.BSIncident;
+  const {
+    MODE_DEFS, normalizeEventMode, modeDefinition, readinessScore,
+    summarizePlayers, summarizeTargets, summarizeServices,
+    buildConfigRisks, buildTopologyFindings, buildReadinessChecks,
+    lintSwitchConfig
+  } = window.BSPlatform;
   let gaugeTimer = null;
   let chartTimer = null;
   let seenUpTimer = null;
   let infraSeenUp = null;  // Set of "deployed" (ever-online) infra instance names; null/empty = show all
   let tournamentTimer = null;
   let opsTimer = null;
+  let controlTimer = null;
   let activePageId = "";
   let activeRoute = "";
   let gaugeSeq = 0;
@@ -48,7 +55,11 @@
   let stageDeviceRegexCache = null;
   const renderSignatures = new Map();
   let lastDataSuccessAt = 0;
+  let lastControlReport = null;
   const DATA_STALE_AFTER_MS = 20000;
+  const CONTROL_MODE_STORAGE_KEY = "bigscreen.eventMode.v1";
+  const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
+  const CONTROL_NETWORK_STORAGE_KEY = "bigscreen.controlNetwork.v1";
 
   // Skip re-rendering a chart when its data hasn't changed since last paint.
   // Historical Prometheus samples are immutable, so a cheap per-series digest
@@ -1383,6 +1394,321 @@
     queryEvidence();
   }
 
+  // ---- Event platform control ----
+
+  function storedControlMode() {
+    try {
+      const stored = window.localStorage.getItem(CONTROL_MODE_STORAGE_KEY);
+      return normalizeEventMode(stored || config.eventMode);
+    } catch (error) {
+      return normalizeEventMode(config.eventMode);
+    }
+  }
+
+  function setStoredControlMode(mode) {
+    const normalized = normalizeEventMode(mode);
+    try {
+      window.localStorage.setItem(CONTROL_MODE_STORAGE_KEY, normalized);
+    } catch (error) {
+      // Kiosk browsers may disable storage; the current render still uses the value.
+    }
+    return normalized;
+  }
+
+  function storedControlLayout() {
+    const fallback = config.defaultLayout || "tournament-64-2layer";
+    try {
+      return window.localStorage.getItem(CONTROL_LAYOUT_STORAGE_KEY) || fallback;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function storedControlNetwork() {
+    try {
+      return window.localStorage.getItem(CONTROL_NETWORK_STORAGE_KEY) || "wired";
+    } catch (error) {
+      return "wired";
+    }
+  }
+
+  function controlPageAndNetwork() {
+    const layout = storedControlLayout();
+    const network = storedControlNetwork();
+    const page = pages.find((item) => item.id === layout && item.kind) ||
+      pages.find((item) => item.id === config.defaultLayout && item.kind) ||
+      pages.find((item) => item.id === "tournament-64-2layer") ||
+      pages.find((item) => item.kind);
+    return {
+      page,
+      network: ["wired", "wireless", "all"].includes(network) ? network : "wired"
+    };
+  }
+
+  function renderControlModeSwitch(mode) {
+    const modeInfo = modeDefinition(mode);
+    const title = document.getElementById("controlModeTitle");
+    const note = document.getElementById("controlModeNote");
+    title.textContent = `${modeInfo.label}模式`;
+    note.textContent = modeInfo.note;
+    const switcher = document.getElementById("controlModeSwitch");
+    switcher.innerHTML = Object.values(MODE_DEFS).map((item) => `
+      <button type="button" class="${item.id === modeInfo.id ? "active" : ""}" data-mode="${escapeHtml(item.id)}">${escapeHtml(item.label)}</button>
+    `).join("");
+    switcher.querySelectorAll("button").forEach((button) => {
+      button.addEventListener("click", () => {
+        setStoredControlMode(button.dataset.mode);
+        refreshControlPanel();
+      });
+    });
+  }
+
+  function controlItemHtml(item) {
+    return `
+      <div class="control-item ${item.level || "info"}">
+        <span>${escapeHtml(item.section || "")}</span>
+        <strong>${escapeHtml(item.label || "")}</strong>
+        <b>${escapeHtml(item.value == null ? "" : item.value)}</b>
+        <em>${escapeHtml(item.note || "")}</em>
+      </div>
+    `;
+  }
+
+  function renderControlReadiness(score) {
+    const meter = document.getElementById("controlReadiness");
+    meter.className = `readiness-meter ${score.level}`;
+    meter.innerHTML = `
+      <strong>${score.score}</strong>
+      <span>现场就绪分</span>
+      <em>${score.bad ? `${score.bad} 个严重项` : score.warn ? `${score.warn} 个关注项` : "关键项正常"}</em>
+    `;
+  }
+
+  function renderControlChecklist(checks) {
+    const wanted = new Set(["赛前", "基础设施", "采集"]);
+    const items = checks.filter((item) => wanted.has(item.section));
+    document.getElementById("controlChecklist").innerHTML = items.map(controlItemHtml).join("") ||
+      `<div class="control-empty">暂无检查项</div>`;
+  }
+
+  function renderControlTopology(targetSummary, topologyFindings, edges) {
+    const rows = [
+      { section: "拓扑", label: "设备目标", level: targetSummary.total ? "good" : "warn", value: String(targetSummary.total), note: `核心 ${targetSummary.byKind.core} / 接入 ${targetSummary.byKind.dist} / ISP ${targetSummary.byKind.isp}` },
+      { section: "拓扑", label: "LLDP 边", level: edges.length ? "good" : "warn", value: String(edges.length), note: edges.length ? "已采集拓扑关系" : "未采集到拓扑关系" },
+      ...topologyFindings
+    ];
+    document.getElementById("controlTopology").innerHTML = rows.map(controlItemHtml).join("");
+  }
+
+  function renderControlConfig(context) {
+    const { page, network, runtimeStatus, configRisks, services } = context;
+    const targetStatus = runtimeStatus && runtimeStatus.targets ? runtimeStatus.targets : null;
+    const updated = runtimeStatus && runtimeStatus.updated_at ? formatTimestampFull(runtimeStatus.updated_at) : "-";
+    const rows = [
+      { label: "赛事", value: config.eventName || config.title || "未设置" },
+      { label: "赛制", value: page ? page.label : "-" },
+      { label: "网络", value: networkLabel(network) },
+      { label: "安全模式", value: config.securityMode || "internal" },
+      { label: "公网入口", value: config.publicBaseUrl || "-" },
+      { label: "ISP", value: config.ispAutoDiscovery === "true" ? "自动发现" : (config.ispNames || "默认") },
+      { label: "目标文件", value: targetStatus ? `${targetStatus.total} 个` : "-", note: targetStatus ? `有线 ${targetStatus.wired} / 无线 ${targetStatus.wireless} / ${updated}` : "" },
+      { label: "采集任务", value: `${services.filter((item) => item.up === item.total).length}/${services.length}` }
+    ];
+    const configRows = rows.map((row) => `
+      <div class="config-row">
+        <span>${escapeHtml(row.label)}</span>
+        <strong>${escapeHtml(row.value)}</strong>
+        ${row.note ? `<em>${escapeHtml(row.note)}</em>` : ""}
+      </div>
+    `).join("");
+    const riskRows = configRisks.length
+      ? `<div class="config-risk-list">${configRisks.map((item) => controlItemHtml({ section: "配置", ...item })).join("")}</div>`
+      : `<div class="control-empty good">配置风险未触发</div>`;
+    document.getElementById("controlConfig").innerHTML = `${configRows}${riskRows}`;
+  }
+
+  function renderControlIncidentFlow(snapshot) {
+    const nowValue = dateTimeInputValue(new Date());
+    const worst = snapshot.readiness.level;
+    const pageId = snapshot.page ? snapshot.page.id : "match-5v5";
+    const flow = [
+      { label: "卡顿分析", href: `/incident?at=${encodeURIComponent(nowValue)}&window=5&threshold=0.05`, value: "当前时间" },
+      { label: "座位核对", href: `/seat-check?layout=${encodeURIComponent(pageId)}&network=${encodeURIComponent(snapshot.network)}`, value: `${snapshot.seatSummary.seats}/${snapshot.seatSummary.expectedSeats}` },
+      { label: "拓扑", href: "/topology", value: `${snapshot.edges.length} 边` },
+      { label: "网络总览", href: "/infra", value: snapshot.targetSummary.offline.length ? `${snapshot.targetSummary.offline.length} 离线` : "正常" }
+    ];
+    document.getElementById("controlIncidentFlow").innerHTML = `
+      <div class="flow-state ${worst}">
+        <strong>${worst === "bad" ? "需要处理" : worst === "warn" ? "需要关注" : "可比赛"}</strong>
+        <span>${snapshot.checks.filter((item) => item.level === "bad" || item.level === "warn").slice(0, 2).map((item) => item.label).join("、") || "关键路径正常"}</span>
+      </div>
+      <div class="flow-links">
+        ${flow.map((item) => `
+          <a href="${escapeHtml(item.href)}">
+            <span>${escapeHtml(item.label)}</span>
+            <strong>${escapeHtml(item.value)}</strong>
+          </a>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderControlLint() {
+    const input = document.getElementById("controlSwitchConfig");
+    const result = document.getElementById("controlLintResult");
+    const issues = lintSwitchConfig(input.value);
+    if (!input.value.trim()) {
+      result.innerHTML = `<div class="control-empty">等待配置片段</div>`;
+      return;
+    }
+    if (!issues.length) {
+      result.innerHTML = `<div class="control-empty good">未发现明显风险</div>`;
+      return;
+    }
+    result.innerHTML = issues.slice(0, 18).map((item) => controlItemHtml({
+      section: item.line ? `L${item.line}` : "全局",
+      label: item.label,
+      level: item.level,
+      value: item.level.toUpperCase(),
+      note: item.note
+    })).join("");
+  }
+
+  async function collectControlSnapshot() {
+    const mode = storedControlMode();
+    const { page, network } = controlPageAndNetwork();
+    const expectedSeats = page ? (page.teams || []).length * page.teamSize : 0;
+    const selector = page ? tournamentSelector(page, network) : 'role="player"';
+    const [snapshot, targets, edges, servicesRaw, runtimeStatus] = await Promise.all([
+      fetchPlayerSnapshot(selector),
+      fetchTopologyTargets(),
+      fetchTopologyEdges(),
+      prometheusInstant("up"),
+      fetchRuntimeStatus()
+    ]);
+    const players = page
+      ? snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize)
+      : snapshot.players;
+    const seatSummary = summarizePlayers(players, expectedSeats);
+    const targetSummary = summarizeTargets(targets);
+    const serviceSummary = summarizeServices(servicesRaw);
+    const configRisks = buildConfigRisks(config, runtimeStatus);
+    const topologyFindings = buildTopologyFindings(targets, edges);
+    const checks = buildReadinessChecks({ seatSummary, targetSummary, serviceSummary, configRisks, topologyFindings });
+    const readiness = readinessScore(checks);
+    return {
+      mode,
+      page,
+      network,
+      players,
+      seatSummary,
+      targets,
+      targetSummary,
+      edges,
+      services: serviceSummary,
+      runtimeStatus,
+      configRisks,
+      topologyFindings,
+      checks,
+      readiness
+    };
+  }
+
+  function renderControlLayoutSelectors(snapshot) {
+    const configHost = document.getElementById("controlConfig");
+    const existing = document.getElementById("controlLayoutSelect");
+    if (existing) return;
+    const matchPages = pages.filter((item) => item.kind);
+    configHost.insertAdjacentHTML("afterbegin", `
+      <div class="control-select-row">
+        <label>赛制
+          <select id="controlLayoutSelect">
+            ${matchPages.map((item) => `<option value="${escapeHtml(item.id)}"${snapshot.page && item.id === snapshot.page.id ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+          </select>
+        </label>
+        <label>网络
+          <select id="controlNetworkSelect">
+            ${["wired", "wireless", "all"].map((item) => `<option value="${item}"${snapshot.network === item ? " selected" : ""}>${networkLabel(item)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+    `);
+    document.getElementById("controlLayoutSelect").addEventListener("change", (event) => {
+      try { window.localStorage.setItem(CONTROL_LAYOUT_STORAGE_KEY, event.target.value); } catch (error) {}
+      refreshControlPanel();
+    });
+    document.getElementById("controlNetworkSelect").addEventListener("change", (event) => {
+      try { window.localStorage.setItem(CONTROL_NETWORK_STORAGE_KEY, event.target.value); } catch (error) {}
+      refreshControlPanel();
+    });
+  }
+
+  function renderControlPanel(snapshot) {
+    renderControlModeSwitch(snapshot.mode);
+    renderControlReadiness(snapshot.readiness);
+    renderControlChecklist(snapshot.checks);
+    renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
+    renderControlConfig(snapshot);
+    renderControlLayoutSelectors(snapshot);
+    renderControlIncidentFlow(snapshot);
+    lastControlReport = snapshot;
+    lastDataSuccessAt = Date.now();
+  }
+
+  async function refreshControlPanel() {
+    if (!lastControlReport) {
+      ["controlReadiness", "controlChecklist", "controlTopology", "controlConfig", "controlIncidentFlow"].forEach((id) => {
+        const element = document.getElementById(id);
+        if (element) element.innerHTML = `<div class="control-empty">加载中</div>`;
+      });
+    }
+    try {
+      const snapshot = await collectControlSnapshot();
+      renderControlPanel(snapshot);
+    } catch (error) {
+      console.error("Control panel failed:", error);
+      document.getElementById("controlReadiness").innerHTML = `<div class="control-empty bad">控制台加载失败</div>`;
+    }
+  }
+
+  function exportControlReport() {
+    if (!lastControlReport) return;
+    const rows = [["time", "mode", "section", "item", "level", "value", "note"]];
+    const mode = modeDefinition(lastControlReport.mode).label;
+    const now = formatTimestampFull(Math.floor(Date.now() / 1000));
+    lastControlReport.checks.forEach((item) => {
+      rows.push([now, mode, item.section, item.label, item.level, item.value, item.note || ""]);
+    });
+    lastControlReport.configRisks.forEach((item) => {
+      rows.push([now, mode, "配置风险", item.label, item.level, item.value, item.note || ""]);
+    });
+    downloadCsv(`event_control_${csvStamp(Math.floor(Date.now() / 1000))}.csv`, rows);
+  }
+
+  function setupControlPanel() {
+    const refreshBtn = document.getElementById("controlRefresh");
+    if (refreshBtn && !refreshBtn.dataset.bound) {
+      refreshBtn.addEventListener("click", refreshControlPanel);
+      refreshBtn.dataset.bound = "1";
+    }
+    const exportBtn = document.getElementById("controlExport");
+    if (exportBtn && !exportBtn.dataset.bound) {
+      exportBtn.addEventListener("click", exportControlReport);
+      exportBtn.dataset.bound = "1";
+    }
+    const rescanBtn = document.getElementById("controlRescan");
+    if (rescanBtn && !rescanBtn.dataset.bound) {
+      rescanBtn.addEventListener("click", function () { triggerRescan(this); });
+      rescanBtn.dataset.bound = "1";
+    }
+    const lintInput = document.getElementById("controlSwitchConfig");
+    if (lintInput && !lintInput.dataset.bound) {
+      lintInput.addEventListener("input", renderControlLint);
+      lintInput.dataset.bound = "1";
+    }
+    renderControlLint();
+  }
+
   function renderNav() {
     const nav = document.getElementById("screenNav");
     if (!nav) return;
@@ -1432,6 +1758,13 @@
     }
   }
 
+  function stopControlRefresh() {
+    if (controlTimer) {
+      window.clearInterval(controlTimer);
+      controlTimer = null;
+    }
+  }
+
   function startInfraRefresh() {
     if (gaugeTimer || chartTimer) return;
     renderSignatures.clear();
@@ -1477,6 +1810,13 @@
     }
   }
 
+  function startControlRefresh() {
+    stopControlRefresh();
+    setupControlPanel();
+    refreshControlPanel();
+    controlTimer = window.setInterval(refreshControlPanel, 10000);
+  }
+
   function setVisible(id, visible) {
     const element = document.getElementById(id);
     if (element) {
@@ -1510,6 +1850,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen home-mode";
     setVisible("homePanel", true);
@@ -1517,15 +1858,35 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     renderHomeCards();
+  }
+
+  function showControl() {
+    const screen = document.querySelector(".screen");
+    stopInfraRefresh();
+    stopTournamentRefresh();
+    stopOpsRefresh();
+    stopTopologyRefresh();
+    screen.className = "screen control-mode";
+    setVisible("homePanel", false);
+    setVisible("panelGrid", false);
+    setVisible("tournamentPanel", false);
+    setVisible("evidencePanel", false);
+    setVisible("opsPanel", false);
+    setVisible("controlPanel", true);
+    setVisible("incidentPanel", false);
+    setVisible("topologyPanel", false);
+    startControlRefresh();
   }
 
   function showInfra() {
     const screen = document.querySelector(".screen");
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen infra-mode";
     setVisible("homePanel", false);
@@ -1533,6 +1894,7 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     startInfraRefresh();
@@ -1541,6 +1903,7 @@
   function showTournament(page) {
     const screen = document.querySelector(".screen");
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = `screen tournament-mode ${page.kind === "match" ? "match-mode" : "multi-team-mode"} ${page.id}`;
     setVisible("homePanel", false);
@@ -1548,6 +1911,7 @@
     setVisible("tournamentPanel", true);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
@@ -1560,6 +1924,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen evidence-mode";
     setVisible("homePanel", false);
@@ -1567,6 +1932,7 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", true);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     setupEvidencePanel();
@@ -1576,6 +1942,7 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = `screen ops-mode ${page.id}-mode`;
     setVisible("homePanel", false);
@@ -1583,6 +1950,7 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", true);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     startOpsRefresh(page);
@@ -1797,6 +2165,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen incident-mode";
     setVisible("homePanel", false);
@@ -1804,6 +2173,7 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", true);
     setVisible("topologyPanel", false);
     setupIncidentPanel();
@@ -2062,12 +2432,14 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     screen.className = "screen topology-mode";
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", true);
     const detail = document.getElementById("topologyDetail");
@@ -2087,6 +2459,8 @@
     activeRoute = routeKey;
     if (page.id === "home") {
       showHome();
+    } else if (page.id === "control") {
+      showControl();
     } else if (page.id === "evidence") {
       showEvidence();
     } else if (page.id === "incident") {
@@ -2103,7 +2477,7 @@
   }
 
   function anyRefreshActive() {
-    return Boolean(gaugeTimer || chartTimer || tournamentTimer || opsTimer || topologyTimer);
+    return Boolean(gaugeTimer || chartTimer || tournamentTimer || opsTimer || controlTimer || topologyTimer);
   }
 
   // Warn when the active page's polling loop hasn't produced fresh data for a

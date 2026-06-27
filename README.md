@@ -119,6 +119,18 @@ vi .env
 
 `SERVER_IP` 留空时，`deploy.sh` 会自动探测并写回 `.env`。飞书 token 留空也能启动，只是不推告警。
 
+赛事控制台相关变量：
+
+```bash
+EVENT_NAME=武汉斗鱼嘉年华
+BIGSCREEN_EVENT_MODE=rehearsal          # setup / rehearsal / match / incident
+BIGSCREEN_DEFAULT_LAYOUT=tournament-64-2layer
+BIGSCREEN_SECURITY_MODE=internal        # internal / public
+BIGSCREEN_PUBLIC_BASE_URL=
+```
+
+`BIGSCREEN_EVENT_MODE` 只是控制台默认模式，打开 `/control` 后也可以在浏览器里临时切换；不会自动改服务器 `.env`。
+
 ### 2.3 启动
 
 ```bash
@@ -304,6 +316,7 @@ docker logs -f topology-collector
 
 ```text
 http://服务器IP:8088             大屏首页
+http://服务器IP:8088/control     赛事控制台
 http://服务器IP:8088/infra       网络总览
 http://服务器IP:8088/topology    网络拓扑
 http://服务器IP:8088/latency     延迟查询
@@ -317,6 +330,7 @@ http://服务器IP:8002             LibreNMS
 
 | 页面 | 用途 |
 |---|---|
+| `/control` | 赛事模式、赛前检查、配置中心、拓扑诊断、交换机配置巡检、报告导出 |
 | `/infra` | 核心、接入、防火墙、ISP、丢包热力图 |
 | `/topology` | ISP 到防火墙、核心、接入的拓扑状态 |
 | `/latency` | 按队伍、座位、时间查单个选手延迟，可导出 CSV |
