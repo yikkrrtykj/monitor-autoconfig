@@ -2,7 +2,7 @@ name: librenms-grafana
 
 services:
   librenms-db:
-    image: mariadb:10.5
+    image: ${MARIADB_IMAGE:-mariadb:10.5}
     container_name: librenms-db
     restart: unless-stopped
     command:
@@ -29,7 +29,7 @@ services:
       start_period: 60s
 
   librenms-redis:
-    image: redis:7.2-alpine
+    image: ${REDIS_IMAGE:-redis:7.2-alpine}
     container_name: librenms-redis
     restart: unless-stopped
     environment:
@@ -43,7 +43,7 @@ services:
       retries: 5
 
   librenms-rrdcached:
-    image: crazymax/rrdcached:latest
+    image: ${RRDCACHED_IMAGE:-crazymax/rrdcached:latest}
     container_name: librenms-rrdcached
     restart: unless-stopped
     environment:
@@ -60,7 +60,7 @@ services:
       - monitor
 
   init-permissions:
-    image: alpine:latest
+    image: ${ALPINE_IMAGE:-alpine:3.20}
     container_name: init-permissions
     volumes:
       - ./grafana-data:/grafana-data
@@ -85,7 +85,7 @@ services:
     restart: "no"
 
   prometheus:
-    image: prom/prometheus:latest
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}
     container_name: prometheus
     restart: unless-stopped
     environment:
@@ -134,7 +134,7 @@ services:
       start_period: 30s
 
   alertmanager-feishu-bridge:
-    image: python:3.12-slim
+    image: ${PYTHON_SLIM_IMAGE:-python:3.12-slim}
     container_name: alertmanager-feishu-bridge
     restart: unless-stopped
     volumes:
@@ -211,7 +211,7 @@ services:
       start_period: 10s
 
   snmp-exporter:
-    image: prom/snmp-exporter:latest
+    image: ${SNMP_EXPORTER_IMAGE:-prom/snmp-exporter:v0.26.0}
     container_name: snmp-exporter
     restart: unless-stopped
     entrypoint:
@@ -259,7 +259,7 @@ services:
       - monitor
 
   blackbox-exporter:
-    image: prom/blackbox-exporter:latest
+    image: ${BLACKBOX_EXPORTER_IMAGE:-prom/blackbox-exporter:v0.25.0}
     container_name: blackbox-exporter
     restart: unless-stopped
     ports:
@@ -295,7 +295,7 @@ services:
   # 放在 "unifi" profile 里；.env.example 默认开启，因为赛事现场通常都有 UniFi。
   # 如果某场完全不用 UniFi，把 COMPOSE_PROFILES 留空即可不启动。
   unpoller:
-    image: ${UNPOLLER_IMAGE:-ghcr.io/unpoller/unpoller:latest}
+    image: ${UNPOLLER_IMAGE:-ghcr.io/unpoller/unpoller:v2.15.3}
     container_name: unpoller
     restart: unless-stopped
     profiles: ["unifi"]
@@ -318,7 +318,9 @@ services:
       - monitor
 
   player-targets:
-    image: python:3-alpine
+    image: ${PLAYER_TOOLS_IMAGE:-monitor-player-tools:local}
+    build:
+      context: ./docker/player-tools
     container_name: player-targets
     restart: unless-stopped
     depends_on:
@@ -360,7 +362,6 @@ services:
       - /bin/sh
       - -c
       - |
-        apk add --no-cache net-snmp-tools
         echo "[player-targets] starting target generator loop"
 
         # Start rescan trigger API in background (POST /rescan → immediate re-scan)
@@ -405,7 +406,9 @@ services:
         done
 
   topology-collector:
-    image: python:3-alpine
+    image: ${PLAYER_TOOLS_IMAGE:-monitor-player-tools:local}
+    build:
+      context: ./docker/player-tools
     container_name: topology-collector
     restart: unless-stopped
     depends_on:
@@ -431,7 +434,6 @@ services:
       - /bin/sh
       - -c
       - |
-        apk add --no-cache net-snmp-tools
         echo "[topology] starting LLDP collector loop"
 
         load_env_key() {
@@ -457,8 +459,33 @@ services:
           sleep "$${TOPOLOGY_REFRESH_INTERVAL:-600}"
         done
 
+  platform-api:
+    image: ${PYTHON_SLIM_IMAGE:-python:3.12-slim}
+    container_name: platform-api
+    restart: unless-stopped
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - platform-state:/workspace/platform-state
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      TZ: Asia/Shanghai
+      PLATFORM_API_PORT: "9200"
+      PLATFORM_WORKDIR: "/workspace"
+      PLATFORM_STATE_DIR: "/workspace/platform-state"
+      PLATFORM_WRITE_ENABLED: "${PLATFORM_WRITE_ENABLED:-true}"
+    command: ["python", "/workspace/platform-api.py"]
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9200/health', timeout=2)\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   librenms:
-    image: librenms/librenms:latest
+    image: ${LIBRENMS_IMAGE:-librenms/librenms:latest}
     container_name: librenms
     restart: unless-stopped
     hostname: librenms
@@ -519,7 +546,7 @@ services:
       - monitor
 
   librenms-dispatcher:
-    image: librenms/librenms:latest
+    image: ${LIBRENMS_IMAGE:-librenms/librenms:latest}
     container_name: librenms-dispatcher
     hostname: librenms-dispatcher
     restart: unless-stopped
@@ -562,7 +589,7 @@ services:
       - monitor
 
   librenms-config:
-    image: librenms/librenms:latest
+    image: ${LIBRENMS_IMAGE:-librenms/librenms:latest}
     container_name: librenms-config
     depends_on:
       librenms:
@@ -639,7 +666,7 @@ services:
         echo "UniFi APs: optional via unpoller/controller API; bridge can auto-add online APs to LibreNMS by SNMP"
 
   grafana:
-    image: grafana/grafana:latest
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.0}
     container_name: grafana
     restart: unless-stopped
     environment:
@@ -669,7 +696,7 @@ services:
       - monitor
 
   bigscreen:
-    image: nginx:alpine
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
     container_name: bigscreen
     restart: unless-stopped
     environment:
@@ -698,6 +725,8 @@ services:
       - "${BIGSCREEN_PORT:-8088}:80"
     depends_on:
       prometheus:
+        condition: service_healthy
+      platform-api:
         condition: service_healthy
     networks:
       - monitor
@@ -767,12 +796,22 @@ services:
             proxy_pass http://$$pt_upstream:9199;
             proxy_read_timeout 5s;
           }
+
+          location /platform-api/ {
+            resolver 127.0.0.11 valid=30s ipv6=off;
+            set $$platform_upstream platform-api;
+            rewrite ^/platform-api/(.*)$$ /$$1 break;
+            proxy_pass http://$$platform_upstream:9200;
+            proxy_read_timeout 30s;
+          }
         }
         EOF
         exec nginx -g 'daemon off;'
 
   grafana-setup:
-    image: alpine:latest
+    image: ${GRAFANA_SETUP_IMAGE:-monitor-grafana-setup:local}
+    build:
+      context: ./docker/grafana-setup
     container_name: grafana-setup
     environment:
       GRAFANA_USER: "${GRAFANA_USER:-admin}"
@@ -802,10 +841,12 @@ services:
       - monitor
 
   rsyslog:
-    image: alpine:latest
+    image: ${RSYSLOG_IMAGE:-monitor-rsyslog:local}
+    build:
+      context: ./docker/rsyslog
     container_name: rsyslog
     restart: unless-stopped
-    command: ["sh", "-c", "apk add --no-cache rsyslog && exec rsyslogd -n -f /etc/rsyslog.conf"]
+    command: ["rsyslogd", "-n", "-f", "/etc/rsyslog.conf"]
     volumes:
       - ./rsyslog.conf:/etc/rsyslog.conf:ro
       - syslog-spool:/var/log/remote
@@ -845,4 +886,5 @@ volumes:
   topology-data:
   grafana-data:
   librenms-db-data:
+  platform-state:
   librenms-data:

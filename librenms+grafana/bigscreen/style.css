@@ -1187,6 +1187,12 @@ body {
   margin-top: 6px;
 }
 .topology-detail .detail-link:hover { text-decoration: underline; }
+.topology-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
 .topology-empty {
   color: #6c7993;
   font-size: 12px;

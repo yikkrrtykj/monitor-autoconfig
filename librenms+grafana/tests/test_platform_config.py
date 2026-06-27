@@ -1,0 +1,81 @@
+import importlib.util
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODULE_PATH = ROOT / "platform_config.py"
+spec = importlib.util.spec_from_file_location("platform_config", MODULE_PATH)
+platform_config = importlib.util.module_from_spec(spec)
+assert spec.loader
+spec.loader.exec_module(platform_config)
+
+
+SAMPLE = """
+event:
+  name: Test Event
+  mode: match
+  default_layout: tournament-64-2layer
+networks:
+  player_vlan: 40
+  player_subnets: 192.168.40.0/24
+  wireless_subnets: 192.168.41.0/24
+  player_gateways: 192.168.10.254
+devices:
+  core:
+    name: core
+    ip: 192.168.10.254
+  firewall:
+    name: firewall
+    ip: 192.168.10.1
+  switches:
+    - name: stage-1
+      ip: 192.168.10.11
+      role: access
+    - name: stage-2
+      ip: 192.168.10.12
+      role: access
+isp:
+  auto_discovery: false
+  max_bandwidth_mbps: 2000
+  links:
+    - name: telecom
+      ping: 223.5.5.5
+alerts:
+  mode: match
+security:
+  grafana_anonymous: false
+"""
+
+
+def test_parse_validate_render_env():
+    config = platform_config.parse_simple_yaml(SAMPLE)
+    assert config["event"]["name"] == "Test Event"
+    assert config["devices"]["switches"][1]["ip"] == "192.168.10.12"
+    issues = platform_config.validate_config(config)
+    assert not [item for item in issues if item["level"] == "bad"]
+    env = platform_config.render_env(config, {"FEISHU_ROBOT_TOKEN": "keep-secret"})
+    assert env["EVENT_NAME"] == "Test Event"
+    assert env["BIGSCREEN_EVENT_MODE"] == "match"
+    assert env["CORE_SWITCH_PING"] == "core:192.168.10.254"
+    assert env["DIST_SWITCH_PING"] == "stage-1:192.168.10.11,stage-2:192.168.10.12"
+    assert env["ISP_PING"] == "telecom:223.5.5.5"
+    assert env["UNIFI_AP_DOWN_FOR_SECONDS"] == "180"
+    assert env["FEISHU_ROBOT_TOKEN"] == "keep-secret"
+    assert env["GRAFANA_ANONYMOUS_ENABLED"] == "false"
+
+
+def test_merge_env_preserves_unknown_keys(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("CUSTOM_KEEP=1\nEVENT_NAME=old\n", encoding="utf-8")
+    rendered = platform_config.merge_env_file(env_path, {"EVENT_NAME": "new", "CORE_SWITCH_PING": "core:1.1.1.1"})
+    assert "CUSTOM_KEEP=1" in rendered
+    assert "EVENT_NAME=new" in rendered
+    assert "CORE_SWITCH_PING=core:1.1.1.1" in rendered
+
+
+if __name__ == "__main__":
+    test_parse_validate_render_env()
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        test_merge_env_preserves_unknown_keys(Path(tmp))
+    print("platform config tests passed")

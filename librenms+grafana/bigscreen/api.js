@@ -447,6 +447,51 @@
     }
   }
 
+  async function platformApi(path, options = {}) {
+    const response = await fetchWithTimeout(`/platform-api${path}`, {
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options
+    }, options.timeoutMs || 15000);
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(text || `Platform API HTTP ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async function fetchPlatformConfig() {
+    try {
+      return await platformApi("/config", { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, error: error.message || "platform config unavailable" };
+    }
+  }
+
+  function postPlatform(path, payload) {
+    return platformApi(path, { method: "POST", body: JSON.stringify(payload || {}) });
+  }
+
+  function patchPlatform(path, payload) {
+    return platformApi(path, { method: "PATCH", body: JSON.stringify(payload || {}) });
+  }
+
+  async function fetchIncidents() {
+    try {
+      return await platformApi("/incidents", { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, incidents: [], error: error.message || "incident store unavailable" };
+    }
+  }
+
+  async function fetchDeliveryManifest() {
+    try {
+      return await platformApi("/delivery/manifest", { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, images: [], files: [], commands: [], error: error.message || "delivery manifest unavailable" };
+    }
+  }
+
   const ns = {
     prometheusBaseUrl,
     rangeWindow,
@@ -474,7 +519,12 @@
     renameListWithInfraMap,
     fetchTopologyTargets,
     fetchTopologyEdges,
-    fetchRuntimeStatus
+    fetchRuntimeStatus,
+    fetchPlatformConfig,
+    postPlatform,
+    patchPlatform,
+    fetchIncidents,
+    fetchDeliveryManifest
   };
 
   if (typeof module !== 'undefined' && module.exports) {

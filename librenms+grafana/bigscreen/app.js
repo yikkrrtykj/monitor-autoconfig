@@ -24,7 +24,8 @@
     activeInfraPingQuery, activeSeriesNames, filterSeriesByNames,
     fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap,
-    fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus
+    fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
+    fetchPlatformConfig, postPlatform, patchPlatform, fetchIncidents, fetchDeliveryManifest
   } = window.BSApi;
   const {
     buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel
@@ -56,6 +57,9 @@
   const renderSignatures = new Map();
   let lastDataSuccessAt = 0;
   let lastControlReport = null;
+  let lastPlatformConfig = null;
+  let lastIncidents = [];
+  let lastDeliveryManifest = null;
   const DATA_STALE_AFTER_MS = 20000;
   const CONTROL_MODE_STORAGE_KEY = "bigscreen.eventMode.v1";
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
@@ -1501,9 +1505,10 @@
   }
 
   function renderControlConfig(context) {
-    const { page, network, runtimeStatus, configRisks, services } = context;
+    const { page, network, runtimeStatus, configRisks, services, platformConfig } = context;
     const targetStatus = runtimeStatus && runtimeStatus.targets ? runtimeStatus.targets : null;
     const updated = runtimeStatus && runtimeStatus.updated_at ? formatTimestampFull(runtimeStatus.updated_at) : "-";
+    const apiState = platformConfig && platformConfig.ok ? "可写" : "不可用";
     const rows = [
       { label: "赛事", value: config.eventName || config.title || "未设置" },
       { label: "赛制", value: page ? page.label : "-" },
@@ -1512,7 +1517,8 @@
       { label: "公网入口", value: config.publicBaseUrl || "-" },
       { label: "ISP", value: config.ispAutoDiscovery === "true" ? "自动发现" : (config.ispNames || "默认") },
       { label: "目标文件", value: targetStatus ? `${targetStatus.total} 个` : "-", note: targetStatus ? `有线 ${targetStatus.wired} / 无线 ${targetStatus.wireless} / ${updated}` : "" },
-      { label: "采集任务", value: `${services.filter((item) => item.up === item.total).length}/${services.length}` }
+      { label: "采集任务", value: `${services.filter((item) => item.up === item.total).length}/${services.length}` },
+      { label: "平台 API", value: apiState, note: platformConfig && platformConfig.error ? platformConfig.error : "" }
     ];
     const configRows = rows.map((row) => `
       <div class="config-row">
@@ -1525,6 +1531,168 @@
       ? `<div class="config-risk-list">${configRisks.map((item) => controlItemHtml({ section: "配置", ...item })).join("")}</div>`
       : `<div class="control-empty good">配置风险未触发</div>`;
     document.getElementById("controlConfig").innerHTML = `${configRows}${riskRows}`;
+  }
+
+  function renderConfigResult(payload) {
+    const result = document.getElementById("controlConfigResult");
+    if (!payload) {
+      result.innerHTML = `<div class="control-empty">等待配置操作</div>`;
+      return;
+    }
+    if (!payload.ok && payload.error) {
+      result.innerHTML = `<div class="control-empty bad">${escapeHtml(payload.error)}</div>`;
+      return;
+    }
+    const issues = payload.issues || [];
+    if (!issues.length) {
+      result.innerHTML = `<div class="control-empty good">${payload.needsRedeploy ? "已写入 .env，需执行 ./apply-env.sh" : "验证通过"}</div>`;
+      return;
+    }
+    result.innerHTML = issues.map((item) => controlItemHtml({
+      section: item.path || "配置",
+      label: item.message || "配置项",
+      level: item.level || "info",
+      value: (item.level || "info").toUpperCase(),
+      note: payload.needsRedeploy ? "已写入 .env，需执行 ./apply-env.sh" : ""
+    })).join("");
+  }
+
+  function renderConfigEditor(platformConfig) {
+    const textarea = document.getElementById("controlConfigText");
+    if (!textarea) return;
+    if (platformConfig && platformConfig.ok && !textarea.dataset.dirty) {
+      textarea.value = platformConfig.text || platformConfig.normalizedText || "";
+    }
+    if (platformConfig && !platformConfig.ok) {
+      renderConfigResult(platformConfig);
+    } else if (platformConfig && platformConfig.ok) {
+      renderConfigResult({ ok: true, issues: platformConfig.issues || [] });
+    }
+  }
+
+  async function runConfigAction(action) {
+    const textarea = document.getElementById("controlConfigText");
+    const text = textarea ? textarea.value : "";
+    const payload = { text, actor: "web", note: action };
+    try {
+      let result;
+      if (action === "validate") {
+        result = await postPlatform("/config/validate", payload);
+      } else if (action === "save") {
+        result = await postPlatform("/config/save", payload);
+      } else if (action === "apply") {
+        result = await postPlatform("/config/apply", payload);
+      } else if (action === "rollback") {
+        result = await postPlatform("/config/rollback", { actor: "web", note: "rollback from control" });
+      }
+      lastPlatformConfig = result;
+      if (result && result.text && textarea) {
+        textarea.value = result.text;
+        delete textarea.dataset.dirty;
+      }
+      renderConfigResult(result);
+      refreshControlPanel();
+    } catch (error) {
+      renderConfigResult({ ok: false, error: error.message || "配置操作失败" });
+    }
+  }
+
+  function importControlConfigFile() {
+    const input = document.getElementById("controlConfigImportFile");
+    if (input) input.click();
+  }
+
+  function bindConfigImportFile() {
+    const fileInput = document.getElementById("controlConfigImportFile");
+    const textarea = document.getElementById("controlConfigText");
+    if (!fileInput || !textarea || fileInput.dataset.bound) return;
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const text = await file.text();
+      textarea.value = text;
+      textarea.dataset.dirty = "1";
+      fileInput.value = "";
+      runConfigAction("validate");
+    });
+    fileInput.dataset.bound = "1";
+  }
+
+  function renderIncidentList(payload) {
+    const incidents = payload && payload.incidents ? payload.incidents : [];
+    lastIncidents = incidents;
+    const list = document.getElementById("controlIncidentList");
+    if (!list) return;
+    if (payload && payload.error) {
+      list.innerHTML = `<div class="control-empty bad">${escapeHtml(payload.error)}</div>`;
+      return;
+    }
+    if (!incidents.length) {
+      list.innerHTML = `<div class="control-empty">暂无事故记录</div>`;
+      return;
+    }
+    list.innerHTML = incidents.slice(0, 12).map((item) => {
+      const started = item.startedAt ? formatTimestampFull(item.startedAt) : "-";
+      const duration = item.recoveredAt && item.startedAt ? `${Math.max(0, Math.round((item.recoveredAt - item.startedAt) / 60))} 分钟` : "进行中";
+      return `
+        <div class="incident-record ${item.severity || "warn"}">
+          <span>#${escapeHtml(item.id)} · ${escapeHtml(item.status || "open")}</span>
+          <strong>${escapeHtml(item.title || "")}</strong>
+          <em>${escapeHtml(started)} · ${escapeHtml(duration)} · ${escapeHtml(item.owner || "未分配")}</em>
+          ${item.status === "resolved" ? "" : `<button type="button" data-resolve-incident="${escapeHtml(item.id)}">标记恢复</button>`}
+        </div>
+      `;
+    }).join("");
+    list.querySelectorAll("[data-resolve-incident]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await patchPlatform(`/incidents/${button.dataset.resolveIncident}`, {
+            status: "resolved",
+            recoveredAt: Math.floor(Date.now() / 1000),
+            event: "标记恢复",
+            eventType: "recovery"
+          });
+          renderIncidentList(await fetchIncidents());
+        } catch (error) {
+          renderIncidentList({ incidents: lastIncidents, error: error.message || "更新事故失败" });
+        }
+      });
+    });
+  }
+
+  async function createControlIncident() {
+    const input = document.getElementById("controlIncidentTitle");
+    const title = (input && input.value.trim()) || (lastControlReport ? `现场检查 ${modeDefinition(lastControlReport.mode).label}` : "现场事故");
+    const related = lastControlReport ? {
+      readiness: lastControlReport.readiness,
+      checks: lastControlReport.checks.filter((item) => item.level === "bad" || item.level === "warn").slice(0, 8)
+    } : {};
+    try {
+      await postPlatform("/incidents", { title, severity: lastControlReport && lastControlReport.readiness.level === "bad" ? "bad" : "warn", related });
+      if (input) input.value = "";
+      renderIncidentList(await fetchIncidents());
+    } catch (error) {
+      renderIncidentList({ incidents: lastIncidents, error: error.message || "创建事故失败" });
+    }
+  }
+
+  function renderDelivery(manifest) {
+    lastDeliveryManifest = manifest;
+    const element = document.getElementById("controlDelivery");
+    if (!element) return;
+    if (!manifest || !manifest.ok) {
+      element.innerHTML = `<div class="control-empty bad">${escapeHtml(manifest && manifest.error ? manifest.error : "交付清单不可用")}</div>`;
+      return;
+    }
+    const rows = [
+      { section: "交付", label: "镜像", level: manifest.images.length ? "good" : "warn", value: String(manifest.images.length), note: manifest.images.slice(0, 3).join("、") },
+      { section: "交付", label: "文件", level: manifest.files.length ? "good" : "warn", value: String(manifest.files.length), note: manifest.files.slice(0, 4).join("、") },
+      { section: "交付", label: "命令", level: "info", value: "离线", note: (manifest.commands || []).join(" && ") }
+    ];
+    element.innerHTML = `
+      ${rows.map(controlItemHtml).join("")}
+      <a class="delivery-download" href="/platform-api/delivery/export">下载当前配置包</a>
+    `;
   }
 
   function renderControlIncidentFlow(snapshot) {
@@ -1579,12 +1747,15 @@
     const { page, network } = controlPageAndNetwork();
     const expectedSeats = page ? (page.teams || []).length * page.teamSize : 0;
     const selector = page ? tournamentSelector(page, network) : 'role="player"';
-    const [snapshot, targets, edges, servicesRaw, runtimeStatus] = await Promise.all([
+    const [snapshot, targets, edges, servicesRaw, runtimeStatus, platformConfig, incidents, deliveryManifest] = await Promise.all([
       fetchPlayerSnapshot(selector),
       fetchTopologyTargets(),
       fetchTopologyEdges(),
       prometheusInstant("up"),
-      fetchRuntimeStatus()
+      fetchRuntimeStatus(),
+      fetchPlatformConfig(),
+      fetchIncidents(),
+      fetchDeliveryManifest()
     ]);
     const players = page
       ? snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize)
@@ -1607,6 +1778,9 @@
       edges,
       services: serviceSummary,
       runtimeStatus,
+      platformConfig,
+      incidents,
+      deliveryManifest,
       configRisks,
       topologyFindings,
       checks,
@@ -1650,14 +1824,18 @@
     renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
     renderControlConfig(snapshot);
     renderControlLayoutSelectors(snapshot);
+    renderConfigEditor(snapshot.platformConfig);
     renderControlIncidentFlow(snapshot);
+    renderIncidentList(snapshot.incidents);
+    renderDelivery(snapshot.deliveryManifest);
     lastControlReport = snapshot;
+    lastPlatformConfig = snapshot.platformConfig;
     lastDataSuccessAt = Date.now();
   }
 
   async function refreshControlPanel() {
     if (!lastControlReport) {
-      ["controlReadiness", "controlChecklist", "controlTopology", "controlConfig", "controlIncidentFlow"].forEach((id) => {
+      ["controlReadiness", "controlChecklist", "controlTopology", "controlConfig", "controlIncidentFlow", "controlIncidentList", "controlDelivery"].forEach((id) => {
         const element = document.getElementById(id);
         if (element) element.innerHTML = `<div class="control-empty">加载中</div>`;
       });
@@ -1705,6 +1883,34 @@
     if (lintInput && !lintInput.dataset.bound) {
       lintInput.addEventListener("input", renderControlLint);
       lintInput.dataset.bound = "1";
+    }
+    const configText = document.getElementById("controlConfigText");
+    if (configText && !configText.dataset.bound) {
+      configText.addEventListener("input", () => { configText.dataset.dirty = "1"; });
+      configText.dataset.bound = "1";
+    }
+    [
+      ["controlConfigValidate", "validate"],
+      ["controlConfigSave", "save"],
+      ["controlConfigApply", "apply"],
+      ["controlConfigRollback", "rollback"]
+    ].forEach(([id, action]) => {
+      const button = document.getElementById(id);
+      if (button && !button.dataset.bound) {
+        button.addEventListener("click", () => runConfigAction(action));
+        button.dataset.bound = "1";
+      }
+    });
+    const importBtn = document.getElementById("controlConfigImport");
+    if (importBtn && !importBtn.dataset.bound) {
+      importBtn.addEventListener("click", importControlConfigFile);
+      importBtn.dataset.bound = "1";
+    }
+    bindConfigImportFile();
+    const incidentCreate = document.getElementById("controlIncidentCreate");
+    if (incidentCreate && !incidentCreate.dataset.bound) {
+      incidentCreate.addEventListener("click", createControlIncident);
+      incidentCreate.dataset.bound = "1";
     }
     renderControlLint();
   }
@@ -2209,6 +2415,7 @@
         const idx = Number(el.dataset.idx);
         const node = topologyNodes[idx];
         if (!node) return;
+        const syslogUrl = node.ip ? `${window.location.protocol}//${window.location.hostname}:3000/d/device-syslog?var-host=${encodeURIComponent(node.ip)}` : "";
         detail.hidden = false;
         detail.innerHTML = `
           <header><strong>${escapeHtml(node.name)}</strong><span class="dot ${node.level}"></span></header>
@@ -2218,7 +2425,11 @@
             <dt>状态</dt><dd>${node.success === undefined ? "无数据" : (node.success ? "在线" : "离线")}</dd>
             <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
           </dl>
-          ${node.ip ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(node.ip)}">在 /latency 查这个 IP →</a>` : ""}
+          <div class="topology-detail-actions">
+            ${node.ip ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(node.ip)}">延迟证据</a>` : ""}
+            <a class="detail-link" href="/incident?at=${encodeURIComponent(dateTimeInputValue(new Date()))}&window=5&threshold=0.05">事故分析</a>
+            ${syslogUrl ? `<a class="detail-link" href="${escapeHtml(syslogUrl)}">Syslog</a>` : ""}
+          </div>
         `;
       };
       el.addEventListener("click", handler);

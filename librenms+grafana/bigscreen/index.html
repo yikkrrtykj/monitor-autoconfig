@@ -130,6 +130,20 @@
             <h2>配置中心</h2>
             <div class="control-config" id="controlConfig"></div>
           </article>
+          <article class="control-card control-config-editor-card">
+            <h2>赛事配置 YAML</h2>
+            <textarea class="control-textarea" id="controlConfigText" spellcheck="false" placeholder="event-config.yml"></textarea>
+            <div class="control-button-row">
+              <button type="button" id="controlConfigValidate">验证</button>
+              <button type="button" id="controlConfigSave">保存</button>
+              <button type="button" id="controlConfigApply">应用</button>
+              <button type="button" id="controlConfigRollback">回滚</button>
+              <button type="button" id="controlConfigImport">导入</button>
+              <a id="controlConfigExport" href="/platform-api/config/export">导出包</a>
+              <input id="controlConfigImportFile" type="file" accept=".yml,.yaml,.json,text/yaml,application/json" hidden />
+            </div>
+            <div class="control-list" id="controlConfigResult"></div>
+          </article>
           <article class="control-card">
             <h2>拓扑诊断</h2>
             <div class="control-list" id="controlTopology"></div>
@@ -138,9 +152,21 @@
             <h2>事故流转</h2>
             <div class="control-flow" id="controlIncidentFlow"></div>
           </article>
+          <article class="control-card">
+            <h2>事故库</h2>
+            <div class="incident-create">
+              <input id="controlIncidentTitle" type="text" placeholder="事故标题" />
+              <button type="button" id="controlIncidentCreate">创建</button>
+            </div>
+            <div class="control-list" id="controlIncidentList"></div>
+          </article>
+          <article class="control-card">
+            <h2>交付包</h2>
+            <div class="control-list" id="controlDelivery"></div>
+          </article>
           <article class="control-card control-lint-card">
             <h2>交换机配置巡检</h2>
-            <textarea id="controlSwitchConfig" spellcheck="false" placeholder="粘贴 show run 片段"></textarea>
+            <textarea class="control-textarea" id="controlSwitchConfig" spellcheck="false" placeholder="粘贴 show run 片段"></textarea>
             <div class="control-list" id="controlLintResult"></div>
           </article>
         </div>

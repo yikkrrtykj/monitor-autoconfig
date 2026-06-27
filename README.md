@@ -127,9 +127,24 @@ BIGSCREEN_EVENT_MODE=rehearsal          # setup / rehearsal / match / incident
 BIGSCREEN_DEFAULT_LAYOUT=tournament-64-2layer
 BIGSCREEN_SECURITY_MODE=internal        # internal / public
 BIGSCREEN_PUBLIC_BASE_URL=
+PLATFORM_WRITE_ENABLED=true
 ```
 
-`BIGSCREEN_EVENT_MODE` 只是控制台默认模式，打开 `/control` 后也可以在浏览器里临时切换；不会自动改服务器 `.env`。
+`BIGSCREEN_EVENT_MODE` 只是控制台默认模式，打开 `/control` 后也可以在浏览器里临时切换。
+
+也可以改 `event-config.yml`，这是平台化后的结构化赛事配置。`/control` 里的“赛事配置 YAML”支持：
+
+- 验证：只检查配置，不写文件
+- 保存：写入 `event-config.yml`
+- 应用：把 `event-config.yml` 渲染成 `.env`
+- 回滚：恢复上一次 `event-config.yml` / `.env`
+- 导出包：导出赛事配置、`.env`、事故库和交付清单
+
+应用后仍建议跑一次：
+
+```bash
+./apply-env.sh
+```
 
 ### 2.3 启动
 
@@ -557,6 +572,10 @@ tar czf monitor-backup-$(date +%Y%m%d).tar.gz \
 | `deploy.sh` | 第一次部署 / 代码升级 / 拉镜像 |
 | `apply-env.sh` | 日常改 `.env` 后应用配置 |
 | `pre-match-check.sh` | 赛前自检 |
+| `event-config.yml` | 结构化赛事配置，控制台可编辑 |
+| `platform-api.py` / `platform_config.py` | 配置中心、事故库、交付包 API |
+| `offline-package.sh` | 导出离线部署包和镜像 tar |
+| `install-offline.sh` | 现场离线安装入口 |
 | `librenms-auto-config.sh` | LibreNMS 设备发现、告警规则、飞书 transport |
 | `prometheus-gen-config.sh` | 生成 Prometheus 抓取配置 |
 | `generate-player-targets.py` | 选手座位发现、无线扫描、静态选手目标 |
@@ -568,4 +587,26 @@ tar czf monitor-backup-$(date +%Y%m%d).tar.gz \
 ```bash
 cd librenms+grafana
 for t in tests/test_bigscreen_*.js; do node "$t"; done
+python3 tests/test_platform_config.py
 ```
+
+## 9. 离线交付
+
+联网环境提前打包：
+
+```bash
+cd librenms+grafana
+./offline-package.sh
+```
+
+现场服务器离线安装：
+
+```bash
+tar -xf dist/monitor-offline-*.tar.gz
+cd monitor-offline-*
+./install-offline.sh
+vi event-config.yml
+./deploy.sh
+```
+
+`offline-package.sh` 会构建本地 helper 镜像，保存 Compose 需要的镜像到 `images.tar`，并排除 Prometheus/LibreNMS/Grafana 等运行数据目录。要锁定镜像版本，可以在 `.env` 里填写 `*_IMAGE` 变量；不确定 tag 的镜像保留可覆盖默认值，避免现场部署时因为猜错 tag 直接失败。

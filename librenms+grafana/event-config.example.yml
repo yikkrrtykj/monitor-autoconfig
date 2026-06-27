@@ -1,0 +1,59 @@
+event:
+  name: 武汉斗鱼嘉年华
+  mode: rehearsal
+  default_layout: tournament-64-2layer
+  security_mode: internal
+  public_base_url:
+
+networks:
+  player_vlan: 40
+  wireless_vlan: 41
+  player_subnets: 192.168.40.0/24
+  wireless_subnets: 192.168.41.0/24
+  player_gateways: 192.168.10.254
+
+devices:
+  core:
+    name: core
+    ip: 192.168.10.254
+  firewall:
+    name: firewall
+    ip: 192.168.10.1
+    snmp: 192.168.10.1
+  switches:
+    - name: stage-1
+      ip: 192.168.10.11
+      role: access
+    - name: stage-2
+      ip: 192.168.10.12
+      role: access
+  servers: []
+
+isp:
+  auto_discovery: true
+  max_bandwidth_mbps: 1000
+  links:
+    - name: telecom
+      ping: 223.5.5.5
+      gateway:
+      bandwidth_mbps: 1000
+    - name: unicom
+      ping: 119.29.29.29
+      gateway:
+      bandwidth_mbps: 1000
+
+unifi:
+  enabled: true
+  controller_url: https://控制器IP
+  user: readonly
+  sites: all
+
+alerts:
+  mode: rehearsal
+  feishu_robot_token:
+  syslog_alert_types: native_vlan_mismatch,errdisable,loopback,dhcp_snooping
+
+security:
+  grafana_anonymous: true
+  public_enabled: false
+  allowed_cidrs: []
