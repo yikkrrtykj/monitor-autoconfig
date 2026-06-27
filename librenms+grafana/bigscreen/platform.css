@@ -91,7 +91,6 @@
 .evidence-panel,
 .ops-panel,
 .incident-panel,
-.heatmap-panel,
 .topology-panel {
   min-width: 0;
   min-height: 0;
@@ -102,7 +101,6 @@
 .evidence-panel[hidden],
 .ops-panel[hidden],
 .incident-panel[hidden],
-.heatmap-panel[hidden],
 .topology-panel[hidden],
 .panel-grid[hidden] {
   display: none;
@@ -236,20 +234,17 @@
 }
 
 .screen.incident-mode,
-.screen.heatmap-mode,
 .screen.topology-mode {
   grid-template-rows: 104px 1fr;
   background: var(--linear-canvas);
 }
 
 .screen.incident-mode .topbar,
-.screen.heatmap-mode .topbar,
 .screen.topology-mode .topbar {
   grid-column: 1 / -1;
 }
 
 .screen.incident-mode main,
-.screen.heatmap-mode main,
 .screen.topology-mode main {
   grid-column: 1 / -1;
 }
@@ -1319,7 +1314,6 @@ a.seat-slot:hover {
   .screen.infra-mode,
   .screen.evidence-mode,
   .screen.incident-mode,
-  .screen.heatmap-mode,
   .screen.topology-mode,
   .screen.ops-mode,
   .screen.tournament-mode {

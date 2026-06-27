@@ -321,7 +321,6 @@ http://服务器IP:8002             LibreNMS
 | `/topology` | ISP 到防火墙、核心、接入的拓扑状态 |
 | `/latency` | 按队伍、座位、时间查单个选手延迟，可导出 CSV |
 | `/incident` | 输入卡顿时间点，关联 ISP、同台选手、基础设施 |
-| `/heatmap` | 一段时间内的离线率和平均延迟 |
 | `/wireless` | 只看无线选手 |
 | `/seat-check` | 赛前核对座位，选手换设备后立即重扫 |
 | `/match-5v5`、`/tournament-6` 等 | 比赛实时大屏 |

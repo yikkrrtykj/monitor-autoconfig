@@ -1135,7 +1135,7 @@
     return local.toISOString().slice(0, 16);
   }
 
-  // CSV export for the operator query pages (/latency and /heatmap) -- raw
+  // CSV export for the operator query pages (/latency) -- raw
   // data to attach to dispute reports alongside screenshots. Not wired to
   // any TV-facing page.
   function downloadCsv(filename, rows) {
@@ -1518,7 +1518,6 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     renderHomeCards();
   }
@@ -1535,7 +1534,6 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     startInfraRefresh();
   }
@@ -1551,7 +1549,6 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
     startInfraRefresh();
@@ -1571,7 +1568,6 @@
     setVisible("evidencePanel", true);
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     setupEvidencePanel();
   }
@@ -1588,7 +1584,6 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", true);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     startOpsRefresh(page);
   }
@@ -1810,243 +1805,8 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("incidentPanel", true);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     setupIncidentPanel();
-  }
-
-  // ---- Connection-quality heatmap ----
-
-  function heatmapWindow() {
-    const startInput = document.getElementById("heatmapStart");
-    const windowInput = document.getElementById("heatmapWindow");
-    const hours = Math.max(0.1, Number(windowInput && windowInput.value ? windowInput.value : 6));
-    const now = Math.floor(Date.now() / 1000);
-    let end = now;
-    let start = now - Math.floor(hours * 3600);
-    if (startInput && startInput.value) {
-      const parsed = new Date(startInput.value);
-      if (Number.isFinite(parsed.getTime())) {
-        start = Math.floor(parsed.getTime() / 1000);
-        end = Math.min(start + Math.floor(hours * 3600), now);
-      }
-    }
-    const span = Math.max(60, end - start);
-    const step = Math.max(15, Math.floor(span / 480));
-    return { start, end, step, span };
-  }
-
-  function heatmapColorForOffline(offlineFrac) {
-    if (!Number.isFinite(offlineFrac) || offlineFrac < 0) return { bg: "rgba(60, 70, 90, 0.6)", level: "none" };
-    if (offlineFrac === 0) return { bg: "rgba(58, 175, 90, 0.92)", level: "good" };
-    if (offlineFrac < 0.01) return { bg: "rgba(120, 200, 70, 0.92)", level: "good" };
-    if (offlineFrac < 0.05) return { bg: "rgba(255, 224, 64, 0.92)", level: "warn" };
-    if (offlineFrac < 0.15) return { bg: "rgba(255, 150, 50, 0.92)", level: "warn" };
-    return { bg: "rgba(239, 35, 60, 0.94)", level: "bad" };
-  }
-
-  function fmtPctText(value) {
-    if (!Number.isFinite(value)) return "-";
-    if (value < 0.0001) return "0.00%";
-    if (value < 0.01) return `${(value * 100).toFixed(2)}%`;
-    return `${(value * 100).toFixed(1)}%`;
-  }
-
-  async function queryHeatmapData(win, teamCount) {
-    const teamFilter = `team=~"${Array.from({ length: teamCount }, (_, i) => i + 1).join("|")}"`;
-    const offlineQ = `1 - avg_over_time(probe_success{role="player",network="wired",${teamFilter}}[${win.span}s])`;
-    const latencyQ = `avg_over_time(probe_icmp_duration_seconds{role="player",network="wired",phase="rtt",${teamFilter}}[${win.span}s])`;
-
-    const url = (query) => `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}&time=${win.end}`;
-    const fetchOne = async (query) => {
-      const resp = await fetchWithTimeout(url(query), { cache: "no-store" });
-      if (!resp.ok) throw new Error(`Prometheus HTTP ${resp.status}`);
-      const payload = await resp.json();
-      if (payload.status !== "success") throw new Error("Prometheus query failed");
-      return payload.data.result.map((item) => ({ metric: item.metric || {}, value: Number(item.value[1]) }));
-    };
-
-    const [offline, latency] = await Promise.all([fetchOne(offlineQ), fetchOne(latencyQ)]);
-    return { offline, latency };
-  }
-
-  function buildHeatmapCells(data, teamCount, seatCount) {
-    const offlineBy = new Map();
-    data.offline.forEach((item) => {
-      const key = `${item.metric.team}|${item.metric.seat}`;
-      const prev = offlineBy.get(key);
-      if (prev === undefined || item.value > prev) offlineBy.set(key, item.value);
-    });
-    const latencyBy = new Map();
-    data.latency.forEach((item) => {
-      const key = `${item.metric.team}|${item.metric.seat}`;
-      const prev = latencyBy.get(key);
-      if (prev === undefined || (Number.isFinite(item.value) && item.value < prev)) {
-        latencyBy.set(key, item.value);
-      }
-    });
-
-    const cells = [];
-    for (let team = 1; team <= teamCount; team += 1) {
-      for (let seat = 1; seat <= seatCount; seat += 1) {
-        const key = `${team}|${seat}`;
-        cells.push({
-          team,
-          seat,
-          offline: offlineBy.has(key) ? offlineBy.get(key) : NaN,
-          latency: latencyBy.has(key) ? latencyBy.get(key) : NaN
-        });
-      }
-    }
-    return cells;
-  }
-
-  function renderHeatmapSummary(cells, win) {
-    const evaluated = cells.filter((cell) => Number.isFinite(cell.offline));
-    const goodCount = evaluated.filter((cell) => cell.offline === 0).length;
-    const warnCount = evaluated.filter((cell) => cell.offline > 0 && cell.offline < 0.05).length;
-    const badCount = evaluated.filter((cell) => cell.offline >= 0.05).length;
-    const noDataCount = cells.length - evaluated.length;
-    const totalOffline = evaluated.reduce((sum, cell) => sum + cell.offline, 0);
-    const avgOffline = evaluated.length ? totalOffline / evaluated.length : NaN;
-
-    const startStr = new Date(win.start * 1000).toLocaleString("zh-CN", { hour12: false });
-    const endStr = new Date(win.end * 1000).toLocaleString("zh-CN", { hour12: false });
-    document.getElementById("heatmapSummary").innerHTML = `
-      <div class="heatmap-kpi"><strong>${cells.length}</strong><span>总座位</span></div>
-      <div class="heatmap-kpi good"><strong>${goodCount}</strong><span>全程在线</span></div>
-      <div class="heatmap-kpi warn"><strong>${warnCount}</strong><span>偶尔抖动</span></div>
-      <div class="heatmap-kpi bad"><strong>${badCount}</strong><span>频繁掉线</span></div>
-      <div class="heatmap-kpi"><strong>${noDataCount}</strong><span>无数据</span></div>
-      <div class="heatmap-kpi"><strong>${fmtPctText(avgOffline)}</strong><span>平均离线率</span></div>
-      <div class="heatmap-window">${escapeHtml(startStr)} → ${escapeHtml(endStr)}</div>
-    `;
-  }
-
-  function renderHeatmapGrid(cells, teamCount, seatCount) {
-    const grid = document.getElementById("heatmapGrid");
-    grid.style.setProperty("--heatmap-team-count", String(teamCount));
-    grid.style.setProperty("--heatmap-seat-count", String(seatCount));
-    grid.innerHTML = cells.map((cell) => {
-      const color = heatmapColorForOffline(cell.offline);
-      const offlineText = Number.isFinite(cell.offline) ? fmtPctText(cell.offline) : "—";
-      const latencyText = Number.isFinite(cell.latency) ? formatPingText(cell.latency) : "—";
-      const tooltip = `Team ${cell.team} Seat ${cell.seat}\n离线 ${offlineText}  平均 ${latencyText}`;
-      return `
-        <div class="heatmap-cell ${color.level}" style="background:${color.bg}" title="${escapeHtml(tooltip)}">
-          <span class="heatmap-cell-pos">T${cell.team}·S${cell.seat}</span>
-          <strong class="heatmap-cell-pct">${escapeHtml(offlineText)}</strong>
-          <em class="heatmap-cell-rtt">${escapeHtml(latencyText)}</em>
-        </div>
-      `;
-    }).join("");
-  }
-
-  function renderHeatmapLegend() {
-    document.getElementById("heatmapLegend").innerHTML = `
-      <span class="heatmap-key" style="background:rgba(58, 175, 90, 0.92)">0% (全程在线)</span>
-      <span class="heatmap-key" style="background:rgba(120, 200, 70, 0.92)">&lt;1% (基本稳)</span>
-      <span class="heatmap-key" style="background:rgba(255, 224, 64, 0.92)">1-5% (轻微抖)</span>
-      <span class="heatmap-key" style="background:rgba(255, 150, 50, 0.92)">5-15% (明显问题)</span>
-      <span class="heatmap-key" style="background:rgba(239, 35, 60, 0.94)">&gt;15% (严重掉线)</span>
-      <span class="heatmap-key" style="background:rgba(60, 70, 90, 0.6)">无数据</span>
-    `;
-  }
-
-  let lastHeatmapExport = null;
-
-  function exportHeatmapCsv() {
-    if (!lastHeatmapExport) return;
-    const { cells, win } = lastHeatmapExport;
-    const rows = [["team", "seat", "offline_ratio", "avg_latency_ms"]];
-    cells.forEach((cell) => {
-      rows.push([
-        String(cell.team),
-        String(cell.seat),
-        Number.isFinite(cell.offline) ? cell.offline.toFixed(4) : "",
-        Number.isFinite(cell.latency) ? (cell.latency * 1000).toFixed(2) : ""
-      ]);
-    });
-    downloadCsv(`heatmap_${csvStamp(win.start)}_${csvStamp(win.end)}.csv`, rows);
-  }
-
-  async function runHeatmap() {
-    const win = heatmapWindow();
-    const teamCount = Math.max(1, Number(document.getElementById("heatmapTeams").value || 16));
-    const seatCount = teamCount === 2 ? 5 : 4;
-
-    const params = new URLSearchParams();
-    const startVal = document.getElementById("heatmapStart").value;
-    if (startVal) params.set("start", startVal);
-    params.set("window", document.getElementById("heatmapWindow").value);
-    params.set("teams", String(teamCount));
-    window.history.replaceState({}, "", `/heatmap?${params.toString()}`);
-
-    document.getElementById("heatmapSummary").innerHTML = `<div class="heatmap-loading">加载中…</div>`;
-    document.getElementById("heatmapGrid").innerHTML = "";
-
-    try {
-      const data = await queryHeatmapData(win, teamCount);
-      const cells = buildHeatmapCells(data, teamCount, seatCount);
-      lastHeatmapExport = { cells, win };
-      renderHeatmapSummary(cells, win);
-      renderHeatmapGrid(cells, teamCount, seatCount);
-      renderHeatmapLegend();
-    } catch (error) {
-      console.error("Heatmap query failed:", error);
-      document.getElementById("heatmapSummary").innerHTML = `<div class="heatmap-error">查询失败: ${escapeHtml(error.message || "")}</div>`;
-    }
-  }
-
-  function setupHeatmapPanel() {
-    const params = new URLSearchParams(window.location.search);
-    const startVal = params.get("start");
-    const windowVal = params.get("window");
-    const teamsVal = params.get("teams");
-
-    const startInput = document.getElementById("heatmapStart");
-    if (startVal) startInput.value = startVal;
-    if (windowVal) {
-      const select = document.getElementById("heatmapWindow");
-      if (Array.from(select.options).some((opt) => opt.value === windowVal)) select.value = windowVal;
-    }
-    if (teamsVal) {
-      const select = document.getElementById("heatmapTeams");
-      if (Array.from(select.options).some((opt) => opt.value === teamsVal)) select.value = teamsVal;
-    }
-
-    const form = document.getElementById("heatmapForm");
-    if (form && !form.dataset.bound) {
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        runHeatmap();
-      });
-      form.dataset.bound = "1";
-    }
-    const exportBtn = document.getElementById("heatmapExport");
-    if (exportBtn && !exportBtn.dataset.bound) {
-      exportBtn.addEventListener("click", exportHeatmapCsv);
-      exportBtn.dataset.bound = "1";
-    }
-    runHeatmap();
-  }
-
-  function showHeatmap() {
-    const screen = document.querySelector(".screen");
-    stopInfraRefresh();
-    stopTournamentRefresh();
-    stopOpsRefresh();
-    stopTopologyRefresh();
-    screen.className = "screen heatmap-mode";
-    setVisible("homePanel", false);
-    setVisible("panelGrid", false);
-    setVisible("tournamentPanel", false);
-    setVisible("evidencePanel", false);
-    setVisible("opsPanel", false);
-    setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", true);
-    setVisible("topologyPanel", false);
-    setupHeatmapPanel();
   }
 
   // ---- Network topology ----
@@ -2309,7 +2069,6 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", true);
     const detail = document.getElementById("topologyDetail");
     detail.hidden = true;
@@ -2332,8 +2091,6 @@
       showEvidence();
     } else if (page.id === "incident") {
       showIncident();
-    } else if (page.id === "heatmap") {
-      showHeatmap();
     } else if (page.id === "topology") {
       showTopology();
     } else if (page.id === "wireless" || page.id === "seat-check") {
