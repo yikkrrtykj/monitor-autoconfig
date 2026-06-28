@@ -1444,16 +1444,9 @@
   }
 
   function renderControlReadiness(score, checks) {
-    const meter = document.getElementById("controlReadiness");
     const missingHost = document.getElementById("controlReadinessMissing");
     const missing = (checks || [])
       .filter((item) => item.level === "bad" || item.level === "warn");
-    meter.className = `readiness-meter ${score.level}`;
-    meter.innerHTML = `
-      <strong>${score.score}</strong>
-      <span>现场就绪分</span>
-      <em>${score.bad ? `${score.bad} 个严重项` : score.warn ? `${score.warn} 个关注项` : "关键项正常"}</em>
-    `;
     if (!missingHost) return;
     missingHost.innerHTML = missing.length
       ? missing.map((item) => controlItemHtml({
@@ -1463,13 +1456,15 @@
           value: item.value == null ? "" : item.value,
           note: item.note || ""
         })).join("")
-      : `<div class="control-empty good">没有待补项</div>`;
+      : `<div class="control-empty good">当前没有需要关注的问题</div>`;
   }
 
   function renderControlChecklist(checks) {
+    const element = document.getElementById("controlChecklist");
+    if (!element) return;
     const wanted = new Set(["赛前", "基础设施", "采集"]);
     const items = checks.filter((item) => wanted.has(item.section));
-    document.getElementById("controlChecklist").innerHTML = items.map(controlItemHtml).join("") ||
+    element.innerHTML = items.map(controlItemHtml).join("") ||
       `<div class="control-empty">暂无检查项</div>`;
   }
 
@@ -1488,13 +1483,10 @@
     const updated = runtimeStatus && runtimeStatus.updated_at ? formatTimestampFull(runtimeStatus.updated_at) : "-";
     const apiState = platformConfig && platformConfig.ok ? "可写" : "不可用";
     const rows = [
-      { label: "赛事", value: config.eventName || config.title || "未设置" },
       { label: "赛制", value: page ? page.label : "-" },
       { label: "网络", value: networkLabel(network) },
-      { label: "安全模式", value: config.securityMode || "internal" },
-      { label: "公网入口", value: config.publicBaseUrl || "-" },
       { label: "ISP", value: config.ispAutoDiscovery === "true" ? "自动发现" : (config.ispNames || "默认") },
-      { label: "目标文件", value: targetStatus ? `${targetStatus.total} 个` : "-", note: targetStatus ? `有线 ${targetStatus.wired} / 无线 ${targetStatus.wireless} / ${updated}` : "" },
+      { label: "选手探测目标", value: targetStatus ? `${targetStatus.total} 个` : "-", note: targetStatus ? `player-targets 生成：有线 ${targetStatus.wired} / 无线 ${targetStatus.wireless} / ${updated}` : "" },
       { label: "采集任务", value: `${services.filter((item) => item.up === item.total).length}/${services.length}` },
       { label: "平台 API", value: apiState, note: platformConfig && platformConfig.error ? platformConfig.error : "" }
     ];
@@ -1518,7 +1510,6 @@
         <div class="control-apply-next">
           <strong>配置流程</strong>
           <span>先验证，确认无误后点保存或应用配置。</span>
-          <code>cd librenms+grafana && ./apply-env.sh</code>
         </div>
       `;
       return;
@@ -1533,16 +1524,11 @@
         ? `
           <div class="control-apply-next good">
             <strong>已写入配置</strong>
-            <span>服务器执行下面命令让 .env 和 targets 生效。</span>
-            <code>cd librenms+grafana && ./apply-env.sh</code>
+            <span>.env 已更新；当前版本仍需要重启相关容器后生效。</span>
           </div>
         `
         : `
-          <div class="control-apply-next good">
-            <strong>验证通过</strong>
-            <span>确认后点保存或应用配置；首次部署才执行 ./deploy.sh。</span>
-            <code>cd librenms+grafana && ./apply-env.sh</code>
-          </div>
+          <div class="control-empty good">验证通过</div>
         `;
       return;
     }
@@ -1557,8 +1543,7 @@
       ${payload.needsRedeploy ? `
         <div class="control-apply-next good">
           <strong>已写入配置</strong>
-          <span>修完提示项后，在服务器执行应用命令。</span>
-          <code>cd librenms+grafana && ./apply-env.sh</code>
+          <span>.env 已更新；当前版本仍需要重启相关容器后生效。</span>
         </div>
       ` : ""}
     `;
@@ -1593,42 +1578,54 @@
 
   function controlConfigDefaults(configValue) {
     const value = cloneControlConfig(configValue);
-    value.event = { default_layout: "tournament-64-2layer", security_mode: "internal", ...(value.event || {}) };
+    value.event = { default_layout: "tournament-64-2layer", ...(value.event || {}) };
+    value.event.name = "";
+    delete value.event.security_mode;
+    delete value.event.public_base_url;
     value.networks = { player_vlan: 40, wireless_vlan: 41, ...(value.networks || {}) };
+    value.snmp = { community: "global", ...(value.snmp || {}) };
     value.devices = { switches: [], servers: [], ...(value.devices || {}) };
     value.devices.core = { name: "core", ...(value.devices.core || {}) };
-    value.devices.firewall = { name: "firewall", ...(value.devices.firewall || {}) };
+    value.devices.firewall = { ...(value.devices.firewall || {}) };
     if (String(value.networks.player_gateways || "") === String(value.devices.core.ip || "")) {
       value.networks.player_gateways = "";
     }
-    value.devices.switches = asConfigArray(value.devices.switches);
-    value.devices.servers = asConfigArray(value.devices.servers);
-    if (!value.devices.switches.length) {
-      value.devices.switches = [1, 2, 3, 4].map((num) => ({
-        name: `stage-${num}`,
-        ip: `192.168.10.${10 + num}`,
-        role: "access"
-      }));
-    } else if (value.devices.switches.every((item) => /^stage-[1-4]$/.test(String(item.name || "")))) {
-      const byName = new Map(value.devices.switches.map((item) => [String(item.name || ""), item]));
-      [1, 2, 3, 4].forEach((num) => {
-        const name = `stage-${num}`;
-        if (!byName.has(name)) {
-          value.devices.switches.push({ name, ip: `192.168.10.${10 + num}`, role: "access" });
-        }
-      });
+    const legacySwitches = asConfigArray(value.devices.switches);
+    value.devices.stage_switches = asConfigArray(value.devices.stage_switches);
+    value.devices.access_switches = asConfigArray(value.devices.access_switches);
+    if (!value.devices.stage_switches.length && legacySwitches.length) {
+      value.devices.stage_switches = legacySwitches;
     }
+    value.devices.servers = asConfigArray(value.devices.servers);
+    if (!value.devices.stage_switches.length) {
+      value.devices.stage_switches = [1, 2, 3, 4].map((num) => ({ ip: `192.168.10.${10 + num}` }));
+    } else {
+      value.devices.stage_switches = value.devices.stage_switches.map((item) => ({ ip: item.ip || item.target || "" }));
+    }
+    value.devices.access_switches = value.devices.access_switches.map((item) => ({ ip: item.ip || item.target || "" }));
     if (!value.devices.servers.length) {
       value.devices.servers = [{ name: "game server", ip: "" }];
     } else if (
       value.devices.servers.length === 1
-      && String(value.devices.servers[0].name || "").toLowerCase() === "grafana"
+      && ["grafana", "game server"].includes(String(value.devices.servers[0].name || "").toLowerCase())
       && String(value.devices.servers[0].ip || "") === "192.168.41.253"
     ) {
       value.devices.servers = [{ name: "game server", ip: "" }];
     }
     value.isp = { auto_discovery: true, max_bandwidth_mbps: 1000, links: [], ...(value.isp || {}) };
     value.isp.links = asConfigArray(value.isp.links);
+    if (
+      value.isp.links.length === 2
+      && String(value.isp.links[0].name || "").toLowerCase() === "telecom"
+      && String(value.isp.links[0].ping || "") === "223.5.5.5"
+      && String(value.isp.links[1].name || "").toLowerCase() === "unicom"
+      && String(value.isp.links[1].ping || "") === "119.29.29.29"
+    ) {
+      value.isp.links = [];
+    }
+    if (!value.isp.links.length && Number(value.isp.max_bandwidth_mbps) === 1000) {
+      value.isp.max_bandwidth_mbps = "";
+    }
     value.unifi = { enabled: false, sites: "all", ...(value.unifi || {}) };
     value.alerts = {
       syslog_alert_types: "native_vlan_mismatch,errdisable,loopback,dhcp_snooping",
@@ -1636,7 +1633,7 @@
     };
     delete value.event.mode;
     delete value.alerts.mode;
-    value.security = { grafana_anonymous: true, public_enabled: false, allowed_cidrs: [], ...(value.security || {}) };
+    value.security = { grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
     return value;
   }
 
@@ -1693,6 +1690,13 @@
   }
 
   function configListRows(name, rows, columns) {
+    const addLabels = {
+      stage_switches: "舞台交换机",
+      access_switches: "接入交换机",
+      switches: "交换机",
+      servers: "服务器",
+      isp: "ISP"
+    };
     return `
       <div class="config-list" data-config-list="${escapeHtml(name)}">
         ${rows.map((row, index) => `
@@ -1706,7 +1710,7 @@
             <button type="button" data-config-remove="${escapeHtml(name)}" data-index="${index}">删除</button>
           </div>
         `).join("")}
-        <button class="config-add-row" type="button" data-config-add="${escapeHtml(name)}">添加${name === "switches" ? "交换机" : name === "servers" ? "服务器" : "ISP"}</button>
+        <button class="config-add-row" type="button" data-config-add="${escapeHtml(name)}">添加${escapeHtml(addLabels[name] || "条目")}</button>
       </div>
     `;
   }
@@ -1718,21 +1722,22 @@
     lastEditableConfig = controlConfigDefaults(configValue);
     form.innerHTML = `
       <section class="config-section">
-        <h3>赛事</h3>
+        <h3>基础</h3>
         <div class="config-fields">
-          ${configInput("event.name", "赛事名称", { placeholder: "武汉斗鱼嘉年华" })}
           ${configInput("event.default_layout", "默认赛制", { type: "select", choices: matchPages.map((item) => ({ value: item.id, label: item.label })) })}
-          ${configInput("event.public_base_url", "公网地址", { placeholder: "需要公网访问时再填" })}
         </div>
       </section>
       <section class="config-section">
-        <h3>网络</h3>
+        <h3>网络 / SNMP</h3>
         <div class="config-fields">
+          ${configInput("snmp.community", "SNMP Community")}
           ${configInput("networks.player_vlan", "选手 VLAN", { number: true })}
           ${configInput("networks.wireless_vlan", "无线 VLAN", { number: true })}
           ${configInput("networks.player_subnets", "选手网段", { type: "textarea", placeholder: "192.168.40.0/24" })}
           ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", placeholder: "192.168.41.0/24" })}
           ${configInput("networks.player_gateways", "选手网关", { type: "textarea", placeholder: "留空则复用核心 IP" })}
+          ${configInput("networks.switch_management_ranges", "交换机管理网段", { type: "textarea", placeholder: "192.168.10.1-100,192.168.10.254" })}
+          ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", placeholder: "可留空；多段用逗号或换行" })}
         </div>
       </section>
       <section class="config-section">
@@ -1740,50 +1745,64 @@
         <div class="config-fields">
           ${configInput("devices.core.name", "核心名称")}
           ${configInput("devices.core.ip", "核心 IP")}
-          ${configInput("devices.firewall.name", "防火墙名称")}
-          ${configInput("devices.firewall.ip", "防火墙管理 IP")}
-          ${configInput("devices.firewall.snmp", "防火墙 SNMP 目标 IP")}
+          ${configInput("devices.firewall.ip", "防火墙 Ping IP", { type: "textarea", placeholder: "可多台，逗号或换行分隔" })}
+          ${configInput("devices.firewall.snmp", "WAN 流量 SNMP IP", { type: "textarea", placeholder: "通常填 HA 逻辑/VIP；多 IP 用逗号或换行" })}
+          ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP", { type: "textarea", placeholder: "HA 两台物理机 IP，逗号或换行分隔" })}
         </div>
       </section>
       <section class="config-section">
-        <h3>接入交换机</h3>
-        ${configListRows("switches", lastEditableConfig.devices.switches, [
-          { key: "name", label: "名称", placeholder: "stage-1" },
+        <h3>舞台交换机</h3>
+        <p class="config-section-note">用于选手座位识别和大屏选手监控；设备名从 SNMP/LibreNMS hostname 获取。</p>
+        ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
           { key: "ip", label: "IP", placeholder: "192.168.10.11" }
+        ])}
+      </section>
+      <section class="config-section">
+        <h3>其它接入交换机</h3>
+        <p class="config-section-note">用于基础设施在线、拓扑和 LibreNMS 发现；不参与选手座位识别。</p>
+        ${configListRows("access_switches", lastEditableConfig.devices.access_switches, [
+          { key: "ip", label: "IP", placeholder: "可留空" }
         ])}
       </section>
       <section class="config-section">
         <h3>服务器</h3>
         ${configListRows("servers", lastEditableConfig.devices.servers, [
-          { key: "name", label: "名称", placeholder: "grafana" },
-          { key: "ip", label: "IP", placeholder: "192.168.41.253" }
+          { key: "name", label: "名称", placeholder: "game server" },
+          { key: "ip", label: "IP", placeholder: "可留空" }
         ])}
       </section>
       <section class="config-section">
         <h3>ISP</h3>
+        <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商；探测 IP 用于检测外网连通性，通常填公网 DNS 或运营商网关。</p>
         <div class="config-fields">
           ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox" })}
-          ${configInput("isp.max_bandwidth_mbps", "兜底带宽 Mbps", { number: true })}
+          ${configInput("isp.max_bandwidth_mbps", "未填带宽时按 Mbps", { number: true, placeholder: "可留空，内部默认 1000" })}
         </div>
         ${configListRows("isp", lastEditableConfig.isp.links, [
-          { key: "name", label: "名称", placeholder: "telecom" },
-          { key: "ping", label: "探测 IP", placeholder: "223.5.5.5" },
-          { key: "gateway", label: "网关 IP", placeholder: "可留空" },
-          { key: "bandwidth_mbps", label: "单链路带宽", number: true }
+          { key: "name", label: "运营商名（可选）", placeholder: "自动发现时可留空" },
+          { key: "ping", label: "连通性探测 IP", placeholder: "公网 DNS 或运营商网关" },
+          { key: "bandwidth_mbps", label: "单线带宽", number: true }
         ])}
       </section>
       <section class="config-section">
-        <h3>UniFi / 告警 / 安全</h3>
+        <h3>UniFi</h3>
         <div class="config-fields">
           ${configInput("unifi.enabled", "启用 UniFi", { type: "checkbox" })}
           ${configInput("unifi.controller_url", "UniFi 地址", { placeholder: "https://控制器IP" })}
           ${configInput("unifi.user", "UniFi 用户")}
           ${configInput("unifi.sites", "UniFi Sites", { placeholder: "all" })}
+        </div>
+      </section>
+      <section class="config-section">
+        <h3>告警</h3>
+        <div class="config-fields">
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
-          ${configInput("alerts.syslog_alert_types", "Syslog 告警类型")}
+        </div>
+      </section>
+      <section class="config-section">
+        <h3>安全</h3>
+        <div class="config-fields">
           ${configInput("security.grafana_anonymous", "Grafana 匿名访问", { type: "checkbox" })}
-          ${configInput("security.public_enabled", "公网模式", { type: "checkbox" })}
-          ${configInput("security.allowed_cidrs", "公网白名单", { type: "textarea", placeholder: "1.2.3.4/32" })}
         </div>
       </section>
     `;
@@ -1807,7 +1826,8 @@
       configPathSet(value, input.dataset.configPath, nextValue);
     });
     const listMappings = {
-      switches: ["devices", "switches"],
+      stage_switches: ["devices", "stage_switches"],
+      access_switches: ["devices", "access_switches"],
       servers: ["devices", "servers"],
       isp: ["isp", "links"]
     };
@@ -1825,7 +1845,6 @@
           if (Object.values(item).some((entry) => String(entry || "").trim())) rows.push(item);
         });
       }
-      if (name === "switches") rows.forEach((item) => { item.role = item.role || "access"; });
       value[path[0]][path[1]] = rows;
     });
     lastEditableConfig = value;
@@ -1964,17 +1983,17 @@
     const element = document.getElementById("controlDelivery");
     if (!element) return;
     if (!manifest || !manifest.ok) {
-      element.innerHTML = `<div class="control-empty bad">${escapeHtml(manifest && manifest.error ? manifest.error : "交付清单不可用")}</div>`;
+      element.innerHTML = `<div class="control-empty bad">${escapeHtml(manifest && manifest.error ? manifest.error : "离线部署清单不可用")}</div>`;
       return;
     }
     const rows = [
-      { section: "交付", label: "镜像", level: manifest.images.length ? "good" : "warn", value: String(manifest.images.length), note: manifest.images.slice(0, 3).join("、") },
-      { section: "交付", label: "文件", level: manifest.files.length ? "good" : "warn", value: String(manifest.files.length), note: manifest.files.slice(0, 4).join("、") },
-      { section: "交付", label: "命令", level: "info", value: "离线", note: (manifest.commands || []).join(" && ") }
+      { section: "部署", label: "镜像", level: manifest.images.length ? "good" : "warn", value: String(manifest.images.length), note: manifest.images.slice(0, 3).join("、") },
+      { section: "部署", label: "文件", level: manifest.files.length ? "good" : "warn", value: String(manifest.files.length), note: manifest.files.slice(0, 4).join("、") },
+      { section: "部署", label: "离线安装", level: "info", value: "脚本", note: (manifest.commands || []).join(" && ") }
     ];
     element.innerHTML = `
       ${rows.map(controlItemHtml).join("")}
-      <a class="delivery-download" href="/platform-api/delivery/export">下载当前配置包</a>
+      <a class="delivery-download" href="/platform-api/delivery/export">下载离线部署配置</a>
     `;
   }
 
@@ -2101,7 +2120,6 @@
 
   function renderControlPanel(snapshot) {
     renderControlReadiness(snapshot.readiness, snapshot.checks);
-    renderControlChecklist(snapshot.checks);
     renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
     renderControlConfig(snapshot);
     renderControlLayoutSelectors(snapshot);
@@ -2172,7 +2190,7 @@
       return;
     }
     if (!lastControlReport) {
-      ["controlReadiness", "controlReadinessMissing", "controlChecklist", "controlTopology", "controlConfig", "controlIncidentFlow", "controlIncidentList", "controlDelivery"].forEach((id) => {
+      ["controlReadinessMissing", "controlTopology", "controlConfig", "controlIncidentFlow", "controlIncidentList", "controlDelivery"].forEach((id) => {
         const element = document.getElementById(id);
         if (element) element.innerHTML = `<div class="control-empty">加载中</div>`;
       });
@@ -2182,9 +2200,8 @@
       renderControlPanel(snapshot);
     } catch (error) {
       console.error("Control panel failed:", error);
-      document.getElementById("controlReadiness").innerHTML = `<div class="control-empty bad">控制台加载失败</div>`;
       const missingHost = document.getElementById("controlReadinessMissing");
-      if (missingHost) missingHost.innerHTML = `<div class="control-empty bad">无法生成待补项</div>`;
+      if (missingHost) missingHost.innerHTML = `<div class="control-empty bad">控制台加载失败</div>`;
     }
   }
 
@@ -2303,14 +2320,16 @@
         const next = collectControlConfigForm();
         if (addButton) {
           const listName = addButton.dataset.configAdd;
-          if (listName === "switches") next.devices.switches.push({ name: "", ip: "", role: "access" });
+          if (listName === "stage_switches") next.devices.stage_switches.push({ ip: "" });
+          if (listName === "access_switches") next.devices.access_switches.push({ ip: "" });
           if (listName === "servers") next.devices.servers.push({ name: "", ip: "" });
-          if (listName === "isp") next.isp.links.push({ name: "", ping: "", gateway: "", bandwidth_mbps: "" });
+          if (listName === "isp") next.isp.links.push({ name: "", ping: "", bandwidth_mbps: "" });
         }
         if (removeButton) {
           const listName = removeButton.dataset.configRemove;
           const index = Number(removeButton.dataset.index);
-          if (listName === "switches") next.devices.switches.splice(index, 1);
+          if (listName === "stage_switches") next.devices.stage_switches.splice(index, 1);
+          if (listName === "access_switches") next.devices.access_switches.splice(index, 1);
           if (listName === "servers") next.devices.servers.splice(index, 1);
           if (listName === "isp") next.isp.links.splice(index, 1);
         }

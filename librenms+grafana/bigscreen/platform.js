@@ -96,23 +96,12 @@
     const risks = [];
     const ispNames = String(config.ispNames || "").split(",").map((item) => item.trim()).filter(Boolean);
     const ispAuto = envFlag(config.ispAutoDiscovery);
-    const publicBaseUrl = String(config.publicBaseUrl || "").trim();
-    const securityMode = String(config.securityMode || "internal").trim().toLowerCase();
 
-    if (!config.eventName && !config.title) {
-      risks.push({ level: "warn", label: "赛事名称", value: "未设置", note: "建议设置 EVENT_NAME 或 BIGSCREEN_TITLE" });
-    }
     if (!ispAuto && !ispNames.length) {
       risks.push({ level: "warn", label: "ISP 名称", value: "默认值", note: "未启用自动发现时建议显式配置 BIGSCREEN_ISP_NAMES" });
     }
     if (!String(config.ispMaxBandwidthMbps || "").trim()) {
       risks.push({ level: "warn", label: "ISP 带宽", value: "未设置", note: "饱和判断会退回默认 1000 Mbps" });
-    }
-    if (securityMode === "public" && !publicBaseUrl) {
-      risks.push({ level: "bad", label: "公网暴露", value: "缺少入口", note: "public 模式建议设置 BIGSCREEN_PUBLIC_BASE_URL 并放在反代/VPN 后" });
-    }
-    if (securityMode === "public" && envFlag(config.grafanaAnonymous)) {
-      risks.push({ level: "warn", label: "Grafana 匿名", value: "开启", note: "公网模式建议关闭匿名或只经 VPN 访问" });
     }
     if (runtimeStatus && runtimeStatus.error) {
       risks.push({ level: "warn", label: "运行状态接口", value: "不可用", note: runtimeStatus.error });
@@ -188,7 +177,7 @@
     const downJobs = services.filter((job) => job.up < job.total);
     checks.push({
       section: "采集",
-      label: "Prometheus targets",
+      label: "采集任务异常",
       level: downJobs.length ? "warn" : "good",
       value: downJobs.length ? `${downJobs.length} 异常` : "正常",
       note: downJobs.slice(0, 3).map((job) => `${job.job} ${job.up}/${job.total}`).join("、")

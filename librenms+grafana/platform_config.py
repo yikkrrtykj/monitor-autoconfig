@@ -238,16 +238,37 @@ def csv(items: Any) -> str:
     return str(items)
 
 
+def split_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (int, float)):
+        return [str(value)]
+    if isinstance(value, str):
+        raw_items = re.split(r"[\n,]+", value)
+    elif isinstance(value, list):
+        raw_items = []
+        for item in value:
+            raw_items.extend(split_values(item))
+    else:
+        raw_items = [str(value)]
+    return [str(item).strip() for item in raw_items if str(item).strip()]
+
+
 def named_targets(items: list[dict[str, Any]], key: str = "ip") -> str:
     targets = []
     for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        value = str(item.get(key) or item.get("target") or "").strip()
-        if not value:
-            continue
-        name = str(item.get("name") or "").strip()
-        targets.append(f"{name}:{value}" if name else value)
+        if isinstance(item, dict):
+            values = split_values(item.get(key) or item.get("target") or "")
+            name = str(item.get("name") or "").strip()
+        else:
+            values = split_values(item)
+            name = ""
+        for index, value in enumerate(values):
+            if name:
+                label = name if len(values) == 1 else f"{name}-{index + 1}"
+                targets.append(f"{label}:{value}")
+            else:
+                targets.append(value)
     return ",".join(targets)
 
 
@@ -260,8 +281,12 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     config.setdefault("unifi", {})
     config.setdefault("alerts", {})
     config.setdefault("security", {})
+    config.setdefault("snmp", {})
     devices = config["devices"]
     devices.setdefault("switches", [])
+    if "stage_switches" not in devices:
+        devices["stage_switches"] = devices.get("switches") or []
+    devices.setdefault("access_switches", [])
     devices.setdefault("servers", [])
     return config
 
@@ -274,17 +299,22 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     networks = config["networks"]
     isp = config["isp"]
 
-    if not event.get("name"):
-        issues.append({"level": "warn", "path": "event.name", "message": "建议填写赛事名称"})
     if not (devices.get("core") or {}).get("ip"):
         issues.append({"level": "bad", "path": "devices.core.ip", "message": "核心交换机 IP 必填"})
-    if not devices.get("switches"):
-        issues.append({"level": "warn", "path": "devices.switches", "message": "没有配置接入交换机"})
-    for idx, item in enumerate(devices.get("switches") or []):
+    stage_switches = devices.get("stage_switches") or devices.get("switches") or []
+    access_switches = devices.get("access_switches") or []
+    if not stage_switches:
+        issues.append({"level": "warn", "path": "devices.stage_switches", "message": "没有配置舞台交换机，选手自动识别会跳过"})
+    for idx, item in enumerate(stage_switches):
         if not item.get("ip"):
-            issues.append({"level": "bad", "path": f"devices.switches[{idx}].ip", "message": "交换机 IP 必填"})
+            issues.append({"level": "bad", "path": f"devices.stage_switches[{idx}].ip", "message": "舞台交换机 IP 必填"})
+    for idx, item in enumerate(access_switches):
+        if not item.get("ip"):
+            issues.append({"level": "bad", "path": f"devices.access_switches[{idx}].ip", "message": "接入交换机 IP 必填"})
     if not networks.get("player_subnets"):
         issues.append({"level": "warn", "path": "networks.player_subnets", "message": "没有配置选手有线网段"})
+    if not networks.get("switch_management_ranges"):
+        issues.append({"level": "warn", "path": "networks.switch_management_ranges", "message": "建议填写交换机管理网段，方便 LibreNMS 自动发现"})
     if not isp.get("auto_discovery") and not isp.get("links"):
         issues.append({"level": "warn", "path": "isp.links", "message": "关闭自动发现时建议配置 ISP 探测目标"})
     if config["security"].get("public_enabled") and not event.get("public_base_url"):
@@ -309,12 +339,18 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     unifi = config["unifi"]
     alerts = config["alerts"]
     security = config["security"]
+    snmp = config["snmp"]
 
     core = devices.get("core") or {}
     firewall = devices.get("firewall") or {}
-    switches = devices.get("switches") or []
+    stage_switches = devices.get("stage_switches") or devices.get("switches") or []
+    access_switches = devices.get("access_switches") or []
+    all_switches = [*stage_switches, *access_switches]
     servers = devices.get("servers") or []
     isp_links = isp.get("links") or []
+    snmp_community = snmp.get("community") or existing.get("SNMP_COMMUNITY", "global")
+    firewall_ping = named_targets([firewall], "ip")
+    firewall_snmp = named_targets([firewall], "snmp")
 
     env = {
         "EVENT_NAME": event.get("name", ""),
@@ -322,24 +358,28 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "BIGSCREEN_DEFAULT_LAYOUT": event.get("default_layout", "tournament-64-2layer"),
         "BIGSCREEN_SECURITY_MODE": event.get("security_mode", "internal"),
         "BIGSCREEN_PUBLIC_BASE_URL": event.get("public_base_url", ""),
+        "SNMP_COMMUNITY": snmp_community,
+        "FIREWALL_SNMP_COMMUNITY": snmp.get("firewall_community") or snmp_community,
         "CORE_SWITCH_PING": named_targets([core]) if core.get("ip") else "",
-        "DIST_SWITCH_PING": named_targets(switches),
-        "TOURNAMENT_SWITCHES": named_targets(switches),
-        "FIREWALL_PING": named_targets([firewall]) if firewall.get("ip") else "",
-        "FIREWALL_SNMP_TARGETS": named_targets([firewall], "snmp") if firewall.get("snmp") else named_targets([firewall]),
+        "DIST_SWITCH_PING": named_targets(all_switches),
+        "TOURNAMENT_SWITCHES": named_targets(stage_switches),
+        "FIREWALL_PING": firewall_ping,
+        "FIREWALL_SNMP_TARGETS": firewall_snmp or firewall_ping,
+        "FIREWALL_UNIT_SNMP_TARGETS": named_targets([firewall], "unit_snmp"),
         "SERVER_PING": named_targets(servers),
         "PLAYER_SUBNETS": csv(networks.get("player_subnets")),
         "WIRELESS_SUBNETS": csv(networks.get("wireless_subnets")),
         "PLAYER_GATEWAYS": csv(networks.get("player_gateways") or core.get("ip")),
         "PLAYER_VLAN_IDS": csv(networks.get("player_vlan")),
+        "LIBRENMS_DISCOVERY_TARGETS": csv(networks.get("switch_management_ranges")),
+        "FIREWALL_DISCOVERY_RANGE": csv(networks.get("firewall_management_ranges")),
         "BIGSCREEN_ISP_AUTO_DISCOVER": str(bool(isp.get("auto_discovery", True))).lower(),
         "BIGSCREEN_ISP_NAMES": ",".join(str(item.get("name")) for item in isp_links if item.get("name")),
         "ISP_PING": ",".join(
-            f"{item.get('name')}:{item.get('ping')}" for item in isp_links if item.get("name") and item.get("ping")
+            f"{item.get('name')}:{item.get('ping')}" if item.get("name") else str(item.get("ping"))
+            for item in isp_links if item.get("ping")
         ),
-        "BIGSCREEN_ISP_IPS": ",".join(
-            f"{item.get('name')}:{item.get('gateway')}" for item in isp_links if item.get("name") and item.get("gateway")
-        ),
+        "BIGSCREEN_ISP_IPS": "",
         "BIGSCREEN_ISP_MAX_BANDWIDTH": str(isp.get("max_bandwidth_mbps") or "1000"),
         "COMPOSE_PROFILES": "unifi" if unifi.get("enabled") else existing.get("COMPOSE_PROFILES", ""),
         "UNIFI_CONTROLLER_URL": unifi.get("controller_url", ""),

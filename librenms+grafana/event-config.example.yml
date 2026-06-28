@@ -1,8 +1,6 @@
 event:
   name:
   default_layout: tournament-64-2layer
-  security_mode: internal
-  public_base_url:
 
 networks:
   player_vlan: 40
@@ -10,56 +8,43 @@ networks:
   player_subnets: 192.168.40.0/24
   wireless_subnets: 192.168.41.0/24
   player_gateways:
+  switch_management_ranges: 192.168.10.1-100,192.168.10.254
+  firewall_management_ranges:
+
+snmp:
+  community: global
 
 devices:
   core:
     name: core
     ip: 192.168.10.254
   firewall:
-    name: firewall
-    ip: 192.168.10.1
-    snmp: 192.168.10.1
-  switches:
-    - name: stage-1
-      ip: 192.168.10.11
-      role: access
-    - name: stage-2
-      ip: 192.168.10.12
-      role: access
-    - name: stage-3
-      ip: 192.168.10.13
-      role: access
-    - name: stage-4
-      ip: 192.168.10.14
-      role: access
+    ip:
+    snmp:
+    unit_snmp:
+  stage_switches:
+    - ip: 192.168.10.11
+    - ip: 192.168.10.12
+    - ip: 192.168.10.13
+    - ip: 192.168.10.14
+  access_switches: []
   servers:
     - name: game server
       ip:
 
 isp:
   auto_discovery: true
-  max_bandwidth_mbps: 1000
-  links:
-    - name: telecom
-      ping: 223.5.5.5
-      gateway:
-      bandwidth_mbps: 1000
-    - name: unicom
-      ping: 119.29.29.29
-      gateway:
-      bandwidth_mbps: 1000
+  max_bandwidth_mbps:
+  links: []
 
 unifi:
-  enabled: true
-  controller_url: https://控制器IP
-  user: readonly
+  enabled: false
+  controller_url:
+  user:
   sites: all
 
 alerts:
   feishu_robot_token:
-  syslog_alert_types: native_vlan_mismatch,errdisable,loopback,dhcp_snooping
 
 security:
   grafana_anonymous: true
-  public_enabled: false
-  allowed_cidrs: []

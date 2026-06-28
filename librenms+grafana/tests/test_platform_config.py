@@ -98,9 +98,43 @@ isp:
     assert env["PLAYER_GATEWAYS"] == "192.168.10.254"
 
 
+def test_platform_fields_render_frontend_config():
+    config = platform_config.parse_simple_yaml("""
+networks:
+  player_subnets: 192.168.40.0/24
+  switch_management_ranges: 192.168.10.1-100,192.168.10.254
+  firewall_management_ranges: 192.168.10.1-2
+snmp:
+  community: esport-snmp
+devices:
+  core:
+    ip: 192.168.10.254
+  firewall:
+    ip: 192.168.10.1
+    snmp: 192.168.10.1,192.168.10.2
+    unit_snmp: 192.168.10.11,192.168.10.12
+  stage_switches:
+    - ip: 192.168.10.11
+    - ip: 192.168.10.12
+  access_switches:
+    - ip: 192.168.10.21
+isp:
+  links:
+""")
+    env = platform_config.render_env(config)
+    assert env["SNMP_COMMUNITY"] == "esport-snmp"
+    assert env["DIST_SWITCH_PING"] == "192.168.10.11,192.168.10.12,192.168.10.21"
+    assert env["TOURNAMENT_SWITCHES"] == "192.168.10.11,192.168.10.12"
+    assert env["FIREWALL_SNMP_TARGETS"] == "192.168.10.1,192.168.10.2"
+    assert env["FIREWALL_UNIT_SNMP_TARGETS"] == "192.168.10.11,192.168.10.12"
+    assert env["LIBRENMS_DISCOVERY_TARGETS"] == "192.168.10.1-100,192.168.10.254"
+    assert env["FIREWALL_DISCOVERY_RANGE"] == "192.168.10.1-2"
+
+
 if __name__ == "__main__":
     test_parse_validate_render_env()
     test_blank_yaml_values_are_empty_strings_and_gateway_falls_back()
+    test_platform_fields_render_frontend_config()
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         test_merge_env_preserves_unknown_keys(Path(tmp))

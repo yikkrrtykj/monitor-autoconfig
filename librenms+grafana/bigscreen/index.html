@@ -139,7 +139,7 @@
           <div class="control-toolbar">
             <div class="control-title">
               <strong>赛事控制台</strong>
-              <span>基础配置、赛前检查、事故和交付</span>
+              <span>基础配置、问题清单、事故和离线部署</span>
             </div>
             <div class="control-actions">
               <button type="button" id="controlRescan" title="立即重扫座位目标">重扫</button>
@@ -151,8 +151,7 @@
           <div class="control-grid">
             <div class="control-stack control-stack-left">
               <article class="control-card control-readiness-card">
-                <h2>就绪度</h2>
-                <div class="readiness-meter" id="controlReadiness"></div>
+                <h2>需要关注</h2>
                 <div class="readiness-missing" id="controlReadinessMissing"></div>
               </article>
               <article class="control-card control-config-editor-card">
@@ -177,10 +176,6 @@
             </div>
             <div class="control-stack control-stack-right">
               <article class="control-card">
-                <h2>赛前检查</h2>
-                <div class="control-list" id="controlChecklist"></div>
-              </article>
-              <article class="control-card">
                 <h2>配置中心</h2>
                 <div class="control-config" id="controlConfig"></div>
               </article>
@@ -201,7 +196,7 @@
                 <div class="control-list" id="controlIncidentList"></div>
               </article>
               <article class="control-card">
-                <h2>交付包</h2>
+                <h2>离线部署包</h2>
                 <div class="control-list" id="controlDelivery"></div>
               </article>
             </div>

@@ -859,7 +859,7 @@
 
 .control-card {
   display: grid;
-  grid-template-rows: 28px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
   min-height: 154px;
@@ -878,18 +878,21 @@
 }
 
 .control-readiness-card {
-  grid-template-rows: 28px minmax(172px, auto) minmax(0, auto);
+  grid-template-rows: auto minmax(0, auto);
+  min-height: 150px;
 }
 
 .control-lint-card {
-  grid-template-rows: 28px 108px minmax(0, 1fr);
+  grid-template-rows: auto 118px minmax(44px, auto);
   min-height: 260px;
+  overflow: visible;
 }
 
 .control-config-editor-card {
-  grid-template-rows: 28px minmax(0, 1fr) auto minmax(0, 136px);
-  height: min(820px, calc(100vh - 330px));
-  min-height: 560px;
+  grid-template-rows: auto minmax(0, auto) auto minmax(0, auto);
+  height: auto;
+  min-height: 0;
+  overflow: visible;
 }
 
 .readiness-meter {
@@ -926,9 +929,8 @@
   align-content: start;
   gap: 6px;
   min-width: 0;
-  min-height: 0;
-  max-height: 190px;
-  overflow: auto;
+  min-height: 88px;
+  overflow: visible;
 }
 
 .readiness-missing .control-item {
@@ -1139,7 +1141,6 @@
   gap: 12px;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
   padding-right: 4px;
 }
 
@@ -1158,6 +1159,13 @@
   color: var(--linear-ink);
   font-size: 13px;
   font-weight: 600;
+}
+
+.config-section-note {
+  margin: -2px 0 2px;
+  color: var(--linear-ink-subtle);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .config-fields {
@@ -1253,13 +1261,17 @@
   min-width: 0;
 }
 
-.config-list[data-config-list="switches"] .config-list-row,
+.config-list[data-config-list="stage_switches"] .config-list-row,
+.config-list[data-config-list="access_switches"] .config-list-row {
+  grid-template-columns: minmax(0, 1fr) 58px;
+}
+
 .config-list[data-config-list="servers"] .config-list-row {
   grid-template-columns: repeat(2, minmax(0, 1fr)) 58px;
 }
 
 .config-list[data-config-list="isp"] .config-list-row {
-  grid-template-columns: repeat(4, minmax(0, 1fr)) 58px;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) 58px;
 }
 
 .config-list-row button,
@@ -2213,7 +2225,8 @@ a.seat-slot:hover {
 
   .config-fields,
   .config-list-row,
-  .config-list[data-config-list="switches"] .config-list-row,
+  .config-list[data-config-list="stage_switches"] .config-list-row,
+  .config-list[data-config-list="access_switches"] .config-list-row,
   .config-list[data-config-list="servers"] .config-list-row,
   .config-list[data-config-list="isp"] .config-list-row {
     grid-template-columns: minmax(0, 1fr);
