@@ -1579,6 +1579,9 @@
   function controlConfigDefaults(configValue) {
     const value = cloneControlConfig(configValue);
     value.event = { name: "", default_layout: "tournament-64-2layer", ...(value.event || {}) };
+    if (String(value.event.name || "").trim() === "武汉斗鱼嘉年华") {
+      value.event.name = "";
+    }
     delete value.event.security_mode;
     delete value.event.public_base_url;
     value.networks = { player_vlan: 40, wireless_vlan: 41, ...(value.networks || {}) };
@@ -1676,8 +1679,10 @@
     const fieldClasses = ["config-field"];
     if (options.compact) fieldClasses.push("config-field-compact");
     if (options.type === "checkbox") {
+      const classes = ["config-field", "config-field-check"];
+      if (options.compactCheck) classes.push("config-field-check-inline");
       return `
-        <label class="config-field config-field-check" for="${escapeHtml(id)}">
+        <label class="${classes.join(" ")}" for="${escapeHtml(id)}">
           <input ${common} type="checkbox"${value ? " checked" : ""} />
           <span>${escapeHtml(label)}</span>
         </label>
@@ -1694,8 +1699,10 @@
       `;
     }
     if (options.type === "textarea") {
+      const textareaClasses = fieldClasses.slice();
+      if (options.wide || !options.compact) textareaClasses.push("config-field-wide");
       return `
-        <label class="${fieldClasses.concat("config-field-wide").join(" ")}" for="${escapeHtml(id)}">
+        <label class="${textareaClasses.join(" ")}" for="${escapeHtml(id)}">
           <span>${escapeHtml(label)}</span>
           <textarea ${common} rows="${options.rows || 2}" placeholder="${escapeHtml(options.placeholder || "")}">${escapeHtml(csvText(value))}</textarea>
         </label>
@@ -1798,7 +1805,7 @@
         <h3>ISP</h3>
         <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商；探测 IP 建议填运营商外网网关，没有网关时再填稳定公网地址。</p>
         <div class="config-fields">
-          ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox" })}
+          ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox", compactCheck: true })}
           ${configInput("isp.max_bandwidth_mbps", "未填带宽时按 Mbps", { number: true, placeholder: "可留空，内部默认 1000" })}
           ${configInput("isp.wan_if_filter", "WAN 口识别关键词", { placeholder: "telecom,telcom,unicom,isp,WAN" })}
         </div>
