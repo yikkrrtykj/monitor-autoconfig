@@ -272,21 +272,21 @@ def named_targets(items: list[dict[str, Any]], key: str = "ip") -> str:
     return ",".join(targets)
 
 
-def switch_discovery_targets(ranges: Any, core_ip: str = "", label: str = "SW") -> str:
-    """Derive switch ping/SNMP targets from a management range so operators can
-    leave the per-switch list empty and let SNMP sysName name each one on the
-    big screen. CIDR blocks are skipped (those drive LibreNMS discovery, and
-    pinging a whole subnet is wasteful) and the core IP is skipped because it
-    already has its own ping target. The ``SW*`` names are only placeholders --
-    the live sysName/hostname replaces them on screen, and the stage view filters
-    by that real name."""
+def switch_discovery_range(ranges: Any, core_ip: str = "") -> str:
+    """Pick the address ranges the switch discovery loop should SNMP-probe so
+    operators can leave the per-switch list empty. Only range/single-IP entries
+    are returned -- CIDR blocks are left to LibreNMS discovery (probing a whole
+    subnet here is wasteful) and the core IP is dropped because it already has
+    its own ping/SNMP target. The discovery loop keeps only addresses that
+    answer, naming each by its real SNMP hostname, so offline IPs never reach
+    the big screen and no ``SW*`` placeholders are invented."""
     core_ip = str(core_ip or "").strip()
-    targets = []
+    entries = []
     for entry in split_values(ranges):
         if "/" in entry or entry == core_ip:
             continue
-        targets.append(f"{label}:{entry}")
-    return ",".join(targets)
+        entries.append(entry)
+    return ",".join(entries)
 
 
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -382,22 +382,14 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     firewall_ping = named_targets([firewall], "ip")
     firewall_snmp = named_targets([firewall], "snmp")
 
-    # Switches: an explicit per-switch list always wins. When it is empty, fall
-    # back to the switch management range so every live switch still reaches the
-    # big screen (SNMP sysName renames each one to its real hostname, and the
-    # stage screen filters by that name -- no per-switch entry needed).
-    if all_switches:
-        dist_ping = named_targets(all_switches)
-    else:
-        dist_ping = switch_discovery_targets(networks.get("switch_management_ranges"), core_ip)
-    if stage_switches:
-        tournament_switches = named_targets(stage_switches)
-    elif not all_switches:
-        # Fully range-driven: let player-seat discovery walk the same range; only
-        # ports carrying a team/seat ifAlias actually produce player targets.
-        tournament_switches = dist_ping
-    else:
-        tournament_switches = ""
+    # Switches reach the big screen two ways: an explicit per-switch list (named
+    # exactly as typed), and/or SNMP discovery of the management range. The range
+    # path keeps only addresses that actually answer and names each by its real
+    # hostname, so operators can leave the per-switch list empty and offline IPs
+    # are never added. The discovery loop consumes SWITCH_DISCOVERY_RANGE.
+    discovery_range = switch_discovery_range(networks.get("switch_management_ranges"), core_ip)
+    dist_ping = named_targets(all_switches)
+    tournament_switches = named_targets(stage_switches)
     # On a Cisco core the player L3 gateway is the core switch itself, so default
     # the gateway and LibreNMS core hint to the core IP when not set explicitly.
     player_gateways = csv(networks.get("player_gateways")) or core_ip
@@ -412,6 +404,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "FIREWALL_SNMP_COMMUNITY": snmp.get("firewall_community") or snmp_community,
         "CORE_SWITCH_PING": core_ping,
         "DIST_SWITCH_PING": dist_ping,
+        "SWITCH_DISCOVERY_RANGE": discovery_range,
         "TOURNAMENT_SWITCHES": tournament_switches,
         "FIREWALL_PING": firewall_ping,
         "FIREWALL_SNMP_TARGETS": firewall_snmp or firewall_ping,

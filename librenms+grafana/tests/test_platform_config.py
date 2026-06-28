@@ -180,10 +180,11 @@ devices:
     assert env["DIST_SWITCH_PING"] == ""
 
 
-def test_switches_fall_back_to_management_range_when_list_empty():
-    # Operator fills only the core IP + switch discovery range; every live switch
-    # should still get pinged/SNMP-scraped, the core (also a gateway) is reused,
-    # and player-seat discovery walks the same range.
+def test_empty_switch_list_drives_discovery_from_range():
+    # Operator fills only the core IP + switch management range: no static switch
+    # ping targets are emitted (offline IPs must not be pinged); instead the
+    # discovery loop gets the range, the core doubles as the gateway, and the
+    # missing-stage-switch warning is suppressed.
     config = platform_config.parse_simple_yaml("""
 networks:
   switch_management_ranges: 192.168.10.11-30,192.168.10.254
@@ -194,18 +195,18 @@ devices:
   access_switches: []
 """)
     env = platform_config.render_env(config)
-    # Core IP is dropped from the derived list (it already has CORE_SWITCH_PING).
-    assert env["DIST_SWITCH_PING"] == "SW:192.168.10.11-30"
-    assert env["TOURNAMENT_SWITCHES"] == "SW:192.168.10.11-30"
+    assert env["DIST_SWITCH_PING"] == ""
+    assert env["TOURNAMENT_SWITCHES"] == ""
+    # Core IP is dropped from the discovery range (it has its own ping/SNMP target).
+    assert env["SWITCH_DISCOVERY_RANGE"] == "192.168.10.11-30"
     assert env["PLAYER_GATEWAYS"] == "192.168.10.254"
     assert env["LIBRENMS_CORE_IP"] == "192.168.10.254"
-    # No blocking issues, and no "missing stage switches" warning when a range is given.
     issues = platform_config.validate_config(config)
     assert not [i for i in issues if i["level"] == "bad"]
     assert not [i for i in issues if i["path"] == "devices.stage_switches"]
 
 
-def test_explicit_switches_take_priority_over_range():
+def test_explicit_switches_and_discovery_range_coexist():
     config = platform_config.parse_simple_yaml("""
 networks:
   switch_management_ranges: 192.168.10.11-30
@@ -220,11 +221,12 @@ devices:
     env = platform_config.render_env(config)
     assert env["DIST_SWITCH_PING"] == "舞台A:192.168.10.11"
     assert env["TOURNAMENT_SWITCHES"] == "舞台A:192.168.10.11"
+    assert env["SWITCH_DISCOVERY_RANGE"] == "192.168.10.11-30"
 
 
 def test_switch_range_cidr_is_left_to_librenms_discovery():
-    # CIDR blocks should not become ping targets (pinging a whole /24 is wasteful);
-    # they still flow to LibreNMS discovery via LIBRENMS_DISCOVERY_TARGETS.
+    # CIDR blocks should not be SNMP-probed by the switch discovery loop (a whole
+    # /24 is wasteful); they still flow to LibreNMS via LIBRENMS_DISCOVERY_TARGETS.
     config = platform_config.parse_simple_yaml("""
 networks:
   switch_management_ranges: 192.168.10.0/24
@@ -236,6 +238,7 @@ devices:
 """)
     env = platform_config.render_env(config)
     assert env["DIST_SWITCH_PING"] == ""
+    assert env["SWITCH_DISCOVERY_RANGE"] == ""
     assert env["LIBRENMS_DISCOVERY_TARGETS"] == "192.168.10.0/24"
 
 
