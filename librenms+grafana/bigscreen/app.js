@@ -1583,12 +1583,6 @@
     if (String(value.devices.core.name || "").trim().toLowerCase() === "core") {
       value.devices.core.name = "";
     }
-    if (String(value.devices.core.ip || "").trim() === "192.168.10.254") {
-      value.devices.core.ip = "";
-    }
-    if (String(value.devices.firewall.ip || "").trim() === "192.168.10.1") {
-      value.devices.firewall.ip = "";
-    }
     if (!configScalar(value.devices.firewall.ip) && configScalar(value.devices.firewall.snmp)) {
       value.devices.firewall.ip = value.devices.firewall.snmp;
     }
@@ -1632,15 +1626,6 @@
       ...(value.isp || {})
     };
     value.isp.links = asConfigArray(value.isp.links);
-    if (
-      value.isp.links.length === 2
-      && String(value.isp.links[0].name || "").toLowerCase() === "telecom"
-      && String(value.isp.links[0].ping || "") === "223.5.5.5"
-      && String(value.isp.links[1].name || "").toLowerCase() === "unicom"
-      && String(value.isp.links[1].ping || "") === "119.29.29.29"
-    ) {
-      value.isp.links = [];
-    }
     if (!value.isp.links.length && Number(value.isp.max_bandwidth_mbps) === 1000) {
       value.isp.max_bandwidth_mbps = "";
     }
@@ -1842,7 +1827,7 @@
         </div>
         ${configListRows("isp", lastEditableConfig.isp.links, [
           { key: "name", label: "运营商名（可选）", placeholder: "自动发现时可留空" },
-          { key: "ip", label: "运营商公网 IP", placeholder: "可留空" },
+          { key: "ip", label: "运营商公网 IP", placeholder: "必填" },
           { key: "ping", label: "外网网关探测地址", placeholder: "运营商外网网关" },
           { key: "bandwidth_mbps", label: "单线带宽", number: true }
         ])}

@@ -163,11 +163,26 @@ devices:
     assert env["DIST_SWITCH_PING"] == ""
 
 
+def test_isp_public_ip_is_required_when_link_is_configured():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+isp:
+  links:
+    - name: telecom
+      ping: 219.140.134.161
+""")
+    issues = platform_config.validate_config(config)
+    assert [item for item in issues if item["level"] == "bad" and item["path"] == "isp.links[0].ip"]
+
+
 if __name__ == "__main__":
     test_parse_validate_render_env()
     test_blank_yaml_values_are_empty_strings_and_gateway_can_be_empty()
     test_platform_fields_render_frontend_config()
     test_empty_stage_switches_do_not_fall_back_to_legacy_switches()
+    test_isp_public_ip_is_required_when_link_is_configured()
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         test_merge_env_preserves_unknown_keys(Path(tmp))

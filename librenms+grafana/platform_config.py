@@ -323,6 +323,9 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         issues.append({"level": "warn", "path": "networks.switch_management_ranges", "message": "建议填写交换机管理网段，方便 LibreNMS 自动发现"})
     if not isp.get("auto_discovery") and not isp.get("links"):
         issues.append({"level": "warn", "path": "isp.links", "message": "关闭自动发现时建议配置 ISP 探测目标"})
+    for idx, item in enumerate(isp.get("links") or []):
+        if item and not item.get("ip"):
+            issues.append({"level": "bad", "path": f"isp.links[{idx}].ip", "message": "运营商公网 IP 必填，用于拓扑展示并加入 LibreNMS"})
     if config["security"].get("public_enabled") and not event.get("public_base_url"):
         issues.append({"level": "bad", "path": "event.public_base_url", "message": "公网模式必须填写 public_base_url"})
     return issues
