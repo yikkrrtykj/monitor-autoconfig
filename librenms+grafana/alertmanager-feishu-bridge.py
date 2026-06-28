@@ -882,7 +882,7 @@ def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
 
 
 def _card_preview_title(title, subtitle):
-    preview = re.sub(r"\s+", " ", f"{title} {subtitle}".strip())
+    preview = re.sub(r"\s+", " ", f"{subtitle} {title}".strip())
     return preview[:120]
 
 

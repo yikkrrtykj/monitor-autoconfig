@@ -1599,11 +1599,7 @@
       name: item.name || "",
       ip: item.ip || item.target || ""
     }));
-    if (!value.devices.stage_switches.length) {
-      value.devices.stage_switches = [1, 2, 3, 4].map((num) => ({ ip: `192.168.10.${10 + num}` }));
-    } else {
-      value.devices.stage_switches = value.devices.stage_switches.map((item) => ({ ip: item.ip || item.target || "" }));
-    }
+    value.devices.stage_switches = value.devices.stage_switches.map((item) => ({ ip: item.ip || item.target || "" }));
     value.devices.access_switches = value.devices.access_switches.map((item) => ({ ip: item.ip || item.target || "" }));
     if (
       value.devices.servers.length === 1
@@ -1748,7 +1744,7 @@
       <div class="config-list" data-config-list="${escapeHtml(name)}">
         ${supportsRange ? `
           <div class="config-range-row">
-            <input type="text" data-config-range-input="${escapeHtml(name)}" placeholder="可输入范围：192.168.10.11-14 或 192.168.10.21,192.168.10.22" />
+            <input type="text" data-config-range-input="${escapeHtml(name)}" placeholder="范围或多个 IP" />
             <button type="button" data-config-add-range="${escapeHtml(name)}">添加范围</button>
           </div>
         ` : ""}
@@ -1809,7 +1805,7 @@
           <h3>舞台交换机</h3>
           <p class="config-section-note">用于选手座位识别和大屏选手监控；设备名从 SNMP/LibreNMS hostname 获取。</p>
           ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
-            { key: "ip", label: "管理地址", placeholder: "交换机管理地址" }
+            { key: "ip", label: "管理地址", placeholder: "可留空" }
           ])}
         </section>
         <section class="config-section">
