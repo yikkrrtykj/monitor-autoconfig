@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 def load_platform_api(state_dir: Path):
     os.environ["PLATFORM_STATE_DIR"] = str(state_dir)
     os.environ["PLATFORM_ADMIN_USER"] = "admin"
-    os.environ["PLATFORM_ADMIN_PASSWORD"] = "Event@2026!"
+    os.environ["PLATFORM_ADMIN_PASSWORD"] = "global"
     os.environ["PLATFORM_AUTH_ENABLED"] = "true"
     spec = importlib.util.spec_from_file_location("platform_api_auth_test", MODULE_PATH)
     platform_api = importlib.util.module_from_spec(spec)
@@ -35,9 +35,9 @@ def test_auth_store_defaults_and_password_change_rules():
         store = api.read_auth_store()
         assert store["username"] == "admin"
         assert store["mustChangePassword"] is True
-        assert api.verify_password("Event@2026!", store["passwordHash"])
+        assert api.verify_password("global", store["passwordHash"])
         assert api.password_strength_error("short")
-        assert api.password_strength_error("Event@2026!")
+        assert api.password_strength_error("global")
         assert api.password_strength_error("NoDigitsHere")
         assert api.password_strength_error("StrongPass2026") is None
 
@@ -86,7 +86,7 @@ def test_http_auth_flow():
 
             status, headers, payload = request_json(f"{base_url}/auth/login", {
                 "username": "admin",
-                "password": "Event@2026!",
+                "password": "global",
             })
             assert status == 200
             assert payload["mustChangePassword"] is True
@@ -97,7 +97,7 @@ def test_http_auth_flow():
             assert payload["mustChangePassword"] is True
 
             status, headers, payload = request_json(f"{base_url}/auth/change-password", {
-                "currentPassword": "Event@2026!",
+                "currentPassword": "global",
                 "newPassword": "StrongPass2026",
                 "confirmPassword": "StrongPass2026",
             }, cookie=cookie)

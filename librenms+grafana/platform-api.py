@@ -44,7 +44,7 @@ HISTORY_DIR = STATE_DIR / "history"
 WRITE_ENABLED = os.environ.get("PLATFORM_WRITE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 AUTH_ENABLED = os.environ.get("PLATFORM_AUTH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 AUTH_ADMIN_USER = os.environ.get("PLATFORM_ADMIN_USER", "admin")
-AUTH_DEFAULT_PASSWORD = os.environ.get("PLATFORM_ADMIN_PASSWORD", "Event@2026!")
+AUTH_DEFAULT_PASSWORD = os.environ.get("PLATFORM_ADMIN_PASSWORD", "global")
 AUTH_COOKIE_NAME = os.environ.get("PLATFORM_SESSION_COOKIE", "platform_session")
 AUTH_COOKIE_SECURE = os.environ.get("PLATFORM_COOKIE_SECURE", "false").lower() in ("1", "true", "yes", "on")
 AUTH_SESSION_SECONDS = max(600, int(float(os.environ.get("PLATFORM_SESSION_HOURS", "8")) * 3600))
@@ -144,7 +144,7 @@ def password_strength_error(password: str) -> str | None:
         return f"新密码至少 {PASSWORD_MIN_LENGTH} 位"
     if password == AUTH_DEFAULT_PASSWORD:
         return "新密码不能继续使用默认密码"
-    if password.lower() in ("password", "admin123456", "event@2026!"):
+    if password.lower() in ("password", "admin123456", "event@2026!", "global"):
         return "新密码过于常见"
     if not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password):
         return "新密码需要同时包含字母和数字"
