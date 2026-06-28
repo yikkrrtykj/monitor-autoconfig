@@ -467,6 +467,11 @@ services:
     volumes:
       - ./:/workspace
       - platform-state:/workspace/platform-state
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin:/host/usr/bin:ro
+      - /usr/lib:/host/usr/lib:ro
+      - /usr/libexec:/host/usr/libexec:ro
+      - /usr/local/lib:/host/usr/local/lib:ro
       - /etc/localtime:/etc/localtime:ro
     environment:
       TZ: Asia/Shanghai
@@ -479,6 +484,11 @@ services:
       PLATFORM_ADMIN_PASSWORD: "${PLATFORM_ADMIN_PASSWORD:-global}"
       PLATFORM_SESSION_HOURS: "${PLATFORM_SESSION_HOURS:-8}"
       PLATFORM_COOKIE_SECURE: "${PLATFORM_COOKIE_SECURE:-false}"
+      PLATFORM_APPLY_ENABLED: "${PLATFORM_APPLY_ENABLED:-true}"
+      PLATFORM_APPLY_COMMAND: "${PLATFORM_APPLY_COMMAND:-/bin/sh /workspace/apply-env.sh}"
+      PLATFORM_APPLY_TIMEOUT: "${PLATFORM_APPLY_TIMEOUT:-300}"
+      DOCKER_CLI_PLUGIN_EXTRA_DIRS: "/host/usr/libexec/docker/cli-plugins:/host/usr/lib/docker/cli-plugins:/host/usr/local/lib/docker/cli-plugins"
+      PATH: "/host/usr/bin:/usr/local/bin:/usr/bin:/bin"
     command: ["python", "/workspace/platform-api.py"]
     networks:
       - monitor

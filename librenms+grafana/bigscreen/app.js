@@ -1503,12 +1503,22 @@
       return;
     }
     if (!payload.ok && payload.error) {
-      result.innerHTML = `<div class="control-empty bad">${escapeHtml(payload.error)}</div>`;
+      result.innerHTML = `
+        <div class="control-empty bad">${escapeHtml(payload.error)}</div>
+        ${payload.applyOutput ? `<pre class="control-apply-log">${escapeHtml(payload.applyOutput)}</pre>` : ""}
+      `;
       return;
     }
     const issues = payload.issues || [];
     if (!issues.length) {
-      result.innerHTML = payload.needsRedeploy
+      result.innerHTML = payload.applied
+        ? `
+          <div class="control-apply-next good">
+            <strong>应用完成</strong>
+            <span>配置已写入 .env，相关容器已重建。</span>
+          </div>
+        `
+        : payload.needsRedeploy
         ? `
           <div class="control-apply-next good">
             <strong>已写入配置</strong>
@@ -1528,7 +1538,12 @@
         value: (item.level || "info").toUpperCase(),
         note: ""
       })).join("")}
-      ${payload.needsRedeploy ? `
+      ${payload.applied ? `
+        <div class="control-apply-next good">
+          <strong>应用完成</strong>
+          <span>配置已写入 .env，相关容器已重建。</span>
+        </div>
+      ` : payload.needsRedeploy ? `
         <div class="control-apply-next good">
           <strong>已写入配置</strong>
           <span>.env 已更新；当前版本仍需要重启相关容器后生效。</span>

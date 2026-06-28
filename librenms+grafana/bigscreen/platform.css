@@ -1516,6 +1516,19 @@
   white-space: nowrap;
 }
 
+.control-apply-log {
+  max-height: 160px;
+  margin: 6px 0 0;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 8px;
+  background: #07080b;
+  color: var(--linear-ink-muted);
+  font: 11px/1.45 Consolas, "SFMono-Regular", monospace;
+  white-space: pre-wrap;
+}
+
 .seat-check-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));

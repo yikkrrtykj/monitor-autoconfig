@@ -6,6 +6,34 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
+detect_host_project_dir() {
+  [ -n "${PLATFORM_HOST_WORKDIR:-}" ] && {
+    printf '%s' "$PLATFORM_HOST_WORKDIR"
+    return 0
+  }
+  [ -S /var/run/docker.sock ] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  container_id=$(hostname 2>/dev/null || true)
+  [ -n "$container_id" ] || return 0
+  docker inspect "$container_id" \
+    --format '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}' \
+    2>/dev/null || true
+}
+
+HOST_PROJECT_DIR=$(detect_host_project_dir)
+
+compose() {
+  if [ -n "$HOST_PROJECT_DIR" ]; then
+    docker compose \
+      -f "$SCRIPT_DIR/docker-compose.yml" \
+      --env-file "$SCRIPT_DIR/.env" \
+      --project-directory "$HOST_PROJECT_DIR" \
+      "$@"
+  else
+    docker compose "$@"
+  fi
+}
+
 env_value() {
   key=$1
   file=${2:-.env}
@@ -63,6 +91,10 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+if [ -n "$HOST_PROJECT_DIR" ]; then
+  echo "[apply-env] Using host project directory: $HOST_PROJECT_DIR"
+fi
+
 migrate_legacy_defaults
 render_grafana_provisioning
 
@@ -83,7 +115,7 @@ SERVICES="
 "
 
 compose_up() {
-  docker compose up -d --force-recreate $SERVICES
+  compose up -d --force-recreate $SERVICES
 }
 
 cleanup_conflicting_containers() {

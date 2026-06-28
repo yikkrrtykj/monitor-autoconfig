@@ -13,7 +13,9 @@ import json
 import os
 import re
 import shutil
+import shlex
 import secrets
+import subprocess
 import time
 import zipfile
 from http import HTTPStatus
@@ -42,6 +44,9 @@ INCIDENT_PATH = STATE_DIR / "incidents.json"
 AUTH_PATH = STATE_DIR / "auth.json"
 HISTORY_DIR = STATE_DIR / "history"
 WRITE_ENABLED = os.environ.get("PLATFORM_WRITE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+APPLY_ENABLED = os.environ.get("PLATFORM_APPLY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+APPLY_COMMAND = os.environ.get("PLATFORM_APPLY_COMMAND", "/bin/sh /workspace/apply-env.sh")
+APPLY_TIMEOUT = max(30, int(os.environ.get("PLATFORM_APPLY_TIMEOUT", "300")))
 AUTH_ENABLED = os.environ.get("PLATFORM_AUTH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 AUTH_ADMIN_USER = os.environ.get("PLATFORM_ADMIN_USER", "admin")
 AUTH_DEFAULT_PASSWORD = os.environ.get("PLATFORM_ADMIN_PASSWORD", "global")
@@ -339,6 +344,70 @@ def require_write() -> None:
         raise PermissionError("platform write endpoints are disabled")
 
 
+def run_apply_command() -> dict:
+    if not APPLY_ENABLED:
+        return {
+            "needsRedeploy": True,
+            "nextStep": "cd librenms+grafana && ./apply-env.sh",
+            "applyOutput": "automatic apply is disabled",
+        }
+
+    env = os.environ.copy()
+    host_path = "/host/usr/bin:/usr/local/bin:/usr/bin:/bin"
+    env["PATH"] = f"{host_path}:{env.get('PATH', '')}"
+    plugin_dirs = ":".join([
+        "/host/usr/libexec/docker/cli-plugins",
+        "/host/usr/lib/docker/cli-plugins",
+        "/host/usr/local/lib/docker/cli-plugins",
+        env.get("DOCKER_CLI_PLUGIN_EXTRA_DIRS", ""),
+    ]).strip(":")
+    if plugin_dirs:
+        env["DOCKER_CLI_PLUGIN_EXTRA_DIRS"] = plugin_dirs
+
+    try:
+        completed = subprocess.run(
+            shlex.split(APPLY_COMMAND),
+            cwd=str(WORKDIR),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=APPLY_TIMEOUT,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        return {
+            "ok": False,
+            "error": "配置已写入，但自动应用失败：找不到 apply 命令",
+            "needsRedeploy": True,
+            "nextStep": "cd librenms+grafana && ./apply-env.sh",
+            "applyOutput": str(exc),
+        }
+    except subprocess.TimeoutExpired as exc:
+        output = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part).strip()
+        return {
+            "ok": False,
+            "error": f"配置已写入，但自动应用超时（{APPLY_TIMEOUT}s）",
+            "needsRedeploy": True,
+            "nextStep": "cd librenms+grafana && ./apply-env.sh",
+            "applyOutput": output[-4000:],
+        }
+
+    output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+    if completed.returncode != 0:
+        return {
+            "ok": False,
+            "error": "配置已写入，但自动应用失败",
+            "needsRedeploy": True,
+            "nextStep": "cd librenms+grafana && ./apply-env.sh",
+            "applyOutput": output[-4000:],
+        }
+    return {
+        "applied": True,
+        "needsRedeploy": False,
+        "applyOutput": output[-4000:],
+    }
+
+
 def save_config(text: str, actor: str = "", note: str = "") -> dict:
     require_write()
     payload = config_payload(text)
@@ -367,11 +436,16 @@ def apply_config(text: str | None, actor: str = "", note: str = "") -> dict:
     ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     ENV_PATH.write_text(rendered, encoding="utf-8")
     append_history("config.apply", actor, note, {"backup": backup, "envKeys": sorted(payload["env"])})
+    apply_result = run_apply_command()
+    append_history("config.apply_command", actor, note, {
+        "applied": bool(apply_result.get("applied")),
+        "needsRedeploy": bool(apply_result.get("needsRedeploy")),
+        "error": apply_result.get("error", ""),
+    })
     return {
         **config_payload(),
         "envBackup": backup,
-        "needsRedeploy": True,
-        "nextStep": "cd librenms+grafana && ./apply-env.sh",
+        **apply_result,
     }
 
 

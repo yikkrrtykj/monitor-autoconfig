@@ -87,15 +87,16 @@ http://服务器IP:8088/control
 |---|---|
 | 验证 | 只检查配置，不写文件 |
 | 保存 | 写入 `event-config.yml` |
-| 应用配置 | 写入 `event-config.yml` 并根据基础配置生成 `.env` |
+| 应用配置 | 写入 `event-config.yml`，生成 `.env`，并自动执行 `apply-env.sh` 重建需要读取环境变量的容器 |
 | 回滚 | 恢复上一次配置 |
 | 导入 | 导入赛事配置包里的 YAML/JSON |
 | 导出包 | 下载当前配置、事故和部署清单 |
 
-点 `应用配置` 后，配置文件已经写好。当前版本如果要让已启动容器立刻读取新的 `.env`，在服务器执行：
+点 `应用配置` 后，控制台会自动让 Prometheus、LibreNMS、飞书桥接、大屏等相关容器重新读取新的 `.env`。如果页面提示自动应用失败，再在服务器执行：
 
 ```bash
-docker compose up -d --force-recreate platform-api bigscreen prometheus blackbox-exporter snmp-exporter alertmanager-feishu-bridge librenms-config
+cd librenms+grafana
+./apply-env.sh
 ```
 
 ## 基础配置怎么填
@@ -111,7 +112,7 @@ docker compose up -d --force-recreate platform-api bigscreen prometheus blackbox
 | 核心 IP | 三层核心或网关交换机管理 IP |
 | 防火墙 IP | 同时用于判断防火墙在线和 WAN 流量 SNMP；多个 IP 用逗号或换行，不用 `/` |
 | 物理防火墙 SNMP IP | HA 两台物理机分别采集时填写，多个 IP 用逗号或换行 |
-| 舞台交换机 | 默认 `192.168.10.11-14`，用于选手识别和大屏选手监控 |
+| 舞台交换机 | 用于选手识别和大屏选手监控，支持 `192.168.10.11-14` 这种范围写法 |
 | 其它接入交换机 | 不参与选手识别，只用于在线、拓扑和发现 |
 | 服务器 | 默认空；需要监控游戏服务器时再添加名称和 IP |
 | ISP 自动发现 | 通过防火墙 SNMP 的 WAN 口名称/描述识别运营商链路 |
