@@ -450,14 +450,44 @@
   async function platformApi(path, options = {}) {
     const response = await fetchWithTimeout(`/platform-api${path}`, {
       cache: "no-store",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json", ...(options.headers || {}) },
       ...options
     }, options.timeoutMs || 15000);
     if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(text || `Platform API HTTP ${response.status}`);
+      const payload = await response.json().catch(() => null);
+      const error = new Error((payload && payload.error) || `Platform API HTTP ${response.status}`);
+      error.status = response.status;
+      error.payload = payload;
+      throw error;
     }
     return response.json();
+  }
+
+  async function fetchPlatformAuthStatus() {
+    try {
+      return await platformApi("/auth/status", { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, enabled: true, authenticated: false, error: error.message || "auth unavailable" };
+    }
+  }
+
+  function loginPlatformAuth(username, password) {
+    return platformApi("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password })
+    });
+  }
+
+  function changePlatformPassword(currentPassword, newPassword, confirmPassword) {
+    return platformApi("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword, newPassword, confirmPassword })
+    });
+  }
+
+  function logoutPlatformAuth() {
+    return platformApi("/auth/logout", { method: "POST", body: JSON.stringify({}) });
   }
 
   async function fetchPlatformConfig() {
@@ -520,6 +550,10 @@
     fetchTopologyTargets,
     fetchTopologyEdges,
     fetchRuntimeStatus,
+    fetchPlatformAuthStatus,
+    loginPlatformAuth,
+    changePlatformPassword,
+    logoutPlatformAuth,
     fetchPlatformConfig,
     postPlatform,
     patchPlatform,

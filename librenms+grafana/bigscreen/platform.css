@@ -637,11 +637,117 @@
   display: grid;
   grid-column: 1 / -1;
   grid-row: 2;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.control-shell {
+  display: grid;
   grid-template-rows: 58px minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
   min-height: 0;
 }
+
+.control-auth[hidden],
+.control-shell[hidden] {
+  display: none;
+}
+
+.control-auth {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-card {
+  display: grid;
+  width: min(430px, 100%);
+  gap: 18px;
+  padding: 24px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 12px;
+  background: var(--linear-surface-1);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+}
+
+.auth-heading {
+  display: grid;
+  gap: 6px;
+}
+
+.auth-heading strong {
+  color: var(--linear-ink);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.auth-heading span {
+  color: var(--linear-ink-subtle);
+  font-size: 13px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-form[hidden] {
+  display: none;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--linear-ink-subtle);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.auth-form input {
+  height: 36px;
+  min-width: 0;
+  padding: 0 11px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 8px;
+  background: var(--linear-surface-2);
+  color: var(--linear-ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.auth-form input:focus {
+  outline: 2px solid rgba(94, 106, 210, 0.5);
+  outline-offset: 1px;
+}
+
+.auth-form button {
+  height: 38px;
+  border: 1px solid rgba(94, 106, 210, 0.58);
+  border-radius: 8px;
+  background: rgba(94, 106, 210, 0.24);
+  color: var(--linear-ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-form button:hover {
+  background: rgba(94, 106, 210, 0.34);
+}
+
+.auth-message {
+  min-height: 18px;
+  color: var(--linear-ink-subtle);
+  font-size: 12px;
+}
+
+.auth-message.good { color: #73d17a; }
+.auth-message.bad { color: #ff6b82; }
 
 .control-toolbar {
   display: flex;
@@ -2080,7 +2186,7 @@ a.seat-slot:hover {
     overflow-x: auto;
   }
 
-  .control-panel {
+  .control-shell {
     grid-template-rows: auto minmax(0, 1fr);
   }
 

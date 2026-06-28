@@ -25,6 +25,7 @@
     fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
+    fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
     fetchPlatformConfig, postPlatform, patchPlatform, fetchIncidents, fetchDeliveryManifest
   } = window.BSApi;
   const {
@@ -57,6 +58,7 @@
   const renderSignatures = new Map();
   let lastDataSuccessAt = 0;
   let lastControlReport = null;
+  let lastControlAuth = null;
   let lastPlatformConfig = null;
   let lastEditableConfig = null;
   let lastIncidents = [];
@@ -2112,7 +2114,63 @@
     lastDataSuccessAt = Date.now();
   }
 
+  function setControlAuthMessage(message, level = "") {
+    const element = document.getElementById("controlAuthMessage");
+    if (!element) return;
+    element.className = `auth-message ${level || ""}`.trim();
+    element.textContent = message || "";
+  }
+
+  function renderControlAuth(status) {
+    const authPanel = document.getElementById("controlAuth");
+    const shell = document.getElementById("controlShell");
+    const loginForm = document.getElementById("controlLoginForm");
+    const passwordForm = document.getElementById("controlPasswordForm");
+    const userInput = document.getElementById("controlLoginUser");
+    const title = document.getElementById("controlAuthTitle");
+    const hint = document.getElementById("controlAuthHint");
+    const authenticated = status && status.authenticated;
+    const mustChange = authenticated && status.mustChangePassword;
+
+    if (!authPanel || !shell) return true;
+    if (authenticated && !mustChange) {
+      authPanel.hidden = true;
+      shell.hidden = false;
+      setControlAuthMessage("");
+      return true;
+    }
+
+    shell.hidden = true;
+    authPanel.hidden = false;
+    if (loginForm) loginForm.hidden = Boolean(authenticated);
+    if (passwordForm) passwordForm.hidden = !mustChange;
+    if (userInput && status && status.defaultUser && !userInput.value) userInput.value = status.defaultUser;
+    if (title) title.textContent = mustChange ? "首次登录需要修改密码" : "赛事控制台登录";
+    if (hint) {
+      hint.textContent = mustChange
+        ? "默认密码只能用于首次进入，请设置一个新的控制台密码。"
+        : "输入控制台账号密码后继续。";
+    }
+    if (status && status.error) {
+      setControlAuthMessage(status.error, "bad");
+    } else if (mustChange) {
+      setControlAuthMessage("新密码至少 10 位，并包含字母和数字。", "");
+    } else {
+      setControlAuthMessage("");
+    }
+    return false;
+  }
+
+  async function ensureControlAuth() {
+    lastControlAuth = await fetchPlatformAuthStatus();
+    return renderControlAuth(lastControlAuth);
+  }
+
   async function refreshControlPanel() {
+    if (!await ensureControlAuth()) {
+      lastControlReport = null;
+      return;
+    }
     if (!lastControlReport) {
       ["controlReadiness", "controlReadinessMissing", "controlChecklist", "controlTopology", "controlConfig", "controlIncidentFlow", "controlIncidentList", "controlDelivery"].forEach((id) => {
         const element = document.getElementById(id);
@@ -2130,6 +2188,59 @@
     }
   }
 
+  async function submitControlLogin(event) {
+    event.preventDefault();
+    const username = (document.getElementById("controlLoginUser") || {}).value || "";
+    const passwordInput = document.getElementById("controlLoginPassword");
+    const password = passwordInput ? passwordInput.value : "";
+    setControlAuthMessage("正在登录...");
+    try {
+      lastControlAuth = await loginPlatformAuth(username.trim(), password);
+      if (passwordInput) passwordInput.value = "";
+      renderControlAuth(lastControlAuth);
+      if (lastControlAuth.authenticated && !lastControlAuth.mustChangePassword) {
+        refreshControlPanel();
+      }
+    } catch (error) {
+      setControlAuthMessage(error.message || "登录失败", "bad");
+    }
+  }
+
+  async function submitControlPasswordChange(event) {
+    event.preventDefault();
+    const currentInput = document.getElementById("controlCurrentPassword");
+    const nextInput = document.getElementById("controlNewPassword");
+    const confirmInput = document.getElementById("controlConfirmPassword");
+    const currentPassword = currentInput ? currentInput.value : "";
+    const newPassword = nextInput ? nextInput.value : "";
+    const confirmPassword = confirmInput ? confirmInput.value : "";
+    if (newPassword !== confirmPassword) {
+      setControlAuthMessage("两次输入的新密码不一致", "bad");
+      return;
+    }
+    setControlAuthMessage("正在修改密码...");
+    try {
+      lastControlAuth = await changePlatformPassword(currentPassword, newPassword, confirmPassword);
+      [currentInput, nextInput, confirmInput].forEach((input) => { if (input) input.value = ""; });
+      setControlAuthMessage("密码已修改", "good");
+      renderControlAuth(lastControlAuth);
+      refreshControlPanel();
+    } catch (error) {
+      setControlAuthMessage(error.message || "修改密码失败", "bad");
+    }
+  }
+
+  async function logoutControl() {
+    try {
+      await logoutPlatformAuth();
+    } catch (error) {
+      // Logout is best effort; local UI should still return to the login screen.
+    }
+    lastControlAuth = { ok: true, enabled: true, authenticated: false };
+    lastControlReport = null;
+    renderControlAuth(lastControlAuth);
+  }
+
   function exportControlReport() {
     if (!lastControlReport) return;
     const rows = [["time", "mode", "section", "item", "level", "value", "note"]];
@@ -2145,6 +2256,21 @@
   }
 
   function setupControlPanel() {
+    const loginForm = document.getElementById("controlLoginForm");
+    if (loginForm && !loginForm.dataset.bound) {
+      loginForm.addEventListener("submit", submitControlLogin);
+      loginForm.dataset.bound = "1";
+    }
+    const passwordForm = document.getElementById("controlPasswordForm");
+    if (passwordForm && !passwordForm.dataset.bound) {
+      passwordForm.addEventListener("submit", submitControlPasswordChange);
+      passwordForm.dataset.bound = "1";
+    }
+    const logoutBtn = document.getElementById("controlLogout");
+    if (logoutBtn && !logoutBtn.dataset.bound) {
+      logoutBtn.addEventListener("click", logoutControl);
+      logoutBtn.dataset.bound = "1";
+    }
     const refreshBtn = document.getElementById("controlRefresh");
     if (refreshBtn && !refreshBtn.dataset.bound) {
       refreshBtn.addEventListener("click", refreshControlPanel);
