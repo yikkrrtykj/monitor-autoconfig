@@ -447,13 +447,13 @@ def merge_env_file(path: Path, updates: dict[str, str]) -> str:
             seen.add(key)
         else:
             lines.append(line)
-    if updates:
+    new_keys = [key for key in sorted(updates) if key not in seen]
+    if new_keys:
         if lines and lines[-1] != "":
             lines.append("")
         lines.append("# Generated from event-config.yml by platform-api")
-        for key in sorted(updates):
-            if key not in seen:
-                lines.append(f"{key}={env_value(updates[key])}")
+        for key in new_keys:
+            lines.append(f"{key}={env_value(updates[key])}")
     return "\n".join(lines).rstrip() + "\n"
 
 

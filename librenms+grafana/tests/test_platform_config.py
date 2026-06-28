@@ -78,6 +78,21 @@ def test_merge_env_preserves_unknown_keys(tmp_path):
     assert "CORE_SWITCH_PING=core:1.1.1.1" in rendered
 
 
+def test_merge_env_repeated_applies_do_not_accumulate_comment_blocks(tmp_path):
+    # Re-applying the same config (a common console workflow) must not keep
+    # tacking on empty "# Generated ..." headers and blank lines every time.
+    env_path = tmp_path / ".env"
+    env_path.write_text("CORE_SWITCH_PING=old\nEXISTING=keep\n", encoding="utf-8")
+    updates = {"CORE_SWITCH_PING": "core:1.1.1.1", "NEWKEY": "x"}
+    for _ in range(3):
+        env_path.write_text(platform_config.merge_env_file(env_path, updates), encoding="utf-8")
+    rendered = env_path.read_text(encoding="utf-8")
+    assert rendered.count("# Generated from event-config.yml") == 1
+    assert "EXISTING=keep" in rendered
+    assert "NEWKEY=x" in rendered
+    assert "\n\n\n" not in rendered
+
+
 def test_blank_yaml_values_are_empty_strings_and_gateway_can_be_empty():
     config = platform_config.parse_simple_yaml("""
 event:
