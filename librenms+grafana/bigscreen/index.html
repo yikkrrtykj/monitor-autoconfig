@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20260623b" />
-    <link rel="stylesheet" href="./platform.css?v=20260623a" />
+    <link rel="stylesheet" href="./platform.css?v=20260628a" />
   </head>
   <body>
     <main class="screen">
@@ -117,52 +117,57 @@
           </div>
         </div>
         <div class="control-grid">
-          <article class="control-card control-readiness-card">
-            <h2>就绪度</h2>
-            <div class="readiness-meter" id="controlReadiness"></div>
-          </article>
-          <article class="control-card">
-            <h2>赛前检查</h2>
-            <div class="control-list" id="controlChecklist"></div>
-          </article>
-          <article class="control-card control-config-editor-card">
-            <h2>基础配置</h2>
-            <div class="control-form" id="controlConfigForm"></div>
-            <div class="control-button-row">
-              <button type="button" id="controlConfigValidate">验证</button>
-              <button type="button" id="controlConfigSave">保存</button>
-              <button type="button" id="controlConfigApply">应用</button>
-              <button type="button" id="controlConfigRollback">回滚</button>
-              <button type="button" id="controlConfigImport">导入</button>
-              <a id="controlConfigExport" href="/platform-api/config/export">导出包</a>
-              <input id="controlConfigImportFile" type="file" accept=".yml,.yaml,.json,text/yaml,application/json" hidden />
-            </div>
-            <div class="control-list" id="controlConfigResult"></div>
-          </article>
-          <article class="control-card">
-            <h2>配置中心</h2>
-            <div class="control-config" id="controlConfig"></div>
-          </article>
-          <article class="control-card">
-            <h2>拓扑诊断</h2>
-            <div class="control-list" id="controlTopology"></div>
-          </article>
-          <article class="control-card">
-            <h2>事故流转</h2>
-            <div class="control-flow" id="controlIncidentFlow"></div>
-          </article>
-          <article class="control-card">
-            <h2>事故库</h2>
-            <div class="incident-create">
-              <input id="controlIncidentTitle" type="text" placeholder="事故标题" />
-              <button type="button" id="controlIncidentCreate">创建</button>
-            </div>
-            <div class="control-list" id="controlIncidentList"></div>
-          </article>
-          <article class="control-card">
-            <h2>交付包</h2>
-            <div class="control-list" id="controlDelivery"></div>
-          </article>
+          <div class="control-stack control-stack-left">
+            <article class="control-card control-readiness-card">
+              <h2>就绪度</h2>
+              <div class="readiness-meter" id="controlReadiness"></div>
+              <div class="readiness-missing" id="controlReadinessMissing"></div>
+            </article>
+            <article class="control-card control-config-editor-card">
+              <h2>基础配置</h2>
+              <div class="control-form" id="controlConfigForm"></div>
+              <div class="control-button-row">
+                <button type="button" id="controlConfigValidate">验证</button>
+                <button type="button" id="controlConfigSave">保存</button>
+                <button type="button" id="controlConfigApply">应用配置</button>
+                <button type="button" id="controlConfigRollback">回滚</button>
+                <button type="button" id="controlConfigImport">导入</button>
+                <a id="controlConfigExport" href="/platform-api/config/export">导出包</a>
+                <input id="controlConfigImportFile" type="file" accept=".yml,.yaml,.json,text/yaml,application/json" hidden />
+              </div>
+              <div class="control-list" id="controlConfigResult"></div>
+            </article>
+          </div>
+          <div class="control-stack control-stack-right">
+            <article class="control-card">
+              <h2>赛前检查</h2>
+              <div class="control-list" id="controlChecklist"></div>
+            </article>
+            <article class="control-card">
+              <h2>配置中心</h2>
+              <div class="control-config" id="controlConfig"></div>
+            </article>
+            <article class="control-card">
+              <h2>拓扑诊断</h2>
+              <div class="control-list" id="controlTopology"></div>
+            </article>
+            <article class="control-card">
+              <h2>事故流转</h2>
+              <div class="control-flow" id="controlIncidentFlow"></div>
+            </article>
+            <article class="control-card">
+              <h2>事故库</h2>
+              <div class="incident-create">
+                <input id="controlIncidentTitle" type="text" placeholder="事故标题" />
+                <button type="button" id="controlIncidentCreate">创建</button>
+              </div>
+              <div class="control-list" id="controlIncidentList"></div>
+            </article>
+            <article class="control-card">
+              <h2>交付包</h2>
+              <div class="control-list" id="controlDelivery"></div>
+            </article>
+          </div>
           <article class="control-card control-lint-card">
             <h2>交换机配置巡检</h2>
             <textarea class="control-textarea" id="controlSwitchConfig" spellcheck="false" placeholder="粘贴 show run 片段"></textarea>
@@ -233,6 +238,6 @@
     <script src="./incident.js?v=20260623a"></script>
     <script src="./topology.js?v=20260623a"></script>
     <script src="./platform.js?v=20260627a"></script>
-    <script src="./app.js?v=20260625a"></script>
+    <script src="./app.js?v=20260628a"></script>
   </body>
 </html>

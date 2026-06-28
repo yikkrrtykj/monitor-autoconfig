@@ -726,8 +726,10 @@
 
 .control-grid {
   display: grid;
-  grid-template-columns: 0.95fr 1.05fr;
-  grid-auto-rows: minmax(220px, auto);
+  grid-template-columns: minmax(520px, 0.95fr) minmax(420px, 1.05fr);
+  grid-template-areas:
+    "left right"
+    "lint lint";
   align-items: start;
   gap: 10px;
   min-width: 0;
@@ -735,12 +737,28 @@
   overflow: auto;
 }
 
+.control-stack {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.control-stack-left {
+  grid-area: left;
+}
+
+.control-stack-right {
+  grid-area: right;
+}
+
 .control-card {
   display: grid;
   grid-template-rows: 28px minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
-  min-height: 0;
+  min-height: 154px;
   overflow: hidden;
   padding: 12px;
   border: 1px solid var(--linear-hairline);
@@ -756,19 +774,18 @@
 }
 
 .control-readiness-card {
-  grid-row: span 1;
+  grid-template-rows: 28px minmax(172px, auto) minmax(0, auto);
 }
 
 .control-lint-card {
-  grid-column: 1 / -1;
+  grid-area: lint;
   grid-template-rows: 28px 108px minmax(0, 1fr);
 }
 
 .control-config-editor-card {
-  grid-column: 1;
-  grid-row: span 4;
-  grid-template-rows: 28px minmax(0, 1fr) 34px minmax(0, auto);
-  min-height: 780px;
+  grid-template-rows: 28px minmax(0, 1fr) auto minmax(0, 136px);
+  height: min(820px, calc(100vh - 330px));
+  min-height: 560px;
 }
 
 .readiness-meter {
@@ -776,7 +793,7 @@
   place-items: center;
   align-content: center;
   gap: 8px;
-  min-height: 0;
+  min-height: 172px;
   border: 1px solid var(--linear-hairline);
   border-radius: 12px;
   background: radial-gradient(circle at 50% 38%, rgba(94, 106, 210, 0.20), transparent 46%);
@@ -799,6 +816,21 @@
 .readiness-meter.good { border-color: rgba(39, 166, 68, 0.48); }
 .readiness-meter.warn { border-color: rgba(255, 227, 45, 0.56); }
 .readiness-meter.bad { border-color: rgba(255, 77, 102, 0.64); }
+
+.readiness-missing {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  max-height: 190px;
+  overflow: auto;
+}
+
+.readiness-missing .control-item {
+  min-height: 38px;
+  padding: 7px 9px;
+}
 
 .control-list,
 .control-config,
@@ -1282,6 +1314,42 @@
 
 .control-empty.good { color: #73d17a; }
 .control-empty.bad { color: #ff6b82; }
+
+.control-apply-next {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border-left: 3px solid rgba(94, 106, 210, 0.88);
+  background: var(--linear-surface-2);
+}
+
+.control-apply-next.good {
+  border-left-color: rgba(39, 166, 68, 0.95);
+}
+
+.control-apply-next strong {
+  color: var(--linear-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.control-apply-next span {
+  color: var(--linear-ink-subtle);
+  font-size: 12px;
+}
+
+.control-apply-next code {
+  overflow: hidden;
+  padding: 7px 8px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 7px;
+  background: #07080b;
+  color: var(--linear-ink-muted);
+  font: 12px/1.35 Consolas, "SFMono-Regular", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .seat-check-grid {
   display: grid;
@@ -2029,14 +2097,19 @@ a.seat-slot:hover {
 
   .control-grid {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "left"
+      "right"
+      "lint";
   }
 
   .control-lint-card {
-    grid-column: auto;
+    grid-area: lint;
   }
 
   .control-config-editor-card {
-    grid-column: auto;
+    height: auto;
+    min-height: 620px;
   }
 
   .config-fields,

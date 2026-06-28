@@ -1441,14 +1441,27 @@
     `;
   }
 
-  function renderControlReadiness(score) {
+  function renderControlReadiness(score, checks) {
     const meter = document.getElementById("controlReadiness");
+    const missingHost = document.getElementById("controlReadinessMissing");
+    const missing = (checks || [])
+      .filter((item) => item.level === "bad" || item.level === "warn");
     meter.className = `readiness-meter ${score.level}`;
     meter.innerHTML = `
       <strong>${score.score}</strong>
       <span>现场就绪分</span>
       <em>${score.bad ? `${score.bad} 个严重项` : score.warn ? `${score.warn} 个关注项` : "关键项正常"}</em>
     `;
+    if (!missingHost) return;
+    missingHost.innerHTML = missing.length
+      ? missing.map((item) => controlItemHtml({
+          section: item.section || "待补",
+          label: item.label || "检查项",
+          level: item.level || "warn",
+          value: item.value == null ? "" : item.value,
+          note: item.note || ""
+        })).join("")
+      : `<div class="control-empty good">没有待补项</div>`;
   }
 
   function renderControlChecklist(checks) {
@@ -1499,7 +1512,13 @@
   function renderConfigResult(payload) {
     const result = document.getElementById("controlConfigResult");
     if (!payload) {
-      result.innerHTML = `<div class="control-empty">等待配置操作</div>`;
+      result.innerHTML = `
+        <div class="control-apply-next">
+          <strong>配置流程</strong>
+          <span>先验证，确认无误后点保存或应用配置。</span>
+          <code>cd librenms+grafana && ./apply-env.sh</code>
+        </div>
+      `;
       return;
     }
     if (!payload.ok && payload.error) {
@@ -1508,16 +1527,39 @@
     }
     const issues = payload.issues || [];
     if (!issues.length) {
-      result.innerHTML = `<div class="control-empty good">${payload.needsRedeploy ? "已写入 .env，需执行 ./apply-env.sh" : "验证通过"}</div>`;
+      result.innerHTML = payload.needsRedeploy
+        ? `
+          <div class="control-apply-next good">
+            <strong>已写入配置</strong>
+            <span>服务器执行下面命令让 .env 和 targets 生效。</span>
+            <code>cd librenms+grafana && ./apply-env.sh</code>
+          </div>
+        `
+        : `
+          <div class="control-apply-next good">
+            <strong>验证通过</strong>
+            <span>确认后点保存或应用配置；首次部署才执行 ./deploy.sh。</span>
+            <code>cd librenms+grafana && ./apply-env.sh</code>
+          </div>
+        `;
       return;
     }
-    result.innerHTML = issues.map((item) => controlItemHtml({
-      section: item.path || "配置",
-      label: item.message || "配置项",
-      level: item.level || "info",
-      value: (item.level || "info").toUpperCase(),
-      note: payload.needsRedeploy ? "已写入 .env，需执行 ./apply-env.sh" : ""
-    })).join("");
+    result.innerHTML = `
+      ${issues.map((item) => controlItemHtml({
+        section: item.path || "配置",
+        label: item.message || "配置项",
+        level: item.level || "info",
+        value: (item.level || "info").toUpperCase(),
+        note: ""
+      })).join("")}
+      ${payload.needsRedeploy ? `
+        <div class="control-apply-next good">
+          <strong>已写入配置</strong>
+          <span>修完提示项后，在服务器执行应用命令。</span>
+          <code>cd librenms+grafana && ./apply-env.sh</code>
+        </div>
+      ` : ""}
+    `;
   }
 
   function cloneControlConfig(configValue) {
@@ -2056,7 +2098,7 @@
   }
 
   function renderControlPanel(snapshot) {
-    renderControlReadiness(snapshot.readiness);
+    renderControlReadiness(snapshot.readiness, snapshot.checks);
     renderControlChecklist(snapshot.checks);
     renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
     renderControlConfig(snapshot);
@@ -2072,7 +2114,7 @@
 
   async function refreshControlPanel() {
     if (!lastControlReport) {
-      ["controlReadiness", "controlChecklist", "controlTopology", "controlConfig", "controlIncidentFlow", "controlIncidentList", "controlDelivery"].forEach((id) => {
+      ["controlReadiness", "controlReadinessMissing", "controlChecklist", "controlTopology", "controlConfig", "controlIncidentFlow", "controlIncidentList", "controlDelivery"].forEach((id) => {
         const element = document.getElementById(id);
         if (element) element.innerHTML = `<div class="control-empty">加载中</div>`;
       });
@@ -2083,6 +2125,8 @@
     } catch (error) {
       console.error("Control panel failed:", error);
       document.getElementById("controlReadiness").innerHTML = `<div class="control-empty bad">控制台加载失败</div>`;
+      const missingHost = document.getElementById("controlReadinessMissing");
+      if (missingHost) missingHost.innerHTML = `<div class="control-empty bad">无法生成待补项</div>`;
     }
   }
 
