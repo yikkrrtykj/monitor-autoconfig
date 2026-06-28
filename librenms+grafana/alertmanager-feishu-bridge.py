@@ -30,7 +30,7 @@ Env:
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
   SYSLOG_EVENT_RATE_LIMIT seconds to suppress duplicate syslog event cards (default 60)
   SYSLOG_ALERT_TYPES      comma list of syslog cards to push
-                          (default native_vlan_mismatch,errdisable,loopback,dhcp_snooping)
+                          (default native_vlan_mismatch,errdisable,bpduguard,loopback,dhcp_snooping)
   SYSLOG_CORRELATION_SECONDS seconds to collapse native-vlan + errdisable on same port
   SYSLOG_RECOVERY_ENABLED true = send recovery cards when an alerted port comes back up
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
@@ -96,7 +96,7 @@ SYSLOG_ALERT_TYPES = {
     part.strip().lower()
     for part in os.environ.get(
         "SYSLOG_ALERT_TYPES",
-        "native_vlan_mismatch,errdisable,loopback,dhcp_snooping",
+        "native_vlan_mismatch,errdisable,bpduguard,loopback,dhcp_snooping",
     ).split(",")
     if part.strip()
 }
@@ -881,6 +881,11 @@ def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
     return _make_card(next_event_title(), f"{header_emoji} AP 掉线告警", color, "\n".join(lines))
 
 
+def _card_preview_title(title, subtitle):
+    preview = re.sub(r"\s+", " ", f"{title} {subtitle}".strip())
+    return preview[:120]
+
+
 def _make_card(title, subtitle, color, body_md):
     return {
         "msg_type": "interactive",
@@ -898,7 +903,7 @@ def _make_card(title, subtitle, color, body_md):
                 }
             },
             "header": {
-                "title": {"tag": "plain_text", "content": title},
+                "title": {"tag": "plain_text", "content": _card_preview_title(title, subtitle)},
                 "subtitle": {"tag": "plain_text", "content": subtitle},
                 "template": color,
                 "padding": "12px 12px 12px 12px",
@@ -1969,6 +1974,7 @@ def _network_event_priority(kind):
         "native_vlan_mismatch": 3,
         "loopback": 2,
         "errdisable": 1,
+        "bpduguard": 1,
     }.get(str(kind or ""), 0)
 
 
@@ -1981,6 +1987,12 @@ def parse_link_state_event(message):
         "port": _clean_iface_token(port),
         "state": state.lower(),
     }
+
+
+def _is_bpdu_event(event):
+    kind = str((event or {}).get("kind") or "").lower()
+    reason = str((event or {}).get("reason") or "").lower()
+    return kind == "bpduguard" or (kind == "errdisable" and "bpdu" in reason)
 
 
 def parse_network_syslog_event(message):
@@ -2041,8 +2053,8 @@ def parse_network_syslog_event(message):
         port = _clean_iface_token(match.group(1)) if match else ""
         return {
             "kind": "bpduguard",
-            "title": "🛑 接入口收到 BPDU",
-            "color": "orange",
+            "title": "⛔ BPDU blocked: Has worsened",
+            "color": "red",
             "port": port,
             "dedupe": f"bpduguard|{port}|{text[:100]}",
             "hint": "普通终端/AP 接入口不应该收到 BPDU；后面可能接了交换机、桥接设备或形成环路。",
@@ -2082,6 +2094,29 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
 
     lines = [f"🖥 设备：{dev_text}"]
     kind = event.get("kind")
+
+    if _is_bpdu_event(event):
+        lines.extend([
+            f"🔌 接口：{event.get('port') or '未解析到'}",
+            f"📋 类型：BPDU_PROTECT",
+        ])
+        if event.get("reason"):
+            lines.append(f"📋 原因：{event.get('reason')}")
+        lines.append(f"⏰ 时间：{ts}")
+        if recovered:
+            lines.append(f"⏳ 变轻耗时：{format_alert_duration(duration, recovered=True)}")
+            return _make_card(
+                next_event_title(),
+                "⛔ BPDU blocked: Has improved",
+                "orange",
+                "\n".join(lines),
+            )
+        return _make_card(
+            next_event_title(),
+            "⛔ BPDU blocked: Has worsened",
+            "red",
+            "\n".join(lines),
+        )
 
     if kind == "native_vlan_mismatch":
         lines.extend([

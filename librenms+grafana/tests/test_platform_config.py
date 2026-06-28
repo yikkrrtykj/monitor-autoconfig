@@ -40,6 +40,7 @@ isp:
   links:
     - name: telecom
       ping: 223.5.5.5
+      ip: 203.0.113.10
 alerts:
   mode: match
 security:
@@ -61,6 +62,8 @@ def test_parse_validate_render_env():
     assert env["FIREWALL_PING"] == "firewall:192.168.10.1"
     assert env["FIREWALL_SNMP_TARGETS"] == "firewall:192.168.10.1"
     assert env["ISP_PING"] == "telecom:223.5.5.5"
+    assert env["BIGSCREEN_ISP_IPS"] == "telecom:203.0.113.10"
+    assert env["FIREWALL_DISCOVERY_RANGE"] == "192.168.9.0/24"
     assert env["UNIFI_AP_DOWN_FOR_SECONDS"] == "180"
     assert env["FEISHU_ROBOT_TOKEN"] == "keep-secret"
     assert env["GRAFANA_ANONYMOUS_ENABLED"] == "false"

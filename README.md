@@ -95,7 +95,7 @@ http://服务器IP:8088/control
 点 `应用配置` 后，配置文件已经写好。当前版本如果要让已启动容器立刻读取新的 `.env`，在服务器执行：
 
 ```bash
-docker compose up -d --force-recreate platform-api bigscreen prometheus blackbox-exporter snmp-exporter
+docker compose up -d --force-recreate platform-api bigscreen prometheus blackbox-exporter snmp-exporter alertmanager-feishu-bridge librenms-config
 ```
 
 ## 基础配置怎么填
@@ -107,7 +107,7 @@ docker compose up -d --force-recreate platform-api bigscreen prometheus blackbox
 | 选手 VLAN / 无线 VLAN | 默认 `40 / 41` |
 | 选手网关 | 留空时复用核心 IP |
 | 交换机管理网段 | 给 LibreNMS 自动发现用，例如 `192.168.10.0/24` 或 `192.168.10.1-100,192.168.10.254` |
-| 防火墙管理网段 | 可留空；需要发现防火墙时填写 |
+| 防火墙管理网段 | 默认 `192.168.9.0/24`；需要发现其它防火墙管理地址时再改 |
 | 核心 IP | 三层核心或网关交换机管理 IP |
 | 防火墙 IP | 同时用于判断防火墙在线和 WAN 流量 SNMP；多个 IP 用逗号或换行，不用 `/` |
 | 物理防火墙 SNMP IP | HA 两台物理机分别采集时填写，多个 IP 用逗号或换行 |
@@ -116,11 +116,12 @@ docker compose up -d --force-recreate platform-api bigscreen prometheus blackbox
 | 服务器 | 默认空；需要监控游戏服务器时再添加名称和 IP |
 | ISP 自动发现 | 通过防火墙 SNMP 的 WAN 口名称/描述识别运营商链路 |
 | WAN 口识别关键词 | 自动发现 WAN 口时匹配接口名/描述，默认 `telecom,telcom,unicom,isp,WAN` |
-| 外网网关探测地址 | 建议填运营商外网网关；没有网关时再填稳定公网地址 |
+| 外网网关探测地址 | 建议填运营商外网网关，用于 ISP 丢包/掉线告警 |
+| 运营商公网 IP | 可选；用于拓扑展示，也会作为 ping-only 设备加入 LibreNMS |
 | 未填带宽时按 Mbps | 链路没有单独带宽时用于饱和判断；可留空，内部默认 1000；饱和阈值默认 90% |
 | 单链路带宽 | 优先级高于默认带宽 |
 | UniFi | 使用 UniFi AP 时填控制器地址和只读账号 |
-| 飞书机器人 Token | 留空则不推飞书 |
+| 飞书机器人 Token | 留空则不推飞书；多台监控可以复用同一个 token，但会推到同一个群且可能重复告警 |
 
 ## 交换机侧配置
 

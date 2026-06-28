@@ -9,7 +9,7 @@ networks:
   wireless_subnets: 192.168.41.0/24
   player_gateways:
   switch_management_ranges: 192.168.10.1-100,192.168.10.254
-  firewall_management_ranges:
+  firewall_management_ranges: 192.168.9.0/24
 
 snmp:
   community: global

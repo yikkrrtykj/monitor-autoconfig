@@ -282,6 +282,9 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     config.setdefault("alerts", {})
     config.setdefault("security", {})
     config.setdefault("snmp", {})
+    networks = config["networks"]
+    if not networks.get("firewall_management_ranges"):
+        networks["firewall_management_ranges"] = "192.168.9.0/24"
     devices = config["devices"]
     devices.setdefault("switches", [])
     if "stage_switches" not in devices:
@@ -380,7 +383,10 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
             f"{item.get('name')}:{item.get('ping')}" if item.get("name") else str(item.get("ping"))
             for item in isp_links if item.get("ping")
         ),
-        "BIGSCREEN_ISP_IPS": "",
+        "BIGSCREEN_ISP_IPS": ",".join(
+            f"{item.get('name')}:{item.get('ip')}" if item.get("name") else str(item.get("ip"))
+            for item in isp_links if item.get("ip")
+        ),
         "BIGSCREEN_ISP_MAX_BANDWIDTH": str(isp.get("max_bandwidth_mbps") or "1000"),
         "ISP_SATURATION_PERCENT": str(isp.get("saturation_percent") or "90"),
         "ISP_DOWN_FOR_SECONDS": str(isp.get("down_for_seconds") or "10"),
@@ -391,7 +397,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "UNIFI_CONTROLLER_SITES": unifi.get("sites", "all"),
         "UNIFI_CONTROLLER_VERIFY_SSL": str(bool(unifi.get("verify_ssl", False))).lower(),
         "FEISHU_ROBOT_TOKEN": alerts.get("feishu_robot_token") or existing.get("FEISHU_ROBOT_TOKEN", ""),
-        "SYSLOG_ALERT_TYPES": alerts.get("syslog_alert_types", "native_vlan_mismatch,errdisable,loopback,dhcp_snooping"),
+        "SYSLOG_ALERT_TYPES": alerts.get("syslog_alert_types", "native_vlan_mismatch,errdisable,bpduguard,loopback,dhcp_snooping"),
         "GRAFANA_ANONYMOUS_ENABLED": str(bool(security.get("grafana_anonymous", True))).lower(),
     }
     env.update(alert_profile(config))

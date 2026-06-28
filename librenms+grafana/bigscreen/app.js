@@ -1572,7 +1572,10 @@
     }
     delete value.event.security_mode;
     delete value.event.public_base_url;
-    value.networks = { player_vlan: 40, wireless_vlan: 41, ...(value.networks || {}) };
+    value.networks = { player_vlan: 40, wireless_vlan: 41, firewall_management_ranges: "192.168.9.0/24", ...(value.networks || {}) };
+    if (!configScalar(value.networks.firewall_management_ranges)) {
+      value.networks.firewall_management_ranges = "192.168.9.0/24";
+    }
     value.snmp = { community: "global", ...(value.snmp || {}) };
     value.devices = { switches: [], servers: [], ...(value.devices || {}) };
     value.devices.core = { name: "core", ...(value.devices.core || {}) };
@@ -1637,7 +1640,7 @@
     }
     value.unifi = { enabled: false, password: "", sites: "all", verify_ssl: false, ...(value.unifi || {}) };
     value.alerts = {
-      syslog_alert_types: "native_vlan_mismatch,errdisable,loopback,dhcp_snooping",
+      syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback,dhcp_snooping",
       ...(value.alerts || {})
     };
     delete value.event.mode;
@@ -1788,7 +1791,7 @@
           ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.41.0/24" })}
           ${configInput("networks.player_gateways", "选手网关", { type: "textarea", compact: true, rows: 1, placeholder: "留空则复用核心 IP" })}
           ${configInput("networks.switch_management_ranges", "交换机管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.10.0/24 或 192.168.10.1-100,192.168.10.254" })}
-          ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "可留空；支持 192.168.11.0/24、范围或单 IP" })}
+          ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "默认 192.168.9.0/24；支持范围或单 IP" })}
         </div>
       </section>
       <section class="config-section">
@@ -1826,7 +1829,7 @@
       </section>
       <section class="config-section">
         <h3>ISP</h3>
-        <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商；探测 IP 建议填运营商外网网关，没有网关时再填稳定公网地址。</p>
+        <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商；网关探测地址用于丢包/掉线告警，公网 IP 用于拓扑展示并加入 LibreNMS。</p>
         <div class="config-fields">
           ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox", compactCheck: true })}
           ${configInput("isp.max_bandwidth_mbps", "未填带宽时按 Mbps", { number: true, placeholder: "可留空，内部默认 1000" })}
@@ -1835,6 +1838,7 @@
         ${configListRows("isp", lastEditableConfig.isp.links, [
           { key: "name", label: "运营商名（可选）", placeholder: "自动发现时可留空" },
           { key: "ping", label: "外网网关探测地址", placeholder: "运营商外网网关" },
+          { key: "ip", label: "运营商公网 IP", placeholder: "可留空" },
           { key: "bandwidth_mbps", label: "单线带宽", number: true }
         ])}
       </section>
@@ -2353,7 +2357,7 @@
           if (listName === "stage_switches") next.devices.stage_switches.push({ ip: "" });
           if (listName === "access_switches") next.devices.access_switches.push({ ip: "" });
           if (listName === "servers") next.devices.servers.push({ name: "", ip: "" });
-          if (listName === "isp") next.isp.links.push({ name: "", ping: "", bandwidth_mbps: "" });
+          if (listName === "isp") next.isp.links.push({ name: "", ping: "", ip: "", bandwidth_mbps: "" });
         }
         if (rangeButton) {
           const listName = rangeButton.dataset.configAddRange;

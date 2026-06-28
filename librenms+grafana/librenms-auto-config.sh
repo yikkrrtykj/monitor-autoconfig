@@ -20,10 +20,11 @@ else
   CORE_IP="${_core:-192.168.10.254}"
 fi
 DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
-FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"
+FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-192.168.9.0/24}"
 FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
 FEISHU_ROBOT_TOKEN="${FEISHU_ROBOT_TOKEN:-}"
 ISP_PING="${ISP_PING:-}"
+BIGSCREEN_ISP_IPS="${BIGSCREEN_ISP_IPS:-}"
 FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
 BIGSCREEN_ISP_MAX_BANDWIDTH="${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
@@ -1950,7 +1951,7 @@ echo "[4b/5] Adding ping-only devices (ISP / Firewall / Servers)..."
 # 单机场景：FIREWALL_UNIT_SNMP_TARGETS 未设 → 物理 IP 来自 FIREWALL_PING 加 ping-only，
 #           VIP 不单独在此 ping（后面 SNMP 块处理）。
 _fw_vip_ping="${FIREWALL_UNIT_SNMP_TARGETS:+${FIREWALL_SNMP_TARGETS}}"
-for combined in $(echo "${ISP_PING}${ISP_PING:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}" | tr ',' '\n'); do
+for combined in $(echo "${ISP_PING}${ISP_PING:+,}${BIGSCREEN_ISP_IPS}${BIGSCREEN_ISP_IPS:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}" | tr ',' '\n'); do
   combined=$(echo "$combined" | tr -d '[:space:]')
   [ -z "$combined" ] && continue
   case "$combined" in *:*)
