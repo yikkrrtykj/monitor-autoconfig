@@ -1937,12 +1937,17 @@
         result = await postPlatform("/config/rollback", { actor: "web", note: "rollback from control" });
       }
       lastPlatformConfig = result;
-      if (result && result.config && form) {
+      const shouldReloadSavedConfig = result && result.ok && action !== "validate";
+      if (shouldReloadSavedConfig && result.config && form) {
         delete form.dataset.dirty;
         renderControlConfigForm(result.config);
+      } else if (form) {
+        form.dataset.dirty = "1";
       }
       renderConfigResult(result);
-      refreshControlPanel();
+      if (shouldReloadSavedConfig) {
+        refreshControlPanel();
+      }
     } catch (error) {
       renderConfigResult({ ok: false, error: error.message || "配置操作失败" });
     }
