@@ -42,6 +42,21 @@ jobs:
       - run: pip install -r librenms+grafana/requirements-dev.txt
       - run: pytest librenms+grafana/tests/ -v
 
+  bigscreen-tests:
+    name: bigscreen-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run big screen JS tests
+        run: |
+          for f in librenms+grafana/tests/test_bigscreen_*.js; do
+            echo "--- $f ---"
+            node "$f"
+          done
+
   compose-config:
     name: compose-config
     runs-on: ubuntu-latest
