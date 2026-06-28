@@ -1612,7 +1612,13 @@
     ) {
       value.devices.servers = [{ name: "game server", ip: "" }];
     }
-    value.isp = { auto_discovery: true, max_bandwidth_mbps: 1000, links: [], ...(value.isp || {}) };
+    value.isp = {
+      auto_discovery: true,
+      wan_if_filter: "telecom,telcom,unicom,isp,WAN",
+      max_bandwidth_mbps: 1000,
+      links: [],
+      ...(value.isp || {})
+    };
     value.isp.links = asConfigArray(value.isp.links);
     if (
       value.isp.links.length === 2
@@ -1626,7 +1632,7 @@
     if (!value.isp.links.length && Number(value.isp.max_bandwidth_mbps) === 1000) {
       value.isp.max_bandwidth_mbps = "";
     }
-    value.unifi = { enabled: false, sites: "all", ...(value.unifi || {}) };
+    value.unifi = { enabled: false, password: "", sites: "all", verify_ssl: false, ...(value.unifi || {}) };
     value.alerts = {
       syslog_alert_types: "native_vlan_mismatch,errdisable,loopback,dhcp_snooping",
       ...(value.alerts || {})
@@ -1655,6 +1661,8 @@
     const value = configPathGet(lastEditableConfig || {}, path);
     const id = `cfg-${path.replace(/[^a-z0-9]+/gi, "-")}`;
     const common = `id="${escapeHtml(id)}" data-config-path="${escapeHtml(path)}"${options.number ? ' data-config-number="1"' : ""}`;
+    const fieldClasses = ["config-field"];
+    if (options.compact) fieldClasses.push("config-field-compact");
     if (options.type === "checkbox") {
       return `
         <label class="config-field config-field-check" for="${escapeHtml(id)}">
@@ -1665,7 +1673,7 @@
     }
     if (options.type === "select") {
       return `
-        <label class="config-field" for="${escapeHtml(id)}">
+        <label class="${fieldClasses.join(" ")}" for="${escapeHtml(id)}">
           <span>${escapeHtml(label)}</span>
           <select ${common}>
             ${(options.choices || []).map((item) => `<option value="${escapeHtml(item.value)}"${String(value || "") === String(item.value) ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
@@ -1675,16 +1683,16 @@
     }
     if (options.type === "textarea") {
       return `
-        <label class="config-field config-field-wide" for="${escapeHtml(id)}">
+        <label class="${fieldClasses.concat("config-field-wide").join(" ")}" for="${escapeHtml(id)}">
           <span>${escapeHtml(label)}</span>
           <textarea ${common} rows="${options.rows || 2}" placeholder="${escapeHtml(options.placeholder || "")}">${escapeHtml(csvText(value))}</textarea>
         </label>
       `;
     }
     return `
-      <label class="config-field" for="${escapeHtml(id)}">
+      <label class="${fieldClasses.join(" ")}" for="${escapeHtml(id)}">
         <span>${escapeHtml(label)}</span>
-        <input ${common} type="${options.number ? "number" : "text"}" value="${escapeHtml(configScalar(value))}" placeholder="${escapeHtml(options.placeholder || "")}" />
+        <input ${common} type="${escapeHtml(options.inputType || (options.number ? "number" : "text"))}" value="${escapeHtml(configScalar(value))}" placeholder="${escapeHtml(options.placeholder || "")}" />
       </label>
     `;
   }
@@ -1733,11 +1741,11 @@
           ${configInput("snmp.community", "SNMP Community")}
           ${configInput("networks.player_vlan", "选手 VLAN", { number: true })}
           ${configInput("networks.wireless_vlan", "无线 VLAN", { number: true })}
-          ${configInput("networks.player_subnets", "选手网段", { type: "textarea", placeholder: "192.168.40.0/24" })}
-          ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", placeholder: "192.168.41.0/24" })}
-          ${configInput("networks.player_gateways", "选手网关", { type: "textarea", placeholder: "留空则复用核心 IP" })}
-          ${configInput("networks.switch_management_ranges", "交换机管理网段", { type: "textarea", placeholder: "192.168.10.1-100,192.168.10.254" })}
-          ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", placeholder: "可留空；多段用逗号或换行" })}
+          ${configInput("networks.player_subnets", "选手网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.40.0/24" })}
+          ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.41.0/24" })}
+          ${configInput("networks.player_gateways", "选手网关", { type: "textarea", compact: true, rows: 1, placeholder: "留空则复用核心 IP" })}
+          ${configInput("networks.switch_management_ranges", "交换机管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.10.0/24 或 192.168.10.1-100,192.168.10.254" })}
+          ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "可留空；支持 192.168.11.0/24、范围或单 IP" })}
         </div>
       </section>
       <section class="config-section">
@@ -1745,9 +1753,9 @@
         <div class="config-fields">
           ${configInput("devices.core.name", "核心名称")}
           ${configInput("devices.core.ip", "核心 IP")}
-          ${configInput("devices.firewall.ip", "防火墙 Ping IP", { type: "textarea", placeholder: "可多台，逗号或换行分隔" })}
-          ${configInput("devices.firewall.snmp", "WAN 流量 SNMP IP", { type: "textarea", placeholder: "通常填 HA 逻辑/VIP；多 IP 用逗号或换行" })}
-          ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP", { type: "textarea", placeholder: "HA 两台物理机 IP，逗号或换行分隔" })}
+          ${configInput("devices.firewall.ip", "防火墙 Ping IP", { type: "textarea", compact: true, rows: 1, placeholder: "可多台，逗号或换行分隔" })}
+          ${configInput("devices.firewall.snmp", "WAN 流量 SNMP IP", { type: "textarea", compact: true, rows: 1, placeholder: "通常填 HA 逻辑/VIP；多 IP 用逗号或换行" })}
+          ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP", { type: "textarea", compact: true, rows: 1, placeholder: "HA 两台物理机 IP，逗号或换行分隔" })}
         </div>
       </section>
       <section class="config-section">
@@ -1777,6 +1785,7 @@
         <div class="config-fields">
           ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox" })}
           ${configInput("isp.max_bandwidth_mbps", "未填带宽时按 Mbps", { number: true, placeholder: "可留空，内部默认 1000" })}
+          ${configInput("isp.wan_if_filter", "WAN 口识别关键词", { placeholder: "telecom,telcom,unicom,isp,WAN" })}
         </div>
         ${configListRows("isp", lastEditableConfig.isp.links, [
           { key: "name", label: "运营商名（可选）", placeholder: "自动发现时可留空" },
@@ -1790,7 +1799,9 @@
           ${configInput("unifi.enabled", "启用 UniFi", { type: "checkbox" })}
           ${configInput("unifi.controller_url", "UniFi 地址", { placeholder: "https://控制器IP" })}
           ${configInput("unifi.user", "UniFi 用户")}
+          ${configInput("unifi.password", "UniFi 密码", { inputType: "password", placeholder: "留空则保留 .env 现有值" })}
           ${configInput("unifi.sites", "UniFi Sites", { placeholder: "all" })}
+          ${configInput("unifi.verify_ssl", "校验 UniFi 证书", { type: "checkbox" })}
         </div>
       </section>
       <section class="config-section">

@@ -119,7 +119,12 @@ devices:
   access_switches:
     - ip: 192.168.10.21
 isp:
+  wan_if_filter: telecom,WAN
+  max_bandwidth_mbps:
   links:
+unifi:
+  password: secret
+  verify_ssl: true
 """)
     env = platform_config.render_env(config)
     assert env["SNMP_COMMUNITY"] == "esport-snmp"
@@ -129,6 +134,12 @@ isp:
     assert env["FIREWALL_UNIT_SNMP_TARGETS"] == "192.168.10.11,192.168.10.12"
     assert env["LIBRENMS_DISCOVERY_TARGETS"] == "192.168.10.1-100,192.168.10.254"
     assert env["FIREWALL_DISCOVERY_RANGE"] == "192.168.10.1-2"
+    assert env["FIREWALL_WAN_IF_FILTER"] == "telecom,WAN"
+    assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "1000"
+    assert env["ISP_SATURATION_PERCENT"] == "90"
+    assert env["ISP_DOWN_FOR_SECONDS"] == "10"
+    assert env["UNIFI_CONTROLLER_PASS"] == "secret"
+    assert env["UNIFI_CONTROLLER_VERIFY_SSL"] == "true"
 
 
 if __name__ == "__main__":

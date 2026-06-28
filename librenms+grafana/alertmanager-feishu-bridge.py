@@ -35,7 +35,7 @@ Env:
   SYSLOG_RECOVERY_ENABLED true = send recovery cards when an alerted port comes back up
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
-  ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
+  ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 10)
   DEVICE_DOWN_REQUIRE_SEEN_UP true = alert only after target was discovered/up once
   DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 1)
   DEVICE_DOWN_SAMPLE_WINDOW_SECONDS recent probe window to catch short flaps (default 5)
@@ -88,7 +88,7 @@ FIREWALL_WAN_IF_FILTER = os.environ.get("FIREWALL_WAN_IF_FILTER", "telecom,telco
 BIGSCREEN_ISP_MAX_BANDWIDTH = os.environ.get("BIGSCREEN_ISP_MAX_BANDWIDTH", "1000")
 BIGSCREEN_ISP_IPS = os.environ.get("BIGSCREEN_ISP_IPS", "")
 ISP_PING = os.environ.get("ISP_PING", "")
-ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "80") or "80")
+ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "90") or "90")
 SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
 SYSLOG_EVENT_RATE_LIMIT = int(os.environ.get("SYSLOG_EVENT_RATE_LIMIT", "60"))
@@ -104,7 +104,7 @@ SYSLOG_CORRELATION_SECONDS = int(os.environ.get("SYSLOG_CORRELATION_SECONDS", "1
 SYSLOG_RECOVERY_ENABLED = os.environ.get("SYSLOG_RECOVERY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
-ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
+ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "10"))
 DEVICE_DOWN_REQUIRE_SEEN_UP = os.environ.get("DEVICE_DOWN_REQUIRE_SEEN_UP", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "1"))
 DEVICE_DOWN_SAMPLE_WINDOW_SECONDS = int(os.environ.get("DEVICE_DOWN_SAMPLE_WINDOW_SECONDS", "5"))

@@ -844,7 +844,7 @@
 .control-stack {
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   min-height: 0;
 }
@@ -860,11 +860,11 @@
 .control-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
   min-height: 154px;
   overflow: hidden;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid var(--linear-hairline);
   border-radius: 12px;
   background: var(--linear-surface-1);
@@ -1138,7 +1138,7 @@
 .control-form {
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 9px;
   min-width: 0;
   min-height: 0;
   padding-right: 4px;
@@ -1146,9 +1146,9 @@
 
 .config-section {
   display: grid;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
-  padding: 10px;
+  padding: 9px;
   border: 1px solid var(--linear-hairline);
   border-radius: 10px;
   background: #07080b;
@@ -1171,14 +1171,14 @@
 .config-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
 }
 
 .config-field,
 .config-list-row label {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -1223,6 +1223,13 @@
   line-height: 1.35;
 }
 
+.config-field-compact textarea {
+  min-height: 32px;
+  height: 32px;
+  padding: 7px 9px;
+  line-height: 1.25;
+}
+
 .config-field input:focus,
 .config-field select:focus,
 .config-field textarea:focus,
@@ -1249,7 +1256,7 @@
 
 .config-list {
   display: grid;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -1257,7 +1264,7 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr)) 58px;
   align-items: end;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
 }
 

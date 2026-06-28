@@ -374,6 +374,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "LIBRENMS_DISCOVERY_TARGETS": csv(networks.get("switch_management_ranges")),
         "FIREWALL_DISCOVERY_RANGE": csv(networks.get("firewall_management_ranges")),
         "BIGSCREEN_ISP_AUTO_DISCOVER": str(bool(isp.get("auto_discovery", True))).lower(),
+        "FIREWALL_WAN_IF_FILTER": isp.get("wan_if_filter") or "telecom,telcom,unicom,isp,WAN",
         "BIGSCREEN_ISP_NAMES": ",".join(str(item.get("name")) for item in isp_links if item.get("name")),
         "ISP_PING": ",".join(
             f"{item.get('name')}:{item.get('ping')}" if item.get("name") else str(item.get("ping"))
@@ -381,10 +382,14 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         ),
         "BIGSCREEN_ISP_IPS": "",
         "BIGSCREEN_ISP_MAX_BANDWIDTH": str(isp.get("max_bandwidth_mbps") or "1000"),
+        "ISP_SATURATION_PERCENT": str(isp.get("saturation_percent") or "90"),
+        "ISP_DOWN_FOR_SECONDS": str(isp.get("down_for_seconds") or "10"),
         "COMPOSE_PROFILES": "unifi" if unifi.get("enabled") else existing.get("COMPOSE_PROFILES", ""),
         "UNIFI_CONTROLLER_URL": unifi.get("controller_url", ""),
         "UNIFI_CONTROLLER_USER": unifi.get("user", ""),
+        "UNIFI_CONTROLLER_PASS": unifi.get("password") or existing.get("UNIFI_CONTROLLER_PASS", ""),
         "UNIFI_CONTROLLER_SITES": unifi.get("sites", "all"),
+        "UNIFI_CONTROLLER_VERIFY_SSL": str(bool(unifi.get("verify_ssl", False))).lower(),
         "FEISHU_ROBOT_TOKEN": alerts.get("feishu_robot_token") or existing.get("FEISHU_ROBOT_TOKEN", ""),
         "SYSLOG_ALERT_TYPES": alerts.get("syslog_alert_types", "native_vlan_mismatch,errdisable,loopback,dhcp_snooping"),
         "GRAFANA_ANONYMOUS_ENABLED": str(bool(security.get("grafana_anonymous", True))).lower(),

@@ -34,6 +34,7 @@ devices:
 
 isp:
   auto_discovery: true
+  wan_if_filter: telecom,telcom,unicom,isp,WAN
   max_bandwidth_mbps:
   links: []
 
@@ -41,7 +42,9 @@ unifi:
   enabled: false
   controller_url:
   user:
+  password:
   sites: all
+  verify_ssl: false
 
 alerts:
   feishu_robot_token:

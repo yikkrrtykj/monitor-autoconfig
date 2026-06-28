@@ -106,7 +106,7 @@ docker compose up -d --force-recreate platform-api bigscreen prometheus blackbox
 | SNMP Community | 交换机、防火墙、LibreNMS/Prometheus 采集共用，默认 `global` |
 | 选手 VLAN / 无线 VLAN | 默认 `40 / 41` |
 | 选手网关 | 留空时复用核心 IP |
-| 交换机管理网段 | 给 LibreNMS 自动发现用，例如 `192.168.10.1-100,192.168.10.254` |
+| 交换机管理网段 | 给 LibreNMS 自动发现用，例如 `192.168.10.0/24` 或 `192.168.10.1-100,192.168.10.254` |
 | 防火墙管理网段 | 可留空；需要发现防火墙时填写 |
 | 核心 IP | 三层核心或网关交换机管理 IP |
 | 防火墙 Ping IP | 用来判断防火墙是否在线 |
@@ -116,8 +116,9 @@ docker compose up -d --force-recreate platform-api bigscreen prometheus blackbox
 | 其它接入交换机 | 不参与选手识别，只用于在线、拓扑和发现 |
 | 服务器 | 默认只给名字 `game server`，IP 可留空 |
 | ISP 自动发现 | 通过防火墙 SNMP 的 WAN 口名称/描述识别运营商链路 |
+| WAN 口识别关键词 | 自动发现 WAN 口时匹配接口名/描述，默认 `telecom,telcom,unicom,isp,WAN` |
 | 连通性探测 IP | 填公网 DNS 或运营商网关，用来判断外网是否通 |
-| 未填带宽时按 Mbps | 链路没有单独带宽时用于饱和判断；可留空，内部默认 1000 |
+| 未填带宽时按 Mbps | 链路没有单独带宽时用于饱和判断；可留空，内部默认 1000；饱和阈值默认 90% |
 | 单链路带宽 | 优先级高于默认带宽 |
 | UniFi | 使用 UniFi AP 时填控制器地址和只读账号 |
 | 飞书机器人 Token | 留空则不推飞书 |
