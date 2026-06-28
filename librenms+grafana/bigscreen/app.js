@@ -1578,8 +1578,7 @@
 
   function controlConfigDefaults(configValue) {
     const value = cloneControlConfig(configValue);
-    value.event = { default_layout: "tournament-64-2layer", ...(value.event || {}) };
-    value.event.name = "";
+    value.event = { name: "", default_layout: "tournament-64-2layer", ...(value.event || {}) };
     delete value.event.security_mode;
     delete value.event.public_base_url;
     value.networks = { player_vlan: 40, wireless_vlan: 41, ...(value.networks || {}) };
@@ -1587,6 +1586,12 @@
     value.devices = { switches: [], servers: [], ...(value.devices || {}) };
     value.devices.core = { name: "core", ...(value.devices.core || {}) };
     value.devices.firewall = { ...(value.devices.firewall || {}) };
+    if (!configScalar(value.devices.firewall.ip) && configScalar(value.devices.firewall.snmp)) {
+      value.devices.firewall.ip = value.devices.firewall.snmp;
+    }
+    if (String(value.devices.firewall.ip || "").trim() === String(value.devices.firewall.snmp || "").trim()) {
+      value.devices.firewall.snmp = "";
+    }
     if (String(value.networks.player_gateways || "") === String(value.devices.core.ip || "")) {
       value.networks.player_gateways = "";
     }
@@ -1596,21 +1601,28 @@
     if (!value.devices.stage_switches.length && legacySwitches.length) {
       value.devices.stage_switches = legacySwitches;
     }
-    value.devices.servers = asConfigArray(value.devices.servers);
+    value.devices.servers = asConfigArray(value.devices.servers).map((item) => ({
+      name: item.name || "",
+      ip: item.ip || item.target || ""
+    }));
     if (!value.devices.stage_switches.length) {
       value.devices.stage_switches = [1, 2, 3, 4].map((num) => ({ ip: `192.168.10.${10 + num}` }));
     } else {
       value.devices.stage_switches = value.devices.stage_switches.map((item) => ({ ip: item.ip || item.target || "" }));
     }
     value.devices.access_switches = value.devices.access_switches.map((item) => ({ ip: item.ip || item.target || "" }));
-    if (!value.devices.servers.length) {
-      value.devices.servers = [{ name: "game server", ip: "" }];
-    } else if (
+    if (
       value.devices.servers.length === 1
       && ["grafana", "game server"].includes(String(value.devices.servers[0].name || "").toLowerCase())
       && String(value.devices.servers[0].ip || "") === "192.168.41.253"
     ) {
-      value.devices.servers = [{ name: "game server", ip: "" }];
+      value.devices.servers = [];
+    } else if (
+      value.devices.servers.length === 1
+      && String(value.devices.servers[0].name || "").toLowerCase() === "game server"
+      && !String(value.devices.servers[0].ip || "").trim()
+    ) {
+      value.devices.servers = [];
     }
     value.isp = {
       auto_discovery: true,
@@ -1732,6 +1744,7 @@
       <section class="config-section">
         <h3>基础</h3>
         <div class="config-fields">
+          ${configInput("event.name", "赛事名称", { placeholder: "可留空" })}
           ${configInput("event.default_layout", "默认赛制", { type: "select", choices: matchPages.map((item) => ({ value: item.id, label: item.label })) })}
         </div>
       </section>
@@ -1750,38 +1763,40 @@
       </section>
       <section class="config-section">
         <h3>核心/防火墙</h3>
+        <p class="config-section-note">防火墙 IP 同时用于 Ping 和 WAN 流量 SNMP；HA 物理机需要单独采集时再填物理防火墙 SNMP IP。</p>
         <div class="config-fields">
           ${configInput("devices.core.name", "核心名称")}
           ${configInput("devices.core.ip", "核心 IP")}
-          ${configInput("devices.firewall.ip", "防火墙 Ping IP", { type: "textarea", compact: true, rows: 1, placeholder: "可多台，逗号或换行分隔" })}
-          ${configInput("devices.firewall.snmp", "WAN 流量 SNMP IP", { type: "textarea", compact: true, rows: 1, placeholder: "通常填 HA 逻辑/VIP；多 IP 用逗号或换行" })}
-          ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP", { type: "textarea", compact: true, rows: 1, placeholder: "HA 两台物理机 IP，逗号或换行分隔" })}
+          ${configInput("devices.firewall.ip", "防火墙 IP", { type: "textarea", compact: true, rows: 1, placeholder: "可留空；多台逗号或换行分隔" })}
+          ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP（可选）", { type: "textarea", compact: true, rows: 1, placeholder: "HA 物理机需要单独采集时填写" })}
         </div>
       </section>
-      <section class="config-section">
-        <h3>舞台交换机</h3>
-        <p class="config-section-note">用于选手座位识别和大屏选手监控；设备名从 SNMP/LibreNMS hostname 获取。</p>
-        ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
-          { key: "ip", label: "IP", placeholder: "192.168.10.11" }
-        ])}
-      </section>
-      <section class="config-section">
-        <h3>其它接入交换机</h3>
-        <p class="config-section-note">用于基础设施在线、拓扑和 LibreNMS 发现；不参与选手座位识别。</p>
-        ${configListRows("access_switches", lastEditableConfig.devices.access_switches, [
-          { key: "ip", label: "IP", placeholder: "可留空" }
-        ])}
-      </section>
+      <div class="config-section-pair">
+        <section class="config-section">
+          <h3>舞台交换机</h3>
+          <p class="config-section-note">用于选手座位识别和大屏选手监控；设备名从 SNMP/LibreNMS hostname 获取。</p>
+          ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
+            { key: "ip", label: "管理地址", placeholder: "交换机管理地址" }
+          ])}
+        </section>
+        <section class="config-section">
+          <h3>其它接入交换机</h3>
+          <p class="config-section-note">用于基础设施在线、拓扑和 LibreNMS 发现；不参与选手座位识别。</p>
+          ${configListRows("access_switches", lastEditableConfig.devices.access_switches, [
+            { key: "ip", label: "管理地址", placeholder: "可留空" }
+          ])}
+        </section>
+      </div>
       <section class="config-section">
         <h3>服务器</h3>
         ${configListRows("servers", lastEditableConfig.devices.servers, [
-          { key: "name", label: "名称", placeholder: "game server" },
-          { key: "ip", label: "IP", placeholder: "可留空" }
+          { key: "name", label: "名称", placeholder: "可留空" },
+          { key: "ip", label: "地址", placeholder: "可留空" }
         ])}
       </section>
       <section class="config-section">
         <h3>ISP</h3>
-        <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商；探测 IP 用于检测外网连通性，通常填公网 DNS 或运营商网关。</p>
+        <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商；探测 IP 建议填运营商外网网关，没有网关时再填稳定公网地址。</p>
         <div class="config-fields">
           ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox" })}
           ${configInput("isp.max_bandwidth_mbps", "未填带宽时按 Mbps", { number: true, placeholder: "可留空，内部默认 1000" })}
@@ -1789,7 +1804,7 @@
         </div>
         ${configListRows("isp", lastEditableConfig.isp.links, [
           { key: "name", label: "运营商名（可选）", placeholder: "自动发现时可留空" },
-          { key: "ping", label: "连通性探测 IP", placeholder: "公网 DNS 或运营商网关" },
+          { key: "ping", label: "外网网关探测地址", placeholder: "运营商外网网关" },
           { key: "bandwidth_mbps", label: "单线带宽", number: true }
         ])}
       </section>
@@ -1858,6 +1873,9 @@
       }
       value[path[0]][path[1]] = rows;
     });
+    if (value.devices && value.devices.firewall) {
+      value.devices.firewall.snmp = value.devices.firewall.ip || "";
+    }
     lastEditableConfig = value;
     return value;
   }

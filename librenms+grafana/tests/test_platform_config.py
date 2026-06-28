@@ -58,6 +58,8 @@ def test_parse_validate_render_env():
     assert env["BIGSCREEN_EVENT_MODE"] == "monitor"
     assert env["CORE_SWITCH_PING"] == "core:192.168.10.254"
     assert env["DIST_SWITCH_PING"] == "stage-1:192.168.10.11,stage-2:192.168.10.12"
+    assert env["FIREWALL_PING"] == "firewall:192.168.10.1"
+    assert env["FIREWALL_SNMP_TARGETS"] == "firewall:192.168.10.1"
     assert env["ISP_PING"] == "telecom:223.5.5.5"
     assert env["UNIFI_AP_DOWN_FOR_SECONDS"] == "180"
     assert env["FEISHU_ROBOT_TOKEN"] == "keep-secret"

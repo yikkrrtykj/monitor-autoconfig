@@ -1154,6 +1154,13 @@
   background: #07080b;
 }
 
+.config-section-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  min-width: 0;
+}
+
 .config-section h3 {
   margin: 0;
   color: var(--linear-ink);
@@ -2236,6 +2243,10 @@ a.seat-slot:hover {
   .config-list[data-config-list="access_switches"] .config-list-row,
   .config-list[data-config-list="servers"] .config-list-row,
   .config-list[data-config-list="isp"] .config-list-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .config-section-pair {
     grid-template-columns: minmax(0, 1fr);
   }
 

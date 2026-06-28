@@ -28,9 +28,7 @@ devices:
     - ip: 192.168.10.13
     - ip: 192.168.10.14
   access_switches: []
-  servers:
-    - name: game server
-      ip:
+  servers: []
 
 isp:
   auto_discovery: true
