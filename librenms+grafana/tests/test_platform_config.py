@@ -57,7 +57,7 @@ def test_parse_validate_render_env():
     env = platform_config.render_env(config, {"FEISHU_ROBOT_TOKEN": "keep-secret"})
     assert env["EVENT_NAME"] == "Test Event"
     assert env["BIGSCREEN_EVENT_MODE"] == "monitor"
-    assert env["CORE_SWITCH_PING"] == "core:192.168.10.254"
+    assert env["CORE_SWITCH_PING"] == "192.168.10.254"
     assert env["DIST_SWITCH_PING"] == "stage-1:192.168.10.11,stage-2:192.168.10.12"
     assert env["FIREWALL_PING"] == "firewall:192.168.10.1"
     assert env["FIREWALL_SNMP_TARGETS"] == "firewall:192.168.10.1"
@@ -78,7 +78,7 @@ def test_merge_env_preserves_unknown_keys(tmp_path):
     assert "CORE_SWITCH_PING=core:1.1.1.1" in rendered
 
 
-def test_blank_yaml_values_are_empty_strings_and_gateway_falls_back():
+def test_blank_yaml_values_are_empty_strings_and_gateway_can_be_empty():
     config = platform_config.parse_simple_yaml("""
 event:
   name:
@@ -100,7 +100,7 @@ isp:
     assert config["event"]["public_base_url"] == ""
     assert config["isp"]["links"][0]["gateway"] == ""
     env = platform_config.render_env(config)
-    assert env["PLAYER_GATEWAYS"] == "192.168.10.254"
+    assert env["PLAYER_GATEWAYS"] == ""
 
 
 def test_platform_fields_render_frontend_config():
@@ -147,10 +147,27 @@ unifi:
     assert env["UNIFI_CONTROLLER_VERIFY_SSL"] == "true"
 
 
+def test_empty_stage_switches_do_not_fall_back_to_legacy_switches():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+  switches:
+    - ip: 192.168.10.11
+    - ip: 192.168.10.12
+  stage_switches: []
+  access_switches: []
+""")
+    env = platform_config.render_env(config)
+    assert env["TOURNAMENT_SWITCHES"] == ""
+    assert env["DIST_SWITCH_PING"] == ""
+
+
 if __name__ == "__main__":
     test_parse_validate_render_env()
-    test_blank_yaml_values_are_empty_strings_and_gateway_falls_back()
+    test_blank_yaml_values_are_empty_strings_and_gateway_can_be_empty()
     test_platform_fields_render_frontend_config()
+    test_empty_stage_switches_do_not_fall_back_to_legacy_switches()
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         test_merge_env_preserves_unknown_keys(Path(tmp))

@@ -304,7 +304,8 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
 
     if not (devices.get("core") or {}).get("ip"):
         issues.append({"level": "bad", "path": "devices.core.ip", "message": "核心交换机 IP 必填"})
-    stage_switches = devices.get("stage_switches") or devices.get("switches") or []
+    stage_switches = devices.get("stage_switches") if "stage_switches" in devices else devices.get("switches")
+    stage_switches = stage_switches or []
     access_switches = devices.get("access_switches") or []
     if not stage_switches:
         issues.append({"level": "warn", "path": "devices.stage_switches", "message": "没有配置舞台交换机，选手自动识别会跳过"})
@@ -314,6 +315,8 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     for idx, item in enumerate(access_switches):
         if not item.get("ip"):
             issues.append({"level": "bad", "path": f"devices.access_switches[{idx}].ip", "message": "接入交换机 IP 必填"})
+    if (devices.get("firewall") or {}).get("ip") and not (devices.get("firewall") or {}).get("unit_snmp"):
+        issues.append({"level": "warn", "path": "devices.firewall.unit_snmp", "message": "建议填写两台物理防火墙 SNMP IP，方便查看 HA 单机状态"})
     if not networks.get("player_subnets"):
         issues.append({"level": "warn", "path": "networks.player_subnets", "message": "没有配置选手有线网段"})
     if not networks.get("switch_management_ranges"):
@@ -346,12 +349,14 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
 
     core = devices.get("core") or {}
     firewall = devices.get("firewall") or {}
-    stage_switches = devices.get("stage_switches") or devices.get("switches") or []
+    stage_switches = devices.get("stage_switches") if "stage_switches" in devices else devices.get("switches")
+    stage_switches = stage_switches or []
     access_switches = devices.get("access_switches") or []
     all_switches = [*stage_switches, *access_switches]
     servers = devices.get("servers") or []
     isp_links = isp.get("links") or []
     snmp_community = snmp.get("community") or existing.get("SNMP_COMMUNITY", "global")
+    core_ping = named_targets([{"ip": core.get("ip")}], "ip") if core.get("ip") else ""
     firewall_ping = named_targets([firewall], "ip")
     firewall_snmp = named_targets([firewall], "snmp")
 
@@ -363,7 +368,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "BIGSCREEN_PUBLIC_BASE_URL": event.get("public_base_url", ""),
         "SNMP_COMMUNITY": snmp_community,
         "FIREWALL_SNMP_COMMUNITY": snmp.get("firewall_community") or snmp_community,
-        "CORE_SWITCH_PING": named_targets([core]) if core.get("ip") else "",
+        "CORE_SWITCH_PING": core_ping,
         "DIST_SWITCH_PING": named_targets(all_switches),
         "TOURNAMENT_SWITCHES": named_targets(stage_switches),
         "FIREWALL_PING": firewall_ping,
@@ -372,7 +377,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "SERVER_PING": named_targets(servers),
         "PLAYER_SUBNETS": csv(networks.get("player_subnets")),
         "WIRELESS_SUBNETS": csv(networks.get("wireless_subnets")),
-        "PLAYER_GATEWAYS": csv(networks.get("player_gateways") or core.get("ip")),
+        "PLAYER_GATEWAYS": csv(networks.get("player_gateways")),
         "PLAYER_VLAN_IDS": csv(networks.get("player_vlan")),
         "LIBRENMS_DISCOVERY_TARGETS": csv(networks.get("switch_management_ranges")),
         "FIREWALL_DISCOVERY_RANGE": csv(networks.get("firewall_management_ranges")),

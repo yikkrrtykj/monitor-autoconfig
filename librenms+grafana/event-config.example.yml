@@ -16,8 +16,7 @@ snmp:
 
 devices:
   core:
-    name: core
-    ip: 192.168.10.254
+    ip:
   firewall:
     ip:
     snmp:

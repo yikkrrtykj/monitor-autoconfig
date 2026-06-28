@@ -1578,8 +1578,17 @@
     }
     value.snmp = { community: "global", ...(value.snmp || {}) };
     value.devices = { switches: [], servers: [], ...(value.devices || {}) };
-    value.devices.core = { name: "core", ...(value.devices.core || {}) };
+    value.devices.core = { ...(value.devices.core || {}) };
     value.devices.firewall = { ...(value.devices.firewall || {}) };
+    if (String(value.devices.core.name || "").trim().toLowerCase() === "core") {
+      value.devices.core.name = "";
+    }
+    if (String(value.devices.core.ip || "").trim() === "192.168.10.254") {
+      value.devices.core.ip = "";
+    }
+    if (String(value.devices.firewall.ip || "").trim() === "192.168.10.1") {
+      value.devices.firewall.ip = "";
+    }
     if (!configScalar(value.devices.firewall.ip) && configScalar(value.devices.firewall.snmp)) {
       value.devices.firewall.ip = value.devices.firewall.snmp;
     }
@@ -1589,10 +1598,11 @@
     if (String(value.networks.player_gateways || "") === String(value.devices.core.ip || "")) {
       value.networks.player_gateways = "";
     }
+    const hasStageSwitches = Object.prototype.hasOwnProperty.call(value.devices, "stage_switches");
     const legacySwitches = asConfigArray(value.devices.switches);
     value.devices.stage_switches = asConfigArray(value.devices.stage_switches);
     value.devices.access_switches = asConfigArray(value.devices.access_switches);
-    if (!value.devices.stage_switches.length && legacySwitches.length) {
+    if (!hasStageSwitches && !value.devices.stage_switches.length && legacySwitches.length) {
       value.devices.stage_switches = legacySwitches;
     }
     value.devices.servers = asConfigArray(value.devices.servers).map((item) => ({
@@ -1785,7 +1795,7 @@
           ${configInput("networks.wireless_vlan", "无线 VLAN", { number: true })}
           ${configInput("networks.player_subnets", "选手网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.40.0/24" })}
           ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.41.0/24" })}
-          ${configInput("networks.player_gateways", "选手网关", { type: "textarea", compact: true, rows: 1, placeholder: "留空则复用核心 IP" })}
+          ${configInput("networks.player_gateways", "选手网关（可选）", { type: "textarea", compact: true, rows: 1, placeholder: "可留空" })}
           ${configInput("networks.switch_management_ranges", "交换机管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.10.0/24 或 192.168.10.1-100,192.168.10.254" })}
           ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "默认 192.168.9.0/24；支持范围或单 IP" })}
         </div>
@@ -1794,10 +1804,9 @@
         <h3>核心/防火墙</h3>
         <p class="config-section-note">防火墙 IP 同时用于 Ping 和 WAN 流量 SNMP；HA 物理机需要单独采集时再填物理防火墙 SNMP IP。</p>
         <div class="config-fields">
-          ${configInput("devices.core.name", "核心名称")}
           ${configInput("devices.core.ip", "核心 IP")}
           ${configInput("devices.firewall.ip", "防火墙 IP", { type: "textarea", compact: true, rows: 1, placeholder: "可留空；多台逗号或换行分隔" })}
-          ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP（可选）", { type: "textarea", compact: true, rows: 1, placeholder: "HA 物理机需要单独采集时填写" })}
+          ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP", { type: "textarea", compact: true, rows: 1, placeholder: "两台物理防火墙，逗号或换行分隔" })}
         </div>
       </section>
       <div class="config-section-pair">
@@ -1833,8 +1842,8 @@
         </div>
         ${configListRows("isp", lastEditableConfig.isp.links, [
           { key: "name", label: "运营商名（可选）", placeholder: "自动发现时可留空" },
-          { key: "ping", label: "外网网关探测地址", placeholder: "运营商外网网关" },
           { key: "ip", label: "运营商公网 IP", placeholder: "可留空" },
+          { key: "ping", label: "外网网关探测地址", placeholder: "运营商外网网关" },
           { key: "bandwidth_mbps", label: "单线带宽", number: true }
         ])}
       </section>
@@ -1903,6 +1912,10 @@
       }
       value[path[0]][path[1]] = rows;
     });
+    if (value.devices) {
+      value.devices.switches = [];
+      if (value.devices.core) delete value.devices.core.name;
+    }
     if (value.devices && value.devices.firewall) {
       value.devices.firewall.snmp = value.devices.firewall.ip || "";
     }
