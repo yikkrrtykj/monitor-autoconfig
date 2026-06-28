@@ -35,10 +35,10 @@ Env:
   SYSLOG_RECOVERY_ENABLED true = send recovery cards when an alerted port comes back up
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
-  ISP_DOWN_FOR_SECONDS    seconds mostly unreachable before ISP ping alerting (default 30)
+  ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 10)
   DEVICE_DOWN_REQUIRE_SEEN_UP true = alert only after target was discovered/up once
   DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 1)
-  DEVICE_DOWN_SAMPLE_WINDOW_SECONDS recent probe window for down confirmation (default 10)
+  DEVICE_DOWN_SAMPLE_WINDOW_SECONDS recent probe window to catch short flaps (default 5)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
   DEVICE_DOWN_STATE_FILE  persisted active down alerts (default /bridge-state/device-down-alerts.json)
   DEVICE_ONLINE_FROM_PING true = send online card when a candidate first comes up
@@ -104,10 +104,10 @@ SYSLOG_CORRELATION_SECONDS = int(os.environ.get("SYSLOG_CORRELATION_SECONDS", "1
 SYSLOG_RECOVERY_ENABLED = os.environ.get("SYSLOG_RECOVERY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
-ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "30"))
+ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "10"))
 DEVICE_DOWN_REQUIRE_SEEN_UP = os.environ.get("DEVICE_DOWN_REQUIRE_SEEN_UP", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "1"))
-DEVICE_DOWN_SAMPLE_WINDOW_SECONDS = int(os.environ.get("DEVICE_DOWN_SAMPLE_WINDOW_SECONDS", "10"))
+DEVICE_DOWN_SAMPLE_WINDOW_SECONDS = int(os.environ.get("DEVICE_DOWN_SAMPLE_WINDOW_SECONDS", "5"))
 DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
     "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping",
@@ -1366,7 +1366,7 @@ def device_down_watcher():
         log("[DOWN] no valid jobs configured, watcher disabled")
         return
     sample_window = max(1, DEVICE_DOWN_SAMPLE_WINDOW_SECONDS)
-    query = 'avg_over_time(probe_success{job=~"%s"}[%ss])' % ("|".join(safe_jobs), sample_window)
+    query = 'min_over_time(probe_success{job=~"%s"}[%ss])' % ("|".join(safe_jobs), sample_window)
     time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
     states = load_device_down_states()
     last_status_log = 0.0
@@ -1425,8 +1425,7 @@ def device_down_watcher():
             try:
                 sample = item.get("value") or [None, "1"]
                 sample_ts = float(sample[0]) if sample[0] is not None else now
-                success_ratio = float(sample[1])
-                up = success_ratio >= (0.5 if job == "infra-isp-ping" else 1)
+                up = float(sample[1]) >= 1
             except (TypeError, ValueError):
                 continue
 

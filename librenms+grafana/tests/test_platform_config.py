@@ -139,7 +139,7 @@ unifi:
     assert env["FIREWALL_WAN_IF_FILTER"] == "telecom,WAN"
     assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "1000"
     assert env["ISP_SATURATION_PERCENT"] == "90"
-    assert env["ISP_DOWN_FOR_SECONDS"] == "30"
+    assert env["ISP_DOWN_FOR_SECONDS"] == "10"
     assert env["UNIFI_CONTROLLER_PASS"] == "secret"
     assert env["UNIFI_CONTROLLER_VERIFY_SSL"] == "true"
 
