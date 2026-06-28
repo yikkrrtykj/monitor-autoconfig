@@ -272,6 +272,23 @@ def named_targets(items: list[dict[str, Any]], key: str = "ip") -> str:
     return ",".join(targets)
 
 
+def switch_discovery_targets(ranges: Any, core_ip: str = "", label: str = "SW") -> str:
+    """Derive switch ping/SNMP targets from a management range so operators can
+    leave the per-switch list empty and let SNMP sysName name each one on the
+    big screen. CIDR blocks are skipped (those drive LibreNMS discovery, and
+    pinging a whole subnet is wasteful) and the core IP is skipped because it
+    already has its own ping target. The ``SW*`` names are only placeholders --
+    the live sysName/hostname replaces them on screen, and the stage view filters
+    by that real name."""
+    core_ip = str(core_ip or "").strip()
+    targets = []
+    for entry in split_values(ranges):
+        if "/" in entry or entry == core_ip:
+            continue
+        targets.append(f"{label}:{entry}")
+    return ",".join(targets)
+
+
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     config = dict(config or {})
     config.setdefault("event", {})
@@ -307,8 +324,9 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     stage_switches = devices.get("stage_switches") if "stage_switches" in devices else devices.get("switches")
     stage_switches = stage_switches or []
     access_switches = devices.get("access_switches") or []
-    if not stage_switches:
-        issues.append({"level": "warn", "path": "devices.stage_switches", "message": "没有配置舞台交换机，选手自动识别会跳过"})
+    has_switch_range = bool(split_values(networks.get("switch_management_ranges")))
+    if not stage_switches and not access_switches and not has_switch_range:
+        issues.append({"level": "warn", "path": "devices.stage_switches", "message": "没有配置舞台交换机，也没填交换机管理网段，选手自动识别会跳过"})
     for idx, item in enumerate(stage_switches):
         if not item.get("ip"):
             issues.append({"level": "bad", "path": f"devices.stage_switches[{idx}].ip", "message": "舞台交换机 IP 必填"})
@@ -351,6 +369,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     snmp = config["snmp"]
 
     core = devices.get("core") or {}
+    core_ip = str(core.get("ip") or "").strip()
     firewall = devices.get("firewall") or {}
     stage_switches = devices.get("stage_switches") if "stage_switches" in devices else devices.get("switches")
     stage_switches = stage_switches or []
@@ -363,6 +382,26 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     firewall_ping = named_targets([firewall], "ip")
     firewall_snmp = named_targets([firewall], "snmp")
 
+    # Switches: an explicit per-switch list always wins. When it is empty, fall
+    # back to the switch management range so every live switch still reaches the
+    # big screen (SNMP sysName renames each one to its real hostname, and the
+    # stage screen filters by that name -- no per-switch entry needed).
+    if all_switches:
+        dist_ping = named_targets(all_switches)
+    else:
+        dist_ping = switch_discovery_targets(networks.get("switch_management_ranges"), core_ip)
+    if stage_switches:
+        tournament_switches = named_targets(stage_switches)
+    elif not all_switches:
+        # Fully range-driven: let player-seat discovery walk the same range; only
+        # ports carrying a team/seat ifAlias actually produce player targets.
+        tournament_switches = dist_ping
+    else:
+        tournament_switches = ""
+    # On a Cisco core the player L3 gateway is the core switch itself, so default
+    # the gateway and LibreNMS core hint to the core IP when not set explicitly.
+    player_gateways = csv(networks.get("player_gateways")) or core_ip
+
     env = {
         "EVENT_NAME": event.get("name", ""),
         "BIGSCREEN_EVENT_MODE": "monitor",
@@ -372,15 +411,16 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "SNMP_COMMUNITY": snmp_community,
         "FIREWALL_SNMP_COMMUNITY": snmp.get("firewall_community") or snmp_community,
         "CORE_SWITCH_PING": core_ping,
-        "DIST_SWITCH_PING": named_targets(all_switches),
-        "TOURNAMENT_SWITCHES": named_targets(stage_switches),
+        "DIST_SWITCH_PING": dist_ping,
+        "TOURNAMENT_SWITCHES": tournament_switches,
         "FIREWALL_PING": firewall_ping,
         "FIREWALL_SNMP_TARGETS": firewall_snmp or firewall_ping,
         "FIREWALL_UNIT_SNMP_TARGETS": named_targets([firewall], "unit_snmp"),
         "SERVER_PING": named_targets(servers),
         "PLAYER_SUBNETS": csv(networks.get("player_subnets")),
         "WIRELESS_SUBNETS": csv(networks.get("wireless_subnets")),
-        "PLAYER_GATEWAYS": csv(networks.get("player_gateways")),
+        "PLAYER_GATEWAYS": player_gateways,
+        "LIBRENMS_CORE_IP": core_ip,
         "PLAYER_VLAN_IDS": csv(networks.get("player_vlan")),
         "LIBRENMS_DISCOVERY_TARGETS": csv(networks.get("switch_management_ranges")),
         "FIREWALL_DISCOVERY_RANGE": csv(networks.get("firewall_management_ranges")),

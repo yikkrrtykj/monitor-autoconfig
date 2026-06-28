@@ -1795,8 +1795,8 @@
           ${configInput("networks.wireless_vlan", "无线 VLAN", { number: true })}
           ${configInput("networks.player_subnets", "选手网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.40.0/24" })}
           ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.41.0/24" })}
-          ${configInput("networks.player_gateways", "选手网关（可选）", { type: "textarea", compact: true, rows: 1, placeholder: "可留空" })}
-          ${configInput("networks.switch_management_ranges", "交换机管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.10.0/24 或 192.168.10.1-100,192.168.10.254" })}
+          ${configInput("networks.player_gateways", "选手网关（可选）", { type: "textarea", compact: true, rows: 1, placeholder: "留空默认用核心交换机 IP" })}
+          ${configInput("networks.switch_management_ranges", "交换机管理网段（交换机就填这里）", { type: "textarea", compact: true, rows: 1, placeholder: "范围如 192.168.10.11-30 会自动上大屏；CIDR 如 192.168.10.0/24 仅用于 LibreNMS 发现" })}
           ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "默认 192.168.9.0/24；支持范围或单 IP" })}
         </div>
       </section>
@@ -1811,15 +1811,15 @@
       </section>
       <div class="config-section-pair">
         <section class="config-section">
-          <h3>舞台交换机</h3>
-          <p class="config-section-note">用于选手座位识别和大屏选手监控；设备名从 SNMP/LibreNMS hostname 获取。</p>
+          <h3>舞台交换机（选填）</h3>
+          <p class="config-section-note">留空即可：只填上面的"交换机管理网段"，系统会自动把网段里的交换机加入大屏，并按交换机 hostname（含"舞台/stage"）自动归到赛事大屏。需要精确指定时再逐台填。设备名从 SNMP/LibreNMS hostname 获取。</p>
           ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
-            { key: "ip", label: "管理地址", placeholder: "可留空" }
+            { key: "ip", label: "管理地址", placeholder: "可留空，留空走网段自动发现" }
           ])}
         </section>
         <section class="config-section">
-          <h3>其它接入交换机</h3>
-          <p class="config-section-note">用于基础设施在线、拓扑和 LibreNMS 发现；不参与选手座位识别。</p>
+          <h3>其它接入交换机（选填）</h3>
+          <p class="config-section-note">留空即可：同样由"交换机管理网段"自动覆盖；hostname 不含"舞台"的交换机自动归到普通大屏。用于基础设施在线、拓扑和 LibreNMS 发现，不参与选手座位识别。</p>
           ${configListRows("access_switches", lastEditableConfig.devices.access_switches, [
             { key: "ip", label: "管理地址", placeholder: "可留空" }
           ])}

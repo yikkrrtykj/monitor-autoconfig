@@ -115,7 +115,9 @@ isp:
     assert config["event"]["public_base_url"] == ""
     assert config["isp"]["links"][0]["gateway"] == ""
     env = platform_config.render_env(config)
-    assert env["PLAYER_GATEWAYS"] == ""
+    # A blank player_gateways parses cleanly; the gateway then defaults to the
+    # core switch IP (the Cisco core is the player L3 gateway).
+    assert env["PLAYER_GATEWAYS"] == "192.168.10.254"
 
 
 def test_platform_fields_render_frontend_config():
@@ -176,6 +178,77 @@ devices:
     env = platform_config.render_env(config)
     assert env["TOURNAMENT_SWITCHES"] == ""
     assert env["DIST_SWITCH_PING"] == ""
+
+
+def test_switches_fall_back_to_management_range_when_list_empty():
+    # Operator fills only the core IP + switch discovery range; every live switch
+    # should still get pinged/SNMP-scraped, the core (also a gateway) is reused,
+    # and player-seat discovery walks the same range.
+    config = platform_config.parse_simple_yaml("""
+networks:
+  switch_management_ranges: 192.168.10.11-30,192.168.10.254
+devices:
+  core:
+    ip: 192.168.10.254
+  stage_switches: []
+  access_switches: []
+""")
+    env = platform_config.render_env(config)
+    # Core IP is dropped from the derived list (it already has CORE_SWITCH_PING).
+    assert env["DIST_SWITCH_PING"] == "SW:192.168.10.11-30"
+    assert env["TOURNAMENT_SWITCHES"] == "SW:192.168.10.11-30"
+    assert env["PLAYER_GATEWAYS"] == "192.168.10.254"
+    assert env["LIBRENMS_CORE_IP"] == "192.168.10.254"
+    # No blocking issues, and no "missing stage switches" warning when a range is given.
+    issues = platform_config.validate_config(config)
+    assert not [i for i in issues if i["level"] == "bad"]
+    assert not [i for i in issues if i["path"] == "devices.stage_switches"]
+
+
+def test_explicit_switches_take_priority_over_range():
+    config = platform_config.parse_simple_yaml("""
+networks:
+  switch_management_ranges: 192.168.10.11-30
+devices:
+  core:
+    ip: 192.168.10.254
+  stage_switches:
+    - name: 舞台A
+      ip: 192.168.10.11
+  access_switches: []
+""")
+    env = platform_config.render_env(config)
+    assert env["DIST_SWITCH_PING"] == "舞台A:192.168.10.11"
+    assert env["TOURNAMENT_SWITCHES"] == "舞台A:192.168.10.11"
+
+
+def test_switch_range_cidr_is_left_to_librenms_discovery():
+    # CIDR blocks should not become ping targets (pinging a whole /24 is wasteful);
+    # they still flow to LibreNMS discovery via LIBRENMS_DISCOVERY_TARGETS.
+    config = platform_config.parse_simple_yaml("""
+networks:
+  switch_management_ranges: 192.168.10.0/24
+devices:
+  core:
+    ip: 192.168.10.254
+  stage_switches: []
+  access_switches: []
+""")
+    env = platform_config.render_env(config)
+    assert env["DIST_SWITCH_PING"] == ""
+    assert env["LIBRENMS_DISCOVERY_TARGETS"] == "192.168.10.0/24"
+
+
+def test_explicit_player_gateway_overrides_core_default():
+    config = platform_config.parse_simple_yaml("""
+networks:
+  player_gateways: 192.168.40.1
+devices:
+  core:
+    ip: 192.168.10.254
+""")
+    env = platform_config.render_env(config)
+    assert env["PLAYER_GATEWAYS"] == "192.168.40.1"
 
 
 def test_isp_public_ip_is_required_when_link_is_configured():
