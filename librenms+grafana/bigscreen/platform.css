@@ -833,9 +833,7 @@
 .control-grid {
   display: grid;
   grid-template-columns: minmax(520px, 0.95fr) minmax(420px, 1.05fr);
-  grid-template-areas:
-    "left right"
-    "lint lint";
+  grid-template-areas: "left right";
   align-items: start;
   gap: 10px;
   min-width: 0;
@@ -884,8 +882,8 @@
 }
 
 .control-lint-card {
-  grid-area: lint;
   grid-template-rows: 28px 108px minmax(0, 1fr);
+  min-height: 260px;
 }
 
 .control-config-editor-card {
@@ -2205,12 +2203,7 @@ a.seat-slot:hover {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "left"
-      "right"
-      "lint";
-  }
-
-  .control-lint-card {
-    grid-area: lint;
+      "right";
   }
 
   .control-config-editor-card {
