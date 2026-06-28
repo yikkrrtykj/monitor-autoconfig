@@ -383,7 +383,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "BIGSCREEN_ISP_IPS": "",
         "BIGSCREEN_ISP_MAX_BANDWIDTH": str(isp.get("max_bandwidth_mbps") or "1000"),
         "ISP_SATURATION_PERCENT": str(isp.get("saturation_percent") or "90"),
-        "ISP_DOWN_FOR_SECONDS": str(isp.get("down_for_seconds") or "10"),
+        "ISP_DOWN_FOR_SECONDS": str(isp.get("down_for_seconds") or "30"),
         "COMPOSE_PROFILES": "unifi" if unifi.get("enabled") else existing.get("COMPOSE_PROFILES", ""),
         "UNIFI_CONTROLLER_URL": unifi.get("controller_url", ""),
         "UNIFI_CONTROLLER_USER": unifi.get("user", ""),

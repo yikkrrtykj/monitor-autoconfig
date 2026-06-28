@@ -65,7 +65,6 @@
   let lastDeliveryManifest = null;
   const DATA_STALE_AFTER_MS = 20000;
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
-  const CONTROL_NETWORK_STORAGE_KEY = "bigscreen.controlNetwork.v1";
 
   // Skip re-rendering a chart when its data hasn't changed since last paint.
   // Historical Prometheus samples are immutable, so a cheap per-series digest
@@ -1411,24 +1410,15 @@
     }
   }
 
-  function storedControlNetwork() {
-    try {
-      return window.localStorage.getItem(CONTROL_NETWORK_STORAGE_KEY) || "wired";
-    } catch (error) {
-      return "wired";
-    }
-  }
-
   function controlPageAndNetwork() {
     const layout = storedControlLayout();
-    const network = storedControlNetwork();
     const page = pages.find((item) => item.id === layout && item.kind) ||
       pages.find((item) => item.id === config.defaultLayout && item.kind) ||
       pages.find((item) => item.id === "tournament-64-2layer") ||
       pages.find((item) => item.kind);
     return {
       page,
-      network: ["wired", "wireless", "all"].includes(network) ? network : "wired"
+      network: "wired"
     };
   }
 
@@ -1478,13 +1468,11 @@
   }
 
   function renderControlConfig(context) {
-    const { page, network, runtimeStatus, configRisks, services, platformConfig } = context;
+    const { runtimeStatus, configRisks, services, platformConfig } = context;
     const targetStatus = runtimeStatus && runtimeStatus.targets ? runtimeStatus.targets : null;
     const updated = runtimeStatus && runtimeStatus.updated_at ? formatTimestampFull(runtimeStatus.updated_at) : "-";
     const apiState = platformConfig && platformConfig.ok ? "可写" : "不可用";
     const rows = [
-      { label: "赛制", value: page ? page.label : "-" },
-      { label: "网络", value: networkLabel(network) },
       { label: "ISP", value: config.ispAutoDiscovery === "true" ? "自动发现" : (config.ispNames || "默认") },
       { label: "选手探测目标", value: targetStatus ? `${targetStatus.total} 个` : "-", note: targetStatus ? `player-targets 生成：有线 ${targetStatus.wired} / 无线 ${targetStatus.wireless} / ${updated}` : "" },
       { label: "采集任务", value: `${services.filter((item) => item.up === item.total).length}/${services.length}` },
@@ -1716,6 +1704,34 @@
     `;
   }
 
+  function expandIpRangeText(value) {
+    const expanded = [];
+    splitConfigList(value).forEach((raw) => {
+      const item = String(raw || "").trim();
+      if (!item) return;
+      const full = item.match(/^(\d{1,3}(?:\.\d{1,3}){3})-(\d{1,3}(?:\.\d{1,3}){3})$/);
+      const short = item.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.)(\d{1,3})-(\d{1,3})$/);
+      if (full) {
+        const start = full[1].split(".").map(Number);
+        const end = full[2].split(".").map(Number);
+        if (start.slice(0, 3).join(".") === end.slice(0, 3).join(".") && start[3] <= end[3]) {
+          for (let octet = start[3]; octet <= end[3]; octet += 1) expanded.push(`${start[0]}.${start[1]}.${start[2]}.${octet}`);
+          return;
+        }
+      }
+      if (short) {
+        const start = Number(short[2]);
+        const end = Number(short[3]);
+        if (start <= end) {
+          for (let octet = start; octet <= end; octet += 1) expanded.push(`${short[1]}${octet}`);
+          return;
+        }
+      }
+      expanded.push(item);
+    });
+    return expanded;
+  }
+
   function configListRows(name, rows, columns) {
     const addLabels = {
       stage_switches: "舞台交换机",
@@ -1724,8 +1740,15 @@
       servers: "服务器",
       isp: "ISP"
     };
+    const supportsRange = name === "stage_switches" || name === "access_switches";
     return `
       <div class="config-list" data-config-list="${escapeHtml(name)}">
+        ${supportsRange ? `
+          <div class="config-range-row">
+            <input type="text" data-config-range-input="${escapeHtml(name)}" placeholder="可输入范围：192.168.10.11-14 或 192.168.10.21,192.168.10.22" />
+            <button type="button" data-config-add-range="${escapeHtml(name)}">添加范围</button>
+          </div>
+        ` : ""}
         ${rows.map((row, index) => `
           <div class="config-list-row" data-index="${index}">
             ${columns.map((column) => `
@@ -2125,40 +2148,10 @@
     };
   }
 
-  function renderControlLayoutSelectors(snapshot) {
-    const configHost = document.getElementById("controlConfig");
-    const existing = document.getElementById("controlLayoutSelect");
-    if (existing) return;
-    const matchPages = pages.filter((item) => item.kind);
-    configHost.insertAdjacentHTML("afterbegin", `
-      <div class="control-select-row">
-        <label>赛制
-          <select id="controlLayoutSelect">
-            ${matchPages.map((item) => `<option value="${escapeHtml(item.id)}"${snapshot.page && item.id === snapshot.page.id ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
-          </select>
-        </label>
-        <label>网络
-          <select id="controlNetworkSelect">
-            ${["wired", "wireless", "all"].map((item) => `<option value="${item}"${snapshot.network === item ? " selected" : ""}>${networkLabel(item)}</option>`).join("")}
-          </select>
-        </label>
-      </div>
-    `);
-    document.getElementById("controlLayoutSelect").addEventListener("change", (event) => {
-      try { window.localStorage.setItem(CONTROL_LAYOUT_STORAGE_KEY, event.target.value); } catch (error) {}
-      refreshControlPanel();
-    });
-    document.getElementById("controlNetworkSelect").addEventListener("change", (event) => {
-      try { window.localStorage.setItem(CONTROL_NETWORK_STORAGE_KEY, event.target.value); } catch (error) {}
-      refreshControlPanel();
-    });
-  }
-
   function renderControlPanel(snapshot) {
     renderControlReadiness(snapshot.readiness, snapshot.checks);
     renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
     renderControlConfig(snapshot);
-    renderControlLayoutSelectors(snapshot);
     renderConfigEditor(snapshot.platformConfig);
     renderControlIncidentFlow(snapshot);
     renderIncidentList(snapshot.incidents);
@@ -2351,8 +2344,9 @@
       configForm.addEventListener("change", markDirty);
       configForm.addEventListener("click", (event) => {
         const addButton = event.target.closest("[data-config-add]");
+        const rangeButton = event.target.closest("[data-config-add-range]");
         const removeButton = event.target.closest("[data-config-remove]");
-        if (!addButton && !removeButton) return;
+        if (!addButton && !rangeButton && !removeButton) return;
         const next = collectControlConfigForm();
         if (addButton) {
           const listName = addButton.dataset.configAdd;
@@ -2360,6 +2354,19 @@
           if (listName === "access_switches") next.devices.access_switches.push({ ip: "" });
           if (listName === "servers") next.devices.servers.push({ name: "", ip: "" });
           if (listName === "isp") next.isp.links.push({ name: "", ping: "", bandwidth_mbps: "" });
+        }
+        if (rangeButton) {
+          const listName = rangeButton.dataset.configAddRange;
+          const input = configForm.querySelector(`[data-config-range-input="${listName}"]`);
+          const values = expandIpRangeText(input ? input.value : "");
+          const target = listName === "stage_switches" ? next.devices.stage_switches : next.devices.access_switches;
+          const known = new Set(target.map((item) => String(item.ip || "").trim()).filter(Boolean));
+          values.forEach((ip) => {
+            if (!known.has(ip)) {
+              target.push({ ip });
+              known.add(ip);
+            }
+          });
         }
         if (removeButton) {
           const listName = removeButton.dataset.configRemove;

@@ -1157,6 +1157,7 @@
 .config-section-pair {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 9px;
   min-width: 0;
 }
@@ -1282,6 +1283,26 @@
   min-width: 0;
 }
 
+.config-range-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.config-range-row input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 7px;
+  background: var(--linear-surface-2);
+  color: var(--linear-ink);
+  font: inherit;
+  font-size: 12px;
+}
+
 .config-list[data-config-list="stage_switches"] .config-list-row,
 .config-list[data-config-list="access_switches"] .config-list-row {
   grid-template-columns: minmax(0, 1fr) 58px;
@@ -1296,7 +1317,8 @@
 }
 
 .config-list-row button,
-.config-add-row {
+.config-add-row,
+.config-range-row button {
   height: 30px;
   border: 1px solid var(--linear-hairline);
   border-radius: 7px;
@@ -1308,7 +1330,8 @@
 }
 
 .config-list-row button:hover,
-.config-add-row:hover {
+.config-add-row:hover,
+.config-range-row button:hover {
   border-color: var(--linear-hairline-strong);
   background: var(--linear-surface-3);
   color: var(--linear-ink);
