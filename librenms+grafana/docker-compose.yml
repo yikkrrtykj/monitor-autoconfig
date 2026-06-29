@@ -439,10 +439,15 @@ services:
       DIST_SWITCH_PING: "${DIST_SWITCH_PING:-}"
       FIREWALL_PING: "${FIREWALL_PING:-}"
       TOURNAMENT_SWITCHES: "${TOURNAMENT_SWITCHES:-}"
-      # Switch auto-discovery: SNMP-probe this range and write live switches
-      # (named by hostname) to a file_sd the Prometheus dist/snmp jobs read.
+      # Switch auto-discovery: ICMP-gate this range and SNMP only the live ones,
+      # then write them (named by hostname) to a file_sd the Prometheus dist/snmp
+      # jobs read. Probing a sparse /24 stays cheap; tune the caps if needed.
       SWITCH_DISCOVERY_RANGE: "${SWITCH_DISCOVERY_RANGE:-}"
       SWITCH_TARGETS_FILE: "/targets/switch_targets.json"
+      SWITCH_DISCOVERY_WORKERS: "${SWITCH_DISCOVERY_WORKERS:-32}"
+      SWITCH_DISCOVERY_MAX_HOSTS: "${SWITCH_DISCOVERY_MAX_HOSTS:-1024}"
+      SWITCH_DISCOVERY_PING_TIMEOUT: "${SWITCH_DISCOVERY_PING_TIMEOUT:-1}"
+      SWITCH_DISCOVERY_SNMP_TIMEOUT: "${SWITCH_DISCOVERY_SNMP_TIMEOUT:-1}"
     entrypoint:
       - /bin/sh
       - -c

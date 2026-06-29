@@ -224,9 +224,9 @@ devices:
     assert env["SWITCH_DISCOVERY_RANGE"] == "192.168.10.11-30"
 
 
-def test_switch_range_cidr_is_left_to_librenms_discovery():
-    # CIDR blocks should not be SNMP-probed by the switch discovery loop (a whole
-    # /24 is wasteful); they still flow to LibreNMS via LIBRENMS_DISCOVERY_TARGETS.
+def test_switch_range_cidr_drives_discovery_and_librenms():
+    # A CIDR block is both SNMP-probed by the discovery loop (ICMP gates each
+    # address, so a sparse /24 stays cheap) and handed to LibreNMS discovery.
     config = platform_config.parse_simple_yaml("""
 networks:
   switch_management_ranges: 192.168.10.0/24
@@ -238,7 +238,7 @@ devices:
 """)
     env = platform_config.render_env(config)
     assert env["DIST_SWITCH_PING"] == ""
-    assert env["SWITCH_DISCOVERY_RANGE"] == ""
+    assert env["SWITCH_DISCOVERY_RANGE"] == "192.168.10.0/24"
     assert env["LIBRENMS_DISCOVERY_TARGETS"] == "192.168.10.0/24"
 
 

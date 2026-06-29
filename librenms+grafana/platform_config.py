@@ -273,19 +273,16 @@ def named_targets(items: list[dict[str, Any]], key: str = "ip") -> str:
 
 
 def switch_discovery_range(ranges: Any, core_ip: str = "") -> str:
-    """Pick the address ranges the switch discovery loop should SNMP-probe so
-    operators can leave the per-switch list empty. Only range/single-IP entries
-    are returned -- CIDR blocks are left to LibreNMS discovery (probing a whole
-    subnet here is wasteful) and the core IP is dropped because it already has
-    its own ping/SNMP target. The discovery loop keeps only addresses that
-    answer, naming each by its real SNMP hostname, so offline IPs never reach
-    the big screen and no ``SW*`` placeholders are invented."""
+    """Pick the address ranges the switch discovery loop should probe so
+    operators can leave the per-switch list empty. CIDR, single IPs and
+    last-octet ranges are all passed through -- the loop ICMP-gates each address
+    and only SNMP-queries the live ones, so probing a sparse /24 stays cheap.
+    The standalone core IP is dropped because it already has its own ping/SNMP
+    target; any other already-monitored IPs are filtered by the loop itself.
+    The loop keeps only addresses that answer and names each by its real SNMP
+    hostname, so offline IPs never reach the big screen."""
     core_ip = str(core_ip or "").strip()
-    entries = []
-    for entry in split_values(ranges):
-        if "/" in entry or entry == core_ip:
-            continue
-        entries.append(entry)
+    entries = [entry for entry in split_values(ranges) if entry != core_ip]
     return ",".join(entries)
 
 

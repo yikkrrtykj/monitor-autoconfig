@@ -14,10 +14,18 @@ def test_expand_targets_handles_ranges_names_and_cidr():
     assert disc.expand_targets("192.168.10.11-13") == [
         "192.168.10.11", "192.168.10.12", "192.168.10.13",
     ]
-    # "name:" prefix is stripped, CIDR is ignored, dedupe across entries.
-    assert disc.expand_targets("SW:192.168.10.11-12,192.168.10.0/24,192.168.10.11") == [
+    # "name:" prefix is stripped and entries dedupe across the list.
+    assert disc.expand_targets("SW:192.168.10.11-12,192.168.10.11") == [
         "192.168.10.11", "192.168.10.12",
     ]
+    # A /30 expands to its two usable host addresses.
+    assert disc.expand_targets("192.168.10.8/30") == ["192.168.10.9", "192.168.10.10"]
+
+
+def test_excluded_ips_expands_named_and_ranged_entries():
+    assert disc.excluded_ips("CORE:192.168.10.254", "192.168.9.1-2") == {
+        "192.168.10.254", "192.168.9.1", "192.168.9.2",
+    }
 
 
 def test_discover_keeps_snmp_hostname_falls_back_to_ip_and_drops_offline():
@@ -28,8 +36,8 @@ def test_discover_keeps_snmp_hostname_falls_back_to_ip_and_drops_offline():
     results = disc.discover(
         ips,
         community="public",
-        probe_snmp=lambda ip, community: hostnames.get(ip, ""),
-        probe_ping=lambda ip: ip in pingable,
+        probe_snmp=lambda ip, community, timeout=1: hostnames.get(ip, ""),
+        probe_ping=lambda ip, timeout=1: ip in pingable,
         workers=4,
     )
     assert results == {
@@ -39,13 +47,47 @@ def test_discover_keeps_snmp_hostname_falls_back_to_ip_and_drops_offline():
     assert "192.168.10.13" not in results  # offline -> not added
 
 
+def test_discover_skips_snmp_for_dead_hosts():
+    # The expensive SNMP probe must only run for ICMP-live hosts, so a sparse
+    # range does not SNMP-scan every dead address.
+    snmp_calls = []
+
+    def snmp(ip, community, timeout=1):
+        snmp_calls.append(ip)
+        return "sw-11" if ip == "192.168.10.11" else ""
+
+    results = disc.discover(
+        [f"192.168.10.{n}" for n in range(11, 31)],  # 20 addresses, 1 alive
+        community="public",
+        probe_snmp=snmp,
+        probe_ping=lambda ip, timeout=1: ip == "192.168.10.11",
+        workers=8,
+    )
+    assert results == {"192.168.10.11": "sw-11"}
+    assert snmp_calls == ["192.168.10.11"]  # SNMP only touched the live host
+
+
+def test_discover_sweeps_with_snmp_when_ping_unavailable():
+    # If ICMP answers for nobody (ping unusable), fall back to an SNMP sweep and
+    # keep only addresses that actually respond to SNMP.
+    hostnames = {"192.168.10.12": "sw-12"}
+    results = disc.discover(
+        ["192.168.10.11", "192.168.10.12"],
+        community="public",
+        probe_snmp=lambda ip, community, timeout=1: hostnames.get(ip, ""),
+        probe_ping=lambda ip, timeout=1: False,
+        workers=2,
+    )
+    assert results == {"192.168.10.12": "sw-12"}
+
+
 def test_discover_rejects_ip_shaped_sysname():
     # Some gear returns its own IP as sysName; treat that as "no hostname".
     results = disc.discover(
         ["192.168.10.11"],
         community="public",
-        probe_snmp=lambda ip, community: "192.168.10.11",
-        probe_ping=lambda ip: True,
+        probe_snmp=lambda ip, community, timeout=1: "192.168.10.11",
+        probe_ping=lambda ip, timeout=1: True,
         workers=1,
     )
     assert results == {"192.168.10.11": "192.168.10.11"}

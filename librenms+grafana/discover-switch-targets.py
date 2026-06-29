@@ -2,24 +2,30 @@
 """Discover live switches in a management range and emit a Prometheus file_sd.
 
 Operators only fill a switch management range in the control console. This loop
-SNMP-probes every address in that range and writes a blackbox/SNMP target file
-containing just the switches that actually answer:
+finds the switches that are actually present and writes a blackbox/SNMP target
+file containing just those:
 
-  * answers SNMP  -> kept, named by its real sysName (hostname)
-  * answers ICMP only (no SNMP) -> kept, named by its IP as a placeholder
-  * answers neither -> left out, so offline/unused IPs never reach the big screen
+  * reachable + answers SNMP  -> kept, named by its real sysName (hostname)
+  * reachable (ICMP) but no SNMP -> kept, named by its IP as a placeholder
+  * unreachable -> left out, so offline/unused addresses never reach the big
+    screen or get continuously scraped
 
-The file is a standard Prometheus file_sd document, e.g.
-
-  [{"targets": ["192.168.10.11"], "labels": {"display_name": "core-sw-01"}}]
+Efficiency: a /24 with only a handful of switches stays cheap because every
+address is first checked with a short, parallel ICMP probe and only the live
+ones are asked for SNMP. Addresses already monitored explicitly (core,
+firewall, listed switches) are skipped so they are not double-counted.
 
 Env vars:
-  SWITCH_DISCOVERY_RANGE   comma/newline separated IPs or last-octet ranges
-                           (e.g. 192.168.10.11-30). CIDR blocks are ignored --
-                           those are for LibreNMS discovery, not ICMP/SNMP sweeps.
-  SNMP_COMMUNITY           SNMPv2c community (default: global).
-  SWITCH_TARGETS_FILE      output path (default: /targets/switch_targets.json).
-  SWITCH_DISCOVERY_WORKERS parallel probes (default: 16).
+  SWITCH_DISCOVERY_RANGE      IPs / last-octet ranges / CIDR to probe
+                              (e.g. 192.168.10.0/24 or 192.168.10.11-30).
+  SNMP_COMMUNITY              SNMPv2c community (default: global).
+  SWITCH_TARGETS_FILE         output path (default: /targets/switch_targets.json).
+  SWITCH_DISCOVERY_WORKERS    parallel probes (default: 32).
+  SWITCH_DISCOVERY_PING_TIMEOUT  ICMP timeout seconds (default: 1).
+  SWITCH_DISCOVERY_SNMP_TIMEOUT  SNMP timeout seconds (default: 1).
+  SWITCH_DISCOVERY_MAX_HOSTS  safety cap on addresses probed (default: 1024).
+  CORE_SWITCH_PING/DIST_SWITCH_PING/FIREWALL_PING/TOURNAMENT_SWITCHES
+                              already-monitored targets, excluded from results.
 """
 from __future__ import annotations
 
@@ -29,22 +35,28 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv4Network
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
+DEFAULT_MAX_HOSTS = 1024
 
 
 def expand_range(item: str) -> list[str]:
-    """Expand one entry ("name:" prefix optional) into individual IPs. CIDR and
-    junk yield nothing; last-octet ("a.b.c.11-30") and full ("a.b.c.11-a.b.c.30")
-    ranges both work, mirroring the other generators."""
+    """Expand one entry into individual IPs. Handles an optional "name:" prefix,
+    single IPs, last-octet ("a.b.c.11-30") and full ranges, and CIDR blocks
+    ("a.b.c.0/24" -> usable host addresses)."""
     item = (item or "").strip()
     if not item:
         return []
     if ":" in item:
         item = item.split(":", 1)[1].strip()
-    if "/" in item or not item:
+    if not item:
         return []
+    if "/" in item:
+        try:
+            return [str(ip) for ip in IPv4Network(item, strict=False).hosts()]
+        except ValueError:
+            return []
     if "-" not in item:
         try:
             return [str(IPv4Address(item))]
@@ -81,25 +93,15 @@ def expand_targets(raw: str) -> list[str]:
     return out
 
 
+def excluded_ips(*raws: str) -> set[str]:
+    out: set[str] = set()
+    for raw in raws:
+        out.update(expand_targets(raw))
+    return out
+
+
 def looks_like_ip(value: str) -> bool:
     return bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", str(value or "")))
-
-
-def snmp_sysname(ip: str, community: str, timeout: int = 2) -> str:
-    """Return the device sysName, or "" when SNMP does not answer."""
-    try:
-        result = subprocess.run(
-            ["snmpget", "-v2c", "-c", community, "-Ovq", "-t", str(timeout), "-r", "1", ip, SYS_NAME_OID],
-            capture_output=True, text=True, timeout=timeout + 3,
-        )
-    except Exception:
-        return ""
-    if result.returncode != 0:
-        return ""
-    name = result.stdout.strip().strip('"').strip()
-    if not name or name.lower().startswith(("no such", "no more")):
-        return ""
-    return name
 
 
 def ping_alive(ip: str, timeout: int = 1) -> bool:
@@ -112,24 +114,51 @@ def ping_alive(ip: str, timeout: int = 1) -> bool:
         return False
 
 
-def discover(ips, community, probe_snmp=snmp_sysname, probe_ping=ping_alive, workers=16) -> dict[str, str]:
-    """Map each live IP to its display name. SNMP hostname wins; an ICMP-only host
-    falls back to its IP; an unreachable host is dropped entirely."""
-    def classify(ip):
-        name = probe_snmp(ip, community)
-        if name and not looks_like_ip(name):
-            return ip, name
-        if probe_ping(ip):
-            return ip, ip
-        return ip, None
+def snmp_sysname(ip: str, community: str, timeout: int = 1) -> str:
+    """Return the device sysName, or "" when SNMP does not answer."""
+    try:
+        result = subprocess.run(
+            ["snmpget", "-v2c", "-c", community, "-Ovq", "-t", str(timeout), "-r", "0", ip, SYS_NAME_OID],
+            capture_output=True, text=True, timeout=timeout + 3,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    name = result.stdout.strip().strip('"').strip()
+    if not name or name.lower().startswith(("no such", "no more")):
+        return ""
+    return name
+
+
+def discover(ips, community, probe_snmp=snmp_sysname, probe_ping=ping_alive,
+             workers=32, ping_timeout=1, snmp_timeout=1) -> dict[str, str]:
+    """Map each live IP to its display name. ICMP gates liveness first (cheap),
+    then only reachable hosts are asked for SNMP -- so a sparse /24 stays fast.
+    SNMP hostname wins; a reachable host without SNMP keeps its IP; unreachable
+    hosts are dropped. If ICMP finds nothing (e.g. unavailable in the runtime),
+    fall back to an SNMP sweep so discovery still works."""
+    if not ips:
+        return {}
+    workers = max(1, workers)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        alive = [ip for ip, ok in zip(ips, executor.map(lambda ip: probe_ping(ip, ping_timeout), ips)) if ok]
+
+    # ICMP normally gates liveness. If it answered for nobody (e.g. ping is not
+    # usable in the runtime), sweep every address with SNMP instead and keep
+    # only the ones that actually respond.
+    ping_gated = bool(alive)
+    scan = alive if ping_gated else list(ips)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        names = list(executor.map(lambda ip: probe_snmp(ip, community, snmp_timeout), scan))
 
     results: dict[str, str] = {}
-    if not ips:
-        return results
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        for ip, name in executor.map(classify, ips):
-            if name is not None:
-                results[ip] = name
+    for ip, name in zip(scan, names):
+        if name and not looks_like_ip(name):
+            results[ip] = name          # SNMP hostname wins
+        elif ping_gated:
+            results[ip] = ip            # reachable but no SNMP -> IP placeholder
+        # else: sweep mode without SNMP -> liveness unconfirmed, drop
     return results
 
 
@@ -154,16 +183,29 @@ def main() -> None:
     raw = os.environ.get("SWITCH_DISCOVERY_RANGE", "").strip()
     out = os.environ.get("SWITCH_TARGETS_FILE", "/targets/switch_targets.json")
     community = os.environ.get("SNMP_COMMUNITY", "global")
-    workers = int(os.environ.get("SWITCH_DISCOVERY_WORKERS", "16") or "16")
+    workers = int(os.environ.get("SWITCH_DISCOVERY_WORKERS", "32") or "32")
+    ping_timeout = int(os.environ.get("SWITCH_DISCOVERY_PING_TIMEOUT", "1") or "1")
+    snmp_timeout = int(os.environ.get("SWITCH_DISCOVERY_SNMP_TIMEOUT", "1") or "1")
+    max_hosts = int(os.environ.get("SWITCH_DISCOVERY_MAX_HOSTS", str(DEFAULT_MAX_HOSTS)) or DEFAULT_MAX_HOSTS)
 
-    ips = expand_targets(raw)
+    exclude = excluded_ips(
+        os.environ.get("CORE_SWITCH_PING", ""),
+        os.environ.get("DIST_SWITCH_PING", ""),
+        os.environ.get("FIREWALL_PING", ""),
+        os.environ.get("TOURNAMENT_SWITCHES", ""),
+    )
+    ips = [ip for ip in expand_targets(raw) if ip not in exclude]
+    if len(ips) > max_hosts:
+        print(f"[switch-discovery] range expands to {len(ips)} addresses; capping at {max_hosts}", file=sys.stderr)
+        ips = ips[:max_hosts]
+
     if not ips:
         write_file_sd(out, [])
         print("[switch-discovery] no range configured; wrote empty target file", file=sys.stderr)
         return
-    results = discover(ips, community, workers=workers)
+    results = discover(ips, community, workers=workers, ping_timeout=ping_timeout, snmp_timeout=snmp_timeout)
     write_file_sd(out, build_file_sd(results))
-    print(f"[switch-discovery] scanned {len(ips)} addresses -> {len(results)} live switches", file=sys.stderr)
+    print(f"[switch-discovery] probed {len(ips)} addresses -> {len(results)} live switches", file=sys.stderr)
 
 
 if __name__ == "__main__":
