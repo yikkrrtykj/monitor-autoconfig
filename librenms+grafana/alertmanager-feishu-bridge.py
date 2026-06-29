@@ -105,6 +105,12 @@ SYSLOG_RECOVERY_ENABLED = os.environ.get("SYSLOG_RECOVERY_ENABLED", "true").lowe
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
 ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "10"))
+# Recovery debounce: only declare a target recovered after it has stayed UP this
+# long. A flapping ISP (up/down/up/down) then yields one DOWN card plus a single
+# recovery once it is genuinely stable, instead of a card per transition.
+# 0 = recover immediately on the first UP (legacy behaviour).
+DEVICE_RECOVER_STABLE_SECONDS = int(os.environ.get("DEVICE_RECOVER_STABLE_SECONDS", "0"))
+ISP_RECOVER_STABLE_SECONDS = int(os.environ.get("ISP_RECOVER_STABLE_SECONDS", "10"))
 DEVICE_DOWN_REQUIRE_SEEN_UP = os.environ.get("DEVICE_DOWN_REQUIRE_SEEN_UP", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "1"))
 DEVICE_DOWN_SAMPLE_WINDOW_SECONDS = int(os.environ.get("DEVICE_DOWN_SAMPLE_WINDOW_SECONDS", "5"))
@@ -840,6 +846,21 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
     return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
 
 
+def _interconnect_port_text(port, alias, members):
+    """Operators want the real physical port(s), not the "Po4" aggregate number.
+    Show members when ifStackTable resolved them, keep the alias, and note the
+    aggregate in parens for reference; fall back to the aggregate when unknown."""
+    members = [m for m in (members or []) if m]
+    if members:
+        text = "、".join(members)
+        if alias and alias != port:
+            text = f"{text} / {alias}"
+        if port and port not in text:
+            text = f"{text}（{port}）"
+        return text
+    return f"{port} / {alias}" if alias and alias != port else port
+
+
 def build_interconnect_card(event, recovered=False):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     color = "green" if recovered else "red"
@@ -850,9 +871,7 @@ def build_interconnect_card(event, recovered=False):
     device = event.get("device") or event.get("ip") or "?"
     ip = event.get("ip") or ""
     device_text = f"{device} ({ip})" if ip and ip != device else device
-    port = event.get("port") or "?"
-    alias = event.get("alias") or ""
-    port_text = f"{port} / {alias}" if alias and alias != port else port
+    port_text = _interconnect_port_text(event.get("port") or "?", event.get("alias") or "", event.get("members") or [])
     lines = [
         f"🖥 设备：{device_text}",
         f"🔌 接口：{port_text}",
@@ -1243,10 +1262,48 @@ def isp_bandwidth_watcher():
         time.sleep(ISP_ALERT_POLL_INTERVAL)
 
 
+def fetch_interconnect_members(jobs_regex, index_names):
+    """Map each device's aggregate ifIndex -> [physical member port names] via
+    ifStackTable. Returns {} when the switch does not expose it, so callers
+    gracefully fall back to showing the aggregate (Po) name."""
+    try:
+        results = prometheus_query(f'ifStackStatus{{job=~"{jobs_regex}"}}')
+    except Exception as exc:
+        log(f"[LINK] ifStack lookup failed (members will be omitted): {exc}")
+        return {}
+    members = {}
+    for item in results:
+        metric = item.get("metric") or {}
+        higher = metric.get("ifStackHigherLayer") or metric.get("ifStackHigherLayerIndex")
+        lower = metric.get("ifStackLowerLayer") or metric.get("ifStackLowerLayerIndex")
+        ip = metric.get("target_ip") or metric.get("instance") or ""
+        # 0 marks the top/bottom sentinels of a stack; only real higher->lower rows pair a port-channel with a member.
+        if not higher or not lower or higher == "0" or lower == "0":
+            continue
+        name = index_names.get((ip, lower))
+        if not name:
+            continue
+        bucket = members.setdefault((ip, higher), [])
+        if name not in bucket:
+            bucket.append(name)
+    return members
+
+
 def fetch_interconnect_ports(jobs_regex):
-    query = f'ifOperStatus{{job=~"{jobs_regex}"}}'
+    results = prometheus_query(f'ifOperStatus{{job=~"{jobs_regex}"}}')
+    # ifIndex -> name for every interface (physical members included) so the
+    # aggregate's member ifIndexes can be resolved to real port names.
+    index_names = {}
+    for item in results:
+        metric = item.get("metric") or {}
+        ip = metric.get("target_ip") or metric.get("instance") or ""
+        ifindex = metric.get("ifIndex")
+        if ip and ifindex:
+            index_names[(ip, ifindex)] = _port_label(metric)
+    members_map = fetch_interconnect_members(jobs_regex, index_names)
+
     ports = []
-    for item in prometheus_query(query):
+    for item in results:
         metric = item.get("metric") or {}
         if not _is_interconnect_port(metric):
             continue
@@ -1259,16 +1316,19 @@ def fetch_interconnect_ports(jobs_regex):
             continue
         ip = metric.get("target_ip") or metric.get("instance") or ""
         port = _port_label(metric)
+        ifindex = metric.get("ifIndex")
+        members = [m for m in members_map.get((ip, ifindex), []) if m and m != port]
         ports.append({
             "key": "|".join([
                 metric.get("job", ""),
                 ip,
-                metric.get("ifIndex") or port,
+                ifindex or port,
             ]),
             "device": metric.get("display_name") or metric.get("instance") or ip or "?",
             "ip": ip,
             "port": port,
             "alias": metric.get("ifAlias") or "",
+            "members": members,
             "up": up,
         })
     return ports
@@ -1351,6 +1411,16 @@ def interconnect_watcher():
                 state["down_since"] = None
 
         time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
+
+
+def recovery_ready(state, now, sample_ts, recover_stable):
+    """Flap-debounce for recoveries: an alerting target that is now UP must stay
+    UP for `recover_stable` seconds before it counts as recovered. Tracks the
+    continuous-up start in state['up_since']; a dip elsewhere clears it so the
+    window restarts. Returns True once it has been stable long enough."""
+    if state.get("up_since") is None:
+        state["up_since"] = sample_ts if sample_ts is not None else now
+    return (now - state["up_since"]) >= recover_stable
 
 
 def device_down_watcher():
@@ -1442,11 +1512,13 @@ def device_down_watcher():
                 "seen_up": False,
                 "ignored_initial_down": False,
                 "last_up_at": None,
+                "up_since": None,
                 "online_sent": False,
                 "name": "",
                 "ip": "",
                 "job": "",
             }
+            recover_stable = ISP_RECOVER_STABLE_SECONDS if job == "infra-isp-ping" else DEVICE_RECOVER_STABLE_SECONDS
             state = states.setdefault(key, default_state.copy())
             for field, value in default_state.items():
                 state.setdefault(field, value)
@@ -1454,6 +1526,9 @@ def device_down_watcher():
             state["ip"] = ip
             state["job"] = job
             if not up:
+                # A dip cancels any in-progress recovery debounce: the link must
+                # restart its stable-up window before it counts as recovered.
+                state["up_since"] = None
                 if DEVICE_DOWN_REQUIRE_SEEN_UP and not state["seen_up"] and not state["alerting"]:
                     if not state["ignored_initial_down"]:
                         log(f"[DOWN] waiting for first UP before alerting {job} {prom_name} ({ip})")
@@ -1495,14 +1570,25 @@ def device_down_watcher():
                             "os": "Ping only",
                         }))
                 if state["alerting"]:
-                    offline = max(0, (sample_ts or now) - (previous_down_since or sample_ts or now))
-                    log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s")
+                    # Debounce recovery: wait until the target has been continuously
+                    # UP for recover_stable seconds before sending the recovery card,
+                    # so a flapping link doesn't spam up/down messages.
+                    if not recovery_ready(state, now, sample_ts, recover_stable):
+                        # Still settling -- stay in the alerting state, send nothing.
+                        save_device_down_states(states)
+                        continue
+                    recovered_at = state["up_since"]
+                    offline = max(0, recovered_at - (previous_down_since or recovered_at))
+                    stable_for = now - recovered_at
+                    log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s stable={int(stable_for)}s")
                     send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline, job=job))
                     state["alerting"] = False
                     state["down_since"] = None
+                    state["up_since"] = None
                     save_device_down_states(states)
                 else:
                     state["down_since"] = None
+                    state["up_since"] = None
                 state["alerting"] = False
 
         time.sleep(DEVICE_DOWN_POLL_INTERVAL)
