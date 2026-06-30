@@ -846,40 +846,44 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
     return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
 
 
-def _interconnect_port_text(port, alias, members):
-    """Operators want the real physical port(s), not the "Po4" aggregate number.
-    Show members when ifStackTable resolved them, keep the alias, and note the
-    aggregate in parens for reference; fall back to the aggregate when unknown."""
-    members = [m for m in (members or []) if m]
-    if members:
-        text = "、".join(members)
-        if alias and alias != port:
-            text = f"{text} / {alias}"
-        if port and port not in text:
-            text = f"{text}（{port}）"
-        return text
-    return f"{port} / {alias}" if alias and alias != port else port
+def _join_ports(names):
+    return "、".join(n for n in (names or []) if n) or "?"
 
 
 def build_interconnect_card(event, recovered=False):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     color = "green" if recovered else "red"
-    status_emoji = "✅" if recovered else "❌"
     header_emoji = "🟢" if recovered else "🔴"
-    state_text = "UP" if recovered else "DOWN"
-    duration_label = "恢复耗时" if recovered else "断线时间"
     device = event.get("device") or event.get("ip") or "?"
     ip = event.get("ip") or ""
     device_text = f"{device} ({ip})" if ip and ip != device else device
-    port_text = _interconnect_port_text(event.get("port") or "?", event.get("alias") or "", event.get("members") or [])
-    lines = [
-        f"🖥 设备：{device_text}",
-        f"🔌 接口：{port_text}",
-        f"{status_emoji} 状态：{state_text}",
-        f"⏳ {duration_label}：{format_alert_duration(event.get('duration'), recovered)}",
-        f"⏰ 时间：{ts}",
-    ]
-    return _make_card(next_event_title(), f"{header_emoji} 互联口断链告警", color, "\n".join(lines))
+    peer = event.get("alias") or event.get("port") or "?"  # ifAlias describes the far end, e.g. to-stage4
+    down_members = event.get("down_members") or []
+    up_members = event.get("up_members") or []
+    if recovered:
+        subtitle = "互联口恢复"
+        status_emoji = "✅"
+        lines = [
+            f"🖥 设备：{device_text}",
+            f"🔌 物理口：{_join_ports(down_members)} 已恢复",
+            f"🔗 对端：{peer}",
+            f"{status_emoji} 状态：链路冗余已恢复",
+            f"⏳ 恢复耗时：{format_alert_duration(event.get('duration'), True)}",
+            f"⏰ 时间：{ts}",
+        ]
+    else:
+        subtitle = "互联口降级告警"
+        # Redundancy lost on one leg; the link still passes traffic via up_members.
+        still_up = f"，剩 {_join_ports(up_members)} 仍在线" if up_members else ""
+        lines = [
+            f"🖥 设备：{device_text}",
+            f"🔌 断线物理口：{_join_ports(down_members)}",
+            f"🔗 对端：{peer}",
+            f"⚠️ 状态：链路降级（仍连通{still_up}）",
+            f"⏳ 持续时间：{format_alert_duration(event.get('duration'), False)}",
+            f"⏰ 时间：{ts}",
+        ]
+    return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
 
 
 def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
@@ -1262,14 +1266,34 @@ def isp_bandwidth_watcher():
         time.sleep(ISP_ALERT_POLL_INTERVAL)
 
 
-def fetch_interconnect_members(jobs_regex, index_names):
-    """Map each device's aggregate ifIndex -> [physical member port names] via
-    ifStackTable. Returns {} when the switch does not expose it, so callers
-    gracefully fall back to showing the aggregate (Po) name."""
+def classify_interconnect(lag_up, member_ups):
+    """Decide what an interconnect LAG's member states mean for alerting:
+
+      healthy  - every member up (nothing to report)
+      degraded - some members down but the bundle is still up (redundancy lost,
+                 traffic still flows -> this is the case worth alerting)
+      down     - the whole bundle is down -> the peer goes unreachable and the
+                 device-down watcher alerts it, so we stay quiet here
+      unknown  - no member visibility (switch lacks ifStackTable); nothing to say
+    """
+    if not member_ups:
+        return "unknown"
+    any_down = not all(member_ups)
+    any_up = any(member_ups)
+    if not any_down:
+        return "healthy"
+    if not any_up or not lag_up:
+        return "down"
+    return "degraded"
+
+
+def fetch_interconnect_members(jobs_regex):
+    """Map (device_ip, aggregate ifIndex) -> [member ifIndex] via ifStackTable.
+    Returns {} when the switch does not expose it."""
     try:
         results = prometheus_query(f'ifStackStatus{{job=~"{jobs_regex}"}}')
     except Exception as exc:
-        log(f"[LINK] ifStack lookup failed (members will be omitted): {exc}")
+        log(f"[LINK] ifStack lookup failed (member ports unavailable): {exc}")
         return {}
     members = {}
     for item in results:
@@ -1277,30 +1301,36 @@ def fetch_interconnect_members(jobs_regex, index_names):
         higher = metric.get("ifStackHigherLayer") or metric.get("ifStackHigherLayerIndex")
         lower = metric.get("ifStackLowerLayer") or metric.get("ifStackLowerLayerIndex")
         ip = metric.get("target_ip") or metric.get("instance") or ""
-        # 0 marks the top/bottom sentinels of a stack; only real higher->lower rows pair a port-channel with a member.
+        # 0 marks the top/bottom sentinels of a stack; only real higher->lower rows pair an aggregate with a member.
         if not higher or not lower or higher == "0" or lower == "0":
             continue
-        name = index_names.get((ip, lower))
-        if not name:
-            continue
         bucket = members.setdefault((ip, higher), [])
-        if name not in bucket:
-            bucket.append(name)
+        if lower not in bucket:
+            bucket.append(lower)
     return members
 
 
 def fetch_interconnect_ports(jobs_regex):
     results = prometheus_query(f'ifOperStatus{{job=~"{jobs_regex}"}}')
-    # ifIndex -> name for every interface (physical members included) so the
-    # aggregate's member ifIndexes can be resolved to real port names.
+    # Per-interface name + up/down for every interface (physical members too), so
+    # an aggregate's member ifIndexes resolve to real port names and states.
     index_names = {}
+    index_up = {}
     for item in results:
         metric = item.get("metric") or {}
         ip = metric.get("target_ip") or metric.get("instance") or ""
         ifindex = metric.get("ifIndex")
-        if ip and ifindex:
-            index_names[(ip, ifindex)] = _port_label(metric)
-    members_map = fetch_interconnect_members(jobs_regex, index_names)
+        if not (ip and ifindex):
+            continue
+        index_names[(ip, ifindex)] = _port_label(metric)
+        try:
+            value = float((item.get("value") or [None, "nan"])[1])
+        except (TypeError, ValueError):
+            continue
+        member_up = _if_oper_is_up(metric, value)
+        # Unknown/stale status counts as up so a missing sample never fakes a degrade.
+        index_up[(ip, ifindex)] = True if member_up is None else bool(member_up)
+    members_map = fetch_interconnect_members(jobs_regex)
 
     ports = []
     for item in results:
@@ -1317,19 +1347,20 @@ def fetch_interconnect_ports(jobs_regex):
         ip = metric.get("target_ip") or metric.get("instance") or ""
         port = _port_label(metric)
         ifindex = metric.get("ifIndex")
-        members = [m for m in members_map.get((ip, ifindex), []) if m and m != port]
+        members = []
+        for member_idx in members_map.get((ip, ifindex), []):
+            name = index_names.get((ip, member_idx))
+            if not name or name == port:
+                continue
+            members.append({"name": name, "up": index_up.get((ip, member_idx), True)})
         ports.append({
-            "key": "|".join([
-                metric.get("job", ""),
-                ip,
-                ifindex or port,
-            ]),
+            "key": "|".join([metric.get("job", ""), ip, ifindex or port]),
             "device": metric.get("display_name") or metric.get("instance") or ip or "?",
             "ip": ip,
             "port": port,
             "alias": metric.get("ifAlias") or "",
+            "lag_up": bool(up),
             "members": members,
-            "up": up,
         })
     return ports
 
@@ -1373,42 +1404,55 @@ def interconnect_watcher():
             continue
 
         if now - last_status_log >= 60:
-            up_count = sum(1 for port in ports if port["up"])
-            down_count = len(ports) - up_count
-            log(f"[LINK] watched port-channels total={len(ports)} up={up_count} down={down_count}")
+            degraded = sum(1 for p in ports if classify_interconnect(p["lag_up"], [m["up"] for m in p["members"]]) == "degraded")
+            log(f"[LINK] watched aggregates total={len(ports)} degraded={degraded}")
             last_status_log = now
 
         for port in ports:
             ip = port.get("ip") or ""
             if ip in librenms_names:
                 port["device"] = librenms_names[ip]
+            member_ups = [m["up"] for m in port["members"]]
+            status = classify_interconnect(port["lag_up"], member_ups)
             state = states.setdefault(port["key"], {
                 "down_since": None,
                 "alerting": False,
-                "last_up_at": None,
+                "down_members": [],
             })
 
-            if not port["up"]:
+            # Only a degraded bundle (a member down while the link still passes
+            # traffic via its peers) is worth an interconnect alert. A fully-down
+            # bundle is suppressed here -- the peer switch goes unreachable and the
+            # device-down watcher reports that instead. Healthy/unknown -> nothing.
+            if status == "degraded":
+                down_members = [m["name"] for m in port["members"] if not m["up"]]
                 if state["down_since"] is None:
-                    state["down_since"] = state.get("last_up_at") or now
+                    state["down_since"] = now
                 duration = max(0, now - state["down_since"])
+                state["down_members"] = down_members
                 if not state["alerting"] and duration >= INTERCONNECT_ALERT_FOR_SECONDS:
                     state["alerting"] = True
                     event = dict(port)
+                    event["down_members"] = down_members
+                    event["up_members"] = [m["name"] for m in port["members"] if m["up"]]
                     event["duration"] = duration
-                    log(f"[LINK] ALERT {event['device']} {event['port']} DOWN")
+                    log(f"[LINK] ALERT {event['device']} {event['port']} degraded, down member(s)={down_members}")
                     send_feishu(build_interconnect_card(event, recovered=False))
             else:
-                previous_down_since = state.get("down_since")
-                state["last_up_at"] = now
                 if state["alerting"]:
-                    duration = max(0, now - (previous_down_since or now))
-                    event = dict(port)
-                    event["duration"] = duration
-                    log(f"[LINK] RECOVER {event['device']} {event['port']} offline={int(duration)}s")
-                    send_feishu(build_interconnect_card(event, recovered=True))
+                    if status == "healthy":
+                        event = dict(port)
+                        event["down_members"] = state.get("down_members") or []
+                        event["up_members"] = [m["name"] for m in port["members"]]
+                        event["duration"] = max(0, now - (state["down_since"] or now))
+                        log(f"[LINK] RECOVER {event['device']} {event['port']} members back up")
+                        send_feishu(build_interconnect_card(event, recovered=True))
+                    else:
+                        # Bundle went fully down -> handed off to the device-down watcher.
+                        log(f"[LINK] {port['device']} {port['port']} fully down; handing off to device-down alert")
                 state["alerting"] = False
                 state["down_since"] = None
+                state["down_members"] = []
 
         time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
 
