@@ -144,9 +144,18 @@ services:
       - ./librenms-data:/librenms-data:ro
       - bridge-state:/bridge-state
       - syslog-spool:/var/log/remote:ro
+      # Read-only LLDP topology so root-cause suppression knows which device is upstream.
+      - topology-data:/etc/prometheus/targets/topology:ro
     environment:
       TZ: Asia/Shanghai
       FEISHU_BRIDGE_PORT: "5005"
+      # Root-cause suppression: alert only the upstream device, fold its downstream
+      # victims (switches + their APs) into that one card. Needs the core IP + LLDP.
+      DEVICE_DOWN_ROOT_CAUSE_ENABLED: "${DEVICE_DOWN_ROOT_CAUSE_ENABLED:-true}"
+      UNIFI_AP_ROOT_CAUSE_ENABLED: "${UNIFI_AP_ROOT_CAUSE_ENABLED:-true}"
+      LIBRENMS_CORE_IP: "${LIBRENMS_CORE_IP:-}"
+      CORE_SWITCH_PING: "${CORE_SWITCH_PING:-}"
+      TOPOLOGY_EDGES_FILE: "/etc/prometheus/targets/topology/edges.json"
       FEISHU_ROBOT_TOKEN: "${FEISHU_ROBOT_TOKEN:-}"
       FEISHU_BRIDGE_DRY_RUN: "${FEISHU_BRIDGE_DRY_RUN:-false}"
       FEISHU_BRIDGE_EVENT_ID_START: "${FEISHU_BRIDGE_EVENT_ID_START:-0}"

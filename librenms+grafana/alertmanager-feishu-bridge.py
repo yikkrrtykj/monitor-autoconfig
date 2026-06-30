@@ -112,6 +112,18 @@ ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "10"))
 DEVICE_RECOVER_STABLE_SECONDS = int(os.environ.get("DEVICE_RECOVER_STABLE_SECONDS", "0"))
 ISP_RECOVER_STABLE_SECONDS = int(os.environ.get("ISP_RECOVER_STABLE_SECONDS", "10"))
 DEVICE_DOWN_REQUIRE_SEEN_UP = os.environ.get("DEVICE_DOWN_REQUIRE_SEEN_UP", "true").lower() in ("1", "true", "yes", "on")
+# Root-cause suppression: when an upstream switch is down, the devices/APs behind
+# it are unreachable too. Instead of a card per victim, alert only the highest
+# device whose own uplink is still reachable (real-time, no batching) and fold a
+# "下游 N 台同时离线" line into it. Needs the LLDP topology (edges.json) + core IP;
+# with neither, nothing is suppressed (fail open -> current behaviour).
+DEVICE_DOWN_ROOT_CAUSE_ENABLED = os.environ.get("DEVICE_DOWN_ROOT_CAUSE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+TOPOLOGY_EDGES_FILE = os.environ.get("TOPOLOGY_EDGES_FILE", "/etc/prometheus/targets/topology/edges.json")
+LIBRENMS_CORE_IP = os.environ.get("LIBRENMS_CORE_IP", "").strip()
+# Shared snapshot of the infra ping tree, written by the device-down watcher and
+# read by the AP watcher so APs behind a down switch can be suppressed too.
+INFRA_DOWN_LOCK = threading.Lock()
+INFRA_DOWN = {"unreachable": set(), "parents": {}, "unreachable_names": set()}
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "1"))
 DEVICE_DOWN_SAMPLE_WINDOW_SECONDS = int(os.environ.get("DEVICE_DOWN_SAMPLE_WINDOW_SECONDS", "5"))
 DEVICE_DOWN_JOBS = os.environ.get(
@@ -158,6 +170,10 @@ SYSNAME_STATE_FILE = os.environ.get(
 # 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
 UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "180"))
+# Suppress an AP-down alert when the switch it uplinks into is itself down (the
+# AP outage is a downstream symptom). Only fires on a confident uplink match;
+# otherwise the AP alerts normally.
+UNIFI_AP_ROOT_CAUSE_ENABLED = os.environ.get("UNIFI_AP_ROOT_CAUSE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "5"))
 # sysName 变更告警：bridge 自己轮询 LibreNMS 设备列表，对比每台设备的 sysName，
 # 变化时推送 旧→新 飞书卡片（LibreNMS 没有可靠的 "changed" 告警算子，webhook 也只带当前值）。
@@ -821,7 +837,7 @@ def build_isp_bandwidth_card(event, recovered=False):
     return _make_card(next_event_title(), f"{header_emoji} 外网 ISP 告警", color, "\n".join(lines))
 
 
-def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
+def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dev = f"{name} ({ip})" if ip and ip != name else (name or ip or "?")
     is_isp = job == "infra-isp-ping"
@@ -841,8 +857,12 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
         f"{label_emoji} {label}：{dev}",
         f"{status_emoji} 状态：{state_text}",
         f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
-        f"⏰ 时间：{ts}",
     ]
+    if not recovered and downstream:
+        # This device is the root cause: its downstream victims are folded in here
+        # instead of each firing its own card.
+        lines.append(f"📉 下游 {downstream} 台设备同时不可达（疑似受其影响，已折叠）")
+    lines.append(f"⏰ 时间：{ts}")
     return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
 
 
@@ -1457,6 +1477,103 @@ def interconnect_watcher():
         time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
 
 
+def build_topology_parents(edges, root_ip):
+    """BFS from the core over LLDP adjacency -> {device_ip: uplink_parent_ip}.
+
+    The root (core) has no parent. Devices not reachable from the core in the
+    graph are simply omitted, so callers treat 'unknown parent' as a root cause
+    (alert it) -- the suppression only ever fires on confidently-mapped victims.
+    """
+    adjacency = {}
+    for edge in edges or []:
+        a = str(edge.get("from_ip") or "").strip()
+        b = str(edge.get("to_ip") or "").strip()
+        if not a or not b or a == b:
+            continue
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+    root_ip = str(root_ip or "").strip()
+    parents = {}
+    if not root_ip or root_ip not in adjacency:
+        return parents
+    seen = {root_ip}
+    queue = [root_ip]
+    while queue:
+        current = queue.pop(0)
+        for neighbor in sorted(adjacency.get(current, ())):
+            if neighbor in seen:
+                continue
+            seen.add(neighbor)
+            parents[neighbor] = current
+            queue.append(neighbor)
+    return parents
+
+
+def is_down_symptom(ip, parents, unreachable):
+    """True when ip sits below a currently-unreachable device in the tree, i.e.
+    it is a downstream victim of an upstream outage rather than the root cause."""
+    seen = set()
+    current = parents.get(ip)
+    while current and current not in seen:
+        if current in unreachable:
+            return True
+        seen.add(current)
+        current = parents.get(current)
+    return False
+
+
+def count_down_descendants(ip, parents, unreachable):
+    """How many currently-unreachable devices sit below ip in the tree (for the
+    root-cause card's 'N downstream devices also unreachable' line)."""
+    children = {}
+    for node, parent in parents.items():
+        children.setdefault(parent, []).append(node)
+    count = 0
+    seen = set()
+    stack = list(children.get(ip, []))
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        if node in unreachable:
+            count += 1
+        stack.extend(children.get(node, []))
+    return count
+
+
+def _ap_uplink_down(uplink_name, uplink_ip):
+    """True when the switch an AP uplinks into is currently unreachable, so the
+    AP's outage is a downstream symptom of that switch outage."""
+    name = str(uplink_name or "").strip().lower()
+    ip = str(uplink_ip or "").strip()
+    with INFRA_DOWN_LOCK:
+        unreachable = INFRA_DOWN.get("unreachable") or set()
+        names = INFRA_DOWN.get("unreachable_names") or set()
+    return bool((ip and ip in unreachable) or (name and name in names))
+
+
+def _topology_core_ip():
+    """The tree root: explicit LIBRENMS_CORE_IP, else the first CORE_SWITCH_PING
+    entry (stripping any 'name:' prefix and '-range' suffix)."""
+    if LIBRENMS_CORE_IP:
+        return LIBRENMS_CORE_IP
+    first = os.environ.get("CORE_SWITCH_PING", "").split(",")[0].strip()
+    if ":" in first:
+        first = first.split(":", 1)[1].strip()
+    return first.split("-")[0].strip()
+
+
+def load_topology_edges():
+    """Load the LLDP adjacency the topology collector writes; [] if absent."""
+    try:
+        with open(TOPOLOGY_EDGES_FILE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
 def recovery_ready(state, now, sample_ts, recover_stable):
     """Flap-debounce for recoveries: an alerting target that is now UP must stay
     UP for `recover_stable` seconds before it counts as recovered. Tracks the
@@ -1494,6 +1611,8 @@ def device_down_watcher():
     isp_names = _isp_target_names()
     auto_add_jobs = {j.strip() for j in DEVICE_AUTO_ADD_SNMP_JOBS.split(",") if j.strip()}
     auto_add_attempted = set()
+    parents = {}
+    core_ip = _topology_core_ip()
     log(
         "[DOWN] device-down watcher enabled "
         f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, "
@@ -1509,6 +1628,11 @@ def device_down_watcher():
                 librenms_names = fetch_librenms_name_cache()
             except Exception as exc:
                 log(f"[DOWN] LibreNMS name refresh failed: {exc}")
+            if DEVICE_DOWN_ROOT_CAUSE_ENABLED:
+                try:
+                    parents = build_topology_parents(load_topology_edges(), core_ip)
+                except Exception as exc:
+                    log(f"[DOWN] topology refresh failed: {exc}")
             last_name_refresh = now
 
         try:
@@ -1517,6 +1641,29 @@ def device_down_watcher():
             log(f"[DOWN] poll failed: {exc}")
             time.sleep(DEVICE_DOWN_POLL_INTERVAL)
             continue
+
+        # Which targets are unreachable right now (raw, immediate) -- used to tell
+        # a root-cause outage from its downstream victims. Shared so the AP
+        # watcher can suppress APs sitting behind a down switch too.
+        unreachable = set()
+        unreachable_names = set()
+        for item in results:
+            metric = item.get("metric") or {}
+            target_ip = metric.get("target_ip") or ""
+            try:
+                if target_ip and float((item.get("value") or [None, "1"])[1]) < 1:
+                    unreachable.add(target_ip)
+                    for candidate in (librenms_names.get(target_ip), metric.get("display_name"), metric.get("instance")):
+                        candidate = str(candidate or "").strip().lower()
+                        if candidate:
+                            unreachable_names.add(candidate)
+            except (TypeError, ValueError):
+                pass
+        if DEVICE_DOWN_ROOT_CAUSE_ENABLED:
+            with INFRA_DOWN_LOCK:
+                INFRA_DOWN["unreachable"] = unreachable
+                INFRA_DOWN["parents"] = parents
+                INFRA_DOWN["unreachable_names"] = unreachable_names
 
         if now - last_status_log >= 60:
             counts = {}
@@ -1582,12 +1729,23 @@ def device_down_watcher():
                 if state["down_since"] is None:
                     state["down_since"] = sample_ts or now
                 if not state["alerting"] and now - state["down_since"] >= down_for_seconds:
-                    state["alerting"] = True
-                    state["seen_up"] = True
-                    offline = max(0, now - state["down_since"])
-                    log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN")
-                    send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job))
-                    save_device_down_states(states)
+                    # Root-cause suppression: if an upstream device is also down,
+                    # this one is a downstream victim -- stay quiet (no alerting
+                    # flag), keep down_since so it alerts later if the upstream
+                    # recovers while it's still down.
+                    if DEVICE_DOWN_ROOT_CAUSE_ENABLED and is_down_symptom(ip, parents, unreachable):
+                        if not state.get("suppressed_logged"):
+                            log(f"[DOWN] suppress downstream symptom {job} {name} ({ip}) behind a down upstream")
+                            state["suppressed_logged"] = True
+                    else:
+                        state["suppressed_logged"] = False
+                        state["alerting"] = True
+                        state["seen_up"] = True
+                        offline = max(0, now - state["down_since"])
+                        downstream = count_down_descendants(ip, parents, unreachable) if DEVICE_DOWN_ROOT_CAUSE_ENABLED else 0
+                        log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN downstream={downstream}")
+                        send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job, downstream=downstream))
+                        save_device_down_states(states)
             else:
                 previous_down_since = state.get("down_since")
                 state["last_up_at"] = sample_ts or now
@@ -1765,6 +1923,7 @@ def _fetch_unifi_controller_aps():
             key = str(device.get("mac") or ip or name).strip()
             if not key or not name:
                 continue
+            uplink = device.get("uplink") or {}
             aps[key] = {
                 "key": key,
                 "name": name,
@@ -1778,6 +1937,10 @@ def _fetch_unifi_controller_aps():
                     or ""
                 ).strip(),
                 "online": _unifi_ap_online(device),
+                # The switch this AP uplinks into (controller's view), used to
+                # suppress the AP when that switch itself is down.
+                "uplink_name": str(uplink.get("uplink_device_name") or uplink.get("device_name") or "").strip(),
+                "uplink_ip": str(uplink.get("uplink_remote_ip") or uplink.get("ip") or "").strip(),
                 "source": "controller",
             }
     return aps
@@ -2014,15 +2177,26 @@ def unifi_ap_watcher():
                 state["name"] = known[key].get("name") or state.get("name") or key
                 state["ip"] = known[key].get("ip") or state.get("ip") or ""
                 state["model"] = known[key].get("model") or state.get("model") or ""
+                state["uplink_name"] = known[key].get("uplink_name") or state.get("uplink_name") or ""
+                state["uplink_ip"] = known[key].get("uplink_ip") or state.get("uplink_ip") or ""
             if state.get("down_since") is None:
                 state["down_since"] = state.get("last_seen") or now
             if not state["alerting"] and now - state["down_since"] >= UNIFI_AP_DOWN_FOR_SECONDS:
-                state["alerting"] = True
-                offline = max(0, now - state["down_since"])
                 name = state.get("name") or key
-                log(f"[AP] ALERT {name} ({state['ip']}) DOWN")
-                send_feishu(build_ap_down_card(name, state["ip"], state["model"],
-                                               recovered=False, offline_seconds=offline))
+                # Root-cause suppression: if the AP's uplink switch is down, this
+                # AP outage is a downstream symptom -- stay quiet, let the switch
+                # alert be the single root-cause card.
+                if UNIFI_AP_ROOT_CAUSE_ENABLED and _ap_uplink_down(state.get("uplink_name"), state.get("uplink_ip")):
+                    if not state.get("suppressed_logged"):
+                        log(f"[AP] suppress {name} ({state['ip']}) behind down uplink {state.get('uplink_name')}")
+                        state["suppressed_logged"] = True
+                else:
+                    state["suppressed_logged"] = False
+                    state["alerting"] = True
+                    offline = max(0, now - state["down_since"])
+                    log(f"[AP] ALERT {name} ({state['ip']}) DOWN")
+                    send_feishu(build_ap_down_card(name, state["ip"], state["model"],
+                                                   recovered=False, offline_seconds=offline))
 
         if now - last_status_log >= 60:
             down = sum(1 for s in states.values() if s.get("alerting"))

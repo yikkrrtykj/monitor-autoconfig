@@ -70,6 +70,62 @@ def test_interconnect_card_names_the_down_physical_port_and_peer(monkeypatch):
     assert "Gi1/0/5" in text          # notes the leg still online
 
 
+def _chain_edges():
+    # 监控 -> 核心 -> 汇聚A -> 接入1 / 接入2
+    return [
+        {"from_ip": "10.0.0.1", "to_ip": "10.0.0.2"},   # core <-> distA
+        {"from_ip": "10.0.0.2", "to_ip": "10.0.0.11"},  # distA <-> access1
+        {"from_ip": "10.0.0.2", "to_ip": "10.0.0.12"},  # distA <-> access2
+    ]
+
+
+def test_build_topology_parents_roots_at_core():
+    parents = bridge.build_topology_parents(_chain_edges(), root_ip="10.0.0.1")
+    assert parents == {"10.0.0.2": "10.0.0.1", "10.0.0.11": "10.0.0.2", "10.0.0.12": "10.0.0.2"}
+    # Unknown core -> empty map (fail open: everything is treated as a root cause).
+    assert bridge.build_topology_parents(_chain_edges(), root_ip="") == {}
+
+
+def test_root_cause_vs_symptom_when_middle_switch_fails():
+    parents = bridge.build_topology_parents(_chain_edges(), root_ip="10.0.0.1")
+    # distA down takes its two access switches with it.
+    unreachable = {"10.0.0.2", "10.0.0.11", "10.0.0.12"}
+    # distA's uplink (core) is fine -> distA is the root cause, alert it.
+    assert bridge.is_down_symptom("10.0.0.2", parents, unreachable) is False
+    # The access switches sit below a down device -> symptoms, suppress.
+    assert bridge.is_down_symptom("10.0.0.11", parents, unreachable) is True
+    assert bridge.is_down_symptom("10.0.0.12", parents, unreachable) is True
+    # The root card can report how many downstream devices are also down.
+    assert bridge.count_down_descendants("10.0.0.2", parents, unreachable) == 2
+
+
+def test_unknown_parent_is_never_suppressed():
+    parents = bridge.build_topology_parents(_chain_edges(), root_ip="10.0.0.1")
+    # A device with no mapped parent (not in the LLDP tree) always alerts.
+    assert bridge.is_down_symptom("10.9.9.9", parents, {"10.0.0.2"}) is False
+
+
+def test_root_cause_card_folds_in_downstream_count(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    card = bridge.build_device_down_card("汇聚A", "10.0.0.2", recovered=False, offline_seconds=12, downstream=2)
+    text = json.dumps(card, ensure_ascii=False)
+    assert "下游 2 台" in text
+    # A lone outage (no downstream) shows no fold-in line.
+    plain = json.dumps(bridge.build_device_down_card("接入1", "10.0.0.11", recovered=False, downstream=0), ensure_ascii=False)
+    assert "下游" not in plain
+
+
+def test_ap_uplink_down_suppresses_only_on_confident_match(monkeypatch):
+    monkeypatch.setitem(bridge.INFRA_DOWN, "unreachable", {"10.0.0.2"})
+    monkeypatch.setitem(bridge.INFRA_DOWN, "unreachable_names", {"access-sw-1"})
+    # Uplink switch is down (by name or by IP) -> AP is a symptom, suppress.
+    assert bridge._ap_uplink_down("Access-SW-1", "") is True
+    assert bridge._ap_uplink_down("", "10.0.0.2") is True
+    # Uplink switch is fine / unknown -> the AP alerts normally.
+    assert bridge._ap_uplink_down("core-sw", "10.0.0.99") is False
+    assert bridge._ap_uplink_down("", "") is False
+
+
 def test_fetch_interconnect_members_maps_aggregate_to_member_ifindexes(monkeypatch):
     # ifStackTable rows: higher=aggregate ifIndex, lower=member ifIndex; 0 is a
     # top/bottom sentinel and must be ignored.
