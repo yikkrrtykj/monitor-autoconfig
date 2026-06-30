@@ -881,7 +881,7 @@ def build_interconnect_card(event, recovered=False):
     down_members = event.get("down_members") or []
     up_members = event.get("up_members") or []
     if recovered:
-        subtitle = "互联口恢复"
+        subtitle = "链路聚合恢复"
         status_emoji = "✅"
         lines = [
             f"🖥 设备：{device_text}",
@@ -892,7 +892,7 @@ def build_interconnect_card(event, recovered=False):
             f"⏰ 时间：{ts}",
         ]
     else:
-        subtitle = "互联口降级告警"
+        subtitle = "链路聚合告警"
         # Redundancy lost on one leg; the link still passes traffic via up_members.
         still_up = f"，剩 {_join_ports(up_members)} 仍在线" if up_members else ""
         lines = [
