@@ -212,7 +212,6 @@ services:
       # only fires after it stays clear this long -- tames BPDU/loopback storms.
       SYSLOG_REALERT_SECONDS: "${SYSLOG_REALERT_SECONDS:-600}"
       SYSLOG_RECOVER_STABLE_SECONDS: "${SYSLOG_RECOVER_STABLE_SECONDS:-120}"
-      # dhcp_snooping left out by default (noisy); add it back here if wanted.
       SYSLOG_ALERT_TYPES: "${SYSLOG_ALERT_TYPES:-native_vlan_mismatch,errdisable,bpduguard,loopback}"
       SYSLOG_CORRELATION_SECONDS: "${SYSLOG_CORRELATION_SECONDS:-10}"
       SYSLOG_RECOVERY_ENABLED: "${SYSLOG_RECOVERY_ENABLED:-true}"

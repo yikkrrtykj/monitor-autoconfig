@@ -30,7 +30,7 @@ Env:
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
   SYSLOG_EVENT_RATE_LIMIT seconds to suppress duplicate syslog event cards (default 60)
   SYSLOG_ALERT_TYPES      comma list of syslog cards to push
-                          (default native_vlan_mismatch,errdisable,bpduguard,loopback,dhcp_snooping)
+                          (default native_vlan_mismatch,errdisable,bpduguard,loopback)
   SYSLOG_CORRELATION_SECONDS seconds to collapse native-vlan + errdisable on same port
   SYSLOG_RECOVERY_ENABLED true = send recovery cards when an alerted port comes back up
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
@@ -101,8 +101,6 @@ SYSLOG_RECOVER_STABLE_SECONDS = int(os.environ.get("SYSLOG_RECOVER_STABLE_SECOND
 SYSLOG_ALERT_TYPES = {
     part.strip().lower()
     for part in os.environ.get(
-        # dhcp_snooping is off by default (noisy, rarely actionable at events);
-        # add it back to SYSLOG_ALERT_TYPES if you want rogue-DHCP alerts.
         "SYSLOG_ALERT_TYPES",
         "native_vlan_mismatch,errdisable,bpduguard,loopback",
     ).split(",")
@@ -181,7 +179,6 @@ SYSNAME_CHANGE_ALERT_ENABLED = os.environ.get("SYSNAME_CHANGE_ALERT_ENABLED", "t
 SYSNAME_CHANGE_POLL_INTERVAL = int(os.environ.get("SYSNAME_CHANGE_POLL_INTERVAL", "60"))
 
 _MAC_RE = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}|[0-9A-Fa-f]{12}"
-_DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
 _MACFLAP_RE = re.compile(
     rf"MACFLAP_NOTIF:\s+Host\s+({_MAC_RE})\s+in\s+vlan\s+(\d+)\s+is\s+flapping\s+between\s+port\s+(\S+)\s+and\s+port\s+(\S+)",
     re.IGNORECASE,
@@ -576,123 +573,6 @@ def _format_mac(value):
     if not mac:
         return str(value or "").strip()
     return ":".join(mac[i:i + 2] for i in range(0, 12, 2))
-
-
-def _dhcp_message_type_text(value):
-    value = str(value or "").strip().upper()
-    labels = {
-        "DHCPDISCOVER": "发现",
-        "DHCPOFFER": "提供",
-        "DHCPREQUEST": "请求",
-        "DHCPDECLINE": "拒绝",
-        "DHCPACK": "确认",
-        "DHCPNAK": "拒绝确认",
-        "DHCPRELEASE": "释放地址",
-        "DHCPINFORM": "信息请求",
-    }
-    return labels.get(value, value)
-
-
-def parse_dhcp_snooping_message(message):
-    text = str(message or "")
-    event = {
-        "message_type": "",
-        "chaddr": "",
-        "chaddr_hex": "",
-        "mac_sa": "",
-        "mac_sa_hex": "",
-        "reason": "",
-    }
-
-    match = re.search(r"message type:\s*([A-Za-z0-9_-]+)", text, re.IGNORECASE)
-    if match:
-        event["message_type"] = match.group(1).upper()
-
-    match = re.search(rf"\bchaddr:\s*({_MAC_RE})", text, re.IGNORECASE)
-    if match:
-        event["chaddr"] = _format_mac(match.group(1))
-        event["chaddr_hex"] = _normalize_mac_hex(match.group(1))
-
-    match = re.search(rf"\bMAC\s+sa:\s*({_MAC_RE})", text, re.IGNORECASE)
-    if match:
-        event["mac_sa"] = _format_mac(match.group(1))
-        event["mac_sa_hex"] = _normalize_mac_hex(match.group(1))
-
-    if "MATCH_MAC_FAIL" in text or "chaddr doesn't match source mac" in text.lower():
-        event["reason"] = "报文客户端 MAC 与实际源 MAC 不一致"
-    else:
-        match = re.search(r"%[^:]+:\s*(.+?)(?:,\s*message type:|$)", text)
-        if match:
-            event["reason"] = match.group(1).strip()
-    return event
-
-
-def _port_label_from_fdb(entry):
-    if not entry:
-        return ""
-    port = str(entry.get("ifName") or entry.get("ifDescr") or entry.get("ifAlias") or "").strip()
-    if not port:
-        return ""
-
-    def comparable(value):
-        text = re.sub(r"[\s_-]+", "", str(value or "").lower())
-        replacements = {
-            "tengigabitethernet": "te",
-            "twentyfivegigabitethernet": "twe",
-            "fortygigabitethernet": "fo",
-            "hundredgigabitethernet": "hu",
-            "gigabitethernet": "gi",
-            "fastethernet": "fa",
-            "portchannel": "po",
-            "ethernet": "eth",
-        }
-        for long_name, short_name in replacements.items():
-            text = text.replace(long_name, short_name)
-        return text
-
-    for extra in (entry.get("ifAlias"), entry.get("ifDescr")):
-        extra = str(extra or "").strip()
-        if not extra or extra == port or comparable(extra) == comparable(port):
-            continue
-        return f"{port} / {extra}"
-    return port
-
-
-def lookup_librenms_fdb_port(mac, host=""):
-    token = _librenms_token()
-    mac_hex = _normalize_mac_hex(mac)
-    if not token or not LIBRENMS_URL or not mac_hex:
-        return None
-
-    url = f"{LIBRENMS_URL}/api/v0/resources/fdb/{mac_hex}/detail"
-    req = request.Request(url, headers={"X-Auth-Token": token})
-    try:
-        with request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
-    except error.HTTPError as exc:
-        if exc.code != 404:
-            body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
-            log(f"[SYSLOG] FDB lookup HTTP {exc.code} for {_format_mac(mac_hex)}: {body[:160]}")
-        return None
-    except Exception as exc:
-        log(f"[SYSLOG] FDB lookup failed for {_format_mac(mac_hex)}: {exc}")
-        return None
-
-    entries = data.get("ports_fdb") or []
-    if isinstance(entries, dict):
-        entries = [entries]
-    if not isinstance(entries, list) or not entries:
-        return None
-
-    host_l = str(host or "").strip().lower()
-    for entry in entries:
-        candidates = [
-            str(entry.get("hostname") or "").strip().lower(),
-            str(entry.get("sysName") or "").strip().lower(),
-        ]
-        if host_l and host_l in candidates:
-            return entry
-    return entries[0]
 
 
 def _host_display_name(host, fdb_entry=None):
@@ -2206,35 +2086,6 @@ def unifi_ap_watcher():
         time.sleep(UNIFI_AP_POLL_INTERVAL)
 
 
-def build_dhcp_snooping_card(host, message, parsed=None):
-    parsed = parsed or parse_dhcp_snooping_message(message)
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    fdb_entry = lookup_librenms_fdb_port(parsed.get("mac_sa_hex"), host)
-    if not fdb_entry and parsed.get("chaddr_hex"):
-        fdb_entry = lookup_librenms_fdb_port(parsed.get("chaddr_hex"), host)
-
-    device = _host_display_name(host, fdb_entry)
-    dev_text = f"{device} ({host})" if host and host != device else device
-    port = _port_label_from_fdb(fdb_entry)
-
-    lines = [f"🖥 设备：{dev_text}"]
-    if port:
-        lines.append(f"🔌 接口：{port}")
-    else:
-        lines.append("🔌 接口：未查到")
-
-    if parsed.get("reason"):
-        lines.append(f"📋 异常：{parsed['reason']}")
-    if parsed.get("message_type"):
-        lines.append(f"📨 DHCP：{_dhcp_message_type_text(parsed['message_type'])}")
-    if parsed.get("mac_sa"):
-        lines.append(f"🔗 实际源 MAC：{parsed['mac_sa']}")
-    if parsed.get("chaddr"):
-        lines.append(f"🧾 报文客户端 MAC：{parsed['chaddr']}")
-    lines.append(f"⏰ 时间：{ts}")
-    return _make_card(next_event_title(), "⚠️ DHCP Snooping 异常", "orange", "\n".join(lines))
-
-
 def _clean_iface_token(value):
     return str(value or "").strip().rstrip(".,;:")
 
@@ -2638,28 +2489,6 @@ def syslog_watcher():
         link_state = parse_link_state_event(message)
         if link_state and link_state.get("state") == "up":
             _send_recovery_if_active(host, link_state.get("port"), now)
-            continue
-
-        if _DHCP_SNOOP_RE.search(message):
-            if not _syslog_event_enabled("dhcp_snooping"):
-                continue
-            parsed = parse_dhcp_snooping_message(message)
-            dedupe_key = "|".join([
-                host,
-                parsed.get("message_type") or "",
-                parsed.get("mac_sa_hex") or "",
-                parsed.get("chaddr_hex") or "",
-                message[:120] if not (parsed.get("mac_sa_hex") or parsed.get("chaddr_hex")) else "",
-            ])
-            now = time.time()
-            if now - _last_sent.get(dedupe_key, 0) >= rate_limit:
-                _last_sent[dedupe_key] = now
-                log(
-                    f"[SYSLOG] DHCP snooping violation from {host} "
-                    f"type={parsed.get('message_type') or '-'} "
-                    f"mac_sa={parsed.get('mac_sa') or '-'} chaddr={parsed.get('chaddr') or '-'}"
-                )
-                send_feishu(build_dhcp_snooping_card(host, message, parsed))
             continue
 
         event = parse_network_syslog_event(message)
