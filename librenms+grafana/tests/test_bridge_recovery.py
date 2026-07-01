@@ -67,8 +67,8 @@ def test_interconnect_card_names_the_down_physical_port_and_peer(monkeypatch):
     assert "Gi1/0/4" in text                   # the actual down physical port
     assert "douyucarnival-stage4" in text      # the real peer switch (from LLDP)
     assert "对端交换机" in text
-    assert "降级" in text                      # framed as degraded, not a full outage
-    assert "Gi1/0/5" in text                   # notes the leg still online
+    assert "链路聚合告警" in text              # framed as a LAG event, not a full outage
+    assert "剩 Gi1/0/5 在线" in text           # status shows the surviving leg
 
 
 def test_peer_switch_resolves_from_lldp_by_down_member_port():
