@@ -208,7 +208,12 @@ services:
       ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-90}"
       SYSLOG_WATCH_ENABLED: "${SYSLOG_WATCH_ENABLED:-true}"
       SYSLOG_EVENT_RATE_LIMIT: "${SYSLOG_EVENT_RATE_LIMIT:-60}"
-      SYSLOG_ALERT_TYPES: "${SYSLOG_ALERT_TYPES:-native_vlan_mismatch,errdisable,bpduguard,loopback,dhcp_snooping}"
+      # A flapping port re-alerts at most once per this window, and its recovery
+      # only fires after it stays clear this long -- tames BPDU/loopback storms.
+      SYSLOG_REALERT_SECONDS: "${SYSLOG_REALERT_SECONDS:-600}"
+      SYSLOG_RECOVER_STABLE_SECONDS: "${SYSLOG_RECOVER_STABLE_SECONDS:-120}"
+      # dhcp_snooping left out by default (noisy); add it back here if wanted.
+      SYSLOG_ALERT_TYPES: "${SYSLOG_ALERT_TYPES:-native_vlan_mismatch,errdisable,bpduguard,loopback}"
       SYSLOG_CORRELATION_SECONDS: "${SYSLOG_CORRELATION_SECONDS:-10}"
       SYSLOG_RECOVERY_ENABLED: "${SYSLOG_RECOVERY_ENABLED:-true}"
       SYSLOG_FILE: "/var/log/remote/syslog.log"

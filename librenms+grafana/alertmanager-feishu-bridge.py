@@ -92,11 +92,19 @@ ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "90") or
 SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
 SYSLOG_EVENT_RATE_LIMIT = int(os.environ.get("SYSLOG_EVENT_RATE_LIMIT", "60"))
+# A recurring problem on the same port re-alerts at most once per this window, so
+# a flapping BPDU/errdisable/loopback port doesn't spam a card every minute.
+SYSLOG_REALERT_SECONDS = int(os.environ.get("SYSLOG_REALERT_SECONDS", "600"))
+# A port must stay clear this long before its recovery card is sent; a re-fire
+# cancels it. Collapses improved/worsened flapping into one alert + one recovery.
+SYSLOG_RECOVER_STABLE_SECONDS = int(os.environ.get("SYSLOG_RECOVER_STABLE_SECONDS", "120"))
 SYSLOG_ALERT_TYPES = {
     part.strip().lower()
     for part in os.environ.get(
+        # dhcp_snooping is off by default (noisy, rarely actionable at events);
+        # add it back to SYSLOG_ALERT_TYPES if you want rogue-DHCP alerts.
         "SYSLOG_ALERT_TYPES",
-        "native_vlan_mismatch,errdisable,bpduguard,loopback,dhcp_snooping",
+        "native_vlan_mismatch,errdisable,bpduguard,loopback",
     ).split(",")
     if part.strip()
 }
@@ -2390,25 +2398,16 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
     if _is_bpdu_event(event):
         lines.extend([
             f"🔌 接口：{event.get('port') or '未解析到'}",
-            f"📋 类型：BPDU_PROTECT",
         ])
         if event.get("reason"):
             lines.append(f"📋 原因：{event.get('reason')}")
-        lines.append(f"⏰ 时间：{ts}")
         if recovered:
-            lines.append(f"⏳ 变轻耗时：{format_alert_duration(duration, recovered=True)}")
-            return _make_card(
-                next_event_title(),
-                "⛔ BPDU blocked: Has improved",
-                "orange",
-                "\n".join(lines),
-            )
-        return _make_card(
-            next_event_title(),
-            "⛔ BPDU blocked: Has worsened",
-            "red",
-            "\n".join(lines),
-        )
+            lines.append("✅ 状态：已恢复")
+            lines.append(f"⏳ 恢复耗时：{format_alert_duration(duration, recovered=True)}")
+            lines.append(f"⏰ 时间：{ts}")
+            return _make_card(next_event_title(), "🟢 BPDU 保护恢复", "green", "\n".join(lines))
+        lines.append(f"⏰ 时间：{ts}")
+        return _make_card(next_event_title(), "⛔ BPDU 保护触发", "red", "\n".join(lines))
 
     if kind == "native_vlan_mismatch":
         lines.extend([
@@ -2459,6 +2458,8 @@ def syslog_watcher():
     _pending_events = {}
     _active_events = {}
     rate_limit = max(1, SYSLOG_EVENT_RATE_LIMIT)
+    network_realert = max(rate_limit, SYSLOG_REALERT_SECONDS)
+    recover_stable = max(0, SYSLOG_RECOVER_STABLE_SECONDS)
     correlation_window = max(0, SYSLOG_CORRELATION_SECONDS)
 
     def _port_key(host, port):
@@ -2496,15 +2497,21 @@ def syslog_watcher():
         }
 
     def _send_network_event(host, message, event, now):
+        port = _network_event_port(event)
+        # A re-fire means the problem is still ongoing: cancel any in-progress
+        # recovery so a flapping port doesn't emit improved/worsened churn.
+        if port:
+            active = _active_events.get(_port_key(host, port))
+            if active:
+                active.pop("recovering_since", None)
         dedupe_key = "|".join([host, event.get("dedupe") or event.get("kind") or message[:120]])
-        if now - _last_sent.get(dedupe_key, 0) >= rate_limit:
+        if now - _last_sent.get(dedupe_key, 0) >= network_realert:
             _last_sent[dedupe_key] = now
             log(
                 f"[SYSLOG] {event.get('kind')} from {host} "
                 f"port={event.get('local_port') or event.get('port') or '-'}"
             )
             sent = send_feishu(build_network_syslog_card(host, message, event))
-            port = _network_event_port(event)
             if sent and SYSLOG_RECOVERY_ENABLED and _network_event_priority(event.get("kind")) > 0 and port:
                 _active_events[_port_key(host, port)] = {
                     "host": host,
@@ -2556,28 +2563,42 @@ def syslog_watcher():
                 continue
             _send_network_event(pending["host"], pending["message"], pending["event"], now)
 
+    def _emit_recovery(active, now):
+        event = active["event"]
+        duration = max(0, now - active.get("started", now))
+        log(
+            f"[SYSLOG] RECOVER {event.get('kind')} from {active['host']} "
+            f"port={_network_event_port(event) or '-'} duration={int(duration)}s"
+        )
+        send_feishu(build_network_syslog_card(
+            active["host"], active["message"], event, recovered=True, duration=duration,
+        ))
+
     def _send_recovery_if_active(host, port, now):
         if not SYSLOG_RECOVERY_ENABLED:
             return False
         key = _port_key(host, port)
-        active = _active_events.pop(key, None)
         _pending_events.pop(key, None)
+        active = _active_events.get(key)
         if not active:
             return False
-        duration = max(0, now - active.get("started", now))
-        event = active["event"]
-        log(
-            f"[SYSLOG] RECOVER {event.get('kind')} from {host} "
-            f"port={_network_event_port(event) or port} duration={int(duration)}s"
-        )
-        send_feishu(build_network_syslog_card(
-            active["host"],
-            active["message"],
-            event,
-            recovered=True,
-            duration=duration,
-        ))
+        if recover_stable <= 0:
+            _active_events.pop(key, None)
+            _emit_recovery(active, now)
+            return True
+        # Debounce: the port must stay clear for recover_stable before we call it
+        # recovered; a re-fire (in _send_network_event) clears this timestamp.
+        active.setdefault("recovering_since", now)
         return True
+
+    def _flush_recoveries(now):
+        if recover_stable <= 0:
+            return
+        for key, active in list(_active_events.items()):
+            started = active.get("recovering_since")
+            if started is not None and now - started >= recover_stable:
+                _active_events.pop(key, None)
+                _emit_recovery(active, now)
 
     while not os.path.exists(SYSLOG_FILE):
         time.sleep(5)
@@ -2592,9 +2613,11 @@ def syslog_watcher():
 
     while True:
         _flush_pending_events(time.time())
+        _flush_recoveries(time.time())
         line = f.readline()
         if not line:
             _flush_pending_events(time.time())
+            _flush_recoveries(time.time())
             time.sleep(0.5)
             try:
                 if os.stat(SYSLOG_FILE).st_ino != current_ino:
