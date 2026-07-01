@@ -149,10 +149,9 @@ services:
     environment:
       TZ: Asia/Shanghai
       FEISHU_BRIDGE_PORT: "5005"
-      # Root-cause suppression: alert only the upstream device, fold its downstream
-      # victims (switches + their APs) into that one card. Needs the core IP + LLDP.
+      # Root-cause suppression: alert only the upstream switch, fold its downstream
+      # victim switches into that one card. Needs the core IP + LLDP topology.
       DEVICE_DOWN_ROOT_CAUSE_ENABLED: "${DEVICE_DOWN_ROOT_CAUSE_ENABLED:-true}"
-      UNIFI_AP_ROOT_CAUSE_ENABLED: "${UNIFI_AP_ROOT_CAUSE_ENABLED:-true}"
       LIBRENMS_CORE_IP: "${LIBRENMS_CORE_IP:-}"
       CORE_SWITCH_PING: "${CORE_SWITCH_PING:-}"
       TOPOLOGY_EDGES_FILE: "/etc/prometheus/targets/topology/edges.json"

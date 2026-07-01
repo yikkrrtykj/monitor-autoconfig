@@ -115,17 +115,6 @@ def test_root_cause_card_folds_in_downstream_count(monkeypatch):
     assert "下游" not in plain
 
 
-def test_ap_uplink_down_suppresses_only_on_confident_match(monkeypatch):
-    monkeypatch.setitem(bridge.INFRA_DOWN, "unreachable", {"10.0.0.2"})
-    monkeypatch.setitem(bridge.INFRA_DOWN, "unreachable_names", {"access-sw-1"})
-    # Uplink switch is down (by name or by IP) -> AP is a symptom, suppress.
-    assert bridge._ap_uplink_down("Access-SW-1", "") is True
-    assert bridge._ap_uplink_down("", "10.0.0.2") is True
-    # Uplink switch is fine / unknown -> the AP alerts normally.
-    assert bridge._ap_uplink_down("core-sw", "10.0.0.99") is False
-    assert bridge._ap_uplink_down("", "") is False
-
-
 def test_fetch_interconnect_members_maps_aggregate_to_member_ifindexes(monkeypatch):
     # ifStackTable rows: higher=aggregate ifIndex, lower=member ifIndex; 0 is a
     # top/bottom sentinel and must be ignored.
