@@ -59,15 +59,28 @@ def test_interconnect_card_names_the_down_physical_port_and_peer(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
     event = {
         "device": "douyucarnival-core", "ip": "192.168.10.254",
-        "alias": "to-stage4", "port": "Po4",
+        "alias": "to-stage4", "port": "Po4", "peer_switch": "douyucarnival-stage4",
         "down_members": ["Gi1/0/4"], "up_members": ["Gi1/0/5"], "duration": 6,
     }
     card = bridge.build_interconnect_card(event, recovered=False)
     text = json.dumps(card, ensure_ascii=False)
-    assert "Gi1/0/4" in text          # the actual down physical port
-    assert "to-stage4" in text        # the peer
-    assert "降级" in text             # framed as degraded, not a full outage
-    assert "Gi1/0/5" in text          # notes the leg still online
+    assert "Gi1/0/4" in text                   # the actual down physical port
+    assert "douyucarnival-stage4" in text      # the real peer switch (from LLDP)
+    assert "对端交换机" in text
+    assert "降级" in text                      # framed as degraded, not a full outage
+    assert "Gi1/0/5" in text                   # notes the leg still online
+
+
+def test_peer_switch_resolves_from_lldp_by_down_member_port():
+    edges = [
+        {"from_ip": "192.168.10.254", "from_port": "Gi1/0/4", "to_sysname": "douyucarnival-stage4"},
+        {"from_ip": "192.168.10.254", "from_port": "Gi1/0/9", "to_sysname": "other"},
+    ]
+    peer_map = bridge.build_peer_map(edges)
+    # The down member's LLDP neighbor is the peer switch.
+    assert bridge.resolve_peer_switch(peer_map, "192.168.10.254", ["Gi1/0/4", "Po4"]) == "douyucarnival-stage4"
+    # Unknown ports -> "" (card falls back to the alias).
+    assert bridge.resolve_peer_switch(peer_map, "192.168.10.254", ["Po9"]) == ""
 
 
 def _chain_edges():

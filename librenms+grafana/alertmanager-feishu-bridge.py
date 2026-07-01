@@ -869,7 +869,8 @@ def build_interconnect_card(event, recovered=False):
     device = event.get("device") or event.get("ip") or "?"
     ip = event.get("ip") or ""
     device_text = f"{device} ({ip})" if ip and ip != device else device
-    peer = event.get("alias") or event.get("port") or "?"  # ifAlias describes the far end, e.g. to-stage4
+    # Prefer the real peer switch from LLDP; fall back to the port alias/name.
+    peer = event.get("peer_switch") or event.get("alias") or event.get("port") or "?"
     down_members = event.get("down_members") or []
     up_members = event.get("up_members") or []
     if recovered:
@@ -878,7 +879,7 @@ def build_interconnect_card(event, recovered=False):
         lines = [
             f"🖥 设备：{device_text}",
             f"🔌 物理口：{_join_ports(down_members)} 已恢复",
-            f"🔗 对端：{peer}",
+            f"🔗 对端交换机：{peer}",
             f"{status_emoji} 状态：链路冗余已恢复",
             f"⏳ 恢复耗时：{format_alert_duration(event.get('duration'), True)}",
             f"⏰ 时间：{ts}",
@@ -890,7 +891,7 @@ def build_interconnect_card(event, recovered=False):
         lines = [
             f"🖥 设备：{device_text}",
             f"🔌 断线物理口：{_join_ports(down_members)}",
-            f"🔗 对端：{peer}",
+            f"🔗 对端交换机：{peer}",
             f"⚠️ 状态：链路降级（仍连通{still_up}）",
             f"⏳ 持续时间：{format_alert_duration(event.get('duration'), False)}",
             f"⏰ 时间：{ts}",
@@ -1392,6 +1393,7 @@ def interconnect_watcher():
     last_status_log = 0.0
     last_name_refresh = 0.0
     librenms_names = {}
+    peer_map = {}
     time.sleep(25)
     log(
         "[LINK] interconnect watcher enabled "
@@ -1406,6 +1408,10 @@ def interconnect_watcher():
                 librenms_names = fetch_librenms_name_cache()
             except Exception as exc:
                 log(f"[LINK] LibreNMS name refresh failed: {exc}")
+            try:
+                peer_map = build_peer_map(load_topology_edges())
+            except Exception as exc:
+                log(f"[LINK] topology peer refresh failed: {exc}")
             last_name_refresh = now
 
         try:
@@ -1444,11 +1450,16 @@ def interconnect_watcher():
                 state["down_members"] = down_members
                 if not state["alerting"] and duration >= INTERCONNECT_ALERT_FOR_SECONDS:
                     state["alerting"] = True
+                    # Peer switch from LLDP: look up the down member ports first,
+                    # then the aggregate; save it so recovery names it too.
+                    peer = resolve_peer_switch(peer_map, port["ip"], down_members + [port["port"]])
+                    state["peer_switch"] = peer
                     event = dict(port)
                     event["down_members"] = down_members
                     event["up_members"] = [m["name"] for m in port["members"] if m["up"]]
+                    event["peer_switch"] = peer
                     event["duration"] = duration
-                    log(f"[LINK] ALERT {event['device']} {event['port']} degraded, down member(s)={down_members}")
+                    log(f"[LINK] ALERT {event['device']} {event['port']} degraded, down member(s)={down_members} peer={peer or '-'}")
                     send_feishu(build_interconnect_card(event, recovered=False))
             else:
                 if state["alerting"]:
@@ -1456,6 +1467,7 @@ def interconnect_watcher():
                         event = dict(port)
                         event["down_members"] = state.get("down_members") or []
                         event["up_members"] = [m["name"] for m in port["members"]]
+                        event["peer_switch"] = state.get("peer_switch") or ""
                         event["duration"] = max(0, now - (state["down_since"] or now))
                         log(f"[LINK] RECOVER {event['device']} {event['port']} members back up")
                         send_feishu(build_interconnect_card(event, recovered=True))
@@ -1499,6 +1511,29 @@ def build_topology_parents(edges, root_ip):
             parents[neighbor] = current
             queue.append(neighbor)
     return parents
+
+
+def build_peer_map(edges):
+    """(device_ip, local_port) -> peer switch name, from the LLDP topology, so a
+    link alert can name the switch on the far end (not just the port alias)."""
+    peers = {}
+    for edge in edges or []:
+        ip = str(edge.get("from_ip") or "").strip()
+        port = str(edge.get("from_port") or "").strip()
+        peer = str(edge.get("to_sysname") or edge.get("to_ip") or "").strip()
+        if ip and port and peer:
+            peers[(ip, port)] = peer
+    return peers
+
+
+def resolve_peer_switch(peer_map, ip, ports):
+    """First peer switch found among the given local ports (down members, then
+    the aggregate). "" when the LLDP topology doesn't know the far end."""
+    for port in ports:
+        peer = peer_map.get((ip, str(port or "").strip()))
+        if peer:
+            return peer
+    return ""
 
 
 def is_down_symptom(ip, parents, unreachable):
