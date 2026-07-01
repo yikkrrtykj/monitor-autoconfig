@@ -887,12 +887,11 @@ def build_interconnect_card(event, recovered=False):
     else:
         subtitle = "链路聚合告警"
         # Redundancy lost on one leg; the link still passes traffic via up_members.
-        still_up = f"，剩 {_join_ports(up_members)} 仍在线" if up_members else ""
         lines = [
             f"🖥 设备：{device_text}",
             f"🔌 断线物理口：{_join_ports(down_members)}",
             f"🔗 对端交换机：{peer}",
-            f"⚠️ 状态：链路降级（仍连通{still_up}）",
+            f"⚠️ 状态：剩 {_join_ports(up_members)} 在线",
             f"⏳ 持续时间：{format_alert_duration(event.get('duration'), False)}",
             f"⏰ 时间：{ts}",
         ]
