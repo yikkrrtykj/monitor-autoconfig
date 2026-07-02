@@ -23,7 +23,7 @@ import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from platform_config import (
     default_config_text,
@@ -50,11 +50,7 @@ APPLY_ENABLED = os.environ.get("PLATFORM_APPLY_ENABLED", "true").lower() in ("1"
 APPLY_COMMAND = os.environ.get("PLATFORM_APPLY_COMMAND", "/bin/sh /workspace/apply-env.sh")
 APPLY_TIMEOUT = max(30, int(os.environ.get("PLATFORM_APPLY_TIMEOUT", "300")))
 BRIDGE_URL = os.environ.get("PLATFORM_BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
-# bash (not sh) -- the script is #!/bin/bash and uses `echo -e`; sh would print "-e".
-PRECHECK_COMMAND = os.environ.get("PLATFORM_PRECHECK_COMMAND", "/bin/bash /workspace/pre-match-check.sh")
-PRECHECK_TIMEOUT = max(30, int(os.environ.get("PLATFORM_PRECHECK_TIMEOUT", "150")))
-# The stack services are on the same docker network; the readiness script reaches
-# them by service name and uses the host docker/curl/ping via /host/usr/bin.
+# The console's 赛前体检 queries these by service name (same docker network).
 PRECHECK_PROM_URL = os.environ.get("PLATFORM_PRECHECK_PROM_URL", "http://prometheus:9090")
 PRECHECK_GRAFANA_URL = os.environ.get("PLATFORM_PRECHECK_GRAFANA_URL", "http://grafana:3000")
 AUTH_ENABLED = os.environ.get("PLATFORM_AUTH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
@@ -385,36 +381,95 @@ def _host_exec_env() -> dict:
     return env
 
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+def _http_json(url: str, timeout: int = 5):
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+def _prom_query(expr: str):
+    return _http_json(f"{PRECHECK_PROM_URL}/api/v1/query?query={quote(expr)}").get("data", {}).get("result", [])
 
 
 def run_precheck() -> dict:
-    """Run pre-match-check.sh and return a structured red/green result for the
-    console. Reaches the stack by service name; reads the same .env the stack uses."""
-    env = _host_exec_env()
-    env["PROM_URL"] = PRECHECK_PROM_URL
-    env["GRAFANA_URL"] = PRECHECK_GRAFANA_URL
-    try:
-        completed = subprocess.run(
-            shlex.split(PRECHECK_COMMAND),
-            cwd=str(WORKDIR), env=env, capture_output=True, text=True,
-            timeout=PRECHECK_TIMEOUT, check=False,
-        )
-    except FileNotFoundError:
-        return {"ok": False, "error": "找不到 pre-match-check.sh"}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"赛前体检超时（{PRECHECK_TIMEOUT}s）"}
+    """Native readiness check for the console. Uses only urllib against the stack
+    services (reachable by name on the docker network) -- no curl/ping/compose,
+    so it works from the slim container and offline. pre-match-check.sh stays for
+    deeper host-side checks on the CLI."""
+    checks: list[dict] = []
 
-    output = _ANSI_RE.sub("", "\n".join(part for part in [completed.stdout, completed.stderr] if part)).strip()
-    summary = re.search(r"通过\s*(\d+).*?警告\s*(\d+).*?失败\s*(\d+)", output, re.S)
-    passed, warned, failed = (int(summary.group(i)) for i in (1, 2, 3)) if summary else (0, 0, 0)
-    verdict = "bad" if (failed > 0 or completed.returncode != 0) else ("warn" if warned > 0 else "good")
-    return {
-        "ok": True,
-        "verdict": verdict,           # good=可开赛 / warn=有警告 / bad=需处理
-        "pass": passed, "warn": warned, "fail": failed,
-        "output": output[-8000:],
-    }
+    def add(level, text):
+        checks.append({"level": level, "text": text})
+
+    # 1. Prometheus 可达 + 抓取目标
+    try:
+        ups = _prom_query("up")
+        online = sum(1 for x in ups if (x.get("value") or [None, "0"])[1] == "1")
+        add("good", f"Prometheus 正常，抓取目标 {online}/{len(ups)} 在线")
+    except Exception as exc:
+        add("bad", f"Prometheus 不可达（{PRECHECK_PROM_URL}）：{exc}")
+        # Without Prometheus the rest can't be judged.
+        return _precheck_result(checks)
+
+    # 2. 基础设施设备在线率（ping）
+    try:
+        infra = _prom_query('probe_success{job=~"infra-.*"}')
+        down = [x for x in infra if (x.get("value") or [None, "1"])[1] != "1"]
+        if not infra:
+            add("warn", "还没有基础设施 ping 目标（配置未填或未应用？）")
+        elif down:
+            names = "、".join((x.get("metric") or {}).get("display_name") or (x.get("metric") or {}).get("instance", "?") for x in down[:8])
+            add("bad", f"{len(down)} 台基础设施设备离线：{names}")
+        else:
+            add("good", f"基础设施 {len(infra)} 台全部在线")
+    except Exception as exc:
+        add("warn", f"无法查询设备在线状态：{exc}")
+
+    # 3. 选手机位 ping 目标
+    try:
+        players = _prom_query('count(probe_success{job="player-ping"})')
+        n = int(float((players[0].get("value") or [None, "0"])[1])) if players else 0
+        add("good" if n else "warn", f"选手机位监控目标 {n} 个" + ("" if n else "（还没扫描到选手，赛前正常）"))
+    except Exception as exc:
+        add("warn", f"无法查询选手目标：{exc}")
+
+    # 4. Grafana
+    try:
+        _http_json(f"{PRECHECK_GRAFANA_URL}/api/health")
+        add("good", "Grafana 正常")
+    except Exception as exc:
+        add("warn", f"Grafana 不可达（{PRECHECK_GRAFANA_URL}）：{exc}")
+
+    # 5. 飞书告警链路
+    try:
+        with urllib.request.urlopen(f"{BRIDGE_URL}/health", timeout=5) as resp:
+            resp.read()
+        add("good", "告警服务（飞书 bridge）正常")
+    except Exception as exc:
+        add("warn", f"告警服务不可达：{exc}")
+
+    # 6. 配置阻塞项
+    try:
+        issues = validate_config(parse_config_text(read_config_text()))
+        blocking = [i for i in issues if i.get("level") == "bad"]
+        if blocking:
+            for i in blocking[:6]:
+                add("bad", f"配置缺项：{i.get('message')}（{i.get('path')}）")
+        else:
+            add("good", "配置无阻塞项")
+    except Exception as exc:
+        add("warn", f"配置检查失败：{exc}")
+
+    return _precheck_result(checks)
+
+
+def _precheck_result(checks: list[dict]) -> dict:
+    icon = {"good": "✓", "warn": "⚠", "bad": "✗"}
+    passed = sum(1 for c in checks if c["level"] == "good")
+    warned = sum(1 for c in checks if c["level"] == "warn")
+    failed = sum(1 for c in checks if c["level"] == "bad")
+    verdict = "bad" if failed else ("warn" if warned else "good")
+    output = "\n".join(f"  {icon[c['level']]} {c['text']}" for c in checks)
+    return {"ok": True, "verdict": verdict, "pass": passed, "warn": warned, "fail": failed, "output": output}
 
 
 def run_apply_command() -> dict:

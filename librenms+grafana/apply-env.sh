@@ -22,14 +22,31 @@ detect_host_project_dir() {
 
 HOST_PROJECT_DIR=$(detect_host_project_dir)
 
-# Prefer the v2 plugin (`docker compose`); fall back to the v1 standalone
-# (`docker-compose`) so hosts that only have the old binary still work.
+# Find a working compose command. Order:
+#   1. `docker compose` (v2 plugin discovered normally)
+#   2. `docker-compose` (v1 standalone on PATH)
+#   3. the v2 plugin binary directly from a (host-mounted) cli-plugins dir --
+#      when run from a container the plugin often isn't auto-discovered, but the
+#      binary is a static Go executable that works when called by full path.
+COMPOSE_CMD=""
 if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then
   COMPOSE_CMD="docker-compose"
 else
-  COMPOSE_CMD=""
+  for _p in \
+    /host/usr/libexec/docker/cli-plugins/docker-compose \
+    /host/usr/lib/docker/cli-plugins/docker-compose \
+    /host/usr/local/lib/docker/cli-plugins/docker-compose \
+    /host/usr/local/libexec/docker/cli-plugins/docker-compose \
+    /usr/libexec/docker/cli-plugins/docker-compose \
+    /usr/lib/docker/cli-plugins/docker-compose \
+    /usr/local/lib/docker/cli-plugins/docker-compose; do
+    if [ -x "$_p" ] && "$_p" version >/dev/null 2>&1; then
+      COMPOSE_CMD="$_p"
+      break
+    fi
+  done
 fi
 
 compose() {
