@@ -22,15 +22,25 @@ detect_host_project_dir() {
 
 HOST_PROJECT_DIR=$(detect_host_project_dir)
 
+# Prefer the v2 plugin (`docker compose`); fall back to the v1 standalone
+# (`docker-compose`) so hosts that only have the old binary still work.
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE_CMD="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD="docker-compose"
+else
+  COMPOSE_CMD=""
+fi
+
 compose() {
   if [ -n "$HOST_PROJECT_DIR" ]; then
-    docker compose \
+    $COMPOSE_CMD \
       -f "$SCRIPT_DIR/docker-compose.yml" \
       --env-file "$SCRIPT_DIR/.env" \
       --project-directory "$HOST_PROJECT_DIR" \
       "$@"
   else
-    docker compose "$@"
+    $COMPOSE_CMD "$@"
   fi
 }
 
@@ -86,8 +96,9 @@ render_grafana_provisioning() {
   /bin/sh "$SCRIPT_DIR/render-grafana-provisioning.sh"
 }
 
-if ! docker compose version >/dev/null 2>&1; then
-  echo "[apply-env] ERROR: docker compose is not available." >&2
+if [ -z "$COMPOSE_CMD" ]; then
+  echo "[apply-env] ERROR: 找不到 docker compose（v2 插件）或 docker-compose（v1）。" >&2
+  echo "[apply-env]        请在服务器上确认 docker compose 可用，或手动执行：cd librenms+grafana && ./apply-env.sh" >&2
   exit 1
 fi
 

@@ -50,7 +50,8 @@ APPLY_ENABLED = os.environ.get("PLATFORM_APPLY_ENABLED", "true").lower() in ("1"
 APPLY_COMMAND = os.environ.get("PLATFORM_APPLY_COMMAND", "/bin/sh /workspace/apply-env.sh")
 APPLY_TIMEOUT = max(30, int(os.environ.get("PLATFORM_APPLY_TIMEOUT", "300")))
 BRIDGE_URL = os.environ.get("PLATFORM_BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
-PRECHECK_COMMAND = os.environ.get("PLATFORM_PRECHECK_COMMAND", "/bin/sh /workspace/pre-match-check.sh")
+# bash (not sh) -- the script is #!/bin/bash and uses `echo -e`; sh would print "-e".
+PRECHECK_COMMAND = os.environ.get("PLATFORM_PRECHECK_COMMAND", "/bin/bash /workspace/pre-match-check.sh")
 PRECHECK_TIMEOUT = max(30, int(os.environ.get("PLATFORM_PRECHECK_TIMEOUT", "150")))
 # The stack services are on the same docker network; the readiness script reaches
 # them by service name and uses the host docker/curl/ping via /host/usr/bin.

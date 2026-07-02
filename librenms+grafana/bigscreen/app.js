@@ -63,6 +63,7 @@
   let lastEditableConfig = null;
   let lastIncidents = [];
   let lastDeliveryManifest = null;
+  let configResultSticky = false;
   const DATA_STALE_AFTER_MS = 20000;
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
 
@@ -1929,6 +1930,10 @@
     if (platformConfig && platformConfig.ok && !form.dataset.dirty) {
       renderControlConfigForm(platformConfig.config || {});
     }
+    // Once the operator has run 验证/保存/应用配置, keep that result on screen --
+    // don't let the periodic refresh overwrite it (that made the apply error
+    // vanish into "验证通过" after a few seconds).
+    if (configResultSticky) return;
     if (platformConfig && !platformConfig.ok) {
       renderConfigResult(platformConfig);
     } else if (platformConfig && platformConfig.ok) {
@@ -1960,11 +1965,13 @@
         form.dataset.dirty = "1";
       }
       renderConfigResult(result);
+      configResultSticky = true;
       if (shouldReloadSavedConfig) {
         refreshControlPanel();
       }
     } catch (error) {
       renderConfigResult({ ok: false, error: error.message || "配置操作失败" });
+      configResultSticky = true;
     }
   }
 
@@ -2055,10 +2062,17 @@
     }
   }
 
+  let lastDeliverySignature = null;
   function renderDelivery(manifest) {
     lastDeliveryManifest = manifest;
     const element = document.getElementById("controlDelivery");
     if (!element) return;
+    // Only rebuild when the manifest actually changes; otherwise the periodic
+    // refresh would wipe the 赛前体检 / 测试告警 results the operator is reading.
+    const signature = JSON.stringify(manifest || null);
+    if (signature === lastDeliverySignature && element.dataset.built === "1") return;
+    lastDeliverySignature = signature;
+    element.dataset.built = "1";
     if (!manifest || !manifest.ok) {
       element.innerHTML = `<div class="control-empty bad">${escapeHtml(manifest && manifest.error ? manifest.error : "离线部署清单不可用")}</div>`;
       return;
