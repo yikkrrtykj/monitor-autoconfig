@@ -1559,6 +1559,35 @@
   border-left-color: rgba(39, 166, 68, 0.95);
 }
 
+.control-apply-next.warn {
+  border-left-color: rgba(214, 158, 46, 0.95);
+}
+
+.control-apply-next.bad {
+  border-left-color: rgba(214, 60, 78, 0.95);
+}
+
+.control-apply-next.pending {
+  border-left-color: rgba(94, 106, 210, 0.95);
+}
+
+.control-apply-next.pending strong::before {
+  content: "";
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 7px;
+  vertical-align: -1px;
+  border: 2px solid rgba(94, 106, 210, 0.35);
+  border-top-color: rgba(94, 106, 210, 0.95);
+  border-radius: 50%;
+  animation: control-spin 0.7s linear infinite;
+}
+
+@keyframes control-spin {
+  to { transform: rotate(360deg); }
+}
+
 .control-apply-next strong {
   color: var(--linear-ink);
   font-size: 13px;

@@ -1494,63 +1494,78 @@
 
   function renderConfigResult(payload) {
     const result = document.getElementById("controlConfigResult");
-    if (!payload) {
+    if (!result) return;
+    if (!payload || (payload.passive && !(payload.issues && payload.issues.length))) {
       result.innerHTML = `
         <div class="control-apply-next">
           <strong>配置流程</strong>
-          <span>先验证，确认无误后点保存或应用配置。</span>
+          <span>先点“验证”，确认无误后点“保存”或“应用配置”。</span>
+        </div>
+      `;
+      return;
+    }
+    if (payload.pending) {
+      result.innerHTML = `
+        <div class="control-apply-next pending">
+          <strong>正在${escapeHtml(payload.pendingLabel || "处理")}…</strong>
+          <span>请稍候，不要重复点击或刷新页面。</span>
         </div>
       `;
       return;
     }
     if (!payload.ok && payload.error) {
       result.innerHTML = `
-        <div class="control-empty bad">${escapeHtml(payload.error)}</div>
+        <div class="control-apply-next bad">
+          <strong>${escapeHtml(payload.errorTitle || "操作失败")}</strong>
+          <span>${escapeHtml(payload.error)}</span>
+        </div>
         ${payload.applyOutput ? `<pre class="control-apply-log">${escapeHtml(payload.applyOutput)}</pre>` : ""}
       `;
       return;
     }
     const issues = payload.issues || [];
-    if (!issues.length) {
-      result.innerHTML = payload.applied
-        ? `
-          <div class="control-apply-next good">
-            <strong>应用完成</strong>
-            <span>配置已写入 .env，相关容器已重建。</span>
-          </div>
-        `
-        : payload.needsRedeploy
-        ? `
-          <div class="control-apply-next good">
-            <strong>已写入配置</strong>
-            <span>.env 已更新；当前版本仍需要重启相关容器后生效。</span>
-          </div>
-        `
-        : `
-          <div class="control-empty good">验证通过</div>
-        `;
-      return;
+    const issuesHtml = issues.map((item) => controlItemHtml({
+      section: item.path || "配置",
+      label: item.message || "配置项",
+      level: item.level || "info",
+      value: (item.level || "info").toUpperCase(),
+      note: ""
+    })).join("");
+    let headline;
+    if (payload.applied) {
+      headline = `
+        <div class="control-apply-next good">
+          <strong>🚀 应用完成</strong>
+          <span>配置已写入 .env，相关容器已重启生效。</span>
+        </div>`;
+    } else if (payload.needsRedeploy) {
+      headline = `
+        <div class="control-apply-next warn">
+          <strong>已保存，待应用</strong>
+          <span>.env 已更新；点“应用配置”重启相关容器后才会生效。</span>
+        </div>`;
+    } else if (payload.action === "save") {
+      headline = `
+        <div class="control-apply-next good">
+          <strong>💾 已保存</strong>
+          <span>配置已写入 .env。点“应用配置”让服务重启生效。</span>
+        </div>`;
+    } else if (payload.action === "rollback") {
+      headline = `
+        <div class="control-apply-next good">
+          <strong>↩ 已回滚</strong>
+          <span>已恢复上一版配置。点“应用配置”让其生效。</span>
+        </div>`;
+    } else if (issues.length) {
+      headline = "";
+    } else {
+      headline = `
+        <div class="control-apply-next good">
+          <strong>✅ 验证通过</strong>
+          <span>配置无误，可点“保存”或“应用配置”。</span>
+        </div>`;
     }
-    result.innerHTML = `
-      ${issues.map((item) => controlItemHtml({
-        section: item.path || "配置",
-        label: item.message || "配置项",
-        level: item.level || "info",
-        value: (item.level || "info").toUpperCase(),
-        note: ""
-      })).join("")}
-      ${payload.applied ? `
-        <div class="control-apply-next good">
-          <strong>应用完成</strong>
-          <span>配置已写入 .env，相关容器已重建。</span>
-        </div>
-      ` : payload.needsRedeploy ? `
-        <div class="control-apply-next good">
-          <strong>已写入配置</strong>
-          <span>.env 已更新；当前版本仍需要重启相关容器后生效。</span>
-        </div>
-      ` : ""}
-    `;
+    result.innerHTML = `${issuesHtml}${headline}`;
   }
 
   function cloneControlConfig(configValue) {
@@ -1937,14 +1952,46 @@
     if (platformConfig && !platformConfig.ok) {
       renderConfigResult(platformConfig);
     } else if (platformConfig && platformConfig.ok) {
-      renderConfigResult({ ok: true, issues: platformConfig.issues || [] });
+      renderConfigResult({ ok: true, passive: true, issues: platformConfig.issues || [] });
     }
+  }
+
+  const CONFIG_ACTION_LABELS = { validate: "验证", save: "保存", apply: "应用配置", rollback: "回滚" };
+
+  function setConfigButtonsBusy(busy) {
+    ["controlConfigValidate", "controlConfigSave", "controlConfigApply", "controlConfigRollback"].forEach((id) => {
+      const btn = document.getElementById(id);
+      if (btn) btn.disabled = busy;
+    });
+  }
+
+  // Applying restarts the bigscreen container (the nginx that serves this page AND
+  // proxies /platform-api), so the apply request is almost always cut off mid-flight
+  // and the page is briefly unreachable. Poll until the proxy is back to confirm.
+  async function waitForPlatformRecovery(maxMs = 90000) {
+    const started = Date.now();
+    await new Promise((r) => setTimeout(r, 3000));
+    while (Date.now() - started < maxMs) {
+      const cfg = await fetchPlatformConfig();
+      if (cfg && cfg.ok) return cfg;
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+    return null;
   }
 
   async function runConfigAction(action) {
     const form = document.getElementById("controlConfigForm");
+    const label = CONFIG_ACTION_LABELS[action] || "处理";
     const configPayload = collectControlConfigForm();
     const payload = { text: JSON.stringify(configPayload, null, 2), actor: "web", note: action };
+    configResultSticky = true;
+    setConfigButtonsBusy(true);
+    renderConfigResult({
+      pending: true,
+      pendingLabel: action === "apply"
+        ? "应用配置，重启服务中（页面可能短暂断开约 10-20 秒，请勿刷新或关闭）"
+        : label
+    });
     try {
       let result;
       if (action === "validate") {
@@ -1952,10 +1999,11 @@
       } else if (action === "save") {
         result = await postPlatform("/config/save", payload);
       } else if (action === "apply") {
-        result = await postPlatform("/config/apply", payload);
+        result = await postPlatform("/config/apply", payload, { timeoutMs: 180000 });
       } else if (action === "rollback") {
         result = await postPlatform("/config/rollback", { actor: "web", note: "rollback from control" });
       }
+      result.action = action;
       lastPlatformConfig = result;
       const shouldReloadSavedConfig = result && result.ok && action !== "validate";
       if (shouldReloadSavedConfig && result.config && form) {
@@ -1965,13 +2013,36 @@
         form.dataset.dirty = "1";
       }
       renderConfigResult(result);
-      configResultSticky = true;
       if (shouldReloadSavedConfig) {
         refreshControlPanel();
       }
     } catch (error) {
-      renderConfigResult({ ok: false, error: error.message || "配置操作失败" });
-      configResultSticky = true;
+      if (action === "apply") {
+        // A dropped connection here almost always means bigscreen restarted mid-apply
+        // -- the apply itself usually finished. Wait for the proxy to come back, then
+        // confirm from the live config instead of flashing a scary error.
+        renderConfigResult({ pending: true, pendingLabel: "服务重启中，等待页面恢复" });
+        const recovered = await waitForPlatformRecovery();
+        if (recovered) {
+          lastPlatformConfig = recovered;
+          if (form) {
+            delete form.dataset.dirty;
+            if (recovered.config) renderControlConfigForm(recovered.config);
+          }
+          renderConfigResult({ ok: true, applied: true, action: "apply", issues: recovered.issues || [] });
+          refreshControlPanel();
+        } else {
+          renderConfigResult({
+            ok: false,
+            errorTitle: "无法确认应用结果",
+            error: "服务重启后页面仍未恢复，请手动刷新页面查看当前配置。"
+          });
+        }
+      } else {
+        renderConfigResult({ ok: false, errorTitle: `${label}失败`, error: error.message || "配置操作失败" });
+      }
+    } finally {
+      setConfigButtonsBusy(false);
     }
   }
 

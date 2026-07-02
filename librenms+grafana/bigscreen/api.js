@@ -498,8 +498,8 @@
     }
   }
 
-  function postPlatform(path, payload) {
-    return platformApi(path, { method: "POST", body: JSON.stringify(payload || {}) });
+  function postPlatform(path, payload, options) {
+    return platformApi(path, { method: "POST", body: JSON.stringify(payload || {}), ...(options || {}) });
   }
 
   function patchPlatform(path, payload) {
