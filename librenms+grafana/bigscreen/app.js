@@ -2071,11 +2071,38 @@
     element.innerHTML = `
       ${rows.map(controlItemHtml).join("")}
       <div class="delivery-actions">
-        <a class="delivery-download" href="/platform-api/delivery/export">下载离线部署配置</a>
+        <button type="button" class="delivery-test-alert" id="preCheckBtn">赛前体检</button>
         <button type="button" class="delivery-test-alert" id="testAlertBtn">发送测试告警</button>
+        <a class="delivery-download" href="/platform-api/delivery/export">下载离线部署配置</a>
         <span class="test-alert-result" id="testAlertResult"></span>
       </div>
+      <div class="precheck-result" id="preCheckResult" hidden></div>
     `;
+    const preBtn = document.getElementById("preCheckBtn");
+    if (preBtn) {
+      preBtn.addEventListener("click", async () => {
+        const box = document.getElementById("preCheckResult");
+        preBtn.disabled = true;
+        if (box) { box.hidden = false; box.className = "precheck-result"; box.textContent = "体检中…（最长约 2 分钟）"; }
+        try {
+          const res = await postPlatform("/pre-check", {});
+          if (box) {
+            if (!res || !res.ok) {
+              box.className = "precheck-result bad";
+              box.textContent = `体检失败：${(res && res.error) || "未知错误"}`;
+            } else {
+              const verdictText = { good: "✅ 可以开赛", warn: "⚠ 有警告，请确认", bad: "❌ 需要处理" }[res.verdict] || res.verdict;
+              box.className = `precheck-result ${res.verdict}`;
+              box.innerHTML = `<div class="precheck-verdict">${verdictText}　通过 ${res.pass} · 警告 ${res.warn} · 失败 ${res.fail}</div><pre>${escapeHtml(res.output || "")}</pre>`;
+            }
+          }
+        } catch (error) {
+          if (box) { box.className = "precheck-result bad"; box.textContent = `体检失败：${error.message}`; }
+        } finally {
+          preBtn.disabled = false;
+        }
+      });
+    }
     const testBtn = document.getElementById("testAlertBtn");
     if (testBtn) {
       testBtn.addEventListener("click", async () => {

@@ -516,6 +516,9 @@ services:
       PLATFORM_STATE_DIR: "/workspace/platform-state"
       # Feishu bridge, used by the console's "发送测试告警" button.
       PLATFORM_BRIDGE_URL: "${PLATFORM_BRIDGE_URL:-http://alertmanager-feishu-bridge:5005}"
+      # "赛前体检" button runs pre-match-check.sh against the stack (by service name).
+      PLATFORM_PRECHECK_PROM_URL: "${PLATFORM_PRECHECK_PROM_URL:-http://prometheus:9090}"
+      PLATFORM_PRECHECK_GRAFANA_URL: "${PLATFORM_PRECHECK_GRAFANA_URL:-http://grafana:3000}"
       PLATFORM_WRITE_ENABLED: "${PLATFORM_WRITE_ENABLED:-true}"
       PLATFORM_AUTH_ENABLED: "${PLATFORM_AUTH_ENABLED:-true}"
       PLATFORM_ADMIN_USER: "${PLATFORM_ADMIN_USER:-admin}"

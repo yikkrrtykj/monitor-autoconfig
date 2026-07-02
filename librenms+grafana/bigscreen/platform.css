@@ -1504,6 +1504,35 @@
 .test-alert-result.good { color: #35c46b; }
 .test-alert-result.bad { color: #ff6b6b; }
 
+.precheck-result {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 20, 34, 0.35);
+  font-size: 12px;
+}
+
+.precheck-result.good { border-color: rgba(53, 196, 107, 0.5); }
+.precheck-result.warn { border-color: rgba(245, 197, 66, 0.5); }
+.precheck-result.bad { border-color: rgba(255, 107, 107, 0.5); }
+
+.precheck-verdict {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.precheck-result pre {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--linear-ink-dim, #9aa0b5);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .control-empty {
   display: grid;
   min-height: 42px;

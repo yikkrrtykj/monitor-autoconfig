@@ -50,6 +50,12 @@ APPLY_ENABLED = os.environ.get("PLATFORM_APPLY_ENABLED", "true").lower() in ("1"
 APPLY_COMMAND = os.environ.get("PLATFORM_APPLY_COMMAND", "/bin/sh /workspace/apply-env.sh")
 APPLY_TIMEOUT = max(30, int(os.environ.get("PLATFORM_APPLY_TIMEOUT", "300")))
 BRIDGE_URL = os.environ.get("PLATFORM_BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
+PRECHECK_COMMAND = os.environ.get("PLATFORM_PRECHECK_COMMAND", "/bin/sh /workspace/pre-match-check.sh")
+PRECHECK_TIMEOUT = max(30, int(os.environ.get("PLATFORM_PRECHECK_TIMEOUT", "150")))
+# The stack services are on the same docker network; the readiness script reaches
+# them by service name and uses the host docker/curl/ping via /host/usr/bin.
+PRECHECK_PROM_URL = os.environ.get("PLATFORM_PRECHECK_PROM_URL", "http://prometheus:9090")
+PRECHECK_GRAFANA_URL = os.environ.get("PLATFORM_PRECHECK_GRAFANA_URL", "http://grafana:3000")
 AUTH_ENABLED = os.environ.get("PLATFORM_AUTH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 AUTH_ADMIN_USER = os.environ.get("PLATFORM_ADMIN_USER", "admin")
 AUTH_DEFAULT_PASSWORD = os.environ.get("PLATFORM_ADMIN_PASSWORD", "global")
@@ -361,14 +367,9 @@ def require_write() -> None:
         raise PermissionError("platform write endpoints are disabled")
 
 
-def run_apply_command() -> dict:
-    if not APPLY_ENABLED:
-        return {
-            "needsRedeploy": True,
-            "nextStep": "cd librenms+grafana && ./apply-env.sh",
-            "applyOutput": "automatic apply is disabled",
-        }
-
+def _host_exec_env() -> dict:
+    """Env that lets a container command use the host's docker/curl/ping via the
+    mounted /host/usr/bin, matching how apply-env runs."""
     env = os.environ.copy()
     host_path = "/host/usr/bin:/usr/local/bin:/usr/bin:/bin"
     env["PATH"] = f"{host_path}:{env.get('PATH', '')}"
@@ -380,6 +381,50 @@ def run_apply_command() -> dict:
     ]).strip(":")
     if plugin_dirs:
         env["DOCKER_CLI_PLUGIN_EXTRA_DIRS"] = plugin_dirs
+    return env
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def run_precheck() -> dict:
+    """Run pre-match-check.sh and return a structured red/green result for the
+    console. Reaches the stack by service name; reads the same .env the stack uses."""
+    env = _host_exec_env()
+    env["PROM_URL"] = PRECHECK_PROM_URL
+    env["GRAFANA_URL"] = PRECHECK_GRAFANA_URL
+    try:
+        completed = subprocess.run(
+            shlex.split(PRECHECK_COMMAND),
+            cwd=str(WORKDIR), env=env, capture_output=True, text=True,
+            timeout=PRECHECK_TIMEOUT, check=False,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "error": "找不到 pre-match-check.sh"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"赛前体检超时（{PRECHECK_TIMEOUT}s）"}
+
+    output = _ANSI_RE.sub("", "\n".join(part for part in [completed.stdout, completed.stderr] if part)).strip()
+    summary = re.search(r"通过\s*(\d+).*?警告\s*(\d+).*?失败\s*(\d+)", output, re.S)
+    passed, warned, failed = (int(summary.group(i)) for i in (1, 2, 3)) if summary else (0, 0, 0)
+    verdict = "bad" if (failed > 0 or completed.returncode != 0) else ("warn" if warned > 0 else "good")
+    return {
+        "ok": True,
+        "verdict": verdict,           # good=可开赛 / warn=有警告 / bad=需处理
+        "pass": passed, "warn": warned, "fail": failed,
+        "output": output[-8000:],
+    }
+
+
+def run_apply_command() -> dict:
+    if not APPLY_ENABLED:
+        return {
+            "needsRedeploy": True,
+            "nextStep": "cd librenms+grafana && ./apply-env.sh",
+            "applyOutput": "automatic apply is disabled",
+        }
+
+    env = _host_exec_env()
 
     try:
         completed = subprocess.run(
@@ -704,6 +749,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/test-alert":
                 require_auth(self)
                 self._send_json(send_test_alert())
+            elif path == "/pre-check":
+                require_auth(self)
+                self._send_json(run_precheck())
             else:
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
         except AuthError as exc:
