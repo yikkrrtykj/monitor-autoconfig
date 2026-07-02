@@ -1646,7 +1646,7 @@
     }
     value.unifi = { enabled: false, password: "", sites: "all", verify_ssl: false, ...(value.unifi || {}) };
     value.alerts = {
-      syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback,dhcp_snooping",
+      syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback",
       ...(value.alerts || {})
     };
     delete value.event.mode;
