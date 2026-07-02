@@ -2,7 +2,6 @@ const assert = require("assert");
 const path = require("path");
 
 const {
-  normalizeEventMode,
   readinessScore,
   summarizePlayers,
   summarizeTargets,
@@ -10,9 +9,6 @@ const {
   buildReadinessChecks,
   lintSwitchConfig
 } = require(path.resolve(__dirname, "../bigscreen/platform.js"));
-
-assert.strictEqual(normalizeEventMode("monitor"), "monitor");
-assert.strictEqual(normalizeEventMode("unknown"), "monitor");
 
 const players = [
   { team: 1, seat: 1, ip: "10.1.1.11", success: true, latency: 0.012 },

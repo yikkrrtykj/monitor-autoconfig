@@ -56,7 +56,6 @@ def test_parse_validate_render_env():
     assert not [item for item in issues if item["level"] == "bad"]
     env = platform_config.render_env(config, {"FEISHU_ROBOT_TOKEN": "keep-secret"})
     assert env["EVENT_NAME"] == "Test Event"
-    assert env["BIGSCREEN_EVENT_MODE"] == "monitor"
     assert env["CORE_SWITCH_PING"] == "192.168.10.254"
     assert env["DIST_SWITCH_PING"] == "stage-1:192.168.10.11,stage-2:192.168.10.12"
     assert env["FIREWALL_PING"] == "firewall:192.168.10.1"
@@ -64,7 +63,6 @@ def test_parse_validate_render_env():
     assert env["ISP_PING"] == "telecom:223.5.5.5"
     assert env["BIGSCREEN_ISP_IPS"] == "telecom:203.0.113.10"
     assert env["FIREWALL_DISCOVERY_RANGE"] == "192.168.9.0/24"
-    assert env["UNIFI_AP_DOWN_FOR_SECONDS"] == "180"
     assert env["FEISHU_ROBOT_TOKEN"] == "keep-secret"
     assert env["GRAFANA_ANONYMOUS_ENABLED"] == "false"
 

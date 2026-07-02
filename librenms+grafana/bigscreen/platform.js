@@ -4,19 +4,6 @@
   // Platform control helpers: pure scoring/lint logic shared by the browser UI
   // and unit tests. DOM rendering and Prometheus queries stay in app.js.
 
-  const MODE_DEFS = {
-    monitor: { id: "monitor", label: "监控", tone: "good", note: "固定告警策略" }
-  };
-
-  function normalizeEventMode(mode) {
-    const value = String(mode || "").trim().toLowerCase();
-    return MODE_DEFS[value] ? value : "monitor";
-  }
-
-  function modeDefinition(mode) {
-    return MODE_DEFS[normalizeEventMode(mode)];
-  }
-
   function levelRank(level) {
     return { good: 0, info: 1, warn: 2, bad: 3 }[level] ?? 1;
   }
@@ -279,9 +266,6 @@
   }
 
   const ns = {
-    MODE_DEFS,
-    normalizeEventMode,
-    modeDefinition,
     levelRank,
     worstLevel,
     readinessScore,

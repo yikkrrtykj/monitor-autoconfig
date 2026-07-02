@@ -756,7 +756,6 @@ services:
       BIGSCREEN_TITLE: "${BIGSCREEN_TITLE:-}"
       BIGSCREEN_SUBTITLE: "${BIGSCREEN_SUBTITLE:-}"
       BIGSCREEN_LOGO_TEXT: "${BIGSCREEN_LOGO_TEXT:-}"
-      BIGSCREEN_EVENT_MODE: "${BIGSCREEN_EVENT_MODE:-rehearsal}"
       BIGSCREEN_DEFAULT_LAYOUT: "${BIGSCREEN_DEFAULT_LAYOUT:-tournament-64-2layer}"
       BIGSCREEN_SECURITY_MODE: "${BIGSCREEN_SECURITY_MODE:-internal}"
       BIGSCREEN_PUBLIC_BASE_URL: "${BIGSCREEN_PUBLIC_BASE_URL:-}"
@@ -793,7 +792,6 @@ services:
           title: "$${BIGSCREEN_TITLE:-}",
           subtitle: "$${BIGSCREEN_SUBTITLE:-}",
           logoText: "$${BIGSCREEN_LOGO_TEXT:-}",
-          eventMode: "$${BIGSCREEN_EVENT_MODE:-rehearsal}",
           defaultLayout: "$${BIGSCREEN_DEFAULT_LAYOUT:-tournament-64-2layer}",
           securityMode: "$${BIGSCREEN_SECURITY_MODE:-internal}",
           publicBaseUrl: "$${BIGSCREEN_PUBLIC_BASE_URL:-}",

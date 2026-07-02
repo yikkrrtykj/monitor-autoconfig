@@ -3,7 +3,6 @@ window.BIGSCREEN_CONFIG = {
   title: "",
   subtitle: "",
   logoText: "",
-  eventMode: "monitor",
   defaultLayout: "tournament-64-2layer",
   securityMode: "internal",
   publicBaseUrl: "",

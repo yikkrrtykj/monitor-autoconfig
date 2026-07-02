@@ -15,20 +15,6 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_ALERT_PROFILE = {
-    "UNIFI_AP_DOWN_FOR_SECONDS": "180",
-    "SYSLOG_EVENT_RATE_LIMIT": "60",
-    "DEVICE_DOWN_FOR_SECONDS": "10",
-    "INTERCONNECT_ALERT_FOR_SECONDS": "5",
-}
-
-MODE_PROFILES = {
-    "monitor": DEFAULT_ALERT_PROFILE,
-    "setup": DEFAULT_ALERT_PROFILE,
-    "rehearsal": DEFAULT_ALERT_PROFILE,
-    "match": DEFAULT_ALERT_PROFILE,
-    "incident": DEFAULT_ALERT_PROFILE,
-}
 
 
 def _strip_comment(line: str) -> str:
@@ -346,13 +332,6 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     return issues
 
 
-def alert_profile(config: dict[str, Any]) -> dict[str, str]:
-    event = config.get("event") or {}
-    alerts = config.get("alerts") or {}
-    mode = str(alerts.get("mode") or event.get("mode") or "monitor").lower()
-    return MODE_PROFILES.get(mode, DEFAULT_ALERT_PROFILE)
-
-
 def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -> dict[str, str]:
     config = normalize_config(config)
     existing = dict(existing or {})
@@ -393,7 +372,6 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
 
     env = {
         "EVENT_NAME": event.get("name", ""),
-        "BIGSCREEN_EVENT_MODE": "monitor",
         "BIGSCREEN_DEFAULT_LAYOUT": event.get("default_layout", "tournament-64-2layer"),
         "BIGSCREEN_SECURITY_MODE": event.get("security_mode", "internal"),
         "BIGSCREEN_PUBLIC_BASE_URL": event.get("public_base_url", ""),
@@ -435,10 +413,9 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "UNIFI_CONTROLLER_SITES": unifi.get("sites", "all"),
         "UNIFI_CONTROLLER_VERIFY_SSL": str(bool(unifi.get("verify_ssl", False))).lower(),
         "FEISHU_ROBOT_TOKEN": alerts.get("feishu_robot_token") or existing.get("FEISHU_ROBOT_TOKEN", ""),
-        "SYSLOG_ALERT_TYPES": alerts.get("syslog_alert_types", "native_vlan_mismatch,errdisable,bpduguard,loopback,dhcp_snooping"),
+        "SYSLOG_ALERT_TYPES": alerts.get("syslog_alert_types", "native_vlan_mismatch,errdisable,bpduguard,loopback"),
         "GRAFANA_ANONYMOUS_ENABLED": str(bool(security.get("grafana_anonymous", True))).lower(),
     }
-    env.update(alert_profile(config))
     return {key: "" if value is None else str(value) for key, value in env.items()}
 
 
