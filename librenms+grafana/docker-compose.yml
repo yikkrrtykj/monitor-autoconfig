@@ -529,7 +529,10 @@ services:
       PLATFORM_APPLY_COMMAND: "${PLATFORM_APPLY_COMMAND:-/bin/sh /workspace/apply-env.sh}"
       PLATFORM_APPLY_TIMEOUT: "${PLATFORM_APPLY_TIMEOUT:-300}"
       DOCKER_CLI_PLUGIN_EXTRA_DIRS: "/host/usr/libexec/docker/cli-plugins:/host/usr/lib/docker/cli-plugins:/host/usr/local/lib/docker/cli-plugins"
-      PATH: "/host/usr/bin:/usr/local/bin:/usr/bin:/bin"
+      # Container binaries first (python3 etc.); host /host/usr/bin last, only for
+      # what the slim image lacks (docker). Host-first ran the host's python3,
+      # which fails on missing shared libs inside the container.
+      PATH: "/usr/local/bin:/usr/bin:/bin:/host/usr/bin"
     command: ["python", "/workspace/platform-api.py"]
     networks:
       - monitor

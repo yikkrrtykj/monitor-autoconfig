@@ -124,7 +124,9 @@ if [ -n "$HOST_PROJECT_DIR" ]; then
 fi
 
 migrate_legacy_defaults
-render_grafana_provisioning
+# Non-fatal: a Grafana dashboard render hiccup must not block applying the config
+# and restarting the containers (the important part).
+render_grafana_provisioning || echo "[apply-env] WARN: Grafana provisioning render failed; continuing to restart services." >&2
 
 SERVICES="
   prometheus

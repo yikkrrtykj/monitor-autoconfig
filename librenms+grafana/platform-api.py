@@ -365,11 +365,12 @@ def require_write() -> None:
 
 
 def _host_exec_env() -> dict:
-    """Env that lets a container command use the host's docker/curl/ping via the
-    mounted /host/usr/bin, matching how apply-env runs."""
+    """Env for running apply-env from inside the container. Prefer the container's
+    own binaries (python3, sed, ...) and only fall back to the host's for what the
+    slim image lacks (docker) -- so /host/usr/bin goes LAST. Putting it first ran
+    the host's dynamically-linked python3, which fails on missing libs here."""
     env = os.environ.copy()
-    host_path = "/host/usr/bin:/usr/local/bin:/usr/bin:/bin"
-    env["PATH"] = f"{host_path}:{env.get('PATH', '')}"
+    env["PATH"] = "/usr/local/bin:/usr/bin:/bin:/host/usr/bin"
     plugin_dirs = ":".join([
         "/host/usr/libexec/docker/cli-plugins",
         "/host/usr/lib/docker/cli-plugins",
