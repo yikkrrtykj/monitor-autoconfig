@@ -60,7 +60,7 @@ Env:
 """
 from datetime import datetime
 from http.cookiejar import CookieJar
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import re
@@ -2789,7 +2789,7 @@ def main():
     else:
         log("[SYSLOG] security watcher disabled")
 
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

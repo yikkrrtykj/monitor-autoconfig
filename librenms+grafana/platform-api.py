@@ -16,11 +16,12 @@ import shutil
 import shlex
 import secrets
 import subprocess
+import threading
 import time
 import urllib.request
 import zipfile
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -80,6 +81,20 @@ def read_json_file(path: Path, fallback):
         return fallback
     except json.JSONDecodeError:
         return fallback
+
+
+# Serializes config-mutating requests so the now-threaded server can't interleave
+# two saves/applies writing the same files.
+WRITE_LOCK = threading.Lock()
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write via a temp file + rename so a concurrent reader never sees a partial
+    file while another request is (re)writing config/.env."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 def write_json_file(path: Path, payload) -> None:
@@ -417,8 +432,7 @@ def save_config(text: str, actor: str = "", note: str = "") -> dict:
     if bad:
         return {**payload, "ok": False, "error": "config has blocking validation errors"}
     backup = backup_file(CONFIG_PATH, "event-config")
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(payload["normalizedText"], encoding="utf-8")
+    atomic_write_text(CONFIG_PATH, payload["normalizedText"])
     append_history("config.save", actor, note, {"backup": backup})
     return {**config_payload(), "backup": backup}
 
@@ -435,8 +449,7 @@ def apply_config(text: str | None, actor: str = "", note: str = "") -> dict:
         return {**payload, "ok": False, "error": "config has blocking validation errors"}
     backup = backup_file(ENV_PATH, "env")
     rendered = merge_env_file(ENV_PATH, payload["env"])
-    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ENV_PATH.write_text(rendered, encoding="utf-8")
+    atomic_write_text(ENV_PATH, rendered)
     append_history("config.apply", actor, note, {"backup": backup, "envKeys": sorted(payload["env"])})
     apply_result = run_apply_command()
     append_history("config.apply_command", actor, note, {
@@ -670,17 +683,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(config_payload(data.get("text", "")))
             elif path == "/config/save":
                 auth = require_auth(self)
-                self._send_json(save_config(data.get("text", ""), data.get("actor", auth["username"]), data.get("note", "")))
+                with WRITE_LOCK:
+                    self._send_json(save_config(data.get("text", ""), data.get("actor", auth["username"]), data.get("note", "")))
             elif path == "/config/apply":
                 auth = require_auth(self)
                 text = data.get("text") if "text" in data else None
-                self._send_json(apply_config(text, data.get("actor", auth["username"]), data.get("note", "")))
+                with WRITE_LOCK:
+                    self._send_json(apply_config(text, data.get("actor", auth["username"]), data.get("note", "")))
             elif path == "/config/rollback":
                 auth = require_auth(self)
-                self._send_json(rollback_config(data.get("actor", auth["username"]), data.get("note", "")))
+                with WRITE_LOCK:
+                    self._send_json(rollback_config(data.get("actor", auth["username"]), data.get("note", "")))
             elif path == "/config/import":
                 auth = require_auth(self)
-                self._send_json(save_config(data.get("text", ""), data.get("actor", auth["username"]), "import"))
+                with WRITE_LOCK:
+                    self._send_json(save_config(data.get("text", ""), data.get("actor", auth["username"]), "import"))
             elif path == "/incidents":
                 require_auth(self)
                 self._send_json({"ok": True, "incident": new_incident(data)})
@@ -720,6 +737,8 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     ensure_dirs()
     port = int(os.environ.get("PLATFORM_API_PORT", "9200"))
-    server = HTTPServer(("0.0.0.0", port), Handler)
+    # Threaded so a long "apply" (runs apply-env.sh, up to PLATFORM_APPLY_TIMEOUT)
+    # doesn't freeze the console's status polls / other requests.
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"[platform-api] listening on :{port}", flush=True)
     server.serve_forever()
