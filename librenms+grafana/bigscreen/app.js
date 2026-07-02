@@ -2070,8 +2070,34 @@
     ];
     element.innerHTML = `
       ${rows.map(controlItemHtml).join("")}
-      <a class="delivery-download" href="/platform-api/delivery/export">下载离线部署配置</a>
+      <div class="delivery-actions">
+        <a class="delivery-download" href="/platform-api/delivery/export">下载离线部署配置</a>
+        <button type="button" class="delivery-test-alert" id="testAlertBtn">发送测试告警</button>
+        <span class="test-alert-result" id="testAlertResult"></span>
+      </div>
     `;
+    const testBtn = document.getElementById("testAlertBtn");
+    if (testBtn) {
+      testBtn.addEventListener("click", async () => {
+        const result = document.getElementById("testAlertResult");
+        testBtn.disabled = true;
+        if (result) { result.textContent = "发送中…"; result.className = "test-alert-result"; }
+        try {
+          const res = await postPlatform("/test-alert", {});
+          const ok = Boolean(res && res.ok);
+          if (result) {
+            result.textContent = ok
+              ? (res.dryRun ? "已触发（DryRun 模式，未真正发送）" : "已发送，请到飞书群确认收到")
+              : `失败：${(res && res.error) || "未知错误"}`;
+            result.className = `test-alert-result ${ok ? "good" : "bad"}`;
+          }
+        } catch (error) {
+          if (result) { result.textContent = `失败：${error.message}`; result.className = "test-alert-result bad"; }
+        } finally {
+          testBtn.disabled = false;
+        }
+      });
+    }
   }
 
   function renderControlIncidentFlow(snapshot) {

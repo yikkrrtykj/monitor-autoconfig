@@ -514,6 +514,8 @@ services:
       PLATFORM_API_PORT: "9200"
       PLATFORM_WORKDIR: "/workspace"
       PLATFORM_STATE_DIR: "/workspace/platform-state"
+      # Feishu bridge, used by the console's "发送测试告警" button.
+      PLATFORM_BRIDGE_URL: "${PLATFORM_BRIDGE_URL:-http://alertmanager-feishu-bridge:5005}"
       PLATFORM_WRITE_ENABLED: "${PLATFORM_WRITE_ENABLED:-true}"
       PLATFORM_AUTH_ENABLED: "${PLATFORM_AUTH_ENABLED:-true}"
       PLATFORM_ADMIN_USER: "${PLATFORM_ADMIN_USER:-admin}"

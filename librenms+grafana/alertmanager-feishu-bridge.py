@@ -648,6 +648,16 @@ def build_sysname_change_card(old_name, new_name, ip="", hostname=""):
     return _make_card(next_event_title(), "✏️ sysName 变更告警", "yellow", "\n".join(lines))
 
 
+def build_test_card():
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "✅ 飞书告警链路正常",
+        "📡 这是一条测试告警，收到即代表机器人配置无误。",
+        f"⏰ 时间：{ts}",
+    ]
+    return _make_card(next_event_title(), "🔔 测试告警", "blue", "\n".join(lines))
+
+
 def build_device_online_card(device):
     name = _best_device_name(device) or "?"
     ip = device.get("ip") or device.get("hostname") or "?"
@@ -2716,6 +2726,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/librenms":
             return self._handle_librenms()
+        if self.path == "/test-alert":
+            return self._handle_test_alert()
         return self._send(404, b"not found")
 
     def _handle_librenms(self):
@@ -2725,6 +2737,18 @@ class Handler(BaseHTTPRequestHandler):
         log(f"librenms alert: {rule_name} state={payload.get('state')}")
         send_feishu(card)
         return self._send(200, b"OK")
+
+    def _handle_test_alert(self):
+        self._read_json()  # drain body
+        if not TOKEN and not DRY_RUN:
+            result = {"ok": False, "error": "未配置飞书机器人 Token（FEISHU_ROBOT_TOKEN）"}
+        else:
+            sent = send_feishu(build_test_card())
+            result = {"ok": bool(sent), "dryRun": DRY_RUN}
+            if not sent and not DRY_RUN:
+                result["error"] = "飞书返回失败，请检查 Token / 群机器人是否有效"
+        log(f"[TEST] test alert requested -> {result}")
+        return self._send(200, json.dumps(result).encode("utf-8"), "application/json; charset=utf-8")
 
     def do_GET(self):
         if self.path == "/health":

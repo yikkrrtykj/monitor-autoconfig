@@ -17,6 +17,7 @@ import shlex
 import secrets
 import subprocess
 import time
+import urllib.request
 import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -47,6 +48,7 @@ WRITE_ENABLED = os.environ.get("PLATFORM_WRITE_ENABLED", "true").lower() in ("1"
 APPLY_ENABLED = os.environ.get("PLATFORM_APPLY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 APPLY_COMMAND = os.environ.get("PLATFORM_APPLY_COMMAND", "/bin/sh /workspace/apply-env.sh")
 APPLY_TIMEOUT = max(30, int(os.environ.get("PLATFORM_APPLY_TIMEOUT", "300")))
+BRIDGE_URL = os.environ.get("PLATFORM_BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
 AUTH_ENABLED = os.environ.get("PLATFORM_AUTH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 AUTH_ADMIN_USER = os.environ.get("PLATFORM_ADMIN_USER", "admin")
 AUTH_DEFAULT_PASSWORD = os.environ.get("PLATFORM_ADMIN_PASSWORD", "global")
@@ -527,6 +529,20 @@ def update_incident(incident_id: int, data: dict) -> dict:
     raise KeyError(f"incident {incident_id} not found")
 
 
+def send_test_alert() -> dict:
+    """Ask the Feishu bridge to push a test card, so operators can confirm the
+    alert path works before an event without waiting for a real incident."""
+    request = urllib.request.Request(
+        f"{BRIDGE_URL}/test-alert", data=b"{}", method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception as exc:
+        return {"ok": False, "error": f"无法连接告警服务：{exc}"}
+
+
 def delivery_manifest() -> dict:
     compose = WORKDIR / "docker-compose.yml"
     files = [
@@ -668,6 +684,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/incidents":
                 require_auth(self)
                 self._send_json({"ok": True, "incident": new_incident(data)})
+            elif path == "/test-alert":
+                require_auth(self)
+                self._send_json(send_test_alert())
             else:
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
         except AuthError as exc:
