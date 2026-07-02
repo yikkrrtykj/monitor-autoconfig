@@ -468,7 +468,11 @@
     try {
       return await platformApi("/auth/status", { timeoutMs: 5000 });
     } catch (error) {
-      return { ok: false, enabled: true, authenticated: false, error: error.message || "auth unavailable" };
+      // No HTTP status means a transport failure (fetch rejected) -- the proxy is
+      // briefly unreachable, e.g. bigscreen restarting during 应用配置. Flag it as
+      // transient so the UI can hold the current view instead of bouncing to login.
+      const transient = error.status == null;
+      return { ok: false, enabled: true, authenticated: false, transient, error: error.message || "auth unavailable" };
     }
   }
 

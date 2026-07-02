@@ -64,6 +64,7 @@
   let lastIncidents = [];
   let lastDeliveryManifest = null;
   let configResultSticky = false;
+  let applyInProgress = false;
   const DATA_STALE_AFTER_MS = 20000;
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
 
@@ -1985,6 +1986,7 @@
     const configPayload = collectControlConfigForm();
     const payload = { text: JSON.stringify(configPayload, null, 2), actor: "web", note: action };
     configResultSticky = true;
+    if (action === "apply") applyInProgress = true;
     setConfigButtonsBusy(true);
     renderConfigResult({
       pending: true,
@@ -2014,6 +2016,7 @@
       }
       renderConfigResult(result);
       if (shouldReloadSavedConfig) {
+        applyInProgress = false;
         refreshControlPanel();
       }
     } catch (error) {
@@ -2030,6 +2033,7 @@
             if (recovered.config) renderControlConfigForm(recovered.config);
           }
           renderConfigResult({ ok: true, applied: true, action: "apply", issues: recovered.issues || [] });
+          applyInProgress = false;
           refreshControlPanel();
         } else {
           renderConfigResult({
@@ -2042,6 +2046,7 @@
         renderConfigResult({ ok: false, errorTitle: `${label}失败`, error: error.message || "配置操作失败" });
       }
     } finally {
+      applyInProgress = false;
       setConfigButtonsBusy(false);
     }
   }
@@ -2365,11 +2370,22 @@
   }
 
   async function ensureControlAuth() {
-    lastControlAuth = await fetchPlatformAuthStatus();
-    return renderControlAuth(lastControlAuth);
+    const status = await fetchPlatformAuthStatus();
+    // During a transient proxy outage (bigscreen restarting on 应用配置) the
+    // auth probe fails with no HTTP status. If we were already authenticated,
+    // hold the console rather than tearing it down to the login screen -- the
+    // next poll will recover on its own.
+    if (status && status.transient && lastControlAuth && lastControlAuth.authenticated) {
+      return true;
+    }
+    lastControlAuth = status;
+    return renderControlAuth(status);
   }
 
   async function refreshControlPanel() {
+    // While 应用配置 is restarting services, its own flow drives the UI and waits
+    // for recovery -- don't let the periodic refresh fight it with failed fetches.
+    if (applyInProgress) return;
     if (!await ensureControlAuth()) {
       lastControlReport = null;
       return;
