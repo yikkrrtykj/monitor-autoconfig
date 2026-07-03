@@ -24,7 +24,9 @@
     activeInfraPingQuery, activeSeriesNames, filterSeriesByNames,
     fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap,
-    fetchTopologyTargets, fetchTopologyEdges
+    fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
+    fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
+    fetchPlatformConfig, postPlatform, patchPlatform, fetchIncidents
   } = window.BSApi;
   const {
     buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel
@@ -33,12 +35,19 @@
     isGatewayAddress, buildPlayers, latencyLevel, playerStatusText, groupPlayersBySeat
   } = window.BSPlayers;
   const { analyzeIncident } = window.BSIncident;
+  const {
+    readinessScore,
+    summarizePlayers, summarizeTargets, summarizeServices,
+    buildConfigRisks, buildTopologyFindings, buildReadinessChecks,
+    lintSwitchScene
+  } = window.BSPlatform;
   let gaugeTimer = null;
   let chartTimer = null;
   let seenUpTimer = null;
   let infraSeenUp = null;  // Set of "deployed" (ever-online) infra instance names; null/empty = show all
   let tournamentTimer = null;
   let opsTimer = null;
+  let controlTimer = null;
   let activePageId = "";
   let activeRoute = "";
   let gaugeSeq = 0;
@@ -48,7 +57,15 @@
   let stageDeviceRegexCache = null;
   const renderSignatures = new Map();
   let lastDataSuccessAt = 0;
+  let lastControlReport = null;
+  let lastControlAuth = null;
+  let lastPlatformConfig = null;
+  let lastEditableConfig = null;
+  let lastIncidents = [];
+  let configResultSticky = false;
+  let applyInProgress = false;
   const DATA_STALE_AFTER_MS = 20000;
+  const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
 
   // Skip re-rendering a chart when its data hasn't changed since last paint.
   // Historical Prometheus samples are immutable, so a cheap per-series digest
@@ -1135,7 +1152,7 @@
     return local.toISOString().slice(0, 16);
   }
 
-  // CSV export for the operator query pages (/latency and /heatmap) -- raw
+  // CSV export for the operator query pages (/latency) -- raw
   // data to attach to dispute reports alongside screenshots. Not wired to
   // any TV-facing page.
   function downloadCsv(filename, rows) {
@@ -1159,10 +1176,12 @@
     const windowInput = document.getElementById("evidenceWindow");
     const centerDate = atInput && atInput.value ? new Date(atInput.value) : new Date();
     const center = Number.isFinite(centerDate.getTime()) ? centerDate.getTime() / 1000 : Date.now() / 1000;
+    // The dropdown value is the TOTAL window (minutes), centered on the query time.
     const minutes = Math.max(1, Number(windowInput && windowInput.value ? windowInput.value : 10));
+    const half = (minutes * 60) / 2;
     const now = Math.floor(Date.now() / 1000);
-    const end = Math.min(Math.floor(center + minutes * 60), now);
-    const start = Math.floor(center - minutes * 60);
+    const end = Math.min(Math.floor(center + half), now);
+    const start = Math.floor(center - half);
     return {
       start: start <= end ? start : Math.max(0, end - minutes * 60),
       end,
@@ -1373,6 +1392,9 @@
         event.preventDefault();
         queryEvidence();
       });
+      // Re-run as soon as a control changes (range/time/network dropdowns, team/seat)
+      // so picking a range applies immediately -- no need to focus IP and press Enter.
+      form.addEventListener("change", () => queryEvidence());
       form.dataset.bound = "1";
     }
     const exportBtn = document.getElementById("evidenceExport");
@@ -1381,6 +1403,1164 @@
       exportBtn.dataset.bound = "1";
     }
     queryEvidence();
+  }
+
+  // ---- Event platform control ----
+
+  function storedControlLayout() {
+    const fallback = config.defaultLayout || "tournament-64-2layer";
+    try {
+      return window.localStorage.getItem(CONTROL_LAYOUT_STORAGE_KEY) || fallback;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function controlPageAndNetwork() {
+    const layout = storedControlLayout();
+    const page = pages.find((item) => item.id === layout && item.kind) ||
+      pages.find((item) => item.id === config.defaultLayout && item.kind) ||
+      pages.find((item) => item.id === "tournament-64-2layer") ||
+      pages.find((item) => item.kind);
+    return {
+      page,
+      network: "wired"
+    };
+  }
+
+  function controlItemHtml(item) {
+    return `
+      <div class="control-item ${item.level || "info"}">
+        <span>${escapeHtml(item.section || "")}</span>
+        <strong>${escapeHtml(item.label || "")}</strong>
+        <b>${escapeHtml(item.value == null ? "" : item.value)}</b>
+        <em>${escapeHtml(item.note || "")}</em>
+      </div>
+    `;
+  }
+
+  function renderControlReadiness(score, checks) {
+    const missingHost = document.getElementById("controlReadinessMissing");
+    const missing = (checks || [])
+      .filter((item) => item.level === "bad" || item.level === "warn");
+    if (!missingHost) return;
+    missingHost.innerHTML = missing.length
+      ? missing.map((item) => controlItemHtml({
+          section: item.section || "待补",
+          label: item.label || "检查项",
+          level: item.level || "warn",
+          value: item.value == null ? "" : item.value,
+          note: item.note || ""
+        })).join("")
+      : `<div class="control-empty good">当前没有需要关注的问题</div>`;
+  }
+
+  function renderControlChecklist(checks) {
+    const element = document.getElementById("controlChecklist");
+    if (!element) return;
+    const wanted = new Set(["赛前", "基础设施", "采集"]);
+    const items = checks.filter((item) => wanted.has(item.section));
+    element.innerHTML = items.map(controlItemHtml).join("") ||
+      `<div class="control-empty">暂无检查项</div>`;
+  }
+
+  function renderControlTopology(targetSummary, topologyFindings, edges) {
+    const rows = [
+      { section: "拓扑", label: "设备目标", level: targetSummary.total ? "good" : "warn", value: String(targetSummary.total), note: `核心 ${targetSummary.byKind.core} / 接入 ${targetSummary.byKind.dist} / ISP ${targetSummary.byKind.isp}` },
+      { section: "拓扑", label: "LLDP 边", level: edges.length ? "good" : "warn", value: String(edges.length), note: edges.length ? "已采集拓扑关系" : "未采集到拓扑关系" },
+      ...topologyFindings
+    ];
+    document.getElementById("controlTopology").innerHTML = rows.map(controlItemHtml).join("");
+  }
+
+  function renderControlConfig(context) {
+    const { runtimeStatus, configRisks, services, platformConfig } = context;
+    const targetStatus = runtimeStatus && runtimeStatus.targets ? runtimeStatus.targets : null;
+    const updated = runtimeStatus && runtimeStatus.updated_at ? formatTimestampFull(runtimeStatus.updated_at) : "-";
+    const apiState = platformConfig && platformConfig.ok ? "可写" : "不可用";
+    const rows = [
+      { label: "ISP", value: config.ispAutoDiscovery === "true" ? "自动发现" : (config.ispNames || "默认") },
+      { label: "选手探测目标", value: targetStatus ? `${targetStatus.total} 个` : "-", note: targetStatus ? `player-targets 生成：有线 ${targetStatus.wired} / 无线 ${targetStatus.wireless} / ${updated}` : "" },
+      { label: "采集任务", value: `${services.filter((item) => item.up === item.total).length}/${services.length}` },
+      { label: "平台 API", value: apiState, note: platformConfig && platformConfig.error ? platformConfig.error : "" }
+    ];
+    const configRows = rows.map((row) => `
+      <div class="config-row">
+        <span>${escapeHtml(row.label)}</span>
+        <strong>${escapeHtml(row.value)}</strong>
+        ${row.note ? `<em>${escapeHtml(row.note)}</em>` : ""}
+      </div>
+    `).join("");
+    const riskRows = configRisks.length
+      ? `<div class="config-risk-list">${configRisks.map((item) => controlItemHtml({ section: "配置", ...item })).join("")}</div>`
+      : `<div class="control-empty good">配置风险未触发</div>`;
+    document.getElementById("controlConfig").innerHTML = `${configRows}${riskRows}`;
+  }
+
+  function renderConfigResult(payload) {
+    const result = document.getElementById("controlConfigResult");
+    if (!result) return;
+    if (!payload || (payload.passive && !(payload.issues && payload.issues.length))) {
+      result.innerHTML = `
+        <div class="control-apply-next">
+          <strong>配置流程</strong>
+          <span>先点“验证”，确认无误后点“保存”或“应用配置”。</span>
+        </div>
+      `;
+      return;
+    }
+    if (payload.pending) {
+      result.innerHTML = `
+        <div class="control-apply-next pending">
+          <strong>正在${escapeHtml(payload.pendingLabel || "处理")}…</strong>
+          <span>请稍候，不要重复点击或刷新页面。</span>
+        </div>
+      `;
+      return;
+    }
+    if (!payload.ok && payload.error) {
+      result.innerHTML = `
+        <div class="control-apply-next bad">
+          <strong>${escapeHtml(payload.errorTitle || "操作失败")}</strong>
+          <span>${escapeHtml(payload.error)}</span>
+        </div>
+        ${payload.applyOutput ? `<pre class="control-apply-log">${escapeHtml(payload.applyOutput)}</pre>` : ""}
+      `;
+      return;
+    }
+    const issues = payload.issues || [];
+    const issuesHtml = issues.map((item) => controlItemHtml({
+      section: item.path || "配置",
+      label: item.message || "配置项",
+      level: item.level || "info",
+      value: (item.level || "info").toUpperCase(),
+      note: ""
+    })).join("");
+    let headline;
+    if (payload.applied) {
+      headline = `
+        <div class="control-apply-next good">
+          <strong>🚀 应用完成</strong>
+          <span>配置已写入 .env，相关容器已重启生效。</span>
+        </div>`;
+    } else if (payload.needsRedeploy) {
+      headline = `
+        <div class="control-apply-next warn">
+          <strong>已保存，待应用</strong>
+          <span>.env 已更新；点“应用配置”重启相关容器后才会生效。</span>
+        </div>`;
+    } else if (payload.action === "save") {
+      headline = `
+        <div class="control-apply-next good">
+          <strong>💾 已保存</strong>
+          <span>配置已写入 .env。点“应用配置”让服务重启生效。</span>
+        </div>`;
+    } else if (payload.action === "rollback") {
+      headline = `
+        <div class="control-apply-next good">
+          <strong>↩ 已回滚</strong>
+          <span>已恢复上一版配置。点“应用配置”让其生效。</span>
+        </div>`;
+    } else if (issues.length) {
+      headline = "";
+    } else {
+      headline = `
+        <div class="control-apply-next good">
+          <strong>✅ 验证通过</strong>
+          <span>配置无误，可点“保存”或“应用配置”。</span>
+        </div>`;
+    }
+    result.innerHTML = `${issuesHtml}${headline}`;
+  }
+
+  function cloneControlConfig(configValue) {
+    return JSON.parse(JSON.stringify(configValue || {}));
+  }
+
+  function asConfigArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function configScalar(value) {
+    if (value == null) return "";
+    if (Array.isArray(value)) return value.join("\n");
+    if (typeof value === "object") return "";
+    return String(value);
+  }
+
+  function csvText(value) {
+    if (Array.isArray(value)) return value.join("\n");
+    return configScalar(value);
+  }
+
+  function splitConfigList(value) {
+    return String(value || "")
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function controlConfigDefaults(configValue) {
+    const value = cloneControlConfig(configValue);
+    value.event = { name: "", default_layout: "tournament-64-2layer", ...(value.event || {}) };
+    if (String(value.event.name || "").trim() === "武汉斗鱼嘉年华") {
+      value.event.name = "";
+    }
+    delete value.event.security_mode;
+    delete value.event.public_base_url;
+    value.networks = { player_vlan: 40, wireless_vlan: 41, firewall_management_ranges: "192.168.9.0/24", ...(value.networks || {}) };
+    if (!configScalar(value.networks.firewall_management_ranges)) {
+      value.networks.firewall_management_ranges = "192.168.9.0/24";
+    }
+    value.snmp = { community: "global", ...(value.snmp || {}) };
+    value.devices = { switches: [], servers: [], ...(value.devices || {}) };
+    value.devices.core = { ...(value.devices.core || {}) };
+    value.devices.firewall = { ...(value.devices.firewall || {}) };
+    if (String(value.devices.core.name || "").trim().toLowerCase() === "core") {
+      value.devices.core.name = "";
+    }
+    if (!configScalar(value.devices.firewall.ip) && configScalar(value.devices.firewall.snmp)) {
+      value.devices.firewall.ip = value.devices.firewall.snmp;
+    }
+    if (String(value.devices.firewall.ip || "").trim() === String(value.devices.firewall.snmp || "").trim()) {
+      value.devices.firewall.snmp = "";
+    }
+    if (String(value.networks.player_gateways || "") === String(value.devices.core.ip || "")) {
+      value.networks.player_gateways = "";
+    }
+    const hasStageSwitches = Object.prototype.hasOwnProperty.call(value.devices, "stage_switches");
+    const legacySwitches = asConfigArray(value.devices.switches);
+    value.devices.stage_switches = asConfigArray(value.devices.stage_switches);
+    value.devices.access_switches = asConfigArray(value.devices.access_switches);
+    if (!hasStageSwitches && !value.devices.stage_switches.length && legacySwitches.length) {
+      value.devices.stage_switches = legacySwitches;
+    }
+    value.devices.servers = asConfigArray(value.devices.servers).map((item) => ({
+      name: item.name || "",
+      ip: item.ip || item.target || ""
+    }));
+    value.devices.stage_switches = value.devices.stage_switches.map((item) => ({ ip: item.ip || item.target || "" }));
+    value.devices.access_switches = value.devices.access_switches.map((item) => ({ ip: item.ip || item.target || "" }));
+    if (
+      value.devices.servers.length === 1
+      && ["grafana", "game server"].includes(String(value.devices.servers[0].name || "").toLowerCase())
+      && String(value.devices.servers[0].ip || "") === "192.168.41.253"
+    ) {
+      value.devices.servers = [];
+    } else if (
+      value.devices.servers.length === 1
+      && String(value.devices.servers[0].name || "").toLowerCase() === "game server"
+      && !String(value.devices.servers[0].ip || "").trim()
+    ) {
+      value.devices.servers = [];
+    }
+    value.isp = {
+      auto_discovery: true,
+      wan_if_filter: "telecom,telcom,unicom,isp,WAN",
+      max_bandwidth_mbps: 1000,
+      links: [],
+      ...(value.isp || {})
+    };
+    value.isp.links = asConfigArray(value.isp.links);
+    if (!value.isp.links.length && Number(value.isp.max_bandwidth_mbps) === 1000) {
+      value.isp.max_bandwidth_mbps = "";
+    }
+    value.unifi = { enabled: false, password: "", sites: "all", verify_ssl: false, ...(value.unifi || {}) };
+    value.alerts = {
+      syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback",
+      ...(value.alerts || {})
+    };
+    delete value.event.mode;
+    delete value.alerts.mode;
+    value.security = { grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
+    return value;
+  }
+
+  function configPathGet(object, path) {
+    return path.split(".").reduce((current, key) => current && current[key], object);
+  }
+
+  function configPathSet(object, path, value) {
+    const parts = path.split(".");
+    let current = object;
+    parts.slice(0, -1).forEach((key) => {
+      if (!current[key] || typeof current[key] !== "object") current[key] = {};
+      current = current[key];
+    });
+    current[parts[parts.length - 1]] = value;
+  }
+
+  function configInput(path, label, options = {}) {
+    const value = configPathGet(lastEditableConfig || {}, path);
+    const id = `cfg-${path.replace(/[^a-z0-9]+/gi, "-")}`;
+    const common = `id="${escapeHtml(id)}" data-config-path="${escapeHtml(path)}"${options.number ? ' data-config-number="1"' : ""}`;
+    const fieldClasses = ["config-field"];
+    if (options.compact) fieldClasses.push("config-field-compact");
+    if (options.type === "checkbox") {
+      const classes = ["config-field", "config-field-check"];
+      if (options.compactCheck) classes.push("config-field-check-inline");
+      return `
+        <label class="${classes.join(" ")}" for="${escapeHtml(id)}">
+          <input ${common} type="checkbox"${value ? " checked" : ""} />
+          <span>${escapeHtml(label)}</span>
+        </label>
+      `;
+    }
+    if (options.type === "select") {
+      return `
+        <label class="${fieldClasses.join(" ")}" for="${escapeHtml(id)}">
+          <span>${escapeHtml(label)}</span>
+          <select ${common}>
+            ${(options.choices || []).map((item) => `<option value="${escapeHtml(item.value)}"${String(value || "") === String(item.value) ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+          </select>
+        </label>
+      `;
+    }
+    if (options.type === "textarea") {
+      const textareaClasses = fieldClasses.slice();
+      if (options.wide || !options.compact) textareaClasses.push("config-field-wide");
+      return `
+        <label class="${textareaClasses.join(" ")}" for="${escapeHtml(id)}">
+          <span>${escapeHtml(label)}</span>
+          <textarea ${common} rows="${options.rows || 2}" placeholder="${escapeHtml(options.placeholder || "")}">${escapeHtml(csvText(value))}</textarea>
+        </label>
+      `;
+    }
+    return `
+      <label class="${fieldClasses.join(" ")}" for="${escapeHtml(id)}">
+        <span>${escapeHtml(label)}</span>
+        <input ${common} type="${escapeHtml(options.inputType || (options.number ? "number" : "text"))}" value="${escapeHtml(configScalar(value))}" placeholder="${escapeHtml(options.placeholder || "")}" />
+      </label>
+    `;
+  }
+
+  function expandIpRangeText(value) {
+    const expanded = [];
+    splitConfigList(value).forEach((raw) => {
+      const item = String(raw || "").trim();
+      if (!item) return;
+      const full = item.match(/^(\d{1,3}(?:\.\d{1,3}){3})-(\d{1,3}(?:\.\d{1,3}){3})$/);
+      const short = item.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.)(\d{1,3})-(\d{1,3})$/);
+      if (full) {
+        const start = full[1].split(".").map(Number);
+        const end = full[2].split(".").map(Number);
+        if (start.slice(0, 3).join(".") === end.slice(0, 3).join(".") && start[3] <= end[3]) {
+          for (let octet = start[3]; octet <= end[3]; octet += 1) expanded.push(`${start[0]}.${start[1]}.${start[2]}.${octet}`);
+          return;
+        }
+      }
+      if (short) {
+        const start = Number(short[2]);
+        const end = Number(short[3]);
+        if (start <= end) {
+          for (let octet = start; octet <= end; octet += 1) expanded.push(`${short[1]}${octet}`);
+          return;
+        }
+      }
+      expanded.push(item);
+    });
+    return expanded;
+  }
+
+  function configListRows(name, rows, columns) {
+    const addLabels = {
+      stage_switches: "舞台交换机",
+      access_switches: "接入交换机",
+      switches: "交换机",
+      servers: "服务器",
+      isp: "ISP"
+    };
+    const supportsRange = name === "stage_switches" || name === "access_switches";
+    return `
+      <div class="config-list" data-config-list="${escapeHtml(name)}">
+        ${supportsRange ? `
+          <div class="config-range-row">
+            <input type="text" data-config-range-input="${escapeHtml(name)}" placeholder="范围或多个 IP" />
+            <button type="button" data-config-add-range="${escapeHtml(name)}">添加范围</button>
+          </div>
+        ` : ""}
+        ${rows.map((row, index) => `
+          <div class="config-list-row" data-index="${index}">
+            ${columns.map((column) => `
+              <label>
+                <span>${escapeHtml(column.label)}</span>
+                <input data-config-key="${escapeHtml(column.key)}"${column.number ? ' data-config-number="1"' : ""} type="${column.number ? "number" : "text"}" value="${escapeHtml(configScalar(row[column.key]))}" placeholder="${escapeHtml(column.placeholder || "")}" />
+              </label>
+            `).join("")}
+            <button type="button" data-config-remove="${escapeHtml(name)}" data-index="${index}">删除</button>
+          </div>
+        `).join("")}
+        <button class="config-add-row" type="button" data-config-add="${escapeHtml(name)}">添加${escapeHtml(addLabels[name] || "条目")}</button>
+      </div>
+    `;
+  }
+
+  function renderControlConfigForm(configValue) {
+    const form = document.getElementById("controlConfigForm");
+    if (!form) return;
+    const matchPages = pages.filter((item) => item.kind);
+    lastEditableConfig = controlConfigDefaults(configValue);
+    form.innerHTML = `
+      <section class="config-section">
+        <h3>基础</h3>
+        <div class="config-fields">
+          ${configInput("event.name", "赛事名称", { placeholder: "可留空" })}
+          ${configInput("event.default_layout", "默认赛制", { type: "select", choices: matchPages.map((item) => ({ value: item.id, label: item.label })) })}
+        </div>
+      </section>
+      <section class="config-section">
+        <h3>网络 / SNMP</h3>
+        <div class="config-fields">
+          ${configInput("snmp.community", "SNMP Community")}
+          ${configInput("networks.player_vlan", "选手 VLAN", { number: true })}
+          ${configInput("networks.wireless_vlan", "无线 VLAN", { number: true })}
+          ${configInput("networks.player_subnets", "选手网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.40.0/24" })}
+          ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.41.0/24" })}
+          ${configInput("networks.player_gateways", "选手网关（可选）", { type: "textarea", compact: true, rows: 1, placeholder: "留空默认用核心交换机 IP" })}
+          ${configInput("networks.switch_management_ranges", "交换机管理网段（交换机就填这里）", { type: "textarea", compact: true, rows: 1, placeholder: "范围如 192.168.10.11-30 会自动 SNMP 发现在线交换机并上大屏；CIDR 如 192.168.10.0/24 仅用于 LibreNMS 发现" })}
+          ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "默认 192.168.9.0/24；支持范围或单 IP" })}
+        </div>
+      </section>
+      <section class="config-section">
+        <h3>核心/防火墙</h3>
+        <p class="config-section-note">防火墙 IP 同时用于 Ping 和 WAN 流量 SNMP；HA 物理机需要单独采集时再填物理防火墙 SNMP IP。</p>
+        <div class="config-fields">
+          ${configInput("devices.core.ip", "核心 IP")}
+          ${configInput("devices.firewall.ip", "防火墙 IP", { type: "textarea", compact: true, rows: 1, placeholder: "可留空；多台逗号或换行分隔" })}
+          ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP", { type: "textarea", compact: true, rows: 1, placeholder: "两台物理防火墙，逗号或换行分隔" })}
+        </div>
+      </section>
+      <div class="config-section-pair">
+        <section class="config-section">
+          <h3>舞台交换机（选填）</h3>
+          <p class="config-section-note">一般留空：填"交换机管理网段"后，系统会 SNMP 扫描该网段，只把真正在线的交换机加入大屏（不在线的不加），名字直接用交换机 hostname；hostname 含"舞台/stage"的自动归到赛事大屏。需要精确指定时再逐台填。</p>
+          ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
+            { key: "ip", label: "管理地址", placeholder: "可留空，留空走网段自动发现" }
+          ])}
+        </section>
+        <section class="config-section">
+          <h3>其它接入交换机（选填）</h3>
+          <p class="config-section-note">一般留空：同样由"交换机管理网段"自动发现；普通大屏包含全部在线交换机。用于基础设施在线、拓扑和 LibreNMS 发现，不参与选手座位识别。</p>
+          ${configListRows("access_switches", lastEditableConfig.devices.access_switches, [
+            { key: "ip", label: "管理地址", placeholder: "可留空" }
+          ])}
+        </section>
+      </div>
+      <section class="config-section">
+        <h3>服务器</h3>
+        ${configListRows("servers", lastEditableConfig.devices.servers, [
+          { key: "name", label: "名称", placeholder: "可留空" },
+          { key: "ip", label: "地址", placeholder: "可留空" }
+        ])}
+      </section>
+      <section class="config-section">
+        <h3>ISP</h3>
+        <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商；网关探测地址用于丢包/掉线告警，公网 IP 用于拓扑展示并加入 LibreNMS。</p>
+        <div class="config-fields">
+          ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox", compactCheck: true })}
+          ${configInput("isp.max_bandwidth_mbps", "未填带宽时按 Mbps", { number: true, placeholder: "可留空，内部默认 1000" })}
+          ${configInput("isp.wan_if_filter", "WAN 口识别关键词", { placeholder: "telecom,telcom,unicom,isp,WAN" })}
+        </div>
+        ${configListRows("isp", lastEditableConfig.isp.links, [
+          { key: "name", label: "运营商名（可选）", placeholder: "自动发现时可留空" },
+          { key: "ip", label: "运营商公网 IP", placeholder: "必填" },
+          { key: "ping", label: "外网网关探测地址", placeholder: "运营商外网网关" },
+          { key: "bandwidth_mbps", label: "单线带宽", number: true }
+        ])}
+      </section>
+      <section class="config-section">
+        <h3>UniFi</h3>
+        <div class="config-fields">
+          ${configInput("unifi.enabled", "启用 UniFi", { type: "checkbox" })}
+          ${configInput("unifi.controller_url", "UniFi 地址", { placeholder: "https://控制器IP" })}
+          ${configInput("unifi.user", "UniFi 用户")}
+          ${configInput("unifi.password", "UniFi 密码", { inputType: "password", placeholder: "留空则保留 .env 现有值" })}
+          ${configInput("unifi.sites", "UniFi Sites", { placeholder: "all" })}
+          ${configInput("unifi.verify_ssl", "校验 UniFi 证书", { type: "checkbox" })}
+        </div>
+      </section>
+      <section class="config-section">
+        <h3>告警</h3>
+        <div class="config-fields">
+          ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
+        </div>
+      </section>
+      <section class="config-section">
+        <h3>安全</h3>
+        <div class="config-fields">
+          ${configInput("security.grafana_anonymous", "Grafana 匿名访问", { type: "checkbox" })}
+        </div>
+      </section>
+    `;
+  }
+
+  function collectControlConfigForm() {
+    const form = document.getElementById("controlConfigForm");
+    const value = controlConfigDefaults(lastEditableConfig);
+    if (!form) return value;
+    form.querySelectorAll("[data-config-path]").forEach((input) => {
+      let nextValue;
+      if (input.type === "checkbox") {
+        nextValue = input.checked;
+      } else if (input.tagName === "TEXTAREA") {
+        nextValue = splitConfigList(input.value);
+      } else if (input.dataset.configNumber) {
+        nextValue = input.value === "" ? "" : Number(input.value);
+      } else {
+        nextValue = input.value.trim();
+      }
+      configPathSet(value, input.dataset.configPath, nextValue);
+    });
+    const listMappings = {
+      stage_switches: ["devices", "stage_switches"],
+      access_switches: ["devices", "access_switches"],
+      servers: ["devices", "servers"],
+      isp: ["isp", "links"]
+    };
+    Object.entries(listMappings).forEach(([name, path]) => {
+      const list = form.querySelector(`[data-config-list="${name}"]`);
+      const rows = [];
+      if (list) {
+        list.querySelectorAll(".config-list-row").forEach((row) => {
+          const item = {};
+          row.querySelectorAll("[data-config-key]").forEach((input) => {
+            item[input.dataset.configKey] = input.dataset.configNumber
+              ? (input.value === "" ? "" : Number(input.value))
+              : input.value.trim();
+          });
+          if (Object.values(item).some((entry) => String(entry || "").trim())) rows.push(item);
+        });
+      }
+      value[path[0]][path[1]] = rows;
+    });
+    if (value.devices) {
+      value.devices.switches = [];
+      if (value.devices.core) delete value.devices.core.name;
+    }
+    if (value.devices && value.devices.firewall) {
+      value.devices.firewall.snmp = value.devices.firewall.ip || "";
+    }
+    lastEditableConfig = value;
+    return value;
+  }
+
+  function renderConfigEditor(platformConfig) {
+    const form = document.getElementById("controlConfigForm");
+    if (!form) return;
+    if (platformConfig && platformConfig.ok && !form.dataset.dirty) {
+      renderControlConfigForm(platformConfig.config || {});
+    }
+    // Once the operator has run 验证/保存/应用配置, keep that result on screen --
+    // don't let the periodic refresh overwrite it (that made the apply error
+    // vanish into "验证通过" after a few seconds).
+    if (configResultSticky) return;
+    if (platformConfig && !platformConfig.ok) {
+      renderConfigResult(platformConfig);
+    } else if (platformConfig && platformConfig.ok) {
+      renderConfigResult({ ok: true, passive: true, issues: platformConfig.issues || [] });
+    }
+  }
+
+  const CONFIG_ACTION_LABELS = { validate: "验证", save: "保存", apply: "应用配置", rollback: "回滚" };
+
+  function setConfigButtonsBusy(busy) {
+    ["controlConfigValidate", "controlConfigSave", "controlConfigApply", "controlConfigRollback"].forEach((id) => {
+      const btn = document.getElementById(id);
+      if (btn) btn.disabled = busy;
+    });
+  }
+
+  // Applying restarts the bigscreen container (the nginx that serves this page AND
+  // proxies /platform-api), so the apply request is almost always cut off mid-flight
+  // and the page is briefly unreachable. Poll until the proxy is back to confirm.
+  async function waitForPlatformRecovery(maxMs = 90000) {
+    const started = Date.now();
+    await new Promise((r) => setTimeout(r, 3000));
+    while (Date.now() - started < maxMs) {
+      const cfg = await fetchPlatformConfig();
+      if (cfg && cfg.ok) return cfg;
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+    return null;
+  }
+
+  async function runConfigAction(action) {
+    const form = document.getElementById("controlConfigForm");
+    const label = CONFIG_ACTION_LABELS[action] || "处理";
+    const configPayload = collectControlConfigForm();
+    const payload = { text: JSON.stringify(configPayload, null, 2), actor: "web", note: action };
+    configResultSticky = true;
+    if (action === "apply") applyInProgress = true;
+    setConfigButtonsBusy(true);
+    renderConfigResult({
+      pending: true,
+      pendingLabel: action === "apply"
+        ? "应用配置，重启服务中（页面可能短暂断开约 10-20 秒，请勿刷新或关闭）"
+        : label
+    });
+    try {
+      let result;
+      if (action === "validate") {
+        result = await postPlatform("/config/validate", payload);
+      } else if (action === "save") {
+        result = await postPlatform("/config/save", payload);
+      } else if (action === "apply") {
+        result = await postPlatform("/config/apply", payload, { timeoutMs: 180000 });
+      } else if (action === "rollback") {
+        result = await postPlatform("/config/rollback", { actor: "web", note: "rollback from control" });
+      }
+      result.action = action;
+      lastPlatformConfig = result;
+      const shouldReloadSavedConfig = result && result.ok && action !== "validate";
+      if (shouldReloadSavedConfig && result.config && form) {
+        delete form.dataset.dirty;
+        renderControlConfigForm(result.config);
+      } else if (form) {
+        form.dataset.dirty = "1";
+      }
+      renderConfigResult(result);
+      if (shouldReloadSavedConfig) {
+        applyInProgress = false;
+        refreshControlPanel();
+      }
+    } catch (error) {
+      if (action === "apply") {
+        // A dropped connection here almost always means bigscreen restarted mid-apply
+        // -- the apply itself usually finished. Wait for the proxy to come back, then
+        // confirm from the live config instead of flashing a scary error.
+        renderConfigResult({ pending: true, pendingLabel: "服务重启中，等待页面恢复" });
+        const recovered = await waitForPlatformRecovery();
+        if (recovered) {
+          lastPlatformConfig = recovered;
+          if (form) {
+            delete form.dataset.dirty;
+            if (recovered.config) renderControlConfigForm(recovered.config);
+          }
+          renderConfigResult({ ok: true, applied: true, action: "apply", issues: recovered.issues || [] });
+          applyInProgress = false;
+          refreshControlPanel();
+        } else {
+          renderConfigResult({
+            ok: false,
+            errorTitle: "无法确认应用结果",
+            error: "服务重启后页面仍未恢复，请手动刷新页面查看当前配置。"
+          });
+        }
+      } else {
+        renderConfigResult({ ok: false, errorTitle: `${label}失败`, error: error.message || "配置操作失败" });
+      }
+    } finally {
+      applyInProgress = false;
+      setConfigButtonsBusy(false);
+    }
+  }
+
+  function importControlConfigFile() {
+    const input = document.getElementById("controlConfigImportFile");
+    if (input) input.click();
+  }
+
+  function bindConfigImportFile() {
+    const fileInput = document.getElementById("controlConfigImportFile");
+    const form = document.getElementById("controlConfigForm");
+    if (!fileInput || !form || fileInput.dataset.bound) return;
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const text = await file.text();
+      fileInput.value = "";
+      // The offline bundle is a .zip (starts with the "PK" magic bytes). Importing it
+      // as text yields an empty config, so guide the operator to the right file.
+      if (/\.zip$/i.test(file.name) || text.slice(0, 2) === "PK") {
+        renderConfigResult({
+          ok: false,
+          errorTitle: "这是离线部署 zip 包，不能直接导入",
+          error: "请导入『导出配置』得到的 event-config.yml，或先把 zip 解压后导入里面的 event-config.yml。"
+        });
+        configResultSticky = true;
+        return;
+      }
+      try {
+        const result = await postPlatform("/config/validate", { text, actor: "web", note: "import" });
+        lastPlatformConfig = result;
+        if (result && result.config) {
+          renderControlConfigForm(result.config);
+          form.dataset.dirty = "1";
+        }
+        renderConfigResult(result);
+      } catch (error) {
+        renderConfigResult({ ok: false, error: error.message || "导入失败" });
+      }
+    });
+    fileInput.dataset.bound = "1";
+  }
+
+  function renderIncidentList(payload) {
+    const incidents = payload && payload.incidents ? payload.incidents : [];
+    lastIncidents = incidents;
+    const list = document.getElementById("controlIncidentList");
+    if (!list) return;
+    if (payload && payload.error) {
+      list.innerHTML = `<div class="control-empty bad">${escapeHtml(payload.error)}</div>`;
+      return;
+    }
+    if (!incidents.length) {
+      list.innerHTML = `<div class="control-empty">暂无事故记录</div>`;
+      return;
+    }
+    list.innerHTML = incidents.slice(0, 12).map((item) => {
+      const started = item.startedAt ? formatTimestampFull(item.startedAt) : "-";
+      const duration = item.recoveredAt && item.startedAt ? `${Math.max(0, Math.round((item.recoveredAt - item.startedAt) / 60))} 分钟` : "进行中";
+      return `
+        <div class="incident-record ${item.severity || "warn"}">
+          <span>#${escapeHtml(item.id)} · ${escapeHtml(item.status || "open")}</span>
+          <strong>${escapeHtml(item.title || "")}</strong>
+          <em>${escapeHtml(started)} · ${escapeHtml(duration)} · ${escapeHtml(item.owner || "未分配")}</em>
+          ${item.status === "resolved" ? "" : `<button type="button" data-resolve-incident="${escapeHtml(item.id)}">标记恢复</button>`}
+        </div>
+      `;
+    }).join("");
+    list.querySelectorAll("[data-resolve-incident]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await patchPlatform(`/incidents/${button.dataset.resolveIncident}`, {
+            status: "resolved",
+            recoveredAt: Math.floor(Date.now() / 1000),
+            event: "标记恢复",
+            eventType: "recovery"
+          });
+          renderIncidentList(await fetchIncidents());
+        } catch (error) {
+          renderIncidentList({ incidents: lastIncidents, error: error.message || "更新事故失败" });
+        }
+      });
+    });
+  }
+
+  async function createControlIncident() {
+    const input = document.getElementById("controlIncidentTitle");
+    const title = (input && input.value.trim()) || "现场事故";
+    const related = lastControlReport ? {
+      readiness: lastControlReport.readiness,
+      checks: lastControlReport.checks.filter((item) => item.level === "bad" || item.level === "warn").slice(0, 8)
+    } : {};
+    try {
+      await postPlatform("/incidents", { title, severity: lastControlReport && lastControlReport.readiness.level === "bad" ? "bad" : "warn", related });
+      if (input) input.value = "";
+      renderIncidentList(await fetchIncidents());
+    } catch (error) {
+      renderIncidentList({ incidents: lastIncidents, error: error.message || "创建事故失败" });
+    }
+  }
+
+  function renderDelivery() {
+    const element = document.getElementById("controlDelivery");
+    if (!element) return;
+    // Render the action buttons once; the periodic refresh must not wipe the
+    // 赛前体检 / 测试告警 results the operator is reading.
+    if (element.dataset.built === "1") return;
+    element.dataset.built = "1";
+    element.innerHTML = `
+      <div class="delivery-actions">
+        <button type="button" class="delivery-test-alert" id="preCheckBtn">赛前体检</button>
+        <button type="button" class="delivery-test-alert" id="testAlertBtn">发送测试告警</button>
+        <span class="test-alert-result" id="testAlertResult"></span>
+      </div>
+      <div class="precheck-result" id="preCheckResult" hidden></div>
+    `;
+    const preBtn = document.getElementById("preCheckBtn");
+    if (preBtn) {
+      preBtn.addEventListener("click", async () => {
+        const box = document.getElementById("preCheckResult");
+        preBtn.disabled = true;
+        if (box) { box.hidden = false; box.className = "precheck-result"; box.textContent = "体检中…（最长约 2 分钟）"; }
+        try {
+          const res = await postPlatform("/pre-check", {});
+          if (box) {
+            if (!res || !res.ok) {
+              box.className = "precheck-result bad";
+              box.textContent = `体检失败：${(res && res.error) || "未知错误"}`;
+            } else {
+              const verdictText = { good: "✅ 可以开赛", warn: "⚠ 有警告，请确认", bad: "❌ 需要处理" }[res.verdict] || res.verdict;
+              box.className = `precheck-result ${res.verdict}`;
+              box.innerHTML = `<div class="precheck-verdict">${verdictText}　通过 ${res.pass} · 警告 ${res.warn} · 失败 ${res.fail}</div><pre>${escapeHtml(res.output || "")}</pre>`;
+            }
+          }
+        } catch (error) {
+          if (box) { box.className = "precheck-result bad"; box.textContent = `体检失败：${error.message}`; }
+        } finally {
+          preBtn.disabled = false;
+        }
+      });
+    }
+    const testBtn = document.getElementById("testAlertBtn");
+    if (testBtn) {
+      testBtn.addEventListener("click", async () => {
+        const result = document.getElementById("testAlertResult");
+        testBtn.disabled = true;
+        if (result) { result.textContent = "发送中…"; result.className = "test-alert-result"; }
+        try {
+          const res = await postPlatform("/test-alert", {});
+          const ok = Boolean(res && res.ok);
+          if (result) {
+            result.textContent = ok
+              ? (res.dryRun ? "已触发（DryRun 模式，未真正发送）" : "已发送，请到飞书群确认收到")
+              : `失败：${(res && res.error) || "未知错误"}`;
+            result.className = `test-alert-result ${ok ? "good" : "bad"}`;
+          }
+        } catch (error) {
+          if (result) { result.textContent = `失败：${error.message}`; result.className = "test-alert-result bad"; }
+        } finally {
+          testBtn.disabled = false;
+        }
+      });
+    }
+  }
+
+  function renderControlIncidentFlow(snapshot) {
+    const nowValue = dateTimeInputValue(new Date());
+    const worst = snapshot.readiness.level;
+    const pageId = snapshot.page ? snapshot.page.id : "match-5v5";
+    const flow = [
+      { label: "卡顿分析", href: `/incident?at=${encodeURIComponent(nowValue)}&window=5&threshold=0.05`, value: "当前时间" },
+      { label: "座位核对", href: `/seat-check?layout=${encodeURIComponent(pageId)}&network=${encodeURIComponent(snapshot.network)}`, value: `${snapshot.seatSummary.seats}/${snapshot.seatSummary.expectedSeats}` },
+      { label: "拓扑", href: "/topology", value: `${snapshot.edges.length} 边` },
+      { label: "网络总览", href: "/infra", value: snapshot.targetSummary.offline.length ? `${snapshot.targetSummary.offline.length} 离线` : "正常" }
+    ];
+    document.getElementById("controlIncidentFlow").innerHTML = `
+      <div class="flow-state ${worst}">
+        <strong>${worst === "bad" ? "需要处理" : worst === "warn" ? "需要关注" : "可比赛"}</strong>
+        <span>${snapshot.checks.filter((item) => item.level === "bad" || item.level === "warn").slice(0, 2).map((item) => item.label).join("、") || "关键路径正常"}</span>
+      </div>
+      <div class="flow-links">
+        ${flow.map((item) => `
+          <a href="${escapeHtml(item.href)}">
+            <span>${escapeHtml(item.label)}</span>
+            <strong>${escapeHtml(item.value)}</strong>
+          </a>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderControlLint() {
+    const coreInput = document.getElementById("controlCoreConfig");
+    const input = document.getElementById("controlSwitchConfig");
+    const result = document.getElementById("controlLintResult");
+    const coreText = coreInput ? coreInput.value : "";
+    const distText = input ? input.value : "";
+    if (!coreText.trim() && !distText.trim()) {
+      result.innerHTML = `<div class="control-empty">等待配置片段</div>`;
+      return;
+    }
+    const issues = lintSwitchScene(coreText, distText);
+    if (!issues.length) {
+      result.innerHTML = `<div class="control-empty good">未发现明显风险</div>`;
+      return;
+    }
+    result.innerHTML = issues.slice(0, 24).map((item) => controlItemHtml({
+      section: item.source || (item.line ? `L${item.line}` : "全局"),
+      label: item.label,
+      level: item.level,
+      value: item.level.toUpperCase(),
+      note: item.note
+    })).join("");
+  }
+
+  async function collectControlSnapshot() {
+    const { page, network } = controlPageAndNetwork();
+    const expectedSeats = page ? (page.teams || []).length * page.teamSize : 0;
+    const selector = page ? tournamentSelector(page, network) : 'role="player"';
+    const [snapshot, targets, edges, servicesRaw, runtimeStatus, platformConfig, incidents] = await Promise.all([
+      fetchPlayerSnapshot(selector),
+      fetchTopologyTargets(),
+      fetchTopologyEdges(),
+      prometheusInstant("up"),
+      fetchRuntimeStatus(),
+      fetchPlatformConfig(),
+      fetchIncidents()
+    ]);
+    const players = page
+      ? snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize)
+      : snapshot.players;
+    const seatSummary = summarizePlayers(players, expectedSeats);
+    const targetSummary = summarizeTargets(targets);
+    const serviceSummary = summarizeServices(servicesRaw);
+    const configRisks = buildConfigRisks(config, runtimeStatus);
+    const topologyFindings = buildTopologyFindings(targets, edges);
+    const checks = buildReadinessChecks({ seatSummary, targetSummary, serviceSummary, configRisks, topologyFindings });
+    const readiness = readinessScore(checks);
+    return {
+      mode: "monitor",
+      page,
+      network,
+      players,
+      seatSummary,
+      targets,
+      targetSummary,
+      edges,
+      services: serviceSummary,
+      runtimeStatus,
+      platformConfig,
+      incidents,
+      configRisks,
+      topologyFindings,
+      checks,
+      readiness
+    };
+  }
+
+  function renderControlPanel(snapshot) {
+    renderControlReadiness(snapshot.readiness, snapshot.checks);
+    renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
+    renderControlConfig(snapshot);
+    renderConfigEditor(snapshot.platformConfig);
+    renderControlIncidentFlow(snapshot);
+    renderIncidentList(snapshot.incidents);
+    renderDelivery();
+    lastControlReport = snapshot;
+    lastPlatformConfig = snapshot.platformConfig;
+    lastDataSuccessAt = Date.now();
+  }
+
+  function setControlAuthMessage(message, level = "") {
+    const element = document.getElementById("controlAuthMessage");
+    if (!element) return;
+    element.className = `auth-message ${level || ""}`.trim();
+    element.textContent = message || "";
+  }
+
+  function renderControlAuth(status) {
+    const authPanel = document.getElementById("controlAuth");
+    const shell = document.getElementById("controlShell");
+    const loginForm = document.getElementById("controlLoginForm");
+    const passwordForm = document.getElementById("controlPasswordForm");
+    const userInput = document.getElementById("controlLoginUser");
+    const title = document.getElementById("controlAuthTitle");
+    const hint = document.getElementById("controlAuthHint");
+    const authenticated = status && status.authenticated;
+    const mustChange = authenticated && status.mustChangePassword;
+
+    if (!authPanel || !shell) return true;
+    if (authenticated && !mustChange) {
+      authPanel.hidden = true;
+      shell.hidden = false;
+      setControlAuthMessage("");
+      return true;
+    }
+
+    shell.hidden = true;
+    authPanel.hidden = false;
+    if (loginForm) loginForm.hidden = Boolean(authenticated);
+    if (passwordForm) passwordForm.hidden = !mustChange;
+    if (userInput && status && status.defaultUser && !userInput.value) userInput.value = status.defaultUser;
+    if (title) title.textContent = mustChange ? "首次登录需要修改密码" : "赛事控制台登录";
+    if (hint) {
+      hint.textContent = mustChange
+        ? "默认密码只能用于首次进入，请设置一个新的控制台密码。"
+        : "输入控制台账号密码后继续。";
+    }
+    if (status && status.error) {
+      setControlAuthMessage(status.error, "bad");
+    } else if (mustChange) {
+      setControlAuthMessage("新密码至少 10 位，并包含字母和数字。", "");
+    } else {
+      setControlAuthMessage("");
+    }
+    return false;
+  }
+
+  async function ensureControlAuth() {
+    const status = await fetchPlatformAuthStatus();
+    // During a transient proxy outage (bigscreen restarting on 应用配置) the
+    // auth probe fails with no HTTP status. If we were already authenticated,
+    // hold the console rather than tearing it down to the login screen -- the
+    // next poll will recover on its own.
+    if (status && status.transient && lastControlAuth && lastControlAuth.authenticated) {
+      return true;
+    }
+    lastControlAuth = status;
+    return renderControlAuth(status);
+  }
+
+  async function refreshControlPanel() {
+    // While 应用配置 is restarting services, its own flow drives the UI and waits
+    // for recovery -- don't let the periodic refresh fight it with failed fetches.
+    if (applyInProgress) return;
+    if (!await ensureControlAuth()) {
+      lastControlReport = null;
+      return;
+    }
+    if (!lastControlReport) {
+      ["controlReadinessMissing", "controlTopology", "controlConfig", "controlIncidentFlow", "controlIncidentList", "controlDelivery"].forEach((id) => {
+        const element = document.getElementById(id);
+        if (element) element.innerHTML = `<div class="control-empty">加载中</div>`;
+      });
+    }
+    try {
+      const snapshot = await collectControlSnapshot();
+      renderControlPanel(snapshot);
+    } catch (error) {
+      console.error("Control panel failed:", error);
+      const missingHost = document.getElementById("controlReadinessMissing");
+      if (missingHost) missingHost.innerHTML = `<div class="control-empty bad">控制台加载失败</div>`;
+    }
+  }
+
+  async function submitControlLogin(event) {
+    event.preventDefault();
+    const username = (document.getElementById("controlLoginUser") || {}).value || "";
+    const passwordInput = document.getElementById("controlLoginPassword");
+    const password = passwordInput ? passwordInput.value : "";
+    setControlAuthMessage("正在登录...");
+    try {
+      lastControlAuth = await loginPlatformAuth(username.trim(), password);
+      if (passwordInput) passwordInput.value = "";
+      renderControlAuth(lastControlAuth);
+      if (lastControlAuth.authenticated && !lastControlAuth.mustChangePassword) {
+        refreshControlPanel();
+      }
+    } catch (error) {
+      setControlAuthMessage(error.message || "登录失败", "bad");
+    }
+  }
+
+  async function submitControlPasswordChange(event) {
+    event.preventDefault();
+    const currentInput = document.getElementById("controlCurrentPassword");
+    const nextInput = document.getElementById("controlNewPassword");
+    const confirmInput = document.getElementById("controlConfirmPassword");
+    const currentPassword = currentInput ? currentInput.value : "";
+    const newPassword = nextInput ? nextInput.value : "";
+    const confirmPassword = confirmInput ? confirmInput.value : "";
+    if (newPassword !== confirmPassword) {
+      setControlAuthMessage("两次输入的新密码不一致", "bad");
+      return;
+    }
+    setControlAuthMessage("正在修改密码...");
+    try {
+      lastControlAuth = await changePlatformPassword(currentPassword, newPassword, confirmPassword);
+      [currentInput, nextInput, confirmInput].forEach((input) => { if (input) input.value = ""; });
+      setControlAuthMessage("密码已修改", "good");
+      renderControlAuth(lastControlAuth);
+      refreshControlPanel();
+    } catch (error) {
+      setControlAuthMessage(error.message || "修改密码失败", "bad");
+    }
+  }
+
+  async function logoutControl() {
+    try {
+      await logoutPlatformAuth();
+    } catch (error) {
+      // Logout is best effort; local UI should still return to the login screen.
+    }
+    lastControlAuth = { ok: true, enabled: true, authenticated: false };
+    lastControlReport = null;
+    renderControlAuth(lastControlAuth);
+  }
+
+  function setupControlPanel() {
+    const loginForm = document.getElementById("controlLoginForm");
+    if (loginForm && !loginForm.dataset.bound) {
+      loginForm.addEventListener("submit", submitControlLogin);
+      loginForm.dataset.bound = "1";
+    }
+    const passwordForm = document.getElementById("controlPasswordForm");
+    if (passwordForm && !passwordForm.dataset.bound) {
+      passwordForm.addEventListener("submit", submitControlPasswordChange);
+      passwordForm.dataset.bound = "1";
+    }
+    const logoutBtn = document.getElementById("controlLogout");
+    if (logoutBtn && !logoutBtn.dataset.bound) {
+      logoutBtn.addEventListener("click", logoutControl);
+      logoutBtn.dataset.bound = "1";
+    }
+    const refreshBtn = document.getElementById("controlRefresh");
+    if (refreshBtn && !refreshBtn.dataset.bound) {
+      refreshBtn.addEventListener("click", refreshControlPanel);
+      refreshBtn.dataset.bound = "1";
+    }
+    const rescanBtn = document.getElementById("controlRescan");
+    if (rescanBtn && !rescanBtn.dataset.bound) {
+      rescanBtn.addEventListener("click", function () { triggerRescan(this); });
+      rescanBtn.dataset.bound = "1";
+    }
+    ["controlSwitchConfig", "controlCoreConfig"].forEach((id) => {
+      const lintInput = document.getElementById(id);
+      if (lintInput && !lintInput.dataset.bound) {
+        lintInput.addEventListener("input", renderControlLint);
+        lintInput.dataset.bound = "1";
+      }
+    });
+    const configForm = document.getElementById("controlConfigForm");
+    if (configForm && !configForm.dataset.bound) {
+      const markDirty = () => { configForm.dataset.dirty = "1"; };
+      configForm.addEventListener("input", markDirty);
+      configForm.addEventListener("change", markDirty);
+      configForm.addEventListener("click", (event) => {
+        const addButton = event.target.closest("[data-config-add]");
+        const rangeButton = event.target.closest("[data-config-add-range]");
+        const removeButton = event.target.closest("[data-config-remove]");
+        if (!addButton && !rangeButton && !removeButton) return;
+        const next = collectControlConfigForm();
+        if (addButton) {
+          const listName = addButton.dataset.configAdd;
+          if (listName === "stage_switches") next.devices.stage_switches.push({ ip: "" });
+          if (listName === "access_switches") next.devices.access_switches.push({ ip: "" });
+          if (listName === "servers") next.devices.servers.push({ name: "", ip: "" });
+          if (listName === "isp") next.isp.links.push({ name: "", ping: "", ip: "", bandwidth_mbps: "" });
+        }
+        if (rangeButton) {
+          const listName = rangeButton.dataset.configAddRange;
+          const input = configForm.querySelector(`[data-config-range-input="${listName}"]`);
+          const values = expandIpRangeText(input ? input.value : "");
+          const target = listName === "stage_switches" ? next.devices.stage_switches : next.devices.access_switches;
+          const known = new Set(target.map((item) => String(item.ip || "").trim()).filter(Boolean));
+          values.forEach((ip) => {
+            if (!known.has(ip)) {
+              target.push({ ip });
+              known.add(ip);
+            }
+          });
+        }
+        if (removeButton) {
+          const listName = removeButton.dataset.configRemove;
+          const index = Number(removeButton.dataset.index);
+          if (listName === "stage_switches") next.devices.stage_switches.splice(index, 1);
+          if (listName === "access_switches") next.devices.access_switches.splice(index, 1);
+          if (listName === "servers") next.devices.servers.splice(index, 1);
+          if (listName === "isp") next.isp.links.splice(index, 1);
+        }
+        renderControlConfigForm(next);
+        configForm.dataset.dirty = "1";
+      });
+      configForm.dataset.bound = "1";
+    }
+    [
+      ["controlConfigValidate", "validate"],
+      ["controlConfigSave", "save"],
+      ["controlConfigApply", "apply"],
+      ["controlConfigRollback", "rollback"]
+    ].forEach(([id, action]) => {
+      const button = document.getElementById(id);
+      if (button && !button.dataset.bound) {
+        button.addEventListener("click", () => runConfigAction(action));
+        button.dataset.bound = "1";
+      }
+    });
+    const importBtn = document.getElementById("controlConfigImport");
+    if (importBtn && !importBtn.dataset.bound) {
+      importBtn.addEventListener("click", importControlConfigFile);
+      importBtn.dataset.bound = "1";
+    }
+    bindConfigImportFile();
+    const incidentCreate = document.getElementById("controlIncidentCreate");
+    if (incidentCreate && !incidentCreate.dataset.bound) {
+      incidentCreate.addEventListener("click", createControlIncident);
+      incidentCreate.dataset.bound = "1";
+    }
+    renderControlLint();
   }
 
   function renderNav() {
@@ -1432,6 +2612,13 @@
     }
   }
 
+  function stopControlRefresh() {
+    if (controlTimer) {
+      window.clearInterval(controlTimer);
+      controlTimer = null;
+    }
+  }
+
   function startInfraRefresh() {
     if (gaugeTimer || chartTimer) return;
     renderSignatures.clear();
@@ -1477,6 +2664,13 @@
     }
   }
 
+  function startControlRefresh() {
+    stopControlRefresh();
+    setupControlPanel();
+    refreshControlPanel();
+    controlTimer = window.setInterval(refreshControlPanel, 10000);
+  }
+
   function setVisible(id, visible) {
     const element = document.getElementById(id);
     if (element) {
@@ -1510,6 +2704,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen home-mode";
     setVisible("homePanel", true);
@@ -1517,16 +2712,35 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     renderHomeCards();
+  }
+
+  function showControl() {
+    const screen = document.querySelector(".screen");
+    stopInfraRefresh();
+    stopTournamentRefresh();
+    stopOpsRefresh();
+    stopTopologyRefresh();
+    screen.className = "screen control-mode";
+    setVisible("homePanel", false);
+    setVisible("panelGrid", false);
+    setVisible("tournamentPanel", false);
+    setVisible("evidencePanel", false);
+    setVisible("opsPanel", false);
+    setVisible("controlPanel", true);
+    setVisible("incidentPanel", false);
+    setVisible("topologyPanel", false);
+    startControlRefresh();
   }
 
   function showInfra() {
     const screen = document.querySelector(".screen");
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen infra-mode";
     setVisible("homePanel", false);
@@ -1534,8 +2748,8 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     startInfraRefresh();
   }
@@ -1543,6 +2757,7 @@
   function showTournament(page) {
     const screen = document.querySelector(".screen");
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = `screen tournament-mode ${page.kind === "match" ? "match-mode" : "multi-team-mode"} ${page.id}`;
     setVisible("homePanel", false);
@@ -1550,8 +2765,8 @@
     setVisible("tournamentPanel", true);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
     startInfraRefresh();
@@ -1563,6 +2778,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen evidence-mode";
     setVisible("homePanel", false);
@@ -1570,8 +2786,8 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", true);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     setupEvidencePanel();
   }
@@ -1580,6 +2796,7 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = `screen ops-mode ${page.id}-mode`;
     setVisible("homePanel", false);
@@ -1587,8 +2804,8 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", true);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     startOpsRefresh(page);
   }
@@ -1802,6 +3019,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen incident-mode";
     setVisible("homePanel", false);
@@ -1809,244 +3027,10 @@
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", true);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", false);
     setupIncidentPanel();
-  }
-
-  // ---- Connection-quality heatmap ----
-
-  function heatmapWindow() {
-    const startInput = document.getElementById("heatmapStart");
-    const windowInput = document.getElementById("heatmapWindow");
-    const hours = Math.max(0.1, Number(windowInput && windowInput.value ? windowInput.value : 6));
-    const now = Math.floor(Date.now() / 1000);
-    let end = now;
-    let start = now - Math.floor(hours * 3600);
-    if (startInput && startInput.value) {
-      const parsed = new Date(startInput.value);
-      if (Number.isFinite(parsed.getTime())) {
-        start = Math.floor(parsed.getTime() / 1000);
-        end = Math.min(start + Math.floor(hours * 3600), now);
-      }
-    }
-    const span = Math.max(60, end - start);
-    const step = Math.max(15, Math.floor(span / 480));
-    return { start, end, step, span };
-  }
-
-  function heatmapColorForOffline(offlineFrac) {
-    if (!Number.isFinite(offlineFrac) || offlineFrac < 0) return { bg: "rgba(60, 70, 90, 0.6)", level: "none" };
-    if (offlineFrac === 0) return { bg: "rgba(58, 175, 90, 0.92)", level: "good" };
-    if (offlineFrac < 0.01) return { bg: "rgba(120, 200, 70, 0.92)", level: "good" };
-    if (offlineFrac < 0.05) return { bg: "rgba(255, 224, 64, 0.92)", level: "warn" };
-    if (offlineFrac < 0.15) return { bg: "rgba(255, 150, 50, 0.92)", level: "warn" };
-    return { bg: "rgba(239, 35, 60, 0.94)", level: "bad" };
-  }
-
-  function fmtPctText(value) {
-    if (!Number.isFinite(value)) return "-";
-    if (value < 0.0001) return "0.00%";
-    if (value < 0.01) return `${(value * 100).toFixed(2)}%`;
-    return `${(value * 100).toFixed(1)}%`;
-  }
-
-  async function queryHeatmapData(win, teamCount) {
-    const teamFilter = `team=~"${Array.from({ length: teamCount }, (_, i) => i + 1).join("|")}"`;
-    const offlineQ = `1 - avg_over_time(probe_success{role="player",network="wired",${teamFilter}}[${win.span}s])`;
-    const latencyQ = `avg_over_time(probe_icmp_duration_seconds{role="player",network="wired",phase="rtt",${teamFilter}}[${win.span}s])`;
-
-    const url = (query) => `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}&time=${win.end}`;
-    const fetchOne = async (query) => {
-      const resp = await fetchWithTimeout(url(query), { cache: "no-store" });
-      if (!resp.ok) throw new Error(`Prometheus HTTP ${resp.status}`);
-      const payload = await resp.json();
-      if (payload.status !== "success") throw new Error("Prometheus query failed");
-      return payload.data.result.map((item) => ({ metric: item.metric || {}, value: Number(item.value[1]) }));
-    };
-
-    const [offline, latency] = await Promise.all([fetchOne(offlineQ), fetchOne(latencyQ)]);
-    return { offline, latency };
-  }
-
-  function buildHeatmapCells(data, teamCount, seatCount) {
-    const offlineBy = new Map();
-    data.offline.forEach((item) => {
-      const key = `${item.metric.team}|${item.metric.seat}`;
-      const prev = offlineBy.get(key);
-      if (prev === undefined || item.value > prev) offlineBy.set(key, item.value);
-    });
-    const latencyBy = new Map();
-    data.latency.forEach((item) => {
-      const key = `${item.metric.team}|${item.metric.seat}`;
-      const prev = latencyBy.get(key);
-      if (prev === undefined || (Number.isFinite(item.value) && item.value < prev)) {
-        latencyBy.set(key, item.value);
-      }
-    });
-
-    const cells = [];
-    for (let team = 1; team <= teamCount; team += 1) {
-      for (let seat = 1; seat <= seatCount; seat += 1) {
-        const key = `${team}|${seat}`;
-        cells.push({
-          team,
-          seat,
-          offline: offlineBy.has(key) ? offlineBy.get(key) : NaN,
-          latency: latencyBy.has(key) ? latencyBy.get(key) : NaN
-        });
-      }
-    }
-    return cells;
-  }
-
-  function renderHeatmapSummary(cells, win) {
-    const evaluated = cells.filter((cell) => Number.isFinite(cell.offline));
-    const goodCount = evaluated.filter((cell) => cell.offline === 0).length;
-    const warnCount = evaluated.filter((cell) => cell.offline > 0 && cell.offline < 0.05).length;
-    const badCount = evaluated.filter((cell) => cell.offline >= 0.05).length;
-    const noDataCount = cells.length - evaluated.length;
-    const totalOffline = evaluated.reduce((sum, cell) => sum + cell.offline, 0);
-    const avgOffline = evaluated.length ? totalOffline / evaluated.length : NaN;
-
-    const startStr = new Date(win.start * 1000).toLocaleString("zh-CN", { hour12: false });
-    const endStr = new Date(win.end * 1000).toLocaleString("zh-CN", { hour12: false });
-    document.getElementById("heatmapSummary").innerHTML = `
-      <div class="heatmap-kpi"><strong>${cells.length}</strong><span>总座位</span></div>
-      <div class="heatmap-kpi good"><strong>${goodCount}</strong><span>全程在线</span></div>
-      <div class="heatmap-kpi warn"><strong>${warnCount}</strong><span>偶尔抖动</span></div>
-      <div class="heatmap-kpi bad"><strong>${badCount}</strong><span>频繁掉线</span></div>
-      <div class="heatmap-kpi"><strong>${noDataCount}</strong><span>无数据</span></div>
-      <div class="heatmap-kpi"><strong>${fmtPctText(avgOffline)}</strong><span>平均离线率</span></div>
-      <div class="heatmap-window">${escapeHtml(startStr)} → ${escapeHtml(endStr)}</div>
-    `;
-  }
-
-  function renderHeatmapGrid(cells, teamCount, seatCount) {
-    const grid = document.getElementById("heatmapGrid");
-    grid.style.setProperty("--heatmap-team-count", String(teamCount));
-    grid.style.setProperty("--heatmap-seat-count", String(seatCount));
-    grid.innerHTML = cells.map((cell) => {
-      const color = heatmapColorForOffline(cell.offline);
-      const offlineText = Number.isFinite(cell.offline) ? fmtPctText(cell.offline) : "—";
-      const latencyText = Number.isFinite(cell.latency) ? formatPingText(cell.latency) : "—";
-      const tooltip = `Team ${cell.team} Seat ${cell.seat}\n离线 ${offlineText}  平均 ${latencyText}`;
-      return `
-        <div class="heatmap-cell ${color.level}" style="background:${color.bg}" title="${escapeHtml(tooltip)}">
-          <span class="heatmap-cell-pos">T${cell.team}·S${cell.seat}</span>
-          <strong class="heatmap-cell-pct">${escapeHtml(offlineText)}</strong>
-          <em class="heatmap-cell-rtt">${escapeHtml(latencyText)}</em>
-        </div>
-      `;
-    }).join("");
-  }
-
-  function renderHeatmapLegend() {
-    document.getElementById("heatmapLegend").innerHTML = `
-      <span class="heatmap-key" style="background:rgba(58, 175, 90, 0.92)">0% (全程在线)</span>
-      <span class="heatmap-key" style="background:rgba(120, 200, 70, 0.92)">&lt;1% (基本稳)</span>
-      <span class="heatmap-key" style="background:rgba(255, 224, 64, 0.92)">1-5% (轻微抖)</span>
-      <span class="heatmap-key" style="background:rgba(255, 150, 50, 0.92)">5-15% (明显问题)</span>
-      <span class="heatmap-key" style="background:rgba(239, 35, 60, 0.94)">&gt;15% (严重掉线)</span>
-      <span class="heatmap-key" style="background:rgba(60, 70, 90, 0.6)">无数据</span>
-    `;
-  }
-
-  let lastHeatmapExport = null;
-
-  function exportHeatmapCsv() {
-    if (!lastHeatmapExport) return;
-    const { cells, win } = lastHeatmapExport;
-    const rows = [["team", "seat", "offline_ratio", "avg_latency_ms"]];
-    cells.forEach((cell) => {
-      rows.push([
-        String(cell.team),
-        String(cell.seat),
-        Number.isFinite(cell.offline) ? cell.offline.toFixed(4) : "",
-        Number.isFinite(cell.latency) ? (cell.latency * 1000).toFixed(2) : ""
-      ]);
-    });
-    downloadCsv(`heatmap_${csvStamp(win.start)}_${csvStamp(win.end)}.csv`, rows);
-  }
-
-  async function runHeatmap() {
-    const win = heatmapWindow();
-    const teamCount = Math.max(1, Number(document.getElementById("heatmapTeams").value || 16));
-    const seatCount = teamCount === 2 ? 5 : 4;
-
-    const params = new URLSearchParams();
-    const startVal = document.getElementById("heatmapStart").value;
-    if (startVal) params.set("start", startVal);
-    params.set("window", document.getElementById("heatmapWindow").value);
-    params.set("teams", String(teamCount));
-    window.history.replaceState({}, "", `/heatmap?${params.toString()}`);
-
-    document.getElementById("heatmapSummary").innerHTML = `<div class="heatmap-loading">加载中…</div>`;
-    document.getElementById("heatmapGrid").innerHTML = "";
-
-    try {
-      const data = await queryHeatmapData(win, teamCount);
-      const cells = buildHeatmapCells(data, teamCount, seatCount);
-      lastHeatmapExport = { cells, win };
-      renderHeatmapSummary(cells, win);
-      renderHeatmapGrid(cells, teamCount, seatCount);
-      renderHeatmapLegend();
-    } catch (error) {
-      console.error("Heatmap query failed:", error);
-      document.getElementById("heatmapSummary").innerHTML = `<div class="heatmap-error">查询失败: ${escapeHtml(error.message || "")}</div>`;
-    }
-  }
-
-  function setupHeatmapPanel() {
-    const params = new URLSearchParams(window.location.search);
-    const startVal = params.get("start");
-    const windowVal = params.get("window");
-    const teamsVal = params.get("teams");
-
-    const startInput = document.getElementById("heatmapStart");
-    if (startVal) startInput.value = startVal;
-    if (windowVal) {
-      const select = document.getElementById("heatmapWindow");
-      if (Array.from(select.options).some((opt) => opt.value === windowVal)) select.value = windowVal;
-    }
-    if (teamsVal) {
-      const select = document.getElementById("heatmapTeams");
-      if (Array.from(select.options).some((opt) => opt.value === teamsVal)) select.value = teamsVal;
-    }
-
-    const form = document.getElementById("heatmapForm");
-    if (form && !form.dataset.bound) {
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        runHeatmap();
-      });
-      form.dataset.bound = "1";
-    }
-    const exportBtn = document.getElementById("heatmapExport");
-    if (exportBtn && !exportBtn.dataset.bound) {
-      exportBtn.addEventListener("click", exportHeatmapCsv);
-      exportBtn.dataset.bound = "1";
-    }
-    runHeatmap();
-  }
-
-  function showHeatmap() {
-    const screen = document.querySelector(".screen");
-    stopInfraRefresh();
-    stopTournamentRefresh();
-    stopOpsRefresh();
-    stopTopologyRefresh();
-    screen.className = "screen heatmap-mode";
-    setVisible("homePanel", false);
-    setVisible("panelGrid", false);
-    setVisible("tournamentPanel", false);
-    setVisible("evidencePanel", false);
-    setVisible("opsPanel", false);
-    setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", true);
-    setVisible("topologyPanel", false);
-    setupHeatmapPanel();
   }
 
   // ---- Network topology ----
@@ -2079,6 +3063,7 @@
         const idx = Number(el.dataset.idx);
         const node = topologyNodes[idx];
         if (!node) return;
+        const syslogUrl = node.ip ? `${window.location.protocol}//${window.location.hostname}:3000/d/device-syslog?var-host=${encodeURIComponent(node.ip)}` : "";
         detail.hidden = false;
         detail.innerHTML = `
           <header><strong>${escapeHtml(node.name)}</strong><span class="dot ${node.level}"></span></header>
@@ -2088,7 +3073,11 @@
             <dt>状态</dt><dd>${node.success === undefined ? "无数据" : (node.success ? "在线" : "离线")}</dd>
             <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
           </dl>
-          ${node.ip ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(node.ip)}">在 /latency 查这个 IP →</a>` : ""}
+          <div class="topology-detail-actions">
+            ${node.ip ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(node.ip)}">延迟证据</a>` : ""}
+            <a class="detail-link" href="/incident?at=${encodeURIComponent(dateTimeInputValue(new Date()))}&window=5&threshold=0.05">事故分析</a>
+            ${syslogUrl ? `<a class="detail-link" href="${escapeHtml(syslogUrl)}">Syslog</a>` : ""}
+          </div>
         `;
       };
       el.addEventListener("click", handler);
@@ -2302,14 +3291,15 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopControlRefresh();
     screen.className = "screen topology-mode";
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
     setVisible("incidentPanel", false);
-    setVisible("heatmapPanel", false);
     setVisible("topologyPanel", true);
     const detail = document.getElementById("topologyDetail");
     detail.hidden = true;
@@ -2328,12 +3318,12 @@
     activeRoute = routeKey;
     if (page.id === "home") {
       showHome();
+    } else if (page.id === "control") {
+      showControl();
     } else if (page.id === "evidence") {
       showEvidence();
     } else if (page.id === "incident") {
       showIncident();
-    } else if (page.id === "heatmap") {
-      showHeatmap();
     } else if (page.id === "topology") {
       showTopology();
     } else if (page.id === "wireless" || page.id === "seat-check") {
@@ -2346,7 +3336,7 @@
   }
 
   function anyRefreshActive() {
-    return Boolean(gaugeTimer || chartTimer || tournamentTimer || opsTimer || topologyTimer);
+    return Boolean(gaugeTimer || chartTimer || tournamentTimer || opsTimer || controlTimer || topologyTimer);
   }
 
   // Warn when the active page's polling loop hasn't produced fresh data for a

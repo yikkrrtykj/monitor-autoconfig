@@ -1,0 +1,46 @@
+event:
+  name:
+  default_layout: tournament-64-2layer
+
+networks:
+  player_vlan: 40
+  wireless_vlan: 41
+  player_subnets: 192.168.40.0/24
+  wireless_subnets: 192.168.41.0/24
+  player_gateways:
+  switch_management_ranges: 192.168.10.1-100,192.168.10.254
+  firewall_management_ranges: 192.168.9.0/24
+
+snmp:
+  community: global
+
+devices:
+  core:
+    ip:
+  firewall:
+    ip:
+    snmp:
+    unit_snmp:
+  stage_switches: []
+  access_switches: []
+  servers: []
+
+isp:
+  auto_discovery: true
+  wan_if_filter: telecom,telcom,unicom,isp,WAN
+  max_bandwidth_mbps:
+  links: []
+
+unifi:
+  enabled: false
+  controller_url:
+  user:
+  password:
+  sites: all
+  verify_ssl: false
+
+alerts:
+  feishu_robot_token:
+
+security:
+  grafana_anonymous: true

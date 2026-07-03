@@ -30,11 +30,12 @@ Env:
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
   SYSLOG_EVENT_RATE_LIMIT seconds to suppress duplicate syslog event cards (default 60)
   SYSLOG_ALERT_TYPES      comma list of syslog cards to push
-                          (default native_vlan_mismatch,errdisable,loopback,dhcp_snooping)
+                          (default native_vlan_mismatch,errdisable,bpduguard,loopback)
   SYSLOG_CORRELATION_SECONDS seconds to collapse native-vlan + errdisable on same port
+  SYSLOG_RECOVERY_ENABLED true = send recovery cards when an alerted port comes back up
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
   DEVICE_DOWN_FOR_SECONDS seconds unreachable before alerting (default 10)
-  ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 0)
+  ISP_DOWN_FOR_SECONDS    seconds unreachable before ISP ping alerting (default 10)
   DEVICE_DOWN_REQUIRE_SEEN_UP true = alert only after target was discovered/up once
   DEVICE_DOWN_POLL_INTERVAL seconds between probe_success polls (default 1)
   DEVICE_DOWN_SAMPLE_WINDOW_SECONDS recent probe window to catch short flaps (default 5)
@@ -59,7 +60,7 @@ Env:
 """
 from datetime import datetime
 from http.cookiejar import CookieJar
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import re
@@ -87,23 +88,44 @@ FIREWALL_WAN_IF_FILTER = os.environ.get("FIREWALL_WAN_IF_FILTER", "telecom,telco
 BIGSCREEN_ISP_MAX_BANDWIDTH = os.environ.get("BIGSCREEN_ISP_MAX_BANDWIDTH", "1000")
 BIGSCREEN_ISP_IPS = os.environ.get("BIGSCREEN_ISP_IPS", "")
 ISP_PING = os.environ.get("ISP_PING", "")
-ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "80") or "80")
+ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "90") or "90")
 SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
 SYSLOG_EVENT_RATE_LIMIT = int(os.environ.get("SYSLOG_EVENT_RATE_LIMIT", "60"))
+# A recurring problem on the same port re-alerts at most once per this window, so
+# a flapping BPDU/errdisable/loopback port doesn't spam a card every minute.
+SYSLOG_REALERT_SECONDS = int(os.environ.get("SYSLOG_REALERT_SECONDS", "600"))
+# A port must stay clear this long before its recovery card is sent; a re-fire
+# cancels it. Collapses improved/worsened flapping into one alert + one recovery.
+SYSLOG_RECOVER_STABLE_SECONDS = int(os.environ.get("SYSLOG_RECOVER_STABLE_SECONDS", "120"))
 SYSLOG_ALERT_TYPES = {
     part.strip().lower()
     for part in os.environ.get(
         "SYSLOG_ALERT_TYPES",
-        "native_vlan_mismatch,errdisable,loopback,dhcp_snooping",
+        "native_vlan_mismatch,errdisable,bpduguard,loopback",
     ).split(",")
     if part.strip()
 }
 SYSLOG_CORRELATION_SECONDS = int(os.environ.get("SYSLOG_CORRELATION_SECONDS", "10"))
+SYSLOG_RECOVERY_ENABLED = os.environ.get("SYSLOG_RECOVERY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_FOR_SECONDS = int(os.environ.get("DEVICE_DOWN_FOR_SECONDS", "10"))
-ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "0"))
+ISP_DOWN_FOR_SECONDS = int(os.environ.get("ISP_DOWN_FOR_SECONDS", "10"))
+# Recovery debounce: only declare a target recovered after it has stayed UP this
+# long. A flapping ISP (up/down/up/down) then yields one DOWN card plus a single
+# recovery once it is genuinely stable, instead of a card per transition.
+# 0 = recover immediately on the first UP (legacy behaviour).
+DEVICE_RECOVER_STABLE_SECONDS = int(os.environ.get("DEVICE_RECOVER_STABLE_SECONDS", "0"))
+ISP_RECOVER_STABLE_SECONDS = int(os.environ.get("ISP_RECOVER_STABLE_SECONDS", "10"))
 DEVICE_DOWN_REQUIRE_SEEN_UP = os.environ.get("DEVICE_DOWN_REQUIRE_SEEN_UP", "true").lower() in ("1", "true", "yes", "on")
+# Root-cause suppression: when an upstream switch is down, the devices/APs behind
+# it are unreachable too. Instead of a card per victim, alert only the highest
+# device whose own uplink is still reachable (real-time, no batching) and fold a
+# "下游 N 台同时离线" line into it. Needs the LLDP topology (edges.json) + core IP;
+# with neither, nothing is suppressed (fail open -> current behaviour).
+DEVICE_DOWN_ROOT_CAUSE_ENABLED = os.environ.get("DEVICE_DOWN_ROOT_CAUSE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+TOPOLOGY_EDGES_FILE = os.environ.get("TOPOLOGY_EDGES_FILE", "/etc/prometheus/targets/topology/edges.json")
+LIBRENMS_CORE_IP = os.environ.get("LIBRENMS_CORE_IP", "").strip()
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "1"))
 DEVICE_DOWN_SAMPLE_WINDOW_SECONDS = int(os.environ.get("DEVICE_DOWN_SAMPLE_WINDOW_SECONDS", "5"))
 DEVICE_DOWN_JOBS = os.environ.get(
@@ -157,7 +179,6 @@ SYSNAME_CHANGE_ALERT_ENABLED = os.environ.get("SYSNAME_CHANGE_ALERT_ENABLED", "t
 SYSNAME_CHANGE_POLL_INTERVAL = int(os.environ.get("SYSNAME_CHANGE_POLL_INTERVAL", "60"))
 
 _MAC_RE = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}|[0-9A-Fa-f]{12}"
-_DHCP_SNOOP_RE = re.compile(r"DHCP_SNOOPING", re.IGNORECASE)
 _MACFLAP_RE = re.compile(
     rf"MACFLAP_NOTIF:\s+Host\s+({_MAC_RE})\s+in\s+vlan\s+(\d+)\s+is\s+flapping\s+between\s+port\s+(\S+)\s+and\s+port\s+(\S+)",
     re.IGNORECASE,
@@ -180,6 +201,12 @@ _STORM_RE = re.compile(
 )
 _LOOPBACK_RE = re.compile(
     r"LOOP_BACK_DETECTED.*?(?:on|interface)\s+(\S+)",
+    re.IGNORECASE,
+)
+_LINK_STATE_RE = re.compile(
+    r"(?:LINK-\d+-\w+|LINEPROTO-\d+-UPDOWN):\s+"
+    r"(?:Line protocol on\s+)?Interface\s+(\S+),\s+changed state to\s+"
+    r"(administratively down|up|down)",
     re.IGNORECASE,
 )
 def _clean_token(raw):
@@ -548,123 +575,6 @@ def _format_mac(value):
     return ":".join(mac[i:i + 2] for i in range(0, 12, 2))
 
 
-def _dhcp_message_type_text(value):
-    value = str(value or "").strip().upper()
-    labels = {
-        "DHCPDISCOVER": "发现",
-        "DHCPOFFER": "提供",
-        "DHCPREQUEST": "请求",
-        "DHCPDECLINE": "拒绝",
-        "DHCPACK": "确认",
-        "DHCPNAK": "拒绝确认",
-        "DHCPRELEASE": "释放地址",
-        "DHCPINFORM": "信息请求",
-    }
-    return labels.get(value, value)
-
-
-def parse_dhcp_snooping_message(message):
-    text = str(message or "")
-    event = {
-        "message_type": "",
-        "chaddr": "",
-        "chaddr_hex": "",
-        "mac_sa": "",
-        "mac_sa_hex": "",
-        "reason": "",
-    }
-
-    match = re.search(r"message type:\s*([A-Za-z0-9_-]+)", text, re.IGNORECASE)
-    if match:
-        event["message_type"] = match.group(1).upper()
-
-    match = re.search(rf"\bchaddr:\s*({_MAC_RE})", text, re.IGNORECASE)
-    if match:
-        event["chaddr"] = _format_mac(match.group(1))
-        event["chaddr_hex"] = _normalize_mac_hex(match.group(1))
-
-    match = re.search(rf"\bMAC\s+sa:\s*({_MAC_RE})", text, re.IGNORECASE)
-    if match:
-        event["mac_sa"] = _format_mac(match.group(1))
-        event["mac_sa_hex"] = _normalize_mac_hex(match.group(1))
-
-    if "MATCH_MAC_FAIL" in text or "chaddr doesn't match source mac" in text.lower():
-        event["reason"] = "报文客户端 MAC 与实际源 MAC 不一致"
-    else:
-        match = re.search(r"%[^:]+:\s*(.+?)(?:,\s*message type:|$)", text)
-        if match:
-            event["reason"] = match.group(1).strip()
-    return event
-
-
-def _port_label_from_fdb(entry):
-    if not entry:
-        return ""
-    port = str(entry.get("ifName") or entry.get("ifDescr") or entry.get("ifAlias") or "").strip()
-    if not port:
-        return ""
-
-    def comparable(value):
-        text = re.sub(r"[\s_-]+", "", str(value or "").lower())
-        replacements = {
-            "tengigabitethernet": "te",
-            "twentyfivegigabitethernet": "twe",
-            "fortygigabitethernet": "fo",
-            "hundredgigabitethernet": "hu",
-            "gigabitethernet": "gi",
-            "fastethernet": "fa",
-            "portchannel": "po",
-            "ethernet": "eth",
-        }
-        for long_name, short_name in replacements.items():
-            text = text.replace(long_name, short_name)
-        return text
-
-    for extra in (entry.get("ifAlias"), entry.get("ifDescr")):
-        extra = str(extra or "").strip()
-        if not extra or extra == port or comparable(extra) == comparable(port):
-            continue
-        return f"{port} / {extra}"
-    return port
-
-
-def lookup_librenms_fdb_port(mac, host=""):
-    token = _librenms_token()
-    mac_hex = _normalize_mac_hex(mac)
-    if not token or not LIBRENMS_URL or not mac_hex:
-        return None
-
-    url = f"{LIBRENMS_URL}/api/v0/resources/fdb/{mac_hex}/detail"
-    req = request.Request(url, headers={"X-Auth-Token": token})
-    try:
-        with request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
-    except error.HTTPError as exc:
-        if exc.code != 404:
-            body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
-            log(f"[SYSLOG] FDB lookup HTTP {exc.code} for {_format_mac(mac_hex)}: {body[:160]}")
-        return None
-    except Exception as exc:
-        log(f"[SYSLOG] FDB lookup failed for {_format_mac(mac_hex)}: {exc}")
-        return None
-
-    entries = data.get("ports_fdb") or []
-    if isinstance(entries, dict):
-        entries = [entries]
-    if not isinstance(entries, list) or not entries:
-        return None
-
-    host_l = str(host or "").strip().lower()
-    for entry in entries:
-        candidates = [
-            str(entry.get("hostname") or "").strip().lower(),
-            str(entry.get("sysName") or "").strip().lower(),
-        ]
-        if host_l and host_l in candidates:
-            return entry
-    return entries[0]
-
-
 def _host_display_name(host, fdb_entry=None):
     if fdb_entry:
         name = _first_non_ip(fdb_entry.get("sysName"), fdb_entry.get("hostname"))
@@ -738,6 +648,16 @@ def build_sysname_change_card(old_name, new_name, ip="", hostname=""):
     return _make_card(next_event_title(), "✏️ sysName 变更告警", "yellow", "\n".join(lines))
 
 
+def build_test_card():
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "✅ 飞书告警链路正常",
+        "📡 这是一条测试告警，收到即代表机器人配置无误。",
+        f"⏰ 时间：{ts}",
+    ]
+    return _make_card(next_event_title(), "🔔 测试告警", "blue", "\n".join(lines))
+
+
 def build_device_online_card(device):
     name = _best_device_name(device) or "?"
     ip = device.get("ip") or device.get("hostname") or "?"
@@ -807,7 +727,7 @@ def build_isp_bandwidth_card(event, recovered=False):
     return _make_card(next_event_title(), f"{header_emoji} 外网 ISP 告警", color, "\n".join(lines))
 
 
-def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
+def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dev = f"{name} ({ip})" if ip and ip != name else (name or ip or "?")
     is_isp = job == "infra-isp-ping"
@@ -827,32 +747,53 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job=""):
         f"{label_emoji} {label}：{dev}",
         f"{status_emoji} 状态：{state_text}",
         f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
-        f"⏰ 时间：{ts}",
     ]
+    if not recovered and downstream:
+        # This device is the root cause: its downstream victims are folded in here
+        # instead of each firing its own card.
+        lines.append(f"📉 下游 {downstream} 台设备同时不可达（疑似受其影响，已折叠）")
+    lines.append(f"⏰ 时间：{ts}")
     return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
+
+
+def _join_ports(names):
+    return "、".join(n for n in (names or []) if n) or "?"
 
 
 def build_interconnect_card(event, recovered=False):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     color = "green" if recovered else "red"
-    status_emoji = "✅" if recovered else "❌"
     header_emoji = "🟢" if recovered else "🔴"
-    state_text = "UP" if recovered else "DOWN"
-    duration_label = "恢复耗时" if recovered else "断线时间"
     device = event.get("device") or event.get("ip") or "?"
     ip = event.get("ip") or ""
     device_text = f"{device} ({ip})" if ip and ip != device else device
-    port = event.get("port") or "?"
-    alias = event.get("alias") or ""
-    port_text = f"{port} / {alias}" if alias and alias != port else port
-    lines = [
-        f"🖥 设备：{device_text}",
-        f"🔌 接口：{port_text}",
-        f"{status_emoji} 状态：{state_text}",
-        f"⏳ {duration_label}：{format_alert_duration(event.get('duration'), recovered)}",
-        f"⏰ 时间：{ts}",
-    ]
-    return _make_card(next_event_title(), f"{header_emoji} 互联口断链告警", color, "\n".join(lines))
+    # Prefer the real peer switch from LLDP; fall back to the port alias/name.
+    peer = event.get("peer_switch") or event.get("alias") or event.get("port") or "?"
+    down_members = event.get("down_members") or []
+    up_members = event.get("up_members") or []
+    if recovered:
+        subtitle = "链路聚合恢复"
+        status_emoji = "✅"
+        lines = [
+            f"🖥 设备：{device_text}",
+            f"🔌 物理口：{_join_ports(down_members)} 已恢复",
+            f"🔗 对端交换机：{peer}",
+            f"{status_emoji} 状态：链路冗余已恢复",
+            f"⏳ 恢复耗时：{format_alert_duration(event.get('duration'), True)}",
+            f"⏰ 时间：{ts}",
+        ]
+    else:
+        subtitle = "链路聚合告警"
+        # Redundancy lost on one leg; the link still passes traffic via up_members.
+        lines = [
+            f"🖥 设备：{device_text}",
+            f"🔌 断线物理口：{_join_ports(down_members)}",
+            f"🔗 对端交换机：{peer}",
+            f"⚠️ 状态：剩 {_join_ports(up_members)} 在线",
+            f"⏳ 持续时间：{format_alert_duration(event.get('duration'), False)}",
+            f"⏰ 时间：{ts}",
+        ]
+    return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
 
 
 def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
@@ -873,6 +814,11 @@ def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
     return _make_card(next_event_title(), f"{header_emoji} AP 掉线告警", color, "\n".join(lines))
 
 
+def _card_preview_title(title, subtitle):
+    preview = re.sub(r"\s+", " ", f"{title} {subtitle}".strip())
+    return preview[:120]
+
+
 def _make_card(title, subtitle, color, body_md):
     return {
         "msg_type": "interactive",
@@ -890,7 +836,7 @@ def _make_card(title, subtitle, color, body_md):
                 }
             },
             "header": {
-                "title": {"tag": "plain_text", "content": title},
+                "title": {"tag": "plain_text", "content": _card_preview_title(title, subtitle)},
                 "subtitle": {"tag": "plain_text", "content": subtitle},
                 "template": color,
                 "padding": "12px 12px 12px 12px",
@@ -1230,10 +1176,74 @@ def isp_bandwidth_watcher():
         time.sleep(ISP_ALERT_POLL_INTERVAL)
 
 
+def classify_interconnect(lag_up, member_ups):
+    """Decide what an interconnect LAG's member states mean for alerting:
+
+      healthy  - every member up (nothing to report)
+      degraded - some members down but the bundle is still up (redundancy lost,
+                 traffic still flows -> this is the case worth alerting)
+      down     - the whole bundle is down -> the peer goes unreachable and the
+                 device-down watcher alerts it, so we stay quiet here
+      unknown  - no member visibility (switch lacks ifStackTable); nothing to say
+    """
+    if not member_ups:
+        return "unknown"
+    any_down = not all(member_ups)
+    any_up = any(member_ups)
+    if not any_down:
+        return "healthy"
+    if not any_up or not lag_up:
+        return "down"
+    return "degraded"
+
+
+def fetch_interconnect_members(jobs_regex):
+    """Map (device_ip, aggregate ifIndex) -> [member ifIndex] via ifStackTable.
+    Returns {} when the switch does not expose it."""
+    try:
+        results = prometheus_query(f'ifStackStatus{{job=~"{jobs_regex}"}}')
+    except Exception as exc:
+        log(f"[LINK] ifStack lookup failed (member ports unavailable): {exc}")
+        return {}
+    members = {}
+    for item in results:
+        metric = item.get("metric") or {}
+        higher = metric.get("ifStackHigherLayer") or metric.get("ifStackHigherLayerIndex")
+        lower = metric.get("ifStackLowerLayer") or metric.get("ifStackLowerLayerIndex")
+        ip = metric.get("target_ip") or metric.get("instance") or ""
+        # 0 marks the top/bottom sentinels of a stack; only real higher->lower rows pair an aggregate with a member.
+        if not higher or not lower or higher == "0" or lower == "0":
+            continue
+        bucket = members.setdefault((ip, higher), [])
+        if lower not in bucket:
+            bucket.append(lower)
+    return members
+
+
 def fetch_interconnect_ports(jobs_regex):
-    query = f'ifOperStatus{{job=~"{jobs_regex}"}}'
+    results = prometheus_query(f'ifOperStatus{{job=~"{jobs_regex}"}}')
+    # Per-interface name + up/down for every interface (physical members too), so
+    # an aggregate's member ifIndexes resolve to real port names and states.
+    index_names = {}
+    index_up = {}
+    for item in results:
+        metric = item.get("metric") or {}
+        ip = metric.get("target_ip") or metric.get("instance") or ""
+        ifindex = metric.get("ifIndex")
+        if not (ip and ifindex):
+            continue
+        index_names[(ip, ifindex)] = _port_label(metric)
+        try:
+            value = float((item.get("value") or [None, "nan"])[1])
+        except (TypeError, ValueError):
+            continue
+        member_up = _if_oper_is_up(metric, value)
+        # Unknown/stale status counts as up so a missing sample never fakes a degrade.
+        index_up[(ip, ifindex)] = True if member_up is None else bool(member_up)
+    members_map = fetch_interconnect_members(jobs_regex)
+
     ports = []
-    for item in prometheus_query(query):
+    for item in results:
         metric = item.get("metric") or {}
         if not _is_interconnect_port(metric):
             continue
@@ -1246,17 +1256,21 @@ def fetch_interconnect_ports(jobs_regex):
             continue
         ip = metric.get("target_ip") or metric.get("instance") or ""
         port = _port_label(metric)
+        ifindex = metric.get("ifIndex")
+        members = []
+        for member_idx in members_map.get((ip, ifindex), []):
+            name = index_names.get((ip, member_idx))
+            if not name or name == port:
+                continue
+            members.append({"name": name, "up": index_up.get((ip, member_idx), True)})
         ports.append({
-            "key": "|".join([
-                metric.get("job", ""),
-                ip,
-                metric.get("ifIndex") or port,
-            ]),
+            "key": "|".join([metric.get("job", ""), ip, ifindex or port]),
             "device": metric.get("display_name") or metric.get("instance") or ip or "?",
             "ip": ip,
             "port": port,
             "alias": metric.get("ifAlias") or "",
-            "up": up,
+            "lag_up": bool(up),
+            "members": members,
         })
     return ports
 
@@ -1276,6 +1290,7 @@ def interconnect_watcher():
     last_status_log = 0.0
     last_name_refresh = 0.0
     librenms_names = {}
+    peer_map = {}
     time.sleep(25)
     log(
         "[LINK] interconnect watcher enabled "
@@ -1290,6 +1305,10 @@ def interconnect_watcher():
                 librenms_names = fetch_librenms_name_cache()
             except Exception as exc:
                 log(f"[LINK] LibreNMS name refresh failed: {exc}")
+            try:
+                peer_map = build_peer_map(load_topology_edges())
+            except Exception as exc:
+                log(f"[LINK] topology peer refresh failed: {exc}")
             last_name_refresh = now
 
         try:
@@ -1300,44 +1319,182 @@ def interconnect_watcher():
             continue
 
         if now - last_status_log >= 60:
-            up_count = sum(1 for port in ports if port["up"])
-            down_count = len(ports) - up_count
-            log(f"[LINK] watched port-channels total={len(ports)} up={up_count} down={down_count}")
+            degraded = sum(1 for p in ports if classify_interconnect(p["lag_up"], [m["up"] for m in p["members"]]) == "degraded")
+            log(f"[LINK] watched aggregates total={len(ports)} degraded={degraded}")
             last_status_log = now
 
         for port in ports:
             ip = port.get("ip") or ""
             if ip in librenms_names:
                 port["device"] = librenms_names[ip]
+            member_ups = [m["up"] for m in port["members"]]
+            status = classify_interconnect(port["lag_up"], member_ups)
             state = states.setdefault(port["key"], {
                 "down_since": None,
                 "alerting": False,
-                "last_up_at": None,
+                "down_members": [],
             })
 
-            if not port["up"]:
+            # Only a degraded bundle (a member down while the link still passes
+            # traffic via its peers) is worth an interconnect alert. A fully-down
+            # bundle is suppressed here -- the peer switch goes unreachable and the
+            # device-down watcher reports that instead. Healthy/unknown -> nothing.
+            if status == "degraded":
+                down_members = [m["name"] for m in port["members"] if not m["up"]]
                 if state["down_since"] is None:
-                    state["down_since"] = state.get("last_up_at") or now
+                    state["down_since"] = now
                 duration = max(0, now - state["down_since"])
+                state["down_members"] = down_members
                 if not state["alerting"] and duration >= INTERCONNECT_ALERT_FOR_SECONDS:
                     state["alerting"] = True
+                    # Peer switch from LLDP: look up the down member ports first,
+                    # then the aggregate; save it so recovery names it too.
+                    peer = resolve_peer_switch(peer_map, port["ip"], down_members + [port["port"]])
+                    state["peer_switch"] = peer
                     event = dict(port)
+                    event["down_members"] = down_members
+                    event["up_members"] = [m["name"] for m in port["members"] if m["up"]]
+                    event["peer_switch"] = peer
                     event["duration"] = duration
-                    log(f"[LINK] ALERT {event['device']} {event['port']} DOWN")
+                    log(f"[LINK] ALERT {event['device']} {event['port']} degraded, down member(s)={down_members} peer={peer or '-'}")
                     send_feishu(build_interconnect_card(event, recovered=False))
             else:
-                previous_down_since = state.get("down_since")
-                state["last_up_at"] = now
                 if state["alerting"]:
-                    duration = max(0, now - (previous_down_since or now))
-                    event = dict(port)
-                    event["duration"] = duration
-                    log(f"[LINK] RECOVER {event['device']} {event['port']} offline={int(duration)}s")
-                    send_feishu(build_interconnect_card(event, recovered=True))
+                    if status == "healthy":
+                        event = dict(port)
+                        event["down_members"] = state.get("down_members") or []
+                        event["up_members"] = [m["name"] for m in port["members"]]
+                        event["peer_switch"] = state.get("peer_switch") or ""
+                        event["duration"] = max(0, now - (state["down_since"] or now))
+                        log(f"[LINK] RECOVER {event['device']} {event['port']} members back up")
+                        send_feishu(build_interconnect_card(event, recovered=True))
+                    else:
+                        # Bundle went fully down -> handed off to the device-down watcher.
+                        log(f"[LINK] {port['device']} {port['port']} fully down; handing off to device-down alert")
                 state["alerting"] = False
                 state["down_since"] = None
+                state["down_members"] = []
 
         time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
+
+
+def build_topology_parents(edges, root_ip):
+    """BFS from the core over LLDP adjacency -> {device_ip: uplink_parent_ip}.
+
+    The root (core) has no parent. Devices not reachable from the core in the
+    graph are simply omitted, so callers treat 'unknown parent' as a root cause
+    (alert it) -- the suppression only ever fires on confidently-mapped victims.
+    """
+    adjacency = {}
+    for edge in edges or []:
+        a = str(edge.get("from_ip") or "").strip()
+        b = str(edge.get("to_ip") or "").strip()
+        if not a or not b or a == b:
+            continue
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+    root_ip = str(root_ip or "").strip()
+    parents = {}
+    if not root_ip or root_ip not in adjacency:
+        return parents
+    seen = {root_ip}
+    queue = [root_ip]
+    while queue:
+        current = queue.pop(0)
+        for neighbor in sorted(adjacency.get(current, ())):
+            if neighbor in seen:
+                continue
+            seen.add(neighbor)
+            parents[neighbor] = current
+            queue.append(neighbor)
+    return parents
+
+
+def build_peer_map(edges):
+    """(device_ip, local_port) -> peer switch name, from the LLDP topology, so a
+    link alert can name the switch on the far end (not just the port alias)."""
+    peers = {}
+    for edge in edges or []:
+        ip = str(edge.get("from_ip") or "").strip()
+        port = str(edge.get("from_port") or "").strip()
+        peer = str(edge.get("to_sysname") or edge.get("to_ip") or "").strip()
+        if ip and port and peer:
+            peers[(ip, port)] = peer
+    return peers
+
+
+def resolve_peer_switch(peer_map, ip, ports):
+    """First peer switch found among the given local ports (down members, then
+    the aggregate). "" when the LLDP topology doesn't know the far end."""
+    for port in ports:
+        peer = peer_map.get((ip, str(port or "").strip()))
+        if peer:
+            return peer
+    return ""
+
+
+def is_down_symptom(ip, parents, unreachable):
+    """True when ip sits below a currently-unreachable device in the tree, i.e.
+    it is a downstream victim of an upstream outage rather than the root cause."""
+    seen = set()
+    current = parents.get(ip)
+    while current and current not in seen:
+        if current in unreachable:
+            return True
+        seen.add(current)
+        current = parents.get(current)
+    return False
+
+
+def count_down_descendants(ip, parents, unreachable):
+    """How many currently-unreachable devices sit below ip in the tree (for the
+    root-cause card's 'N downstream devices also unreachable' line)."""
+    children = {}
+    for node, parent in parents.items():
+        children.setdefault(parent, []).append(node)
+    count = 0
+    seen = set()
+    stack = list(children.get(ip, []))
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        if node in unreachable:
+            count += 1
+        stack.extend(children.get(node, []))
+    return count
+
+
+def _topology_core_ip():
+    """The tree root: explicit LIBRENMS_CORE_IP, else the first CORE_SWITCH_PING
+    entry (stripping any 'name:' prefix and '-range' suffix)."""
+    if LIBRENMS_CORE_IP:
+        return LIBRENMS_CORE_IP
+    first = os.environ.get("CORE_SWITCH_PING", "").split(",")[0].strip()
+    if ":" in first:
+        first = first.split(":", 1)[1].strip()
+    return first.split("-")[0].strip()
+
+
+def load_topology_edges():
+    """Load the LLDP adjacency the topology collector writes; [] if absent."""
+    try:
+        with open(TOPOLOGY_EDGES_FILE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def recovery_ready(state, now, sample_ts, recover_stable):
+    """Flap-debounce for recoveries: an alerting target that is now UP must stay
+    UP for `recover_stable` seconds before it counts as recovered. Tracks the
+    continuous-up start in state['up_since']; a dip elsewhere clears it so the
+    window restarts. Returns True once it has been stable long enough."""
+    if state.get("up_since") is None:
+        state["up_since"] = sample_ts if sample_ts is not None else now
+    return (now - state["up_since"]) >= recover_stable
 
 
 def device_down_watcher():
@@ -1367,6 +1524,8 @@ def device_down_watcher():
     isp_names = _isp_target_names()
     auto_add_jobs = {j.strip() for j in DEVICE_AUTO_ADD_SNMP_JOBS.split(",") if j.strip()}
     auto_add_attempted = set()
+    parents = {}
+    core_ip = _topology_core_ip()
     log(
         "[DOWN] device-down watcher enabled "
         f"(jobs={','.join(jobs)}, for={DEVICE_DOWN_FOR_SECONDS}s, "
@@ -1382,6 +1541,11 @@ def device_down_watcher():
                 librenms_names = fetch_librenms_name_cache()
             except Exception as exc:
                 log(f"[DOWN] LibreNMS name refresh failed: {exc}")
+            if DEVICE_DOWN_ROOT_CAUSE_ENABLED:
+                try:
+                    parents = build_topology_parents(load_topology_edges(), core_ip)
+                except Exception as exc:
+                    log(f"[DOWN] topology refresh failed: {exc}")
             last_name_refresh = now
 
         try:
@@ -1390,6 +1554,18 @@ def device_down_watcher():
             log(f"[DOWN] poll failed: {exc}")
             time.sleep(DEVICE_DOWN_POLL_INTERVAL)
             continue
+
+        # Which targets are unreachable right now (raw, immediate) -- used to tell
+        # a root-cause outage from its downstream victims.
+        unreachable = set()
+        for item in results:
+            metric = item.get("metric") or {}
+            target_ip = metric.get("target_ip") or ""
+            try:
+                if target_ip and float((item.get("value") or [None, "1"])[1]) < 1:
+                    unreachable.add(target_ip)
+            except (TypeError, ValueError):
+                pass
 
         if now - last_status_log >= 60:
             counts = {}
@@ -1429,11 +1605,13 @@ def device_down_watcher():
                 "seen_up": False,
                 "ignored_initial_down": False,
                 "last_up_at": None,
+                "up_since": None,
                 "online_sent": False,
                 "name": "",
                 "ip": "",
                 "job": "",
             }
+            recover_stable = ISP_RECOVER_STABLE_SECONDS if job == "infra-isp-ping" else DEVICE_RECOVER_STABLE_SECONDS
             state = states.setdefault(key, default_state.copy())
             for field, value in default_state.items():
                 state.setdefault(field, value)
@@ -1441,6 +1619,9 @@ def device_down_watcher():
             state["ip"] = ip
             state["job"] = job
             if not up:
+                # A dip cancels any in-progress recovery debounce: the link must
+                # restart its stable-up window before it counts as recovered.
+                state["up_since"] = None
                 if DEVICE_DOWN_REQUIRE_SEEN_UP and not state["seen_up"] and not state["alerting"]:
                     if not state["ignored_initial_down"]:
                         log(f"[DOWN] waiting for first UP before alerting {job} {prom_name} ({ip})")
@@ -1450,12 +1631,23 @@ def device_down_watcher():
                 if state["down_since"] is None:
                     state["down_since"] = sample_ts or now
                 if not state["alerting"] and now - state["down_since"] >= down_for_seconds:
-                    state["alerting"] = True
-                    state["seen_up"] = True
-                    offline = max(0, now - state["down_since"])
-                    log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN")
-                    send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job))
-                    save_device_down_states(states)
+                    # Root-cause suppression: if an upstream device is also down,
+                    # this one is a downstream victim -- stay quiet (no alerting
+                    # flag), keep down_since so it alerts later if the upstream
+                    # recovers while it's still down.
+                    if DEVICE_DOWN_ROOT_CAUSE_ENABLED and is_down_symptom(ip, parents, unreachable):
+                        if not state.get("suppressed_logged"):
+                            log(f"[DOWN] suppress downstream symptom {job} {name} ({ip}) behind a down upstream")
+                            state["suppressed_logged"] = True
+                    else:
+                        state["suppressed_logged"] = False
+                        state["alerting"] = True
+                        state["seen_up"] = True
+                        offline = max(0, now - state["down_since"])
+                        downstream = count_down_descendants(ip, parents, unreachable) if DEVICE_DOWN_ROOT_CAUSE_ENABLED else 0
+                        log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN downstream={downstream}")
+                        send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job, downstream=downstream))
+                        save_device_down_states(states)
             else:
                 previous_down_since = state.get("down_since")
                 state["last_up_at"] = sample_ts or now
@@ -1482,14 +1674,25 @@ def device_down_watcher():
                             "os": "Ping only",
                         }))
                 if state["alerting"]:
-                    offline = max(0, (sample_ts or now) - (previous_down_since or sample_ts or now))
-                    log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s")
+                    # Debounce recovery: wait until the target has been continuously
+                    # UP for recover_stable seconds before sending the recovery card,
+                    # so a flapping link doesn't spam up/down messages.
+                    if not recovery_ready(state, now, sample_ts, recover_stable):
+                        # Still settling -- stay in the alerting state, send nothing.
+                        save_device_down_states(states)
+                        continue
+                    recovered_at = state["up_since"]
+                    offline = max(0, recovered_at - (previous_down_since or recovered_at))
+                    stable_for = now - recovered_at
+                    log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s stable={int(stable_for)}s")
                     send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline, job=job))
                     state["alerting"] = False
                     state["down_since"] = None
+                    state["up_since"] = None
                     save_device_down_states(states)
                 else:
                     state["down_since"] = None
+                    state["up_since"] = None
                 state["alerting"] = False
 
         time.sleep(DEVICE_DOWN_POLL_INTERVAL)
@@ -1893,41 +2096,64 @@ def unifi_ap_watcher():
         time.sleep(UNIFI_AP_POLL_INTERVAL)
 
 
-def build_dhcp_snooping_card(host, message, parsed=None):
-    parsed = parsed or parse_dhcp_snooping_message(message)
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    fdb_entry = lookup_librenms_fdb_port(parsed.get("mac_sa_hex"), host)
-    if not fdb_entry and parsed.get("chaddr_hex"):
-        fdb_entry = lookup_librenms_fdb_port(parsed.get("chaddr_hex"), host)
-
-    device = _host_display_name(host, fdb_entry)
-    dev_text = f"{device} ({host})" if host and host != device else device
-    port = _port_label_from_fdb(fdb_entry)
-
-    lines = [f"🖥 设备：{dev_text}"]
-    if port:
-        lines.append(f"🔌 接口：{port}")
-    else:
-        lines.append("🔌 接口：未查到")
-
-    if parsed.get("reason"):
-        lines.append(f"📋 异常：{parsed['reason']}")
-    if parsed.get("message_type"):
-        lines.append(f"📨 DHCP：{_dhcp_message_type_text(parsed['message_type'])}")
-    if parsed.get("mac_sa"):
-        lines.append(f"🔗 实际源 MAC：{parsed['mac_sa']}")
-    if parsed.get("chaddr"):
-        lines.append(f"🧾 报文客户端 MAC：{parsed['chaddr']}")
-    lines.append(f"⏰ 时间：{ts}")
-    return _make_card(next_event_title(), "⚠️ DHCP Snooping 异常", "orange", "\n".join(lines))
-
-
 def _clean_iface_token(value):
     return str(value or "").strip().rstrip(".,;:")
 
 
+def _normalize_iface_key(value):
+    token = _clean_iface_token(value).lower().replace(" ", "")
+    replacements = [
+        ("hundredgigabitethernet", "hu"),
+        ("twentyfivegigabitethernet", "twe"),
+        ("fortygigabitethernet", "fo"),
+        ("tengigabitethernet", "te"),
+        ("gigabitethernet", "gi"),
+        ("fastethernet", "fa"),
+        ("port-channel", "po"),
+        ("portchannel", "po"),
+    ]
+    for full, short in replacements:
+        if token.startswith(full):
+            return short + token[len(full):]
+    return token
+
+
 def _syslog_event_enabled(kind):
     return "all" in SYSLOG_ALERT_TYPES or str(kind or "").lower() in SYSLOG_ALERT_TYPES
+
+
+def _network_event_port(event):
+    if not event:
+        return ""
+    if event.get("kind") == "native_vlan_mismatch":
+        return event.get("local_port") or ""
+    return event.get("port") or ""
+
+
+def _network_event_priority(kind):
+    return {
+        "native_vlan_mismatch": 3,
+        "loopback": 2,
+        "errdisable": 1,
+        "bpduguard": 1,
+    }.get(str(kind or ""), 0)
+
+
+def parse_link_state_event(message):
+    match = _LINK_STATE_RE.search(str(message or ""))
+    if not match:
+        return None
+    port, state = match.groups()
+    return {
+        "port": _clean_iface_token(port),
+        "state": state.lower(),
+    }
+
+
+def _is_bpdu_event(event):
+    kind = str((event or {}).get("kind") or "").lower()
+    reason = str((event or {}).get("reason") or "").lower()
+    return kind == "bpduguard" or (kind == "errdisable" and "bpdu" in reason)
 
 
 def parse_network_syslog_event(message):
@@ -1988,8 +2214,8 @@ def parse_network_syslog_event(message):
         port = _clean_iface_token(match.group(1)) if match else ""
         return {
             "kind": "bpduguard",
-            "title": "🛑 接入口收到 BPDU",
-            "color": "orange",
+            "title": "⛔ BPDU blocked: Has worsened",
+            "color": "red",
             "port": port,
             "dedupe": f"bpduguard|{port}|{text[:100]}",
             "hint": "普通终端/AP 接入口不应该收到 BPDU；后面可能接了交换机、桥接设备或形成环路。",
@@ -2022,13 +2248,27 @@ def parse_network_syslog_event(message):
     return None
 
 
-def build_network_syslog_card(host, message, event):
+def build_network_syslog_card(host, message, event, recovered=False, duration=0):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     device = _host_display_name(host)
     dev_text = f"{device} ({host})" if host and host != device else device
 
     lines = [f"🖥 设备：{dev_text}"]
     kind = event.get("kind")
+
+    if _is_bpdu_event(event):
+        lines.extend([
+            f"🔌 接口：{event.get('port') or '未解析到'}",
+        ])
+        if event.get("reason"):
+            lines.append(f"📋 原因：{event.get('reason')}")
+        if recovered:
+            lines.append("✅ 状态：已恢复")
+            lines.append(f"⏳ 恢复耗时：{format_alert_duration(duration, recovered=True)}")
+            lines.append(f"⏰ 时间：{ts}")
+            return _make_card(next_event_title(), "🟢 BPDU 保护恢复", "green", "\n".join(lines))
+        lines.append(f"⏰ 时间：{ts}")
+        return _make_card(next_event_title(), "⛔ BPDU 保护触发", "red", "\n".join(lines))
 
     if kind == "native_vlan_mismatch":
         lines.extend([
@@ -2051,63 +2291,175 @@ def build_network_syslog_card(host, message, event):
             f"🔌 接口：{event.get('port') or '未解析到'}",
         ])
 
+    if recovered:
+        lines.append("✅ 状态：已恢复")
+        lines.append(f"⏳ 恢复耗时：{format_alert_duration(duration, recovered=True)}")
     lines.append(f"⏰ 时间：{ts}")
+
+    if recovered:
+        recovery_titles = {
+            "native_vlan_mismatch": "🟢 接入口疑似串线恢复",
+            "loopback": "🟢 端口回环恢复",
+            "errdisable": "🟢 接口保护恢复",
+        }
+        return _make_card(
+            next_event_title(),
+            recovery_titles.get(kind, "🟢 网络安全事件恢复"),
+            "green",
+            "\n".join(lines),
+        )
+
     return _make_card(next_event_title(), event.get("title") or "⚠️ 网络安全事件", event.get("color") or "orange", "\n".join(lines))
 
 
 def syslog_watcher():
     log(f"[SYSLOG] watching {SYSLOG_FILE} for network security events")
     _last_sent = {}
-    _recent_native_ports = {}
-    _pending_errdisable = {}
+    _recent_priority_ports = {}
+    _pending_events = {}
+    _active_events = {}
     rate_limit = max(1, SYSLOG_EVENT_RATE_LIMIT)
+    network_realert = max(rate_limit, SYSLOG_REALERT_SECONDS)
+    recover_stable = max(0, SYSLOG_RECOVER_STABLE_SECONDS)
     correlation_window = max(0, SYSLOG_CORRELATION_SECONDS)
 
     def _port_key(host, port):
-        return "|".join([str(host or ""), _clean_iface_token(port).lower()])
+        return "|".join([str(host or ""), _normalize_iface_key(port)])
 
-    def _purge_recent_native(now):
+    def _purge_recent_priority(now):
         if correlation_window <= 0:
-            _recent_native_ports.clear()
+            _recent_priority_ports.clear()
             return
         cutoff = now - correlation_window
-        for key, ts in list(_recent_native_ports.items()):
-            if ts < cutoff:
-                _recent_native_ports.pop(key, None)
+        for key, entry in list(_recent_priority_ports.items()):
+            if entry.get("ts", 0) < cutoff:
+                _recent_priority_ports.pop(key, None)
 
-    def _has_recent_native(host, port, now):
+    def _has_recent_higher_priority(host, port, kind, now):
         if not port or correlation_window <= 0:
             return False
-        _purge_recent_native(now)
-        ts = _recent_native_ports.get(_port_key(host, port), 0)
-        return bool(ts and now - ts <= correlation_window)
+        _purge_recent_priority(now)
+        entry = _recent_priority_ports.get(_port_key(host, port))
+        if not entry:
+            return False
+        return entry.get("priority", 0) > _network_event_priority(kind)
+
+    def _remember_recent_event(host, event, now):
+        priority = _network_event_priority(event.get("kind"))
+        if priority <= 0 or correlation_window <= 0:
+            return
+        port = _network_event_port(event)
+        if not port:
+            return
+        _recent_priority_ports[_port_key(host, port)] = {
+            "kind": event.get("kind"),
+            "priority": priority,
+            "ts": now,
+        }
 
     def _send_network_event(host, message, event, now):
+        port = _network_event_port(event)
+        # A re-fire means the problem is still ongoing: cancel any in-progress
+        # recovery so a flapping port doesn't emit improved/worsened churn.
+        if port:
+            active = _active_events.get(_port_key(host, port))
+            if active:
+                active.pop("recovering_since", None)
         dedupe_key = "|".join([host, event.get("dedupe") or event.get("kind") or message[:120]])
-        if now - _last_sent.get(dedupe_key, 0) >= rate_limit:
+        if now - _last_sent.get(dedupe_key, 0) >= network_realert:
             _last_sent[dedupe_key] = now
             log(
                 f"[SYSLOG] {event.get('kind')} from {host} "
                 f"port={event.get('local_port') or event.get('port') or '-'}"
             )
-            send_feishu(build_network_syslog_card(host, message, event))
+            sent = send_feishu(build_network_syslog_card(host, message, event))
+            if sent and SYSLOG_RECOVERY_ENABLED and _network_event_priority(event.get("kind")) > 0 and port:
+                _active_events[_port_key(host, port)] = {
+                    "host": host,
+                    "message": message,
+                    "event": event,
+                    "started": now,
+                }
+        _remember_recent_event(host, event, now)
 
-    def _drop_pending_errdisable_for(host, port):
+    def _drop_pending_lower_for(host, port, priority):
         key = _port_key(host, port)
-        _pending_errdisable.pop(key, None)
+        pending = _pending_events.get(key)
+        if pending and _network_event_priority(pending["event"].get("kind")) < priority:
+            _pending_events.pop(key, None)
 
-    def _flush_pending_errdisable(now):
-        for key, pending in list(_pending_errdisable.items()):
+    def _queue_pending_event(host, message, event, now):
+        port = _network_event_port(event)
+        key = _port_key(host, port)
+        priority = _network_event_priority(event.get("kind"))
+        pending = _pending_events.get(key)
+        if pending and _network_event_priority(pending["event"].get("kind")) >= priority:
+            log(
+                f"[SYSLOG] suppressed {event.get('kind')} from {host} "
+                f"port={port or '-'} after pending higher/equal priority event"
+            )
+            return
+        _pending_events[key] = {
+            "host": host,
+            "message": message,
+            "event": event,
+            "due": now + correlation_window,
+        }
+
+    def _flush_pending_events(now):
+        for key, pending in list(_pending_events.items()):
             if now < pending["due"]:
                 continue
-            _pending_errdisable.pop(key, None)
-            if _has_recent_native(pending["host"], pending["event"].get("port"), now):
+            _pending_events.pop(key, None)
+            if _has_recent_higher_priority(
+                pending["host"],
+                _network_event_port(pending["event"]),
+                pending["event"].get("kind"),
+                now,
+            ):
                 log(
-                    f"[SYSLOG] suppressed errdisable from {pending['host']} "
-                    f"port={pending['event'].get('port') or '-'} after native_vlan_mismatch"
+                    f"[SYSLOG] suppressed {pending['event'].get('kind')} from {pending['host']} "
+                    f"port={_network_event_port(pending['event']) or '-'} after higher priority event"
                 )
                 continue
             _send_network_event(pending["host"], pending["message"], pending["event"], now)
+
+    def _emit_recovery(active, now):
+        event = active["event"]
+        duration = max(0, now - active.get("started", now))
+        log(
+            f"[SYSLOG] RECOVER {event.get('kind')} from {active['host']} "
+            f"port={_network_event_port(event) or '-'} duration={int(duration)}s"
+        )
+        send_feishu(build_network_syslog_card(
+            active["host"], active["message"], event, recovered=True, duration=duration,
+        ))
+
+    def _send_recovery_if_active(host, port, now):
+        if not SYSLOG_RECOVERY_ENABLED:
+            return False
+        key = _port_key(host, port)
+        _pending_events.pop(key, None)
+        active = _active_events.get(key)
+        if not active:
+            return False
+        if recover_stable <= 0:
+            _active_events.pop(key, None)
+            _emit_recovery(active, now)
+            return True
+        # Debounce: the port must stay clear for recover_stable before we call it
+        # recovered; a re-fire (in _send_network_event) clears this timestamp.
+        active.setdefault("recovering_since", now)
+        return True
+
+    def _flush_recoveries(now):
+        if recover_stable <= 0:
+            return
+        for key, active in list(_active_events.items()):
+            started = active.get("recovering_since")
+            if started is not None and now - started >= recover_stable:
+                _active_events.pop(key, None)
+                _emit_recovery(active, now)
 
     while not os.path.exists(SYSLOG_FILE):
         time.sleep(5)
@@ -2121,10 +2473,12 @@ def syslog_watcher():
         return
 
     while True:
-        _flush_pending_errdisable(time.time())
+        _flush_pending_events(time.time())
+        _flush_recoveries(time.time())
         line = f.readline()
         if not line:
-            _flush_pending_errdisable(time.time())
+            _flush_pending_events(time.time())
+            _flush_recoveries(time.time())
             time.sleep(0.5)
             try:
                 if os.stat(SYSLOG_FILE).st_ino != current_ino:
@@ -2140,53 +2494,43 @@ def syslog_watcher():
         if len(parts) < 3:
             continue
         host, _severity, message = parts
+        now = time.time()
 
-        if _DHCP_SNOOP_RE.search(message):
-            if not _syslog_event_enabled("dhcp_snooping"):
-                continue
-            parsed = parse_dhcp_snooping_message(message)
-            dedupe_key = "|".join([
-                host,
-                parsed.get("message_type") or "",
-                parsed.get("mac_sa_hex") or "",
-                parsed.get("chaddr_hex") or "",
-                message[:120] if not (parsed.get("mac_sa_hex") or parsed.get("chaddr_hex")) else "",
-            ])
-            now = time.time()
-            if now - _last_sent.get(dedupe_key, 0) >= rate_limit:
-                _last_sent[dedupe_key] = now
-                log(
-                    f"[SYSLOG] DHCP snooping violation from {host} "
-                    f"type={parsed.get('message_type') or '-'} "
-                    f"mac_sa={parsed.get('mac_sa') or '-'} chaddr={parsed.get('chaddr') or '-'}"
-                )
-                send_feishu(build_dhcp_snooping_card(host, message, parsed))
+        link_state = parse_link_state_event(message)
+        if link_state and link_state.get("state") == "up":
+            _send_recovery_if_active(host, link_state.get("port"), now)
             continue
 
         event = parse_network_syslog_event(message)
         if event:
             if not _syslog_event_enabled(event.get("kind")):
                 continue
-            now = time.time()
             kind = event.get("kind")
             if kind == "native_vlan_mismatch":
-                _recent_native_ports[_port_key(host, event.get("local_port"))] = now
-                _drop_pending_errdisable_for(host, event.get("local_port"))
+                _drop_pending_lower_for(host, _network_event_port(event), _network_event_priority(kind))
                 _send_network_event(host, message, event, now)
                 continue
-            if kind == "errdisable" and correlation_window > 0:
-                if _has_recent_native(host, event.get("port"), now):
+            if kind == "loopback":
+                if _has_recent_higher_priority(host, _network_event_port(event), kind, now):
                     log(
-                        f"[SYSLOG] suppressed errdisable from {host} "
-                        f"port={event.get('port') or '-'} after native_vlan_mismatch"
+                        f"[SYSLOG] suppressed loopback from {host} "
+                        f"port={_network_event_port(event) or '-'} after higher priority event"
                     )
                     continue
-                _pending_errdisable[_port_key(host, event.get("port"))] = {
-                    "host": host,
-                    "message": message,
-                    "event": event,
-                    "due": now + correlation_window,
-                }
+                _drop_pending_lower_for(host, _network_event_port(event), _network_event_priority(kind))
+                if correlation_window > 0:
+                    _queue_pending_event(host, message, event, now)
+                else:
+                    _send_network_event(host, message, event, now)
+                continue
+            if kind == "errdisable" and correlation_window > 0:
+                if _has_recent_higher_priority(host, event.get("port"), kind, now):
+                    log(
+                        f"[SYSLOG] suppressed errdisable from {host} "
+                        f"port={event.get('port') or '-'} after higher priority event"
+                    )
+                    continue
+                _queue_pending_event(host, message, event, now)
                 continue
             _send_network_event(host, message, event, now)
 
@@ -2382,6 +2726,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/librenms":
             return self._handle_librenms()
+        if self.path == "/test-alert":
+            return self._handle_test_alert()
         return self._send(404, b"not found")
 
     def _handle_librenms(self):
@@ -2391,6 +2737,18 @@ class Handler(BaseHTTPRequestHandler):
         log(f"librenms alert: {rule_name} state={payload.get('state')}")
         send_feishu(card)
         return self._send(200, b"OK")
+
+    def _handle_test_alert(self):
+        self._read_json()  # drain body
+        if not TOKEN and not DRY_RUN:
+            result = {"ok": False, "error": "未配置飞书机器人 Token（FEISHU_ROBOT_TOKEN）"}
+        else:
+            sent = send_feishu(build_test_card())
+            result = {"ok": bool(sent), "dryRun": DRY_RUN}
+            if not sent and not DRY_RUN:
+                result["error"] = "飞书返回失败，请检查 Token / 群机器人是否有效"
+        log(f"[TEST] test alert requested -> {result}")
+        return self._send(200, json.dumps(result).encode("utf-8"), "application/json; charset=utf-8")
 
     def do_GET(self):
         if self.path == "/health":
@@ -2424,13 +2782,14 @@ def main():
             f"[SYSLOG] security watcher enabled "
             f"(file={SYSLOG_FILE}, rate_limit={SYSLOG_EVENT_RATE_LIMIT}s, "
             f"types={','.join(sorted(SYSLOG_ALERT_TYPES)) or '-'}, "
-            f"correlation={SYSLOG_CORRELATION_SECONDS}s)"
+            f"correlation={SYSLOG_CORRELATION_SECONDS}s, "
+            f"recovery={SYSLOG_RECOVERY_ENABLED})"
         )
         threading.Thread(target=syslog_watcher, daemon=True).start()
     else:
         log("[SYSLOG] security watcher disabled")
 
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

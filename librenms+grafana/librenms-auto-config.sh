@@ -20,14 +20,15 @@ else
   CORE_IP="${_core:-192.168.10.254}"
 fi
 DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
-FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"
+FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-192.168.9.0/24}"
 FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
 FEISHU_ROBOT_TOKEN="${FEISHU_ROBOT_TOKEN:-}"
 ISP_PING="${ISP_PING:-}"
+BIGSCREEN_ISP_IPS="${BIGSCREEN_ISP_IPS:-}"
 FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
 BIGSCREEN_ISP_MAX_BANDWIDTH="${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
-ISP_SATURATION_PERCENT="${ISP_SATURATION_PERCENT:-80}"
+ISP_SATURATION_PERCENT="${ISP_SATURATION_PERCENT:-90}"
 FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
 # 互联/上联口描述关键词（逗号分隔）。只对 ifAlias 含这些词的口做"断链"告警，
 # 其它口（选手口等）不报。把上联成员口统一描述成含这些词即可，如 description to-stage1。
@@ -484,13 +485,18 @@ configure_runtime() {
     # 先清掉旧的 nets 配置（忽略报错）
     run_lnms config:set nets '[]' >/dev/null 2>&1 || true
 
-    # 从 IP 范围提取 /24 网段（取第一个 IP 的前三段），去重
+    # 从 IP 范围提取 /24 网段（取第一个 IP 的前三段），去重；CIDR 直接保留。
     for target in $(echo "${DISCOVERY_TARGETS},${FIREWALL_DISCOVERY_RANGE}" | tr ',' '\n'); do
       target=$(echo "$target" | tr -d '[:space:]')
       [ -z "$target" ] && continue
-      base_ip=${target%%-*}      # 取 range 起始 IP，或单 IP
-      prefix=$(echo "$base_ip" | sed 's/\.[0-9]*$//')
-      cidr="${prefix}.0/24"
+      case "$target" in
+        */*) cidr="$target" ;;
+        *)
+          base_ip=${target%%-*}      # 取 range 起始 IP，或单 IP
+          prefix=$(echo "$base_ip" | sed 's/\.[0-9]*$//')
+          cidr="${prefix}.0/24"
+          ;;
+      esac
       # 跳过重复
       case "$seen_cidrs" in *"$cidr"*) continue ;; esac
       seen_cidrs="$seen_cidrs $cidr"
@@ -623,6 +629,21 @@ expand_targets() {
     target=$(echo "$target" | tr -d '[:space:]')
     [ -z "$target" ] && continue
     case "$target" in
+      */24)
+        base_ip=${target%/*}
+        prefix=${base_ip%.*}
+        octet=1
+        while [ "$octet" -le 254 ]; do
+          echo "$prefix.$octet"
+          octet=$((octet + 1))
+        done
+        ;;
+      */32)
+        echo "${target%/*}"
+        ;;
+      */*)
+        echo "  WARNING: Unsupported discovery CIDR $target (only /24 and /32 are expanded)" >&2
+        ;;
       *-*)
         start_ip=${target%-*}
         end_part=${target#*-}
@@ -1930,7 +1951,7 @@ echo "[4b/5] Adding ping-only devices (ISP / Firewall / Servers)..."
 # 单机场景：FIREWALL_UNIT_SNMP_TARGETS 未设 → 物理 IP 来自 FIREWALL_PING 加 ping-only，
 #           VIP 不单独在此 ping（后面 SNMP 块处理）。
 _fw_vip_ping="${FIREWALL_UNIT_SNMP_TARGETS:+${FIREWALL_SNMP_TARGETS}}"
-for combined in $(echo "${ISP_PING}${ISP_PING:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}" | tr ',' '\n'); do
+for combined in $(echo "${ISP_PING}${ISP_PING:+,}${BIGSCREEN_ISP_IPS}${BIGSCREEN_ISP_IPS:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}" | tr ',' '\n'); do
   combined=$(echo "$combined" | tr -d '[:space:]')
   [ -z "$combined" ] && continue
   case "$combined" in *:*)

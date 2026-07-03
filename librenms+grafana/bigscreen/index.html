@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20260623b" />
-    <link rel="stylesheet" href="./platform.css?v=20260623a" />
+    <link rel="stylesheet" href="./platform.css?v=20260628c" />
   </head>
   <body>
     <main class="screen">
@@ -77,12 +77,11 @@
           </label>
           <label>IP（填了优先按 IP 查，可查选手或基础设施任意设备） <input id="evidenceIp" type="text" /></label>
           <label>查询时间 <input id="evidenceAt" type="datetime-local" /></label>
-          <label>查询范围
+          <label title="以“查询时间”为中心的总时间窗">查询范围
             <select id="evidenceWindow">
-              <option value="5">前后 5 分钟</option>
-              <option value="10">前后 10 分钟</option>
-              <option value="15">前后 15 分钟</option>
-              <option value="30">前后 30 分钟</option>
+              <option value="5">5 分钟</option>
+              <option value="10" selected>10 分钟</option>
+              <option value="30">30 分钟</option>
             </select>
           </label>
           <button type="submit">查询</button>
@@ -104,31 +103,112 @@
         <div class="ops-summary" id="opsSummary"></div>
         <div class="ops-board" id="opsBoard"></div>
       </section>
-      <section class="heatmap-panel" id="heatmapPanel" aria-label="质量热图" hidden>
-        <form class="heatmap-controls" id="heatmapForm">
-          <label>起点 <input id="heatmapStart" type="datetime-local" /></label>
-          <label>时长
-            <select id="heatmapWindow">
-              <option value="1">最近 1 小时</option>
-              <option value="3">最近 3 小时</option>
-              <option value="6" selected>最近 6 小时</option>
-              <option value="12">最近 12 小时</option>
-              <option value="24">最近 24 小时</option>
-            </select>
-          </label>
-          <label>队伍数
-            <select id="heatmapTeams">
-              <option value="2">2 队 (5v5)</option>
-              <option value="6">6 队</option>
-              <option value="16" selected>16 队 (64 人)</option>
-            </select>
-          </label>
-          <button type="submit">绘制</button>
-          <button type="button" id="heatmapExport" title="把当前热图的离线率/平均延迟导出为 CSV">导出 CSV</button>
-        </form>
-        <div class="heatmap-summary" id="heatmapSummary"></div>
-        <div class="heatmap-grid" id="heatmapGrid"></div>
-        <div class="heatmap-legend" id="heatmapLegend"></div>
+      <section class="control-panel" id="controlPanel" aria-label="赛事控制台" hidden>
+        <div class="control-auth" id="controlAuth" hidden>
+          <section class="auth-card" aria-labelledby="controlAuthTitle">
+            <div class="auth-heading">
+              <strong id="controlAuthTitle">赛事控制台登录</strong>
+              <span id="controlAuthHint">输入账号密码后继续</span>
+            </div>
+            <form class="auth-form" id="controlLoginForm">
+              <label>账号
+                <input id="controlLoginUser" type="text" autocomplete="username" placeholder="admin" />
+              </label>
+              <label>密码
+                <input id="controlLoginPassword" type="password" autocomplete="current-password" />
+              </label>
+              <button type="submit">登录</button>
+            </form>
+            <form class="auth-form" id="controlPasswordForm" hidden>
+              <label>当前密码
+                <input id="controlCurrentPassword" type="password" autocomplete="current-password" />
+              </label>
+              <label>新密码
+                <input id="controlNewPassword" type="password" autocomplete="new-password" />
+              </label>
+              <label>确认新密码
+                <input id="controlConfirmPassword" type="password" autocomplete="new-password" />
+              </label>
+              <button type="submit">修改密码并进入</button>
+            </form>
+            <div class="auth-message" id="controlAuthMessage"></div>
+          </section>
+        </div>
+        <div class="control-shell" id="controlShell">
+          <div class="control-toolbar">
+            <div class="control-title">
+              <strong>赛事控制台</strong>
+              <span>基础配置、问题清单、事故和赛前工具</span>
+            </div>
+            <div class="control-actions">
+              <button type="button" id="controlRescan" title="立即重扫座位目标">重扫</button>
+              <button type="button" id="controlRefresh" title="刷新控制台">刷新</button>
+              <button type="button" id="controlLogout" title="退出赛事控制台">退出</button>
+            </div>
+          </div>
+          <div class="control-grid">
+            <div class="control-stack control-stack-left">
+              <article class="control-card control-readiness-card">
+                <h2>需要关注</h2>
+                <div class="readiness-missing" id="controlReadinessMissing"></div>
+              </article>
+              <article class="control-card control-config-editor-card">
+                <h2>基础配置</h2>
+                <div class="control-form" id="controlConfigForm"></div>
+                <div class="control-button-row">
+                  <button type="button" id="controlConfigValidate">验证</button>
+                  <button type="button" id="controlConfigSave">保存</button>
+                  <button type="button" id="controlConfigApply">应用配置</button>
+                  <button type="button" id="controlConfigRollback">回滚</button>
+                  <button type="button" id="controlConfigImport">导入配置</button>
+                  <a id="controlConfigExport" href="/platform-api/config/download">导出配置</a>
+                  <input id="controlConfigImportFile" type="file" accept=".yml,.yaml,text/yaml" hidden />
+                </div>
+                <div class="control-list" id="controlConfigResult"></div>
+              </article>
+            </div>
+            <div class="control-stack control-stack-right">
+              <article class="control-card">
+                <h2>配置中心</h2>
+                <div class="control-config" id="controlConfig"></div>
+              </article>
+              <article class="control-card">
+                <h2>拓扑诊断</h2>
+                <div class="control-list" id="controlTopology"></div>
+              </article>
+              <article class="control-card">
+                <h2>事故流转</h2>
+                <div class="control-flow" id="controlIncidentFlow"></div>
+              </article>
+              <article class="control-card">
+                <h2>事故库</h2>
+                <div class="incident-create">
+                  <input id="controlIncidentTitle" type="text" placeholder="事故标题" />
+                  <button type="button" id="controlIncidentCreate">创建</button>
+                </div>
+                <div class="control-list" id="controlIncidentList"></div>
+              </article>
+              <article class="control-card control-lint-card">
+                <h2>交换机配置巡检</h2>
+                <div class="lint-panes">
+                  <div class="lint-pane">
+                    <label class="lint-pane-label">核心交换机</label>
+                    <textarea class="control-textarea" id="controlCoreConfig" spellcheck="false" placeholder="粘贴核心 show run 片段"></textarea>
+                  </div>
+                  <div class="lint-pane">
+                    <label class="lint-pane-label">分线交换机</label>
+                    <textarea class="control-textarea" id="controlSwitchConfig" spellcheck="false" placeholder="粘贴当前分线 show run 片段，核对后换下一台"></textarea>
+                  </div>
+                </div>
+                <div class="control-list" id="controlLintResult"></div>
+              </article>
+              <article class="control-card">
+                <h2>赛前工具</h2>
+                <div class="control-list" id="controlDelivery"></div>
+              </article>
+            </div>
+          </div>
+        </div>
       </section>
       <section class="topology-panel" id="topologyPanel" aria-label="网络拓扑" hidden>
         <div class="topology-toolbar">
@@ -188,10 +268,11 @@
     <script src="./config.js?v=20260623a"></script>
     <script src="./pages.js?v=20260623a"></script>
     <script src="./utils.js?v=20260623a"></script>
-    <script src="./api.js?v=20260623c"></script>
+    <script src="./api.js?v=20260628a"></script>
     <script src="./players.js?v=20260623a"></script>
     <script src="./incident.js?v=20260623a"></script>
     <script src="./topology.js?v=20260623a"></script>
-    <script src="./app.js?v=20260625a"></script>
+    <script src="./platform.js?v=20260627a"></script>
+    <script src="./app.js?v=20260628f"></script>
   </body>
 </html>

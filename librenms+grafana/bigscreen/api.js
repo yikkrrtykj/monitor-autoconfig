@@ -435,6 +435,97 @@
     }
   }
 
+  async function fetchRuntimeStatus() {
+    try {
+      const response = await fetchWithTimeout("/player-targets/status", { cache: "no-store" }, 5000);
+      if (!response.ok) {
+        return { ok: false, error: `HTTP ${response.status}` };
+      }
+      return await response.json();
+    } catch (error) {
+      return { ok: false, error: error.message || "runtime status unavailable" };
+    }
+  }
+
+  async function platformApi(path, options = {}) {
+    const response = await fetchWithTimeout(`/platform-api${path}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options
+    }, options.timeoutMs || 15000);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      const error = new Error((payload && payload.error) || `Platform API HTTP ${response.status}`);
+      error.status = response.status;
+      error.payload = payload;
+      throw error;
+    }
+    return response.json();
+  }
+
+  async function fetchPlatformAuthStatus() {
+    try {
+      return await platformApi("/auth/status", { timeoutMs: 5000 });
+    } catch (error) {
+      // No HTTP status means a transport failure (fetch rejected) -- the proxy is
+      // briefly unreachable, e.g. bigscreen restarting during 应用配置. Flag it as
+      // transient so the UI can hold the current view instead of bouncing to login.
+      const transient = error.status == null;
+      return { ok: false, enabled: true, authenticated: false, transient, error: error.message || "auth unavailable" };
+    }
+  }
+
+  function loginPlatformAuth(username, password) {
+    return platformApi("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password })
+    });
+  }
+
+  function changePlatformPassword(currentPassword, newPassword, confirmPassword) {
+    return platformApi("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword, newPassword, confirmPassword })
+    });
+  }
+
+  function logoutPlatformAuth() {
+    return platformApi("/auth/logout", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async function fetchPlatformConfig() {
+    try {
+      return await platformApi("/config", { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, error: error.message || "platform config unavailable" };
+    }
+  }
+
+  function postPlatform(path, payload, options) {
+    return platformApi(path, { method: "POST", body: JSON.stringify(payload || {}), ...(options || {}) });
+  }
+
+  function patchPlatform(path, payload) {
+    return platformApi(path, { method: "PATCH", body: JSON.stringify(payload || {}) });
+  }
+
+  async function fetchIncidents() {
+    try {
+      return await platformApi("/incidents", { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, incidents: [], error: error.message || "incident store unavailable" };
+    }
+  }
+
+  async function fetchDeliveryManifest() {
+    try {
+      return await platformApi("/delivery/manifest", { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, images: [], files: [], commands: [], error: error.message || "delivery manifest unavailable" };
+    }
+  }
+
   const ns = {
     prometheusBaseUrl,
     rangeWindow,
@@ -461,7 +552,17 @@
     fetchInfraDeviceNames,
     renameListWithInfraMap,
     fetchTopologyTargets,
-    fetchTopologyEdges
+    fetchTopologyEdges,
+    fetchRuntimeStatus,
+    fetchPlatformAuthStatus,
+    loginPlatformAuth,
+    changePlatformPassword,
+    logoutPlatformAuth,
+    fetchPlatformConfig,
+    postPlatform,
+    patchPlatform,
+    fetchIncidents,
+    fetchDeliveryManifest
   };
 
   if (typeof module !== 'undefined' && module.exports) {

@@ -17,6 +17,10 @@ FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
 FIREWALL_UNIT_SNMP_TARGETS="${FIREWALL_UNIT_SNMP_TARGETS:-}"
 SNMP_AUTH="${SNMP_AUTH:-global}"
 PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}"
+# Live switches discovered from SWITCH_DISCOVERY_RANGE (written by the topology
+# container). Used as a file_sd source so only switches that actually answer are
+# pinged/SNMP-scraped, each already named by its real hostname.
+SWITCH_TARGETS_FILE="${SWITCH_TARGETS_FILE:-/etc/prometheus/targets/topology/switch_targets.json}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
 # 选手 ICMP 单独的采集间隔：比全局更密（默认 5s），纠纷回查的时间分辨率翻倍。
 # blackbox 对几十个选手目标 5s 一轮的负载可以忽略，被探测的选手机器无感知。
@@ -84,10 +88,12 @@ write_labeled_targets() {
   IFS=$old_ifs
 }
 
-# Write a named ping job to CONFIG_FILE
+# Write a named ping job to CONFIG_FILE. A 3rd arg, when set, adds a file_sd
+# source (e.g. discovered switch targets) alongside the static ones.
 write_ping_job() {
   job_name="$1"
   targets="$2"
+  file_sd="${3:-}"
   interval="$INFRA_PING_SCRAPE_INTERVAL"
   if [ "$job_name" = "infra-isp-ping" ]; then
     interval="$ISP_PING_SCRAPE_INTERVAL"
@@ -106,6 +112,15 @@ EOF
     echo "      - targets: []" >> "$CONFIG_FILE"
   else
     write_labeled_targets "$targets" >> "$CONFIG_FILE"
+  fi
+
+  if [ -n "$file_sd" ]; then
+    cat >> "$CONFIG_FILE" <<EOF
+    file_sd_configs:
+      - files:
+          - "${file_sd}"
+        refresh_interval: 60s
+EOF
   fi
 
   cat >> "$CONFIG_FILE" <<'RELABEL'
@@ -186,6 +201,7 @@ write_snmp_job() {
   targets="$2"
   module="${3:-if_mib}"
   interval="${4:-}"
+  file_sd="${5:-}"
 
   {
     echo "  - job_name: \"${job_name}\""
@@ -203,6 +219,15 @@ write_snmp_job() {
     write_labeled_targets "$targets" >> "$CONFIG_FILE"
   else
     echo "      - targets: []" >> "$CONFIG_FILE"
+  fi
+
+  if [ -n "$file_sd" ]; then
+    cat >> "$CONFIG_FILE" <<EOF
+    file_sd_configs:
+      - files:
+          - "${file_sd}"
+        refresh_interval: 60s
+EOF
   fi
 
   cat >> "$CONFIG_FILE" <<'RELABEL'
@@ -235,14 +260,16 @@ EOF
 # Infrastructure ping jobs
 write_ping_job "infra-isp-ping"   "$ISP_PING"
 write_ping_job "infra-core-ping"  "$CORE_SWITCH_PING"
-write_ping_job "infra-dist-ping"  "$DIST_SWITCH_PING"
+# Dist switches: explicit targets plus any discovered from SWITCH_DISCOVERY_RANGE.
+write_ping_job "infra-dist-ping"  "$DIST_SWITCH_PING" "$SWITCH_TARGETS_FILE"
 write_ping_job "infra-fw-ping"    "$FIREWALL_PING"
 write_ping_job "infra-srv-ping"   "$SERVER_PING"
 
 # Infrastructure SNMP jobs for device uptime
 SWITCH_SNMP_TARGETS="${CORE_SWITCH_PING}${CORE_SWITCH_PING:+,}${DIST_SWITCH_PING}"
 FIREWALL_SNMP_UPTIME_TARGETS="$(apply_reference_names "$FIREWALL_SNMP_TARGETS" "$FIREWALL_PING")"
-write_snmp_job "infra-switch-snmp"   "$SWITCH_SNMP_TARGETS"           "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
+# Same discovered switches also get SNMP-scraped so sysName/uptime resolve.
+write_snmp_job "infra-switch-snmp"   "$SWITCH_SNMP_TARGETS"           "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL" "$SWITCH_TARGETS_FILE"
 write_snmp_job "infra-fw-snmp"       "$FIREWALL_SNMP_UPTIME_TARGETS"  "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
 write_snmp_job "infra-fw-unit-snmp"  "$FIREWALL_UNIT_SNMP_TARGETS"    "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
 write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     "if_mib"        "$SWITCH_IFMIB_SCRAPE_INTERVAL"

@@ -1,9 +1,6 @@
 #!/bin/sh
 set -u
 
-# Install required packages
-apk add --no-cache curl jq
-
 GRAFANA_URL="${GRAFANA_URL:-http://grafana:3000}"
 GRAFANA_USER="${GRAFANA_USER:-admin}"
 GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-root}"

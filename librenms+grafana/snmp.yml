@@ -9,6 +9,9 @@ modules:
       - sysUpTime
       - ifTable
       - ifXTable
+      # ifStackTable maps an aggregate (Po/LAG) interface to its physical member
+      # ports, so interconnect alerts can name the real ports, not just "Po4".
+      - ifStackTable
     max_repetitions: 25
     retries: 3
     timeout: 10s

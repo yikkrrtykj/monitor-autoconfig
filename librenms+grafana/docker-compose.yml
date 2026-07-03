@@ -2,7 +2,7 @@ name: librenms-grafana
 
 services:
   librenms-db:
-    image: mariadb:10.5
+    image: ${MARIADB_IMAGE:-mariadb:10.5}
     container_name: librenms-db
     restart: unless-stopped
     command:
@@ -29,7 +29,7 @@ services:
       start_period: 60s
 
   librenms-redis:
-    image: redis:7.2-alpine
+    image: ${REDIS_IMAGE:-redis:7.2-alpine}
     container_name: librenms-redis
     restart: unless-stopped
     environment:
@@ -43,7 +43,7 @@ services:
       retries: 5
 
   librenms-rrdcached:
-    image: crazymax/rrdcached:latest
+    image: ${RRDCACHED_IMAGE:-crazymax/rrdcached:latest}
     container_name: librenms-rrdcached
     restart: unless-stopped
     environment:
@@ -60,7 +60,7 @@ services:
       - monitor
 
   init-permissions:
-    image: alpine:latest
+    image: ${ALPINE_IMAGE:-alpine:3.20}
     container_name: init-permissions
     volumes:
       - ./grafana-data:/grafana-data
@@ -85,7 +85,7 @@ services:
     restart: "no"
 
   prometheus:
-    image: prom/prometheus:latest
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}
     container_name: prometheus
     restart: unless-stopped
     environment:
@@ -110,6 +110,7 @@ services:
       UNIFI_CONTROLLER_URL: "${UNIFI_CONTROLLER_URL:-}"
       UNIFI_SCRAPE_INTERVAL: "${UNIFI_SCRAPE_INTERVAL:-10s}"
       PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
+      SWITCH_TARGETS_FILE: "/etc/prometheus/targets/topology/switch_targets.json"
     volumes:
       - prometheus-data:/prometheus
       - player-targets-data:/etc/prometheus/targets
@@ -134,7 +135,7 @@ services:
       start_period: 30s
 
   alertmanager-feishu-bridge:
-    image: python:3.12-slim
+    image: ${PYTHON_SLIM_IMAGE:-python:3.12-slim}
     container_name: alertmanager-feishu-bridge
     restart: unless-stopped
     volumes:
@@ -143,9 +144,17 @@ services:
       - ./librenms-data:/librenms-data:ro
       - bridge-state:/bridge-state
       - syslog-spool:/var/log/remote:ro
+      # Read-only LLDP topology so root-cause suppression knows which device is upstream.
+      - topology-data:/etc/prometheus/targets/topology:ro
     environment:
       TZ: Asia/Shanghai
       FEISHU_BRIDGE_PORT: "5005"
+      # Root-cause suppression: alert only the upstream switch, fold its downstream
+      # victim switches into that one card. Needs the core IP + LLDP topology.
+      DEVICE_DOWN_ROOT_CAUSE_ENABLED: "${DEVICE_DOWN_ROOT_CAUSE_ENABLED:-true}"
+      LIBRENMS_CORE_IP: "${LIBRENMS_CORE_IP:-}"
+      CORE_SWITCH_PING: "${CORE_SWITCH_PING:-}"
+      TOPOLOGY_EDGES_FILE: "/etc/prometheus/targets/topology/edges.json"
       FEISHU_ROBOT_TOKEN: "${FEISHU_ROBOT_TOKEN:-}"
       FEISHU_BRIDGE_DRY_RUN: "${FEISHU_BRIDGE_DRY_RUN:-false}"
       FEISHU_BRIDGE_EVENT_ID_START: "${FEISHU_BRIDGE_EVENT_ID_START:-0}"
@@ -162,7 +171,10 @@ services:
       ISP_ALERT_STATUS_INTERVAL: "${ISP_ALERT_STATUS_INTERVAL:-30}"
       DEVICE_DOWN_ENABLED: "${DEVICE_DOWN_ENABLED:-true}"
       DEVICE_DOWN_FOR_SECONDS: "${DEVICE_DOWN_FOR_SECONDS:-10}"
-      ISP_DOWN_FOR_SECONDS: "${ISP_DOWN_FOR_SECONDS:-0}"
+      ISP_DOWN_FOR_SECONDS: "${ISP_DOWN_FOR_SECONDS:-10}"
+      # 恢复防抖：恢复告警要连续不丢包这么多秒才发。ISP 默认 10s，避免闪断刷屏。
+      DEVICE_RECOVER_STABLE_SECONDS: "${DEVICE_RECOVER_STABLE_SECONDS:-0}"
+      ISP_RECOVER_STABLE_SECONDS: "${ISP_RECOVER_STABLE_SECONDS:-10}"
       DEVICE_DOWN_REQUIRE_SEEN_UP: "${DEVICE_DOWN_REQUIRE_SEEN_UP:-true}"
       DEVICE_DOWN_POLL_INTERVAL: "${DEVICE_DOWN_POLL_INTERVAL:-1}"
       DEVICE_DOWN_SAMPLE_WINDOW_SECONDS: "${DEVICE_DOWN_SAMPLE_WINDOW_SECONDS:-5}"
@@ -193,11 +205,16 @@ services:
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
       ISP_PING: "${ISP_PING:-}"
-      ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
+      ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-90}"
       SYSLOG_WATCH_ENABLED: "${SYSLOG_WATCH_ENABLED:-true}"
       SYSLOG_EVENT_RATE_LIMIT: "${SYSLOG_EVENT_RATE_LIMIT:-60}"
-      SYSLOG_ALERT_TYPES: "${SYSLOG_ALERT_TYPES:-native_vlan_mismatch,errdisable,loopback,dhcp_snooping}"
+      # A flapping port re-alerts at most once per this window, and its recovery
+      # only fires after it stays clear this long -- tames BPDU/loopback storms.
+      SYSLOG_REALERT_SECONDS: "${SYSLOG_REALERT_SECONDS:-600}"
+      SYSLOG_RECOVER_STABLE_SECONDS: "${SYSLOG_RECOVER_STABLE_SECONDS:-120}"
+      SYSLOG_ALERT_TYPES: "${SYSLOG_ALERT_TYPES:-native_vlan_mismatch,errdisable,bpduguard,loopback}"
       SYSLOG_CORRELATION_SECONDS: "${SYSLOG_CORRELATION_SECONDS:-10}"
+      SYSLOG_RECOVERY_ENABLED: "${SYSLOG_RECOVERY_ENABLED:-true}"
       SYSLOG_FILE: "/var/log/remote/syslog.log"
     command: ["python", "/app/bridge.py"]
     networks:
@@ -210,7 +227,7 @@ services:
       start_period: 10s
 
   snmp-exporter:
-    image: prom/snmp-exporter:latest
+    image: ${SNMP_EXPORTER_IMAGE:-prom/snmp-exporter:v0.26.0}
     container_name: snmp-exporter
     restart: unless-stopped
     entrypoint:
@@ -258,7 +275,7 @@ services:
       - monitor
 
   blackbox-exporter:
-    image: prom/blackbox-exporter:latest
+    image: ${BLACKBOX_EXPORTER_IMAGE:-prom/blackbox-exporter:v0.25.0}
     container_name: blackbox-exporter
     restart: unless-stopped
     ports:
@@ -294,7 +311,7 @@ services:
   # 放在 "unifi" profile 里；.env.example 默认开启，因为赛事现场通常都有 UniFi。
   # 如果某场完全不用 UniFi，把 COMPOSE_PROFILES 留空即可不启动。
   unpoller:
-    image: ${UNPOLLER_IMAGE:-ghcr.io/unpoller/unpoller:latest}
+    image: ${UNPOLLER_IMAGE:-ghcr.io/unpoller/unpoller:v2.15.3}
     container_name: unpoller
     restart: unless-stopped
     profiles: ["unifi"]
@@ -317,7 +334,9 @@ services:
       - monitor
 
   player-targets:
-    image: python:3-alpine
+    image: ${PLAYER_TOOLS_IMAGE:-monitor-player-tools:local}
+    build:
+      context: ./docker/player-tools
     container_name: player-targets
     restart: unless-stopped
     depends_on:
@@ -333,6 +352,9 @@ services:
     environment:
       TZ: Asia/Shanghai
       TOURNAMENT_SWITCHES: "${TOURNAMENT_SWITCHES:-}"
+      # Falls back to the switch discovery range when no stage switches are listed,
+      # so player-seat detection works in the "only fill a range" setup.
+      SWITCH_DISCOVERY_RANGE: "${SWITCH_DISCOVERY_RANGE:-}"
       SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
       PLAYER_GATEWAYS: "${PLAYER_GATEWAYS:-}"
       PLAYER_GATEWAY_SNMP_COMMUNITY: "${PLAYER_GATEWAY_SNMP_COMMUNITY:-}"
@@ -359,7 +381,6 @@ services:
       - /bin/sh
       - -c
       - |
-        apk add --no-cache net-snmp-tools
         echo "[player-targets] starting target generator loop"
 
         # Start rescan trigger API in background (POST /rescan → immediate re-scan)
@@ -375,9 +396,13 @@ services:
         }
 
         load_runtime_env() {
-          for key in TOURNAMENT_SWITCHES SNMP_COMMUNITY PLAYER_GATEWAYS PLAYER_GATEWAY_SNMP_COMMUNITY PLAYER_VLAN_IDS PLAYER_REQUIRE_LINK_UP PLAYER_VERIFY_PING LIBRENMS_CORE_IP CORE_SWITCH_PING PLAYER_SUBNETS WIRELESS_SUBNETS PLAYER_STATIC_TARGETS PLAYER_STATIC_NETWORK PLAYER_WIRELESS_SCAN PLAYER_WIRELESS_SCAN_LIMIT PLAYER_WIRELESS_SCAN_TEAM_SIZE PLAYER_WIRELESS_SCAN_TIMEOUT PLAYER_WIRELESS_SCAN_WORKERS PLAYER_WIRELESS_SCAN_MAX_HOSTS PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS PLAYER_WIRELESS_SCAN_EXCLUDE PLAYER_TARGETS_REFRESH_INTERVAL; do
+          for key in TOURNAMENT_SWITCHES SWITCH_DISCOVERY_RANGE SNMP_COMMUNITY PLAYER_GATEWAYS PLAYER_GATEWAY_SNMP_COMMUNITY PLAYER_VLAN_IDS PLAYER_REQUIRE_LINK_UP PLAYER_VERIFY_PING LIBRENMS_CORE_IP CORE_SWITCH_PING PLAYER_SUBNETS WIRELESS_SUBNETS PLAYER_STATIC_TARGETS PLAYER_STATIC_NETWORK PLAYER_WIRELESS_SCAN PLAYER_WIRELESS_SCAN_LIMIT PLAYER_WIRELESS_SCAN_TEAM_SIZE PLAYER_WIRELESS_SCAN_TIMEOUT PLAYER_WIRELESS_SCAN_WORKERS PLAYER_WIRELESS_SCAN_MAX_HOSTS PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS PLAYER_WIRELESS_SCAN_EXCLUDE PLAYER_TARGETS_REFRESH_INTERVAL; do
             load_env_key "$$key"
           done
+          # No stage switches listed -> walk the discovery range instead, so
+          # seat detection still runs when operators only fill a range.
+          : "$${TOURNAMENT_SWITCHES:=$${SWITCH_DISCOVERY_RANGE:-}}"
+          export TOURNAMENT_SWITCHES
         }
 
         wait_or_trigger() {
@@ -404,7 +429,9 @@ services:
         done
 
   topology-collector:
-    image: python:3-alpine
+    image: ${PLAYER_TOOLS_IMAGE:-monitor-player-tools:local}
+    build:
+      context: ./docker/player-tools
     container_name: topology-collector
     restart: unless-stopped
     depends_on:
@@ -415,6 +442,7 @@ services:
     volumes:
       - topology-data:/targets
       - ./generate-topology-edges.py:/generate-topology-edges.py:ro
+      - ./discover-switch-targets.py:/discover-switch-targets.py:ro
       - ./.env:/config/.env:ro
     environment:
       TZ: Asia/Shanghai
@@ -426,11 +454,19 @@ services:
       DIST_SWITCH_PING: "${DIST_SWITCH_PING:-}"
       FIREWALL_PING: "${FIREWALL_PING:-}"
       TOURNAMENT_SWITCHES: "${TOURNAMENT_SWITCHES:-}"
+      # Switch auto-discovery: ICMP-gate this range and SNMP only the live ones,
+      # then write them (named by hostname) to a file_sd the Prometheus dist/snmp
+      # jobs read. Probing a sparse /24 stays cheap; tune the caps if needed.
+      SWITCH_DISCOVERY_RANGE: "${SWITCH_DISCOVERY_RANGE:-}"
+      SWITCH_TARGETS_FILE: "/targets/switch_targets.json"
+      SWITCH_DISCOVERY_WORKERS: "${SWITCH_DISCOVERY_WORKERS:-32}"
+      SWITCH_DISCOVERY_MAX_HOSTS: "${SWITCH_DISCOVERY_MAX_HOSTS:-1024}"
+      SWITCH_DISCOVERY_PING_TIMEOUT: "${SWITCH_DISCOVERY_PING_TIMEOUT:-1}"
+      SWITCH_DISCOVERY_SNMP_TIMEOUT: "${SWITCH_DISCOVERY_SNMP_TIMEOUT:-1}"
     entrypoint:
       - /bin/sh
       - -c
       - |
-        apk add --no-cache net-snmp-tools
         echo "[topology] starting LLDP collector loop"
 
         load_env_key() {
@@ -443,21 +479,72 @@ services:
         }
 
         load_runtime_env() {
-          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES TOPOLOGY_REFRESH_INTERVAL; do
+          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES SWITCH_DISCOVERY_RANGE TOPOLOGY_REFRESH_INTERVAL; do
             load_env_key "$$key"
           done
         }
 
         while true; do
           load_runtime_env
+          python3 /discover-switch-targets.py 2>&1 | while IFS= read -r line; do
+            echo "[switch-discovery] $$line"
+          done
           python3 /generate-topology-edges.py 2>&1 | while IFS= read -r line; do
             echo "[topology] $$line"
           done
           sleep "$${TOPOLOGY_REFRESH_INTERVAL:-600}"
         done
 
+  platform-api:
+    image: ${PYTHON_SLIM_IMAGE:-python:3.12-slim}
+    container_name: platform-api
+    restart: unless-stopped
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - platform-state:/workspace/platform-state
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin:/host/usr/bin:ro
+      - /usr/lib:/host/usr/lib:ro
+      - /usr/libexec:/host/usr/libexec:ro
+      - /usr/local/lib:/host/usr/local/lib:ro
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      TZ: Asia/Shanghai
+      PLATFORM_API_PORT: "9200"
+      PLATFORM_WORKDIR: "/workspace"
+      PLATFORM_STATE_DIR: "/workspace/platform-state"
+      # Feishu bridge, used by the console's "发送测试告警" button.
+      PLATFORM_BRIDGE_URL: "${PLATFORM_BRIDGE_URL:-http://alertmanager-feishu-bridge:5005}"
+      # "赛前体检" button runs pre-match-check.sh against the stack (by service name).
+      PLATFORM_PRECHECK_PROM_URL: "${PLATFORM_PRECHECK_PROM_URL:-http://prometheus:9090}"
+      PLATFORM_PRECHECK_GRAFANA_URL: "${PLATFORM_PRECHECK_GRAFANA_URL:-http://grafana:3000}"
+      PLATFORM_WRITE_ENABLED: "${PLATFORM_WRITE_ENABLED:-true}"
+      PLATFORM_AUTH_ENABLED: "${PLATFORM_AUTH_ENABLED:-true}"
+      PLATFORM_ADMIN_USER: "${PLATFORM_ADMIN_USER:-admin}"
+      PLATFORM_ADMIN_PASSWORD: "${PLATFORM_ADMIN_PASSWORD:-global}"
+      PLATFORM_SESSION_HOURS: "${PLATFORM_SESSION_HOURS:-8}"
+      PLATFORM_COOKIE_SECURE: "${PLATFORM_COOKIE_SECURE:-false}"
+      PLATFORM_APPLY_ENABLED: "${PLATFORM_APPLY_ENABLED:-true}"
+      PLATFORM_APPLY_COMMAND: "${PLATFORM_APPLY_COMMAND:-/bin/sh /workspace/apply-env.sh}"
+      PLATFORM_APPLY_TIMEOUT: "${PLATFORM_APPLY_TIMEOUT:-300}"
+      DOCKER_CLI_PLUGIN_EXTRA_DIRS: "/host/usr/libexec/docker/cli-plugins:/host/usr/lib/docker/cli-plugins:/host/usr/local/lib/docker/cli-plugins"
+      # Container binaries first (python3 etc.); host /host/usr/bin last, only for
+      # what the slim image lacks (docker). Host-first ran the host's python3,
+      # which fails on missing shared libs inside the container.
+      PATH: "/usr/local/bin:/usr/bin:/bin:/host/usr/bin"
+    command: ["python", "/workspace/platform-api.py"]
+    networks:
+      - monitor
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9200/health', timeout=2)\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   librenms:
-    image: librenms/librenms:latest
+    image: ${LIBRENMS_IMAGE:-librenms/librenms:latest}
     container_name: librenms
     restart: unless-stopped
     hostname: librenms
@@ -518,7 +605,7 @@ services:
       - monitor
 
   librenms-dispatcher:
-    image: librenms/librenms:latest
+    image: ${LIBRENMS_IMAGE:-librenms/librenms:latest}
     container_name: librenms-dispatcher
     hostname: librenms-dispatcher
     restart: unless-stopped
@@ -561,7 +648,7 @@ services:
       - monitor
 
   librenms-config:
-    image: librenms/librenms:latest
+    image: ${LIBRENMS_IMAGE:-librenms/librenms:latest}
     container_name: librenms-config
     depends_on:
       librenms:
@@ -603,15 +690,16 @@ services:
       LIBRENMS_ADMIN_PASSWORD: "${LIBRENMS_ADMIN_PASSWORD:-librenms123}"
       LIBRENMS_ADMIN_EMAIL: "${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
       LIBRENMS_OWN_HOSTNAME: "${SERVER_IP:-}"
-      FIREWALL_DISCOVERY_RANGE: "${FIREWALL_DISCOVERY_RANGE:-}"
+      FIREWALL_DISCOVERY_RANGE: "${FIREWALL_DISCOVERY_RANGE:-192.168.9.0/24}"
       FIREWALL_SNMP_COMMUNITY: "${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
       FIREWALL_SNMP_TARGETS: "${FIREWALL_SNMP_TARGETS:-}"
       FEISHU_ROBOT_TOKEN: "${FEISHU_ROBOT_TOKEN:-}"
       ISP_PING: "${ISP_PING:-}"
+      BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
       FIREWALL_PING: "${FIREWALL_PING:-}"
       SERVER_PING: "${SERVER_PING:-}"
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
-      ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-80}"
+      ISP_SATURATION_PERCENT: "${ISP_SATURATION_PERCENT:-90}"
       FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
       UPLINK_IF_FILTER: "${UPLINK_IF_FILTER:-to-stage,to-core,to-dist,uplink}"
       LIBRENMS_IGNORE_DOWN_PORTS: "${LIBRENMS_IGNORE_DOWN_PORTS:-true}"
@@ -638,7 +726,7 @@ services:
         echo "UniFi APs: optional via unpoller/controller API; bridge can auto-add online APs to LibreNMS by SNMP"
 
   grafana:
-    image: grafana/grafana:latest
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.0}
     container_name: grafana
     restart: unless-stopped
     environment:
@@ -668,7 +756,7 @@ services:
       - monitor
 
   bigscreen:
-    image: nginx:alpine
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
     container_name: bigscreen
     restart: unless-stopped
     environment:
@@ -676,6 +764,10 @@ services:
       BIGSCREEN_TITLE: "${BIGSCREEN_TITLE:-}"
       BIGSCREEN_SUBTITLE: "${BIGSCREEN_SUBTITLE:-}"
       BIGSCREEN_LOGO_TEXT: "${BIGSCREEN_LOGO_TEXT:-}"
+      BIGSCREEN_DEFAULT_LAYOUT: "${BIGSCREEN_DEFAULT_LAYOUT:-tournament-64-2layer}"
+      BIGSCREEN_SECURITY_MODE: "${BIGSCREEN_SECURITY_MODE:-internal}"
+      BIGSCREEN_PUBLIC_BASE_URL: "${BIGSCREEN_PUBLIC_BASE_URL:-}"
+      BIGSCREEN_GRAFANA_ANONYMOUS: "${GRAFANA_ANONYMOUS_ENABLED:-true}"
       BIGSCREEN_PROMETHEUS_BASE_URL: "${BIGSCREEN_PROMETHEUS_BASE_URL:-}"
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-}"
       BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
@@ -693,6 +785,8 @@ services:
     depends_on:
       prometheus:
         condition: service_healthy
+      platform-api:
+        condition: service_healthy
     networks:
       - monitor
     entrypoint:
@@ -706,6 +800,10 @@ services:
           title: "$${BIGSCREEN_TITLE:-}",
           subtitle: "$${BIGSCREEN_SUBTITLE:-}",
           logoText: "$${BIGSCREEN_LOGO_TEXT:-}",
+          defaultLayout: "$${BIGSCREEN_DEFAULT_LAYOUT:-tournament-64-2layer}",
+          securityMode: "$${BIGSCREEN_SECURITY_MODE:-internal}",
+          publicBaseUrl: "$${BIGSCREEN_PUBLIC_BASE_URL:-}",
+          grafanaAnonymous: "$${BIGSCREEN_GRAFANA_ANONYMOUS:-true}",
           prometheusBaseUrl: "$${BIGSCREEN_PROMETHEUS_BASE_URL:-}",
           ispNames: "$${BIGSCREEN_ISP_NAMES:-}",
           ispIps: "$${BIGSCREEN_ISP_IPS:-$${ISP_PING:-}}",
@@ -756,12 +854,22 @@ services:
             proxy_pass http://$$pt_upstream:9199;
             proxy_read_timeout 5s;
           }
+
+          location /platform-api/ {
+            resolver 127.0.0.11 valid=30s ipv6=off;
+            set $$platform_upstream platform-api;
+            rewrite ^/platform-api/(.*)$$ /$$1 break;
+            proxy_pass http://$$platform_upstream:9200;
+            proxy_read_timeout 30s;
+          }
         }
         EOF
         exec nginx -g 'daemon off;'
 
   grafana-setup:
-    image: alpine:latest
+    image: ${GRAFANA_SETUP_IMAGE:-monitor-grafana-setup:local}
+    build:
+      context: ./docker/grafana-setup
     container_name: grafana-setup
     environment:
       GRAFANA_USER: "${GRAFANA_USER:-admin}"
@@ -791,10 +899,12 @@ services:
       - monitor
 
   rsyslog:
-    image: alpine:latest
+    image: ${RSYSLOG_IMAGE:-monitor-rsyslog:local}
+    build:
+      context: ./docker/rsyslog
     container_name: rsyslog
     restart: unless-stopped
-    command: ["sh", "-c", "apk add --no-cache rsyslog && exec rsyslogd -n -f /etc/rsyslog.conf"]
+    command: ["rsyslogd", "-n", "-f", "/etc/rsyslog.conf"]
     volumes:
       - ./rsyslog.conf:/etc/rsyslog.conf:ro
       - syslog-spool:/var/log/remote
@@ -834,4 +944,5 @@ volumes:
   topology-data:
   grafana-data:
   librenms-db-data:
+  platform-state:
   librenms-data:

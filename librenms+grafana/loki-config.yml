@@ -34,6 +34,20 @@ limits_config:
   max_streams_per_user: 0
   ingestion_rate_mb: 16
   ingestion_burst_size_mb: 32
+  # 把一次大时间范围的查询拆成多段并行执行，syslog 面板/搜索因此明显加快。
+  split_queries_by_interval: 30m
+  max_query_parallelism: 16
+
+# 查询结果缓存：syslog 面板每 30s 自动刷新，1 小时窗口里只有最后一小段在变，
+# 其余早已写定。缓存这些不变的分段后，刷新几乎只查增量，转圈时间大幅下降。
+query_range:
+  align_queries_with_step: true
+  cache_results: true
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
 
 compactor:
   working_directory: /loki/compactor
