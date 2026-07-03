@@ -8,7 +8,8 @@ const {
   summarizeServices,
   buildReadinessChecks,
   lintSwitchConfig,
-  lintSwitchPair
+  lintSwitchPair,
+  lintSwitchScene
 } = require(path.resolve(__dirname, "../bigscreen/platform.js"));
 
 const players = [
@@ -154,5 +155,14 @@ const coreOk = coreCfg.replace("allowed vlan 40", "allowed vlan 40,41");
 assert.ok(!lintSwitchPair(coreOk, distCfg).some((item) => item.label.includes("核心放行 VLAN")), "core permitting the VLAN is not flagged");
 // No core reference -> only the distribution's own checks run (no cross-check).
 assert.ok(!lintSwitchPair("", distCfg).some((item) => item.label.includes("核心放行 VLAN")), "no core reference means no cross-check");
+
+// Scene lint checks BOTH panes and tags each finding with its source.
+const sceneNoLog = "no vstack\ninterface GigabitEthernet1/0/1\n switchport mode trunk\n switchport trunk allowed vlan 40,41\n";
+const scene = lintSwitchScene(sceneNoLog, distCfg);
+assert.ok(scene.some((item) => item.source === "核心"), "core pane is linted and tagged");
+assert.ok(scene.some((item) => item.source === "分线"), "distribution pane is linted and tagged");
+// Core alone is still checked (its own missing logging host shows up).
+const coreOnly = lintSwitchScene(sceneNoLog, "");
+assert.ok(coreOnly.length && coreOnly.every((item) => item.source === "核心"), "core-only scene lints just the core");
 
 console.log("bigscreen platform tests passed");

@@ -437,6 +437,20 @@
       .sort((a, b) => levelRank(b.level) - levelRank(a.level) || a.line - b.line);
   }
 
+  // Lint both panes and the coordination between them, tagging each finding with
+  // its source (核心 / 分线 / 配合) so the operator sees which switch it came from.
+  function lintSwitchScene(coreText, distText) {
+    const issues = [];
+    if (String(coreText || "").trim()) {
+      lintSwitchConfig(coreText).forEach((item) => issues.push({ ...item, source: "核心" }));
+    }
+    if (String(distText || "").trim()) {
+      lintSwitchConfig(distText).forEach((item) => issues.push({ ...item, source: "分线" }));
+    }
+    lintCoreDistCoordination(coreText, distText).forEach((item) => issues.push({ ...item, source: "配合" }));
+    return issues.sort((a, b) => levelRank(b.level) - levelRank(a.level) || a.line - b.line);
+  }
+
   const ns = {
     levelRank,
     worstLevel,
@@ -451,7 +465,8 @@
     splitInterfaceBlocks,
     lintSwitchConfig,
     lintCoreDistCoordination,
-    lintSwitchPair
+    lintSwitchPair,
+    lintSwitchScene
   };
 
   if (typeof module !== 'undefined' && module.exports) {

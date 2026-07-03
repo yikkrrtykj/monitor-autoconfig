@@ -39,7 +39,7 @@
     readinessScore,
     summarizePlayers, summarizeTargets, summarizeServices,
     buildConfigRisks, buildTopologyFindings, buildReadinessChecks,
-    lintSwitchPair
+    lintSwitchScene
   } = window.BSPlatform;
   let gaugeTimer = null;
   let chartTimer = null;
@@ -2249,17 +2249,17 @@
     const result = document.getElementById("controlLintResult");
     const coreText = coreInput ? coreInput.value : "";
     const distText = input ? input.value : "";
-    if (!distText.trim()) {
-      result.innerHTML = `<div class="control-empty">${coreText.trim() ? "在右侧粘贴分线交换机配置开始核对" : "等待配置片段"}</div>`;
+    if (!coreText.trim() && !distText.trim()) {
+      result.innerHTML = `<div class="control-empty">等待配置片段</div>`;
       return;
     }
-    const issues = lintSwitchPair(coreText, distText);
+    const issues = lintSwitchScene(coreText, distText);
     if (!issues.length) {
       result.innerHTML = `<div class="control-empty good">未发现明显风险</div>`;
       return;
     }
-    result.innerHTML = issues.slice(0, 18).map((item) => controlItemHtml({
-      section: item.line ? `L${item.line}` : "全局",
+    result.innerHTML = issues.slice(0, 24).map((item) => controlItemHtml({
+      section: item.source || (item.line ? `L${item.line}` : "全局"),
       label: item.label,
       level: item.level,
       value: item.level.toUpperCase(),
