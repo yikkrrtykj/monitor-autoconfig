@@ -2170,16 +2170,16 @@
       return;
     }
     const rows = [
-      { section: "部署", label: "镜像", level: manifest.images.length ? "good" : "warn", value: String(manifest.images.length), note: manifest.images.slice(0, 3).join("、") },
-      { section: "部署", label: "文件", level: manifest.files.length ? "good" : "warn", value: String(manifest.files.length), note: manifest.files.slice(0, 4).join("、") },
-      { section: "部署", label: "离线安装", level: "info", value: "脚本", note: (manifest.commands || []).join(" && ") }
+      { section: "部署", label: "需要镜像", level: manifest.images.length ? "good" : "warn", value: String(manifest.images.length), note: manifest.images.slice(0, 3).join("、") },
+      { section: "部署", label: "打包文件", level: manifest.files.length ? "good" : "warn", value: String(manifest.files.length), note: manifest.files.slice(0, 4).join("、") },
+      { section: "部署", label: "在服务器上执行", level: "info", value: "脚本", note: (manifest.commands || []).join(" && ") }
     ];
     element.innerHTML = `
       ${rows.map(controlItemHtml).join("")}
+      <div class="delivery-hint">搬到没网的新服务器时，在服务器上按上面命令执行 offline-package.sh 打成离线包（含镜像）再拷贝安装。本机备份配置用上方“导出配置”。</div>
       <div class="delivery-actions">
         <button type="button" class="delivery-test-alert" id="preCheckBtn">赛前体检</button>
         <button type="button" class="delivery-test-alert" id="testAlertBtn">发送测试告警</button>
-        <a class="delivery-download" href="/platform-api/delivery/export">下载离线部署配置</a>
         <span class="test-alert-result" id="testAlertResult"></span>
       </div>
       <div class="precheck-result" id="preCheckResult" hidden></div>
@@ -2475,19 +2475,6 @@
     renderControlAuth(lastControlAuth);
   }
 
-  function exportControlReport() {
-    if (!lastControlReport) return;
-    const rows = [["time", "section", "item", "level", "value", "note"]];
-    const now = formatTimestampFull(Math.floor(Date.now() / 1000));
-    lastControlReport.checks.forEach((item) => {
-      rows.push([now, item.section, item.label, item.level, item.value, item.note || ""]);
-    });
-    lastControlReport.configRisks.forEach((item) => {
-      rows.push([now, "配置风险", item.label, item.level, item.value, item.note || ""]);
-    });
-    downloadCsv(`event_control_${csvStamp(Math.floor(Date.now() / 1000))}.csv`, rows);
-  }
-
   function setupControlPanel() {
     const loginForm = document.getElementById("controlLoginForm");
     if (loginForm && !loginForm.dataset.bound) {
@@ -2508,11 +2495,6 @@
     if (refreshBtn && !refreshBtn.dataset.bound) {
       refreshBtn.addEventListener("click", refreshControlPanel);
       refreshBtn.dataset.bound = "1";
-    }
-    const exportBtn = document.getElementById("controlExport");
-    if (exportBtn && !exportBtn.dataset.bound) {
-      exportBtn.addEventListener("click", exportControlReport);
-      exportBtn.dataset.bound = "1";
     }
     const rescanBtn = document.getElementById("controlRescan");
     if (rescanBtn && !rescanBtn.dataset.bound) {

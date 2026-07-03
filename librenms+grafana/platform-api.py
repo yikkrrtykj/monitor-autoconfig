@@ -1,11 +1,10 @@
-"""Platform API for event config, incidents, and delivery artifacts.
+"""Platform API for event config, incidents, and the offline-deploy manifest.
 
 This service is intentionally small and dependency-free. It owns the writable
 platform state while the bigscreen remains a static UI served by nginx.
 """
 from __future__ import annotations
 
-import io
 import base64
 import hashlib
 import hmac
@@ -19,7 +18,6 @@ import subprocess
 import threading
 import time
 import urllib.request
-import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -691,17 +689,6 @@ def delivery_manifest() -> dict:
     }
 
 
-def export_zip() -> bytes:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path in [CONFIG_PATH, ENV_PATH, INCIDENT_PATH, WORKDIR / "README.md", WORKDIR / "docker-compose.yml"]:
-            if path.exists():
-                zf.write(path, arcname=path.name)
-        manifest = json.dumps(delivery_manifest(), ensure_ascii=False, indent=2)
-        zf.writestr("platform-manifest.json", manifest)
-    return buffer.getvalue()
-
-
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status: int = 200, headers: dict[str, str] | None = None):
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -759,7 +746,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(delivery_manifest())
             elif path == "/config/download":
                 # The single round-trippable config file: export this, edit or archive
-                # it, then re-import it. (The zip below is the full offline bundle.)
+                # it, then re-import it via /config/import.
                 require_auth(self)
                 text = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else ""
                 self._send_bytes(
@@ -767,9 +754,6 @@ class Handler(BaseHTTPRequestHandler):
                     f"event-config-{stamp()}.yml",
                     "application/x-yaml; charset=utf-8",
                 )
-            elif path == "/delivery/export" or path == "/config/export":
-                require_auth(self)
-                self._send_bytes(export_zip(), f"event-platform-{stamp()}.zip")
             else:
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
         except AuthError as exc:

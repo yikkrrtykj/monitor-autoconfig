@@ -1454,17 +1454,14 @@
   cursor: pointer;
 }
 
-.delivery-download {
-  display: grid;
-  min-height: 38px;
-  place-items: center;
-  border: 1px solid rgba(94, 106, 210, 0.58);
-  border-radius: 9px;
-  background: rgba(94, 106, 210, 0.18);
-  color: var(--linear-ink);
-  font-size: 13px;
-  font-weight: 600;
-  text-decoration: none;
+.delivery-hint {
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  border-left: 3px solid rgba(94, 106, 210, 0.6);
+  background: var(--linear-surface-2);
+  color: var(--linear-ink-subtle);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .delivery-actions {
@@ -1472,10 +1469,6 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-}
-
-.delivery-actions .delivery-download {
-  flex: 1 1 auto;
 }
 
 .delivery-test-alert {
