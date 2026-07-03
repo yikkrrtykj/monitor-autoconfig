@@ -279,7 +279,6 @@
     const global = raw.replace(/\n\s*interface\s+[\s\S]*$/i, "");
     const hasGlobalBpduguard = /^\s*spanning-tree\s+portfast\s+bpduguard\s+default\s*$/im.test(global);
     const hasGlobalPortfast = /^\s*spanning-tree\s+portfast\s+(?:default|edge\s+default)\s*$/im.test(global);
-    const dhcpSnooping = /^\s*ip\s+dhcp\s+snooping\s*$/im.test(global) || /^\s*ip\s+dhcp\s+snooping\s+vlan\s+/im.test(global);
 
     if (!/^\s*no\s+vstack\s*$/im.test(global)) {
       addIssue(issues, "warn", "no vstack", "建议全局关闭 Cisco vstack，减少无用服务暴露", 0);
@@ -335,16 +334,10 @@
         if (/storm-control\s+broadcast\s+level/i.test(body) && !/storm-control\s+action\s+shutdown/i.test(body)) {
           hit("stormaction", "warn", "风暴动作", "已有广播阈值但缺少 storm-control action shutdown", block);
         }
-        if (/ip\s+dhcp\s+snooping\s+trust/i.test(body)) {
-          hit("dhcptrust", "bad", "DHCP Trust", "普通接入口不应配置 DHCP snooping trust", block);
-        }
       }
 
       if (trunk && /spanning-tree\s+bpduguard\s+enable/i.test(body)) {
         hit("trunkbpdu", "bad", "BPDU Guard", "Trunk/上联口不建议开 bpduguard，会误断互联", block);
-      }
-      if (dhcpSnooping && uplink && !/ip\s+dhcp\s+snooping\s+trust/i.test(body)) {
-        hit("uplinktrust", "info", "DHCP Trust", "已启用 DHCP Snooping，上联/DHCP 来源口通常需要 trust", block);
       }
     });
 

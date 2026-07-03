@@ -78,22 +78,6 @@ interface GigabitEthernet1/0/48
 const trunkIssues = lintSwitchConfig(badTrunk);
 assert.ok(trunkIssues.some((item) => item.level === "bad" && item.label.includes("BPDU Guard")), "trunk BPDU Guard is flagged");
 
-const badDhcpTrust = `
-no vstack
-logging host 192.168.41.253
-interface GigabitEthernet1/0/9
- description player
- switchport access vlan 41
- switchport mode access
- ip dhcp snooping trust
- storm-control broadcast level 1.00 0.50
- storm-control action shutdown
- spanning-tree portfast edge
- spanning-tree bpduguard enable
-`;
-const trustIssues = lintSwitchConfig(badDhcpTrust);
-assert.ok(trustIssues.some((item) => item.level === "bad" && item.label.includes("DHCP Trust")), "access DHCP trust is flagged");
-
 // Many access ports failing the same check collapse into one ranged card.
 let manyPorts = "no vstack\nlogging host 192.168.41.253\n";
 for (let i = 1; i <= 10; i++) {
