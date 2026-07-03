@@ -267,9 +267,13 @@
     return set;
   }
 
-  function lintSwitchConfig(text) {
+  function lintSwitchConfig(text, options) {
     const raw = String(text || "");
     if (!raw.trim()) return [];
+    // The core is an L3 aggregation switch: its ports are trunks/SVIs, not player
+    // access ports, so edge-only checks (BPDU Guard, PortFast, storm-control, and
+    // the "接入 VLAN 必须在上联放行" rule) don't apply to it.
+    const isCore = !!(options && options.role === "core");
     const issues = [];
     const blocks = splitInterfaceBlocks(raw);
     const global = raw.replace(/\n\s*interface\s+[\s\S]*$/i, "");
@@ -318,7 +322,7 @@
         if (vlanMatch) accessVlans.add(Number(vlanMatch[1]));
       }
 
-      if (access && !uplink) {
+      if (!isCore && access && !uplink) {
         if (!hasGlobalPortfast && !/spanning-tree\s+portfast(?:\s+edge)?/i.test(body)) {
           hit("portfast", "warn", "PortFast", "接入口建议启用 spanning-tree portfast edge", block);
         }
@@ -350,8 +354,11 @@
       addIssue(issues, group.level, label, note, group.ports[0].line);
     });
 
-    // 核心/分线配合：接入口用到的 VLAN 必须在上联 Trunk 放行，否则这些口的选手到不了核心。
-    if (accessVlans.size && !trunkBlocks.length) {
+    // 分线接入口用到的 VLAN 必须在自己的上联 Trunk 放行，否则这些口的选手到不了
+    // 核心。核心是汇聚层、没有这种“上联”概念，跳过。
+    if (isCore) {
+      // no edge uplink-VLAN rule for the core
+    } else if (accessVlans.size && !trunkBlocks.length) {
       addIssue(issues, "info", "上联缺失", "有接入口但未发现上联 Trunk/Port-channel 口，确认与核心/分线交换机的互联", 0);
     } else if (accessVlans.size && trunkBlocks.length) {
       const allowed = new Set();
@@ -442,7 +449,7 @@
   function lintSwitchScene(coreText, distText) {
     const issues = [];
     if (String(coreText || "").trim()) {
-      lintSwitchConfig(coreText).forEach((item) => issues.push({ ...item, source: "核心" }));
+      lintSwitchConfig(coreText, { role: "core" }).forEach((item) => issues.push({ ...item, source: "核心" }));
     }
     if (String(distText || "").trim()) {
       lintSwitchConfig(distText).forEach((item) => issues.push({ ...item, source: "分线" }));

@@ -165,4 +165,22 @@ assert.ok(scene.some((item) => item.source === "分线"), "distribution pane is 
 const coreOnly = lintSwitchScene(sceneNoLog, "");
 assert.ok(coreOnly.length && coreOnly.every((item) => item.source === "核心"), "core-only scene lints just the core");
 
+// Core role skips edge-only checks (BPDU Guard / uplink-VLAN) but keeps globals.
+const coreWithAccessPorts = `
+interface GigabitEthernet1/0/1
+ switchport access vlan 20
+ switchport mode access
+interface GigabitEthernet1/0/2
+ description to-dist
+ switchport mode trunk
+ switchport trunk allowed vlan 20
+`;
+const coreLint = lintSwitchConfig(coreWithAccessPorts, { role: "core" });
+assert.ok(!coreLint.some((item) => item.label.includes("BPDU Guard")), "core role does not flag missing BPDU Guard");
+assert.ok(!coreLint.some((item) => item.label.includes("放行 VLAN")), "core role does not apply the uplink-VLAN rule");
+assert.ok(coreLint.some((item) => item.label.includes("no vstack")), "core role still runs global hygiene checks");
+// Same config as an access switch DOES flag the edge issues.
+const asAccess = lintSwitchConfig(coreWithAccessPorts);
+assert.ok(asAccess.some((item) => item.label.includes("BPDU Guard")), "access role still flags BPDU Guard");
+
 console.log("bigscreen platform tests passed");
