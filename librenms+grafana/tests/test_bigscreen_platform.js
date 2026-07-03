@@ -7,7 +7,8 @@ const {
   summarizeTargets,
   summarizeServices,
   buildReadinessChecks,
-  lintSwitchConfig
+  lintSwitchConfig,
+  lintSwitchPair
 } = require(path.resolve(__dirname, "../bigscreen/platform.js"));
 
 const players = [
@@ -123,5 +124,35 @@ assert.ok(vlanIssues.some((item) => item.level === "bad" && item.label.includes(
 // A trunk that allows the access VLAN does not trip the coordination check.
 const vlanOk = vlanMismatch.replace("allowed vlan 40", "allowed vlan 40,41");
 assert.ok(!lintSwitchConfig(vlanOk).some((item) => item.label.includes("放行 VLAN")), "allowed access VLAN is not flagged");
+
+// Core/dist pair: the core must permit the VLANs a distribution switch serves.
+const coreCfg = `
+no vstack
+interface GigabitEthernet1/0/1
+ description to-dist
+ switchport mode trunk
+ switchport trunk allowed vlan 40
+`;
+const distCfg = `
+no vstack
+logging host 192.168.41.253
+spanning-tree portfast bpduguard default
+interface GigabitEthernet1/0/1
+ switchport access vlan 41
+ switchport mode access
+ storm-control broadcast level 1.0
+ storm-control action shutdown
+interface GigabitEthernet1/0/48
+ description uplink to-core
+ switchport mode trunk
+ switchport trunk allowed vlan 41
+`;
+const pairIssues = lintSwitchPair(coreCfg, distCfg);
+assert.ok(pairIssues.some((item) => item.level === "bad" && item.label.includes("核心放行 VLAN")), "core missing a distribution VLAN is flagged");
+// When the core permits the VLAN, no core-coordination bad is raised.
+const coreOk = coreCfg.replace("allowed vlan 40", "allowed vlan 40,41");
+assert.ok(!lintSwitchPair(coreOk, distCfg).some((item) => item.label.includes("核心放行 VLAN")), "core permitting the VLAN is not flagged");
+// No core reference -> only the distribution's own checks run (no cross-check).
+assert.ok(!lintSwitchPair("", distCfg).some((item) => item.label.includes("核心放行 VLAN")), "no core reference means no cross-check");
 
 console.log("bigscreen platform tests passed");

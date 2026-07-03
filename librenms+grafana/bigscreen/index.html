@@ -190,7 +190,16 @@
               </article>
               <article class="control-card control-lint-card">
                 <h2>交换机配置巡检</h2>
-                <textarea class="control-textarea" id="controlSwitchConfig" spellcheck="false" placeholder="粘贴 show run 片段"></textarea>
+                <div class="lint-panes">
+                  <div class="lint-pane">
+                    <label class="lint-pane-label">核心交换机（参考，留着不动）</label>
+                    <textarea class="control-textarea" id="controlCoreConfig" spellcheck="false" placeholder="粘贴核心 show run 片段"></textarea>
+                  </div>
+                  <div class="lint-pane">
+                    <label class="lint-pane-label">分线交换机（逐台核对）</label>
+                    <textarea class="control-textarea" id="controlSwitchConfig" spellcheck="false" placeholder="粘贴当前分线 show run 片段，核对后换下一台"></textarea>
+                  </div>
+                </div>
                 <div class="control-list" id="controlLintResult"></div>
               </article>
               <article class="control-card">

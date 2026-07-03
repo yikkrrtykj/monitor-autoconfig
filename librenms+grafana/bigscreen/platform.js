@@ -374,6 +374,69 @@
     return issues.sort((a, b) => levelRank(b.level) - levelRank(a.level) || a.line - b.line);
   }
 
+  // VLAN-relevant facts from one switch config: access VLANs it serves, the VLANs
+  // its uplink trunk permits, native VLANs, and whether the trunk restricts at all.
+  function collectVlanFacts(text) {
+    const blocks = splitInterfaceBlocks(String(text || ""));
+    const accessVlans = new Set();
+    const allowed = new Set();
+    const native = new Set();
+    let restricts = false;
+    let hasUplink = false;
+    blocks.forEach((block) => {
+      const body = block.body;
+      if (isShutdown(body)) return;
+      const trunk = /switchport\s+mode\s+trunk|switchport\s+trunk\s+allowed|channel-group\s+\d+/i.test(body) || /^port-channel/i.test(block.name);
+      const uplink = trunk || isLikelyUplink(block);
+      if (uplink) {
+        hasUplink = true;
+        (body.match(/switchport\s+trunk\s+allowed\s+vlan(?:\s+add)?\s+([0-9,\-]+)/ig) || []).forEach((line) => {
+          restricts = true;
+          const list = line.match(/([0-9,\-]+)\s*$/);
+          if (list) parseVlanList(list[1]).forEach((vlan) => allowed.add(vlan));
+        });
+        const nativeMatch = body.match(/switchport\s+trunk\s+native\s+vlan\s+(\d+)/i);
+        if (nativeMatch) native.add(Number(nativeMatch[1]));
+      } else {
+        const access = /switchport\s+mode\s+access/i.test(body) || (/switchport\s+access\s+vlan/i.test(body) && !/switchport\s+mode\s+trunk/i.test(body));
+        if (access) {
+          const vlanMatch = body.match(/switchport\s+access\s+vlan\s+(\d+)/i);
+          if (vlanMatch) accessVlans.add(Number(vlanMatch[1]));
+        }
+      }
+    });
+    return { accessVlans, allowed, native, restricts, hasUplink };
+  }
+
+  // Cross-check a distribution/access switch against the core it uplinks to.
+  function lintCoreDistCoordination(coreText, distText) {
+    const issues = [];
+    if (!String(coreText || "").trim() || !String(distText || "").trim()) return issues;
+    const core = collectVlanFacts(coreText);
+    const dist = collectVlanFacts(distText);
+    // The VLANs the distribution serves (access + what its uplink permits) must be
+    // permitted on the core's trunks, or that traffic dies at the core.
+    const served = new Set([...dist.accessVlans, ...dist.allowed]);
+    if (served.size && core.restricts) {
+      const missing = [...served].filter((vlan) => !core.allowed.has(vlan)).sort((a, b) => a - b);
+      if (missing.length) {
+        addIssue(issues, "bad", "核心放行 VLAN", `核心 Trunk 未放行 VLAN ${missing.join("、")}（分线在用），到核心会断`, 0);
+      }
+    }
+    if (core.native.size && dist.native.size && ![...dist.native].some((vlan) => core.native.has(vlan))) {
+      addIssue(issues, "warn", "native VLAN 不一致", `核心上联 native vlan ${[...core.native].join("、")} 与分线 ${[...dist.native].join("、")} 不一致，可能串 VLAN`, 0);
+    }
+    return issues;
+  }
+
+  // Lint one distribution switch (right pane) against a fixed core reference
+  // (left pane). Core stays put while each distribution config is swapped in.
+  function lintSwitchPair(coreText, distText) {
+    return lintSwitchConfig(distText)
+      .concat(lintCoreDistCoordination(coreText, distText))
+      .sort((a, b) => levelRank(b.level) - levelRank(a.level) || a.line - b.line);
+  }
+
   const ns = {
     levelRank,
     worstLevel,
@@ -386,7 +449,9 @@
     buildTopologyFindings,
     buildReadinessChecks,
     splitInterfaceBlocks,
-    lintSwitchConfig
+    lintSwitchConfig,
+    lintCoreDistCoordination,
+    lintSwitchPair
   };
 
   if (typeof module !== 'undefined' && module.exports) {

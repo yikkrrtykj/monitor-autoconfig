@@ -1118,6 +1118,32 @@
   white-space: nowrap;
 }
 
+.lint-panes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .lint-panes {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lint-pane {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.lint-pane-label {
+  color: var(--linear-ink-subtle);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .control-textarea {
   width: 100%;
   min-width: 0;

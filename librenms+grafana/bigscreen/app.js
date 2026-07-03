@@ -39,7 +39,7 @@
     readinessScore,
     summarizePlayers, summarizeTargets, summarizeServices,
     buildConfigRisks, buildTopologyFindings, buildReadinessChecks,
-    lintSwitchConfig
+    lintSwitchPair
   } = window.BSPlatform;
   let gaugeTimer = null;
   let chartTimer = null;
@@ -2244,13 +2244,16 @@
   }
 
   function renderControlLint() {
+    const coreInput = document.getElementById("controlCoreConfig");
     const input = document.getElementById("controlSwitchConfig");
     const result = document.getElementById("controlLintResult");
-    const issues = lintSwitchConfig(input.value);
-    if (!input.value.trim()) {
-      result.innerHTML = `<div class="control-empty">等待配置片段</div>`;
+    const coreText = coreInput ? coreInput.value : "";
+    const distText = input ? input.value : "";
+    if (!distText.trim()) {
+      result.innerHTML = `<div class="control-empty">${coreText.trim() ? "在右侧粘贴分线交换机配置开始核对" : "等待配置片段"}</div>`;
       return;
     }
+    const issues = lintSwitchPair(coreText, distText);
     if (!issues.length) {
       result.innerHTML = `<div class="control-empty good">未发现明显风险</div>`;
       return;
@@ -2483,11 +2486,13 @@
       rescanBtn.addEventListener("click", function () { triggerRescan(this); });
       rescanBtn.dataset.bound = "1";
     }
-    const lintInput = document.getElementById("controlSwitchConfig");
-    if (lintInput && !lintInput.dataset.bound) {
-      lintInput.addEventListener("input", renderControlLint);
-      lintInput.dataset.bound = "1";
-    }
+    ["controlSwitchConfig", "controlCoreConfig"].forEach((id) => {
+      const lintInput = document.getElementById(id);
+      if (lintInput && !lintInput.dataset.bound) {
+        lintInput.addEventListener("input", renderControlLint);
+        lintInput.dataset.bound = "1";
+      }
+    });
     const configForm = document.getElementById("controlConfigForm");
     if (configForm && !configForm.dataset.bound) {
       const markDirty = () => { configForm.dataset.dirty = "1"; };
