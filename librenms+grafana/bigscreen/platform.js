@@ -279,6 +279,7 @@
     const global = raw.replace(/\n\s*interface\s+[\s\S]*$/i, "");
     const hasGlobalBpduguard = /^\s*spanning-tree\s+portfast\s+bpduguard\s+default\s*$/im.test(global);
     const hasGlobalPortfast = /^\s*spanning-tree\s+portfast\s+(?:default|edge\s+default)\s*$/im.test(global);
+    const dhcpSnooping = /^\s*ip\s+dhcp\s+snooping\s*$/im.test(global) || /^\s*ip\s+dhcp\s+snooping\s+vlan\s+/im.test(global);
 
     if (!/^\s*no\s+vstack\s*$/im.test(global)) {
       addIssue(issues, "warn", "no vstack", "建议全局关闭 Cisco vstack，减少无用服务暴露", 0);
@@ -334,6 +335,9 @@
         if (/storm-control\s+broadcast\s+level/i.test(body) && !/storm-control\s+action\s+shutdown/i.test(body)) {
           hit("stormaction", "warn", "风暴动作", "已有广播阈值但缺少 storm-control action shutdown", block);
         }
+        if (/ip\s+dhcp\s+snooping\s+trust/i.test(body)) {
+          hit("dhcptrust", "bad", "DHCP Trust", "接入口不应配置 DHCP snooping trust（trust 只给上联/DHCP 来源口）", block);
+        }
       }
 
       if (trunk && /spanning-tree\s+bpduguard\s+enable/i.test(body)) {
@@ -368,6 +372,16 @@
         if (missing.length) {
           addIssue(issues, "bad", "上联放行 VLAN", `上联 Trunk 未放行接入 VLAN ${missing.join("、")}，这些口的选手上不了核心`, trunkBlocks[0].startLine);
         }
+      }
+    }
+
+    // 分线（有选手接入口）应启用 DHCP snooping，防止选手私接路由器/DHCP 抢地址。
+    // 核心不接选手，跳过。
+    if (!isCore && accessVlans.size) {
+      if (!dhcpSnooping) {
+        addIssue(issues, "warn", "DHCP Snooping", "分线接入口建议启用 DHCP snooping，防止选手私接路由器/DHCP 抢地址", 0);
+      } else if (!/ip\s+dhcp\s+snooping\s+trust/i.test(raw)) {
+        addIssue(issues, "warn", "DHCP Trust", "已启用 DHCP snooping 但没有 trust 口，上联/DHCP 来源口需 trust，否则选手拿不到 IP", 0);
       }
     }
 

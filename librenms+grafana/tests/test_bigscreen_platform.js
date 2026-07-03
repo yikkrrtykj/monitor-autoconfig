@@ -167,4 +167,36 @@ assert.ok(coreLint.some((item) => item.label.includes("no vstack")), "core role 
 const asAccess = lintSwitchConfig(coreWithAccessPorts);
 assert.ok(asAccess.some((item) => item.label.includes("BPDU Guard")), "access role still flags BPDU Guard");
 
+// Distribution switches should run DHCP snooping; missing it is flagged, but the
+// core is never nagged about it.
+const noSnoop = `
+no vstack
+logging host 192.168.41.253
+spanning-tree portfast bpduguard default
+interface GigabitEthernet1/0/1
+ switchport access vlan 41
+ switchport mode access
+ storm-control broadcast level 1.0
+ storm-control action shutdown
+`;
+assert.ok(lintSwitchConfig(noSnoop).some((item) => item.label.includes("DHCP Snooping")), "distribution missing DHCP snooping is flagged");
+assert.ok(!lintSwitchConfig(noSnoop, { role: "core" }).some((item) => item.label.includes("DHCP")), "core is not asked for DHCP snooping");
+// An access port wrongly set to trust is a bad finding.
+const accessTrust = noSnoop.replace("switchport mode access", "switchport mode access\n ip dhcp snooping trust");
+assert.ok(lintSwitchConfig(accessTrust).some((item) => item.level === "bad" && item.label.includes("DHCP Trust")), "access-port DHCP trust is flagged");
+// Snooping enabled but no trust port anywhere breaks DHCP -> warn.
+const snoopNoTrust = `
+no vstack
+logging host 192.168.41.253
+ip dhcp snooping
+ip dhcp snooping vlan 41
+spanning-tree portfast bpduguard default
+interface GigabitEthernet1/0/1
+ switchport access vlan 41
+ switchport mode access
+ storm-control broadcast level 1.0
+ storm-control action shutdown
+`;
+assert.ok(lintSwitchConfig(snoopNoTrust).some((item) => item.level === "warn" && item.label.includes("DHCP Trust")), "snooping without any trust port is flagged");
+
 console.log("bigscreen platform tests passed");
