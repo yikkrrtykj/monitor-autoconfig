@@ -1177,10 +1177,12 @@
     const windowInput = document.getElementById("evidenceWindow");
     const centerDate = atInput && atInput.value ? new Date(atInput.value) : new Date();
     const center = Number.isFinite(centerDate.getTime()) ? centerDate.getTime() / 1000 : Date.now() / 1000;
+    // The dropdown value is the TOTAL window (minutes), centered on the query time.
     const minutes = Math.max(1, Number(windowInput && windowInput.value ? windowInput.value : 10));
+    const half = (minutes * 60) / 2;
     const now = Math.floor(Date.now() / 1000);
-    const end = Math.min(Math.floor(center + minutes * 60), now);
-    const start = Math.floor(center - minutes * 60);
+    const end = Math.min(Math.floor(center + half), now);
+    const start = Math.floor(center - half);
     return {
       start: start <= end ? start : Math.max(0, end - minutes * 60),
       end,
@@ -1391,6 +1393,9 @@
         event.preventDefault();
         queryEvidence();
       });
+      // Re-run as soon as a control changes (range/time/network dropdowns, team/seat)
+      // so picking a range applies immediately -- no need to focus IP and press Enter.
+      form.addEventListener("change", () => queryEvidence());
       form.dataset.bound = "1";
     }
     const exportBtn = document.getElementById("evidenceExport");
@@ -2472,14 +2477,13 @@
 
   function exportControlReport() {
     if (!lastControlReport) return;
-    const rows = [["time", "mode", "section", "item", "level", "value", "note"]];
-    const mode = "监控";
+    const rows = [["time", "section", "item", "level", "value", "note"]];
     const now = formatTimestampFull(Math.floor(Date.now() / 1000));
     lastControlReport.checks.forEach((item) => {
-      rows.push([now, mode, item.section, item.label, item.level, item.value, item.note || ""]);
+      rows.push([now, item.section, item.label, item.level, item.value, item.note || ""]);
     });
     lastControlReport.configRisks.forEach((item) => {
-      rows.push([now, mode, "配置风险", item.label, item.level, item.value, item.note || ""]);
+      rows.push([now, "配置风险", item.label, item.level, item.value, item.note || ""]);
     });
     downloadCsv(`event_control_${csvStamp(Math.floor(Date.now() / 1000))}.csv`, rows);
   }

@@ -77,12 +77,11 @@
           </label>
           <label>IP（填了优先按 IP 查，可查选手或基础设施任意设备） <input id="evidenceIp" type="text" /></label>
           <label>查询时间 <input id="evidenceAt" type="datetime-local" /></label>
-          <label>查询范围
+          <label title="以“查询时间”为中心的总时间窗">查询范围
             <select id="evidenceWindow">
-              <option value="5">前后 5 分钟</option>
-              <option value="10">前后 10 分钟</option>
-              <option value="15">前后 15 分钟</option>
-              <option value="30">前后 30 分钟</option>
+              <option value="5">5 分钟</option>
+              <option value="10" selected>10 分钟</option>
+              <option value="30">30 分钟</option>
             </select>
           </label>
           <button type="submit">查询</button>
@@ -164,7 +163,7 @@
                   <button type="button" id="controlConfigRollback">回滚</button>
                   <button type="button" id="controlConfigImport">导入配置</button>
                   <a id="controlConfigExport" href="/platform-api/config/download">导出配置</a>
-                  <input id="controlConfigImportFile" type="file" accept=".yml,.yaml,.json,text/yaml,application/json" hidden />
+                  <input id="controlConfigImportFile" type="file" accept=".yml,.yaml,text/yaml" hidden />
                 </div>
                 <div class="control-list" id="controlConfigResult"></div>
               </article>
