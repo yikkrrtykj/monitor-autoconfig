@@ -716,9 +716,9 @@ class Handler(BaseHTTPRequestHandler):
         if status != HTTPStatus.NO_CONTENT:
             self.wfile.write(body)
 
-    def _send_bytes(self, body: bytes, filename: str):
+    def _send_bytes(self, body: bytes, filename: str, content_type: str = "application/zip"):
         self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -757,6 +757,16 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/delivery/manifest":
                 require_auth(self)
                 self._send_json(delivery_manifest())
+            elif path == "/config/download":
+                # The single round-trippable config file: export this, edit or archive
+                # it, then re-import it. (The zip below is the full offline bundle.)
+                require_auth(self)
+                text = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else ""
+                self._send_bytes(
+                    text.encode("utf-8"),
+                    f"event-config-{stamp()}.yml",
+                    "application/x-yaml; charset=utf-8",
+                )
             elif path == "/delivery/export" or path == "/config/export":
                 require_auth(self)
                 self._send_bytes(export_zip(), f"event-platform-{stamp()}.zip")
