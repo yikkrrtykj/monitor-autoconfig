@@ -95,6 +95,30 @@ migrate_legacy_defaults() {
   migrate_env_default UNIFI_SCRAPE_INTERVAL 30s 10s
 }
 
+# Keep .env in sync with event-config.yml (the console's source of truth) before
+# restarting, so a plain restart can't resurrect a previous event's values.
+# merge_env_file only overwrites the keys the config renders, so hand-tuned
+# advanced keys in .env are preserved.
+sync_env_from_config() {
+  [ -f "$SCRIPT_DIR/event-config.yml" ] || return 0
+  [ -f "$SCRIPT_DIR/platform_config.py" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  if (cd "$SCRIPT_DIR" && python3 - <<'PY'
+from pathlib import Path
+from platform_config import parse_simple_yaml, render_env, read_env, merge_env_file
+cfg = parse_simple_yaml(Path("event-config.yml").read_text(encoding="utf-8"))
+if not isinstance(cfg, dict):
+    raise SystemExit("event-config.yml is not a mapping")
+env = render_env(cfg, read_env(Path(".env")))
+Path(".env").write_text(merge_env_file(Path(".env"), env), encoding="utf-8")
+PY
+  ); then
+    echo "[apply-env] .env synced from event-config.yml"
+  else
+    echo "[apply-env] WARN: could not sync .env from event-config.yml; using existing .env" >&2
+  fi
+}
+
 render_grafana_provisioning() {
   if ! command -v python3 >/dev/null 2>&1; then
     echo "[apply-env] ERROR: python3 is required to render Grafana provisioning." >&2
@@ -123,6 +147,7 @@ if [ -n "$HOST_PROJECT_DIR" ]; then
   echo "[apply-env] Using host project directory: $HOST_PROJECT_DIR"
 fi
 
+sync_env_from_config
 migrate_legacy_defaults
 # Non-fatal: a Grafana dashboard render hiccup must not block applying the config
 # and restarting the containers (the important part).

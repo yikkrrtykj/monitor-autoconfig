@@ -26,7 +26,7 @@
     fetchInfraDeviceNames, renameListWithInfraMap,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
-    fetchPlatformConfig, postPlatform, patchPlatform, fetchIncidents, fetchDeliveryManifest
+    fetchPlatformConfig, postPlatform, patchPlatform, fetchIncidents
   } = window.BSApi;
   const {
     buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel
@@ -62,7 +62,6 @@
   let lastPlatformConfig = null;
   let lastEditableConfig = null;
   let lastIncidents = [];
-  let lastDeliveryManifest = null;
   let configResultSticky = false;
   let applyInProgress = false;
   const DATA_STALE_AFTER_MS = 20000;
@@ -2154,29 +2153,14 @@
     }
   }
 
-  let lastDeliverySignature = null;
-  function renderDelivery(manifest) {
-    lastDeliveryManifest = manifest;
+  function renderDelivery() {
     const element = document.getElementById("controlDelivery");
     if (!element) return;
-    // Only rebuild when the manifest actually changes; otherwise the periodic
-    // refresh would wipe the 赛前体检 / 测试告警 results the operator is reading.
-    const signature = JSON.stringify(manifest || null);
-    if (signature === lastDeliverySignature && element.dataset.built === "1") return;
-    lastDeliverySignature = signature;
+    // Render the action buttons once; the periodic refresh must not wipe the
+    // 赛前体检 / 测试告警 results the operator is reading.
+    if (element.dataset.built === "1") return;
     element.dataset.built = "1";
-    if (!manifest || !manifest.ok) {
-      element.innerHTML = `<div class="control-empty bad">${escapeHtml(manifest && manifest.error ? manifest.error : "离线部署清单不可用")}</div>`;
-      return;
-    }
-    const rows = [
-      { section: "部署", label: "需要镜像", level: manifest.images.length ? "good" : "warn", value: String(manifest.images.length), note: manifest.images.slice(0, 3).join("、") },
-      { section: "部署", label: "打包文件", level: manifest.files.length ? "good" : "warn", value: String(manifest.files.length), note: manifest.files.slice(0, 4).join("、") },
-      { section: "部署", label: "在服务器上执行", level: "info", value: "脚本", note: (manifest.commands || []).join(" && ") }
-    ];
     element.innerHTML = `
-      ${rows.map(controlItemHtml).join("")}
-      <div class="delivery-hint">搬到没网的新服务器时，在服务器上按上面命令执行 offline-package.sh 打成离线包（含镜像）再拷贝安装。本机备份配置用上方“导出配置”。</div>
       <div class="delivery-actions">
         <button type="button" class="delivery-test-alert" id="preCheckBtn">赛前体检</button>
         <button type="button" class="delivery-test-alert" id="testAlertBtn">发送测试告警</button>
@@ -2284,15 +2268,14 @@
     const { page, network } = controlPageAndNetwork();
     const expectedSeats = page ? (page.teams || []).length * page.teamSize : 0;
     const selector = page ? tournamentSelector(page, network) : 'role="player"';
-    const [snapshot, targets, edges, servicesRaw, runtimeStatus, platformConfig, incidents, deliveryManifest] = await Promise.all([
+    const [snapshot, targets, edges, servicesRaw, runtimeStatus, platformConfig, incidents] = await Promise.all([
       fetchPlayerSnapshot(selector),
       fetchTopologyTargets(),
       fetchTopologyEdges(),
       prometheusInstant("up"),
       fetchRuntimeStatus(),
       fetchPlatformConfig(),
-      fetchIncidents(),
-      fetchDeliveryManifest()
+      fetchIncidents()
     ]);
     const players = page
       ? snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize)
@@ -2317,7 +2300,6 @@
       runtimeStatus,
       platformConfig,
       incidents,
-      deliveryManifest,
       configRisks,
       topologyFindings,
       checks,
@@ -2332,7 +2314,7 @@
     renderConfigEditor(snapshot.platformConfig);
     renderControlIncidentFlow(snapshot);
     renderIncidentList(snapshot.incidents);
-    renderDelivery(snapshot.deliveryManifest);
+    renderDelivery();
     lastControlReport = snapshot;
     lastPlatformConfig = snapshot.platformConfig;
     lastDataSuccessAt = Date.now();
