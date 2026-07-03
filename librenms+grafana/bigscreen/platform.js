@@ -203,6 +203,70 @@
     issues.push({ level, label, note, line: line || 0 });
   }
 
+  function abbreviateIfPrefix(prefix) {
+    const table = [
+      [/^tengigabitethernet$/i, "Te"],
+      [/^twentyfivegige?$/i, "Twe"],
+      [/^fortygige?$/i, "Fo"],
+      [/^hundredgige?$/i, "Hu"],
+      [/^gigabitethernet$/i, "Gi"],
+      [/^fastethernet$/i, "Fa"],
+      [/^ethernet$/i, "Eth"]
+    ];
+    for (const [re, abbr] of table) {
+      if (re.test(prefix)) return abbr;
+    }
+    return prefix;
+  }
+
+  // Collapse a list of interface names into compact ranges, e.g.
+  // ["GigabitEthernet1/0/1".."/10"] -> "Gi1/0/1-10".
+  function compressInterfaceNames(names) {
+    const groups = new Map();
+    const order = [];
+    const leftovers = [];
+    names.forEach((name) => {
+      const match = String(name).match(/^([A-Za-z][A-Za-z\-]*?)\s*(\d+(?:\/\d+)*)$/);
+      if (!match) { leftovers.push(String(name)); return; }
+      const prefix = abbreviateIfPrefix(match[1]);
+      const parts = match[2].split("/");
+      const last = Number(parts.pop());
+      const base = parts.join("/");
+      const key = `${prefix}|${base}`;
+      if (!groups.has(key)) { groups.set(key, { prefix, base, nums: [] }); order.push(key); }
+      groups.get(key).nums.push(last);
+    });
+    const pieces = order.map((key) => {
+      const group = groups.get(key);
+      const nums = [...new Set(group.nums)].sort((a, b) => a - b);
+      const ranges = [];
+      let start = nums[0];
+      let prev = nums[0];
+      for (let i = 1; i < nums.length; i++) {
+        if (nums[i] === prev + 1) { prev = nums[i]; continue; }
+        ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
+        start = prev = nums[i];
+      }
+      ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
+      const head = group.base ? `${group.prefix}${group.base}/` : group.prefix;
+      return `${head}${ranges.join(",")}`;
+    });
+    return pieces.concat(leftovers).join(" ") || names.join(" ");
+  }
+
+  function parseVlanList(text) {
+    const set = new Set();
+    String(text).split(",").forEach((part) => {
+      const range = part.trim().match(/^(\d+)-(\d+)$/);
+      if (range) {
+        for (let i = Number(range[1]); i <= Number(range[2]); i++) set.add(i);
+      } else if (/^\d+$/.test(part.trim())) {
+        set.add(Number(part.trim()));
+      }
+    });
+    return set;
+  }
+
   function lintSwitchConfig(text) {
     const raw = String(text || "");
     if (!raw.trim()) return [];
@@ -229,6 +293,17 @@
       addIssue(issues, "info", "恢复间隔", "未看到 errdisable recovery interval", 0);
     }
 
+    // Collect per-check hits across all ports, then emit ONE grouped card per
+    // check (e.g. "Gi1/0/1-10 BPDU Guard") instead of one card per port.
+    const groups = new Map();
+    const hit = (key, level, suffix, note, block) => {
+      if (!groups.has(key)) { groups.set(key, { level, suffix, note, ports: [] }); }
+      groups.get(key).ports.push({ name: block.name, line: block.startLine });
+    };
+
+    const accessVlans = new Set();
+    const trunkBlocks = [];
+
     blocks.forEach((block) => {
       const body = block.body;
       if (isShutdown(body)) return;
@@ -236,31 +311,65 @@
       const trunk = /switchport\s+mode\s+trunk|switchport\s+trunk\s+allowed|channel-group\s+\d+/i.test(body) || /^port-channel/i.test(block.name);
       const uplink = trunk || isLikelyUplink(block);
 
+      if (uplink) {
+        trunkBlocks.push(block);
+      } else if (access) {
+        const vlanMatch = body.match(/switchport\s+access\s+vlan\s+(\d+)/i);
+        if (vlanMatch) accessVlans.add(Number(vlanMatch[1]));
+      }
+
       if (access && !uplink) {
         if (!hasGlobalPortfast && !/spanning-tree\s+portfast(?:\s+edge)?/i.test(body)) {
-          addIssue(issues, "warn", `${block.name} PortFast`, "接入口建议启用 spanning-tree portfast edge", block.startLine);
+          hit("portfast", "warn", "PortFast", "接入口建议启用 spanning-tree portfast edge", block);
         }
         if (!hasGlobalBpduguard && !/spanning-tree\s+bpduguard\s+enable/i.test(body)) {
-          addIssue(issues, "bad", `${block.name} BPDU Guard`, "接入口缺少 BPDU Guard，接错交换机时不会自动保护", block.startLine);
+          hit("bpduguard", "bad", "BPDU Guard", "接入口缺少 BPDU Guard，接错交换机时不会自动保护", block);
         }
         if (!/storm-control\s+broadcast\s+level/i.test(body)) {
-          addIssue(issues, "warn", `${block.name} 广播风暴`, "接入口建议配置 storm-control broadcast level", block.startLine);
+          hit("storm", "warn", "广播风暴", "接入口建议配置 storm-control broadcast level", block);
         }
         if (/storm-control\s+broadcast\s+level/i.test(body) && !/storm-control\s+action\s+shutdown/i.test(body)) {
-          addIssue(issues, "warn", `${block.name} 风暴动作`, "已有广播阈值但缺少 storm-control action shutdown", block.startLine);
+          hit("stormaction", "warn", "风暴动作", "已有广播阈值但缺少 storm-control action shutdown", block);
         }
         if (/ip\s+dhcp\s+snooping\s+trust/i.test(body)) {
-          addIssue(issues, "bad", `${block.name} DHCP Trust`, "普通接入口不应配置 DHCP snooping trust", block.startLine);
+          hit("dhcptrust", "bad", "DHCP Trust", "普通接入口不应配置 DHCP snooping trust", block);
         }
       }
 
       if (trunk && /spanning-tree\s+bpduguard\s+enable/i.test(body)) {
-        addIssue(issues, "bad", `${block.name} BPDU Guard`, "Trunk/上联口不建议开 bpduguard，会误断互联", block.startLine);
+        hit("trunkbpdu", "bad", "BPDU Guard", "Trunk/上联口不建议开 bpduguard，会误断互联", block);
       }
       if (dhcpSnooping && uplink && !/ip\s+dhcp\s+snooping\s+trust/i.test(body)) {
-        addIssue(issues, "info", `${block.name} DHCP Trust`, "已启用 DHCP Snooping，上联/DHCP 来源口通常需要 trust", block.startLine);
+        hit("uplinktrust", "info", "DHCP Trust", "已启用 DHCP Snooping，上联/DHCP 来源口通常需要 trust", block);
       }
     });
+
+    groups.forEach((group) => {
+      const label = `${compressInterfaceNames(group.ports.map((port) => port.name))} ${group.suffix}`;
+      const note = group.ports.length > 1 ? `${group.note}（共 ${group.ports.length} 口）` : group.note;
+      addIssue(issues, group.level, label, note, group.ports[0].line);
+    });
+
+    // 核心/分线配合：接入口用到的 VLAN 必须在上联 Trunk 放行，否则这些口的选手到不了核心。
+    if (accessVlans.size && !trunkBlocks.length) {
+      addIssue(issues, "info", "上联缺失", "有接入口但未发现上联 Trunk/Port-channel 口，确认与核心/分线交换机的互联", 0);
+    } else if (accessVlans.size && trunkBlocks.length) {
+      const allowed = new Set();
+      let restricts = false;
+      trunkBlocks.forEach((block) => {
+        (block.body.match(/switchport\s+trunk\s+allowed\s+vlan(?:\s+add)?\s+([0-9,\-]+)/ig) || []).forEach((line) => {
+          restricts = true;
+          const list = line.match(/([0-9,\-]+)\s*$/);
+          if (list) parseVlanList(list[1]).forEach((vlan) => allowed.add(vlan));
+        });
+      });
+      if (restricts) {
+        const missing = [...accessVlans].filter((vlan) => !allowed.has(vlan)).sort((a, b) => a - b);
+        if (missing.length) {
+          addIssue(issues, "bad", "上联放行 VLAN", `上联 Trunk 未放行接入 VLAN ${missing.join("、")}，这些口的选手上不了核心`, trunkBlocks[0].startLine);
+        }
+      }
+    }
 
     return issues.sort((a, b) => levelRank(b.level) - levelRank(a.level) || a.line - b.line);
   }

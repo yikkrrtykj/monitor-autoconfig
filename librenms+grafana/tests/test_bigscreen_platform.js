@@ -92,4 +92,36 @@ interface GigabitEthernet1/0/9
 const trustIssues = lintSwitchConfig(badDhcpTrust);
 assert.ok(trustIssues.some((item) => item.level === "bad" && item.label.includes("DHCP Trust")), "access DHCP trust is flagged");
 
+// Many access ports failing the same check collapse into one ranged card.
+let manyPorts = "no vstack\nlogging host 192.168.41.253\n";
+for (let i = 1; i <= 10; i++) {
+  manyPorts += `interface GigabitEthernet1/0/${i}\n switchport access vlan 41\n switchport mode access\n spanning-tree portfast edge\n storm-control broadcast level 1.0\n storm-control action shutdown\n`;
+}
+const manyIssues = lintSwitchConfig(manyPorts);
+const bpduCards = manyIssues.filter((item) => item.label.includes("BPDU Guard"));
+assert.strictEqual(bpduCards.length, 1, "10 ports missing BPDU Guard collapse into one card");
+assert.strictEqual(bpduCards[0].label, "Gi1/0/1-10 BPDU Guard", "grouped card uses a compact interface range");
+
+// Core/dist coordination: an access VLAN not allowed on the uplink trunk is flagged.
+const vlanMismatch = `
+no vstack
+logging host 192.168.41.253
+spanning-tree portfast bpduguard default
+interface GigabitEthernet1/0/1
+ switchport access vlan 41
+ switchport mode access
+ storm-control broadcast level 1.0
+ storm-control action shutdown
+interface GigabitEthernet1/0/48
+ description uplink to-core
+ switchport mode trunk
+ switchport trunk allowed vlan 40
+`;
+const vlanIssues = lintSwitchConfig(vlanMismatch);
+assert.ok(vlanIssues.some((item) => item.level === "bad" && item.label.includes("放行 VLAN")), "access VLAN missing from uplink trunk is flagged");
+
+// A trunk that allows the access VLAN does not trip the coordination check.
+const vlanOk = vlanMismatch.replace("allowed vlan 40", "allowed vlan 40,41");
+assert.ok(!lintSwitchConfig(vlanOk).some((item) => item.label.includes("放行 VLAN")), "allowed access VLAN is not flagged");
+
 console.log("bigscreen platform tests passed");
