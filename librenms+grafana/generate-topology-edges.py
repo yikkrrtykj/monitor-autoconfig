@@ -10,7 +10,8 @@ network adjacency graph, then emit artifacts for downstream:
 Env vars:
   TOPOLOGY_DEVICES           comma-separated device IPs to poll. Empty -> union of
                              CORE_SWITCH_PING + DIST_SWITCH_PING + FIREWALL_PING +
-                             TOURNAMENT_SWITCHES.
+                             TOURNAMENT_SWITCHES + auto-discovered switches from
+                             SWITCH_TARGETS_FILE (default /targets/switch_targets.json).
   TOPOLOGY_SNMP_COMMUNITY    SNMPv2c community (default: SNMP_COMMUNITY).
   TOPOLOGY_OUTPUT_DIR        where to write edges.json / legacy empty files
                              (default: /etc/prometheus/targets/topology).
@@ -244,6 +245,28 @@ def resolve_ifindex(loc_port, ifname_map, loc_port_desc_map):
     return resolve_ifindex_by_name(desc, ifname_map)
 
 
+def load_discovered_switch_ips():
+    """自动发现的交换机（discover-switch-targets.py 写的 file_sd JSON）也要参与
+    LLDP/CDP 采集：运维只填交换机管理网段时 DIST/TOURNAMENT 列表是空的，只轮询
+    核心会看不到接入交换机之间的边，拓扑就退化成一排平铺。"""
+    path = os.environ.get("SWITCH_TARGETS_FILE", "/targets/switch_targets.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    ips = []
+    if isinstance(data, list):
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            for target in entry.get("targets") or []:
+                ip = str(target).strip()
+                if ip:
+                    ips.append(ip)
+    return ips
+
+
 def load_device_list():
     raw = os.environ.get("TOPOLOGY_DEVICES", "").strip()
     if raw:
@@ -265,6 +288,10 @@ def load_device_list():
                     continue
                 union.append(ip)
                 seen.add(ip)
+    for ip in load_discovered_switch_ips():
+        if ip not in seen:
+            union.append(ip)
+            seen.add(ip)
     return union
 
 

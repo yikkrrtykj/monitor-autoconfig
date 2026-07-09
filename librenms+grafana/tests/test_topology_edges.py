@@ -298,3 +298,58 @@ class TestBuildEdgesCdp:
             sorted([e["from_ip"], e["to_ip"]]) == ["192.168.10.23", "192.168.10.24"]
             for e in edges
         )
+
+
+# ---- load_device_list() merges auto-discovered switches ----
+
+class TestLoadDeviceList:
+    def _write_targets(self, tmp_path, payload):
+        import json as _json
+        path = tmp_path / "switch_targets.json"
+        path.write_text(_json.dumps(payload), encoding="utf-8")
+        return str(path)
+
+    def test_union_includes_discovered_switches(self, tmp_path, monkeypatch):
+        # 运维只填网段时 DIST/TOURNAMENT 为空，发现文件里的交换机必须进轮询清单，
+        # 否则接入层之间的 LLDP/CDP 边采不到、拓扑退化成平铺。
+        targets = self._write_targets(tmp_path, [
+            {"targets": ["192.168.10.11"], "labels": {"display_name": "Global-new-stack"}},
+            {"targets": ["192.168.10.81"], "labels": {"display_name": "falak-studio5"}},
+        ])
+        monkeypatch.setenv("SWITCH_TARGETS_FILE", targets)
+        monkeypatch.setenv("TOPOLOGY_DEVICES", "")
+        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
+        monkeypatch.setenv("DIST_SWITCH_PING", "")
+        monkeypatch.setenv("FIREWALL_PING", "192.168.9.1")
+        monkeypatch.setenv("TOURNAMENT_SWITCHES", "")
+        devices = gte.load_device_list()
+        assert devices == ["192.168.10.254", "192.168.9.1", "192.168.10.11", "192.168.10.81"]
+
+    def test_discovered_duplicates_are_not_repeated(self, tmp_path, monkeypatch):
+        targets = self._write_targets(tmp_path, [
+            {"targets": ["192.168.10.254"], "labels": {"display_name": "core"}},
+        ])
+        monkeypatch.setenv("SWITCH_TARGETS_FILE", targets)
+        monkeypatch.setenv("TOPOLOGY_DEVICES", "")
+        monkeypatch.setenv("CORE_SWITCH_PING", "192.168.10.254")
+        monkeypatch.setenv("DIST_SWITCH_PING", "")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setenv("TOURNAMENT_SWITCHES", "")
+        assert gte.load_device_list() == ["192.168.10.254"]
+
+    def test_explicit_topology_devices_still_override(self, tmp_path, monkeypatch):
+        targets = self._write_targets(tmp_path, [
+            {"targets": ["192.168.10.81"], "labels": {}},
+        ])
+        monkeypatch.setenv("SWITCH_TARGETS_FILE", targets)
+        monkeypatch.setenv("TOPOLOGY_DEVICES", "10.0.0.1,10.0.0.2")
+        assert gte.load_device_list() == ["10.0.0.1", "10.0.0.2"]
+
+    def test_missing_or_bad_file_is_ignored(self, monkeypatch):
+        monkeypatch.setenv("SWITCH_TARGETS_FILE", "/nonexistent/switch_targets.json")
+        monkeypatch.setenv("TOPOLOGY_DEVICES", "")
+        monkeypatch.setenv("CORE_SWITCH_PING", "192.168.10.254")
+        monkeypatch.setenv("DIST_SWITCH_PING", "")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setenv("TOURNAMENT_SWITCHES", "")
+        assert gte.load_device_list() == ["192.168.10.254"]
