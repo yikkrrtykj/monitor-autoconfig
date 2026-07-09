@@ -149,8 +149,40 @@ pull_images() {
   return 0
 }
 
+pull_base_images() {
+  # 本地构建镜像的基础镜像（docker/*/Dockerfile 里的 FROM）不在 compose pull 的
+  # 服务镜像清单里，build 阶段才由 BuildKit 联网解析；BuildKit 在 registry 镜像站
+  # 报错时不会像 docker pull 那样回退官方源，镜像站一抽风 build 直接失败。
+  # 这里提前用 docker pull（带回退、带重试）把基础镜像备到本地，build 即离线。
+  base_images=$(sed -nE 's/^[[:space:]]*FROM[[:space:]]+([^[:space:]]+).*/\1/p' docker/*/Dockerfile 2>/dev/null | sort -u)
+  [ -n "$base_images" ] || return 0
+  for image in $base_images; do
+    [ "$image" = "scratch" ] && continue
+    if docker image inspect "$image" >/dev/null 2>&1; then
+      echo "[deploy] Base image $image already present."
+      continue
+    fi
+    attempt=1
+    while [ "$attempt" -le "$IMAGE_PULL_RETRIES" ]; do
+      echo "[deploy] Pulling base image $image (attempt $attempt/$IMAGE_PULL_RETRIES)..."
+      if docker pull "$image"; then
+        break
+      fi
+      if [ "$attempt" -eq "$IMAGE_PULL_RETRIES" ]; then
+        echo "[deploy] WARN: base image $image 拉取失败，build 阶段可能因此报错；可稍后手动 docker pull $image 再重跑。" >&2
+        break
+      fi
+      echo "[deploy] Pull failed; retrying in ${IMAGE_PULL_RETRY_DELAY}s..."
+      sleep "$IMAGE_PULL_RETRY_DELAY"
+      attempt=$((attempt + 1))
+    done
+  done
+  return 0
+}
+
 render_grafana_provisioning
 pull_images
+pull_base_images
 
 echo "[deploy] Starting monitoring stack..."
 docker compose rm -sf grafana-provisioning-render >/dev/null 2>&1 || true
