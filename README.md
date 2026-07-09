@@ -110,6 +110,8 @@ chmod +x *.sh
 
 `deploy.sh` 会自动：探测本机 IP 写入 `SERVER_IP`、逐个拉镜像并自动重试、渲染 Grafana 配置、`docker compose up -d` 启动全部服务。
 
+拉镜像日志里 `monitor-rsyslog:local`、`monitor-player-tools:local`、`monitor-grafana-setup:local` 三个镜像报 403/pull access denied 是正常的：它们是本地构建镜像，仓库里本来就没有，`up` 阶段会用仓库里的 Dockerfile 自动构建，不影响部署。
+
 ### 5. 启动后检查
 
 ```bash

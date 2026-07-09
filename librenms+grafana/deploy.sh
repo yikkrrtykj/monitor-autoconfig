@@ -120,10 +120,18 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 pull_images() {
+  # monitor-*:local 这几个镜像是本地构建的，任何仓库里都没有，pull 必然报错。
+  # compose v2.15+ 用 --ignore-buildable 直接跳过它们；老版本跳不过时，pull 的
+  # 失败不再中断部署（后面的 up -d 会自行构建本地镜像、补拉缺失镜像）。
+  pull_args=""
+  if docker compose pull --help 2>/dev/null | grep -q -- "--ignore-buildable"; then
+    pull_args="--ignore-buildable"
+  fi
+
   attempt=1
   while [ "$attempt" -le "$IMAGE_PULL_RETRIES" ]; do
     echo "[deploy] Pulling images (attempt $attempt/$IMAGE_PULL_RETRIES, parallel=$COMPOSE_PARALLEL_LIMIT)..."
-    if docker compose pull; then
+    if docker compose pull $pull_args; then
       return 0
     fi
 
@@ -136,9 +144,9 @@ pull_images() {
     attempt=$((attempt + 1))
   done
 
-  echo "[deploy] ERROR: image pull failed after $IMAGE_PULL_RETRIES attempts." >&2
-  echo "[deploy] This is usually Docker Hub/CDN/network instability. Configure a registry mirror or retry later." >&2
-  return 1
+  echo "[deploy] WARN: image pull still failing after $IMAGE_PULL_RETRIES attempts; continuing anyway." >&2
+  echo "[deploy] WARN: 本地构建镜像(monitor-*:local)拉不到是正常的；若真缺镜像，下面 up 阶段会报出来。" >&2
+  return 0
 }
 
 render_grafana_provisioning
