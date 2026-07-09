@@ -19,6 +19,7 @@ devices:
     ip:
   firewall:
     ip:
+    name:
     snmp:
     unit_snmp:
   stage_switches: []

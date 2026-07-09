@@ -1827,6 +1827,7 @@
         <div class="config-fields">
           ${configInput("devices.core.ip", "核心 IP")}
           ${configInput("devices.firewall.ip", "防火墙 IP", { type: "textarea", compact: true, rows: 1, placeholder: "可留空；多台逗号或换行分隔" })}
+          ${configInput("devices.firewall.name", "防火墙名称（可选）", { placeholder: "大屏/拓扑显示名；留空用设备 SNMP sysName" })}
           ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP", { type: "textarea", compact: true, rows: 1, placeholder: "两台物理防火墙，逗号或换行分隔" })}
         </div>
       </section>

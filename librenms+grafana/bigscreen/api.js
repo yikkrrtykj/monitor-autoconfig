@@ -204,6 +204,15 @@
     return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(value || ""));
   }
 
+  // 出厂占位/HA 成员名不算真名：Hillstone HA 的 sysName 是 Member0/Member1，
+  // 未配置 hostname 的思科是 Switch/Router、Juniper 是 Amnesiac。这种名字
+  // 顶掉配置名毫无意义，宁可继续显示运维填的名字或 IP。
+  const GENERIC_SYSNAME_RE = /^(member\d*|switch|router|firewall|amnesiac)$/i;
+
+  function isMeaningfulSysName(value) {
+    return Boolean(value) && !looksLikeIp(value) && !GENERIC_SYSNAME_RE.test(value);
+  }
+
   function bestSysName(metric) {
     const candidates = [
       metric.sysName,
@@ -213,7 +222,7 @@
     ];
     for (const candidate of candidates) {
       const value = String(candidate || "").trim();
-      if (value && !looksLikeIp(value)) return value;
+      if (isMeaningfulSysName(value)) return value;
     }
     return "";
   }
@@ -228,7 +237,8 @@
       if (!storage) return new Map();
       const entries = JSON.parse(storage.getItem(INFRA_NAME_STORAGE_KEY) || "[]");
       if (!Array.isArray(entries)) return new Map();
-      return new Map(entries.filter(([key, value]) => key && value && !looksLikeIp(value)));
+      // isMeaningfulSysName 同时清掉历史版本缓存下来的 Member1 之类占位名。
+      return new Map(entries.filter(([key, value]) => key && isMeaningfulSysName(String(value || ""))));
     } catch (error) {
       return new Map();
     }
@@ -245,7 +255,7 @@
   }
 
   function rememberInfraName(map, metric, name) {
-    if (!name || looksLikeIp(name)) return;
+    if (!isMeaningfulSysName(String(name || ""))) return;
     [metric.target_ip, metric.instance, metric.display_name]
       .map((value) => String(value || "").trim())
       .filter(Boolean)

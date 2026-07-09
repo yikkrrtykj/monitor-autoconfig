@@ -50,7 +50,11 @@
     if (seconds < 86400) {
       return { value: (seconds / 3600).toFixed(2), unit: "小时" };
     }
-    return { value: (seconds / 86400).toFixed(2), unit: "天" };
+    // 超过 90 天后 "184.79 天" 这种数不直观，换算成月（按 30 天）。
+    if (seconds < 90 * 86400) {
+      return { value: (seconds / 86400).toFixed(2), unit: "天" };
+    }
+    return { value: (seconds / (30 * 86400)).toFixed(1), unit: "月" };
   }
 
   function formatBits(value) {
