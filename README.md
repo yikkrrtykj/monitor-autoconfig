@@ -22,32 +22,68 @@
 
 ## 部署
 
-```bash
-git clone https://github.com/yikkrrtykj/monitor-autoconfig.git
-cd monitor-autoconfig/librenms+grafana
-cp .env.example .env
-cp event-config.example.yml event-config.yml
-chmod +x *.sh
-./deploy.sh
-```
+### 0. 服务器要求
 
-启动后检查：
+- Linux x86_64，推荐 Ubuntu 20.04+ / Debian 11+（其它能跑 Docker 的发行版也可以）
+- 建议 4 核 / 8G 内存 / 100G 磁盘起步（Prometheus 默认保留 15 天数据）
+- 监控服务器要和交换机管理网段互通（SNMP 出向采集），交换机能把 syslog 发到它
 
-```bash
-docker compose ps
-./pre-match-check.sh
-```
+需要预装：Docker（含 compose v2 插件）、git、python3。下面从零开始装。
 
-更新测试分支示例：
+### 1. 安装 Docker（含 compose 插件）
+
+国内服务器用阿里云安装源：
 
 ```bash
-git fetch origin
-git checkout -B codex/remove-quality-heatmap origin/codex/remove-quality-heatmap
-cd librenms+grafana
-docker compose up -d
+curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
+systemctl enable --now docker
 ```
 
-国内服务器拉镜像超时，需要给 Docker daemon 配代理：
+能正常访问外网的服务器直接：
+
+```bash
+curl -fsSL https://get.docker.com | bash
+systemctl enable --now docker
+```
+
+验证（两条都要能出版本号）：
+
+```bash
+docker --version
+docker compose version
+```
+
+`docker compose version` 报 “不是 docker 命令” 说明缺 v2 插件（老的 `docker-compose` v1 不行），单独补装：
+
+```bash
+apt-get install -y docker-compose-plugin    # Debian/Ubuntu
+# yum install -y docker-compose-plugin      # CentOS/RHEL（需先配好 docker-ce 源）
+```
+
+### 2. 安装 git 和 python3
+
+`deploy.sh` 渲染 Grafana 配置需要 python3：
+
+```bash
+apt-get update && apt-get install -y git python3    # Debian/Ubuntu
+# yum install -y git python3                        # CentOS/RHEL
+```
+
+### 3. 国内拉镜像加速（拉镜像超时再做）
+
+方法一：给 Docker 配 registry 镜像加速（改成你可用的加速地址）：
+
+```bash
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<'EOF'
+{
+  "registry-mirrors": ["https://docker.m.daocloud.io"]
+}
+EOF
+systemctl restart docker
+```
+
+方法二：有代理时给 Docker daemon 配代理：
 
 ```bash
 mkdir -p /etc/systemd/system/docker.service.d
@@ -59,6 +95,49 @@ Environment="NO_PROXY=localhost,127.0.0.1,::1"
 EOF
 systemctl daemon-reload
 systemctl restart docker
+```
+
+### 4. 拉代码并启动
+
+```bash
+git clone https://github.com/yikkrrtykj/monitor-autoconfig.git
+cd monitor-autoconfig/librenms+grafana
+cp .env.example .env
+cp event-config.example.yml event-config.yml
+chmod +x *.sh
+./deploy.sh
+```
+
+`deploy.sh` 会自动：探测本机 IP 写入 `SERVER_IP`、逐个拉镜像并自动重试、渲染 Grafana 配置、`docker compose up -d` 启动全部服务。
+
+### 5. 启动后检查
+
+```bash
+docker compose ps
+./pre-match-check.sh
+```
+
+浏览器打开 `http://服务器IP:8088/control`，用 `admin / global` 登录（首次登录强制改密码），在"基础配置"里填核心 IP、交换机管理网段、SNMP Community，点"应用配置"。
+
+### 6. 端口放行
+
+云服务器记得在安全组放行，现场内网一般不用管：
+
+| 端口 | 方向 | 用途 |
+|---|---|---|
+| 8088/tcp | 入 | 大屏 / 控制台 |
+| 3000/tcp | 入 | Grafana |
+| 8002/tcp | 入 | LibreNMS |
+| 514/udp+tcp | 入 | 交换机 syslog 上报 |
+| 161/udp | 出 | SNMP 采集（出向，无需开入向） |
+
+### 更新到测试分支
+
+```bash
+git fetch origin
+git checkout -B codex/remove-quality-heatmap origin/codex/remove-quality-heatmap
+cd librenms+grafana
+docker compose up -d
 ```
 
 ## 控制台
@@ -154,7 +233,7 @@ cd librenms+grafana
 ./offline-package.sh
 ```
 
-现场离线服务器：
+现场离线服务器（注意：`install-offline.sh` 只导入镜像，不安装 Docker 本体，离线服务器需要提前装好 Docker + compose 插件和 python3，可在有网时用上面第 1、2 步装好或做进系统镜像）：
 
 ```bash
 tar -xf monitor-offline-*.tar.gz
