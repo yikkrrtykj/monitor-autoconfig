@@ -270,8 +270,8 @@
 
     const map = new Map(infraNameCache || readStoredInfraDeviceNames());
     const queries = [
-      'max_over_time(sysName{job=~"infra-switch-snmp|infra-fw-snmp"}[12h])',
-      'sysName{job=~"infra-switch-snmp|infra-fw-snmp"}'
+      'max_over_time(sysName{job=~"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp"}[12h])',
+      'sysName{job=~"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp"}'
     ];
     for (const query of queries) {
       try {
@@ -283,6 +283,25 @@
       } catch (error) {
         // Older deployments may not have sysName in the lightweight SNMP module yet.
       }
+    }
+    try {
+      const units = await prometheusInstant('up{job="infra-fw-unit-snmp"}');
+      units
+        .slice()
+        .sort((a, b) => String(a.metric.target_ip || a.metric.instance || "")
+          .localeCompare(String(b.metric.target_ip || b.metric.instance || ""), "zh-CN", { numeric: true }))
+        .forEach((item, index) => {
+          const metric = item.metric || {};
+          const keys = [metric.target_ip, metric.instance, metric.display_name]
+            .map((value) => String(value || "").trim())
+            .filter(Boolean);
+          if (keys.some((key) => map.has(key))) return;
+          const configuredName = String(metric.display_name || "").trim();
+          const fallbackName = isMeaningfulSysName(configuredName) ? configuredName : `防火墙成员${index + 1}`;
+          rememberInfraName(map, metric, fallbackName);
+        });
+    } catch (error) {
+      // Unit targets are optional; deployments without FireCluster keep the old name map.
     }
     infraNameCache = map;
     infraNameCachedAt = now;
@@ -418,9 +437,10 @@
   async function fetchTopologyTargets() {
     const jobs = ["infra-isp-ping", "infra-fw-ping", "infra-core-ping", "infra-dist-ping", "infra-srv-ping"];
     const filter = jobs.join("|");
-    const [success, latency, nameMap] = await Promise.all([
+    const [success, latency, unitStatus, nameMap] = await Promise.all([
       prometheusInstant(`probe_success{job=~"${filter}"}`),
       prometheusInstant(`probe_icmp_duration_seconds{job=~"${filter}",phase="rtt"}`),
+      prometheusInstant('up{job="infra-fw-unit-snmp"}'),
       fetchInfraDeviceNames()
     ]);
     const map = new Map();
@@ -441,6 +461,27 @@
       const node = map.get(key);
       if (node) node.latency = item.value;
     });
+    unitStatus
+      .slice()
+      .sort((a, b) => String(a.metric.target_ip || a.metric.instance || "")
+        .localeCompare(String(b.metric.target_ip || b.metric.instance || ""), "zh-CN", { numeric: true }))
+      .forEach((item, index) => {
+        const metric = item.metric || {};
+        const targetIp = metric.target_ip || metric.instance;
+        if (!targetIp) return;
+        const key = `infra-fw-unit-snmp|${targetIp}`;
+        const configuredName = String(metric.display_name || "").trim();
+        const displayName = nameMap.get(metric.target_ip) || nameMap.get(metric.instance) ||
+          (isMeaningfulSysName(configuredName) ? configuredName : `防火墙成员${index + 1}`);
+        map.set(key, {
+          job: "infra-fw-unit-snmp",
+          instance: metric.instance || targetIp,
+          targetIp,
+          displayName,
+          success: item.value >= 1,
+          latency: null
+        });
+      });
     return Array.from(map.values());
   }
 
@@ -591,3 +632,4 @@
     window.BSApi = ns;
   }
 }());
+
