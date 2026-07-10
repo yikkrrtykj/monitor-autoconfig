@@ -216,6 +216,16 @@ def normalize_port_name(name):
     match = re.search(r"(\d+(?:/\d+)+)", text)
     if match:
         return match.group(1)
+    # Cisco Small Business / SG switches use flat interface numbers and expose
+    # the same port with different spellings across IF-MIB and CDP-MIB:
+    # "GigabitEthernet24" vs "gi24".  Treat those as the same key so the
+    # bidirectional LLDP/CDP observations collapse into one physical edge.
+    flat = re.fullmatch(
+        r"(?:gigabitethernet|gi|fastethernet|fa|tengigabitethernet|te|ethernet|eth)(\d+)",
+        text,
+    )
+    if flat:
+        return str(int(flat.group(1)))
     return text
 
 
@@ -235,14 +245,18 @@ def resolve_ifindex(loc_port, ifname_map, loc_port_desc_map):
     use a separate bridge port id. Try identity first, then match the loc port
     description against ifName values (normalized) for a single hit.
     """
+    desc = loc_port_desc_map.get(loc_port)
+    if desc:
+        resolved = resolve_ifindex_by_name(desc, ifname_map)
+        if resolved is not None:
+            return resolved
+
+    # On IOS the LLDP local port number normally is the ifIndex.  Keep that as
+    # the fallback, but only after trying lldpLocPortDesc: SG220 uses a bridge
+    # port number here (for example 23) while the real IF-MIB port is 24.
     if loc_port in ifname_map:
         return loc_port
-
-    desc = loc_port_desc_map.get(loc_port)
-    if not desc:
-        return None
-
-    return resolve_ifindex_by_name(desc, ifname_map)
+    return None
 
 
 def load_discovered_switch_ips():
@@ -532,3 +546,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
