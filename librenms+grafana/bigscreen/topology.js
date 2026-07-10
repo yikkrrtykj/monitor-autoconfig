@@ -245,8 +245,35 @@
       });
       // Top of the tree = directly under the core (depth 1) or never discovered.
       const topLevel = dists.filter((d) => !depthByIp.has(d.ip) || depthByIp.get(d.ip) <= 1);
+      // Keep switches with a direct peer link next to each other. Without this,
+      // target discovery order can put unrelated switches between a pair and the
+      // short inter-switch cable is rendered across half of the access row.
+      const topLevelByIp = new Map(topLevel.filter((d) => d.ip).map((d) => [d.ip, d]));
+      const topLevelOrder = new Map(topLevel.map((d, idx) => [d.ip, idx]));
+      const orderedTopLevel = [];
+      const groupedTopLevelIps = new Set();
+      topLevel.forEach((seed) => {
+        if (!seed.ip || groupedTopLevelIps.has(seed.ip)) return;
+        const queue = [seed.ip];
+        groupedTopLevelIps.add(seed.ip);
+        while (queue.length) {
+          const ip = queue.shift();
+          const item = topLevelByIp.get(ip);
+          if (item) orderedTopLevel.push(item);
+          Array.from(adj.get(ip) || [])
+            .filter((peerIp) => topLevelByIp.has(peerIp) && !groupedTopLevelIps.has(peerIp))
+            .sort((a, b) => (topLevelOrder.get(a) || 0) - (topLevelOrder.get(b) || 0))
+            .forEach((peerIp) => {
+              groupedTopLevelIps.add(peerIp);
+              queue.push(peerIp);
+            });
+        }
+      });
+      topLevel.forEach((item) => {
+        if (!item.ip) orderedTopLevel.push(item);
+      });
       const placed = new Map();
-      const baseRow = placeRow(topLevel, rowY(3));
+      const baseRow = placeRow(orderedTopLevel, rowY(3));
       baseRow.forEach((n) => { if (n.ip) placed.set(n.ip, n); });
       const childRowH = NODE_H + DIST_LINK_GAP;
       const placeChildren = (parentNode) => {
