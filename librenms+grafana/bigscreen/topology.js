@@ -142,7 +142,7 @@
   }
 
   function topologyLayout(layers, canvasWidth, canvasHeight, lldpEdges) {
-    const NODE_W = 128;
+    const NODE_W = 144;
     const NODE_H = 58;
     const topPad = 22;
     const bottomPad = 22;
@@ -496,12 +496,22 @@
       } else if (Math.abs(link.from.y - link.to.y) < 4) {
         const left = link.from.x <= link.to.x ? link.from : link.to;
         const right = left === link.from ? link.to : link.from;
-        const x1 = left.x + left.w;
-        const x2 = right.x;
-        const y = nodeCenterY(left);
-        d = `M ${x1} ${y} L ${x2} ${y}`;
+        const x1 = nodeCenterX(left);
+        const x2 = nodeCenterX(right);
+        const y1 = left.y + left.h;
+        const y2 = right.y + right.h;
+        const routeY = Math.max(y1, y2) + 18;
+        d = `M ${x1} ${y1} L ${x1} ${routeY} L ${x2} ${routeY} L ${x2} ${y2}`;
         labelX = (x1 + x2) / 2;
-        labelY = y - 7;
+        labelY = routeY + 13;
+        if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
+          const leftPort = left === link.from ? link.labelLines[0] : link.labelLines[1];
+          const rightPort = left === link.from ? link.labelLines[1] : link.labelLines[0];
+          labelPositions = [
+            { text: leftPort, x: x1 + 9, y: y1 + 13, anchor: "start" },
+            { text: rightPort, x: x2 + 9, y: y2 + 13, anchor: "start" }
+          ];
+        }
       } else if (
         (link.from.kind === "core" && link.to.kind === "server") ||
         (link.from.kind === "server" && link.to.kind === "core")
