@@ -396,11 +396,47 @@ def merge_edge(edges_by_key, edge):
     key = canonical_edge_key(edge)
     existing = edges_by_key.get(key)
     if existing is None:
+        edge["_observations"] = 1
         edges_by_key[key] = edge
         return
+    existing["_observations"] = existing.get("_observations", 1) + 1
     for field in ("from_port", "from_ifindex", "to_port", "to_ifindex"):
         if not existing.get(field) and edge.get(field):
             existing[field] = edge[field]
+
+
+def resolve_endpoint_conflicts(edges):
+    """Keep one physical neighbor per resolved interface.
+
+    SG220 can expose an off-by-one LLDP bridge-port row alongside the correct
+    CDP row. After both directions are polled that yields 24<->24 twice plus
+    one 23->24 row from each side. A physical ifIndex cannot terminate two
+    different links, so keep the bidirectionally-confirmed edge.
+    """
+    ranked = sorted(
+        edges,
+        key=lambda edge: (
+            edge.get("_observations", 1),
+            int(edge.get("from_ifindex") is not None) + int(edge.get("to_ifindex") is not None),
+            int(bool(edge.get("from_port"))) + int(bool(edge.get("to_port"))),
+        ),
+        reverse=True,
+    )
+    occupied = set()
+    kept = []
+    for edge in ranked:
+        endpoints = [
+            (edge.get("from_ip"), edge.get("from_ifindex")),
+            (edge.get("to_ip"), edge.get("to_ifindex")),
+        ]
+        resolved = [endpoint for endpoint in endpoints if endpoint[0] and endpoint[1] is not None]
+        if len(resolved) == 2 and any(endpoint in occupied for endpoint in resolved):
+            continue
+        if len(resolved) == 2:
+            occupied.update(resolved)
+        edge.pop("_observations", None)
+        kept.append(edge)
+    return kept
 
 
 def build_edges(devices, name_index):
@@ -483,7 +519,7 @@ def build_edges(devices, name_index):
                 "to_ifindex": remote_ifindex,
             })
 
-    return list(edges_by_key.values()), placeholder_neighbors
+    return resolve_endpoint_conflicts(list(edges_by_key.values())), placeholder_neighbors
 
 
 def atomic_write_json(path, data):
