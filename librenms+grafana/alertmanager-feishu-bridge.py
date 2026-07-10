@@ -911,6 +911,9 @@ def _parse_bandwidth_config(raw):
             up = float(parts[1]) if len(parts) > 1 else down
         except (TypeError, ValueError):
             up = down
+        if label == "*":
+            cfg["default"] = {"down": down, "up": up}
+            continue
         cfg["per"].append({
             "label": label.lower(),
             "norm": _norm_label(label),
@@ -1021,14 +1024,30 @@ def _if_oper_is_up(metric, value):
     return int(value) == 1
 
 
-def _bandwidth_for_label(label, direction, cfg):
+def _bandwidth_for_label(label, direction, cfg, index=None):
     lower = label.lower()
     norm = _norm_label(label)
     for entry in cfg["per"]:
         if (entry["label"] and entry["label"] in lower) or (entry["norm"] and entry["norm"] in norm):
             return entry["down"] if direction == "in" else entry["up"]
+    if isinstance(index, int) and 0 <= index < len(cfg["per"]):
+        entry = cfg["per"][index]
+        return entry["down"] if direction == "in" else entry["up"]
     default = cfg["default"] or {"down": 1000.0, "up": 1000.0}
     return default["down"] if direction == "in" else default["up"]
+
+
+def _bandwidth_indexes(rates):
+    ports = {}
+    for sample in rates:
+        label = sample["label"]
+        try:
+            if_index = int(sample.get("if_index"))
+        except (TypeError, ValueError):
+            if_index = 2**31
+        ports[label] = min(if_index, ports.get(label, 2**31))
+    ordered = sorted(ports, key=lambda label: (ports[label], label.lower()))
+    return {label: index for index, label in enumerate(ordered)}
 
 
 def prometheus_query(query):
@@ -1060,6 +1079,7 @@ def fetch_wan_rates():
                 "label": label,
                 "direction": direction,
                 "value_bps": value_bps,
+                "if_index": metric_labels.get("ifIndex"),
                 "target_ip": metric_labels.get("target_ip") or metric_labels.get("instance") or "",
             })
     return results
@@ -1075,8 +1095,11 @@ def log_isp_status(rates, bandwidth_cfg):
         return
 
     rows = []
+    indexes = _bandwidth_indexes(rates)
     for sample in sorted(rates, key=lambda item: item["value_bps"], reverse=True)[:6]:
-        capacity_mbps = _bandwidth_for_label(sample["label"], sample["direction"], bandwidth_cfg)
+        capacity_mbps = _bandwidth_for_label(
+            sample["label"], sample["direction"], bandwidth_cfg, indexes.get(sample["label"])
+        )
         threshold_bps = capacity_mbps * 1000000 * (ISP_SATURATION_PERCENT / 100.0)
         rows.append(
             f"{sample['label']} {sample['direction']}="
@@ -1113,9 +1136,12 @@ def isp_bandwidth_watcher():
             last_status_log = now
 
         seen = set()
+        indexes = _bandwidth_indexes(rates)
         for sample in rates:
             seen.add(sample["key"])
-            capacity_mbps = _bandwidth_for_label(sample["label"], sample["direction"], bandwidth_cfg)
+            capacity_mbps = _bandwidth_for_label(
+                sample["label"], sample["direction"], bandwidth_cfg, indexes.get(sample["label"])
+            )
             threshold_bps = capacity_mbps * 1000000 * (ISP_SATURATION_PERCENT / 100.0)
             state = states.setdefault(sample["key"], {
                 "active_since": None,

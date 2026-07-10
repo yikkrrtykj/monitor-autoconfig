@@ -162,6 +162,45 @@ unifi:
     assert env["UNIFI_CONTROLLER_VERIFY_SSL"] == "true"
 
 
+def test_per_link_bandwidth_is_rendered_in_form_order():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+isp:
+  max_bandwidth_mbps:
+  links:
+    - name:
+      ip: 222.72.19.238
+      ping: 222.72.19.237
+      bandwidth_mbps: 200
+    - name:
+      ip: 58.246.24.67
+      ping: 58.246.24.65
+      bandwidth_mbps: 500
+""")
+    env = platform_config.render_env(config)
+    assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "*:1000,__link_1:200,__link_2:500"
+
+
+def test_missing_per_link_bandwidth_keeps_its_position_and_uses_global_default():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+isp:
+  max_bandwidth_mbps: 800
+  links:
+    - name: telecom
+      ip: 203.0.113.10
+    - name:
+      ip: 203.0.113.11
+      bandwidth_mbps: 500
+""")
+    env = platform_config.render_env(config)
+    assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "*:800,telecom:800,__link_2:500"
+
+
 def test_empty_stage_switches_do_not_fall_back_to_legacy_switches():
     config = platform_config.parse_simple_yaml("""
 devices:
@@ -270,6 +309,8 @@ if __name__ == "__main__":
     test_parse_validate_render_env()
     test_blank_yaml_values_are_empty_strings_and_gateway_can_be_empty()
     test_platform_fields_render_frontend_config()
+    test_per_link_bandwidth_is_rendered_in_form_order()
+    test_missing_per_link_bandwidth_keeps_its_position_and_uses_global_default()
     test_empty_stage_switches_do_not_fall_back_to_legacy_switches()
     test_isp_public_ip_is_required_when_link_is_configured()
     import tempfile

@@ -159,7 +159,7 @@
   }
 
   function parseIspBandwidthConfig(raw) {
-    const result = { default: { down: 1000, up: 1000 }, perIsp: {} };
+    const result = { default: { down: 1000, up: 1000 }, perIsp: {}, ordered: [] };
     if (raw === undefined || raw === null) return result;
     const text = String(raw).trim();
     if (!text) return result;
@@ -179,7 +179,13 @@
       const down = Number.isFinite(parts[0]) ? parts[0] : null;
       if (down === null) return;
       const up = Number.isFinite(parts[1]) ? parts[1] : down;
-      result.perIsp[name] = { down, up };
+      const entry = { down, up };
+      if (name === "*") {
+        result.default = entry;
+        return;
+      }
+      result.perIsp[name] = entry;
+      result.ordered.push(entry);
     });
     return result;
   }

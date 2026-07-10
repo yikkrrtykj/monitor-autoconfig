@@ -29,6 +29,10 @@ assert.strictEqual(ispChartMaxBps("ISP3"), 300 * 1000 * 1000);
 window.BIGSCREEN_CONFIG.ispMaxBandwidthMbps = "ISP1:500/300,ISP2:800";
 assert.strictEqual(ispChartMaxBps("ISP1"), 500 * 1000 * 1000);
 assert.strictEqual(ispChartMaxBps("ISP2"), 800 * 1000 * 1000);
+window.BIGSCREEN_CONFIG.ispMaxBandwidthMbps = "*:1000,__link_1:200,__link_2:500";
+assert.deepStrictEqual(parseIspBandwidthConfig(window.BIGSCREEN_CONFIG.ispMaxBandwidthMbps).default, { down: 1000, up: 1000 });
+assert.strictEqual(ispChartMaxBps("eth0", 0), 200 * 1000 * 1000, "unnamed first link uses first discovered port");
+assert.strictEqual(ispChartMaxBps("eth1", 1), 500 * 1000 * 1000, "unnamed second link uses second discovered port");
 window.BIGSCREEN_CONFIG.ispMaxBandwidthMbps = "ISP1:500,ISP2:500,ISP3:300";
 
 // ---- ISP name resolution: empty names must mean "pure auto-discover", not the

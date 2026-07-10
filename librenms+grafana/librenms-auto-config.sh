@@ -854,6 +854,10 @@ try {
                 continue;
             }
             $up = is_numeric($parts[1] ?? null) ? (float) $parts[1] : $down;
+            if ($name === '*') {
+                $cfg['default'] = max($down, $up);
+                continue;
+            }
             $cfg['per'][] = [
                 'label' => strtolower($name),
                 'norm' => preg_replace('/[^a-z0-9]+/', '', strtolower($name)),
@@ -913,7 +917,7 @@ try {
         return false;
     };
 
-    $portSpeed = function (string $text) use ($speedCfg): ?float {
+    $portSpeed = function (string $text, int $index) use ($speedCfg): ?float {
         $lower = strtolower($text);
         $norm = preg_replace('/[^a-z0-9]+/', '', $lower);
         foreach ($speedCfg['per'] as $entry) {
@@ -921,6 +925,9 @@ try {
                 ($entry['norm'] !== '' && str_contains($norm, $entry['norm']))) {
                 return $entry['mbps'];
             }
+        }
+        if (isset($speedCfg['per'][$index])) {
+            return $speedCfg['per'][$index]['mbps'];
         }
         return $speedCfg['default'];
     };
@@ -956,9 +963,11 @@ try {
         if ($has($portsCols, 'deleted')) {
             $where[] = '(deleted = 0 OR deleted IS NULL)';
         }
-        $stmt = $pdo->prepare('SELECT * FROM ports WHERE ' . implode(' AND ', $where));
+        $orderBy = $has($portsCols, 'ifIndex') ? ' ORDER BY ifIndex, port_id' : ' ORDER BY port_id';
+        $stmt = $pdo->prepare('SELECT * FROM ports WHERE ' . implode(' AND ', $where) . $orderBy);
         $stmt->execute($values);
         $matched = 0;
+        $wanIndex = 0;
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $port) {
             $labelParts = [];
             foreach (['ifAlias', 'ifName', 'ifDescr'] as $column) {
@@ -970,7 +979,8 @@ try {
             if ($label === '' || ! $matchesWan($label)) {
                 continue;
             }
-            $mbps = $portSpeed($label);
+            $mbps = $portSpeed($label, $wanIndex);
+            $wanIndex++;
             if ($mbps === null || $mbps <= 0) {
                 echo "  {$target['name']} ({$target['ip']}): {$label} matched WAN, but no bandwidth entry matched\n";
                 continue;

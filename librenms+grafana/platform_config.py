@@ -272,6 +272,42 @@ def switch_discovery_range(ranges: Any, core_ip: str = "") -> str:
     return ",".join(entries)
 
 
+def _bandwidth_text(value: Any) -> str:
+    """Return a normalized Mbps value, including optional down/up syntax."""
+    parts = str(value if value is not None else "").strip().split("/", 1)
+    normalized = []
+    for part in parts:
+        try:
+            number = float(part.strip())
+        except (TypeError, ValueError):
+            return ""
+        if number <= 0:
+            return ""
+        normalized.append(f"{number:g}")
+    return "/".join(normalized)
+
+
+def isp_bandwidth_config(isp: dict[str, Any]) -> str:
+    """Render the global fallback plus ordered per-link bandwidth values.
+
+    Named links continue to match their discovered interface label.  Empty
+    names receive an internal placeholder; consumers then use list position as
+    a fallback so auto-discovered interfaces such as eth0/eth1 still get the
+    bandwidth entered for the corresponding form row.
+    """
+    default = _bandwidth_text(isp.get("max_bandwidth_mbps")) or "1000"
+    links = [item for item in (isp.get("links") or []) if isinstance(item, dict)]
+    if not any(_bandwidth_text(item.get("bandwidth_mbps")) for item in links):
+        return default
+
+    entries = [f"*:{default}"]
+    for index, item in enumerate(links, start=1):
+        label = str(item.get("name") or "").strip() or f"__link_{index}"
+        bandwidth = _bandwidth_text(item.get("bandwidth_mbps")) or default
+        entries.append(f"{label}:{bandwidth}")
+    return ",".join(entries)
+
+
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     config = dict(config or {})
     config.setdefault("event", {})
@@ -403,7 +439,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
             f"{item.get('name')}:{item.get('ip')}" if item.get("name") else str(item.get("ip"))
             for item in isp_links if item.get("ip")
         ),
-        "BIGSCREEN_ISP_MAX_BANDWIDTH": str(isp.get("max_bandwidth_mbps") or "1000"),
+        "BIGSCREEN_ISP_MAX_BANDWIDTH": isp_bandwidth_config(isp),
         "ISP_SATURATION_PERCENT": str(isp.get("saturation_percent") or "90"),
         "ISP_DOWN_FOR_SECONDS": str(isp.get("down_for_seconds") or "10"),
         "COMPOSE_PROFILES": "unifi" if unifi.get("enabled") else existing.get("COMPOSE_PROFILES", ""),

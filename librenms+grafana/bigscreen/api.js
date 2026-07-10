@@ -329,7 +329,7 @@
 
   function ispDiscoveryQuery() {
     const pattern = wanFilterPattern();
-    return `group by (ifAlias) (ifHCInOctets{job="firewall-snmp",ifAlias=~".+",ifAlias=~"(?i).*(${pattern}).*"}) or group by (ifName) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName=~".+",ifName=~"(?i).*(${pattern}).*"}) or group by (ifDescr) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName="",ifDescr=~".+",ifDescr=~"(?i).*(${pattern}).*"})`;
+    return `group by (ifAlias,ifIndex) (ifHCInOctets{job="firewall-snmp",ifAlias=~".+",ifAlias=~"(?i).*(${pattern}).*"}) or group by (ifName,ifIndex) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName=~".+",ifName=~"(?i).*(${pattern}).*"}) or group by (ifDescr,ifIndex) (ifHCInOctets{job="firewall-snmp",ifAlias="",ifName="",ifDescr=~".+",ifDescr=~"(?i).*(${pattern}).*"})`;
   }
 
   // 运维显式填写的 ISP 名字（不注入默认）。未填则为空数组。
@@ -363,8 +363,15 @@
 
     try {
       const discovered = await prometheusInstant(ispDiscoveryQuery());
+      discovered.sort((a, b) => {
+        const aIndex = Number(a.metric.ifIndex);
+        const bIndex = Number(b.metric.ifIndex);
+        if (Number.isFinite(aIndex) && Number.isFinite(bIndex) && aIndex !== bIndex) return aIndex - bIndex;
+        const aName = a.metric.ifAlias || a.metric.ifName || a.metric.ifDescr || "";
+        const bName = b.metric.ifAlias || b.metric.ifName || b.metric.ifDescr || "";
+        return aName.localeCompare(bName, "zh-CN", { numeric: true });
+      });
       const discoveredNames = uniqueNames(discovered.map((item) => item.metric.ifAlias || item.metric.ifName || item.metric.ifDescr));
-      discoveredNames.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
       // 显式名字 + 发现到的口合并；没填显式名字就只显示发现到的（换场地零改配置）。
       const names = uniqueNames([...configured, ...discoveredNames]).slice(0, 4);
       ispNamesCache = names.length ? names : getIspNames();
@@ -397,15 +404,15 @@
     return settled.filter((r) => r.status === "fulfilled").map((r) => r.value);
   }
 
-  function ispCapacityBps(name, direction) {
+  function ispCapacityBps(name, direction, index = -1) {
     const cfg = parseIspBandwidthConfig(config.ispMaxBandwidthMbps);
-    const entry = cfg.perIsp[name] || cfg.default;
+    const entry = cfg.perIsp[name] || cfg.ordered[index] || cfg.default;
     const mbps = direction === "in" ? entry.down : entry.up;
     return Math.max(1, Number(mbps) || 1000) * 1000 * 1000;
   }
 
-  function ispChartMaxBps(name) {
-    return Math.max(ispCapacityBps(name, "in"), ispCapacityBps(name, "out"));
+  function ispChartMaxBps(name, index = -1) {
+    return Math.max(ispCapacityBps(name, "in", index), ispCapacityBps(name, "out", index));
   }
 
   async function fetchTopologyTargets() {
