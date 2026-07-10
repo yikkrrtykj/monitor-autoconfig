@@ -285,7 +285,7 @@
       }
     }
     try {
-      const units = await prometheusInstant('up{job="infra-fw-unit-snmp"}');
+      const units = await prometheusInstant('last_over_time(up{job="infra-fw-unit-snmp"}[25m])');
       units
         .slice()
         .sort((a, b) => String(a.metric.target_ip || a.metric.instance || "")
@@ -440,7 +440,9 @@
     const [success, latency, unitStatus, nameMap] = await Promise.all([
       prometheusInstant(`probe_success{job=~"${filter}"}`),
       prometheusInstant(`probe_icmp_duration_seconds{job=~"${filter}",phase="rtt"}`),
-      prometheusInstant('up{job="infra-fw-unit-snmp"}'),
+      // Keep both HA members visible through an occasional missed/late SNMP scrape.
+      // The last sample still carries the current target labels and up/down value.
+      prometheusInstant('last_over_time(up{job="infra-fw-unit-snmp"}[25m])'),
       fetchInfraDeviceNames()
     ]);
     const map = new Map();
