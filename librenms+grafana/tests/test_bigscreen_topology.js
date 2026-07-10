@@ -169,16 +169,22 @@ const hierTargets = [
   target("infra-core-ping", "PMGO-core", "172.25.10.254"),
   target("infra-dist-ping", "PMGO-FOH", "172.25.10.24"),
   target("infra-dist-ping", "PMGO-JIESHOU-RIGHT", "172.25.10.23"),
+  target("infra-dist-ping", "PMGO-JIESHOU-LEFT", "172.25.10.22"),
+  target("infra-dist-ping", "PMGO-SPARE", "172.25.10.21"),
 ];
 const hierEdges = [
   { from_ip: "172.25.10.24", from_port: "Gi0/9", to_ip: "172.25.10.254", to_port: "Te2/1/7" },
-  { from_ip: "172.25.10.24", from_port: "Gi0/6", to_ip: "172.25.10.23", to_port: "Gi0/23" },
+  { from_ip: "172.25.10.21", from_port: "Gi0/9", to_ip: "172.25.10.254", to_port: "Te2/1/8" },
+  { from_ip: "172.25.10.24", from_port: "Gi5/0/17", to_ip: "172.25.10.23", to_port: "Gi2/0/1" },
+  { from_ip: "172.25.10.24", from_port: "Gi4/0/27", to_ip: "172.25.10.22", to_port: "Gi1/0/24" },
 ];
 const hierLayout = topologyLayout(buildTopologyLayers(hierTargets), 1365, 620, hierEdges);
 const fohNode = hierLayout.nodes.find((n) => n.ip === "172.25.10.24");
 const jieNode = hierLayout.nodes.find((n) => n.ip === "172.25.10.23");
+const leftNode = hierLayout.nodes.find((n) => n.ip === "172.25.10.22");
 assert.ok(fohNode && jieNode, "both access switches are placed");
 assert.ok(jieNode.y > fohNode.y, "child switch sits in a row below its parent");
+assert.ok(leftNode && leftNode.y > fohNode.y, "second child switch sits below the same parent");
 assert.ok(hierLayout.coreBus, "core bus exists for direct core child links");
 assert.strictEqual(
   Math.round(jieNode.y - (fohNode.y + fohNode.h)),
@@ -188,5 +194,26 @@ assert.strictEqual(
 const coreToChild = hierLayout.links.some((l) =>
   [l.from.ip, l.to.ip].includes("172.25.10.254") && [l.from.ip, l.to.ip].includes("172.25.10.23"));
 assert.ok(!coreToChild, "no synthetic core->child link when a real uplink exists");
+const directDistCenters = hierLayout.links
+  .filter((link) => link.busLink)
+  .map((link) => {
+    const node = link.from.kind === "dist" ? link.from : link.to;
+    return centerX(node);
+  });
+assert.strictEqual(
+  hierLayout.coreBus.x1,
+  Math.min(hierLayout.coreBus.coreX, ...directDistCenters),
+  "core bus starts at its first direct downlink, not at a lower child switch"
+);
+assert.strictEqual(
+  hierLayout.coreBus.x2,
+  Math.max(hierLayout.coreBus.coreX, ...directDistCenters),
+  "core bus ends at its last direct downlink, not at a lower child switch"
+);
+const hierSvg = renderTopologySvg(hierLayout, 1365);
+assert.ok(hierSvg.includes(">Gi5/0/17</text>"), "parent port is rendered as its own endpoint label");
+assert.ok(hierSvg.includes(">Gi2/0/1</text>"), "child port is rendered as its own endpoint label");
+assert.ok(hierSvg.includes(">Gi4/0/27</text>"), "second parent port is rendered separately");
+assert.ok(hierSvg.includes(">Gi1/0/24</text>"), "second child port is rendered separately");
 
 console.log("bigscreen topology tests passed");

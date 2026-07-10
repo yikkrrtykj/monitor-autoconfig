@@ -372,7 +372,13 @@
       const primaryCore = coreRow[Math.floor(coreRow.length / 2)];
       const coreX = primaryCore.x + primaryCore.w / 2;
       const coreY = primaryCore.y + primaryCore.h;
-      const distCenters = distRow.map((node) => node.x + node.w / 2);
+      // Size the backbone from switches connected directly to the core only.
+      // Child switches live in lower rows and must not make the horizontal bus
+      // protrude beyond its first/last real downlink.
+      const distCenters = coreDistLinks.map((link) => {
+        const node = link.from.kind === "dist" ? link.from : link.to;
+        return node.x + node.w / 2;
+      });
       const busY = rowY(3) - DIST_LINK_GAP;
       coreBus = {
         x1: Math.min(coreX, ...distCenters),
@@ -517,6 +523,15 @@
         d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
         labelX = (x1 + x2) / 2;
         labelY = midY - 5;
+        if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
+          // Keep the two endpoint ports visually attached to their own boxes.
+          // A shared two-line label in the middle makes parent/child switch
+          // ports look concatenated, especially when the link is diagonal.
+          labelPositions = [
+            { text: link.labelLines[0], x: x1, y: y1 + 13, anchor: "middle" },
+            { text: link.labelLines[1], x: x2, y: y2 - 5, anchor: "middle" }
+          ];
+        }
       }
       const labelLines = Array.isArray(link.labelLines) && link.labelLines.length
         ? link.labelLines
