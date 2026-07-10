@@ -3225,7 +3225,9 @@
       if (seq !== topologySeq) return;
       // 与网络总览一致：隐藏从没上线过的设备（按 instance 名匹配 seen-up 集合）。
       const seenUp = activeSeriesNames(seenItems);
-      const targets = seenUp.size\n        ? allTargets.filter((t) => t.job === "infra-fw-unit-snmp" || seenUp.has(t.instance))\n        : allTargets;
+      const targets = seenUp.size
+        ? allTargets.filter((t) => t.job === "infra-fw-unit-snmp" || seenUp.has(t.instance))
+        : allTargets;
       const layers = buildTopologyLayers(targets);
       const containerWidth = Math.max(640, canvas.clientWidth || 1200);
       const height = Math.max(420, canvas.clientHeight || 680);
