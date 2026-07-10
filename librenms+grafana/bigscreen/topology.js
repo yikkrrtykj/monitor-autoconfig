@@ -83,7 +83,13 @@
     });
 
     const infrastructureIps = new Set();
-    const firewalls = targets.filter((t) => t.job === "infra-fw-ping").map((t) => ({
+    const firewallUnitTargets = targets.filter((t) => t.job === "infra-fw-unit-snmp");
+    // FireCluster 有物理成员 SNMP 数据时，拓扑只画物理成员；共享逻辑地址仍留在
+    // 延迟总览中。没有配置成员时回退旧的共享地址，兼容非 HA 防火墙。
+    const firewallTargets = firewallUnitTargets.length
+      ? firewallUnitTargets
+      : targets.filter((t) => t.job === "infra-fw-ping");
+    const firewalls = firewallTargets.map((t) => ({
       kind: "firewall",
       name: t.displayName,
       ip: t.targetIp,
