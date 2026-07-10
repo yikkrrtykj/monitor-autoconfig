@@ -198,7 +198,7 @@ cd librenms+grafana
 | 其它接入交换机 | 不参与选手识别，只用于在线、拓扑和发现 |
 | 服务器 | 默认空；需要监控游戏服务器时再添加名称和 IP |
 | ISP 自动发现 | 通过防火墙 SNMP 的 WAN 口名称/描述识别运营商链路 |
-| WAN 口识别关键词 | 自动发现 WAN 口时匹配接口名/描述，默认 `telecom,telcom,unicom,isp,WAN` |
+| WAN 口识别关键词 | 自动发现 WAN 口时匹配接口名/描述，默认 `telecom,telcom,unicom,isp,WAN`；防火墙 SNMP 只报 `eth0/eth1` 物理名时（如 WatchGuard）直接加物理口名，如 `...,eth0,eth1`，以数字结尾的关键词按边界匹配、不会误配 eth10 |
 | 外网网关探测地址 | 建议填运营商外网网关，用于 ISP 丢包/掉线告警 |
 | 运营商公网 IP | 可选；用于拓扑展示，也会作为 ping-only 设备加入 LibreNMS |
 | 未填带宽时按 Mbps | 链路没有单独带宽时用于饱和判断；可留空，内部默认 1000；饱和阈值默认 90% |

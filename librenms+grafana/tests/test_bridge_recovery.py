@@ -140,3 +140,20 @@ def test_fetch_interconnect_members_maps_aggregate_to_member_ifindexes(monkeypat
     monkeypatch.setattr(bridge, "prometheus_query", lambda q: stack_rows)
     members = bridge.fetch_interconnect_members("infra-switch-ifmib")
     assert members == {("10.0.0.1", "400"): ["4", "5"]}
+
+
+def test_wan_keyword_digit_suffix_requires_boundary():
+    # WatchGuard 这类防火墙 SNMP 只报 eth0/eth1 物理名：填 eth1 只能命中 eth1，
+    # 不能顺带把 eth10~eth15 当成 WAN 口；非数字结尾的关键词维持包含匹配。
+    original = bridge.FIREWALL_WAN_IF_FILTER
+    try:
+        bridge.FIREWALL_WAN_IF_FILTER = "telecom,WAN,eth0,eth1"
+        assert bridge._is_wan_port("eth0") is True
+        assert bridge._is_wan_port("eth1") is True
+        assert bridge._is_wan_port("eth10") is False
+        assert bridge._is_wan_port("eth15") is False
+        assert bridge._is_wan_port("WAN1") is True
+        assert bridge._is_wan_port("telecom-200M") is True
+        assert bridge._is_wan_port("lan-port") is False
+    finally:
+        bridge.FIREWALL_WAN_IF_FILTER = original

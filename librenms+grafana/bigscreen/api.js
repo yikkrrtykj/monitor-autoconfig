@@ -316,11 +316,14 @@
   }
 
   function wanFilterPattern() {
+    // 以数字结尾的关键词按边界匹配：WatchGuard 这类防火墙 SNMP 只报 eth0/eth1
+    // 物理名，运维只能填 eth1 来圈 WAN 口，不能让它顺带命中 eth10~eth15。
+    // 不以数字结尾的关键词维持包含匹配（WAN 仍命中 WAN1）。
     return String(config.wanIfFilter || "telecom,telcom,unicom,isp,wan")
       .split(",")
       .map((name) => name.trim())
       .filter(Boolean)
-      .map(escapeRegex)
+      .map((name) => (/\d$/.test(name) ? `${escapeRegex(name)}(?:[^0-9]|$)` : escapeRegex(name)))
       .join("|") || "telecom|telcom|unicom|isp|wan";
   }
 

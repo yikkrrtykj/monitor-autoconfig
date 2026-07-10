@@ -1,7 +1,7 @@
 const assert = require("assert");
 const path = require("path");
 
-global.window = { BIGSCREEN_CONFIG: {}, BIGSCREEN_QUERIES: {} };
+global.window = { BIGSCREEN_CONFIG: { wanIfFilter: "telecom,WAN,eth0,eth1" }, BIGSCREEN_QUERIES: {} };
 
 // Fake Prometheus：防火墙的 sysName 是 HA 占位名 Member1，交换机是真 hostname。
 global.fetch = async (url) => {
@@ -39,6 +39,16 @@ const api = require(path.resolve(__dirname, "../bigscreen/api.js"));
   assert.deepStrictEqual(utils.formatUptime(89 * 86400), { value: "89.00", unit: "天" });
   assert.deepStrictEqual(utils.formatUptime(184.79 * 86400), { value: "6.2", unit: "月" });
   assert.deepStrictEqual(utils.formatUptime(30 * 86400 * 12), { value: "12.0", unit: "月" });
+
+  // WAN 关键词：以数字结尾的按边界匹配（eth1 不命中 eth10），其它维持包含匹配。
+  const wanRe = new RegExp(`.*(${api.wanFilterPattern()}).*`, "i");
+  assert.ok(wanRe.test("eth0"), "eth0 应命中");
+  assert.ok(wanRe.test("eth1"), "eth1 应命中");
+  assert.ok(!wanRe.test("eth10"), "eth10 不应被 eth1 误配");
+  assert.ok(!wanRe.test("eth15"), "eth15 不应被 eth1 误配");
+  assert.ok(wanRe.test("WAN1"), "WAN 关键词维持包含匹配");
+  assert.ok(wanRe.test("telecom-200M"), "telecom 维持包含匹配");
+  assert.ok(!wanRe.test("lan-port"), "非 WAN 口不命中");
 
   console.log("bigscreen infra name/uptime tests passed");
 })().catch((error) => { console.error(error); process.exit(1); });

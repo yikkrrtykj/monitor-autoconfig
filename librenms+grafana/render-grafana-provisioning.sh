@@ -33,11 +33,15 @@ is_true() {
 }
 
 # CSV 关键词 -> 正则（逐个转义元字符，用 | 连接）。
+# 以数字结尾的关键词按边界匹配（eth1 不命中 eth10~eth15），其它维持包含匹配。
 csv_to_regex() {
   python3 - "${1:-}" <<'PY'
 import sys, re
+def pat(p):
+    escaped = re.escape(p)
+    return escaped + "(?:[^0-9]|$)" if p[-1].isdigit() else escaped
 parts = [p.strip() for p in sys.argv[1].split(",") if p.strip()]
-print("|".join(re.escape(p) for p in parts))
+print("|".join(pat(p) for p in parts))
 PY
 }
 

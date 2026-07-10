@@ -898,7 +898,15 @@ try {
     $matchesWan = function (string $text) use ($keywords): bool {
         $lower = strtolower($text);
         foreach ($keywords as $kw) {
-            if ($kw !== '' && str_contains($lower, $kw)) {
+            if ($kw === '') {
+                continue;
+            }
+            // 以数字结尾的关键词按边界匹配（eth1 不命中 eth10），其它包含即命中。
+            if (preg_match('/\\d$/', $kw)) {
+                if (preg_match('/' . preg_quote($kw, '/') . '(?:[^0-9]|$)/', $lower)) {
+                    return true;
+                }
+            } elseif (str_contains($lower, $kw)) {
                 return true;
             }
         }
@@ -1210,7 +1218,15 @@ try {
     $matchesWan = function (string $text) use ($keywords): bool {
         $lower = strtolower($text);
         foreach ($keywords as $kw) {
-            if ($kw !== '' && str_contains($lower, $kw)) {
+            if ($kw === '') {
+                continue;
+            }
+            // 以数字结尾的关键词按边界匹配（eth1 不命中 eth10），其它包含即命中。
+            if (preg_match('/\\d$/', $kw)) {
+                if (preg_match('/' . preg_quote($kw, '/') . '(?:[^0-9]|$)/', $lower)) {
+                    return true;
+                }
+            } elseif (str_contains($lower, $kw)) {
                 return true;
             }
         }

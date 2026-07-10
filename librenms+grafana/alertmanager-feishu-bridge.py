@@ -963,8 +963,16 @@ def _wan_label(metric):
 
 
 def _is_wan_port(label):
+    # 以数字结尾的关键词按边界匹配：WatchGuard 等防火墙 SNMP 只报 eth0/eth1
+    # 物理名，填 eth1 不能顺带命中 eth10~eth15；其它关键词维持包含匹配。
     lower = label.lower()
-    return any(keyword in lower for keyword in _wan_keywords())
+    for keyword in _wan_keywords():
+        if keyword[-1:].isdigit():
+            if re.search(re.escape(keyword) + r"(?:\D|$)", lower):
+                return True
+        elif keyword in lower:
+            return True
+    return False
 
 
 def _interconnect_keywords():
