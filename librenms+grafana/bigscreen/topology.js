@@ -402,6 +402,17 @@
         groups.get(key).push(link);
       });
       groups.forEach((group) => {
+        const otherSide = side === "from" ? "to" : "from";
+        // Allocate attachment slots from left to right according to the other
+        // endpoint. LLDP rows can arrive in any order; using that raw order can
+        // swap two child links and draw an unnecessary X below their parent.
+        group.sort((a, b) => {
+          const aOther = a[otherSide];
+          const bOther = b[otherSide];
+          const aX = aOther.x + aOther.w / 2;
+          const bX = bOther.x + bOther.w / 2;
+          return aX - bX || nodeKey(aOther).localeCompare(nodeKey(bOther));
+        });
         group.forEach((link, idx) => {
           link[`${side}Slot`] = idx;
           link[`${side}SlotCount`] = group.length;
@@ -621,3 +632,4 @@
     window.BSTopology = ns;
   }
 }());
+
