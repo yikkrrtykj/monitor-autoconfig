@@ -3237,7 +3237,7 @@
         layers.isps.length, layers.firewalls.length,
         layers.cores.length, layers.servers.length, layers.dists.length, 1
       );
-      const width = Math.max(containerWidth, maxRow * 152 + 48);
+      const width = Math.max(containerWidth, maxRow * 168 + 48);
       const layout = topologyLayout(layers, width, height, edges);
       topologyNodes = layout.nodes;
       if (shouldRender("topology", topologySignature(layout, width, edges))) {
