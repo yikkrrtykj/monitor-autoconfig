@@ -175,8 +175,10 @@ const hierTargets = [
 const hierEdges = [
   { from_ip: "172.25.10.24", from_port: "Gi0/9", to_ip: "172.25.10.254", to_port: "Te2/1/7" },
   { from_ip: "172.25.10.21", from_port: "Gi0/9", to_ip: "172.25.10.254", to_port: "Te2/1/8" },
-  { from_ip: "172.25.10.24", from_port: "Gi5/0/17", to_ip: "172.25.10.23", to_port: "Gi2/0/1" },
+  // Deliberately return child edges in the opposite order from their node
+  // placement. Slot assignment must still route left-to-left/right-to-right.
   { from_ip: "172.25.10.24", from_port: "Gi4/0/27", to_ip: "172.25.10.22", to_port: "Gi1/0/24" },
+  { from_ip: "172.25.10.24", from_port: "Gi5/0/17", to_ip: "172.25.10.23", to_port: "Gi2/0/1" },
 ];
 const hierLayout = topologyLayout(buildTopologyLayers(hierTargets), 1365, 620, hierEdges);
 const fohNode = hierLayout.nodes.find((n) => n.ip === "172.25.10.24");
@@ -194,6 +196,20 @@ assert.strictEqual(
 const coreToChild = hierLayout.links.some((l) =>
   [l.from.ip, l.to.ip].includes("172.25.10.254") && [l.from.ip, l.to.ip].includes("172.25.10.23"));
 assert.ok(!coreToChild, "no synthetic core->child link when a real uplink exists");
+const parentChildLinks = hierLayout.links
+  .filter((link) => [link.from.ip, link.to.ip].includes("172.25.10.24"))
+  .filter((link) => ["172.25.10.22", "172.25.10.23"].some((ip) => [link.from.ip, link.to.ip].includes(ip)))
+  .sort((a, b) => {
+    const aChild = a.from.ip === "172.25.10.24" ? a.to : a.from;
+    const bChild = b.from.ip === "172.25.10.24" ? b.to : b.from;
+    return centerX(aChild) - centerX(bChild);
+  });
+assert.strictEqual(parentChildLinks.length, 2);
+assert.deepStrictEqual(
+  parentChildLinks.map((link) => link.from.ip === "172.25.10.24" ? link.fromSlot : link.toSlot),
+  [0, 1],
+  "parent attachment slots follow child positions, so sibling links never cross"
+);
 const directDistCenters = hierLayout.links
   .filter((link) => link.busLink)
   .map((link) => {
@@ -217,3 +233,4 @@ assert.ok(hierSvg.includes(">Gi4/0/27</text>"), "second parent port is rendered 
 assert.ok(hierSvg.includes(">Gi1/0/24</text>"), "second child port is rendered separately");
 
 console.log("bigscreen topology tests passed");
+
