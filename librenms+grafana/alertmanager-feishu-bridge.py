@@ -386,15 +386,32 @@ def fetch_librenms_devices(token):
         return json.loads(resp.read().decode("utf-8")).get("devices", [])
 
 
+def _librenms_device_ref_for_ip(token, ip):
+    """Resolve an IP to the device id accepted by LibreNMS PATCH routes."""
+    for device in fetch_librenms_devices(token):
+        candidates = {
+            str(device.get("ip") or "").strip(),
+            str(device.get("hostname") or "").strip(),
+        }
+        if str(ip) in candidates:
+            return device.get("device_id") or device.get("hostname") or ip
+    return ip
+
+
 def update_librenms_device_display(ip, name, log_prefix="[WATCHER]"):
     token = _librenms_token()
     name = str(name or "").strip()
     if not token or not LIBRENMS_URL or not ip or not name or _looks_like_ip(name):
         return False
     payload = {"field": "display", "data": name}
-    encoded_ip = parse.quote(str(ip), safe="")
+    try:
+        device_ref = _librenms_device_ref_for_ip(token, ip)
+    except Exception as exc:
+        log(f"{log_prefix} LibreNMS device-id lookup failed for {ip}: {exc}")
+        device_ref = ip
+    encoded_ref = parse.quote(str(device_ref), safe="")
     req = request.Request(
-        f"{LIBRENMS_URL}/api/v0/devices/{encoded_ip}",
+        f"{LIBRENMS_URL}/api/v0/devices/{encoded_ref}",
         data=json.dumps(payload).encode("utf-8"),
         headers={"X-Auth-Token": token, "Content-Type": "application/json"},
         method="PATCH",
@@ -2130,15 +2147,14 @@ def unifi_ap_watcher():
                     )
                     if add_result == "exists":
                         snmp_confirmed_exists.add(ip)
-                    if add_result == "added" and mark_device_online_notified(name, ip):
-                        log(f"[AP] new SNMP AP deployed: {name} ({ip})")
+                    if add_result in ("added", "exists") and mark_device_online_notified(name, ip):
+                        action = "added" if add_result == "added" else "first seen (already in LibreNMS)"
+                        log(f"[AP] AP deployment notified: {name} ({ip}), {action}")
                         send_feishu(build_device_online_card({
                             "display": name,
                             "ip": ip,
                             "hardware": info.get("model") or "",
                         }))
-                    elif add_result:
-                        mark_device_online_notified(name, ip)
             if ip and sync_name and not add_attempted:
                 last_sync = name_sync_attempted.get(ip, 0)
                 if now - last_sync >= UNIFI_AP_NAME_SYNC_SECONDS:
