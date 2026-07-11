@@ -27,7 +27,14 @@ global.fetch = async (url) => {
       { metric: { job: "infra-switch-snmp", instance: "SW1", target_ip: "10.0.0.11", display_name: "SW1", sysName: "access-sw-11" }, value: [0, "1"] },
       // A device whose sysName is just its management IP must be rejected so the
       // screen keeps the friendlier configured name rather than an IP.
-      { metric: { job: "infra-switch-snmp", instance: "SW2", target_ip: "10.0.0.12", display_name: "SW2", sysName: "10.0.0.12" }, value: [0, "1"] }
+      { metric: { job: "infra-switch-snmp", instance: "SW2", target_ip: "10.0.0.12", display_name: "SW2", sysName: "10.0.0.12" }, value: [0, "1"] },
+      { metric: { job: "infra-fw-unit-snmp", instance: "192.168.9.11", target_ip: "192.168.9.11", display_name: "192.168.9.11", sysName: "Member1" }, value: [0, "1"] },
+      { metric: { job: "infra-fw-unit-snmp", instance: "192.168.9.12", target_ip: "192.168.9.12", display_name: "192.168.9.12", sysName: "Member2" }, value: [0, "1"] }
+    ];
+  } else if (query.includes('up{job="infra-fw-unit-snmp"}')) {
+    result = [
+      { metric: { job: "infra-fw-unit-snmp", instance: "192.168.9.11", target_ip: "192.168.9.11", display_name: "192.168.9.11" }, value: [0, "1"] },
+      { metric: { job: "infra-fw-unit-snmp", instance: "192.168.9.12", target_ip: "192.168.9.12", display_name: "192.168.9.12" }, value: [0, "1"] }
     ];
   } else if (query.includes("probe_success")) {
     result = [
@@ -55,6 +62,8 @@ const api = require(path.resolve(__dirname, "../bigscreen/api.js"));
   assert.strictEqual(nameMap.get("CORE1"), "core-sw-01", "core resolves by configured name");
   assert.strictEqual(nameMap.get("10.0.0.11"), "access-sw-11", "dist resolves by IP");
   assert.ok(!nameMap.has("10.0.0.12"), "IP-only sysName is rejected");
+  assert.strictEqual(nameMap.get("192.168.9.11"), "Member1", "first unit uses its native sysName");
+  assert.strictEqual(nameMap.get("192.168.9.12"), "Member2", "second unit uses its native sysName");
 
   // 2. Gauge/chart lists get the configured name replaced with the hostname,
   //    keeping the original for traceability; devices without a valid sysName
@@ -77,6 +86,8 @@ const api = require(path.resolve(__dirname, "../bigscreen/api.js"));
   assert.strictEqual(byIp["10.0.0.1"], "core-sw-01", "topology core renamed to hostname");
   assert.strictEqual(byIp["10.0.0.11"], "access-sw-11", "topology dist renamed to hostname");
   assert.strictEqual(byIp["10.0.0.12"], "SW2", "topology keeps configured name without a valid sysName");
+  assert.strictEqual(byIp["192.168.9.11"], "Member1", "topology uses first physical member sysName");
+  assert.strictEqual(byIp["192.168.9.12"], "Member2", "topology uses second physical member sysName");
 
   console.log("bigscreen device name tests passed");
 })().catch((error) => { console.error(error); process.exit(1); });
