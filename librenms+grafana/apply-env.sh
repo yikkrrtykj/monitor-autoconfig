@@ -169,6 +169,15 @@ SERVICES="
   grafana-setup
 "
 
+# unpoller reads the controller URL and credentials only when its container is
+# created. A plain restart leaves the old values in the container, so include
+# it in the recreate set whenever the UniFi compose profile is enabled.
+COMPOSE_PROFILES_VALUE=$(render_env_value COMPOSE_PROFILES)
+case ",${COMPOSE_PROFILES_VALUE}," in
+  *,unifi,*) SERVICES="${SERVICES}  unpoller
+" ;;
+esac
+
 compose_up() {
   compose up -d --force-recreate $SERVICES
 }
