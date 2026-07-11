@@ -30,7 +30,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
       "id": 1,
       "options": {
         "colorMode": "value",
@@ -66,7 +66,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
       "id": 2,
       "options": {
         "colorMode": "value",
@@ -103,7 +103,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
       "id": 3,
       "options": {
         "colorMode": "value",
@@ -132,42 +132,6 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
-      "id": 4,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "editorMode": "code",
-          "expr": "sum(unpoller_device_upgradable{type=\"uap\"})",
-          "instant": true,
-          "legendFormat": "可升级",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "固件可升级 AP",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": {
           "color": { "mode": "continuous-GrYlRd" },
           "mappings": [],
           "min": 0,
@@ -176,7 +140,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 4 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
       "id": 5,
       "options": {
         "displayMode": "gradient",
@@ -190,7 +154,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "sum by (name) (unpoller_device_stations{type=\"uap\"})",
+          "expr": "sum by (name, site_name, source) (unpoller_device_stations{type=\"uap\"}) and on (name, site_name, source) unpoller_device_info{type=\"uap\"} @ end()",
           "instant": true,
           "legendFormat": "{{name}}",
           "range": false,
@@ -199,52 +163,6 @@
       ],
       "title": "每台 AP 在线客户端数",
       "type": "bargauge"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 4 },
-      "id": 6,
-      "options": {
-        "cellHeight": "sm",
-        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
-        "showHeader": true,
-        "sortBy": [{ "displayName": "客户端数", "desc": true }]
-      },
-      "pluginVersion": "12.1.1",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "editorMode": "code",
-          "expr": "sum by (name) (unpoller_device_stations{type=\"uap\"})",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": { "Time": true },
-            "indexByName": {},
-            "renameByName": { "name": "AP", "Value": "客户端数" }
-          }
-        }
-      ],
-      "title": "各 AP 客户端数（在表 = 在线）",
-      "type": "table"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -278,7 +196,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
       "id": 7,
       "options": {
         "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
@@ -289,8 +207,8 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "unpoller_device_radio_channel_utilization_total_ratio",
-          "legendFormat": "{{name}} {{band}}G",
+          "expr": "unpoller_device_radio_channel_utilization_total_ratio and on (name, site_name, source) unpoller_device_info{type=\"uap\"} @ end()",
+          "legendFormat": "{{name}} {{radio_name}}",
           "refId": "A"
         }
       ],
@@ -329,7 +247,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "id": 8,
       "options": {
         "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
@@ -340,20 +258,138 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "unpoller_device_cpu_utilization_ratio{type=\"uap\"}",
-          "legendFormat": "{{name}} CPU",
+          "expr": "unpoller_device_cpu_utilization_ratio{type=\"uap\"} and on (name, site_name, source) unpoller_device_info{type=\"uap\"} @ end()",
+          "legendFormat": "{{name}}",
           "refId": "A"
+        }
+      ],
+      "title": "AP CPU 利用率",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "min": 0,
+          "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.7 }, { "color": "red", "value": 0.9 }] },
+          "unit": "percentunit"
         },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "id": 9,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "unpoller_device_memory_utilization_ratio{type=\"uap\"}",
-          "legendFormat": "{{name}} 内存",
-          "refId": "B"
+          "expr": "unpoller_device_memory_utilization_ratio{type=\"uap\"} and on (name, site_name, source) unpoller_device_info{type=\"uap\"} @ end()",
+          "legendFormat": "{{name}}",
+          "refId": "A"
         }
       ],
-      "title": "AP CPU / 内存利用率",
+      "title": "AP 内存利用率",
       "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-BlPu" },
+          "mappings": [],
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "unit": "Bps",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 28 },
+      "id": 10,
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "topk(10, sum by (name, ip, mac) (unpoller_client_receive_rate_bytes{wired=\"false\", ip!=\"\"}))",
+          "instant": true,
+          "legendFormat": "{{name}} · {{ip}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "客户端实时下载流量 Top 10",
+      "type": "bargauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-YlOrRd" },
+          "mappings": [],
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] },
+          "unit": "Bps",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 28 },
+      "id": 11,
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "topk(10, sum by (name, ip, mac) (unpoller_client_transmit_rate_bytes{wired=\"false\", ip!=\"\"}))",
+          "instant": true,
+          "legendFormat": "{{name}} · {{ip}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "客户端实时上传流量 Top 10",
+      "type": "bargauge"
     }
   ],
   "refresh": "30s",
