@@ -204,10 +204,9 @@
     return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(value || ""));
   }
 
-  // 出厂占位/HA 成员名不算真名：Hillstone HA 的 sysName 是 Member0/Member1，
-  // 未配置 hostname 的思科是 Switch/Router、Juniper 是 Amnesiac。这种名字
-  // 顶掉配置名毫无意义，宁可继续显示运维填的名字或 IP。
-  const GENERIC_SYSNAME_RE = /^(member\d*|switch|router|firewall|amnesiac)$/i;
+  // HA 设备的 Member0/Member1/Member2 是区分物理成员所必需的设备自带名称，
+  // 必须保留。只过滤完全没有识别价值的出厂通用名。
+  const GENERIC_SYSNAME_RE = /^(switch|router|firewall|amnesiac)$/i;
 
   function isMeaningfulSysName(value) {
     return Boolean(value) && !looksLikeIp(value) && !GENERIC_SYSNAME_RE.test(value);
@@ -237,7 +236,7 @@
       if (!storage) return new Map();
       const entries = JSON.parse(storage.getItem(INFRA_NAME_STORAGE_KEY) || "[]");
       if (!Array.isArray(entries)) return new Map();
-      // isMeaningfulSysName 同时清掉历史版本缓存下来的 Member1 之类占位名。
+      // isMeaningfulSysName 同时清掉历史版本缓存下来的 IP/通用占位名。
       return new Map(entries.filter(([key, value]) => key && isMeaningfulSysName(String(value || ""))));
     } catch (error) {
       return new Map();
