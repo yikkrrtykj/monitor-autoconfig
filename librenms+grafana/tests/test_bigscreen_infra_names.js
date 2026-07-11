@@ -3,7 +3,7 @@ const path = require("path");
 
 global.window = { BIGSCREEN_CONFIG: { wanIfFilter: "telecom,WAN,eth0,eth1" }, BIGSCREEN_QUERIES: {} };
 
-// Fake Prometheus：防火墙的 sysName 是 HA 占位名 Member1，交换机是真 hostname。
+// Fake Prometheus：防火墙使用 HA 物理成员名 Member1，交换机使用 hostname。
 global.fetch = async (url) => {
   const query = new URL(String(url), "http://localhost").searchParams.get("query") || "";
   let result = [];
@@ -20,19 +20,19 @@ const utils = require(path.resolve(__dirname, "../bigscreen/utils.js"));
 const api = require(path.resolve(__dirname, "../bigscreen/api.js"));
 
 (async () => {
-  // Member1 这类出厂占位/HA 成员 sysName 不进名字表；真 hostname 正常进。
+  // Member1 是区分 HA 物理成员所必需的设备自带名称，应进入名字表。
   const nameMap = await api.fetchInfraDeviceNames();
-  assert.ok(!nameMap.has("192.168.9.1"), "占位 sysName(Member1) 应被拒收");
+  assert.strictEqual(nameMap.get("192.168.9.1"), "Member1", "HA 成员 sysName 应被保留");
   assert.strictEqual(nameMap.get("192.168.10.32"), "rts2", "真实 hostname 正常收录");
 
-  // 改名结果：交换机 IP -> rts2；防火墙保持手填名，不被 Member1 顶掉。
+  // 改名结果：交换机 IP -> rts2；防火墙 IP/配置名 -> 当前设备 sysName。
   const renamed = api.renameListWithInfraMap([
     { name: "192.168.10.32", metric: { instance: "192.168.10.32", target_ip: "192.168.10.32" } },
     { name: "外网防火墙", metric: { instance: "外网防火墙", target_ip: "192.168.9.1" } }
   ], nameMap);
   assert.strictEqual(renamed[0].name, "rts2");
   assert.strictEqual(renamed[0].originalName, "192.168.10.32");
-  assert.strictEqual(renamed[1].name, "外网防火墙");
+  assert.strictEqual(renamed[1].name, "Member1");
 
   // 运行时长：90 天以内保持"天"，超过换算成"月"（按 30 天）。
   assert.deepStrictEqual(utils.formatUptime(59.22 * 86400), { value: "59.22", unit: "天" });
