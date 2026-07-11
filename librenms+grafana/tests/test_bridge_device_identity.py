@@ -30,6 +30,14 @@ def test_generic_stack_platform_is_not_reported_as_exact_model():
     assert bridge._clean_device_model("C29xx Stacking") == ""
 
 
+def test_librenms_display_update_resolves_ip_to_device_id(monkeypatch):
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda token: [
+        {"device_id": 42, "hostname": "ap-tech-room", "ip": "192.168.200.204"},
+    ])
+    assert bridge._librenms_device_ref_for_ip("token", "192.168.200.204") == 42
+    assert bridge._librenms_device_ref_for_ip("token", "192.168.200.207") == "192.168.200.207"
+
+
 def test_new_device_card_always_contains_model_line(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
     card = bridge.build_device_online_card({"display": "rts1", "ip": "192.168.10.31"})
