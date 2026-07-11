@@ -305,6 +305,11 @@ isp:
     assert [item for item in issues if item["level"] == "bad" and item["path"] == "isp.links[0].ip"]
 
 
+def test_runtime_allows_duplicate_sysnames_for_identical_aps():
+    script = (ROOT / "librenms-auto-config.sh").read_text(encoding="utf-8")
+    assert "config:set allow_duplicate_sysName true" in script
+
+
 if __name__ == "__main__":
     test_parse_validate_render_env()
     test_blank_yaml_values_are_empty_strings_and_gateway_can_be_empty()
