@@ -1,0 +1,40 @@
+import json
+
+from .conftest import bridge
+
+
+def test_inventory_chassis_model_replaces_generic_stack_platform():
+    inventory = [
+        {"entPhysicalClass": "module", "entPhysicalModelName": "C3KX-PWR-350WAC"},
+        {"entPhysicalClass": "chassis", "entPhysicalModelName": "WS-C2960X-24TS-L"},
+        {"entPhysicalClass": "port", "entPhysicalModelName": "SFP-10G-SR"},
+    ]
+    assert bridge._inventory_device_model(inventory) == "WS-C2960X-24TS-L"
+    assert bridge._best_device_model({
+        "hardware": "C29xx Stacking",
+        "inventory_model": bridge._inventory_device_model(inventory),
+    }) == "WS-C2960X-24TS-L"
+
+
+def test_generic_stack_platform_is_not_reported_as_exact_model():
+    assert bridge._clean_device_model("C29xx Stacking") == ""
+
+
+def test_new_device_card_always_contains_model_line(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    card = bridge.build_device_online_card({"display": "rts1", "ip": "192.168.10.31"})
+    text = json.dumps(card, ensure_ascii=False)
+    assert "型号：暂未识别" in text
+
+
+def test_new_device_card_prefers_inventory_model(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#2")
+    card = bridge.build_device_online_card({
+        "display": "falak-studio5",
+        "ip": "192.168.10.81",
+        "hardware": "C29xx Stacking",
+        "inventory_model": "WS-C2960X-24TS-L",
+    })
+    text = json.dumps(card, ensure_ascii=False)
+    assert "型号：WS-C2960X-24TS-L" in text
+    assert "C29xx Stacking" not in text
