@@ -438,6 +438,13 @@ configure_runtime() {
     echo "  auth_mechanism: mysql" || \
     echo "  WARNING: Could not set auth_mechanism"
 
+  # UniFi APs of the same model commonly ship with the same SNMP sysName
+  # (for example every U6-Lite reports "u6-lite"). Their management IPs are
+  # unique, so allow LibreNMS to add them and use controller names as display.
+  run_lnms config:set allow_duplicate_sysName true >/dev/null 2>&1 && \
+    echo "  allow_duplicate_sysName: enabled for identical AP models" || \
+    echo "  WARNING: Could not allow duplicate sysName values"
+
   if [ "$LIBRENMS_FORCE_BASE_URL" = "true" ]; then
     run_lnms config:set base_url "$LIBRENMS_BASE_URL" >/dev/null 2>&1 && \
       echo "  base_url: $LIBRENMS_BASE_URL" || \
