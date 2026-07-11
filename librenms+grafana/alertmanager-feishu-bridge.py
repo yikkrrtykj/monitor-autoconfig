@@ -386,16 +386,38 @@ def fetch_librenms_devices(token):
         return json.loads(resp.read().decode("utf-8")).get("devices", [])
 
 
-def _librenms_device_ref_for_ip(token, ip):
-    """Resolve an IP to the device id accepted by LibreNMS PATCH routes."""
+def _find_librenms_device_by_ip(token, ip):
     for device in fetch_librenms_devices(token):
         candidates = {
             str(device.get("ip") or "").strip(),
             str(device.get("hostname") or "").strip(),
         }
         if str(ip) in candidates:
-            return device.get("device_id") or device.get("hostname") or ip
+            return device
+    return None
+
+
+def _librenms_device_ref_for_ip(token, ip):
+    """Resolve an IP to the device id accepted by LibreNMS PATCH routes."""
+    device = _find_librenms_device_by_ip(token, ip)
+    if device:
+        return device.get("device_id") or device.get("hostname") or ip
     return ip
+
+
+def _confirm_librenms_device_exists(token, ip, message, log_prefix):
+    """Never trust a generic 'already exists' error without finding the device."""
+    try:
+        exists = _find_librenms_device_by_ip(token, ip) is not None
+    except Exception as exc:
+        log(f"{log_prefix} could not verify existing LibreNMS device {ip}: {exc}")
+        return False
+    if not exists:
+        log(
+            f"{log_prefix} LibreNMS reported 'already exists' for {ip}, but no matching "
+            f"device is returned by the API; will retry. Response: {str(message)[:240]}"
+        )
+    return exists
 
 
 def update_librenms_device_display(ip, name, log_prefix="[WATCHER]"):
@@ -483,7 +505,9 @@ def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"
             log(f"{log_prefix} SNMP auto-add requested for {name or ip} ({ip})")
             update_librenms_device_display(ip, name, log_prefix=log_prefix)
             return "added"
-        if "already" in str(message).lower():
+        if "already" in str(message).lower() and _confirm_librenms_device_exists(
+            token, ip, message, log_prefix
+        ):
             log(f"{log_prefix} SNMP auto-add skipped for {name or ip} ({ip}): already exists")
             update_librenms_device_display(ip, name, log_prefix=log_prefix)
             return "exists"
@@ -491,7 +515,9 @@ def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"
         return ""
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
-        if "already" in body.lower():
+        if "already" in body.lower() and _confirm_librenms_device_exists(
+            token, ip, body, log_prefix
+        ):
             log(f"{log_prefix} SNMP auto-add skipped for {name or ip} ({ip}): already exists")
             update_librenms_device_display(ip, name, log_prefix=log_prefix)
             return "exists"
