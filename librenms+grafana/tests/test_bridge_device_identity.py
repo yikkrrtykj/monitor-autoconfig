@@ -38,6 +38,22 @@ def test_librenms_display_update_resolves_ip_to_device_id(monkeypatch):
     assert bridge._librenms_device_ref_for_ip("token", "192.168.200.207") == "192.168.200.207"
 
 
+def test_already_exists_is_rejected_when_api_has_no_matching_device(monkeypatch):
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda token: [])
+    assert bridge._confirm_librenms_device_exists(
+        "token", "192.168.200.204", "device may already exist", "[TEST]"
+    ) is False
+
+
+def test_already_exists_is_confirmed_by_matching_device(monkeypatch):
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda token: [
+        {"device_id": 42, "hostname": "192.168.200.204", "ip": "192.168.200.204"},
+    ])
+    assert bridge._confirm_librenms_device_exists(
+        "token", "192.168.200.204", "device already exists", "[TEST]"
+    ) is True
+
+
 def test_new_device_card_always_contains_model_line(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
     card = bridge.build_device_online_card({"display": "rts1", "ip": "192.168.10.31"})
