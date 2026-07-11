@@ -1,6 +1,16 @@
+import importlib.util
 import json
+from pathlib import Path
 
-from .conftest import bridge
+
+# alertmanager-feishu-bridge.py has a hyphen, so load it by file path just like
+# test_bridge_recovery.py does. conftest.py intentionally does not export it.
+_spec = importlib.util.spec_from_file_location(
+    "feishu_bridge_device_identity",
+    Path(__file__).resolve().parent.parent / "alertmanager-feishu-bridge.py",
+)
+bridge = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(bridge)
 
 
 def test_inventory_chassis_model_replaces_generic_stack_platform():
