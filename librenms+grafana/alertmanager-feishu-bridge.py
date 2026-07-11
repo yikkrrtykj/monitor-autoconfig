@@ -14,6 +14,8 @@ Env:
   LIBRENMS_TOKEN_FILE     path to token file written by librenms-config
                           (default /librenms-data/librenms-api-token)
   SWITCH_WATCH_INTERVAL   seconds between device-list polls (default 120)
+  DEVICE_MODEL_WAIT_SECONDS seconds to wait for LibreNMS discovery/inventory
+                          before sending a new-device card (default 300)
   PROMETHEUS_URL          Prometheus internal URL (default http://prometheus:9090)
   ISP_ALERT_ENABLED       true = watch firewall WAN bandwidth (default true)
   ISP_ALERT_FOR_SECONDS   seconds above threshold before alerting (default 10)
@@ -77,6 +79,7 @@ LIBRENMS_URL = os.environ.get("LIBRENMS_URL", "").rstrip("/")
 LIBRENMS_API_TOKEN = os.environ.get("LIBRENMS_API_TOKEN", "")
 LIBRENMS_TOKEN_FILE = os.environ.get("LIBRENMS_TOKEN_FILE", "/librenms-data/librenms-api-token")
 SWITCH_WATCH_INTERVAL = int(os.environ.get("SWITCH_WATCH_INTERVAL", "30"))
+DEVICE_MODEL_WAIT_SECONDS = int(os.environ.get("DEVICE_MODEL_WAIT_SECONDS", "300"))
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090").rstrip("/")
 ISP_ALERT_ENABLED = os.environ.get("ISP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 ISP_ALERT_FOR_SECONDS = int(os.environ.get("ISP_ALERT_FOR_SECONDS", "10"))
@@ -542,6 +545,73 @@ def _enrich_device_with_unifi(device):
     return enriched
 
 
+_GENERIC_DEVICE_MODEL_RE = re.compile(
+    r"^(?:c\d+xx\s+stacking|cisco\s+ios|generic|unknown|n/?a|none|not\s+available)$",
+    re.IGNORECASE,
+)
+
+
+def _clean_device_model(value):
+    model = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not model or _GENERIC_DEVICE_MODEL_RE.fullmatch(model):
+        return ""
+    if re.fullmatch(r"(?:0x[0-9a-f]+|zeroDotZero|\d+)", model, re.IGNORECASE):
+        return ""
+    return model
+
+
+def _inventory_device_model(inventory):
+    """Return concrete chassis model(s), ignoring ports/PSUs/generic labels."""
+    rows = [row for row in (inventory or []) if isinstance(row, dict)]
+    groups = [
+        [row for row in rows if str(row.get("entPhysicalClass") or "").lower() in ("chassis", "3")],
+        [row for row in rows if str(row.get("entPhysicalContainedIn") or "") in ("", "0")],
+    ]
+    for group in groups:
+        models = []
+        for row in group:
+            model = _clean_device_model(row.get("entPhysicalModelName"))
+            if model and model not in models:
+                models.append(model)
+        if models:
+            return " / ".join(models)
+    return ""
+
+
+def _best_device_model(device):
+    for field in ("inventory_model", "hardware", "model"):
+        model = _clean_device_model(device.get(field))
+        if model:
+            return model
+    return ""
+
+
+def fetch_librenms_inventory(token, device):
+    device_ref = device.get("device_id") or device.get("hostname") or device.get("ip")
+    if not token or not LIBRENMS_URL or not device_ref:
+        return []
+    encoded_ref = parse.quote(str(device_ref), safe="")
+    req = request.Request(
+        f"{LIBRENMS_URL}/api/v0/inventory/{encoded_ref}/all",
+        headers={"X-Auth-Token": token},
+    )
+    with request.urlopen(req, timeout=10) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    return payload.get("inventory", []) if isinstance(payload, dict) else []
+
+
+def _enrich_device_with_inventory(device, token):
+    enriched = dict(device)
+    try:
+        inventory_model = _inventory_device_model(fetch_librenms_inventory(token, device))
+    except Exception as exc:
+        log(f"[WATCHER] inventory lookup failed for {device.get('hostname') or device.get('ip')}: {exc}")
+        inventory_model = ""
+    if inventory_model:
+        enriched["inventory_model"] = inventory_model
+    return enriched
+
+
 def _device_name(dev):
     return _best_device_name(dev)
 
@@ -661,12 +731,11 @@ def build_test_card():
 def build_device_online_card(device):
     name = _best_device_name(device) or "?"
     ip = device.get("ip") or device.get("hostname") or "?"
-    hw = device.get("hardware") or ""
+    hw = _best_device_model(device) or "暂未识别"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     lines = [f"🖥 设备：{name}", f"🌐 IP：{ip}"]
-    if hw:
-        lines.append(f"🔧 型号：{hw}")
+    lines.append(f"🔧 型号：{hw}")
     lines.append(f"⏰ 时间：{ts}")
 
     return _make_card(next_event_title(), "🔵 新设备部署", "blue", "\n".join(lines))
@@ -2586,6 +2655,7 @@ def device_watcher():
         notified = _load_json_set(DEVICE_ONLINE_STATE_FILE)
     log(f"[WATCHER] loaded {len(notified)} notified devices")
     first_successful_poll = True
+    model_wait_started = {}
     while True:
         try:
             token = _librenms_token()
@@ -2642,9 +2712,24 @@ def device_watcher():
             ip = online_dev.get("ip") or online_dev.get("hostname")
             keys = {value for value in (key, ip) if value}
             if keys and not (keys & notified):
+                online_dev = _enrich_device_with_inventory(online_dev, token)
+                model = _best_device_model(online_dev)
+                pending_key = str(ip or key)
+                if not model:
+                    started_at = model_wait_started.setdefault(pending_key, time.time())
+                    waited = time.time() - started_at
+                    if waited < DEVICE_MODEL_WAIT_SECONDS:
+                        log(
+                            f"[WATCHER] waiting for device model before online alert: "
+                            f"{_best_device_name(online_dev)} ({ip}), waited={int(waited)}s"
+                        )
+                        continue
+                else:
+                    online_dev["hardware"] = model
                 log(f"[WATCHER] new SNMP device detected: {_best_device_name(online_dev)} ({ip})")
                 send_feishu(build_device_online_card(online_dev))
                 notified.update(keys)
+                model_wait_started.pop(pending_key, None)
                 changed = True
 
         if changed:
