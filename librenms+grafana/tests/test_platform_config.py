@@ -95,7 +95,6 @@ def test_blank_yaml_values_are_empty_strings_and_gateway_can_be_empty():
     config = platform_config.parse_simple_yaml("""
 event:
   name:
-  public_base_url:
 networks:
   player_gateways:
 devices:
@@ -110,7 +109,6 @@ isp:
       gateway:
 """)
     assert config["event"]["name"] == ""
-    assert config["event"]["public_base_url"] == ""
     assert config["isp"]["links"][0]["gateway"] == ""
     env = platform_config.render_env(config)
     # A blank player_gateways parses cleanly; the gateway then defaults to the
@@ -388,16 +386,6 @@ def test_unifi_profile_can_be_disabled_without_dropping_other_profiles():
     enabled = platform_config.render_env({"devices": {"core": {"ip": "192.168.10.254"}}, "unifi": {"enabled": True}}, existing)
     assert disabled["COMPOSE_PROFILES"] == "metrics"
     assert enabled["COMPOSE_PROFILES"] == "metrics,unifi"
-
-
-def test_public_mode_requires_a_complete_http_url():
-    base = {"devices": {"core": {"ip": "192.168.10.254"}}, "event": {"security_mode": "public"}}
-    assert any(item["path"] == "event.public_base_url" and item["level"] == "bad" for item in platform_config.validate_config(base))
-    base["event"]["public_base_url"] = "monitor.example.com"
-    assert any(item["path"] == "event.public_base_url" and item["level"] == "bad" for item in platform_config.validate_config(base))
-    base["event"]["public_base_url"] = "https://monitor.example.com"
-    assert not any(item["path"] == "event.public_base_url" and item["level"] == "bad" for item in platform_config.validate_config(base))
-
 
 if __name__ == "__main__":
     test_parse_validate_render_env()

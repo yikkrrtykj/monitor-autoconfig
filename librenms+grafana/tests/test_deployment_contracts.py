@@ -39,6 +39,30 @@ def test_bigscreen_runtime_config_is_encoded_before_javascript_embedding():
     assert 'title: "$${BIGSCREEN_TITLE:-}"' not in compose
 
 
+def test_control_basic_section_only_contains_event_name_and_layout():
+    app = read("bigscreen/app.js")
+    basic = app.split("<h3>基础</h3>", 1)[1].split("</section>", 1)[0]
+
+    assert 'configInput("event.name", "赛事名称"' in basic
+    assert 'configInput("event.default_layout", "默认赛制"' in basic
+    assert "event.security_mode" not in basic
+    assert "event.public_base_url" not in basic
+    assert "delete value.event.security_mode" in app
+    assert "delete value.event.public_base_url" in app
+
+
+def test_control_number_inputs_do_not_expose_or_react_to_wheel_spinners():
+    app = read("bigscreen/app.js")
+    css = read("bigscreen/platform.css")
+
+    assert 'configForm.addEventListener("wheel"' in app
+    assert 'input.type === "number"' in app
+    assert "input.blur()" in app
+    assert 'input[type="number"]::-webkit-inner-spin-button' in css
+    assert "-webkit-appearance: none" in css
+    assert "-moz-appearance: textfield" in css
+
+
 def test_apply_failure_does_not_mass_delete_services():
     script = read("apply-env.sh")
 

@@ -776,8 +776,6 @@ services:
       BIGSCREEN_SUBTITLE: "${BIGSCREEN_SUBTITLE:-}"
       BIGSCREEN_LOGO_TEXT: "${BIGSCREEN_LOGO_TEXT:-}"
       BIGSCREEN_DEFAULT_LAYOUT: "${BIGSCREEN_DEFAULT_LAYOUT:-tournament-64-2layer}"
-      BIGSCREEN_SECURITY_MODE: "${BIGSCREEN_SECURITY_MODE:-internal}"
-      BIGSCREEN_PUBLIC_BASE_URL: "${BIGSCREEN_PUBLIC_BASE_URL:-}"
       BIGSCREEN_GRAFANA_ANONYMOUS: "${GRAFANA_ANONYMOUS_ENABLED:-true}"
       BIGSCREEN_PROMETHEUS_BASE_URL: "${BIGSCREEN_PROMETHEUS_BASE_URL:-}"
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-}"
@@ -813,8 +811,6 @@ services:
         SUBTITLE_B64="$$(b64 "$${BIGSCREEN_SUBTITLE:-}")"
         LOGO_TEXT_B64="$$(b64 "$${BIGSCREEN_LOGO_TEXT:-}")"
         LAYOUT_B64="$$(b64 "$${BIGSCREEN_DEFAULT_LAYOUT:-tournament-64-2layer}")"
-        SECURITY_MODE_B64="$$(b64 "$${BIGSCREEN_SECURITY_MODE:-internal}")"
-        PUBLIC_BASE_URL_B64="$$(b64 "$${BIGSCREEN_PUBLIC_BASE_URL:-}")"
         GRAFANA_ANONYMOUS_B64="$$(b64 "$${BIGSCREEN_GRAFANA_ANONYMOUS:-true}")"
         PROMETHEUS_BASE_URL_B64="$$(b64 "$${BIGSCREEN_PROMETHEUS_BASE_URL:-}")"
         ISP_NAMES_B64="$$(b64 "$${BIGSCREEN_ISP_NAMES:-}")"
@@ -837,8 +833,6 @@ services:
           subtitle: decodeConfigValue("$$SUBTITLE_B64"),
           logoText: decodeConfigValue("$$LOGO_TEXT_B64"),
           defaultLayout: decodeConfigValue("$$LAYOUT_B64"),
-          securityMode: decodeConfigValue("$$SECURITY_MODE_B64"),
-          publicBaseUrl: decodeConfigValue("$$PUBLIC_BASE_URL_B64"),
           grafanaAnonymous: decodeConfigValue("$$GRAFANA_ANONYMOUS_B64"),
           prometheusBaseUrl: decodeConfigValue("$$PROMETHEUS_BASE_URL_B64"),
           ispNames: decodeConfigValue("$$ISP_NAMES_B64"),

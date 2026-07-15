@@ -521,17 +521,6 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     check_positive(isp.get("saturation_percent"), "isp.saturation_percent", "ISP 饱和阈值", 0, 100)
     check_positive(isp.get("down_for_seconds"), "isp.down_for_seconds", "ISP 断线确认时间", 0)
 
-    mode = str(event.get("security_mode") or "internal").strip().lower()
-    if mode not in ("internal", "public"):
-        add("bad", "event.security_mode", "security_mode 只能是 internal 或 public")
-    public_url = str(event.get("public_base_url") or "").strip()
-    if mode == "public" and not public_url:
-        add("bad", "event.public_base_url", "公网模式必须填写 public_base_url")
-    if public_url:
-        parsed = urlparse(public_url)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            add("bad", "event.public_base_url", "public_base_url 必须是完整的 http(s) URL")
-
     unifi = config["unifi"]
     if unifi.get("enabled"):
         controller_url = str(unifi.get("controller_url") or "").strip()
@@ -586,8 +575,6 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     env = {
         "EVENT_NAME": event.get("name", ""),
         "BIGSCREEN_DEFAULT_LAYOUT": event.get("default_layout", "tournament-64-2layer"),
-        "BIGSCREEN_SECURITY_MODE": event.get("security_mode", "internal"),
-        "BIGSCREEN_PUBLIC_BASE_URL": event.get("public_base_url", ""),
         "SNMP_COMMUNITY": snmp_community,
         "FIREWALL_SNMP_COMMUNITY": snmp.get("firewall_community") or snmp_community,
         "CORE_SWITCH_PING": core_ping,

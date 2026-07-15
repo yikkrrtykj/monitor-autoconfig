@@ -1610,7 +1610,12 @@
 
   function controlConfigDefaults(configValue) {
     const value = cloneControlConfig(configValue);
-    value.event = { name: "", default_layout: "tournament-64-2layer", security_mode: "internal", public_base_url: "", ...(value.event || {}) };
+    value.event = { name: "", default_layout: "tournament-64-2layer", ...(value.event || {}) };
+    // Public access is not a control-panel concern. Older imported configs may
+    // still contain these keys; drop them when the form is saved so the basic
+    // section stays limited to the event name and default tournament layout.
+    delete value.event.security_mode;
+    delete value.event.public_base_url;
     if (String(value.event.name || "").trim() === "武汉斗鱼嘉年华") {
       value.event.name = "";
     }
@@ -1810,8 +1815,6 @@
         <div class="config-fields">
           ${configInput("event.name", "赛事名称", { placeholder: "可留空" })}
           ${configInput("event.default_layout", "默认赛制", { type: "select", choices: matchPages.map((item) => ({ value: item.id, label: item.label })) })}
-          ${configInput("event.security_mode", "访问模式", { type: "select", choices: [{ value: "internal", label: "内网" }, { value: "public", label: "公网" }] })}
-          ${configInput("event.public_base_url", "公网基础 URL", { placeholder: "公网模式必填，例如 https://monitor.example.com" })}
         </div>
       </section>
       <section class="config-section">
@@ -2519,6 +2522,13 @@
       const markDirty = () => { configForm.dataset.dirty = "1"; };
       configForm.addEventListener("input", markDirty);
       configForm.addEventListener("change", markDirty);
+      // Browsers increment focused number inputs when the mouse wheel moves.
+      // Remove focus before the native wheel action so scrolling the long
+      // configuration form cannot silently change VLAN or bandwidth values.
+      configForm.addEventListener("wheel", (event) => {
+        const input = event.target instanceof HTMLInputElement ? event.target : null;
+        if (input && input.type === "number" && document.activeElement === input) input.blur();
+      }, { passive: true });
       configForm.addEventListener("click", (event) => {
         const addButton = event.target.closest("[data-config-add]");
         const rangeButton = event.target.closest("[data-config-add-range]");
