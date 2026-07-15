@@ -5,7 +5,9 @@
   const pingGaugeQuery = queries.pingGauge || "";
   const uptimeQuery = queries.uptime || "";
   const lossQuery = queries.loss || "";
-  const playerSnapshotWindow = "90s";
+  // Keep one scrape interval of tolerance without presenting a player who
+  // disconnected a minute ago as still online.
+  const playerSnapshotWindow = "15s";
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
   const pages = window.BIGSCREEN_PAGES || [];
 
@@ -26,7 +28,7 @@
     fetchInfraDeviceNames, renameListWithInfraMap,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
-    fetchPlatformConfig, postPlatform, patchPlatform, fetchIncidents
+    fetchPlatformConfig, fetchApplyStatus, postPlatform, patchPlatform, fetchIncidents
   } = window.BSApi;
   const {
     buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel
@@ -621,7 +623,7 @@
   }
 
   function playerSuccessSnapshotQuery(selector) {
-    return `max_over_time(probe_success{${selector}}[${playerSnapshotWindow}])`;
+    return `last_over_time(probe_success{${selector}}[${playerSnapshotWindow}])`;
   }
 
   function renderTournamentTrend(page, trendSeries) {
@@ -758,8 +760,8 @@
     }
   }
 
-  // Refresh the slowly-changing "deployed" set on its own timer so the heavy
-  // max_over_time query doesn't run every 5s. Keeps the previous set on failure.
+  // Refresh the slowly-changing infrastructure "deployed" set on its own timer
+  // so its long-window query does not run every 5s. Keep it on API failure.
   async function refreshInfraSeenUp() {
     try {
       infraSeenUp = activeSeriesNames(await prometheusInstant(activeInfraPingQuery()));
@@ -1537,7 +1539,13 @@
       note: ""
     })).join("");
     let headline;
-    if (payload.applied) {
+    if (payload.action === "rollback" && payload.applied) {
+      headline = `
+        <div class="control-apply-next good">
+          <strong>↩ 回滚并应用完成</strong>
+          <span>配置与 .env 已恢复到同一个历史版本，相关服务已重新验证。</span>
+        </div>`;
+    } else if (payload.applied) {
       headline = `
         <div class="control-apply-next good">
           <strong>🚀 应用完成</strong>
@@ -1553,13 +1561,13 @@
       headline = `
         <div class="control-apply-next good">
           <strong>💾 已保存</strong>
-          <span>配置已写入 .env。点“应用配置”让服务重启生效。</span>
+          <span>event-config.yml 已保存。点“应用配置”生成 .env 并让服务重启生效。</span>
         </div>`;
     } else if (payload.action === "rollback") {
       headline = `
-        <div class="control-apply-next good">
-          <strong>↩ 已回滚</strong>
-          <span>已恢复上一版配置。点“应用配置”让其生效。</span>
+        <div class="control-apply-next warn">
+          <strong>↩ 已恢复文件，等待部署</strong>
+          <span>配置与 .env 已成对恢复；当前环境关闭了自动应用，需要手动部署。</span>
         </div>`;
     } else if (issues.length) {
       headline = "";
@@ -1602,12 +1610,10 @@
 
   function controlConfigDefaults(configValue) {
     const value = cloneControlConfig(configValue);
-    value.event = { name: "", default_layout: "tournament-64-2layer", ...(value.event || {}) };
+    value.event = { name: "", default_layout: "tournament-64-2layer", security_mode: "internal", public_base_url: "", ...(value.event || {}) };
     if (String(value.event.name || "").trim() === "武汉斗鱼嘉年华") {
       value.event.name = "";
     }
-    delete value.event.security_mode;
-    delete value.event.public_base_url;
     value.networks = { player_vlan: 40, wireless_vlan: 41, firewall_management_ranges: "192.168.9.0/24", ...(value.networks || {}) };
     if (!configScalar(value.networks.firewall_management_ranges)) {
       value.networks.firewall_management_ranges = "192.168.9.0/24";
@@ -1639,8 +1645,8 @@
       name: item.name || "",
       ip: item.ip || item.target || ""
     }));
-    value.devices.stage_switches = value.devices.stage_switches.map((item) => ({ ip: item.ip || item.target || "" }));
-    value.devices.access_switches = value.devices.access_switches.map((item) => ({ ip: item.ip || item.target || "" }));
+    value.devices.stage_switches = value.devices.stage_switches.map((item) => ({ ...item, name: item.name || "", ip: item.ip || item.target || "" }));
+    value.devices.access_switches = value.devices.access_switches.map((item) => ({ ...item, name: item.name || "", ip: item.ip || item.target || "" }));
     if (
       value.devices.servers.length === 1
       && ["grafana", "game server"].includes(String(value.devices.servers[0].name || "").toLowerCase())
@@ -1670,9 +1676,7 @@
       syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback",
       ...(value.alerts || {})
     };
-    delete value.event.mode;
-    delete value.alerts.mode;
-    value.security = { grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
+    value.security = { ...(value.security || {}), grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
     return value;
   }
 
@@ -1806,6 +1810,8 @@
         <div class="config-fields">
           ${configInput("event.name", "赛事名称", { placeholder: "可留空" })}
           ${configInput("event.default_layout", "默认赛制", { type: "select", choices: matchPages.map((item) => ({ value: item.id, label: item.label })) })}
+          ${configInput("event.security_mode", "访问模式", { type: "select", choices: [{ value: "internal", label: "内网" }, { value: "public", label: "公网" }] })}
+          ${configInput("event.public_base_url", "公网基础 URL", { placeholder: "公网模式必填，例如 https://monitor.example.com" })}
         </div>
       </section>
       <section class="config-section">
@@ -1836,6 +1842,7 @@
           <h3>舞台交换机（选填）</h3>
           <p class="config-section-note">一般留空：填"交换机管理网段"后，系统会 SNMP 扫描该网段，只把真正在线的交换机加入大屏（不在线的不加），名字直接用交换机 hostname；hostname 含"舞台/stage"的自动归到赛事大屏。需要精确指定时再逐台填。</p>
           ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
+            { key: "name", label: "名称", placeholder: "可留空，默认用 SNMP hostname" },
             { key: "ip", label: "管理地址", placeholder: "可留空，留空走网段自动发现" }
           ])}
         </section>
@@ -1843,6 +1850,7 @@
           <h3>其它接入交换机（选填）</h3>
           <p class="config-section-note">一般留空：同样由"交换机管理网段"自动发现；普通大屏包含全部在线交换机。用于基础设施在线、拓扑和 LibreNMS 发现，不参与选手座位识别。</p>
           ${configListRows("access_switches", lastEditableConfig.devices.access_switches, [
+            { key: "name", label: "名称", placeholder: "可留空，默认用 SNMP hostname" },
             { key: "ip", label: "管理地址", placeholder: "可留空" }
           ])}
         </section>
@@ -1936,10 +1944,6 @@
     });
     if (value.devices) {
       value.devices.switches = [];
-      if (value.devices.core) delete value.devices.core.name;
-    }
-    if (value.devices && value.devices.firewall) {
-      value.devices.firewall.snmp = value.devices.firewall.ip || "";
     }
     lastEditableConfig = value;
     return value;
@@ -1971,18 +1975,28 @@
     });
   }
 
-  // Applying restarts the bigscreen container (the nginx that serves this page AND
-  // proxies /platform-api), so the apply request is almost always cut off mid-flight
-  // and the page is briefly unreachable. Poll until the proxy is back to confirm.
-  async function waitForPlatformRecovery(maxMs = 90000) {
+  // Applying restarts the bigscreen nginx, so the HTTP response may be cut off.
+  // Poll the durable operation record; merely seeing /config again is not proof
+  // that the apply command or its post-restart health verification succeeded.
+  async function waitForPlatformRecovery(operationId, maxMs = 180000) {
     const started = Date.now();
     await new Promise((r) => setTimeout(r, 3000));
     while (Date.now() - started < maxMs) {
-      const cfg = await fetchPlatformConfig();
-      if (cfg && cfg.ok) return cfg;
+      const [cfg, status] = await Promise.all([
+        fetchPlatformConfig(),
+        fetchApplyStatus(operationId)
+      ]);
+      if (cfg && cfg.ok && status && ["succeeded", "pending", "failed"].includes(status.state)) {
+        return { config: cfg, status };
+      }
       await new Promise((r) => setTimeout(r, 2500));
     }
     return null;
+  }
+
+  function configOperationId(action) {
+    const random = Math.random().toString(36).slice(2, 10);
+    return `web-${action}-${Date.now()}-${random}`;
   }
 
   async function runConfigAction(action) {
@@ -1990,6 +2004,8 @@
     const label = CONFIG_ACTION_LABELS[action] || "处理";
     const configPayload = collectControlConfigForm();
     const payload = { text: JSON.stringify(configPayload, null, 2), actor: "web", note: action };
+    const operationId = (action === "apply" || action === "rollback") ? configOperationId(action) : "";
+    if (operationId) payload.operationId = operationId;
     configResultSticky = true;
     if (action === "apply") applyInProgress = true;
     setConfigButtonsBusy(true);
@@ -2008,7 +2024,7 @@
       } else if (action === "apply") {
         result = await postPlatform("/config/apply", payload, { timeoutMs: 180000 });
       } else if (action === "rollback") {
-        result = await postPlatform("/config/rollback", { actor: "web", note: "rollback from control" });
+        result = await postPlatform("/config/rollback", { actor: "web", note: "rollback from control", operationId }, { timeoutMs: 180000 });
       }
       result.action = action;
       lastPlatformConfig = result;
@@ -2025,19 +2041,23 @@
         refreshControlPanel();
       }
     } catch (error) {
-      if (action === "apply") {
-        // A dropped connection here almost always means bigscreen restarted mid-apply
-        // -- the apply itself usually finished. Wait for the proxy to come back, then
-        // confirm from the live config instead of flashing a scary error.
-        renderConfigResult({ pending: true, pendingLabel: "服务重启中，等待页面恢复" });
-        const recovered = await waitForPlatformRecovery();
+      if (action === "apply" || action === "rollback") {
+        renderConfigResult({ pending: true, pendingLabel: "服务重启中，正在核对任务结果" });
+        const recovered = await waitForPlatformRecovery(operationId);
         if (recovered) {
-          lastPlatformConfig = recovered;
+          const recoveredConfig = recovered.config;
+          const recoveredStatus = recovered.status;
+          lastPlatformConfig = recoveredConfig;
           if (form) {
             delete form.dataset.dirty;
-            if (recovered.config) renderControlConfigForm(recovered.config);
+            if (recoveredConfig.config) renderControlConfigForm(recoveredConfig.config);
           }
-          renderConfigResult({ ok: true, applied: true, action: "apply", issues: recovered.issues || [] });
+          renderConfigResult({
+            ...recoveredStatus,
+            action,
+            issues: recoveredConfig.issues || [],
+            applied: Boolean(recoveredStatus.applied)
+          });
           applyInProgress = false;
           refreshControlPanel();
         } else {

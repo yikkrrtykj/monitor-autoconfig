@@ -267,4 +267,4 @@ docker rm -f librenms grafana prometheus bigscreen rsyslog blackbox-exporter snm
 docker compose up -d
 ```
 
-数据目录如 `librenms-data`、`grafana-data`、`librenms-db-data` 不要随便删除。
+`librenms-data`、`librenms-db-data`、`librenms-rrdcached-journal` 是宿主机目录；Prometheus、Grafana、Loki 等使用 Docker 命名卷。两类数据都不要随便删除，尤其不要在保留数据时执行 `docker compose down -v`。

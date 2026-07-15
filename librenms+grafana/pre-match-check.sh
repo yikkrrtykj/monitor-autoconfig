@@ -10,12 +10,26 @@
 
 set -u
 
-if [ -f ./.env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . ./.env
-  set +a
-fi
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR" || exit 1
+
+# .env is data, not a shell program. Read only the keys this check needs via
+# the same parser used by platform-api, so values containing $(), quotes or #
+# can never execute commands on the host.
+load_env_key() {
+  key=$1
+  [ -f ./.env ] || return 0
+  declare -p "$key" >/dev/null 2>&1 && return 0
+  value=$(python3 "$SCRIPT_DIR/platform_config.py" env-get ./.env "$key" 2>/dev/null || true)
+  [ -n "$value" ] || return 0
+  printf -v "$key" '%s' "$value"
+  # shellcheck disable=SC2163  # key intentionally names the variable to export.
+  export "$key"
+}
+
+for key in PROMETHEUS_PORT GRAFANA_PORT GRAFANA_USER GRAFANA_PASSWORD FIREWALL_WAN_IF_FILTER LIBRENMS_DISCOVERY_TARGETS COMPOSE_PROFILES PLAYER_TARGETS_REFRESH_INTERVAL; do
+  load_env_key "$key"
+done
 
 PROM_URL="${PROM_URL:-http://localhost:${PROMETHEUS_PORT:-9090}}"
 GRAFANA_URL="${GRAFANA_URL:-http://localhost:${GRAFANA_PORT:-3000}}"
@@ -140,11 +154,23 @@ hdr "1. Docker 容器状态"
 if ! command -v docker >/dev/null 2>&1; then
   fail "docker 命令不可用"
 else
-  for svc in prometheus grafana blackbox-exporter snmp-exporter player-targets librenms; do
+  services="prometheus grafana bigscreen platform-api alertmanager-feishu-bridge blackbox-exporter snmp-exporter player-targets topology-collector librenms librenms-dispatcher librenms-db librenms-redis librenms-rrdcached rsyslog loki promtail-syslog"
+  case ",${COMPOSE_PROFILES:-}," in
+    *,unifi,*) services="$services unpoller" ;;
+  esac
+  for svc in $services; do
     state=$(docker inspect -f '{{.State.Status}}' "$svc" 2>/dev/null || echo "missing")
-    if [ "$state" = "running" ]; then ok "$svc 运行中"
-    elif [ "$state" = "missing" ]; then warn "$svc 容器不存在（如果是该服务未启用，忽略）"
-    else fail "$svc 状态异常: $state"
+    health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$svc" 2>/dev/null || echo "missing")
+    if [ "$state" = "running" ] && [ "$health" = "unhealthy" ]; then
+      fail "$svc 正在运行但健康检查失败"
+    elif [ "$state" = "running" ] && [ "$health" = "starting" ]; then
+      warn "$svc 正在启动，健康检查尚未通过"
+    elif [ "$state" = "running" ]; then
+      ok "$svc 运行中"
+    elif [ "$state" = "missing" ]; then
+      fail "$svc 容器不存在"
+    else
+      fail "$svc 状态异常: $state"
     fi
   done
 fi
@@ -170,7 +196,7 @@ fi
 hdr "3. Prometheus 抓取目标 (targets)"
 
 target_total_all=0
-for job in infra-core-ping infra-dist-ping infra-fw-ping infra-srv-ping firewall-snmp player-ping; do
+for job in infra-core-ping infra-dist-ping infra-fw-ping infra-isp-ping infra-srv-ping infra-switch-snmp infra-fw-snmp infra-fw-unit-snmp infra-switch-ifmib firewall-snmp player-ping; do
   read -r total up <<EOF
 $(prom_targets_summary "$job")
 EOF
@@ -180,7 +206,8 @@ EOF
   fi
   total=${total:-0}; up=${up:-0}
   target_total_all=$((target_total_all + ${total%.*}))
-  if [ "$total" = "0" ]; then warn "$job: 0 个目标（如未配置可忽略）"
+  if [ "$total" = "0" ] && { [ "$job" = "infra-core-ping" ] || [ "$job" = "player-ping" ]; }; then fail "$job: 0 个目标"
+  elif [ "$total" = "0" ]; then warn "$job: 0 个目标（未启用该功能时可忽略）"
   elif [ "$up" = "$total" ]; then ok "$job: $up/$total"
   else fail "$job: $up/$total — 有目标抓取失败"
   fi
@@ -227,13 +254,13 @@ hdr "5. 选手 targets 生成"
 player_total=$(prom_value 'count(probe_success{role="player"})')
 player_total=${player_total:-0}
 if [ "$player_total" = "0" ]; then
-  warn "未注册任何选手 targets"
+  fail "未注册任何选手 targets"
   echo "         可能原因:"
   echo "         - TOURNAMENT_SWITCHES 未配置"
   echo "         - 交换机端口 description 未按 teamNN-MM 命名"
   echo "         - WIRELESS_SUBNETS 未配置，或无线扫描未发现在线 IP"
   echo "         - WiFi-only 比赛未配置 PLAYER_STATIC_TARGETS"
-  echo "         - generate-player-targets.py 还没跑完第一轮（每 60s 一次）"
+  echo "         - generate-player-targets.py 还没跑完第一轮（默认每 ${PLAYER_TARGETS_REFRESH_INTERVAL:-300}s 一次）"
 else
   ok "已注册 $player_total 个选手 targets"
 
@@ -253,7 +280,13 @@ else
   if [ "$wired" -gt 0 ] && [ "$online" = "$wired" ]; then
     ok "全部有线选手在线 ($online/$wired)"
   elif [ "$wired" -gt 0 ]; then
-    warn "$online/$wired 有线选手在线（赛前正常，开赛时应全部在线）"
+    fail "$online/$wired 有线选手在线 — 赛前必须确认全部机位"
+  fi
+
+  all_online=$(prom_value 'count(probe_success{role="player"} == 1) or vector(0)')
+  all_online=${all_online:-0}
+  if [ "$all_online" != "$player_total" ]; then
+    fail "全部选手网络仅 $all_online/$player_total 在线"
   fi
 
   # Team count + distribution — wired only so headcount isn't polluted by wireless-scan synthetic seats
@@ -331,11 +364,14 @@ except Exception: print('')
   else fail "Prometheus 数据源未注册 — 检查 grafana-setup.sh 是否跑完"
   fi
 
-  # Dashboard count
+  # Dashboard count: compare with the dashboards actually shipped by this repo,
+  # not a stale hard-coded minimum.
   dash_count=$(curl -s --max-time 5 -H "Authorization: Basic $GAUTH" "${GRAFANA_URL}/api/search?type=dash-db" 2>/dev/null | \
     python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
-  if [ "$dash_count" -ge 5 ]; then ok "Dashboard 已加载 ($dash_count 个)"
-  else warn "Dashboard 数量偏少 ($dash_count)"
+  expected_dash_count=$(find "$SCRIPT_DIR/grafana-provisioning/dashboard-json" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+  expected_dash_count=${expected_dash_count:-0}
+  if [ "$dash_count" -ge "$expected_dash_count" ] && [ "$expected_dash_count" -gt 0 ]; then ok "Dashboard 已加载 ($dash_count/$expected_dash_count 个)"
+  else fail "Dashboard 未完整加载 ($dash_count/$expected_dash_count)"
   fi
 fi
 
@@ -358,7 +394,8 @@ else
     fi
   fi
 
-  # 8b. validate.php
+  # 8b. validate.php — dispatcher 容器 running 不等于 scheduler 已注册，
+  # 因此不再屏蔽 Scheduler is not running。
   if [ "$disp_state" = "running" ] || [ $FIX -eq 1 ]; then
     validate=$(docker exec -u librenms librenms sh -lc 'php /opt/librenms/validate.php 2>&1' 2>/dev/null || true)
     if [ -z "$validate" ]; then
@@ -366,8 +403,7 @@ else
     else
       # 已知可忽略的 WARN（docker 部署专属）
       ignore_warn='Updates are managed through the official Docker image'
-      fail_lines=$(echo "$validate" | grep -E '^\[FAIL\]' | grep -v 'Scheduler is not running' || true)
-      # 上面单独检查了 dispatcher，所以 validate 报的 "Scheduler is not running" 在 dispatcher 已 up 时是误报
+      fail_lines=$(echo "$validate" | grep -E '^\[FAIL\]' || true)
       warn_lines=$(echo "$validate" | grep -E '^\[WARN\]' | grep -v "$ignore_warn" || true)
       no_devices=$(echo "$validate" | grep -c 'You have no devices' || true)
 
@@ -431,7 +467,7 @@ if [ $FAIL -gt 0 ]; then
   exit 1
 elif [ $WARN -gt 0 ]; then
   echo "⚠ 有警告项，确认是否预期"
-  exit 0
+  exit 2
 else
   echo "✅ 全部通过，可以开赛"
   exit 0

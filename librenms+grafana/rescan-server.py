@@ -41,10 +41,10 @@ class RescanHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         payload = {
-            "ok": True,
             "now": int(time.time()),
             **_target_status(),
         }
+        payload["ok"] = not bool(payload.get("error"))
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -54,6 +54,10 @@ class RescanHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self.path.rstrip("/") != "/rescan":
+            self.send_response(404)
+            self.end_headers()
+            return
         open(TRIGGER, "w").close()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")

@@ -791,6 +791,37 @@ def merge_dedup_targets(path_b_targets, path_a_targets):
     return merged
 
 
+def dedupe_player_targets(*priority_groups):
+    """Merge source groups from highest to lowest priority.
+
+    Explicit static mappings beat SNMP discovery, which beats synthetic
+    wireless-scan seats. A target is unique both by IP and by
+    (team, seat, network), preventing the same live host or seat from being
+    scraped/counting twice when sources overlap.
+    """
+    seen_ips = set()
+    seen_seats = set()
+    merged = []
+    for group in priority_groups:
+        for target in group or []:
+            targets = target.get("targets") or []
+            labels = target.get("labels") or {}
+            if not targets:
+                continue
+            ip = str(targets[0])
+            seat_key = (
+                str(labels.get("team") or ""),
+                str(labels.get("seat") or ""),
+                str(labels.get("network") or ""),
+            )
+            if ip in seen_ips or seat_key in seen_seats:
+                continue
+            seen_ips.add(ip)
+            seen_seats.add(seat_key)
+            merged.append(target)
+    return merged
+
+
 def verify_targets_alive(targets, timeout=1, workers=64):
     """Drop targets whose IP doesn't respond to ICMP within `timeout` seconds.
 
@@ -884,7 +915,8 @@ def main():
         wireless_scan_exclude.update(gateway_like_ips(wireless_nets))
     output_file = os.environ.get("PLAYER_TARGETS_FILE", "/etc/prometheus/player_targets.json")
 
-    all_targets = []
+    scan_targets = []
+    discovered_targets = []
 
     if wireless_scan_enabled:
         scan_ips = discover_wireless_scan_ips(
@@ -904,14 +936,12 @@ def main():
             f"[INFO] wireless scan generated {len(scan_targets)} network=wireless targets from WIRELESS_SUBNETS",
             file=sys.stderr,
         )
-        all_targets.extend(scan_targets)
 
     static_targets = parse_static_player_targets(
         static_targets_raw, wired_nets, wireless_nets, static_default_network
     )
     if static_targets:
         print(f"[INFO] loaded {len(static_targets)} static player targets", file=sys.stderr)
-        all_targets.extend(static_targets)
 
     if not switches_raw:
         print("[INFO] TOURNAMENT_SWITCHES not set, skipping SNMP target discovery", file=sys.stderr)
@@ -970,7 +1000,12 @@ def main():
             for (team, net), count in sorted(per_team.items(), key=lambda kv: (int(kv[0][0]), kv[0][1])):
                 print(f"[INFO] team {team} {net}: {count} target(s)", file=sys.stderr)
 
-            all_targets.extend(merged)
+            discovered_targets.extend(merged)
+
+    all_targets = dedupe_player_targets(static_targets, discovered_targets, scan_targets)
+    dropped_duplicates = len(static_targets) + len(discovered_targets) + len(scan_targets) - len(all_targets)
+    if dropped_duplicates:
+        print(f"[INFO] removed {dropped_duplicates} duplicate player target(s) across sources", file=sys.stderr)
 
     if env_bool("PLAYER_VERIFY_PING", default=True) and all_targets:
         all_targets = verify_targets_alive(all_targets)

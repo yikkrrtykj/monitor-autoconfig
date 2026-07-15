@@ -1,13 +1,14 @@
 #!/bin/sh
-set -u
+set -eu
 
 GRAFANA_URL="${GRAFANA_URL:-http://grafana:3000}"
 GRAFANA_USER="${GRAFANA_USER:-admin}"
 GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-root}"
-GRAFANA_AUTH="${GRAFANA_AUTH:-Basic $(echo -n "${GRAFANA_USER}:${GRAFANA_PASSWORD}" | base64)}"
+GRAFANA_SETUP_TIMEOUT="${GRAFANA_SETUP_TIMEOUT:-180}"
+GRAFANA_AUTH="${GRAFANA_AUTH:-Basic $(printf '%s' "${GRAFANA_USER}:${GRAFANA_PASSWORD}" | base64)}"
 
 grafana_get() {
-  curl -s -H "Authorization: $GRAFANA_AUTH" "$GRAFANA_URL$1"
+  curl -fsS -H "Authorization: $GRAFANA_AUTH" "$GRAFANA_URL$1"
 }
 
 grafana_send() {
@@ -15,7 +16,7 @@ grafana_send() {
   path=$2
   payload=$3
 
-  curl -s -X "$method" \
+  curl -fsS -X "$method" \
     -H "Content-Type: application/json" \
     -H "Authorization: $GRAFANA_AUTH" \
     -d "$payload" \
@@ -26,7 +27,7 @@ upsert_datasource() {
   name=$1
   payload=$2
 
-  existing=$(grafana_get "/api/datasources/name/$name")
+  existing=$(grafana_get "/api/datasources/name/$name" 2>/dev/null || true)
   datasource_id=$(echo "$existing" | jq -r '.id // empty' 2>/dev/null || true)
 
   if [ -n "$datasource_id" ]; then
@@ -39,9 +40,15 @@ upsert_datasource() {
 }
 
 echo "Waiting for Grafana to be ready..."
-while ! curl -s "$GRAFANA_URL/api/health" > /dev/null 2>&1; do
+elapsed=0
+while ! curl -fsS "$GRAFANA_URL/api/health" > /dev/null 2>&1; do
+  if [ "$elapsed" -ge "$GRAFANA_SETUP_TIMEOUT" ]; then
+    echo "ERROR: Grafana was not ready after ${GRAFANA_SETUP_TIMEOUT}s" >&2
+    exit 1
+  fi
   echo "Grafana not ready, waiting..."
   sleep 5
+  elapsed=$((elapsed + 5))
 done
 echo "Grafana is ready!"
 

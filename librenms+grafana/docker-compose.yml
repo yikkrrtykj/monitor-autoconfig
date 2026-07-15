@@ -43,7 +43,7 @@ services:
       retries: 5
 
   librenms-rrdcached:
-    image: ${RRDCACHED_IMAGE:-crazymax/rrdcached:latest}
+    image: ${RRDCACHED_IMAGE:-crazymax/rrdcached:1.9.0-r4}
     container_name: librenms-rrdcached
     restart: unless-stopped
     environment:
@@ -63,20 +63,16 @@ services:
     image: ${ALPINE_IMAGE:-alpine:3.20}
     container_name: init-permissions
     volumes:
-      - ./grafana-data:/grafana-data
-      - ./prometheus-data:/prometheus-data
       - ./librenms-db-data:/librenms-db-data
       - ./librenms-data:/librenms-data
       - ./librenms-rrdcached-journal:/librenms-rrdcached-journal
     command: |
       sh -c '
         echo "Setting up directory permissions..."
-        mkdir -p /grafana-data /prometheus-data /librenms-db-data /librenms-data /librenms-data/rrd /librenms-rrdcached-journal
+        mkdir -p /librenms-db-data /librenms-data /librenms-data/rrd /librenms-rrdcached-journal
         chown -R 999:999 /librenms-db-data
-        chown -R 472:472 /grafana-data
-        chown -R 65534:65534 /prometheus-data
         chown -R 1000:1000 /librenms-data /librenms-rrdcached-journal
-        chmod -R 755 /grafana-data /prometheus-data /librenms-db-data /librenms-data
+        chmod -R 755 /librenms-db-data /librenms-data
         chmod -R 775 /librenms-data/rrd /librenms-rrdcached-journal
         echo "Permissions set successfully"
       '
@@ -182,7 +178,7 @@ services:
       DEVICE_ONLINE_FROM_PING: "${DEVICE_ONLINE_FROM_PING:-false}"
       DEVICE_AUTO_ADD_FROM_PING: "${DEVICE_AUTO_ADD_FROM_PING:-true}"
       DEVICE_AUTO_ADD_SNMP_JOBS: "${DEVICE_AUTO_ADD_SNMP_JOBS:-infra-core-ping,infra-dist-ping}"
-      SNMP_COMMUNITY: "${SNMP_COMMUNITY:-public}"
+      SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
       INTERCONNECT_ALERT_ENABLED: "${INTERCONNECT_ALERT_ENABLED:-true}"
       INTERCONNECT_ALERT_FOR_SECONDS: "${INTERCONNECT_ALERT_FOR_SECONDS:-5}"
       INTERCONNECT_ALERT_POLL_INTERVAL: "${INTERCONNECT_ALERT_POLL_INTERVAL:-5}"
@@ -192,7 +188,7 @@ services:
       UNIFI_AP_DOWN_FOR_SECONDS: "${UNIFI_AP_DOWN_FOR_SECONDS:-180}"
       UNIFI_AP_POLL_INTERVAL: "${UNIFI_AP_POLL_INTERVAL:-5}"
       UNIFI_AP_SNMP_AUTO_ADD: "${UNIFI_AP_SNMP_AUTO_ADD:-true}"
-      UNIFI_AP_SNMP_COMMUNITY: "${UNIFI_AP_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
+      UNIFI_AP_SNMP_COMMUNITY: "${UNIFI_AP_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-global}}"
       UNIFI_AP_SNMP_ADD_RETRY_SECONDS: "${UNIFI_AP_SNMP_ADD_RETRY_SECONDS:-60}"
       UNIFI_CONTROLLER_URL: "${UNIFI_CONTROLLER_URL:-}"
       UNIFI_CONTROLLER_USER: "${UNIFI_CONTROLLER_USER:-}"
@@ -348,6 +344,7 @@ services:
       - player-targets-data:/targets
       - ./generate-player-targets.py:/generate-player-targets.py:ro
       - ./rescan-server.py:/rescan-server.py:ro
+      - ./platform_config.py:/platform_config.py:ro
       - ./.env:/config/.env:ro
     environment:
       TZ: Asia/Shanghai
@@ -385,14 +382,14 @@ services:
 
         # Start rescan trigger API in background (POST /rescan → immediate re-scan)
         python3 /rescan-server.py &
+        RESCAN_PID=$$!
 
         load_env_key() {
           key="$$1"
           [ -f /config/.env ] || return 0
-          line="$$(grep -E "^[[:space:]]*$${key}[[:space:]]*=" /config/.env | tail -n 1 || true)"
-          [ -n "$$line" ] || return 0
-          value="$$(printf '%s' "$$line" | sed -E "s/^[[:space:]]*$${key}[[:space:]]*=[[:space:]]*//; s/[[:space:]]+#.*$$//; s/[[:space:]]*\r?$$//")"
-          export "$$key=$$value"
+          if value="$$(python3 /platform_config.py env-get /config/.env "$$key" 2>/dev/null)"; then
+            export "$$key=$$value"
+          fi
         }
 
         load_runtime_env() {
@@ -420,11 +417,17 @@ services:
         }
 
         while true; do
+          if ! kill -0 "$$RESCAN_PID" 2>/dev/null; then
+            echo "[player-targets] rescan API stopped unexpectedly" >&2
+            exit 1
+          fi
           load_runtime_env
           echo "[player-targets] using TOURNAMENT_SWITCHES=$${TOURNAMENT_SWITCHES:-} PLAYER_GATEWAYS=$${PLAYER_GATEWAYS:-$${LIBRENMS_CORE_IP:-}} PLAYER_VLAN_IDS=$${PLAYER_VLAN_IDS:-} PLAYER_SUBNETS=$${PLAYER_SUBNETS:-} WIRELESS_SUBNETS=$${WIRELESS_SUBNETS:-} PLAYER_WIRELESS_SCAN=$${PLAYER_WIRELESS_SCAN:-true}"
-          python3 /generate-player-targets.py 2>&1 | while IFS= read -r line; do
-            echo "[player-targets] $$line"
-          done
+          if ! output="$$(python3 /generate-player-targets.py 2>&1)"; then
+            printf '%s\n' "$$output" | while IFS= read -r line; do echo "[player-targets] $$line"; done
+            exit 1
+          fi
+          printf '%s\n' "$$output" | while IFS= read -r line; do echo "[player-targets] $$line"; done
           wait_or_trigger
         done
 
@@ -443,6 +446,7 @@ services:
       - topology-data:/targets
       - ./generate-topology-edges.py:/generate-topology-edges.py:ro
       - ./discover-switch-targets.py:/discover-switch-targets.py:ro
+      - ./platform_config.py:/platform_config.py:ro
       - ./.env:/config/.env:ro
     environment:
       TZ: Asia/Shanghai
@@ -472,10 +476,9 @@ services:
         load_env_key() {
           key="$$1"
           [ -f /config/.env ] || return 0
-          line="$$(grep -E "^[[:space:]]*$${key}[[:space:]]*=" /config/.env | tail -n 1 || true)"
-          [ -n "$$line" ] || return 0
-          value="$$(printf '%s' "$$line" | sed -E "s/^[[:space:]]*$${key}[[:space:]]*=[[:space:]]*//; s/[[:space:]]+#.*$$//; s/[[:space:]]*\r?$$//")"
-          export "$$key=$$value"
+          if value="$$(python3 /platform_config.py env-get /config/.env "$$key" 2>/dev/null)"; then
+            export "$$key=$$value"
+          fi
         }
 
         load_runtime_env() {
@@ -486,12 +489,16 @@ services:
 
         while true; do
           load_runtime_env
-          python3 /discover-switch-targets.py 2>&1 | while IFS= read -r line; do
-            echo "[switch-discovery] $$line"
-          done
-          python3 /generate-topology-edges.py 2>&1 | while IFS= read -r line; do
-            echo "[topology] $$line"
-          done
+          if ! output="$$(python3 /discover-switch-targets.py 2>&1)"; then
+            printf '%s\n' "$$output" | while IFS= read -r line; do echo "[switch-discovery] $$line"; done
+            exit 1
+          fi
+          printf '%s\n' "$$output" | while IFS= read -r line; do echo "[switch-discovery] $$line"; done
+          if ! output="$$(python3 /generate-topology-edges.py 2>&1)"; then
+            printf '%s\n' "$$output" | while IFS= read -r line; do echo "[topology] $$line"; done
+            exit 1
+          fi
+          printf '%s\n' "$$output" | while IFS= read -r line; do echo "[topology] $$line"; done
           sleep "$${TOPOLOGY_REFRESH_INTERVAL:-600}"
         done
 
@@ -519,6 +526,9 @@ services:
       # "赛前体检" button runs pre-match-check.sh against the stack (by service name).
       PLATFORM_PRECHECK_PROM_URL: "${PLATFORM_PRECHECK_PROM_URL:-http://prometheus:9090}"
       PLATFORM_PRECHECK_GRAFANA_URL: "${PLATFORM_PRECHECK_GRAFANA_URL:-http://grafana:3000}"
+      PLATFORM_PRECHECK_BIGSCREEN_URL: "${PLATFORM_PRECHECK_BIGSCREEN_URL:-http://bigscreen}"
+      PLATFORM_PRECHECK_LIBRENMS_URL: "${PLATFORM_PRECHECK_LIBRENMS_URL:-http://librenms:8000}"
+      PLATFORM_PRECHECK_PLAYER_TARGETS_URL: "${PLATFORM_PRECHECK_PLAYER_TARGETS_URL:-http://player-targets:9199}"
       PLATFORM_WRITE_ENABLED: "${PLATFORM_WRITE_ENABLED:-true}"
       PLATFORM_AUTH_ENABLED: "${PLATFORM_AUTH_ENABLED:-true}"
       PLATFORM_ADMIN_USER: "${PLATFORM_ADMIN_USER:-admin}"
@@ -528,6 +538,7 @@ services:
       PLATFORM_APPLY_ENABLED: "${PLATFORM_APPLY_ENABLED:-true}"
       PLATFORM_APPLY_COMMAND: "${PLATFORM_APPLY_COMMAND:-/bin/sh /workspace/apply-env.sh}"
       PLATFORM_APPLY_TIMEOUT: "${PLATFORM_APPLY_TIMEOUT:-300}"
+      PLATFORM_APPLY_VERIFY_TIMEOUT: "${PLATFORM_APPLY_VERIFY_TIMEOUT:-90}"
       DOCKER_CLI_PLUGIN_EXTRA_DIRS: "/host/usr/libexec/docker/cli-plugins:/host/usr/lib/docker/cli-plugins:/host/usr/local/lib/docker/cli-plugins"
       # Container binaries first (python3 etc.); host /host/usr/bin last, only for
       # what the slim image lacks (docker). Host-first ran the host's python3,
@@ -544,7 +555,7 @@ services:
       start_period: 10s
 
   librenms:
-    image: ${LIBRENMS_IMAGE:-librenms/librenms:latest}
+    image: ${LIBRENMS_IMAGE:-librenms/librenms:26.6.1}
     container_name: librenms
     restart: unless-stopped
     hostname: librenms
@@ -605,7 +616,7 @@ services:
       - monitor
 
   librenms-dispatcher:
-    image: ${LIBRENMS_IMAGE:-librenms/librenms:latest}
+    image: ${LIBRENMS_IMAGE:-librenms/librenms:26.6.1}
     container_name: librenms-dispatcher
     hostname: librenms-dispatcher
     restart: unless-stopped
@@ -648,7 +659,7 @@ services:
       - monitor
 
   librenms-config:
-    image: ${LIBRENMS_IMAGE:-librenms/librenms:latest}
+    image: ${LIBRENMS_IMAGE:-librenms/librenms:26.6.1}
     container_name: librenms-config
     depends_on:
       librenms:
@@ -691,7 +702,7 @@ services:
       LIBRENMS_ADMIN_EMAIL: "${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
       LIBRENMS_OWN_HOSTNAME: "${SERVER_IP:-}"
       FIREWALL_DISCOVERY_RANGE: "${FIREWALL_DISCOVERY_RANGE:-192.168.9.0/24}"
-      FIREWALL_SNMP_COMMUNITY: "${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-public}}"
+      FIREWALL_SNMP_COMMUNITY: "${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-global}}"
       FIREWALL_SNMP_TARGETS: "${FIREWALL_SNMP_TARGETS:-}"
       FEISHU_ROBOT_TOKEN: "${FEISHU_ROBOT_TOKEN:-}"
       ISP_PING: "${ISP_PING:-}"
@@ -794,24 +805,49 @@ services:
       - -c
       - |
         cp -r /app/. /usr/share/nginx/html/
+        b64() {
+          printf '%s' "$$1" | base64 | tr -d '\n'
+        }
+        EVENT_NAME_B64="$$(b64 "$${BIGSCREEN_EVENT_NAME:-}")"
+        TITLE_B64="$$(b64 "$${BIGSCREEN_TITLE:-}")"
+        SUBTITLE_B64="$$(b64 "$${BIGSCREEN_SUBTITLE:-}")"
+        LOGO_TEXT_B64="$$(b64 "$${BIGSCREEN_LOGO_TEXT:-}")"
+        LAYOUT_B64="$$(b64 "$${BIGSCREEN_DEFAULT_LAYOUT:-tournament-64-2layer}")"
+        SECURITY_MODE_B64="$$(b64 "$${BIGSCREEN_SECURITY_MODE:-internal}")"
+        PUBLIC_BASE_URL_B64="$$(b64 "$${BIGSCREEN_PUBLIC_BASE_URL:-}")"
+        GRAFANA_ANONYMOUS_B64="$$(b64 "$${BIGSCREEN_GRAFANA_ANONYMOUS:-true}")"
+        PROMETHEUS_BASE_URL_B64="$$(b64 "$${BIGSCREEN_PROMETHEUS_BASE_URL:-}")"
+        ISP_NAMES_B64="$$(b64 "$${BIGSCREEN_ISP_NAMES:-}")"
+        ISP_IPS_B64="$$(b64 "$${BIGSCREEN_ISP_IPS:-$${ISP_PING:-}}")"
+        ISP_AUTO_DISCOVERY_B64="$$(b64 "$${BIGSCREEN_ISP_AUTO_DISCOVER:-true}")"
+        ISP_MAX_BANDWIDTH_B64="$$(b64 "$${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}")"
+        SERVER_TARGETS_B64="$$(b64 "$${SERVER_PING:-}")"
+        STAGE_FILTER_B64="$$(b64 "$${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}")"
+        WAN_FILTER_B64="$$(b64 "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}")"
         cat > /usr/share/nginx/html/config.js <<EOF
+        // Values are base64-encoded by the entrypoint before being embedded.
+        // This keeps quotes/newlines in operator-entered labels as data instead
+        // of executable JavaScript.
+        const decodeConfigValue = (value) => new TextDecoder().decode(
+          Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
+        );
         window.BIGSCREEN_CONFIG = {
-          eventName: "$${BIGSCREEN_EVENT_NAME:-}",
-          title: "$${BIGSCREEN_TITLE:-}",
-          subtitle: "$${BIGSCREEN_SUBTITLE:-}",
-          logoText: "$${BIGSCREEN_LOGO_TEXT:-}",
-          defaultLayout: "$${BIGSCREEN_DEFAULT_LAYOUT:-tournament-64-2layer}",
-          securityMode: "$${BIGSCREEN_SECURITY_MODE:-internal}",
-          publicBaseUrl: "$${BIGSCREEN_PUBLIC_BASE_URL:-}",
-          grafanaAnonymous: "$${BIGSCREEN_GRAFANA_ANONYMOUS:-true}",
-          prometheusBaseUrl: "$${BIGSCREEN_PROMETHEUS_BASE_URL:-}",
-          ispNames: "$${BIGSCREEN_ISP_NAMES:-}",
-          ispIps: "$${BIGSCREEN_ISP_IPS:-$${ISP_PING:-}}",
-          ispAutoDiscovery: "$${BIGSCREEN_ISP_AUTO_DISCOVER:-true}",
-          ispMaxBandwidthMbps: "$${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}",
-          serverTargets: "$${SERVER_PING:-}",
-          stageDeviceFilter: "$${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}",
-          wanIfFilter: "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+          eventName: decodeConfigValue("$$EVENT_NAME_B64"),
+          title: decodeConfigValue("$$TITLE_B64"),
+          subtitle: decodeConfigValue("$$SUBTITLE_B64"),
+          logoText: decodeConfigValue("$$LOGO_TEXT_B64"),
+          defaultLayout: decodeConfigValue("$$LAYOUT_B64"),
+          securityMode: decodeConfigValue("$$SECURITY_MODE_B64"),
+          publicBaseUrl: decodeConfigValue("$$PUBLIC_BASE_URL_B64"),
+          grafanaAnonymous: decodeConfigValue("$$GRAFANA_ANONYMOUS_B64"),
+          prometheusBaseUrl: decodeConfigValue("$$PROMETHEUS_BASE_URL_B64"),
+          ispNames: decodeConfigValue("$$ISP_NAMES_B64"),
+          ispIps: decodeConfigValue("$$ISP_IPS_B64"),
+          ispAutoDiscovery: decodeConfigValue("$$ISP_AUTO_DISCOVERY_B64"),
+          ispMaxBandwidthMbps: decodeConfigValue("$$ISP_MAX_BANDWIDTH_B64"),
+          serverTargets: decodeConfigValue("$$SERVER_TARGETS_B64"),
+          stageDeviceFilter: decodeConfigValue("$$STAGE_FILTER_B64"),
+          wanIfFilter: decodeConfigValue("$$WAN_FILTER_B64")
         };
         EOF
         cat > /etc/nginx/conf.d/default.conf <<'EOF'
@@ -860,7 +896,10 @@ services:
             set $$platform_upstream platform-api;
             rewrite ^/platform-api/(.*)$$ /$$1 break;
             proxy_pass http://$$platform_upstream:9200;
-            proxy_read_timeout 30s;
+            # The platform apply command may legitimately run for several
+            # minutes. The durable operation status still handles a bigscreen
+            # restart, while this avoids an unrelated nginx timeout first.
+            proxy_read_timeout 360s;
           }
         }
         EOF
@@ -874,6 +913,7 @@ services:
     environment:
       GRAFANA_USER: "${GRAFANA_USER:-admin}"
       GRAFANA_PASSWORD: "${GRAFANA_PASSWORD:-root}"
+      GRAFANA_SETUP_TIMEOUT: "${GRAFANA_SETUP_TIMEOUT:-180}"
     depends_on:
       grafana:
         condition: service_started
@@ -881,7 +921,7 @@ services:
         condition: service_healthy
     networks:
       - monitor
-    restart: on-failure
+    restart: "no"
     volumes:
       - ./grafana-setup.sh:/grafana-setup.sh:ro
     command: ["/bin/sh", "-c", "sleep 30 && /bin/sh /grafana-setup.sh"]
@@ -943,6 +983,4 @@ volumes:
   player-targets-data:
   topology-data:
   grafana-data:
-  librenms-db-data:
   platform-state:
-  librenms-data:

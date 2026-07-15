@@ -28,7 +28,7 @@ def test_excluded_ips_expands_named_and_ranged_entries():
     }
 
 
-def test_discover_keeps_snmp_hostname_falls_back_to_ip_and_drops_offline():
+def test_discover_keeps_only_snmp_responsive_hosts():
     hostnames = {"192.168.10.11": "core-sw-01"}      # answers SNMP
     pingable = {"192.168.10.11", "192.168.10.12"}    # .12 answers ping only
     ips = ["192.168.10.11", "192.168.10.12", "192.168.10.13"]  # .13 is offline
@@ -40,21 +40,18 @@ def test_discover_keeps_snmp_hostname_falls_back_to_ip_and_drops_offline():
         probe_ping=lambda ip, timeout=1: ip in pingable,
         workers=4,
     )
-    assert results == {
-        "192.168.10.11": "core-sw-01",   # SNMP hostname wins
-        "192.168.10.12": "192.168.10.12",  # ping-only -> IP placeholder, never "SW"
-    }
+    assert results == {"192.168.10.11": "core-sw-01"}
+    assert "192.168.10.12" not in results  # ping-only server/controller is not a switch
     assert "192.168.10.13" not in results  # offline -> not added
 
 
-def test_discover_skips_snmp_for_dead_hosts():
-    # The expensive SNMP probe must only run for ICMP-live hosts, so a sparse
-    # range does not SNMP-scan every dead address.
+def test_discover_snmp_probes_icmp_blocked_hosts_too():
+    # Ping is not an eligibility gate: an ACL may block ICMP on a real switch.
     snmp_calls = []
 
     def snmp(ip, community, timeout=1):
         snmp_calls.append(ip)
-        return "sw-11" if ip == "192.168.10.11" else ""
+        return "sw-12" if ip == "192.168.10.12" else ""
 
     results = disc.discover(
         [f"192.168.10.{n}" for n in range(11, 31)],  # 20 addresses, 1 alive
@@ -63,8 +60,8 @@ def test_discover_skips_snmp_for_dead_hosts():
         probe_ping=lambda ip, timeout=1: ip == "192.168.10.11",
         workers=8,
     )
-    assert results == {"192.168.10.11": "sw-11"}
-    assert snmp_calls == ["192.168.10.11"]  # SNMP only touched the live host
+    assert results == {"192.168.10.12": "sw-12"}
+    assert snmp_calls == [f"192.168.10.{n}" for n in range(11, 31)]
 
 
 def test_discover_sweeps_with_snmp_when_ping_unavailable():

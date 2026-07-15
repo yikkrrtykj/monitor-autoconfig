@@ -559,6 +559,36 @@ class TestMergeDedupTargets:
         merged = gpt.merge_dedup_targets(path_b, path_a)
         assert len(merged) == 2
 
+
+class TestCrossSourceTargetDedup:
+    @staticmethod
+    def _target(team, seat, ip, source, network="wireless"):
+        return {
+            "targets": [ip],
+            "labels": {
+                "team": str(team), "seat": str(seat), "network": network,
+                "switch": source, "role": "player",
+            },
+        }
+
+    def test_static_mapping_beats_wireless_scan_for_same_ip(self):
+        static = [self._target(8, 3, "192.168.41.20", "static")]
+        scan = [self._target(1, 1, "192.168.41.20", "wireless-scan")]
+        merged = gpt.dedupe_player_targets(static, [], scan)
+        assert merged == static
+
+    def test_higher_priority_source_beats_same_seat_with_stale_ip(self):
+        static = [self._target(2, 1, "192.168.41.30", "static")]
+        scan = [self._target(2, 1, "192.168.41.31", "wireless-scan")]
+        merged = gpt.dedupe_player_targets(static, [], scan)
+        assert merged == static
+
+    def test_same_seat_on_different_networks_is_preserved(self):
+        wired = [self._target(2, 1, "192.168.40.30", "snmp", "wired")]
+        wireless = [self._target(2, 1, "192.168.41.30", "static", "wireless")]
+        merged = gpt.dedupe_player_targets(wireless, wired, [])
+        assert len(merged) == 2
+
     def test_dedup_key_is_team_seat_ip(self):
         # Same team+seat but different IP -> two entries
         path_a = [self._target(1, 1, "172.25.11.10", "sw")]

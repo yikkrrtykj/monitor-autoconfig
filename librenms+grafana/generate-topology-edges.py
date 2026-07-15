@@ -342,6 +342,9 @@ def expand_device_entry(entry):
             return []
     if int(end) < int(start):
         return []
+    if int(end) - int(start) + 1 > 4096:
+        print(f"[WARN] topology range too large, skipped: {entry}", file=sys.stderr)
+        return []
     return [str(IPv4Address(value)) for value in range(int(start), int(end) + 1)]
 
 
@@ -542,7 +545,7 @@ def main():
         atomic_write_json(os.path.join(output_dir, "rates.json"), [])
         return 0
 
-    print(f"[INFO] polling LLDP+CDP on {len(device_ips)} device(s) with community={community}", file=sys.stderr)
+    print(f"[INFO] polling LLDP+CDP on {len(device_ips)} device(s)", file=sys.stderr)
     devices = {}
     with ThreadPoolExecutor(max_workers=min(16, len(device_ips))) as executor:
         futures = {executor.submit(poll_device, ip, community): ip for ip in device_ips}
@@ -582,4 +585,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

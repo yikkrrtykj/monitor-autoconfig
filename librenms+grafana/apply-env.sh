@@ -3,7 +3,7 @@
 
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
 detect_host_project_dir() {
@@ -65,9 +65,8 @@ env_value() {
   key=$1
   file=${2:-.env}
   [ -f "$file" ] || return 1
-  value=$(sed -n "s/^${key}=//p" "$file" | tail -n 1)
-  [ -n "$value" ] || return 1
-  printf '%s' "$value"
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 "$SCRIPT_DIR/platform_config.py" env-get "$file" "$key"
 }
 
 render_env_value() {
@@ -79,7 +78,7 @@ migrate_env_default() {
   old=$2
   new=$3
   [ -f .env ] || return 0
-  current=$(sed -n "s/^${key}=//p" .env | tail -n 1)
+  current=$(env_value "$key" .env 2>/dev/null || true)
   if [ "$current" = "$old" ]; then
     tmp_env=$(mktemp)
     sed "s|^${key}=.*|${key}=${new}|" .env > "$tmp_env" && mv "$tmp_env" .env
@@ -102,20 +101,26 @@ migrate_legacy_defaults() {
 sync_env_from_config() {
   [ -f "$SCRIPT_DIR/event-config.yml" ] || return 0
   [ -f "$SCRIPT_DIR/platform_config.py" ] || return 0
-  command -v python3 >/dev/null 2>&1 || return 0
+  command -v python3 >/dev/null 2>&1 || return 1
   if (cd "$SCRIPT_DIR" && python3 - <<'PY'
 from pathlib import Path
-from platform_config import parse_simple_yaml, render_env, read_env, merge_env_file
+from platform_config import parse_simple_yaml, render_env, read_env, merge_env_file, validate_config
 cfg = parse_simple_yaml(Path("event-config.yml").read_text(encoding="utf-8"))
 if not isinstance(cfg, dict):
     raise SystemExit("event-config.yml is not a mapping")
+bad = [item for item in validate_config(cfg) if item.get("level") == "bad"]
+if bad:
+    for item in bad:
+        print(f"{item.get('path')}: {item.get('message')}")
+    raise SystemExit("event-config.yml has blocking validation errors")
 env = render_env(cfg, read_env(Path(".env")))
 Path(".env").write_text(merge_env_file(Path(".env"), env), encoding="utf-8")
 PY
   ); then
     echo "[apply-env] .env synced from event-config.yml"
   else
-    echo "[apply-env] WARN: could not sync .env from event-config.yml; using existing .env" >&2
+    echo "[apply-env] ERROR: could not validate/sync .env from event-config.yml" >&2
+    return 1
   fi
 }
 
@@ -147,11 +152,17 @@ if [ -n "$HOST_PROJECT_DIR" ]; then
   echo "[apply-env] Using host project directory: $HOST_PROJECT_DIR"
 fi
 
-sync_env_from_config
+if ! sync_env_from_config; then
+  exit 1
+fi
 migrate_legacy_defaults
-# Non-fatal: a Grafana dashboard render hiccup must not block applying the config
-# and restarting the containers (the important part).
-render_grafana_provisioning || echo "[apply-env] WARN: Grafana provisioning render failed; continuing to restart services." >&2
+# Never restart Grafana against stale or partially rendered provisioning. A
+# render failure makes the whole apply fail so platform-api can restore the
+# paired config/.env snapshot instead of reporting a false success.
+if ! render_grafana_provisioning; then
+  echo "[apply-env] ERROR: Grafana provisioning render failed; no services were recreated." >&2
+  exit 1
+fi
 
 SERVICES="
   prometheus
@@ -169,30 +180,43 @@ SERVICES="
   grafana-setup
 "
 
+# A host-side apply must refresh platform-api too so changes to its auth/apply
+# settings take effect. Console applies are executed by that same container and
+# set PLATFORM_API_SELF_APPLY=true; recreating the caller would kill it before
+# it can persist the operation result and perform rollback when necessary.
+if [ "${PLATFORM_API_SELF_APPLY:-false}" != "true" ]; then
+  SERVICES="${SERVICES}  platform-api
+"
+fi
+
 # unpoller reads the controller URL and credentials only when its container is
 # created. A plain restart leaves the old values in the container, so include
 # it in the recreate set whenever the UniFi compose profile is enabled.
 COMPOSE_PROFILES_VALUE=$(render_env_value COMPOSE_PROFILES)
+REMOVE_UNPOLLER=false
 case ",${COMPOSE_PROFILES_VALUE}," in
   *,unifi,*) SERVICES="${SERVICES}  unpoller
 " ;;
+  *)
+    if docker inspect unpoller >/dev/null 2>&1; then
+      REMOVE_UNPOLLER=true
+    fi
+    ;;
 esac
 
 compose_up() {
   compose up -d --force-recreate $SERVICES
 }
 
-cleanup_conflicting_containers() {
-  echo "[apply-env] Recreate failed. Cleaning possibly half-recreated containers and retrying..."
-  for name in $SERVICES; do
-    docker rm -f "$name" >/dev/null 2>&1 || true
-  done
-}
-
 echo "[apply-env] Recreating services that read .env..."
 if ! compose_up; then
-  cleanup_conflicting_containers
-  compose_up
+  echo "[apply-env] ERROR: service recreation failed; containers were left intact for diagnosis/rollback." >&2
+  exit 1
+fi
+
+if [ "$REMOVE_UNPOLLER" = "true" ]; then
+  echo "[apply-env] UniFi profile disabled; removing the existing unpoller container."
+  docker rm -f unpoller >/dev/null
 fi
 
 echo "[apply-env] Done. Watch LibreNMS config progress with:"

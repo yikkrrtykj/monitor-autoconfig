@@ -37,14 +37,18 @@ fi
 
 # Patch RrdCheck.php to suppress progress echo lines that corrupt JSON API responses.
 # Applied to source code before s6 starts so it survives cont-init.d regeneration.
-if [ -f /opt/librenms/LibreNMS/Validations/RrdCheck.php ]; then
-  sed -i "55s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  sed -i "67s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  sed -i "69s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  sed -i "75s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  sed -i "81s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  sed -i "82s/echo/\/\/ echo/" /opt/librenms/LibreNMS/Validations/RrdCheck.php 2>/dev/null || true
-  echo "[librenms-entry] RrdCheck.php echo lines commented out"
+RRD_CHECK_FILE=/opt/librenms/LibreNMS/Validations/RrdCheck.php
+if [ -f "$RRD_CHECK_FILE" ]; then
+  # LibreNMS 26.6.1 has exactly six indented progress-output statements in
+  # this validator. Verify that shape before editing; fixed line numbers can
+  # silently comment unrelated PHP when an image is changed.
+  rrd_echo_count=$(grep -c '^[[:space:]]*echo ' "$RRD_CHECK_FILE" 2>/dev/null || true)
+  if [ "$rrd_echo_count" = "6" ]; then
+    sed -i '/^[[:space:]]*echo /s/echo/\/\/ echo/' "$RRD_CHECK_FILE"
+    echo "[librenms-entry] RrdCheck.php progress output disabled"
+  else
+    echo "[librenms-entry] WARNING: unexpected RrdCheck.php layout; leaving upstream source unchanged" >&2
+  fi
 fi
 
 # LibreNMS's stock top widgets mostly show tiny graphs. On the event home
@@ -444,7 +448,7 @@ try {
 }
 PHPEOF
   repaired_base_url=""
-  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     if php /tmp/librenms-repair-base-url.php >/dev/null 2>&1; then
       repaired_base_url=1
       break
