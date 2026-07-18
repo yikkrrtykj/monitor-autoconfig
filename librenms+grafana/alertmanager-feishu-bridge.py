@@ -23,6 +23,10 @@ Env:
   ISP_ALERT_RATE_WINDOW   Prometheus rate() window (default 1m)
   ISP_ALERT_STATUS_INTERVAL seconds between status logs (default 30)
   ISP_ALERT_RESOLVE_SECONDS seconds below threshold before recovery (default 30)
+  ISP_ALERT_SPIKE_IGNORE_FACTOR drop rate samples above capacity x this factor
+                          as SNMP counter glitches (default 5, 0 = keep all)
+  ISP_DATA_MISSING_ALERT_SECONDS alert after WAN traffic series have been gone
+                          this long (default 120, 0 = disable)
   FIREWALL_WAN_IF_FILTER  WAN interface label keywords
   BIGSCREEN_ISP_MAX_BANDWIDTH ISP bandwidth Mbps config
   BIGSCREEN_ISP_IPS     optional ISP display names, NAME:IP comma list
@@ -87,6 +91,13 @@ ISP_ALERT_POLL_INTERVAL = int(os.environ.get("ISP_ALERT_POLL_INTERVAL", "5"))
 ISP_ALERT_RATE_WINDOW = os.environ.get("ISP_ALERT_RATE_WINDOW", "1m")
 ISP_ALERT_RESOLVE_SECONDS = int(os.environ.get("ISP_ALERT_RESOLVE_SECONDS", "30"))
 ISP_ALERT_STATUS_INTERVAL = int(os.environ.get("ISP_ALERT_STATUS_INTERVAL", "30"))
+# 计数器跳变防护：换防火墙/HA 切换/重启会让同一采集 IP 背后的 SNMP 计数器突变，
+# rate() 会在整个窗口内算出几十 Gbps 的假速率。超过"配置带宽 x 该倍数"的样本
+# 判定为物理上不可能，直接丢弃不参与告警。0 = 关闭防护。
+ISP_ALERT_SPIKE_IGNORE_FACTOR = float(os.environ.get("ISP_ALERT_SPIKE_IGNORE_FACTOR", "5") or "0")
+# WAN 流量序列整体消失（SNMP 认证不通、换防火墙后接口名不再匹配
+# FIREWALL_WAN_IF_FILTER 等）持续该秒数后推数据中断告警。0 = 关闭。
+ISP_DATA_MISSING_ALERT_SECONDS = int(os.environ.get("ISP_DATA_MISSING_ALERT_SECONDS", "120"))
 FIREWALL_WAN_IF_FILTER = os.environ.get("FIREWALL_WAN_IF_FILTER", "telecom,telcom,unicom,isp,WAN")
 BIGSCREEN_ISP_MAX_BANDWIDTH = os.environ.get("BIGSCREEN_ISP_MAX_BANDWIDTH", "1000")
 BIGSCREEN_ISP_IPS = os.environ.get("BIGSCREEN_ISP_IPS", "")
@@ -839,6 +850,23 @@ def build_isp_bandwidth_card(event, recovered=False):
     return _make_card(next_event_title(), f"{header_emoji} 外网 ISP 告警", color, "\n".join(lines))
 
 
+def build_isp_data_missing_card(missing_seconds, recovered=False):
+    color = "green" if recovered else "red"
+    status_emoji = "✅" if recovered else "❌"
+    header_emoji = "🟢" if recovered else "🔴"
+    state_text = "已恢复" if recovered else "数据中断"
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "🌐 对象：防火墙 WAN 流量采集",
+        f"{status_emoji} 状态：{state_text}",
+        f"⏳ 中断时长：{format_duration(missing_seconds)}",
+        f"⏰ 时间：{ts}",
+    ]
+    if not recovered:
+        lines.append("💡 请检查防火墙 SNMP 是否可达、FIREWALL_WAN_IF_FILTER 是否匹配新接口名")
+    return _make_card(next_event_title(), f"{header_emoji} 外网流量采集告警", color, "\n".join(lines))
+
+
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dev = f"{name} ({ip})" if ip and ip != name else (name or ip or "?")
@@ -1149,6 +1177,25 @@ def _bandwidth_for_label(label, direction, cfg, index=None):
     return default["down"] if direction == "in" else default["up"]
 
 
+def _counter_glitch_limit_bps(capacity_mbps, factor=None):
+    """Bps ceiling above which a rate sample is a counter glitch, or None if off.
+
+    A WAN port cannot legitimately carry many times its configured capacity;
+    values far beyond it only appear when rate() spans an SNMP counter jump
+    (firewall replaced, HA member switch, snmpd restart).
+    """
+    factor = ISP_ALERT_SPIKE_IGNORE_FACTOR if factor is None else factor
+    if not factor or factor <= 0:
+        return None
+    try:
+        capacity = float(capacity_mbps)
+    except (TypeError, ValueError):
+        return None
+    if capacity <= 0:
+        return None
+    return capacity * 1000000 * factor
+
+
 def _bandwidth_indexes(rates):
     ports = {}
     for sample in rates:
@@ -1228,10 +1275,15 @@ def isp_bandwidth_watcher():
     bandwidth_cfg = _parse_bandwidth_config(BIGSCREEN_ISP_MAX_BANDWIDTH)
     states = {}
     last_status_log = 0.0
+    data_seen = False
+    data_missing_since = None
+    data_missing_alerting = False
     log(
         "[ISP] realtime bandwidth watcher enabled "
         f"(threshold={ISP_SATURATION_PERCENT:g}%, for={ISP_ALERT_FOR_SECONDS}s, "
-        f"poll={ISP_ALERT_POLL_INTERVAL}s, rate_window={ISP_ALERT_RATE_WINDOW}, prometheus={PROMETHEUS_URL})"
+        f"poll={ISP_ALERT_POLL_INTERVAL}s, rate_window={ISP_ALERT_RATE_WINDOW}, "
+        f"spike_ignore_factor={ISP_ALERT_SPIKE_IGNORE_FACTOR:g}, "
+        f"data_missing_after={ISP_DATA_MISSING_ALERT_SECONDS}s, prometheus={PROMETHEUS_URL})"
     )
 
     while True:
@@ -1242,6 +1294,27 @@ def isp_bandwidth_watcher():
             log(f"[ISP] poll failed: {exc}")
             time.sleep(ISP_ALERT_POLL_INTERVAL)
             continue
+
+        # 数据中断守护：以前有 WAN 序列、现在整体消失（换防火墙后 SNMP 认证
+        # 不通 / 接口名不再匹配 WAN 关键词 / 采集挂了），静默丢监控比误报更危险。
+        if rates:
+            if data_missing_alerting:
+                missing = now - data_missing_since if data_missing_since else 0
+                log(f"[ISP] WAN traffic series recovered after {int(missing)}s gap")
+                send_feishu(build_isp_data_missing_card(missing, recovered=True))
+            data_seen = True
+            data_missing_since = None
+            data_missing_alerting = False
+        elif data_seen and ISP_DATA_MISSING_ALERT_SECONDS > 0:
+            if data_missing_since is None:
+                data_missing_since = now
+            elif not data_missing_alerting and now - data_missing_since >= ISP_DATA_MISSING_ALERT_SECONDS:
+                data_missing_alerting = True
+                log(
+                    "[ISP] ALERT WAN traffic series missing for "
+                    f"{int(now - data_missing_since)}s; check firewall SNMP and FIREWALL_WAN_IF_FILTER"
+                )
+                send_feishu(build_isp_data_missing_card(now - data_missing_since, recovered=False))
 
         if now - last_status_log >= ISP_ALERT_STATUS_INTERVAL:
             log_isp_status(rates, bandwidth_cfg)
@@ -1254,6 +1327,14 @@ def isp_bandwidth_watcher():
             capacity_mbps = _bandwidth_for_label(
                 sample["label"], sample["direction"], bandwidth_cfg, indexes.get(sample["label"])
             )
+            glitch_limit = _counter_glitch_limit_bps(capacity_mbps)
+            if glitch_limit is not None and sample["value_bps"] >= glitch_limit:
+                log(
+                    f"[ISP] ignore counter glitch {sample['label']} {sample['direction']} "
+                    f"{format_bps(sample['value_bps'])} (> {format_bps(glitch_limit)}, "
+                    f"capacity {capacity_mbps:g} Mbps)"
+                )
+                continue
             threshold_bps = capacity_mbps * 1000000 * (ISP_SATURATION_PERCENT / 100.0)
             state = states.setdefault(sample["key"], {
                 "active_since": None,
