@@ -263,6 +263,10 @@ write_ping_job "infra-core-ping"  "$CORE_SWITCH_PING"
 # Dist switches: explicit targets plus any discovered from SWITCH_DISCOVERY_RANGE.
 write_ping_job "infra-dist-ping"  "$DIST_SWITCH_PING" "$SWITCH_TARGETS_FILE"
 write_ping_job "infra-fw-ping"    "$FIREWALL_PING"
+# HA 物理防火墙单机 ping：一台一台下机/换机时能发离线告警。逻辑 VIP 永远有
+# 一台在应答，只 ping VIP 看不到单机下线。独立 job 是为了不进大屏拓扑
+# （拓扑只画 infra-fw-ping 的防火墙节点）。
+write_ping_job "infra-fw-unit-ping" "$FIREWALL_UNIT_SNMP_TARGETS"
 write_ping_job "infra-srv-ping"   "$SERVER_PING"
 
 # Infrastructure SNMP jobs for device uptime

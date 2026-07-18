@@ -353,7 +353,7 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         if not item.get("ip"):
             issues.append({"level": "bad", "path": f"devices.access_switches[{idx}].ip", "message": "接入交换机 IP 必填"})
     if (devices.get("firewall") or {}).get("ip") and not (devices.get("firewall") or {}).get("unit_snmp"):
-        issues.append({"level": "warn", "path": "devices.firewall.unit_snmp", "message": "建议填写两台物理防火墙 SNMP IP，方便查看 HA 单机状态"})
+        issues.append({"level": "warn", "path": "devices.firewall.unit_snmp", "message": "建议填写两台物理防火墙 SNMP IP，HA 单机状态和单机离线告警都靠它"})
     if not networks.get("player_subnets"):
         issues.append({"level": "warn", "path": "networks.player_subnets", "message": "没有配置选手有线网段"})
     if not networks.get("switch_management_ranges"):

@@ -1823,7 +1823,7 @@
       </section>
       <section class="config-section">
         <h3>核心/防火墙</h3>
-        <p class="config-section-note">防火墙 IP 同时用于 Ping 和 WAN 流量 SNMP；HA 物理机需要单独采集时再填物理防火墙 SNMP IP。</p>
+        <p class="config-section-note">防火墙 IP 同时用于 Ping 和 WAN 流量 SNMP；HA 物理机填物理防火墙 SNMP IP 后，单机会独立采集并有离线告警。</p>
         <div class="config-fields">
           ${configInput("devices.core.ip", "核心 IP")}
           ${configInput("devices.firewall.ip", "防火墙 IP", { type: "textarea", compact: true, rows: 1, placeholder: "可留空；多台逗号或换行分隔" })}

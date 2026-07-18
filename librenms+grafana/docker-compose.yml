@@ -178,7 +178,7 @@ services:
       DEVICE_DOWN_REQUIRE_SEEN_UP: "${DEVICE_DOWN_REQUIRE_SEEN_UP:-true}"
       DEVICE_DOWN_POLL_INTERVAL: "${DEVICE_DOWN_POLL_INTERVAL:-1}"
       DEVICE_DOWN_SAMPLE_WINDOW_SECONDS: "${DEVICE_DOWN_SAMPLE_WINDOW_SECONDS:-5}"
-      DEVICE_DOWN_JOBS: "${DEVICE_DOWN_JOBS:-infra-core-ping,infra-dist-ping,infra-fw-ping,infra-isp-ping,infra-srv-ping}"
+      DEVICE_DOWN_JOBS: "${DEVICE_DOWN_JOBS:-infra-core-ping,infra-dist-ping,infra-fw-ping,infra-fw-unit-ping,infra-isp-ping,infra-srv-ping}"
       DEVICE_ONLINE_FROM_PING: "${DEVICE_ONLINE_FROM_PING:-false}"
       DEVICE_AUTO_ADD_FROM_PING: "${DEVICE_AUTO_ADD_FROM_PING:-true}"
       DEVICE_AUTO_ADD_SNMP_JOBS: "${DEVICE_AUTO_ADD_SNMP_JOBS:-infra-core-ping,infra-dist-ping}"
