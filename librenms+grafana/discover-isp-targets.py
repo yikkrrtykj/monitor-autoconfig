@@ -175,18 +175,21 @@ def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str]) -
             "gateway": gateway,
             "name": labels.get(ifindex) or gateway,
             "wan_ip": wan_ips.get(ifindex, ""),
+            "_ifindex": ifindex,
         })
 
-    # Two lines from one carrier can share an interface label; number them so
-    # display names stay unique.
-    by_name: dict[str, int] = {}
+    # Two lines from one carrier can share an interface label; number them by
+    # ifIndex order (电信-1/电信-2) -- the same rule the bandwidth watcher uses,
+    # so ping cards and bandwidth cards for one line carry one name.
+    groups: dict[str, list[dict]] = {}
     for item in results:
-        by_name[item["name"]] = by_name.get(item["name"], 0) + 1
-    counters: dict[str, int] = {}
+        groups.setdefault(item["name"], []).append(item)
+    for name, items in groups.items():
+        if len(items) > 1:
+            for position, item in enumerate(sorted(items, key=lambda x: x["_ifindex"]), start=1):
+                item["name"] = f"{name}-{position}"
     for item in results:
-        if by_name[item["name"]] > 1:
-            counters[item["name"]] = counters.get(item["name"], 0) + 1
-            item["name"] = f"{item['name']}-{counters[item['name']]}"
+        item.pop("_ifindex", None)
     return sorted(results, key=lambda item: item["name"])
 
 

@@ -1167,9 +1167,15 @@ def _if_oper_is_up(metric, value):
 def _bandwidth_for_label(label, direction, cfg, index=None):
     lower = label.lower()
     norm = _norm_label(label)
+    # 取最具体（名字最长）的匹配：双线场景配了 "电信:500,电信2:200" 时，
+    # 端口 电信2 必须拿到自己的 200，而不是被兜底的 "电信" 抢先命中。
+    best = None
     for entry in cfg["per"]:
         if (entry["label"] and entry["label"] in lower) or (entry["norm"] and entry["norm"] in norm):
-            return entry["down"] if direction == "in" else entry["up"]
+            if best is None or len(entry["norm"]) > len(best["norm"]):
+                best = entry
+    if best is not None:
+        return best["down"] if direction == "in" else best["up"]
     if isinstance(index, int) and 0 <= index < len(cfg["per"]):
         entry = cfg["per"][index]
         return entry["down"] if direction == "in" else entry["up"]
@@ -1194,6 +1200,35 @@ def _counter_glitch_limit_bps(capacity_mbps, factor=None):
     if capacity <= 0:
         return None
     return capacity * 1000000 * factor
+
+
+def _dedupe_wan_labels(results):
+    """同名 WAN 口（双电信/双联通）按 ifIndex 排位补 -1/-2 后缀。
+
+    不加后缀时两条线会共用同一个告警状态键和卡片名，互相覆盖。后缀与
+    ISP 网关自动发现的重名编号规则一致（同样按 ifIndex 升序），带宽配置
+    写 电信-1/电信-2（或 电信1，匹配时忽略符号）即可分线绑定。单线不受影响。
+    """
+    indexes = {}
+    for sample in results:
+        try:
+            ifi = int(sample.get("if_index"))
+        except (TypeError, ValueError):
+            ifi = 2**31
+        sample["_ifindex"] = ifi
+        indexes.setdefault(sample["label"], set()).add(ifi)
+    ranks = {
+        label: {ifi: pos + 1 for pos, ifi in enumerate(sorted(values))}
+        for label, values in indexes.items()
+        if len(values) > 1
+    }
+    for sample in results:
+        label = sample["label"]
+        if label in ranks:
+            sample["label"] = f"{label}-{ranks[label][sample['_ifindex']]}"
+        sample["key"] = f"{sample['label']}|{sample['direction']}"
+        sample.pop("_ifindex", None)
+    return results
 
 
 def _bandwidth_indexes(rates):
@@ -1241,7 +1276,7 @@ def fetch_wan_rates():
                 "if_index": metric_labels.get("ifIndex"),
                 "target_ip": metric_labels.get("target_ip") or metric_labels.get("instance") or "",
             })
-    return results
+    return _dedupe_wan_labels(results)
 
 
 def log_isp_status(rates, bandwidth_cfg):

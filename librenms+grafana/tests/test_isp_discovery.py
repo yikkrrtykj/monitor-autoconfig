@@ -106,6 +106,69 @@ def test_manual_isp_ping_entries_take_precedence():
     assert payload[0]["labels"]["wan_ip"] == "100.65.1.2"
 
 
+def test_duplicate_carrier_lines_numbered_by_ifindex():
+    """双电信双联通:同名口按 ifIndex 升序编号,和带宽告警的去重规则一致。"""
+    walks = {
+        disco.OID_IF_ALIAS: {
+            f"{disco.OID_IF_ALIAS}.4": "电信",
+            f"{disco.OID_IF_ALIAS}.2": "电信",
+            f"{disco.OID_IF_ALIAS}.5": "联通",
+            f"{disco.OID_IF_ALIAS}.6": "联通",
+        },
+        disco.OID_IP_AD_ENT_IFINDEX: {
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.100.64.1.2": "2",
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.100.64.2.2": "4",
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.100.65.1.2": "5",
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.100.65.2.2": "6",
+        },
+        disco.OID_IP_AD_ENT_NETMASK: {},
+        disco.OID_CIDR_DEFAULT_NEXTHOP: {
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.100.64.1.1": "100.64.1.1",
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.100.64.2.1": "100.64.2.1",
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.100.65.1.1": "100.65.1.1",
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.100.65.2.1": "100.65.2.1",
+        },
+        disco.OID_CIDR_DEFAULT_IFINDEX: {
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.100.64.1.1": "2",
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.100.64.2.1": "4",
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.100.65.1.1": "5",
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.100.65.2.1": "6",
+        },
+    }
+    results = disco.discover_from_walks(walks, disco.wan_keywords("电信,联通"))
+    assert [(item["name"], item["gateway"]) for item in results] == [
+        ("电信-1", "100.64.1.1"),
+        ("电信-2", "100.64.2.1"),
+        ("联通-1", "100.65.1.1"),
+        ("联通-2", "100.65.2.1"),
+    ]
+
+
+def test_foreign_carrier_names_match_by_keyword():
+    """国外运营商:关键词/口名没有任何语言假设,配进 WAN 过滤即可。"""
+    walks = {
+        disco.OID_IF_ALIAS: {
+            f"{disco.OID_IF_ALIAS}.1": "Vodafone-Line",
+            f"{disco.OID_IF_ALIAS}.2": "Singtel",
+        },
+        disco.OID_IP_AD_ENT_IFINDEX: {
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.203.0.113.2": "1",
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.198.51.100.2": "2",
+        },
+        disco.OID_IP_AD_ENT_NETMASK: {},
+        disco.OID_CIDR_DEFAULT_NEXTHOP: {
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.203.0.113.1": "203.0.113.1",
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.198.51.100.1": "198.51.100.1",
+        },
+        disco.OID_CIDR_DEFAULT_IFINDEX: {
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.203.0.113.1": "1",
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.198.51.100.1": "2",
+        },
+    }
+    results = disco.discover_from_walks(walks, disco.wan_keywords("vodafone,singtel"))
+    assert {item["name"] for item in results} == {"Vodafone-Line", "Singtel"}
+
+
 def test_target_ips_parses_named_lists():
     assert disco.target_ips("FW:192.168.9.1, 192.168.9.2\ntelecom:1.2.3.4") == [
         "192.168.9.1", "192.168.9.2", "1.2.3.4",
@@ -120,5 +183,7 @@ if __name__ == "__main__":
     test_rfc1213_fallback_single_default_route()
     test_lan_default_route_and_duplicates_are_dropped()
     test_manual_isp_ping_entries_take_precedence()
+    test_duplicate_carrier_lines_numbered_by_ifindex()
+    test_foreign_carrier_names_match_by_keyword()
     test_target_ips_parses_named_lists()
     print("ISP discovery tests passed")

@@ -43,6 +43,39 @@ def test_counter_glitch_limit_disabled_or_invalid():
     assert bridge._counter_glitch_limit_bps("bad", factor=5) is None
 
 
+def test_most_specific_bandwidth_entry_wins_over_generic():
+    # "电信" 兜底在前也不能抢走 "电信2" 的精确条目
+    cfg = bridge._parse_bandwidth_config("电信:500,电信2:200")
+    assert bridge._bandwidth_for_label("电信2", "in", cfg) == 200
+    assert bridge._bandwidth_for_label("电信1", "in", cfg) == 500
+    # 带后缀的去重名（电信-2）按去符号匹配到 电信2 条目
+    assert bridge._bandwidth_for_label("电信-2", "in", cfg) == 200
+
+
+def test_duplicate_wan_labels_get_ifindex_suffixes():
+    def sample(label, if_index, direction="in"):
+        return {"key": f"{label}|{direction}", "label": label,
+                "direction": direction, "value_bps": 0.0, "if_index": if_index}
+
+    rates = bridge._dedupe_wan_labels([
+        sample("电信", "7"), sample("电信", "3"),
+        sample("电信", "7", "out"), sample("电信", "3", "out"),
+        sample("联通", "5"),
+    ])
+    labels = {(item["label"], item["direction"]) for item in rates}
+    # 双电信按 ifIndex 升序编号，两个方向后缀一致；单线联通名字不动
+    assert ("电信-1", "in") in labels and ("电信-1", "out") in labels
+    assert ("电信-2", "in") in labels and ("电信-2", "out") in labels
+    assert ("联通", "in") in labels
+    by_label = {item["label"]: item for item in rates if item["direction"] == "in"}
+    assert by_label["电信-1"]["if_index"] == "3"
+    assert by_label["电信-2"]["if_index"] == "7"
+    # 状态键跟着新名字走，两条线不再共用一个告警状态
+    assert {item["key"] for item in rates} == {
+        "电信-1|in", "电信-2|in", "电信-1|out", "电信-2|out", "联通|in",
+    }
+
+
 def test_isp_data_missing_card_states():
     alert = bridge.build_isp_data_missing_card(130, recovered=False)
     body = alert["card"]["body"]["elements"][0]["content"]
@@ -59,5 +92,7 @@ if __name__ == "__main__":
     test_named_bandwidth_still_takes_precedence_over_position()
     test_counter_glitch_limit_drops_impossible_rates()
     test_counter_glitch_limit_disabled_or_invalid()
+    test_most_specific_bandwidth_entry_wins_over_generic()
+    test_duplicate_wan_labels_get_ifindex_suffixes()
     test_isp_data_missing_card_states()
     print("ISP bandwidth tests passed")
