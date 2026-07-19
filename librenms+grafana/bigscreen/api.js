@@ -564,6 +564,15 @@
     }
   }
 
+  async function fetchApplyStatus(operationId) {
+    try {
+      const query = new URLSearchParams({ operationId: String(operationId || "") });
+      return await platformApi(`/config/apply-status?${query.toString()}`, { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, state: "unavailable", operationId, error: error.message || "apply status unavailable" };
+    }
+  }
+
   function postPlatform(path, payload, options) {
     return platformApi(path, { method: "POST", body: JSON.stringify(payload || {}), ...(options || {}) });
   }
@@ -621,6 +630,7 @@
     changePlatformPassword,
     logoutPlatformAuth,
     fetchPlatformConfig,
+    fetchApplyStatus,
     postPlatform,
     patchPlatform,
     fetchIncidents,

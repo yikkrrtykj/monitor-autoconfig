@@ -9,6 +9,9 @@ Env:
   FEISHU_BRIDGE_PORT      listen port (default 5005)
   FEISHU_ROBOT_TOKEN      Feishu bot webhook token
   FEISHU_BRIDGE_DRY_RUN   true = log payloads, never POST to Feishu
+  FEISHU_SEND_MAX_ATTEMPTS retry attempts for each Feishu delivery (default 3)
+  FEISHU_SEND_RETRY_BASE_SECONDS exponential retry base delay (default 1)
+  FEISHU_FAILED_EVENT_RETRY_SECONDS retry delay for queued syslog events (default 30)
   LIBRENMS_URL            LibreNMS internal URL (e.g. http://librenms:8000)
   LIBRENMS_API_TOKEN      LibreNMS API token (falls back to token file)
   LIBRENMS_TOKEN_FILE     path to token file written by librenms-config
@@ -78,6 +81,9 @@ from urllib import error, parse, request
 
 PORT = int(os.environ.get("FEISHU_BRIDGE_PORT", "5005"))
 DRY_RUN = os.environ.get("FEISHU_BRIDGE_DRY_RUN", "").lower() in ("1", "true", "yes", "on")
+FEISHU_SEND_MAX_ATTEMPTS = max(1, int(os.environ.get("FEISHU_SEND_MAX_ATTEMPTS", "3")))
+FEISHU_SEND_RETRY_BASE_SECONDS = max(0.0, float(os.environ.get("FEISHU_SEND_RETRY_BASE_SECONDS", "1")))
+FEISHU_FAILED_EVENT_RETRY_SECONDS = max(1, int(os.environ.get("FEISHU_FAILED_EVENT_RETRY_SECONDS", "30")))
 
 LIBRENMS_URL = os.environ.get("LIBRENMS_URL", "").rstrip("/")
 LIBRENMS_API_TOKEN = os.environ.get("LIBRENMS_API_TOKEN", "")
@@ -149,7 +155,7 @@ DEVICE_DOWN_JOBS = os.environ.get(
 DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "false").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_FROM_PING = os.environ.get("DEVICE_AUTO_ADD_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-core-ping,infra-dist-ping")
-SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "public")
+SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "global")
 UNIFI_AP_SNMP_AUTO_ADD = os.environ.get("UNIFI_AP_SNMP_AUTO_ADD", "true").lower() in ("1", "true", "yes", "on")
 UNIFI_AP_SNMP_COMMUNITY = os.environ.get("UNIFI_AP_SNMP_COMMUNITY", SNMP_COMMUNITY)
 UNIFI_AP_SNMP_ADD_RETRY_SECONDS = int(os.environ.get("UNIFI_AP_SNMP_ADD_RETRY_SECONDS", "60"))
@@ -244,6 +250,10 @@ SEVERITY_COLOR = {
 EVENT_ID_LOCK = threading.Lock()
 DEVICE_ONLINE_STATE_LOCK = threading.Lock()
 DEVICE_DOWN_STATE_LOCK = threading.Lock()
+HEALTH_LOCK = threading.Lock()
+WATCHER_THREADS = {}
+WATCHER_HEALTH = {}
+DELIVERY_HEALTH = {"lastSuccessAt": None, "lastFailureAt": None, "lastError": ""}
 
 
 def _read_int_file(path, default=0):
@@ -369,6 +379,67 @@ def log(message):
     print(f"[{datetime.now().isoformat(timespec='seconds')}] {message}", file=sys.stderr, flush=True)
 
 
+def mark_watcher_health(name, ok=True, error_message=""):
+    with HEALTH_LOCK:
+        state = WATCHER_HEALTH.setdefault(name, {})
+        state["lastPollAt"] = int(time.time())
+        if ok:
+            state["lastSuccessAt"] = state["lastPollAt"]
+            state["lastError"] = ""
+        else:
+            state["lastFailureAt"] = state["lastPollAt"]
+            state["lastError"] = str(error_message or "unknown error")[:300]
+
+
+def mark_delivery_health(ok, error_message=""):
+    with HEALTH_LOCK:
+        if ok:
+            DELIVERY_HEALTH["lastSuccessAt"] = int(time.time())
+            DELIVERY_HEALTH["lastError"] = ""
+        else:
+            DELIVERY_HEALTH["lastFailureAt"] = int(time.time())
+            DELIVERY_HEALTH["lastError"] = str(error_message or "delivery failed")[:300]
+
+
+def bridge_health_payload():
+    with HEALTH_LOCK:
+        watchers = {}
+        for name, thread in WATCHER_THREADS.items():
+            state = dict(WATCHER_HEALTH.get(name) or {})
+            state["alive"] = bool(thread.is_alive())
+            watchers[name] = state
+        delivery = dict(DELIVERY_HEALTH)
+    dead = sorted(name for name, state in watchers.items() if not state.get("alive"))
+    token_ready = bool(TOKEN) or DRY_RUN
+    ready = token_ready and not dead
+    return {
+        "ok": True,
+        "ready": ready,
+        "dryRun": DRY_RUN,
+        "tokenConfigured": bool(TOKEN),
+        "deadWatchers": dead,
+        "watchers": watchers,
+        "delivery": delivery,
+        "time": int(time.time()),
+    }
+
+
+def start_watcher(name, target):
+    def guarded():
+        mark_watcher_health(name, True)
+        try:
+            target()
+        except Exception as exc:
+            mark_watcher_health(name, False, exc)
+            log(f"[FATAL] watcher {name} stopped: {exc}")
+            raise
+    thread = threading.Thread(target=guarded, name=f"watcher-{name}", daemon=True)
+    with HEALTH_LOCK:
+        WATCHER_THREADS[name] = thread
+    thread.start()
+    return thread
+
+
 def next_event_title():
     global EVENT_ID
     with EVENT_ID_LOCK:
@@ -487,7 +558,7 @@ def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"
     if not token:
         log(f"{log_prefix} SNMP auto-add postponed for {name or ip} ({ip}): LibreNMS API token not ready")
         return ""
-    snmp_community = (community or SNMP_COMMUNITY or "public").strip()
+    snmp_community = (community or SNMP_COMMUNITY or "global").strip()
     payload = {
         "hostname": ip,
         "version": "v2c",
@@ -911,12 +982,13 @@ def build_interconnect_card(event, recovered=False):
     peer = event.get("peer_switch") or event.get("alias") or event.get("port") or "?"
     down_members = event.get("down_members") or []
     up_members = event.get("up_members") or []
+    aggregate_down = event.get("status") == "down"
     if recovered:
         subtitle = "链路聚合恢复"
         status_emoji = "✅"
         lines = [
             f"🖥 设备：{device_text}",
-            f"🔌 物理口：{_join_ports(down_members)} 已恢复",
+            f"🔌 物理口：{_join_ports(down_members) if down_members else event.get('port', '?')} 已恢复",
             f"🔗 对端交换机：{peer}",
             f"{status_emoji} 状态：链路冗余已恢复",
             f"⏳ 恢复耗时：{format_alert_duration(event.get('duration'), True)}",
@@ -924,12 +996,17 @@ def build_interconnect_card(event, recovered=False):
         ]
     else:
         subtitle = "链路聚合告警"
-        # Redundancy lost on one leg; the link still passes traffic via up_members.
+        port_text = _join_ports(down_members) if down_members else event.get("port", "?")
+        state_text = (
+            f"聚合链路 DOWN；在线成员：{_join_ports(up_members)}"
+            if aggregate_down else
+            f"冗余降低；剩 {_join_ports(up_members)} 在线"
+        )
         lines = [
             f"🖥 设备：{device_text}",
-            f"🔌 断线物理口：{_join_ports(down_members)}",
+            f"🔌 异常接口：{port_text}",
             f"🔗 对端交换机：{peer}",
-            f"⚠️ 状态：剩 {_join_ports(up_members)} 在线",
+            f"⚠️ 状态：{state_text}",
             f"⏳ 持续时间：{format_alert_duration(event.get('duration'), False)}",
             f"⏰ 时间：{ts}",
         ]
@@ -998,27 +1075,89 @@ def _make_card(title, subtitle, color, body_md):
     }
 
 
+def _feishu_response_result(response_text):
+    """Return (ok, detail) for a Feishu webhook JSON response.
+
+    Feishu reports token/permission/rate-limit failures in a JSON business code,
+    often while the HTTP status itself is 200.  Treating every HTTP 200 as a
+    success permanently loses alerts, so a recognizable zero code is required.
+    """
+    try:
+        payload = json.loads(str(response_text or "").strip())
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False, "response is not valid JSON"
+    if not isinstance(payload, dict):
+        return False, "response JSON is not an object"
+    code = payload.get("code")
+    if code is None:
+        code = payload.get("StatusCode", payload.get("status_code"))
+    try:
+        ok = int(code) == 0
+    except (TypeError, ValueError):
+        return False, "response has no recognizable business code"
+    detail = str(payload.get("msg") or payload.get("StatusMessage") or payload.get("message") or "")
+    return ok, detail or f"code={code}"
+
+
 def send_feishu(card):
     if DRY_RUN:
         log(f"[DRY] would POST card: {card['card']['header']['title']['content']}")
+        mark_delivery_health(True)
         return True
     if not TOKEN:
         log("[WARN] FEISHU_ROBOT_TOKEN empty, dropping alert (set token or enable DRY_RUN)")
+        mark_delivery_health(False, "FEISHU_ROBOT_TOKEN is empty")
         return False
     url = f"https://open.feishu.cn/open-apis/bot/v2/hook/{TOKEN}"
     data = json.dumps(card).encode("utf-8")
     req = request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    try:
-        with request.urlopen(req, timeout=5) as resp:
-            response_text = resp.read().decode("utf-8", errors="replace")
-            log(f"feishu response: {response_text[:200]}")
-        return True
-    except error.URLError as exc:
-        log(f"[ERR] feishu request failed: {exc}")
+    last_error = "delivery failed"
+    for attempt in range(1, FEISHU_SEND_MAX_ATTEMPTS + 1):
+        try:
+            with request.urlopen(req, timeout=5) as resp:
+                response_text = resp.read().decode("utf-8", errors="replace")
+            ok, detail = _feishu_response_result(response_text)
+            if ok:
+                log(f"feishu response: {response_text[:200]}")
+                mark_delivery_health(True)
+                return True
+            last_error = detail
+            log(
+                f"[ERR] feishu rejected alert attempt "
+                f"{attempt}/{FEISHU_SEND_MAX_ATTEMPTS}: {detail}; response={response_text[:200]}"
+            )
+        except error.URLError as exc:
+            last_error = str(exc)
+            log(f"[ERR] feishu request attempt {attempt}/{FEISHU_SEND_MAX_ATTEMPTS} failed: {exc}")
+        except Exception as exc:
+            last_error = str(exc)
+            log(f"[ERR] unexpected Feishu error attempt {attempt}/{FEISHU_SEND_MAX_ATTEMPTS}: {exc}")
+        if attempt < FEISHU_SEND_MAX_ATTEMPTS:
+            delay = FEISHU_SEND_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            if delay > 0:
+                time.sleep(delay)
+    mark_delivery_health(False, last_error)
+    return False
+
+
+def send_device_online_once(card, *identity_values):
+    """Ensure an online card was delivered once; persist keys only after success."""
+    clean = {str(value).strip() for value in identity_values if str(value or "").strip()}
+    if not clean:
         return False
-    except Exception as exc:
-        log(f"[ERR] unexpected: {exc}")
-        return False
+    # Serialize check -> send -> commit so the AP and LibreNMS watcher cannot
+    # both deliver the same device while still avoiding a false persisted mark.
+    with DEVICE_ONLINE_STATE_LOCK:
+        items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+        if clean & items:
+            if not clean.issubset(items):
+                items.update(clean)
+                _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
+            return True
+        if not send_feishu(card):
+            return False
+        items.update(clean)
+        return _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
 
 
 def _norm_label(value):
@@ -1326,9 +1465,11 @@ def isp_bandwidth_watcher():
         try:
             rates = fetch_wan_rates()
         except Exception as exc:
+            mark_watcher_health("isp-bandwidth", False, exc)
             log(f"[ISP] poll failed: {exc}")
             time.sleep(ISP_ALERT_POLL_INTERVAL)
             continue
+        mark_watcher_health("isp-bandwidth", True)
 
         # 数据中断守护：以前有 WAN 序列、现在整体消失（换防火墙后 SNMP 认证
         # 不通 / 接口名不再匹配 WAN 关键词 / 采集挂了），静默丢监控比误报更危险。
@@ -1386,8 +1527,6 @@ def isp_bandwidth_watcher():
                 state["clear_since"] = None
                 duration = now - state["active_since"]
                 if not state["alerting"] and duration >= ISP_ALERT_FOR_SECONDS:
-                    state["alerting"] = True
-                    state["alert_started"] = state["active_since"]
                     event = {
                         **sample,
                         "threshold_bps": threshold_bps,
@@ -1399,7 +1538,9 @@ def isp_bandwidth_watcher():
                         f"[ISP] ALERT {sample['label']} {sample['direction']} "
                         f"{format_bps(sample['value_bps'])} >= {format_bps(threshold_bps)}"
                     )
-                    send_feishu(build_isp_bandwidth_card(event, recovered=False))
+                    if send_feishu(build_isp_bandwidth_card(event, recovered=False)):
+                        state["alerting"] = True
+                        state["alert_started"] = state["active_since"]
             else:
                 state["active_since"] = None
                 if state["alerting"]:
@@ -1407,11 +1548,9 @@ def isp_bandwidth_watcher():
                         state["clear_since"] = now
                     clear_duration = now - state["clear_since"]
                     if clear_duration >= ISP_ALERT_RESOLVE_SECONDS:
-                        state["alerting"] = False
                         # 持续 = 整段饱和时长（首次越过阈值→恢复），不是 30 秒恢复防抖
                         _start = state["alert_started"] if state["alert_started"] is not None else state["clear_since"]
                         saturated_duration = now - _start
-                        state["alert_started"] = None
                         event = {
                             **sample,
                             "threshold_bps": threshold_bps,
@@ -1423,15 +1562,19 @@ def isp_bandwidth_watcher():
                             f"[ISP] RECOVER {sample['label']} {sample['direction']} "
                             f"{format_bps(sample['value_bps'])} < {format_bps(threshold_bps)}"
                         )
-                        send_feishu(build_isp_bandwidth_card(event, recovered=True))
+                        if send_feishu(build_isp_bandwidth_card(event, recovered=True)):
+                            state["alerting"] = False
+                            state["alert_started"] = None
                 else:
                     state["clear_since"] = None
 
         for key, state in list(states.items()):
             if key in seen:
                 continue
-            if state.get("alerting") and state.get("clear_since") is None:
-                state["clear_since"] = now
+            if state.get("alerting"):
+                # A vanished Prometheus series is not proof of recovery. Keep the
+                # delivered alert active until the series returns with a clear value.
+                state["clear_since"] = None
             elif state.get("clear_since") and now - state["clear_since"] >= ISP_ALERT_RESOLVE_SECONDS:
                 states.pop(key, None)
 
@@ -1444,17 +1587,18 @@ def classify_interconnect(lag_up, member_ups):
       healthy  - every member up (nothing to report)
       degraded - some members down but the bundle is still up (redundancy lost,
                  traffic still flows -> this is the case worth alerting)
-      down     - the whole bundle is down -> the peer goes unreachable and the
-                 device-down watcher alerts it, so we stay quiet here
+      down     - aggregate protocol/oper state is down, or every member is down
       unknown  - no member visibility (switch lacks ifStackTable); nothing to say
     """
     if not member_ups:
-        return "unknown"
+        return "down" if lag_up is False else "unknown"
+    if not lag_up:
+        return "down"
     any_down = not all(member_ups)
     any_up = any(member_ups)
     if not any_down:
         return "healthy"
-    if not any_up or not lag_up:
+    if not any_up:
         return "down"
     return "degraded"
 
@@ -1576,9 +1720,11 @@ def interconnect_watcher():
         try:
             ports = fetch_interconnect_ports(jobs_regex)
         except Exception as exc:
+            mark_watcher_health("interconnect", False, exc)
             log(f"[LINK] poll failed: {exc}")
             time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
             continue
+        mark_watcher_health("interconnect", True)
 
         if now - last_status_log >= 60:
             degraded = sum(1 for p in ports if classify_interconnect(p["lag_up"], [m["up"] for m in p["members"]]) == "degraded")
@@ -1595,20 +1741,19 @@ def interconnect_watcher():
                 "down_since": None,
                 "alerting": False,
                 "down_members": [],
+                "handoff_logged": False,
             })
 
-            # Only a degraded bundle (a member down while the link still passes
-            # traffic via its peers) is worth an interconnect alert. A fully-down
-            # bundle is suppressed here -- the peer switch goes unreachable and the
-            # device-down watcher reports that instead. Healthy/unknown -> nothing.
-            if status == "degraded":
+            # Alert both reduced redundancy and a fully/protocol-down aggregate.
+            # The peer may remain reachable through another path, so handing the
+            # latter off to device-down can otherwise miss the failure entirely.
+            if status in ("degraded", "down"):
                 down_members = [m["name"] for m in port["members"] if not m["up"]]
                 if state["down_since"] is None:
                     state["down_since"] = now
                 duration = max(0, now - state["down_since"])
                 state["down_members"] = down_members
                 if not state["alerting"] and duration >= INTERCONNECT_ALERT_FOR_SECONDS:
-                    state["alerting"] = True
                     # Peer switch from LLDP: look up the down member ports first,
                     # then the aggregate; save it so recovery names it too.
                     peer = resolve_peer_switch(peer_map, port["ip"], down_members + [port["port"]])
@@ -1618,8 +1763,11 @@ def interconnect_watcher():
                     event["up_members"] = [m["name"] for m in port["members"] if m["up"]]
                     event["peer_switch"] = peer
                     event["duration"] = duration
-                    log(f"[LINK] ALERT {event['device']} {event['port']} degraded, down member(s)={down_members} peer={peer or '-'}")
-                    send_feishu(build_interconnect_card(event, recovered=False))
+                    event["status"] = status
+                    log(f"[LINK] ALERT {event['device']} {event['port']} status={status}, down member(s)={down_members} peer={peer or '-'}")
+                    if send_feishu(build_interconnect_card(event, recovered=False)):
+                        state["alerting"] = True
+                        state["handoff_logged"] = False
             else:
                 if state["alerting"]:
                     if status == "healthy":
@@ -1628,14 +1776,17 @@ def interconnect_watcher():
                         event["up_members"] = [m["name"] for m in port["members"]]
                         event["peer_switch"] = state.get("peer_switch") or ""
                         event["duration"] = max(0, now - (state["down_since"] or now))
+                        event["status"] = "healthy"
                         log(f"[LINK] RECOVER {event['device']} {event['port']} members back up")
-                        send_feishu(build_interconnect_card(event, recovered=True))
-                    else:
-                        # Bundle went fully down -> handed off to the device-down watcher.
-                        log(f"[LINK] {port['device']} {port['port']} fully down; handing off to device-down alert")
-                state["alerting"] = False
-                state["down_since"] = None
-                state["down_members"] = []
+                        if send_feishu(build_interconnect_card(event, recovered=True)):
+                            state["alerting"] = False
+                            state["down_since"] = None
+                            state["down_members"] = []
+                            state["handoff_logged"] = False
+                else:
+                    state["down_since"] = None
+                    state["down_members"] = []
+                    state["handoff_logged"] = False
 
         time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
 
@@ -1682,6 +1833,11 @@ def build_peer_map(edges):
         peer = str(edge.get("to_sysname") or edge.get("to_ip") or "").strip()
         if ip and port and peer:
             peers[(ip, port)] = peer
+        reverse_ip = str(edge.get("to_ip") or "").strip()
+        reverse_port = str(edge.get("to_port") or "").strip()
+        reverse_peer = str(edge.get("from_sysname") or edge.get("from_ip") or "").strip()
+        if reverse_ip and reverse_port and reverse_peer:
+            peers[(reverse_ip, reverse_port)] = reverse_peer
     return peers
 
 
@@ -1813,9 +1969,11 @@ def device_down_watcher():
         try:
             results = prometheus_query(query)
         except Exception as exc:
+            mark_watcher_health("device-down", False, exc)
             log(f"[DOWN] poll failed: {exc}")
             time.sleep(DEVICE_DOWN_POLL_INTERVAL)
             continue
+        mark_watcher_health("device-down", True)
 
         # Which targets are unreachable right now (raw, immediate) -- used to tell
         # a root-cause outage from its downstream victims.
@@ -1869,6 +2027,7 @@ def device_down_watcher():
                 "last_up_at": None,
                 "up_since": None,
                 "online_sent": False,
+                "online_pending": False,
                 "name": "",
                 "ip": "",
                 "job": "",
@@ -1903,13 +2062,13 @@ def device_down_watcher():
                             state["suppressed_logged"] = True
                     else:
                         state["suppressed_logged"] = False
-                        state["alerting"] = True
-                        state["seen_up"] = True
                         offline = max(0, now - state["down_since"])
                         downstream = count_down_descendants(ip, parents, unreachable) if DEVICE_DOWN_ROOT_CAUSE_ENABLED else 0
                         log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN downstream={downstream}")
-                        send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job, downstream=downstream))
-                        save_device_down_states(states)
+                        if send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job, downstream=downstream)):
+                            state["alerting"] = True
+                            state["seen_up"] = True
+                            save_device_down_states(states)
             else:
                 previous_down_since = state.get("down_since")
                 state["last_up_at"] = sample_ts or now
@@ -1928,13 +2087,16 @@ def device_down_watcher():
                         auto_add_attempted.add(ip)
                         add_librenms_snmp_device(ip)
                     if first_up_after_candidate_down and DEVICE_ONLINE_FROM_PING and not state["online_sent"]:
-                        state["online_sent"] = True
+                        state["online_pending"] = True
                         log(f"[DOWN] online detected from ping: {job} {name} ({ip})")
-                        send_feishu(build_device_online_card({
+                if DEVICE_ONLINE_FROM_PING and state.get("online_pending") and not state["online_sent"]:
+                    if send_device_online_once(build_device_online_card({
                             "display": name,
                             "ip": ip,
                             "os": "Ping only",
-                        }))
+                        }), name, ip):
+                        state["online_sent"] = True
+                        state["online_pending"] = False
                 if state["alerting"]:
                     # Debounce recovery: wait until the target has been continuously
                     # UP for recover_stable seconds before sending the recovery card,
@@ -1947,15 +2109,14 @@ def device_down_watcher():
                     offline = max(0, recovered_at - (previous_down_since or recovered_at))
                     stable_for = now - recovered_at
                     log(f"[DOWN] RECOVER {job} {name} ({ip}) offline={int(offline)}s stable={int(stable_for)}s")
-                    send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline, job=job))
-                    state["alerting"] = False
-                    state["down_since"] = None
-                    state["up_since"] = None
+                    if send_feishu(build_device_down_card(name, ip, recovered=True, offline_seconds=offline, job=job)):
+                        state["alerting"] = False
+                        state["down_since"] = None
+                        state["up_since"] = None
                     save_device_down_states(states)
                 else:
                     state["down_since"] = None
                     state["up_since"] = None
-                state["alerting"] = False
 
         time.sleep(DEVICE_DOWN_POLL_INTERVAL)
 
@@ -2204,9 +2365,11 @@ def unifi_ap_watcher():
         try:
             results = prometheus_query(query)
         except Exception as exc:
+            mark_watcher_health("unifi-ap", False, exc)
             log(f"[AP] poll failed: {exc}")
             time.sleep(UNIFI_AP_POLL_INTERVAL)
             continue
+        mark_watcher_health("unifi-ap", True)
 
         metric_online = _ap_online_metric_map()
         controller_aps = fetch_unifi_controller_aps_cached()
@@ -2289,14 +2452,15 @@ def unifi_ap_watcher():
                     )
                     if add_result == "exists":
                         snmp_confirmed_exists.add(ip)
-                    if add_result in ("added", "exists") and mark_device_online_notified(name, ip):
+                    if add_result in ("added", "exists"):
                         action = "added" if add_result == "added" else "first seen (already in LibreNMS)"
-                        log(f"[AP] AP deployment notified: {name} ({ip}), {action}")
-                        send_feishu(build_device_online_card({
+                        card = build_device_online_card({
                             "display": name,
                             "ip": ip,
                             "hardware": info.get("model") or "",
-                        }))
+                        })
+                        if send_device_online_once(card, name, ip):
+                            log(f"[AP] AP deployment notification confirmed: {name} ({ip}), {action}")
             if ip and sync_name and not add_attempted:
                 last_sync = name_sync_attempted.get(ip, 0)
                 if now - last_sync >= UNIFI_AP_NAME_SYNC_SECONDS:
@@ -2318,10 +2482,12 @@ def unifi_ap_watcher():
             if state["alerting"]:
                 offline = max(0, now - (state.get("down_since") or now))
                 log(f"[AP] RECOVER {name} ({state['ip']}) offline={int(offline)}s")
-                send_feishu(build_ap_down_card(name, state["ip"], state["model"],
-                                               recovered=True, offline_seconds=offline))
-            state["alerting"] = False
-            state["down_since"] = None
+                if send_feishu(build_ap_down_card(name, state["ip"], state["model"],
+                                                  recovered=True, offline_seconds=offline)):
+                    state["alerting"] = False
+                    state["down_since"] = None
+            else:
+                state["down_since"] = None
 
         # Previously-seen APs now missing => down after debounce.
         for key, state in list(states.items()):
@@ -2338,12 +2504,12 @@ def unifi_ap_watcher():
             if state.get("down_since") is None:
                 state["down_since"] = state.get("last_seen") or now
             if not state["alerting"] and now - state["down_since"] >= UNIFI_AP_DOWN_FOR_SECONDS:
-                state["alerting"] = True
                 offline = max(0, now - state["down_since"])
                 name = state.get("name") or key
                 log(f"[AP] ALERT {name} ({state['ip']}) DOWN")
-                send_feishu(build_ap_down_card(name, state["ip"], state["model"],
-                                               recovered=False, offline_seconds=offline))
+                if send_feishu(build_ap_down_card(name, state["ip"], state["model"],
+                                                  recovered=False, offline_seconds=offline)):
+                    state["alerting"] = True
 
         if now - last_status_log >= 60:
             down = sum(1 for s in states.values() if s.get("alerting"))
@@ -2579,6 +2745,7 @@ def syslog_watcher():
     _recent_priority_ports = {}
     _pending_events = {}
     _active_events = {}
+    _failed_events = {}
     rate_limit = max(1, SYSLOG_EVENT_RATE_LIMIT)
     network_realert = max(rate_limit, SYSLOG_REALERT_SECONDS)
     recover_stable = max(0, SYSLOG_RECOVER_STABLE_SECONDS)
@@ -2628,20 +2795,37 @@ def syslog_watcher():
                 active.pop("recovering_since", None)
         dedupe_key = "|".join([host, event.get("dedupe") or event.get("kind") or message[:120]])
         if now - _last_sent.get(dedupe_key, 0) >= network_realert:
-            _last_sent[dedupe_key] = now
             log(
                 f"[SYSLOG] {event.get('kind')} from {host} "
                 f"port={event.get('local_port') or event.get('port') or '-'}"
             )
             sent = send_feishu(build_network_syslog_card(host, message, event))
-            if sent and SYSLOG_RECOVERY_ENABLED and _network_event_priority(event.get("kind")) > 0 and port:
-                _active_events[_port_key(host, port)] = {
+            if sent:
+                _last_sent[dedupe_key] = now
+                _failed_events.pop(dedupe_key, None)
+                if SYSLOG_RECOVERY_ENABLED and _network_event_priority(event.get("kind")) > 0 and port:
+                    _active_events[_port_key(host, port)] = {
+                        "host": host,
+                        "message": message,
+                        "event": event,
+                        "started": now,
+                    }
+            else:
+                previous = _failed_events.get(dedupe_key, {})
+                _failed_events[dedupe_key] = {
                     "host": host,
                     "message": message,
                     "event": event,
-                    "started": now,
+                    "retry_at": now + FEISHU_FAILED_EVENT_RETRY_SECONDS,
+                    "attempts": int(previous.get("attempts", 0)) + 1,
                 }
         _remember_recent_event(host, event, now)
+
+    def _flush_failed_events(now):
+        for item in list(_failed_events.values()):
+            if now < item.get("retry_at", 0):
+                continue
+            _send_network_event(item["host"], item["message"], item["event"], now)
 
     def _drop_pending_lower_for(host, port, priority):
         key = _port_key(host, port)
@@ -2692,7 +2876,7 @@ def syslog_watcher():
             f"[SYSLOG] RECOVER {event.get('kind')} from {active['host']} "
             f"port={_network_event_port(event) or '-'} duration={int(duration)}s"
         )
-        send_feishu(build_network_syslog_card(
+        return send_feishu(build_network_syslog_card(
             active["host"], active["message"], event, recovered=True, duration=duration,
         ))
 
@@ -2705,8 +2889,11 @@ def syslog_watcher():
         if not active:
             return False
         if recover_stable <= 0:
-            _active_events.pop(key, None)
-            _emit_recovery(active, now)
+            active["recovering_since"] = now
+            if _emit_recovery(active, now):
+                _active_events.pop(key, None)
+            else:
+                active["recovery_retry_at"] = now + FEISHU_FAILED_EVENT_RETRY_SECONDS
             return True
         # Debounce: the port must stay clear for recover_stable before we call it
         # recovered; a re-fire (in _send_network_event) clears this timestamp.
@@ -2714,15 +2901,17 @@ def syslog_watcher():
         return True
 
     def _flush_recoveries(now):
-        if recover_stable <= 0:
-            return
         for key, active in list(_active_events.items()):
             started = active.get("recovering_since")
-            if started is not None and now - started >= recover_stable:
-                _active_events.pop(key, None)
-                _emit_recovery(active, now)
+            retry_at = active.get("recovery_retry_at", 0)
+            if started is not None and now - started >= recover_stable and now >= retry_at:
+                if _emit_recovery(active, now):
+                    _active_events.pop(key, None)
+                else:
+                    active["recovery_retry_at"] = now + FEISHU_FAILED_EVENT_RETRY_SECONDS
 
     while not os.path.exists(SYSLOG_FILE):
+        mark_watcher_health("syslog", False, f"waiting for {SYSLOG_FILE}")
         time.sleep(5)
 
     try:
@@ -2730,14 +2919,18 @@ def syslog_watcher():
         f.seek(0, 2)
         current_ino = os.fstat(f.fileno()).st_ino
     except OSError as exc:
+        mark_watcher_health("syslog", False, exc)
         log(f"[SYSLOG] cannot open {SYSLOG_FILE}: {exc}")
         return
 
     while True:
+        mark_watcher_health("syslog", True)
+        _flush_failed_events(time.time())
         _flush_pending_events(time.time())
         _flush_recoveries(time.time())
         line = f.readline()
         if not line:
+            _flush_failed_events(time.time())
             _flush_pending_events(time.time())
             _flush_recoveries(time.time())
             time.sleep(0.5)
@@ -2818,14 +3011,17 @@ def device_watcher():
         try:
             token = _librenms_token()
             if not token:
+                mark_watcher_health("device-online", False, "LibreNMS token unavailable")
                 log("[WATCHER] token lost, skipping poll")
                 time.sleep(SWITCH_WATCH_INTERVAL)
                 continue
             devices = fetch_librenms_devices(token)
         except Exception as exc:
+            mark_watcher_health("device-online", False, exc)
             log(f"[WATCHER] poll failed: {exc}")
             time.sleep(SWITCH_WATCH_INTERVAL)
             continue
+        mark_watcher_health("device-online", True)
 
         with DEVICE_ONLINE_STATE_LOCK:
             persisted_notified = _load_json_set(DEVICE_ONLINE_STATE_FILE)
@@ -2885,10 +3081,10 @@ def device_watcher():
                 else:
                     online_dev["hardware"] = model
                 log(f"[WATCHER] new SNMP device detected: {_best_device_name(online_dev)} ({ip})")
-                send_feishu(build_device_online_card(online_dev))
-                notified.update(keys)
-                model_wait_started.pop(pending_key, None)
-                changed = True
+                if send_device_online_once(build_device_online_card(online_dev), *keys):
+                    notified.update(keys)
+                    model_wait_started.pop(pending_key, None)
+                    changed = True
 
         if changed:
             with DEVICE_ONLINE_STATE_LOCK:
@@ -2930,15 +3126,18 @@ def sysname_change_watcher():
     while True:
         token = _librenms_token()
         if not token:
+            mark_watcher_health("sysname-change", False, "LibreNMS token unavailable")
             log("[SYSNAME] no API token yet, retrying...")
             time.sleep(SYSNAME_CHANGE_POLL_INTERVAL)
             continue
         try:
             devices = fetch_librenms_devices(token)
         except Exception as exc:
+            mark_watcher_health("sysname-change", False, exc)
             log(f"[SYSNAME] poll failed: {exc}")
             time.sleep(SYSNAME_CHANGE_POLL_INTERVAL)
             continue
+        mark_watcher_health("sysname-change", True)
 
         current = {}
         for dev in devices:
@@ -2953,7 +3152,10 @@ def sysname_change_watcher():
             prev_name = str((snapshot.get(device_id) or {}).get("sysName") or "").strip()
             if seeded and prev_name and prev_name != sys_name:
                 log(f"[SYSNAME] CHANGE device_id={device_id} {prev_name} -> {sys_name} ({ip})")
-                send_feishu(build_sysname_change_card(prev_name, sys_name, ip=ip, hostname=hostname))
+                if not send_feishu(build_sysname_change_card(prev_name, sys_name, ip=ip, hostname=hostname)):
+                    # Retain the previous snapshot so the same change is retried
+                    # on the next successful LibreNMS poll.
+                    current[device_id] = snapshot[device_id]
 
         snapshot = current
         _save_json_dict(SYSNAME_STATE_FILE, snapshot)
@@ -3012,8 +3214,11 @@ class Handler(BaseHTTPRequestHandler):
         card = build_librenms_card(payload)
         rule_name = payload.get("name") or payload.get("rule") or "LibreNMS 告警"
         log(f"librenms alert: {rule_name} state={payload.get('state')}")
-        send_feishu(card)
-        return self._send(200, b"OK")
+        if send_feishu(card):
+            return self._send(200, b"OK")
+        # A non-2xx response tells LibreNMS that transport delivery failed and
+        # preserves its opportunity to retry instead of acknowledging a lost alert.
+        return self._send(502, b"Feishu delivery failed")
 
     def _handle_test_alert(self):
         self._read_json()  # drain body
@@ -3029,7 +3234,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            return self._send(200, b"OK")
+            body = json.dumps(bridge_health_payload(), ensure_ascii=False).encode("utf-8")
+            return self._send(200, body, "application/json; charset=utf-8")
         return self._send(404, b"not found")
 
     def log_message(self, fmt, *args):
@@ -3043,16 +3249,21 @@ def main():
 
     if LIBRENMS_URL:
         log(f"[WATCHER] device watcher enabled (librenms_url={LIBRENMS_URL})")
-        threading.Thread(target=device_watcher, daemon=True).start()
-        threading.Thread(target=sysname_change_watcher, daemon=True).start()
+        start_watcher("device-online", device_watcher)
+        if SYSNAME_CHANGE_ALERT_ENABLED:
+            start_watcher("sysname-change", sysname_change_watcher)
     else:
         log("[WATCHER] LIBRENMS_URL not set, device watcher disabled")
 
     if PROMETHEUS_URL:
-        threading.Thread(target=isp_bandwidth_watcher, daemon=True).start()
-        threading.Thread(target=interconnect_watcher, daemon=True).start()
-        threading.Thread(target=device_down_watcher, daemon=True).start()
-        threading.Thread(target=unifi_ap_watcher, daemon=True).start()
+        if ISP_ALERT_ENABLED:
+            start_watcher("isp-bandwidth", isp_bandwidth_watcher)
+        if INTERCONNECT_ALERT_ENABLED:
+            start_watcher("interconnect", interconnect_watcher)
+        if DEVICE_DOWN_ENABLED:
+            start_watcher("device-down", device_down_watcher)
+        if UNIFI_AP_ALERT_ENABLED:
+            start_watcher("unifi-ap", unifi_ap_watcher)
 
     if SYSLOG_WATCH_ENABLED:
         log(
@@ -3062,7 +3273,7 @@ def main():
             f"correlation={SYSLOG_CORRELATION_SECONDS}s, "
             f"recovery={SYSLOG_RECOVERY_ENABLED})"
         )
-        threading.Thread(target=syslog_watcher, daemon=True).start()
+        start_watcher("syslog", syslog_watcher)
     else:
         log("[SYSLOG] security watcher disabled")
 

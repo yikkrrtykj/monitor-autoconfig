@@ -133,32 +133,29 @@ def snmp_sysname(ip: str, community: str, timeout: int = 1) -> str:
 
 def discover(ips, community, probe_snmp=snmp_sysname, probe_ping=ping_alive,
              workers=32, ping_timeout=1, snmp_timeout=1) -> dict[str, str]:
-    """Map each live IP to its display name. ICMP gates liveness first (cheap),
-    then only reachable hosts are asked for SNMP -- so a sparse /24 stays fast.
-    SNMP hostname wins; a reachable host without SNMP keeps its IP; unreachable
-    hosts are dropped. If ICMP finds nothing (e.g. unavailable in the runtime),
-    fall back to an SNMP sweep so discovery still works."""
+    """Map SNMP-responsive switch candidates to their display names.
+
+    ICMP is only a diagnostic hint: it cannot prove a host is a switch, and an
+    ACL may block ping on a perfectly healthy switch. Every bounded candidate
+    is therefore SNMP-probed; ping-only hosts are excluded, while SNMP-live,
+    ICMP-blocked devices remain discoverable.
+    """
     if not ips:
         return {}
     workers = max(1, workers)
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        alive = [ip for ip, ok in zip(ips, executor.map(lambda ip: probe_ping(ip, ping_timeout), ips)) if ok]
-
-    # ICMP normally gates liveness. If it answered for nobody (e.g. ping is not
-    # usable in the runtime), sweep every address with SNMP instead and keep
-    # only the ones that actually respond.
-    ping_gated = bool(alive)
-    scan = alive if ping_gated else list(ips)
+        ping_alive_map = dict(zip(ips, executor.map(lambda ip: probe_ping(ip, ping_timeout), ips)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        names = list(executor.map(lambda ip: probe_snmp(ip, community, snmp_timeout), scan))
+        names = list(executor.map(lambda ip: probe_snmp(ip, community, snmp_timeout), ips))
 
     results: dict[str, str] = {}
-    for ip, name in zip(scan, names):
+    for ip, name in zip(ips, names):
         if name and not looks_like_ip(name):
             results[ip] = name          # SNMP hostname wins
-        elif ping_gated:
-            results[ip] = ip            # reachable but no SNMP -> IP placeholder
-        # else: sweep mode without SNMP -> liveness unconfirmed, drop
+        elif name:
+            results[ip] = ip            # SNMP answered but sysName itself is an IP
+        elif ping_alive_map.get(ip):
+            print(f"[switch-discovery] skip ping-only non-SNMP host {ip}", file=sys.stderr)
     return results
 
 

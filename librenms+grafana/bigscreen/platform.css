@@ -1250,6 +1250,23 @@
   padding: 0 9px;
 }
 
+/* Number spinners invite accidental edits and focused number inputs also
+   react to the mouse wheel. JavaScript removes focus on wheel; these rules
+   remove the matching arrow controls without weakening numeric validation. */
+.config-field input[type="number"],
+.config-list-row input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.config-field input[type="number"]::-webkit-inner-spin-button,
+.config-field input[type="number"]::-webkit-outer-spin-button,
+.config-list-row input[type="number"]::-webkit-inner-spin-button,
+.config-list-row input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
 .config-field textarea {
   min-height: 54px;
   resize: vertical;

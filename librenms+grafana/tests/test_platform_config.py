@@ -95,7 +95,6 @@ def test_blank_yaml_values_are_empty_strings_and_gateway_can_be_empty():
     config = platform_config.parse_simple_yaml("""
 event:
   name:
-  public_base_url:
 networks:
   player_gateways:
 devices:
@@ -110,7 +109,6 @@ isp:
       gateway:
 """)
     assert config["event"]["name"] == ""
-    assert config["event"]["public_base_url"] == ""
     assert config["isp"]["links"][0]["gateway"] == ""
     env = platform_config.render_env(config)
     # A blank player_gateways parses cleanly; the gateway then defaults to the
@@ -330,6 +328,85 @@ def test_runtime_allows_duplicate_sysnames_for_identical_aps():
     script = (ROOT / "librenms-auto-config.sh").read_text(encoding="utf-8")
     assert "config:set allow_duplicate_sysName true" in script
 
+
+def test_yaml_dump_and_parse_round_trip_escaped_strings():
+    original = {
+        "event": {
+            "name": 'Arena "A" \\ Main',
+            "subtitle": "line one\nline two # final",
+        },
+        "devices": {"core": {"ip": "192.168.10.254"}},
+    }
+    rendered = platform_config.dump_simple_yaml(original)
+    assert platform_config.parse_simple_yaml(rendered) == original
+
+
+def test_env_round_trip_preserves_spaces_hash_quotes_and_backslashes(tmp_path):
+    env_path = tmp_path / ".env"
+    values = {
+        "SNMP_COMMUNITY": 'event #1 "main" \\ site',
+        "PLAIN": "ok",
+    }
+    env_path.write_text(platform_config.merge_env_file(env_path, values), encoding="utf-8")
+    assert platform_config.read_env(env_path) == values
+
+
+def test_validation_rejects_invalid_network_and_numeric_values():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 999.999.999.999
+  stage_switches:
+    - name: bad
+      ip: bad-ip
+networks:
+  player_vlan: 9999
+  wireless_vlan: 0
+  player_subnets: not-a-cidr
+  player_gateways: also-bad
+  switch_management_ranges: 192.168.0.0/16
+isp:
+  saturation_percent: -1
+  down_for_seconds: 0
+  links:
+    - ip: 203.0.113.999
+      ping: nope
+      bandwidth_mbps: -100
+""")
+    bad_paths = {item["path"] for item in platform_config.validate_config(config) if item["level"] == "bad"}
+    assert "devices.core.ip" in bad_paths
+    assert "devices.stage_switches[0].ip" in bad_paths
+    assert "networks.player_vlan[0]" in bad_paths
+    assert "networks.wireless_vlan[0]" in bad_paths
+    assert "networks.player_subnets[0]" in bad_paths
+    assert "networks.player_gateways[0]" in bad_paths
+    assert "networks.switch_management_ranges[0]" in bad_paths
+    assert "isp.saturation_percent" in bad_paths
+    assert "isp.down_for_seconds" in bad_paths
+    assert "isp.links[0].ip" in bad_paths
+    assert "isp.links[0].ping" in bad_paths
+    assert "isp.links[0].bandwidth_mbps" in bad_paths
+
+
+def test_validation_reports_wrong_section_types_without_crashing():
+    issues = platform_config.validate_config({
+        "devices": ["not", "an", "object"],
+        "networks": "bad",
+        "isp": {"links": "bad"},
+    })
+    paths = {item["path"] for item in issues if item["level"] == "bad"}
+    assert {"devices", "networks", "isp.links"}.issubset(paths)
+    # Rendering invalid sections is safe after validation, so the API can return
+    # structured issues instead of an AttributeError/HTTP 500.
+    assert isinstance(platform_config.render_env({"devices": [], "networks": "bad"}), dict)
+
+
+def test_unifi_profile_can_be_disabled_without_dropping_other_profiles():
+    existing = {"COMPOSE_PROFILES": "metrics,unifi"}
+    disabled = platform_config.render_env({"devices": {"core": {"ip": "192.168.10.254"}}, "unifi": {"enabled": False}}, existing)
+    enabled = platform_config.render_env({"devices": {"core": {"ip": "192.168.10.254"}}, "unifi": {"enabled": True}}, existing)
+    assert disabled["COMPOSE_PROFILES"] == "metrics"
+    assert enabled["COMPOSE_PROFILES"] == "metrics,unifi"
 
 if __name__ == "__main__":
     test_parse_validate_render_env()

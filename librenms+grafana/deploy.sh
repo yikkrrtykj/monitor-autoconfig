@@ -5,16 +5,15 @@
 
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
 env_value() {
   key=$1
   file=${2:-.env}
   [ -f "$file" ] || return 1
-  value=$(sed -n "s/^${key}=//p" "$file" | tail -n 1)
-  [ -n "$value" ] || return 1
-  printf '%s' "$value"
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 "$SCRIPT_DIR/platform_config.py" env-get "$file" "$key"
 }
 
 migrate_env_default() {
@@ -22,7 +21,7 @@ migrate_env_default() {
   old=$2
   new=$3
   [ -f .env ] || return 0
-  current=$(sed -n "s/^${key}=//p" .env | tail -n 1)
+  current=$(env_value "$key" .env 2>/dev/null || true)
   if [ "$current" = "$old" ]; then
     tmp_env=$(mktemp)
     sed "s|^${key}=.*|${key}=${new}|" .env > "$tmp_env" && mv "$tmp_env" .env
@@ -62,6 +61,38 @@ if [ ! -f .env ]; then
     echo "[deploy] ERROR: .env and .env.example are both missing." >&2
     exit 1
   fi
+fi
+
+sync_env_from_config() {
+  [ -f "$SCRIPT_DIR/event-config.yml" ] || return 0
+  command -v python3 >/dev/null 2>&1 || {
+    echo "[deploy] ERROR: python3 is required to validate event-config.yml." >&2
+    return 1
+  }
+  if (cd "$SCRIPT_DIR" && python3 - <<'PY'
+from pathlib import Path
+from platform_config import parse_simple_yaml, render_env, read_env, merge_env_file, validate_config
+cfg = parse_simple_yaml(Path("event-config.yml").read_text(encoding="utf-8"))
+if not isinstance(cfg, dict):
+    raise SystemExit("event-config.yml is not a mapping")
+bad = [item for item in validate_config(cfg) if item.get("level") == "bad"]
+if bad:
+    for item in bad:
+        print(f"{item.get('path')}: {item.get('message')}")
+    raise SystemExit("event-config.yml has blocking validation errors")
+env = render_env(cfg, read_env(Path(".env")))
+Path(".env").write_text(merge_env_file(Path(".env"), env), encoding="utf-8")
+PY
+  ); then
+    echo "[deploy] .env synced from event-config.yml"
+  else
+    echo "[deploy] ERROR: could not validate/sync .env from event-config.yml" >&2
+    return 1
+  fi
+}
+
+if ! sync_env_from_config; then
+  exit 1
 fi
 
 migrate_legacy_defaults

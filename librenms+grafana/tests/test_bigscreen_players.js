@@ -1,4 +1,5 @@
 const assert = require("assert");
+const fs = require("fs");
 const path = require("path");
 
 const {
@@ -82,5 +83,12 @@ const grouped = groupPlayersBySeat([
 ]);
 assert.strictEqual(grouped.get("1|1").length, 2);
 assert.strictEqual(grouped.get("1|2").length, 1);
+
+// Current status must reflect the most recent scrape, not "any success in the
+// last 90 seconds", which kept disconnected players falsely online.
+const appSource = fs.readFileSync(path.resolve(__dirname, "../bigscreen/app.js"), "utf8");
+assert.ok(appSource.includes('const playerSnapshotWindow = "15s"'));
+assert.ok(appSource.includes("last_over_time(probe_success"));
+assert.ok(!appSource.includes("max_over_time(probe_success{${selector}}[${playerSnapshotWindow}])"));
 
 console.log("bigscreen players tests passed");

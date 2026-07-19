@@ -104,6 +104,31 @@ def test_http_auth_flow():
             assert status == 200
             assert payload["mustChangePassword"] is False
             assert "HttpOnly" in headers["Set-Cookie"]
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+
+            observed = {}
+
+            def fake_save(text, actor, note):
+                observed.update(text=text, actor=actor, note=note)
+                return {"ok": True}
+
+            api.save_config = fake_save
+            status, _, payload = request_json(f"{base_url}/config/save", {
+                "text": "event: {}",
+                "actor": "forged-admin",
+                "note": "audit",
+            }, cookie=cookie)
+            assert status == 200
+            assert payload["ok"] is True
+            assert observed["actor"] == "admin"
+
+            api.MAX_REQUEST_BODY_BYTES = 8
+            status, _, payload = request_json(f"{base_url}/auth/login", {
+                "username": "admin",
+                "password": "anything",
+            })
+            assert status == 413
+            assert payload["error"] == "请求内容过大"
         finally:
             server.shutdown()
             thread.join(timeout=5)

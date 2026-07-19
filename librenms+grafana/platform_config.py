@@ -9,10 +9,13 @@ does not need PyYAML.
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 
@@ -42,7 +45,14 @@ def _scalar(value: str) -> Any:
     if value in ("[]", "{}"):
         return [] if value == "[]" else {}
     if value[0:1] == value[-1:] and value[:1] in ("'", '"'):
-        return value[1:-1]
+        if value.startswith('"'):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid quoted scalar: {value}") from exc
+        # YAML single-quoted strings escape a literal quote by doubling it;
+        # backslashes otherwise stay literal.
+        return value[1:-1].replace("''", "'")
     lower = value.lower()
     if lower in ("true", "yes", "on"):
         return True
@@ -308,68 +318,227 @@ def isp_bandwidth_config(isp: dict[str, Any]) -> str:
     return ",".join(entries)
 
 
+def compose_profiles(existing: Any, unifi_enabled: bool) -> str:
+    profiles = [item.strip() for item in str(existing or "").split(",") if item.strip()]
+    profiles = [item for item in profiles if item != "unifi"]
+    if unifi_enabled:
+        profiles.append("unifi")
+    return ",".join(dict.fromkeys(profiles))
+
+
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
-    config = dict(config or {})
-    config.setdefault("event", {})
-    config.setdefault("networks", {})
-    config.setdefault("devices", {})
-    config.setdefault("isp", {})
-    config.setdefault("unifi", {})
-    config.setdefault("alerts", {})
-    config.setdefault("security", {})
-    config.setdefault("snmp", {})
+    config = dict(config) if isinstance(config, dict) else {}
+    for section in ("event", "networks", "devices", "isp", "unifi", "alerts", "security", "snmp"):
+        value = config.get(section)
+        config[section] = dict(value) if isinstance(value, dict) else {}
     networks = config["networks"]
     if not networks.get("firewall_management_ranges"):
         networks["firewall_management_ranges"] = "192.168.9.0/24"
     devices = config["devices"]
+    for key in ("switches", "stage_switches", "access_switches", "servers"):
+        if key in devices and not isinstance(devices[key], list):
+            devices[key] = []
     devices.setdefault("switches", [])
     if "stage_switches" not in devices:
         devices["stage_switches"] = devices.get("switches") or []
     devices.setdefault("access_switches", [])
     devices.setdefault("servers", [])
+    for key in ("core", "firewall"):
+        if key in devices and not isinstance(devices[key], dict):
+            devices[key] = {}
+    if not isinstance(config["isp"].get("links", []), list):
+        config["isp"]["links"] = []
     return config
 
 
 def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
-    config = normalize_config(config)
     issues: list[dict[str, str]] = []
+    if not isinstance(config, dict):
+        return [{"level": "bad", "path": "$", "message": "配置根节点必须是对象"}]
+
+    def add(level: str, path: str, message: str) -> None:
+        issues.append({"level": level, "path": path, "message": message})
+
+    for section in ("event", "networks", "devices", "isp", "unifi", "alerts", "security", "snmp"):
+        if section in config and not isinstance(config.get(section), dict):
+            add("bad", section, f"{section} 必须是对象")
+    raw_devices = config.get("devices") if isinstance(config.get("devices"), dict) else {}
+    for key in ("core", "firewall"):
+        if key in raw_devices and not isinstance(raw_devices.get(key), dict):
+            add("bad", f"devices.{key}", f"devices.{key} 必须是对象")
+    for key in ("switches", "stage_switches", "access_switches", "servers"):
+        if key in raw_devices and not isinstance(raw_devices.get(key), list):
+            add("bad", f"devices.{key}", f"devices.{key} 必须是列表")
+    raw_isp = config.get("isp") if isinstance(config.get("isp"), dict) else {}
+    if "links" in raw_isp and not isinstance(raw_isp.get("links"), list):
+        add("bad", "isp.links", "isp.links 必须是列表")
+
+    config = normalize_config(config)
     event = config["event"]
     devices = config["devices"]
     networks = config["networks"]
     isp = config["isp"]
 
-    if not (devices.get("core") or {}).get("ip"):
-        issues.append({"level": "bad", "path": "devices.core.ip", "message": "核心交换机 IP 必填"})
+    def valid_ip(value: Any) -> bool:
+        try:
+            return ipaddress.ip_address(str(value or "").strip()).version == 4
+        except ValueError:
+            return False
+
+    def valid_cidr(value: Any) -> bool:
+        try:
+            return ipaddress.ip_network(str(value or "").strip(), strict=False).version == 4
+        except ValueError:
+            return False
+
+    def range_size(value: Any) -> int | None:
+        text = str(value or "").strip()
+        try:
+            if "/" in text:
+                return ipaddress.ip_network(text, strict=False).num_addresses
+            if "-" not in text:
+                ipaddress.IPv4Address(text)
+                return 1
+            start_raw, end_raw = [part.strip() for part in text.split("-", 1)]
+            start = ipaddress.IPv4Address(start_raw)
+            if re.fullmatch(r"\d{1,3}", end_raw):
+                end = ipaddress.IPv4Address(f"{start_raw.rsplit('.', 1)[0]}.{end_raw}")
+            else:
+                end = ipaddress.IPv4Address(end_raw)
+            size = int(end) - int(start) + 1
+            return size if size > 0 else None
+        except ValueError:
+            return None
+
+    def check_ip(value: Any, path: str, label: str, required: bool = False) -> None:
+        text = str(value or "").strip()
+        if not text:
+            if required:
+                add("bad", path, f"{label}必填")
+            return
+        if not valid_ip(text):
+            add("bad", path, f"{label}不是有效 IPv4 地址")
+
+    def check_ip_values(value: Any, path: str, label: str) -> None:
+        for index, item in enumerate(split_values(value)):
+            check_ip(item, f"{path}[{index}]", label)
+
+    def check_subnets(value: Any, path: str, label: str) -> None:
+        for index, item in enumerate(split_values(value)):
+            if not valid_cidr(item):
+                add("bad", f"{path}[{index}]", f"{label}不是有效 IPv4 CIDR")
+
+    def check_ranges(value: Any, path: str, label: str, max_hosts: int = 4096) -> None:
+        for index, item in enumerate(split_values(value)):
+            size = range_size(item)
+            item_path = f"{path}[{index}]"
+            if size is None:
+                add("bad", item_path, f"{label}不是有效 IP、CIDR 或 IP 范围")
+            elif size > max_hosts:
+                add("bad", item_path, f"{label}展开为 {size} 个地址，超过上限 {max_hosts}")
+
+    def check_positive(value: Any, path: str, label: str, minimum: float = 0, maximum: float | None = None) -> None:
+        if value in (None, ""):
+            return
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            add("bad", path, f"{label}必须是数字")
+            return
+        if number <= minimum:
+            add("bad", path, f"{label}必须大于 {minimum:g}")
+        elif maximum is not None and number > maximum:
+            add("bad", path, f"{label}不能大于 {maximum:g}")
+
+    check_ip((devices.get("core") or {}).get("ip"), "devices.core.ip", "核心交换机 IP ", required=True)
     stage_switches = devices.get("stage_switches") if "stage_switches" in devices else devices.get("switches")
     stage_switches = stage_switches or []
     access_switches = devices.get("access_switches") or []
     has_switch_range = bool(split_values(networks.get("switch_management_ranges")))
     if not stage_switches and not access_switches and not has_switch_range:
-        issues.append({"level": "warn", "path": "devices.stage_switches", "message": "没有配置舞台交换机，也没填交换机管理网段，选手自动识别会跳过"})
-    for idx, item in enumerate(stage_switches):
-        if not item.get("ip"):
-            issues.append({"level": "bad", "path": f"devices.stage_switches[{idx}].ip", "message": "舞台交换机 IP 必填"})
-    for idx, item in enumerate(access_switches):
-        if not item.get("ip"):
-            issues.append({"level": "bad", "path": f"devices.access_switches[{idx}].ip", "message": "接入交换机 IP 必填"})
+        add("warn", "devices.stage_switches", "没有配置舞台交换机，也没填交换机管理网段，选手自动识别会跳过")
+
+    explicit_ips: dict[str, str] = {}
+    core_ip = str((devices.get("core") or {}).get("ip") or "").strip()
+    if core_ip and valid_ip(core_ip):
+        explicit_ips[core_ip] = "devices.core.ip"
+    for group, label in ((stage_switches, "舞台交换机"), (access_switches, "接入交换机"), (devices.get("servers") or [], "服务器")):
+        group_path = "stage_switches" if group is stage_switches else "access_switches" if group is access_switches else "servers"
+        for idx, item in enumerate(group):
+            path = f"devices.{group_path}[{idx}]"
+            if not isinstance(item, dict):
+                add("bad", path, f"{label}条目必须是对象")
+                continue
+            ip = str(item.get("ip") or "").strip()
+            check_ip(ip, f"{path}.ip", f"{label} IP ", required=True)
+            if ip and valid_ip(ip):
+                if ip in explicit_ips:
+                    add("bad", f"{path}.ip", f"IP {ip} 与 {explicit_ips[ip]} 重复")
+                else:
+                    explicit_ips[ip] = f"{path}.ip"
+
+    firewall = devices.get("firewall") or {}
+    if firewall:
+        if not isinstance(firewall, dict):
+            add("bad", "devices.firewall", "防火墙必须是对象")
+        else:
+            check_ip_values(firewall.get("ip"), "devices.firewall.ip", "防火墙 IP")
+            check_ip_values(firewall.get("snmp"), "devices.firewall.snmp", "防火墙 SNMP IP")
+            check_ip_values(firewall.get("unit_snmp"), "devices.firewall.unit_snmp", "防火墙物理节点 IP")
     if (devices.get("firewall") or {}).get("ip") and not (devices.get("firewall") or {}).get("unit_snmp"):
-        issues.append({"level": "warn", "path": "devices.firewall.unit_snmp", "message": "建议填写两台物理防火墙 SNMP IP，HA 单机状态和单机离线告警都靠它"})
+        add("warn", "devices.firewall.unit_snmp", "建议填写两台物理防火墙 SNMP IP，HA 单机状态和单机离线告警都靠它")
+
+    check_subnets(networks.get("player_subnets"), "networks.player_subnets", "选手有线网段")
+    check_subnets(networks.get("wireless_subnets"), "networks.wireless_subnets", "选手无线网段")
+    check_ip_values(networks.get("player_gateways"), "networks.player_gateways", "选手网关")
+    check_ranges(networks.get("switch_management_ranges"), "networks.switch_management_ranges", "交换机管理范围")
+    check_ranges(networks.get("firewall_management_ranges"), "networks.firewall_management_ranges", "防火墙管理范围")
+    for field, label in (("player_vlan", "选手 VLAN"), ("wireless_vlan", "无线 VLAN")):
+        for index, vlan in enumerate(split_values(networks.get(field))):
+            try:
+                number = int(vlan)
+            except ValueError:
+                number = 0
+            if not 1 <= number <= 4094:
+                add("bad", f"networks.{field}[{index}]", f"{label}必须在 1-4094 之间")
     if not networks.get("player_subnets"):
-        issues.append({"level": "warn", "path": "networks.player_subnets", "message": "没有配置选手有线网段"})
+        add("warn", "networks.player_subnets", "没有配置选手有线网段")
     if not networks.get("switch_management_ranges"):
-        issues.append({"level": "warn", "path": "networks.switch_management_ranges", "message": "建议填写交换机管理网段，方便 LibreNMS 自动发现"})
+        add("warn", "networks.switch_management_ranges", "建议填写交换机管理网段，方便 LibreNMS 自动发现")
     if not isp.get("auto_discovery") and not isp.get("links"):
-        issues.append({"level": "warn", "path": "isp.links", "message": "关闭自动发现时建议配置 ISP 探测目标"})
+        add("warn", "isp.links", "关闭自动发现时建议配置 ISP 探测目标")
     for idx, item in enumerate(isp.get("links") or []):
+        path = f"isp.links[{idx}]"
+        if not isinstance(item, dict):
+            add("bad", path, "ISP 条目必须是对象")
+            continue
         if item and not item.get("ip"):
             # 自动发现开着时，只填"名称+带宽"来绑定 WAN 口带宽是合法用法：
             # 网关 ping 目标从防火墙路由表自动发现，公网 IP 只影响拓扑展示。
             if isp.get("auto_discovery", True):
-                issues.append({"level": "warn", "path": f"isp.links[{idx}].ip", "message": "运营商公网 IP 未填：拓扑不展示该线路、LibreNMS 不加 ping 设备；带宽/网关仍按名称自动绑定"})
+                add("warn", f"{path}.ip", "运营商公网 IP 未填：拓扑不展示该线路、LibreNMS 不加 ping 设备；带宽/网关仍按名称自动绑定")
             else:
-                issues.append({"level": "bad", "path": f"isp.links[{idx}].ip", "message": "运营商公网 IP 必填，用于拓扑展示并加入 LibreNMS"})
-    if config["security"].get("public_enabled") and not event.get("public_base_url"):
-        issues.append({"level": "bad", "path": "event.public_base_url", "message": "公网模式必须填写 public_base_url"})
+                add("bad", f"{path}.ip", "运营商公网 IP 必填，用于拓扑展示并加入 LibreNMS")
+        else:
+            check_ip(item.get("ip"), f"{path}.ip", "运营商公网 IP ")
+        check_ip(item.get("ping"), f"{path}.ping", "运营商探测 IP ")
+        if item.get("bandwidth_mbps") not in (None, "") and not _bandwidth_text(item.get("bandwidth_mbps")):
+            add("bad", f"{path}.bandwidth_mbps", "ISP 带宽必须为正数，或使用 下行/上行 格式")
+    if isp.get("max_bandwidth_mbps") not in (None, "") and not _bandwidth_text(isp.get("max_bandwidth_mbps")):
+        add("bad", "isp.max_bandwidth_mbps", "默认 ISP 带宽必须为正数，或使用 下行/上行 格式")
+    check_positive(isp.get("saturation_percent"), "isp.saturation_percent", "ISP 饱和阈值", 0, 100)
+    check_positive(isp.get("down_for_seconds"), "isp.down_for_seconds", "ISP 断线确认时间", 0)
+
+    unifi = config["unifi"]
+    if unifi.get("enabled"):
+        controller_url = str(unifi.get("controller_url") or "").strip()
+        parsed = urlparse(controller_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            add("bad", "unifi.controller_url", "启用 UniFi 时必须填写完整控制器 URL")
+        if not str(unifi.get("user") or "").strip():
+            add("bad", "unifi.user", "启用 UniFi 时必须填写只读账号")
+        if not str(unifi.get("password") or "").strip():
+            add("bad", "unifi.password", "启用 UniFi 时必须填写密码")
     return issues
 
 
@@ -414,8 +583,6 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     env = {
         "EVENT_NAME": event.get("name", ""),
         "BIGSCREEN_DEFAULT_LAYOUT": event.get("default_layout", "tournament-64-2layer"),
-        "BIGSCREEN_SECURITY_MODE": event.get("security_mode", "internal"),
-        "BIGSCREEN_PUBLIC_BASE_URL": event.get("public_base_url", ""),
         "SNMP_COMMUNITY": snmp_community,
         "FIREWALL_SNMP_COMMUNITY": snmp.get("firewall_community") or snmp_community,
         "CORE_SWITCH_PING": core_ping,
@@ -447,9 +614,9 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
             for item in isp_links if item.get("ip")
         ),
         "BIGSCREEN_ISP_MAX_BANDWIDTH": isp_bandwidth_config(isp),
-        "ISP_SATURATION_PERCENT": str(isp.get("saturation_percent") or "90"),
-        "ISP_DOWN_FOR_SECONDS": str(isp.get("down_for_seconds") or "10"),
-        "COMPOSE_PROFILES": "unifi" if unifi.get("enabled") else existing.get("COMPOSE_PROFILES", ""),
+        "ISP_SATURATION_PERCENT": str(isp.get("saturation_percent") if isp.get("saturation_percent") not in (None, "") else "90"),
+        "ISP_DOWN_FOR_SECONDS": str(isp.get("down_for_seconds") if isp.get("down_for_seconds") not in (None, "") else "10"),
+        "COMPOSE_PROFILES": compose_profiles(existing.get("COMPOSE_PROFILES", ""), bool(unifi.get("enabled"))),
         "UNIFI_CONTROLLER_URL": unifi.get("controller_url", ""),
         "UNIFI_CONTROLLER_USER": unifi.get("user", ""),
         "UNIFI_CONTROLLER_PASS": unifi.get("password") or existing.get("UNIFI_CONTROLLER_PASS", ""),
@@ -470,8 +637,17 @@ def read_env(path: Path) -> dict[str, str]:
         if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        value = value.strip().strip('"').strip("'")
-        env[key.strip()] = value
+        value = value.strip()
+        if value.startswith('"') and value.endswith('"'):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                # Preserve malformed input so validation/callers can surface it;
+                # never silently reinterpret a broken quoted value.
+                pass
+        elif value.startswith("'") and value.endswith("'"):
+            value = value[1:-1]
+        env[key.strip()] = str(value)
     return env
 
 
@@ -515,3 +691,14 @@ def default_config_text(example_path: Path) -> str:
 
 def stamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == "env-get":
+        values = read_env(Path(sys.argv[2]))
+        key = sys.argv[3]
+        if key not in values or values[key] == "":
+            raise SystemExit(1)
+        sys.stdout.write(values[key])
+    else:
+        raise SystemExit("usage: platform_config.py env-get ENV_FILE KEY")

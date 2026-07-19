@@ -45,14 +45,18 @@ def test_flap_restarts_the_stable_window():
 def test_classify_interconnect_distinguishes_degraded_from_down():
     # All members up -> nothing to report.
     assert bridge.classify_interconnect(True, [True, True]) == "healthy"
+    # Aggregate protocol/oper state down is a real failure even if every
+    # physical member still has carrier (for example LACP negotiation failed).
+    assert bridge.classify_interconnect(False, [True, True]) == "down"
     # One member down while the bundle is still up -> the alertable case.
     assert bridge.classify_interconnect(True, [True, False]) == "degraded"
-    # Every member down -> bundle down; device-down covers the peer, stay quiet.
+    # Every member down -> bundle down and must be alerted directly.
     assert bridge.classify_interconnect(False, [False, False]) == "down"
     # A single-member bundle that drops is "down", never "degraded".
     assert bridge.classify_interconnect(False, [False]) == "down"
     # No member visibility (no ifStackTable) -> nothing to say.
     assert bridge.classify_interconnect(True, []) == "unknown"
+    assert bridge.classify_interconnect(False, []) == "down"
 
 
 def test_interconnect_card_names_the_down_physical_port_and_peer(monkeypatch):
@@ -81,6 +85,27 @@ def test_peer_switch_resolves_from_lldp_by_down_member_port():
     assert bridge.resolve_peer_switch(peer_map, "192.168.10.254", ["Gi1/0/4", "Po4"]) == "douyucarnival-stage4"
     # Unknown ports -> "" (card falls back to the alias).
     assert bridge.resolve_peer_switch(peer_map, "192.168.10.254", ["Po9"]) == ""
+
+
+def test_peer_switch_map_is_bidirectional_when_remote_port_is_known():
+    edges = [{
+        "from_ip": "10.0.0.1", "from_sysname": "core", "from_port": "Gi1/0/1",
+        "to_ip": "10.0.0.2", "to_sysname": "stage", "to_port": "Gi1/0/48",
+    }]
+    peer_map = bridge.build_peer_map(edges)
+    assert bridge.resolve_peer_switch(peer_map, "10.0.0.1", ["Gi1/0/1"]) == "stage"
+    assert bridge.resolve_peer_switch(peer_map, "10.0.0.2", ["Gi1/0/48"]) == "core"
+
+
+def test_interconnect_card_describes_protocol_down_without_fake_member(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    card = bridge.build_interconnect_card({
+        "device": "core", "ip": "10.0.0.1", "port": "Po1", "peer_switch": "stage",
+        "down_members": [], "up_members": ["Gi1/0/1", "Gi1/0/2"], "status": "down", "duration": 8,
+    })
+    text = json.dumps(card, ensure_ascii=False)
+    assert "聚合链路 DOWN" in text
+    assert "Po1" in text
 
 
 def _chain_edges():
