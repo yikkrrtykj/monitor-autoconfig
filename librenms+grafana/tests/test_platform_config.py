@@ -292,6 +292,23 @@ devices:
 
 
 def test_isp_public_ip_is_required_when_link_is_configured():
+    # 关闭自动发现时仍强制公网 IP（旧行为）
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+isp:
+  auto_discovery: false
+  links:
+    - name: telecom
+      ping: 219.140.134.161
+""")
+    issues = platform_config.validate_config(config)
+    assert [item for item in issues if item["level"] == "bad" and item["path"] == "isp.links[0].ip"]
+
+
+def test_isp_bandwidth_only_link_is_allowed_with_auto_discovery():
+    # 自动发现（默认开）时，只填名称+带宽用于绑定 WAN 口的行不再阻塞保存
     config = platform_config.parse_simple_yaml("""
 devices:
   core:
@@ -299,10 +316,14 @@ devices:
 isp:
   links:
     - name: telecom
-      ping: 219.140.134.161
+      bandwidth_mbps: 500
 """)
     issues = platform_config.validate_config(config)
-    assert [item for item in issues if item["level"] == "bad" and item["path"] == "isp.links[0].ip"]
+    assert not [item for item in issues if item["level"] == "bad" and item["path"] == "isp.links[0].ip"]
+    assert [item for item in issues if item["level"] == "warn" and item["path"] == "isp.links[0].ip"]
+    env = platform_config.render_env(config)
+    assert env["ISP_GATEWAY_AUTO_DISCOVER"] == "true"
+    assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "*:1000,telecom:500"
 
 
 def test_runtime_allows_duplicate_sysnames_for_identical_aps():
@@ -318,6 +339,7 @@ if __name__ == "__main__":
     test_missing_per_link_bandwidth_keeps_its_position_and_uses_global_default()
     test_empty_stage_switches_do_not_fall_back_to_legacy_switches()
     test_isp_public_ip_is_required_when_link_is_configured()
+    test_isp_bandwidth_only_link_is_allowed_with_auto_discovery()
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         test_merge_env_preserves_unknown_keys(Path(tmp))

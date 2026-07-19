@@ -1856,16 +1856,16 @@
       </section>
       <section class="config-section">
         <h3>ISP</h3>
-        <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商；网关探测地址用于丢包/掉线告警，公网 IP 用于拓扑展示并加入 LibreNMS。</p>
+        <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商，并从路由表自动发现网关探测地址。带宽按"运营商名"绑定：名称与防火墙 WAN 口名/别名一致（或留空按行顺序对应 WAN 口）。网关探测地址一般留空自动发现；公网 IP 用于拓扑展示并加入 LibreNMS，不填只影响拓扑。</p>
         <div class="config-fields">
           ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox", compactCheck: true })}
           ${configInput("isp.max_bandwidth_mbps", "未填带宽时按 Mbps", { number: true, placeholder: "可留空，内部默认 1000" })}
           ${configInput("isp.wan_if_filter", "WAN 口识别关键词", { placeholder: "telecom,telcom,unicom,isp,WAN" })}
         </div>
         ${configListRows("isp", lastEditableConfig.isp.links, [
-          { key: "name", label: "运营商名（可选）", placeholder: "自动发现时可留空" },
-          { key: "ip", label: "运营商公网 IP", placeholder: "必填" },
-          { key: "ping", label: "外网网关探测地址", placeholder: "运营商外网网关" },
+          { key: "name", label: "运营商名（可选）", placeholder: "与防火墙 WAN 口名一致以绑定带宽" },
+          { key: "ip", label: "运营商公网 IP", placeholder: "用于拓扑展示，可留空" },
+          { key: "ping", label: "外网网关探测地址", placeholder: "留空自动从防火墙路由表发现" },
           { key: "bandwidth_mbps", label: "单线带宽", number: true }
         ])}
       </section>

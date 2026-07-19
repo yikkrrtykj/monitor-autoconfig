@@ -362,7 +362,12 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         issues.append({"level": "warn", "path": "isp.links", "message": "关闭自动发现时建议配置 ISP 探测目标"})
     for idx, item in enumerate(isp.get("links") or []):
         if item and not item.get("ip"):
-            issues.append({"level": "bad", "path": f"isp.links[{idx}].ip", "message": "运营商公网 IP 必填，用于拓扑展示并加入 LibreNMS"})
+            # 自动发现开着时，只填"名称+带宽"来绑定 WAN 口带宽是合法用法：
+            # 网关 ping 目标从防火墙路由表自动发现，公网 IP 只影响拓扑展示。
+            if isp.get("auto_discovery", True):
+                issues.append({"level": "warn", "path": f"isp.links[{idx}].ip", "message": "运营商公网 IP 未填：拓扑不展示该线路、LibreNMS 不加 ping 设备；带宽/网关仍按名称自动绑定"})
+            else:
+                issues.append({"level": "bad", "path": f"isp.links[{idx}].ip", "message": "运营商公网 IP 必填，用于拓扑展示并加入 LibreNMS"})
     if config["security"].get("public_enabled") and not event.get("public_base_url"):
         issues.append({"level": "bad", "path": "event.public_base_url", "message": "公网模式必须填写 public_base_url"})
     return issues
@@ -429,6 +434,8 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "LIBRENMS_DISCOVERY_TARGETS": csv(networks.get("switch_management_ranges")),
         "FIREWALL_DISCOVERY_RANGE": csv(networks.get("firewall_management_ranges")),
         "BIGSCREEN_ISP_AUTO_DISCOVER": str(bool(isp.get("auto_discovery", True))).lower(),
+        # 同一个开关也控制“从防火墙路由表自动发现 ISP 网关 ping 目标”。
+        "ISP_GATEWAY_AUTO_DISCOVER": str(bool(isp.get("auto_discovery", True))).lower(),
         "FIREWALL_WAN_IF_FILTER": isp.get("wan_if_filter") or "telecom,telcom,unicom,isp,WAN",
         "BIGSCREEN_ISP_NAMES": ",".join(str(item.get("name")) for item in isp_links if item.get("name")),
         "ISP_PING": ",".join(
