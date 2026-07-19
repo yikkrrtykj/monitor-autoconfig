@@ -443,6 +443,7 @@ services:
       - topology-data:/targets
       - ./generate-topology-edges.py:/generate-topology-edges.py:ro
       - ./discover-switch-targets.py:/discover-switch-targets.py:ro
+      - ./discover-isp-targets.py:/discover-isp-targets.py:ro
       - ./.env:/config/.env:ro
     environment:
       TZ: Asia/Shanghai
@@ -463,6 +464,15 @@ services:
       SWITCH_DISCOVERY_MAX_HOSTS: "${SWITCH_DISCOVERY_MAX_HOSTS:-1024}"
       SWITCH_DISCOVERY_PING_TIMEOUT: "${SWITCH_DISCOVERY_PING_TIMEOUT:-1}"
       SWITCH_DISCOVERY_SNMP_TIMEOUT: "${SWITCH_DISCOVERY_SNMP_TIMEOUT:-1}"
+      # ISP 网关自动发现：从防火墙 SNMP 读 WAN 口地址和默认路由下一跳，
+      # 写 isp_targets.json 给 infra-isp-ping；手工 ISP_PING 条目优先。
+      ISP_GATEWAY_AUTO_DISCOVER: "${ISP_GATEWAY_AUTO_DISCOVER:-true}"
+      ISP_TARGETS_FILE: "/targets/isp_targets.json"
+      FIREWALL_SNMP_TARGETS: "${FIREWALL_SNMP_TARGETS:-}"
+      FIREWALL_SNMP_COMMUNITY: "${FIREWALL_SNMP_COMMUNITY:-}"
+      FIREWALL_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
+      ISP_PING: "${ISP_PING:-}"
+      ISP_DISCOVERY_SNMP_TIMEOUT: "${ISP_DISCOVERY_SNMP_TIMEOUT:-2}"
     entrypoint:
       - /bin/sh
       - -c
@@ -479,7 +489,7 @@ services:
         }
 
         load_runtime_env() {
-          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES SWITCH_DISCOVERY_RANGE TOPOLOGY_REFRESH_INTERVAL; do
+          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES SWITCH_DISCOVERY_RANGE TOPOLOGY_REFRESH_INTERVAL ISP_GATEWAY_AUTO_DISCOVER FIREWALL_SNMP_TARGETS FIREWALL_SNMP_COMMUNITY FIREWALL_WAN_IF_FILTER ISP_PING; do
             load_env_key "$$key"
           done
         }
@@ -488,6 +498,9 @@ services:
           load_runtime_env
           python3 /discover-switch-targets.py 2>&1 | while IFS= read -r line; do
             echo "[switch-discovery] $$line"
+          done
+          python3 /discover-isp-targets.py 2>&1 | while IFS= read -r line; do
+            echo "[isp-discovery] $$line"
           done
           python3 /generate-topology-edges.py 2>&1 | while IFS= read -r line; do
             echo "[topology] $$line"

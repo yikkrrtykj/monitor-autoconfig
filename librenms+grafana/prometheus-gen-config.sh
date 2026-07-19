@@ -21,6 +21,9 @@ PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}
 # container). Used as a file_sd source so only switches that actually answer are
 # pinged/SNMP-scraped, each already named by its real hostname.
 SWITCH_TARGETS_FILE="${SWITCH_TARGETS_FILE:-/etc/prometheus/targets/topology/switch_targets.json}"
+# ISP 网关自动发现结果（topology 容器从防火墙 SNMP 路由表读出的默认路由下一跳），
+# 和手工 ISP_PING 一起进 infra-isp-ping。
+ISP_TARGETS_FILE="${ISP_TARGETS_FILE:-/etc/prometheus/targets/topology/isp_targets.json}"
 SCRAPE_INTERVAL="${PROMETHEUS_SCRAPE_INTERVAL:-10s}"
 # 选手 ICMP 单独的采集间隔：比全局更密（默认 5s），纠纷回查的时间分辨率翻倍。
 # blackbox 对几十个选手目标 5s 一轮的负载可以忽略，被探测的选手机器无感知。
@@ -258,7 +261,7 @@ scrape_configs:
 EOF
 
 # Infrastructure ping jobs
-write_ping_job "infra-isp-ping"   "$ISP_PING"
+write_ping_job "infra-isp-ping"   "$ISP_PING" "$ISP_TARGETS_FILE"
 write_ping_job "infra-core-ping"  "$CORE_SWITCH_PING"
 # Dist switches: explicit targets plus any discovered from SWITCH_DISCOVERY_RANGE.
 write_ping_job "infra-dist-ping"  "$DIST_SWITCH_PING" "$SWITCH_TARGETS_FILE"
