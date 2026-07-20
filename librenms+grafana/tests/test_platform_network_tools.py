@@ -1,0 +1,400 @@
+import json
+import os
+from types import SimpleNamespace
+
+import pytest
+
+from .test_platform_transactions import load_api
+
+
+def _iperf_payload(received_bps=950_000_000, sent_bps=1_000_000_000):
+    return json.dumps({
+        "intervals": [
+            {"sum": {"start": 0, "end": 1, "seconds": 1, "bytes": 118_750_000, "bits_per_second": 950_000_000, "retransmits": 1}},
+            {"sum": {"start": 1, "end": 2, "seconds": 1, "bytes": 120_000_000, "bits_per_second": 960_000_000, "retransmits": 2}},
+        ],
+        "end": {
+            "sum_sent": {
+                "bits_per_second": sent_bps,
+                "seconds": 10.01,
+                "retransmits": 3,
+                "bytes": 1_250_000_000,
+            },
+            "sum_received": {
+                "bits_per_second": received_bps,
+                "seconds": 10.01,
+                "bytes": 1_187_500_000,
+            },
+        },
+    })
+
+
+DHCP_POOL_OUTPUT = """
+Pool PLAYERS :
+ Utilization mark (high/low)    : 100 / 0
+ Subnet size (first/next)       : 0 / 0
+ Total addresses                : 254
+ Leased addresses               : 81
+ Excluded addresses             : 10
+ Pending event                  : none
+ 1 subnet is currently in the pool :
+ Current index        IP address range                    Leased/Excluded/Total
+ 192.168.40.92        192.168.40.1     - 192.168.40.254    81    / 10    / 254
+
+Pool WIRELESS :
+ Total addresses                : 126
+ Leased addresses               : 113
+ Excluded addresses             : 1
+ 192.168.41.115       192.168.41.1     - 192.168.41.126    113   / 1     / 126
+"""
+
+
+def test_network_host_and_port_range_validation(tmp_path):
+    api = load_api(tmp_path)
+
+    assert api.validate_network_host("iperf.online.net") == "iperf.online.net"
+    assert api.validate_network_host("192.168.10.254") == "192.168.10.254"
+    assert api.parse_port_range("5200-5202") == [5200, 5201, 5202]
+
+    with pytest.raises(api.DiagnosticError):
+        api.validate_network_host("iperf.online.net; reboot")
+    with pytest.raises(api.DiagnosticError):
+        api.parse_port_range("5200-5215")
+
+
+def test_iperf_json_uses_receiver_rate_and_reports_retransmits(tmp_path):
+    api = load_api(tmp_path)
+
+    result = api.parse_iperf3_json(_iperf_payload())
+
+    assert result["mbps"] == 950.0
+    assert result["seconds"] == 10.01
+    assert result["retransmits"] == 3
+    assert result["bytes"] == 1_187_500_000
+    assert result["sender"] == {"mbps": 1000.0, "bytes": 1_250_000_000, "seconds": 10.01, "retransmits": 3}
+    assert result["receiver"] == {"mbps": 950.0, "bytes": 1_187_500_000, "seconds": 10.01, "retransmits": 0}
+    assert result["intervals"][0] == {
+        "start": 0.0,
+        "end": 1.0,
+        "seconds": 1.0,
+        "bytes": 118_750_000,
+        "mbps": 950.0,
+        "retransmits": 1,
+    }
+
+
+def test_iperf_tries_next_port_without_using_a_shell(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    api.IPERF3_COMMAND = "iperf3"
+    api.IPERF3_TIMEOUT = 30
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[command.index("-p") + 1] == "5200":
+            return SimpleNamespace(returncode=1, stdout="", stderr="server is busy")
+        return SimpleNamespace(returncode=0, stdout=_iperf_payload(), stderr="")
+
+    monkeypatch.setattr(api.subprocess, "run", fake_run)
+    monkeypatch.setattr(api, "_host_exec_env", lambda: {})
+
+    result = api.run_iperf_test({
+        "server": "speedtest.hkg12.hk.leaseweb.net",
+        "ports": "5200-5201",
+        "duration": 3,
+        "parallel": 1,
+        "direction": "upload",
+    })
+
+    assert result["protocol"] == "TCP"
+    assert result["results"][0]["port"] == 5201
+    assert [call[0][call[0].index("-p") + 1] for call in calls] == ["5200", "5201"]
+    assert all("shell" not in kwargs for _command, kwargs in calls)
+    assert all("--connect-timeout" in command for command, _kwargs in calls)
+    assert api.iperf_status_payload()["state"] == "complete"
+    assert api.iperf_status_payload()["percent"] == 100
+
+
+def test_iperf_error_summary_hides_raw_json(tmp_path):
+    api = load_api(tmp_path)
+
+    detail = api._iperf_error_summary(
+        json.dumps({"start": {}, "intervals": [], "end": {}, "error": "control socket has closed unexpectedly"}),
+        "",
+        1,
+    )
+
+    assert detail == "服务器中途关闭连接"
+
+
+def test_iperf_defaults_to_hong_kong_preset(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    api.IPERF3_COMMAND = "iperf3"
+    calls = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=_iperf_payload(), stderr="")
+
+    monkeypatch.setattr(api.subprocess, "run", fake_run)
+    monkeypatch.setattr(api, "_host_exec_env", lambda: {})
+
+    api.run_iperf_test({"duration": 3, "parallel": 1, "direction": "upload"})
+
+    assert calls[0][calls[0].index("-c") + 1] == "speedtest.hkg12.hk.leaseweb.net"
+    assert calls[0][calls[0].index("-p") + 1] == "5201"
+
+
+def test_cisco_dhcp_pool_parser_reports_capacity_and_thresholds(tmp_path):
+    api = load_api(tmp_path)
+
+    pools = api.parse_cisco_dhcp_pools(DHCP_POOL_OUTPUT)
+
+    assert pools[0] == {
+        "name": "PLAYERS",
+        "range": "192.168.40.1 - 192.168.40.254",
+        "total": 254,
+        "leased": 81,
+        "excluded": 10,
+        "available": 163,
+        "utilization": 33.2,
+        "level": "good",
+    }
+    assert pools[1]["utilization"] == 90.4
+    assert pools[1]["level"] == "bad"
+
+
+def test_cisco_dhcp_conflict_and_statistics_parsers(tmp_path):
+    api = load_api(tmp_path)
+
+    conflicts = api.parse_cisco_dhcp_conflicts("""
+IP address        Detection method   Detection time          VRF
+192.168.40.55     Ping               Jul 17 2026 10:00 AM
+192.168.40.55     Gratuitous ARP     Jul 17 2026 10:01 AM
+192.168.41.9      Ping               Jul 17 2026 10:02 AM
+""")
+    statistics = api.parse_cisco_dhcp_statistics("""
+Automatic bindings 194
+Manual bindings 2
+Expired bindings 7
+Malformed messages 1
+""")
+
+    assert conflicts == ["192.168.40.55", "192.168.41.9"]
+    assert statistics == {
+        "automaticBindings": 194,
+        "manualBindings": 2,
+        "expiredBindings": 7,
+        "malformedMessages": 1,
+    }
+
+
+def test_dhcp_dashboard_reuses_configured_core_and_short_cache(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
+    api.DHCP_CACHE.clear()
+    api.DHCP_REFRESH_SECONDS = 60
+    calls = []
+
+    def fake_collect(host):
+        calls.append(host)
+        return {
+            "ok": True,
+            "host": host,
+            "source": "devices.core.ip",
+            "pools": [],
+            "conflicts": [],
+            "statistics": {},
+            "summary": {"poolCount": 0},
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(api, "collect_cisco_dhcp", fake_collect)
+
+    first = api.get_dhcp_dashboard()
+    second = api.get_dhcp_dashboard()
+    forced = api.get_dhcp_dashboard(force=True)
+
+    assert first["host"] == "192.168.10.254"
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert forced["cached"] is True
+    assert calls == ["192.168.10.254"]
+
+
+def test_dhcp_collection_uses_one_session_and_skips_full_binding_list(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    opened = []
+    commands = []
+
+    class FakeSession:
+        def __init__(self):
+            self.closed = False
+
+        def write(self, _data):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    session = FakeSession()
+    monkeypatch.setattr(api, "_open_cisco_telnet", lambda host: opened.append(host) or session)
+
+    def fake_command(_session, command):
+        commands.append(command)
+        return {
+            "show ip dhcp pool": DHCP_POOL_OUTPUT,
+            "show ip dhcp conflict": "No conflicts detected",
+            "show ip dhcp server statistics": "Automatic bindings 194",
+        }.get(command, "")
+
+    monkeypatch.setattr(api, "_telnet_command", fake_command)
+
+    result = api.collect_cisco_dhcp("192.168.10.254")
+
+    assert result["summary"]["poolCount"] == 2
+    assert opened == ["192.168.10.254"]
+    assert commands == [
+        "terminal length 0",
+        "show ip dhcp pool",
+        "show ip dhcp conflict",
+        "show ip dhcp server statistics",
+    ]
+    assert "show ip dhcp binding" not in commands
+    assert session.closed is True
+
+
+def test_dhcp_connection_test_only_checks_login_and_privilege(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
+    commands = []
+
+    class FakeSession:
+        def __init__(self):
+            self.closed = False
+
+        def write(self, _data):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    session = FakeSession()
+    monkeypatch.setattr(api, "_open_cisco_telnet", lambda host: session)
+    monkeypatch.setattr(
+        api,
+        "_telnet_command",
+        lambda _session, command: commands.append(command) or "Current privilege level is 15",
+    )
+
+    result = api.test_dhcp_connection()
+
+    assert result["host"] == "192.168.10.254"
+    assert result["login"] is True
+    assert result["privileged"] is True
+    assert result["privilegeLevel"] == 15
+    assert commands == ["show privilege"]
+    assert session.closed is True
+
+
+def test_dhcp_console_settings_are_private_and_override_environment(tmp_path):
+    api = load_api(tmp_path)
+    api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
+    api.DHCP_SWITCH_USERNAME = "env-user"
+    api.DHCP_SWITCH_PASSWORD = "env-password"
+    api.DHCP_SWITCH_ENABLE_PASSWORD = ""
+    api.DHCP_SWITCH_PORT = 23
+
+    saved = api.save_dhcp_settings({
+        "username": "console-user",
+        "password": "console-password",
+        "enablePassword": "enable-password",
+        "port": 2323,
+    })
+
+    assert saved["username"] == "console-user"
+    assert saved["passwordConfigured"] is True
+    assert saved["enablePasswordConfigured"] is True
+    assert "password" not in saved
+    assert "enablePassword" not in saved
+    stored = json.loads(api.DHCP_SETTINGS_PATH.read_text(encoding="utf-8"))
+    assert stored["password"] == "console-password"
+    assert stored["enablePassword"] == "enable-password"
+    # Windows does not expose POSIX chmod bits through stat(). Production runs
+    # in the Linux platform-api container, where the private mode is enforced.
+    if os.name != "nt":
+        assert api.DHCP_SETTINGS_PATH.stat().st_mode & 0o077 == 0
+    runtime = api.dhcp_connection_settings()
+    assert runtime["username"] == "console-user"
+    assert runtime["password"] == "console-password"
+    assert runtime["port"] == 2323
+
+    api.save_dhcp_settings({"username": "renamed", "password": "", "enablePassword": "", "port": 23})
+    preserved = api.dhcp_connection_settings()
+    assert preserved["username"] == "renamed"
+    assert preserved["password"] == "console-password"
+    assert preserved["enablePassword"] == "enable-password"
+
+
+def test_platform_api_image_contains_iperf_and_telnet_clients(tmp_path):
+    api = load_api(tmp_path)
+    root = api.Path(__file__).resolve().parents[1]
+
+    dockerfile = (root / "docker" / "platform-api" / "Dockerfile").read_text(encoding="utf-8")
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "iperf3" in dockerfile
+    assert "PLATFORM_IPERF3_COMMAND" in compose
+    assert 'PLATFORM_IPERF3_COMMAND:-iperf3' in compose
+    assert "docker exec player-targets iperf3" not in compose
+    assert "monitor-platform-api:local" in compose
+    assert "docker/platform-api" in compose
+    assert "telnetlib3==4.0.5" in dockerfile
+
+
+def test_dhcp_page_and_platform_service_wiring(tmp_path):
+    api = load_api(tmp_path)
+    root = api.Path(__file__).resolve().parents[1]
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    pages = (root / "bigscreen" / "pages.js").read_text(encoding="utf-8")
+    app = (root / "bigscreen" / "app.js").read_text(encoding="utf-8")
+    index = (root / "bigscreen" / "index.html").read_text(encoding="utf-8")
+
+    assert "PLATFORM_DHCP_SWITCH_PASSWORD" in compose
+    assert 'path: "/dhcp"' in pages
+    assert 'id="dhcpPanel"' in index
+    assert 'id="dhcpConnectionTest"' not in index
+    assert 'id="controlDhcpSettingsForm"' in app
+    assert 'id="controlDhcpHost"' not in app
+    assert 'href="/control#core-telnet"' in app
+    assert "核心/防火墙" in app
+    assert "testDhcpConnection" in app
+    assert "fetchDhcpSettings" in app
+    assert app.index('postPlatform("/config/save"') < app.index("saveDhcpSettings(credentials)")
+    assert "speedtest.hkg12.hk.leaseweb.net" in app
+    assert "speedtest.sin1.sg.leaseweb.net" in app
+    assert "iperf.scbd.net.id" in app
+    assert "23.249.58.14" in app
+    assert "84.17.57.129" in app
+    assert "sgp.proof.ovh.net" in app
+    assert "speedtest.tangerang2.myrepublic.net.id" in app
+    assert "土耳其·伊斯坦布尔" in app
+    assert "中国大陆（自有服务器）" not in app
+    assert "马来西亚（自有服务器）" not in app
+    assert "泰国（自有服务器）" not in app
+    assert '<option value="custom">自定义</option>' in app
+    assert "window.confirm" not in app
+    assert 'id="iperfConfirm"' in app
+    assert 'id="iperfProgress"' in app
+    assert "fetchIperfStatus" in app
+    assert "最长约 60 秒" in app
+    assert 'id="iperfPublicServer"' in app
+    assert 'id="iperfPorts"' in app and "readonly" in app
+    assert "iperfServer.readOnly = !isCustom" in app
+    assert "iperfPorts.readOnly = !isCustom" in app
+    assert "iperf-interval-table" in app
+    assert "接收端全程平均" in app
+    assert "/seat-check" not in pages
+    assert "/seat-check" not in app
+    assert 'document.visibilityState === "hidden"' in app
+    assert "stopDhcpRefresh()" in app

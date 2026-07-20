@@ -29,6 +29,160 @@ def test_recovery_immediate_when_stable_seconds_zero():
     assert bridge.recovery_ready(state, now=100, sample_ts=100, recover_stable=0) is True
 
 
+def test_temporary_device_retires_at_48_hour_boundary(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
+    monkeypatch.setattr(bridge, "DEVICE_REENROLL_JOBS", "infra-dist-ping")
+    state = {"alerting": True, "down_since": 100}
+
+    assert bridge.device_retirement_due(state, "infra-dist-ping", 100 + 48 * 60 * 60 - 1) is False
+    assert bridge.device_retirement_due(state, "infra-dist-ping", 100 + 48 * 60 * 60) is True
+    assert bridge.device_retirement_due(state, "infra-core-ping", 100 + 72 * 60 * 60) is False
+
+
+def test_root_cause_suppressed_device_still_retires_after_48_hours(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
+    monkeypatch.setattr(bridge, "DEVICE_REENROLL_JOBS", "infra-dist-ping")
+    state = {
+        "alerting": False,
+        "seen_up": True,
+        "down_since": 100,
+        "job": "infra-dist-ping",
+    }
+
+    assert bridge.device_retirement_due(state, "infra-dist-ping", 100 + 48 * 60 * 60) is True
+
+
+def test_48_hour_cleanup_ends_old_outage_while_device_is_absent(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
+    monkeypatch.setattr(bridge, "DEVICE_REENROLL_JOBS", "infra-dist-ping")
+    key = "infra-dist-ping|192.168.10.27"
+    states = {key: {
+        "alerting": True,
+        "down_since": 100,
+        "seen_up": True,
+        "job": "infra-dist-ping",
+    }}
+
+    assert bridge.retire_expired_device_states(states, 100 + 48 * 60 * 60) == [key]
+    assert states[key]["alerting"] is False
+    assert states[key]["retired"] is True
+    assert states[key]["down_since"] is None
+    assert states[key]["seen_up"] is False
+
+
+def test_reenrolled_device_sends_new_online_card_and_clears_old_outage(monkeypatch):
+    state = {
+        "alerting": False,
+        "retired": True,
+        "retired_at": 100,
+        "down_since": None,
+        "up_since": None,
+        "seen_up": True,
+        "online_sent": False,
+        "online_pending": False,
+    }
+    cards = []
+    monkeypatch.setattr(
+        bridge,
+        "send_device_online_new_lifecycle",
+        lambda card, *identity: cards.append((card, identity)) or True,
+    )
+    assert bridge.notify_device_reenrolled(state, "access-7", "192.168.10.27") is True
+    assert len(cards) == 1
+    assert cards[0][1] == ("access-7", "192.168.10.27")
+    assert state["alerting"] is False
+    assert state["retired"] is False
+    assert state["down_since"] is None
+    assert state["online_sent"] is True
+
+
+def test_reenroll_waits_for_online_card_delivery(monkeypatch):
+    state = {"alerting": False, "retired": True, "retired_at": 100, "down_since": None, "seen_up": True}
+    monkeypatch.setattr(bridge, "send_device_online_new_lifecycle", lambda card, *identity: False)
+    assert bridge.notify_device_reenrolled(state, "access-7", "192.168.10.27") is False
+    assert state["retired"] is True
+    assert state["retired_at"] == 100
+
+
+def test_retired_device_is_deleted_from_librenms_with_bounded_retry(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", 60)
+    outcomes = iter(["", "deleted"])
+    calls = []
+    monkeypatch.setattr(
+        bridge,
+        "delete_librenms_device",
+        lambda ip: calls.append(ip) or next(outcomes),
+    )
+    state = {
+        "retired": True,
+        "ip": "192.168.10.27",
+        "librenms_deleted": False,
+        "librenms_sync_last_attempt": 0,
+    }
+
+    assert bridge.sync_retired_librenms_deletions({"device": state}, 100) is True
+    assert state["librenms_deleted"] is False
+    assert bridge.sync_retired_librenms_deletions({"device": state}, 159) is False
+    assert bridge.sync_retired_librenms_deletions({"device": state}, 160) is True
+    assert state["librenms_deleted"] is True
+    assert calls == ["192.168.10.27", "192.168.10.27"]
+
+
+def test_reenrolled_device_is_readded_with_bounded_retry(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", 60)
+    outcomes = iter(["", "added"])
+    calls = []
+    monkeypatch.setattr(
+        bridge,
+        "add_librenms_snmp_device",
+        lambda ip, name, log_prefix: calls.append((ip, name, log_prefix)) or next(outcomes),
+    )
+    state = {
+        "retired": True,
+        "librenms_deleted": True,
+        "librenms_readded": False,
+        "librenms_sync_last_attempt": 0,
+    }
+
+    assert bridge.prepare_reenrolled_librenms_device(state, "access-7", "192.168.10.27", 100) is False
+    assert bridge.prepare_reenrolled_librenms_device(state, "access-7", "192.168.10.27", 159) is False
+    assert bridge.prepare_reenrolled_librenms_device(state, "access-7", "192.168.10.27", 160) is True
+    assert state["librenms_readded"] is True
+    assert calls == [
+        ("192.168.10.27", "access-7", "[DOWN]"),
+        ("192.168.10.27", "access-7", "[DOWN]"),
+    ]
+
+
+def test_reenroll_age_survives_bridge_restart(monkeypatch, tmp_path):
+    state_file = tmp_path / "device-down.json"
+    monkeypatch.setattr(bridge, "DEVICE_DOWN_STATE_FILE", str(state_file))
+    monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
+    monkeypatch.setattr(bridge, "DEVICE_REENROLL_JOBS", "infra-dist-ping")
+    key = "infra-dist-ping|192.168.10.27"
+
+    bridge.save_device_down_states({key: {
+        "alerting": True,
+        "down_since": 100,
+        "seen_up": True,
+        "name": "access-7",
+        "ip": "192.168.10.27",
+        "job": "infra-dist-ping",
+    }})
+    restored = bridge.load_device_down_states()[key]
+
+    assert restored["down_since"] == 100
+    assert bridge.retire_expired_device_states({key: restored}, 100 + 48 * 60 * 60) == [key]
+    monkeypatch.setattr(bridge, "delete_librenms_device", lambda ip: "deleted")
+    assert bridge.sync_retired_librenms_deletions({key: restored}, 100 + 48 * 60 * 60) is True
+    bridge.save_device_down_states({key: restored})
+    retired_after_restart = bridge.load_device_down_states()[key]
+    assert retired_after_restart["alerting"] is False
+    assert retired_after_restart["retired"] is True
+    assert retired_after_restart["down_since"] is None
+    assert retired_after_restart["librenms_deleted"] is True
+
+
 def test_flap_restarts_the_stable_window():
     state = {"up_since": None}
     # UP at t=100, not yet stable.

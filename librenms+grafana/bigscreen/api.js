@@ -577,6 +577,14 @@
     return platformApi(path, { method: "POST", body: JSON.stringify(payload || {}), ...(options || {}) });
   }
 
+  async function fetchIperfStatus() {
+    try {
+      return await platformApi("/network/iperf3/status", { timeoutMs: 3000 });
+    } catch (error) {
+      return { ok: false, state: "unavailable", error: error.message || "测速状态不可用" };
+    }
+  }
+
   function patchPlatform(path, payload) {
     return platformApi(path, { method: "PATCH", body: JSON.stringify(payload || {}) });
   }
@@ -595,6 +603,35 @@
     } catch (error) {
       return { ok: false, images: [], files: [], commands: [], error: error.message || "delivery manifest unavailable" };
     }
+  }
+
+  function fetchDhcpDashboard(force = false) {
+    const query = force ? "?force=1" : "";
+    return platformApi(`/network/dhcp${query}`, { timeoutMs: 30000 });
+  }
+
+  function testDhcpConnection() {
+    return platformApi("/network/dhcp/test", {
+      method: "POST",
+      body: JSON.stringify({}),
+      timeoutMs: 30000
+    });
+  }
+
+  async function fetchDhcpSettings() {
+    try {
+      return await platformApi("/network/dhcp/settings", { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, error: error.message || "Telnet settings unavailable" };
+    }
+  }
+
+  function saveDhcpSettings(payload) {
+    return platformApi("/network/dhcp/settings", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+      timeoutMs: 10000
+    });
   }
 
   const ns = {
@@ -632,9 +669,14 @@
     fetchPlatformConfig,
     fetchApplyStatus,
     postPlatform,
+    fetchIperfStatus,
     patchPlatform,
     fetchIncidents,
-    fetchDeliveryManifest
+    fetchDeliveryManifest,
+    fetchDhcpDashboard,
+    testDhcpConnection,
+    fetchDhcpSettings,
+    saveDhcpSettings
   };
 
   if (typeof module !== 'undefined' && module.exports) {

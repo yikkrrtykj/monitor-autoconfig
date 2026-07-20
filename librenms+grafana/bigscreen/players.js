@@ -89,16 +89,6 @@
     return "正常";
   }
 
-  function groupPlayersBySeat(players) {
-    const grouped = new Map();
-    players.forEach((player) => {
-      const key = `${player.team}|${player.seat}`;
-      if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key).push(player);
-    });
-    return grouped;
-  }
-
   const ns = {
     playerKey,
     isGatewayAddress,
@@ -106,8 +96,7 @@
     dedupePlayersBySeat,
     buildPlayers,
     latencyLevel,
-    playerStatusText,
-    groupPlayersBySeat
+    playerStatusText
   };
 
   if (typeof module !== 'undefined' && module.exports) {

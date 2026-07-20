@@ -28,13 +28,14 @@
     fetchInfraDeviceNames, renameListWithInfraMap,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
-    fetchPlatformConfig, fetchApplyStatus, postPlatform, patchPlatform, fetchIncidents
+    fetchPlatformConfig, fetchApplyStatus, postPlatform, fetchIperfStatus, patchPlatform, fetchIncidents,
+    fetchDhcpDashboard, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
   const {
     buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel
   } = window.BSTopology;
   const {
-    isGatewayAddress, buildPlayers, latencyLevel, playerStatusText, groupPlayersBySeat
+    isGatewayAddress, buildPlayers, latencyLevel, playerStatusText
   } = window.BSPlayers;
   const { analyzeIncident } = window.BSIncident;
   const {
@@ -50,6 +51,10 @@
   let tournamentTimer = null;
   let opsTimer = null;
   let controlTimer = null;
+  let dhcpTimer = null;
+  let dhcpSeq = 0;
+  let dhcpRefreshing = false;
+  let dhcpHasData = false;
   let activePageId = "";
   let activeRoute = "";
   let gaugeSeq = 0;
@@ -62,6 +67,7 @@
   let lastControlReport = null;
   let lastControlAuth = null;
   let lastPlatformConfig = null;
+  let lastDhcpSettings = null;
   let lastEditableConfig = null;
   let lastIncidents = [];
   let configResultSticky = false;
@@ -1039,116 +1045,6 @@
     }
   }
 
-  function seatCheckConfigFromUrl() {
-    const params = new URLSearchParams(window.location.search);
-    const layout = params.get("layout") || "match-5v5";
-    const network = params.get("network") || "wired";
-    return {
-      page: pages.find((page) => page.id === layout && page.kind) || pages.find((page) => page.id === "match-5v5"),
-      network: ["wired", "wireless", "all"].includes(network) ? network : "wired"
-    };
-  }
-
-  function renderSeatCheckControls(page, network) {
-    const matchPages = pages.filter((item) => item.kind);
-    const controls = document.getElementById("opsControls");
-    const modeKey = `seat-check:${page.id}:${network}`;
-    if (controls.dataset.mode === modeKey) return;
-    controls.dataset.mode = modeKey;
-    controls.innerHTML = `
-      <label>赛制
-        <select id="seatCheckLayout">
-          ${matchPages.map((item) => `<option value="${escapeHtml(item.id)}"${item.id === page.id ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
-        </select>
-      </label>
-      <label>网络
-        <select id="seatCheckNetwork">
-          ${["wired", "wireless", "all"].map((item) => `<option value="${item}"${item === network ? " selected" : ""}>${networkLabel(item)}</option>`).join("")}
-        </select>
-      </label>
-      <div class="ops-title compact">
-        <strong>赛前座位核对</strong>
-        <span>缺失、重复、离线会直接标出。</span>
-      </div>
-    `;
-    document.getElementById("seatCheckLayout").addEventListener("change", updateSeatCheckUrl);
-    document.getElementById("seatCheckNetwork").addEventListener("change", updateSeatCheckUrl);
-  }
-
-  function updateSeatCheckUrl() {
-    const layout = document.getElementById("seatCheckLayout").value;
-    const network = document.getElementById("seatCheckNetwork").value;
-    window.history.replaceState({}, "", `/seat-check?layout=${encodeURIComponent(layout)}&network=${encodeURIComponent(network)}`);
-    activeRoute = `seat-check${window.location.search}`;
-    refreshSeatCheck();
-  }
-
-  function renderCheckSeat(team, seat, players) {
-    if (!players.length) {
-      return `<div class="check-seat missing"><span>${seatLabel(seat)}</span><strong>缺失</strong><em>-</em></div>`;
-    }
-    const player = players[0];
-    const duplicate = players.length > 1;
-    const level = duplicate ? "duplicate" : latencyLevel(player);
-    const status = duplicate ? `重复 ${players.length}` : playerStatusText(player);
-    return `
-      <a class="check-seat ${level}" href="${escapeHtml(latencyUrlForPlayer(player))}">
-        <span>${seatLabel(seat)}</span>
-        <strong>${escapeHtml(status)}</strong>
-        <em>${escapeHtml(player.ip)}</em>
-      </a>
-    `;
-  }
-
-  function renderSeatCheckBoard(page, players) {
-    const grouped = groupPlayersBySeat(players);
-    document.getElementById("opsBoard").innerHTML = `
-      <div class="seat-check-grid">
-        ${(page.teams || []).map((team) => `
-          <article class="seat-check-card">
-            <header><strong>${escapeHtml(teamName(page, team))}</strong><span>${page.teamSize} 座</span></header>
-            <div>
-              ${Array.from({ length: page.teamSize }, (_, index) => {
-                const seat = index + 1;
-                return renderCheckSeat(team, seat, grouped.get(`${team}|${seat}`) || []);
-              }).join("")}
-            </div>
-          </article>
-        `).join("")}
-      </div>
-    `;
-  }
-
-  async function refreshSeatCheck() {
-    const { page, network } = seatCheckConfigFromUrl();
-    renderSeatCheckControls(page, network);
-    try {
-      const snapshot = await fetchPlayerSnapshot(tournamentSelector(page, network));
-      const players = snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize);
-      const grouped = groupPlayersBySeat(players);
-      const expected = (page.teams || []).length * page.teamSize;
-      const missing = (page.teams || []).reduce((sum, team) => {
-        return sum + Array.from({ length: page.teamSize }, (_, index) => index + 1)
-          .filter((seat) => !(grouped.get(`${team}|${seat}`) || []).length).length;
-      }, 0);
-      const duplicateSeats = Array.from(grouped.values()).filter((items) => items.length > 1).length;
-      const online = players.filter((player) => player.success).length;
-      renderOpsKpis([
-        { label: "应到座位", value: expected, note: `${page.label} · ${networkLabel(network)}` },
-        { label: "已识别", value: grouped.size, level: grouped.size === expected ? "good" : "warn", note: "按队伍/座位去重" },
-        { label: "在线", value: online, level: !players.length || online === players.length ? "good" : "warn", note: `${players.length} 个目标` },
-        { label: "缺失", value: missing, level: missing ? "bad" : "good", note: "未发现 IP" },
-        { label: "重复座位", value: duplicateSeats, level: duplicateSeats ? "bad" : "good", note: "同座位多个 IP" }
-      ]);
-      renderSeatCheckBoard(page, players);
-      lastDataSuccessAt = Date.now();
-    } catch (error) {
-      renderNoData(document.getElementById("opsSummary"), "查询失败");
-      renderNoData(document.getElementById("opsBoard"));
-      console.error(error);
-    }
-  }
-
   function dateTimeInputValue(date) {
     const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
     return local.toISOString().slice(0, 16);
@@ -1499,6 +1395,103 @@
     document.getElementById("controlConfig").innerHTML = `${configRows}${riskRows}`;
   }
 
+  function renderControlDhcpSettings(settings) {
+    lastDhcpSettings = settings;
+    const editor = document.getElementById("controlConfigForm");
+    const form = document.getElementById("controlDhcpSettingsForm");
+    const username = document.getElementById("controlDhcpUsername");
+    const port = document.getElementById("controlDhcpPort");
+    const password = document.getElementById("controlDhcpPassword");
+    const enablePassword = document.getElementById("controlDhcpEnablePassword");
+    const state = document.getElementById("controlDhcpSavedState");
+    if (!form) return;
+    if (!settings || !settings.ok) {
+      if (state) state.textContent = (settings && settings.error) || "无法读取 Telnet 配置";
+      return;
+    }
+    if (!editor || !editor.dataset.telnetDirty) {
+      if (username) username.value = settings.username || "";
+      if (port) port.value = String(settings.port || 23);
+      if (password) password.value = "";
+      if (enablePassword) enablePassword.value = "";
+    }
+    if (password) {
+      password.placeholder = settings.passwordConfigured
+        ? "已保存；留空保留原密码"
+        : "尚未设置登录密码";
+    }
+    if (enablePassword) {
+      enablePassword.placeholder = settings.enablePasswordConfigured
+        ? "已保存；留空保留原密码"
+        : "没有 Enable 密码可留空";
+    }
+    if (state) {
+      const passwordState = settings.passwordConfigured ? "登录密码已保存" : "登录密码未设置";
+      const enableState = settings.enablePasswordConfigured ? "Enable 密码已保存" : "未设置 Enable 密码";
+      state.textContent = `${passwordState} · ${enableState}`;
+    }
+  }
+
+  async function saveAndTestControlDhcpSettings(event) {
+    event.preventDefault();
+    const form = document.getElementById("controlDhcpSettingsForm");
+    const button = document.getElementById("controlDhcpSaveTest");
+    const result = document.getElementById("controlDhcpSettingsResult");
+    const username = document.getElementById("controlDhcpUsername");
+    const password = document.getElementById("controlDhcpPassword");
+    const enablePassword = document.getElementById("controlDhcpEnablePassword");
+    const port = document.getElementById("controlDhcpPort");
+    const editor = document.getElementById("controlConfigForm");
+    if (!form || !result) return;
+    const credentials = {
+      username: username ? username.value.trim() : "",
+      password: password ? password.value : "",
+      enablePassword: enablePassword ? enablePassword.value : "",
+      port: port ? port.value : "23"
+    };
+    let settingsSaved = false;
+    if (button) button.disabled = true;
+    result.hidden = false;
+    result.className = "network-tool-result loading";
+    result.textContent = "正在保存当前基础配置和 Telnet 信息…";
+    try {
+      const configPayload = collectControlConfigForm();
+      const savedConfig = await postPlatform("/config/save", {
+        text: JSON.stringify(configPayload, null, 2),
+        actor: "web",
+        note: "save core config before Telnet test"
+      });
+      if (!savedConfig || !savedConfig.ok) {
+        if (savedConfig) renderConfigResult({ ...savedConfig, action: "save" });
+        throw new Error((savedConfig && savedConfig.error) || "基础配置验证未通过");
+      }
+      lastPlatformConfig = savedConfig;
+      lastEditableConfig = controlConfigDefaults(savedConfig.config || configPayload);
+      if (editor) delete editor.dataset.dirty;
+      configResultSticky = true;
+      renderConfigResult({ ...savedConfig, action: "save" });
+
+      const settings = await saveDhcpSettings(credentials);
+      settingsSaved = true;
+      if (password) password.value = "";
+      if (enablePassword) enablePassword.value = "";
+      if (editor) delete editor.dataset.telnetDirty;
+      renderControlDhcpSettings(settings);
+      result.className = "network-tool-result loading";
+      result.textContent = "配置已保存，正在测试核心交换机连接…";
+      const connection = await testDhcpConnection();
+      result.className = `network-tool-result ${connection.privileged ? "good" : "warn"}`;
+      result.textContent = `核心 IP 和 Telnet 信息已保存。${connection.message} · ${connection.host}:${connection.port} · ${connection.latencyMs} ms`;
+    } catch (error) {
+      result.className = "network-tool-result bad";
+      result.textContent = settingsSaved
+        ? `配置已保存，但连接测试失败：${error.message || "未知错误"}`
+        : `保存失败：${error.message || "未知错误"}`;
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   function renderConfigResult(payload) {
     const result = document.getElementById("controlConfigResult");
     if (!result) return;
@@ -1804,9 +1797,48 @@
     `;
   }
 
+  function controlDhcpSettingsMarkup() {
+    return `
+      <div class="config-private-section" id="core-telnet">
+        <div class="network-tool-heading">
+          <div>
+            <h4>核心交换机 Telnet</h4>
+            <p>用于只读 DHCP 查询；密码单独保存在本机，不随赛事配置导出。</p>
+          </div>
+          <span class="network-tool-badge">只读连接</span>
+        </div>
+        <div class="network-tool-grid telnet-settings-grid" id="controlDhcpSettingsForm">
+          <label>Telnet 端口
+            <input id="controlDhcpPort" type="number" min="1" max="65535" value="23" />
+          </label>
+          <label>用户名
+            <input id="controlDhcpUsername" type="text" autocomplete="off" placeholder="按交换机实际配置填写" />
+          </label>
+          <label>登录密码
+            <input id="controlDhcpPassword" type="password" autocomplete="new-password" placeholder="输入后保存；留空保留原密码" />
+          </label>
+          <label>Enable 密码
+            <input id="controlDhcpEnablePassword" type="password" autocomplete="new-password" placeholder="没有可留空；留空保留原密码" />
+          </label>
+        </div>
+        <div class="network-tool-actions">
+          <button type="button" id="controlDhcpSaveTest">保存核心配置并测试</button>
+          <span id="controlDhcpSavedState">等待读取配置</span>
+        </div>
+        <div class="network-tool-result" id="controlDhcpSettingsResult" hidden></div>
+      </div>
+    `;
+  }
+
   function renderControlConfigForm(configValue) {
     const form = document.getElementById("controlConfigForm");
     if (!form) return;
+    const telnetDraft = form.dataset.telnetDirty ? {
+      username: (document.getElementById("controlDhcpUsername") || {}).value || "",
+      password: (document.getElementById("controlDhcpPassword") || {}).value || "",
+      enablePassword: (document.getElementById("controlDhcpEnablePassword") || {}).value || "",
+      port: (document.getElementById("controlDhcpPort") || {}).value || "23"
+    } : null;
     const matchPages = pages.filter((item) => item.kind);
     lastEditableConfig = controlConfigDefaults(configValue);
     form.innerHTML = `
@@ -1839,6 +1871,7 @@
           ${configInput("devices.firewall.name", "防火墙名称（可选）", { placeholder: "大屏/拓扑显示名；留空用设备 SNMP sysName" })}
           ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP", { type: "textarea", compact: true, rows: 1, placeholder: "两台物理防火墙，逗号或换行分隔" })}
         </div>
+        ${controlDhcpSettingsMarkup()}
       </section>
       <div class="config-section-pair">
         <section class="config-section">
@@ -1904,6 +1937,19 @@
         </div>
       </section>
     `;
+    if (telnetDraft) {
+      document.getElementById("controlDhcpUsername").value = telnetDraft.username;
+      document.getElementById("controlDhcpPassword").value = telnetDraft.password;
+      document.getElementById("controlDhcpEnablePassword").value = telnetDraft.enablePassword;
+      document.getElementById("controlDhcpPort").value = telnetDraft.port;
+    }
+    if (lastDhcpSettings) renderControlDhcpSettings(lastDhcpSettings);
+    if (window.location.hash === "#core-telnet") {
+      window.requestAnimationFrame(() => {
+        const target = document.getElementById("core-telnet");
+        if (target) target.scrollIntoView({ block: "center" });
+      });
+    }
   }
 
   function collectControlConfigForm() {
@@ -1955,7 +2001,7 @@
   function renderConfigEditor(platformConfig) {
     const form = document.getElementById("controlConfigForm");
     if (!form) return;
-    if (platformConfig && platformConfig.ok && !form.dataset.dirty) {
+    if (platformConfig && platformConfig.ok && !form.dataset.dirty && !form.dataset.telnetDirty) {
       renderControlConfigForm(platformConfig.config || {});
     }
     // Once the operator has run 验证/保存/应用配置, keep that result on screen --
@@ -2180,8 +2226,8 @@
   function renderDelivery() {
     const element = document.getElementById("controlDelivery");
     if (!element) return;
-    // Render the action buttons once; the periodic refresh must not wipe the
-    // 赛前体检 / 测试告警 results the operator is reading.
+    // Render once so periodic status refreshes do not wipe manually entered
+    // diagnostic settings or the result the operator is reading.
     if (element.dataset.built === "1") return;
     element.dataset.built = "1";
     element.innerHTML = `
@@ -2191,7 +2237,148 @@
         <span class="test-alert-result" id="testAlertResult"></span>
       </div>
       <div class="precheck-result" id="preCheckResult" hidden></div>
+      <section class="network-tool" aria-labelledby="iperfToolTitle">
+        <div class="network-tool-heading">
+          <div>
+            <h3 id="iperfToolTitle">iPerf3 出口测速</h3>
+            <p>默认使用香港公共节点；公共节点繁忙时会自动尝试同组其他端口。</p>
+          </div>
+          <span class="network-tool-badge">主动占用带宽</span>
+        </div>
+        <div class="network-tool-grid iperf-tool-grid">
+          <label>测速地区
+            <select id="iperfPreset">
+              <option value="hongkong" selected>中国香港（公共节点）</option>
+              <option value="singapore">新加坡（公共节点）</option>
+              <option value="istanbul">土耳其·伊斯坦布尔（公共节点）</option>
+              <option value="indonesia">印度尼西亚（公共节点）</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <label>公共服务器
+            <select id="iperfPublicServer"></select>
+          </label>
+          <label>服务器
+            <input id="iperfServer" type="text" value="speedtest.hkg12.hk.leaseweb.net" spellcheck="false" readonly />
+          </label>
+          <label>端口或范围
+            <input id="iperfPorts" type="text" inputmode="numeric" value="5201-5210" spellcheck="false" readonly />
+          </label>
+          <label>单向时长（秒）
+            <input id="iperfDuration" type="text" inputmode="numeric" value="10" spellcheck="false" />
+          </label>
+          <label>并发连接
+            <input id="iperfParallel" type="text" inputmode="numeric" value="10" spellcheck="false" />
+          </label>
+          <label>方向
+            <select id="iperfDirection">
+              <option value="both" selected>先上传，再下载</option>
+              <option value="upload">仅上传</option>
+              <option value="download">仅下载</option>
+            </select>
+          </label>
+        </div>
+        <p class="network-tool-hint" id="iperfPresetHint">香港 Leaseweb 公共节点；共享服务器繁忙时结果可能偏低。</p>
+        <div class="network-tool-actions">
+          <button type="button" class="delivery-test-alert" id="iperfRunBtn">开始测速</button>
+          <span>正常双向约 20 秒；节点繁忙时会重试，最长约 60 秒。</span>
+        </div>
+        <div class="iperf-confirm" id="iperfConfirm" hidden>
+          <div class="iperf-confirm-copy">
+            <strong>确认开始出口测速</strong>
+            <span id="iperfConfirmSummary"></span>
+          </div>
+          <div class="iperf-confirm-actions">
+            <button type="button" id="iperfCancelBtn">取消</button>
+            <button type="button" class="primary" id="iperfConfirmBtn">确认并开始</button>
+          </div>
+        </div>
+        <div class="iperf-progress" id="iperfProgress" hidden aria-live="polite">
+          <div class="iperf-progress-heading">
+            <strong id="iperfProgressPhase">准备测速</strong>
+            <span id="iperfProgressElapsed">0.0 秒</span>
+          </div>
+          <div class="iperf-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <i id="iperfProgressFill"></i>
+          </div>
+          <span id="iperfProgressDetail">正在建立任务…</span>
+        </div>
+        <div class="network-tool-result" id="iperfResult" hidden></div>
+      </section>
     `;
+    const iperfPresets = {
+      hongkong: {
+        note: "香港公共节点；服务器和端口来自公共列表并自动锁定。",
+        servers: [
+          { label: "Leaseweb 香港 · 10G", server: "speedtest.hkg12.hk.leaseweb.net", ports: "5201-5210" },
+          { label: "香港节点 · 23.249.58.14 · 10G", server: "23.249.58.14", ports: "30000" },
+          { label: "香港节点 · 84.17.57.129 · 2×10G", server: "84.17.57.129", ports: "5201" }
+        ]
+      },
+      singapore: {
+        note: "新加坡公共节点；适合东南亚项目赛前参考。",
+        servers: [
+          { label: "Leaseweb 新加坡 · 10G", server: "speedtest.sin1.sg.leaseweb.net", ports: "5201-5210" },
+          { label: "OVH 新加坡 · 1G", server: "sgp.proof.ovh.net", ports: "5201-5210" },
+          { label: "新加坡节点 · 96.45.38.22 · 10G", server: "96.45.38.22", ports: "30000" },
+          { label: "新加坡节点 · 89.187.162.1 · 2×10G", server: "89.187.162.1", ports: "5201" }
+        ]
+      },
+      istanbul: {
+        note: "土耳其公共节点；包含伊斯坦布尔和布尔萨。",
+        servers: [
+          { label: "伊斯坦布尔 · 69.48.237.66 · 10G", server: "69.48.237.66", ports: "30000" },
+          { label: "伊斯坦布尔 · 156.146.52.1 · 2×10G", server: "156.146.52.1", ports: "5201" },
+          { label: "布尔萨 · iperf.pendc.com · 10G", server: "iperf.pendc.com", ports: "5201-5209" }
+        ]
+      },
+      indonesia: {
+        note: "印度尼西亚公共节点；共享服务器只用于赛前参考。",
+        servers: [
+          { label: "Curug · iperf.scbd.net.id · 1G", server: "iperf.scbd.net.id", ports: "5201-5209" },
+          { label: "Kediri · MyRepublic", server: "speedtest.tangerang2.myrepublic.net.id", ports: "9200-9240" }
+        ]
+      },
+      custom: {
+        placeholder: "填写自有或其他公共 iPerf3 服务器",
+        note: "使用手工填写的服务器和端口。"
+      }
+    };
+    const iperfPreset = document.getElementById("iperfPreset");
+    const iperfPublicServer = document.getElementById("iperfPublicServer");
+    const iperfServer = document.getElementById("iperfServer");
+    const iperfPorts = document.getElementById("iperfPorts");
+    const iperfHint = document.getElementById("iperfPresetHint");
+    const applyIperfPublicServer = () => {
+      const preset = iperfPresets[iperfPreset.value] || iperfPresets.custom;
+      const selected = (preset.servers || [])[Number(iperfPublicServer.value || 0)];
+      if (!selected) return;
+      iperfServer.value = selected.server;
+      iperfPorts.value = selected.ports;
+    };
+    const applyIperfPreset = () => {
+      const preset = iperfPresets[iperfPreset.value] || iperfPresets.custom;
+      iperfServer.placeholder = preset.placeholder || "iPerf3 服务器域名或 IP";
+      const isCustom = iperfPreset.value === "custom";
+      iperfServer.readOnly = !isCustom;
+      iperfPorts.readOnly = !isCustom;
+      if (isCustom) {
+        iperfPublicServer.innerHTML = '<option value="0">手工填写</option>';
+        iperfPublicServer.disabled = true;
+        iperfServer.value = "";
+        iperfPorts.value = "5201";
+      } else {
+        iperfPublicServer.disabled = false;
+        iperfPublicServer.innerHTML = preset.servers.map((item, index) => (
+          `<option value="${index}">${escapeHtml(item.label)}</option>`
+        )).join("");
+        applyIperfPublicServer();
+      }
+      if (iperfHint) iperfHint.textContent = preset.note;
+    };
+    if (iperfPreset) iperfPreset.addEventListener("change", applyIperfPreset);
+    if (iperfPublicServer) iperfPublicServer.addEventListener("change", applyIperfPublicServer);
+    applyIperfPreset();
     const preBtn = document.getElementById("preCheckBtn");
     if (preBtn) {
       preBtn.addEventListener("click", async () => {
@@ -2239,15 +2426,209 @@
         }
       });
     }
+
+    const iperfBtn = document.getElementById("iperfRunBtn");
+    const iperfConfirm = document.getElementById("iperfConfirm");
+    const iperfConfirmSummary = document.getElementById("iperfConfirmSummary");
+    const iperfConfirmBtn = document.getElementById("iperfConfirmBtn");
+    const iperfCancelBtn = document.getElementById("iperfCancelBtn");
+    const iperfProgress = document.getElementById("iperfProgress");
+    const iperfProgressPhase = document.getElementById("iperfProgressPhase");
+    const iperfProgressElapsed = document.getElementById("iperfProgressElapsed");
+    const iperfProgressFill = document.getElementById("iperfProgressFill");
+    const iperfProgressDetail = document.getElementById("iperfProgressDetail");
+    let pendingIperfRequest = null;
+    let iperfProgressTimer = null;
+    let iperfProgressRefreshing = false;
+
+    const hideIperfConfirmation = () => {
+      pendingIperfRequest = null;
+      if (iperfConfirm) iperfConfirm.hidden = true;
+    };
+
+    const renderIperfProgress = (status) => {
+      if (!iperfProgress || !status || status.state === "unavailable") return;
+      const elapsed = Math.max(0, Number(status.elapsedSeconds || 0));
+      const maxSeconds = Math.max(1, Number(status.maxSeconds || 60));
+      const reported = Math.max(0, Math.min(100, Number(status.percent || 0)));
+      const timeFloor = status.state === "running" ? Math.min(95, (elapsed / maxSeconds) * 100) : 0;
+      const percent = status.state === "complete" ? 100 : Math.max(reported, timeFloor);
+      const phaseLabels = {
+        preparing: "准备测速",
+        upload: "上传测速",
+        download: "下载测速",
+        complete: "测速完成",
+        failed: "测速失败"
+      };
+      iperfProgress.hidden = false;
+      iperfProgress.className = `iperf-progress ${status.state || "running"}`;
+      if (iperfProgressPhase) iperfProgressPhase.textContent = phaseLabels[status.phase] || "测速进行中";
+      if (iperfProgressElapsed) iperfProgressElapsed.textContent = `${elapsed.toFixed(1)} 秒 / 最长 ${maxSeconds} 秒`;
+      if (iperfProgressFill) iperfProgressFill.style.width = `${percent.toFixed(1)}%`;
+      const track = iperfProgress.querySelector("[role=progressbar]");
+      if (track) track.setAttribute("aria-valuenow", String(Math.round(percent)));
+      if (iperfProgressDetail) iperfProgressDetail.textContent = status.message || "测速进行中";
+    };
+
+    const refreshIperfProgress = async () => {
+      if (iperfProgressRefreshing) return;
+      iperfProgressRefreshing = true;
+      try {
+        renderIperfProgress(await fetchIperfStatus());
+      } finally {
+        iperfProgressRefreshing = false;
+      }
+    };
+
+    const startIperfProgress = () => {
+      if (iperfProgressTimer) window.clearInterval(iperfProgressTimer);
+      renderIperfProgress({
+        state: "running",
+        phase: "preparing",
+        percent: 0,
+        elapsedSeconds: 0,
+        maxSeconds: 60,
+        message: "正在连接测速服务…"
+      });
+      iperfProgressTimer = window.setInterval(refreshIperfProgress, 500);
+    };
+
+    const stopIperfProgress = async () => {
+      if (iperfProgressTimer) {
+        window.clearInterval(iperfProgressTimer);
+        iperfProgressTimer = null;
+      }
+      await refreshIperfProgress();
+    };
+
+    const formatIperfBytes = (value) => {
+      const bytes = Math.max(0, Number(value || 0));
+      if (bytes >= 1024 ** 3) return `${(bytes / (1024 ** 3)).toFixed(2)} GB`;
+      if (bytes >= 1024 ** 2) return `${(bytes / (1024 ** 2)).toFixed(2)} MB`;
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+      return `${Math.round(bytes)} B`;
+    };
+
+    const iperfDirectionDetails = (item, protocol) => {
+      const labels = { upload: "上传", download: "下载" };
+      const sender = item.sender || {};
+      const receiver = item.receiver || {};
+      const intervals = item.intervals || [];
+      return `
+        <section class="iperf-direction-detail">
+          <header>
+            <strong>${labels[item.direction] || escapeHtml(item.direction)}明细</strong>
+            <span>${escapeHtml(protocol)} · 接收端全程平均 ${Number(item.mbps || 0).toFixed(2)} Mbps</span>
+          </header>
+          <div class="iperf-endpoints">
+            <div><span>发送端总计</span><strong>${Number(sender.mbps || 0).toFixed(2)} Mbps</strong><small>${formatIperfBytes(sender.bytes)} · 重传 ${Number(sender.retransmits || 0)}</small></div>
+            <div><span>接收端总计</span><strong>${Number(receiver.mbps || item.mbps || 0).toFixed(2)} Mbps</strong><small>${formatIperfBytes(receiver.bytes || item.bytes)} · ${Number(receiver.seconds || item.seconds || 0).toFixed(2)} 秒</small></div>
+          </div>
+          ${intervals.length ? `
+            <div class="iperf-interval-table-wrap">
+              <table class="iperf-interval-table">
+                <thead><tr><th>区间</th><th>传输量</th><th>平均速率</th><th>TCP 重传</th></tr></thead>
+                <tbody>
+                  ${intervals.map((interval) => `
+                    <tr>
+                      <td>${Number(interval.start || 0).toFixed(2)}–${Number(interval.end || 0).toFixed(2)} 秒</td>
+                      <td>${formatIperfBytes(interval.bytes)}</td>
+                      <td>${Number(interval.mbps || 0).toFixed(2)} Mbps</td>
+                      <td>${interval.retransmits == null ? "—" : Number(interval.retransmits)}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+                <tfoot><tr><th>全程</th><th>${formatIperfBytes(receiver.bytes || item.bytes)}</th><th>${Number(receiver.mbps || item.mbps || 0).toFixed(2)} Mbps</th><th>${Number(sender.retransmits || item.retransmits || 0)}</th></tr></tfoot>
+              </table>
+            </div>
+          ` : '<p class="network-result-note">本次服务器没有返回每秒区间明细。</p>'}
+        </section>
+      `;
+    };
+
+    const executeIperfTest = async (request) => {
+      const result = document.getElementById("iperfResult");
+      hideIperfConfirmation();
+      iperfBtn.disabled = true;
+      startIperfProgress();
+      if (result) {
+        result.hidden = false;
+        result.className = "network-tool-result loading";
+        result.textContent = "正在寻找可用端口并测速，请勿重复点击……";
+      }
+      try {
+        const response = await postPlatform("/network/iperf3", request, { timeoutMs: 310000 });
+        const labels = { upload: "上传", download: "下载" };
+        const protocol = response.protocol || "TCP";
+        if (result) {
+          result.className = "network-tool-result good";
+          result.innerHTML = `
+            <div class="network-result-summary">
+              ${(response.results || []).map((item) => `
+                <div><span>${labels[item.direction] || item.direction} · 接收端平均</span><strong>${Number(item.mbps || 0).toFixed(2)} Mbps</strong><small>${formatIperfBytes(item.bytes)} · 端口 ${item.port} · 重传 ${Number(item.retransmits || 0)}</small></div>
+              `).join("")}
+            </div>
+            <p class="network-result-note">${escapeHtml(protocol)} · 服务器 ${escapeHtml(response.server)} · ${response.parallel} 路并发 · 单向 ${response.duration} 秒</p>
+            <div class="iperf-direction-details">
+              ${(response.results || []).map((item) => iperfDirectionDetails(item, protocol)).join("")}
+            </div>
+          `;
+        }
+      } catch (error) {
+        if (result) {
+          result.className = "network-tool-result bad";
+          result.textContent = `测速失败：${error.message}`;
+        }
+      } finally {
+        await stopIperfProgress();
+        iperfBtn.disabled = false;
+      }
+    };
+
+    if (iperfBtn) {
+      iperfBtn.addEventListener("click", () => {
+        const result = document.getElementById("iperfResult");
+        const direction = document.getElementById("iperfDirection").value;
+        const seconds = Number(document.getElementById("iperfDuration").value || 10);
+        const server = document.getElementById("iperfServer").value.trim();
+        if (!server) {
+          if (result) {
+            result.hidden = false;
+            result.className = "network-tool-result bad";
+            result.textContent = "请先填写自定义 iPerf3 服务器。";
+          }
+          return;
+        }
+        pendingIperfRequest = {
+          server,
+          ports: document.getElementById("iperfPorts").value.trim(),
+          duration: document.getElementById("iperfDuration").value.trim(),
+          parallel: document.getElementById("iperfParallel").value.trim(),
+          direction
+        };
+        const estimated = seconds * (direction === "both" ? 2 : 1);
+        if (iperfConfirmSummary) {
+          iperfConfirmSummary.textContent = `${server} · 正常约 ${estimated} 秒，节点忙时最长约 60 秒 · 期间会主动占用公网带宽`;
+        }
+        if (iperfConfirm) iperfConfirm.hidden = false;
+        if (iperfConfirmBtn) iperfConfirmBtn.focus();
+      });
+    }
+    if (iperfCancelBtn) iperfCancelBtn.addEventListener("click", hideIperfConfirmation);
+    if (iperfConfirmBtn) {
+      iperfConfirmBtn.addEventListener("click", () => {
+        if (pendingIperfRequest) executeIperfTest(pendingIperfRequest);
+      });
+    }
+
   }
 
   function renderControlIncidentFlow(snapshot) {
     const nowValue = dateTimeInputValue(new Date());
     const worst = snapshot.readiness.level;
-    const pageId = snapshot.page ? snapshot.page.id : "match-5v5";
     const flow = [
       { label: "卡顿分析", href: `/incident?at=${encodeURIComponent(nowValue)}&window=5&threshold=0.05`, value: "当前时间" },
-      { label: "座位核对", href: `/seat-check?layout=${encodeURIComponent(pageId)}&network=${encodeURIComponent(snapshot.network)}`, value: `${snapshot.seatSummary.seats}/${snapshot.seatSummary.expectedSeats}` },
+      { label: "比赛座位", href: snapshot.page ? snapshot.page.path : "/", value: `${snapshot.seatSummary.seats}/${snapshot.seatSummary.expectedSeats}` },
       { label: "拓扑", href: "/topology", value: `${snapshot.edges.length} 边` },
       { label: "网络总览", href: "/infra", value: snapshot.targetSummary.offline.length ? `${snapshot.targetSummary.offline.length} 离线` : "正常" }
     ];
@@ -2295,14 +2676,15 @@
     const { page, network } = controlPageAndNetwork();
     const expectedSeats = page ? (page.teams || []).length * page.teamSize : 0;
     const selector = page ? tournamentSelector(page, network) : 'role="player"';
-    const [snapshot, targets, edges, servicesRaw, runtimeStatus, platformConfig, incidents] = await Promise.all([
+    const [snapshot, targets, edges, servicesRaw, runtimeStatus, platformConfig, incidents, dhcpSettings] = await Promise.all([
       fetchPlayerSnapshot(selector),
       fetchTopologyTargets(),
       fetchTopologyEdges(),
       prometheusInstant("up"),
       fetchRuntimeStatus(),
       fetchPlatformConfig(),
-      fetchIncidents()
+      fetchIncidents(),
+      fetchDhcpSettings()
     ]);
     const players = page
       ? snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize)
@@ -2326,6 +2708,7 @@
       services: serviceSummary,
       runtimeStatus,
       platformConfig,
+      dhcpSettings,
       incidents,
       configRisks,
       topologyFindings,
@@ -2339,6 +2722,7 @@
     renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
     renderControlConfig(snapshot);
     renderConfigEditor(snapshot.platformConfig);
+    renderControlDhcpSettings(snapshot.dhcpSettings);
     renderControlIncidentFlow(snapshot);
     renderIncidentList(snapshot.incidents);
     renderDelivery();
@@ -2519,7 +2903,10 @@
     });
     const configForm = document.getElementById("controlConfigForm");
     if (configForm && !configForm.dataset.bound) {
-      const markDirty = () => { configForm.dataset.dirty = "1"; };
+      const markDirty = (event) => {
+        if (event.target.closest("#controlDhcpSettingsForm")) configForm.dataset.telnetDirty = "1";
+        else configForm.dataset.dirty = "1";
+      };
       configForm.addEventListener("input", markDirty);
       configForm.addEventListener("change", markDirty);
       // Browsers increment focused number inputs when the mouse wheel moves.
@@ -2530,6 +2917,11 @@
         if (input && input.type === "number" && document.activeElement === input) input.blur();
       }, { passive: true });
       configForm.addEventListener("click", (event) => {
+        const dhcpSaveButton = event.target.closest("#controlDhcpSaveTest");
+        if (dhcpSaveButton) {
+          saveAndTestControlDhcpSettings(event);
+          return;
+        }
         const addButton = event.target.closest("[data-config-add]");
         const rangeButton = event.target.closest("[data-config-add-range]");
         const removeButton = event.target.closest("[data-config-remove]");
@@ -2682,7 +3074,7 @@
 
   function startOpsRefresh(page) {
     stopOpsRefresh();
-    const refresh = page.id === "wireless" ? refreshWirelessOverview : refreshSeatCheck;
+    const refresh = refreshWirelessOverview;
     refresh();
     opsTimer = window.setInterval(refresh, 5000);
     const rescanBtn = document.getElementById("opsRescan");
@@ -2700,6 +3092,150 @@
     setupControlPanel();
     refreshControlPanel();
     controlTimer = window.setInterval(refreshControlPanel, 10000);
+  }
+
+  function stopDhcpRefresh() {
+    if (dhcpTimer) {
+      window.clearTimeout(dhcpTimer);
+      dhcpTimer = null;
+    }
+    dhcpSeq += 1;
+    dhcpRefreshing = false;
+  }
+
+  function dhcpSummaryCard(label, value, note, level = "") {
+    return `
+      <div class="dhcp-summary-card ${level}">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+        <small>${escapeHtml(note || "")}</small>
+      </div>
+    `;
+  }
+
+  function renderDhcpDashboard(payload) {
+    const summary = payload.summary || {};
+    const pools = payload.pools || [];
+    const conflicts = payload.conflicts || [];
+    const captured = payload.capturedAt
+      ? new Date(payload.capturedAt * 1000).toLocaleTimeString("zh-CN", { hour12: false })
+      : "—";
+    const refreshSeconds = Number(payload.refreshSeconds || 60);
+    setText("dhcpConnection", `${payload.host || "—"} · 读取自基础配置 · ${refreshSeconds} 秒刷新`);
+
+    const status = document.getElementById("dhcpStatus");
+    if (status) {
+      status.className = "dhcp-status good";
+      status.textContent = payload.refreshing
+        ? `正在刷新，当前显示上次结果 · 采集于 ${captured}`
+        : `${payload.cached ? `使用 ${Number(payload.cacheAgeSeconds || 0).toFixed(0)} 秒内缓存` : "已从核心交换机刷新"} · 采集于 ${captured}`;
+    }
+
+    const utilization = Number(summary.utilization || 0);
+    const utilizationLevel = utilization >= 90 ? "bad" : utilization >= 80 ? "warn" : "good";
+    const summaryElement = document.getElementById("dhcpSummary");
+    if (summaryElement) {
+      summaryElement.innerHTML = [
+        dhcpSummaryCard("地址池", String(summary.poolCount || 0), "核心交换机"),
+        dhcpSummaryCard("可分配地址", String(summary.total || 0), `排除 ${summary.excluded || 0}`),
+        dhcpSummaryCard("已租用", String(summary.leased || 0), "当前活动地址"),
+        dhcpSummaryCard("剩余", String(summary.available || 0), "仍可分配"),
+        dhcpSummaryCard("总体使用率", `${utilization.toFixed(1)}%`, "80% 提醒 / 90% 告警", utilizationLevel),
+        dhcpSummaryCard("冲突地址", String(summary.conflictCount || 0), conflicts.slice(0, 3).join("、") || "未发现冲突", conflicts.length ? "bad" : "good")
+      ].join("");
+    }
+
+    const poolsElement = document.getElementById("dhcpPools");
+    if (poolsElement) {
+      poolsElement.innerHTML = pools.length ? pools.map((pool) => {
+        const pct = Math.max(0, Math.min(100, Number(pool.utilization || 0)));
+        return `
+          <article class="dhcp-pool-card ${escapeHtml(pool.level || "good")}">
+            <header>
+              <div><strong>${escapeHtml(pool.name || "未命名地址池")}</strong><span>${escapeHtml(pool.range || "交换机未返回地址范围")}</span></div>
+              <b>${pct.toFixed(1)}%</b>
+            </header>
+            <div class="dhcp-pool-bar"><i style="width:${pct}%"></i></div>
+            <dl>
+              <div><dt>总地址</dt><dd>${Number(pool.total || 0)}</dd></div>
+              <div><dt>已租用</dt><dd>${Number(pool.leased || 0)}</dd></div>
+              <div><dt>剩余</dt><dd>${Number(pool.available || 0)}</dd></div>
+              <div><dt>排除</dt><dd>${Number(pool.excluded || 0)}</dd></div>
+            </dl>
+          </article>
+        `;
+      }).join("") : `<div class="dhcp-empty">核心交换机当前没有返回 DHCP 地址池。</div>`;
+    }
+
+    const warningText = (payload.warnings || []).join("；");
+    setText(
+      "dhcpFootnote",
+      `${warningText ? `${warningText} · ` : ""}页面切走或浏览器标签隐藏后停止刷新；不会读取完整租约明细。`
+    );
+  }
+
+  function scheduleDhcpRefresh(seconds = 60) {
+    if (dhcpTimer) window.clearTimeout(dhcpTimer);
+    if (activePageId !== "dhcp" || document.visibilityState === "hidden") {
+      dhcpTimer = null;
+      return;
+    }
+    dhcpTimer = window.setTimeout(() => refreshDhcpDashboard(false), Math.max(30, Number(seconds || 60)) * 1000);
+  }
+
+  async function refreshDhcpDashboard(force = false) {
+    if (activePageId !== "dhcp" || document.visibilityState === "hidden" || dhcpRefreshing) return;
+    const seq = ++dhcpSeq;
+    dhcpRefreshing = true;
+    const refreshButton = document.getElementById("dhcpRefresh");
+    if (refreshButton) refreshButton.disabled = true;
+    const status = document.getElementById("dhcpStatus");
+    if (status) {
+      status.className = "dhcp-status loading";
+      status.textContent = dhcpHasData ? "正在从核心交换机刷新…" : "正在连接核心交换机并读取 DHCP…";
+    }
+    let nextSeconds = 60;
+    try {
+      const payload = await fetchDhcpDashboard(force);
+      if (seq !== dhcpSeq || activePageId !== "dhcp") return;
+      dhcpHasData = true;
+      nextSeconds = Number(payload.refreshSeconds || 60);
+      renderDhcpDashboard(payload);
+      lastDataSuccessAt = Date.now();
+    } catch (error) {
+      if (seq !== dhcpSeq || activePageId !== "dhcp") return;
+      if (status) {
+        status.className = "dhcp-status bad";
+        status.textContent = `读取失败：${error.message || "未知错误"}`;
+      }
+      if (!dhcpHasData) {
+        const poolsElement = document.getElementById("dhcpPools");
+        const summaryElement = document.getElementById("dhcpSummary");
+        if (summaryElement) summaryElement.innerHTML = "";
+        if (poolsElement) poolsElement.innerHTML = `
+          <div class="dhcp-empty bad">
+            <span>请检查核心 IP、Telnet 登录信息和交换机连通性。</span>
+            <a class="dhcp-config-link" href="/control#core-telnet">去赛事控制台配置</a>
+          </div>
+        `;
+      }
+    } finally {
+      if (seq === dhcpSeq) {
+        dhcpRefreshing = false;
+        if (refreshButton) refreshButton.disabled = false;
+        scheduleDhcpRefresh(nextSeconds);
+      }
+    }
+  }
+
+  function startDhcpRefresh() {
+    stopDhcpRefresh();
+    const refreshButton = document.getElementById("dhcpRefresh");
+    if (refreshButton && !refreshButton.dataset.bound) {
+      refreshButton.addEventListener("click", () => refreshDhcpDashboard(true));
+      refreshButton.dataset.bound = "1";
+    }
+    refreshDhcpDashboard(false);
   }
 
   function setVisible(id, visible) {
@@ -2736,6 +3272,7 @@
     stopTournamentRefresh();
     stopOpsRefresh();
     stopControlRefresh();
+    stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = "screen home-mode";
     setVisible("homePanel", true);
@@ -2744,6 +3281,7 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("controlPanel", false);
+    setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     renderHomeCards();
@@ -2754,6 +3292,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopOpsRefresh();
+    stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = "screen control-mode";
     setVisible("homePanel", false);
@@ -2762,6 +3301,7 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("controlPanel", true);
+    setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     startControlRefresh();
@@ -2772,6 +3312,7 @@
     stopTournamentRefresh();
     stopOpsRefresh();
     stopControlRefresh();
+    stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = "screen infra-mode";
     setVisible("homePanel", false);
@@ -2780,6 +3321,7 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("controlPanel", false);
+    setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     startInfraRefresh();
@@ -2789,6 +3331,7 @@
     const screen = document.querySelector(".screen");
     stopOpsRefresh();
     stopControlRefresh();
+    stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = `screen tournament-mode ${page.kind === "match" ? "match-mode" : "multi-team-mode"} ${page.id}`;
     setVisible("homePanel", false);
@@ -2797,6 +3340,7 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("controlPanel", false);
+    setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
@@ -2810,6 +3354,7 @@
     stopTournamentRefresh();
     stopOpsRefresh();
     stopControlRefresh();
+    stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = "screen evidence-mode";
     setVisible("homePanel", false);
@@ -2818,6 +3363,7 @@
     setVisible("evidencePanel", true);
     setVisible("opsPanel", false);
     setVisible("controlPanel", false);
+    setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     setupEvidencePanel();
@@ -2828,6 +3374,7 @@
     stopInfraRefresh();
     stopTournamentRefresh();
     stopControlRefresh();
+    stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = `screen ops-mode ${page.id}-mode`;
     setVisible("homePanel", false);
@@ -2836,6 +3383,7 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", true);
     setVisible("controlPanel", false);
+    setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     startOpsRefresh(page);
@@ -3051,6 +3599,7 @@
     stopTournamentRefresh();
     stopOpsRefresh();
     stopControlRefresh();
+    stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = "screen incident-mode";
     setVisible("homePanel", false);
@@ -3059,6 +3608,7 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("controlPanel", false);
+    setVisible("dhcpPanel", false);
     setVisible("incidentPanel", true);
     setVisible("topologyPanel", false);
     setupIncidentPanel();
@@ -3325,6 +3875,7 @@
     stopTournamentRefresh();
     stopOpsRefresh();
     stopControlRefresh();
+    stopDhcpRefresh();
     screen.className = "screen topology-mode";
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
@@ -3332,6 +3883,7 @@
     setVisible("evidencePanel", false);
     setVisible("opsPanel", false);
     setVisible("controlPanel", false);
+    setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", true);
     const detail = document.getElementById("topologyDetail");
@@ -3339,6 +3891,26 @@
     detail.innerHTML = `<div class="topology-empty">点击任意节点查看详情</div>`;
     resetTopoView();
     startTopologyRefresh();
+  }
+
+  function showDhcp() {
+    const screen = document.querySelector(".screen");
+    stopInfraRefresh();
+    stopTournamentRefresh();
+    stopOpsRefresh();
+    stopControlRefresh();
+    stopTopologyRefresh();
+    screen.className = "screen dhcp-mode";
+    setVisible("homePanel", false);
+    setVisible("panelGrid", false);
+    setVisible("tournamentPanel", false);
+    setVisible("evidencePanel", false);
+    setVisible("opsPanel", false);
+    setVisible("controlPanel", false);
+    setVisible("dhcpPanel", true);
+    setVisible("incidentPanel", false);
+    setVisible("topologyPanel", false);
+    startDhcpRefresh();
   }
 
   function renderPage() {
@@ -3353,13 +3925,15 @@
       showHome();
     } else if (page.id === "control") {
       showControl();
+    } else if (page.id === "dhcp") {
+      showDhcp();
     } else if (page.id === "evidence") {
       showEvidence();
     } else if (page.id === "incident") {
       showIncident();
     } else if (page.id === "topology") {
       showTopology();
-    } else if (page.id === "wireless" || page.id === "seat-check") {
+    } else if (page.id === "wireless") {
       showOps(page);
     } else if (page.kind) {
       showTournament(page);
@@ -3369,7 +3943,7 @@
   }
 
   function anyRefreshActive() {
-    return Boolean(gaugeTimer || chartTimer || tournamentTimer || opsTimer || controlTimer || topologyTimer);
+    return Boolean(gaugeTimer || chartTimer || tournamentTimer || opsTimer || controlTimer || dhcpTimer || topologyTimer);
   }
 
   // Warn when the active page's polling loop hasn't produced fresh data for a
@@ -3378,7 +3952,8 @@
   function updateFreshness() {
     const badge = document.getElementById("dataFreshness");
     if (!badge) return;
-    const stale = anyRefreshActive() && lastDataSuccessAt > 0 && (Date.now() - lastDataSuccessAt) > DATA_STALE_AFTER_MS;
+    const staleAfter = activePageId === "dhcp" ? 90000 : DATA_STALE_AFTER_MS;
+    const stale = anyRefreshActive() && lastDataSuccessAt > 0 && (Date.now() - lastDataSuccessAt) > staleAfter;
     if (!stale) {
       badge.hidden = true;
       return;
@@ -3418,6 +3993,11 @@
   tick();
   window.setInterval(tick, 1000);
   window.addEventListener("popstate", renderPage);
+  document.addEventListener("visibilitychange", () => {
+    if (activePageId !== "dhcp") return;
+    if (document.visibilityState === "hidden") stopDhcpRefresh();
+    else startDhcpRefresh();
+  });
   // Charts are sized from the container, so a resize must force a full repaint
   // even when the underlying data is unchanged. Repaint right after the drag
   // settles instead of waiting for the next 5s tick -- the range cache makes

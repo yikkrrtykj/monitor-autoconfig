@@ -61,7 +61,11 @@ def test_discover_snmp_probes_icmp_blocked_hosts_too():
         workers=8,
     )
     assert results == {"192.168.10.12": "sw-12"}
-    assert snmp_calls == [f"192.168.10.{n}" for n in range(11, 31)]
+    # Worker scheduling does not promise callback order; verify the discovery
+    # sweep covered every candidate exactly once instead.
+    assert sorted(snmp_calls, key=lambda ip: int(ip.rsplit(".", 1)[1])) == [
+        f"192.168.10.{n}" for n in range(11, 31)
+    ]
 
 
 def test_discover_sweeps_with_snmp_when_ping_unavailable():

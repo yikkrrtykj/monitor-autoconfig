@@ -84,6 +84,18 @@ def test_http_auth_flow():
             assert status == 401
             assert payload["error"] == "需要登录"
 
+            status, _, payload = request_json(f"{base_url}/network/dhcp/settings")
+            assert status == 401
+            assert payload["error"] == "需要登录"
+
+            status, _, payload = request_json(f"{base_url}/network/dhcp/test", {})
+            assert status == 401
+            assert payload["error"] == "需要登录"
+
+            status, _, payload = request_json(f"{base_url}/network/iperf3/status")
+            assert status == 401
+            assert payload["error"] == "需要登录"
+
             status, headers, payload = request_json(f"{base_url}/auth/login", {
                 "username": "admin",
                 "password": "global",
@@ -105,6 +117,20 @@ def test_http_auth_flow():
             assert payload["mustChangePassword"] is False
             assert "HttpOnly" in headers["Set-Cookie"]
             cookie = headers["Set-Cookie"].split(";", 1)[0]
+
+            api.CONFIG_PATH = Path(tmp) / "event-config.yml"
+            api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
+            status, _, payload = request_json(f"{base_url}/network/dhcp/settings", {
+                "username": "cisco-admin",
+                "password": "private-login-password",
+                "enablePassword": "private-enable-password",
+                "port": 23,
+            }, cookie=cookie)
+            assert status == 200
+            assert payload["passwordConfigured"] is True
+            assert payload["enablePasswordConfigured"] is True
+            assert "password" not in payload
+            assert "enablePassword" not in payload
 
             observed = {}
 
@@ -134,8 +160,32 @@ def test_http_auth_flow():
             thread.join(timeout=5)
 
 
+def test_dhcp_get_preserves_diagnostic_http_status():
+    with tempfile.TemporaryDirectory() as tmp:
+        api = load_platform_api(Path(tmp))
+        api.ensure_dirs()
+
+        def fail_dashboard(_force=False):
+            raise api.DiagnosticError(503, "尚未配置交换机密码")
+
+        api.get_dhcp_dashboard = fail_dashboard
+        server = HTTPServer(("127.0.0.1", 0), api.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, _, payload = request_json(
+                f"http://127.0.0.1:{server.server_port}/network/dhcp"
+            )
+            assert status == 503
+            assert payload == {"ok": False, "error": "尚未配置交换机密码"}
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
 if __name__ == "__main__":
     test_auth_store_defaults_and_password_change_rules()
     test_session_lifecycle()
     test_http_auth_flow()
+    test_dhcp_get_preserves_diagnostic_http_status()
     print("platform auth tests passed")
