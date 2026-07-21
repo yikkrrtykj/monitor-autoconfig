@@ -39,7 +39,9 @@ def test_temporary_device_retires_at_48_hour_boundary(monkeypatch):
     assert bridge.device_retirement_due(state, "infra-core-ping", 100 + 72 * 60 * 60) is False
 
 
-def test_root_cause_suppressed_device_still_retires_after_48_hours(monkeypatch):
+def test_root_cause_suppressed_device_is_not_asked_for_deletion(monkeypatch):
+    # 根因抑制的下游"受害者"（alerting=False）可能只是上游断了——绝不进入
+    # 待删除流程，避免误删仍在使用的设备
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_JOBS", "infra-dist-ping")
     state = {
@@ -49,10 +51,10 @@ def test_root_cause_suppressed_device_still_retires_after_48_hours(monkeypatch):
         "job": "infra-dist-ping",
     }
 
-    assert bridge.device_retirement_due(state, "infra-dist-ping", 100 + 48 * 60 * 60) is True
+    assert bridge.device_retirement_due(state, "infra-dist-ping", 100 + 48 * 60 * 60) is False
 
 
-def test_48_hour_cleanup_ends_old_outage_while_device_is_absent(monkeypatch):
+def test_48_hour_outage_marks_pending_delete_instead_of_deleting(monkeypatch):
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_JOBS", "infra-dist-ping")
     key = "infra-dist-ping|192.168.10.27"
@@ -63,11 +65,67 @@ def test_48_hour_cleanup_ends_old_outage_while_device_is_absent(monkeypatch):
         "job": "infra-dist-ping",
     }}
 
-    assert bridge.retire_expired_device_states(states, 100 + 48 * 60 * 60) == [key]
-    assert states[key]["alerting"] is False
-    assert states[key]["retired"] is True
-    assert states[key]["down_since"] is None
-    assert states[key]["seen_up"] is False
+    assert bridge.mark_pending_delete_states(states, 100 + 48 * 60 * 60) == [key]
+    # 只标记 + 生成确认口令；告警状态原样保留，不删任何东西
+    assert states[key]["pending_delete"] is True
+    assert states[key]["pending_token"]
+    assert states[key]["alerting"] is True
+    assert states[key]["down_since"] == 100
+    # 已标记的不会重复标记
+    assert bridge.mark_pending_delete_states(states, 100 + 49 * 60 * 60) == []
+
+
+def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
+    key = "infra-dist-ping|192.168.10.27"
+
+    def fresh_state():
+        bridge.DEVICE_DOWN_STATES.clear()
+        bridge.DEVICE_DOWN_STATES[key] = {
+            "alerting": True,
+            "down_since": 100,
+            "seen_up": True,
+            "pending_delete": True,
+            "pending_token": "tok-1",
+            "name": "access-7",
+            "ip": "192.168.10.27",
+            "job": "infra-dist-ping",
+        }
+        return bridge.DEVICE_DOWN_STATES[key]
+
+    monkeypatch.setattr(bridge, "save_device_down_states", lambda states: None)
+    monkeypatch.setattr(bridge, "_target_currently_up", lambda job, ip: False)
+    deleted = []
+    monkeypatch.setattr(bridge, "delete_librenms_device", lambda ip: deleted.append(ip) or "deleted")
+
+    # 错口令拒绝，不删
+    state = fresh_state()
+    result = bridge.resolve_pending_delete(key, "delete", "wrong")
+    assert result["ok"] is False and not deleted
+
+    # keep：清标记、48 小时内不再询问、不删
+    state = fresh_state()
+    result = bridge.resolve_pending_delete(key, "keep", "tok-1")
+    assert result["ok"] is True
+    assert state["pending_delete"] is False
+    assert state["pending_snoozed_until"] > 0
+    assert not deleted
+
+    # delete：真正删除并转入"已退役"生命周期
+    state = fresh_state()
+    result = bridge.resolve_pending_delete(key, "delete", "tok-1")
+    assert result["ok"] is True
+    assert deleted == ["192.168.10.27"]
+    assert state["retired"] is True and state["librenms_deleted"] is True
+    assert state["alerting"] is False and state["pending_delete"] is False
+
+    # 设备当前在线：拒绝删除并撤销待删除
+    state = fresh_state()
+    monkeypatch.setattr(bridge, "_target_currently_up", lambda job, ip: True)
+    result = bridge.resolve_pending_delete(key, "delete", "tok-1")
+    assert result["ok"] is False
+    assert state["pending_delete"] is False
+    assert state.get("retired") is not True
 
 
 def test_reenrolled_device_sends_new_online_card_and_clears_old_outage(monkeypatch):
@@ -104,28 +162,23 @@ def test_reenroll_waits_for_online_card_delivery(monkeypatch):
     assert state["retired_at"] == 100
 
 
-def test_retired_device_is_deleted_from_librenms_with_bounded_retry(monkeypatch):
+def test_returned_device_reenrolls_even_without_prior_librenms_delete(monkeypatch):
+    # 确认制下删除只发生在人工确认里；设备自己回来时 LibreNMS 记录还在，
+    # re-add 返回 exists 直接复用——不再卡在"必须先删除成功"的悬空状态
     monkeypatch.setattr(bridge, "DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", 60)
-    outcomes = iter(["", "deleted"])
-    calls = []
     monkeypatch.setattr(
         bridge,
-        "delete_librenms_device",
-        lambda ip: calls.append(ip) or next(outcomes),
+        "add_librenms_snmp_device",
+        lambda ip, name, log_prefix: "exists",
     )
     state = {
         "retired": True,
-        "ip": "192.168.10.27",
         "librenms_deleted": False,
+        "librenms_readded": False,
         "librenms_sync_last_attempt": 0,
     }
-
-    assert bridge.sync_retired_librenms_deletions({"device": state}, 100) is True
-    assert state["librenms_deleted"] is False
-    assert bridge.sync_retired_librenms_deletions({"device": state}, 159) is False
-    assert bridge.sync_retired_librenms_deletions({"device": state}, 160) is True
-    assert state["librenms_deleted"] is True
-    assert calls == ["192.168.10.27", "192.168.10.27"]
+    assert bridge.prepare_reenrolled_librenms_device(state, "access-7", "192.168.10.27", 100) is True
+    assert state["librenms_readded"] is True
 
 
 def test_reenrolled_device_is_readded_with_bounded_retry(monkeypatch):
@@ -172,15 +225,14 @@ def test_reenroll_age_survives_bridge_restart(monkeypatch, tmp_path):
     restored = bridge.load_device_down_states()[key]
 
     assert restored["down_since"] == 100
-    assert bridge.retire_expired_device_states({key: restored}, 100 + 48 * 60 * 60) == [key]
-    monkeypatch.setattr(bridge, "delete_librenms_device", lambda ip: "deleted")
-    assert bridge.sync_retired_librenms_deletions({key: restored}, 100 + 48 * 60 * 60) is True
+    # 48h 到点只标记待删除；标记连同口令要在桥接重启后幸存
+    assert bridge.mark_pending_delete_states({key: restored}, 100 + 48 * 60 * 60) == [key]
     bridge.save_device_down_states({key: restored})
-    retired_after_restart = bridge.load_device_down_states()[key]
-    assert retired_after_restart["alerting"] is False
-    assert retired_after_restart["retired"] is True
-    assert retired_after_restart["down_since"] is None
-    assert retired_after_restart["librenms_deleted"] is True
+    pending_after_restart = bridge.load_device_down_states()[key]
+    assert pending_after_restart["pending_delete"] is True
+    assert pending_after_restart["pending_token"] == restored["pending_token"]
+    assert pending_after_restart["alerting"] is True
+    assert pending_after_restart["down_since"] == 100
 
 
 def test_flap_restarts_the_stable_window():

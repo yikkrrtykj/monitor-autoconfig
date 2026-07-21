@@ -28,7 +28,7 @@
     fetchInfraDeviceNames, renameListWithInfraMap,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
-    fetchPlatformConfig, fetchApplyStatus, postPlatform, fetchIperfStatus, patchPlatform, fetchIncidents,
+    fetchPlatformConfig, fetchApplyStatus, postPlatform, fetchIperfStatus, fetchRetirePending, patchPlatform, fetchIncidents,
     fetchDhcpDashboard, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
   const {
@@ -2237,6 +2237,16 @@
         <span class="test-alert-result" id="testAlertResult"></span>
       </div>
       <div class="precheck-result" id="preCheckResult" hidden></div>
+      <section class="network-tool" aria-labelledby="retirePendingTitle">
+        <div class="network-tool-heading">
+          <div>
+            <h3 id="retirePendingTitle">待删除设备</h3>
+            <p>离线满 48 小时的设备在这里等人工确认；不确认永远不会自动删除。飞书确认卡与此面板等效。</p>
+          </div>
+          <button type="button" class="delivery-test-alert" id="retirePendingRefreshBtn">刷新列表</button>
+        </div>
+        <div class="network-tool-result" id="retirePendingList" hidden></div>
+      </section>
       <section class="network-tool" aria-labelledby="iperfToolTitle">
         <div class="network-tool-heading">
           <div>
@@ -2425,6 +2435,85 @@
           testBtn.disabled = false;
         }
       });
+    }
+
+    const retireList = document.getElementById("retirePendingList");
+    const retireRefreshBtn = document.getElementById("retirePendingRefreshBtn");
+
+    const renderRetirePending = (payload) => {
+      if (!retireList) return;
+      retireList.hidden = false;
+      const pending = (payload && payload.pending) || [];
+      if (payload && payload.error) {
+        retireList.className = "network-tool-result bad";
+        retireList.textContent = payload.error;
+        return;
+      }
+      if (!pending.length) {
+        retireList.className = "network-tool-result good";
+        retireList.textContent = "没有待删除设备。";
+        return;
+      }
+      retireList.className = "network-tool-result warn";
+      retireList.innerHTML = pending.map((item) => {
+        const name = escapeHtml(item.name || item.ip || "?");
+        const ip = escapeHtml(item.ip || "");
+        const downSince = item.downSince
+          ? new Date(item.downSince * 1000).toLocaleString("zh-CN", { hour12: false })
+          : "未知";
+        return `
+          <div class="retire-pending-row" data-key="${escapeHtml(item.key)}" data-token="${escapeHtml(item.token)}">
+            <span>${name}${ip && ip !== name ? ` (${ip})` : ""} · 离线自 ${escapeHtml(downSince)}</span>
+            <button type="button" class="delivery-test-alert" data-retire-action="delete">确认删除</button>
+            <button type="button" class="delivery-test-alert" data-retire-action="keep">保留设备</button>
+          </div>`;
+      }).join("");
+    };
+
+    const refreshRetirePending = async () => {
+      if (!retireList) return;
+      renderRetirePending(await fetchRetirePending());
+    };
+
+    if (retireRefreshBtn) retireRefreshBtn.addEventListener("click", refreshRetirePending);
+    if (retireList) {
+      retireList.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-retire-action]");
+        if (!button) return;
+        const row = button.closest(".retire-pending-row");
+        if (!row) return;
+        const action = button.dataset.retireAction;
+        // 删除采用两段式按钮：第一次点击只是"武装"，再点一次才真正执行，
+        // 与控制台其它危险操作一致（不使用浏览器弹窗）。
+        if (action === "delete" && button.dataset.armed !== "1") {
+          button.dataset.armed = "1";
+          button.textContent = "再点一次确认删除";
+          setTimeout(() => {
+            button.dataset.armed = "";
+            button.textContent = "确认删除";
+          }, 5000);
+          return;
+        }
+        button.disabled = true;
+        try {
+          const result = await postPlatform("/network/retire/resolve", {
+            key: row.dataset.key,
+            token: row.dataset.token,
+            action,
+          });
+          if (!result || result.ok !== true) {
+            renderRetirePending({ error: (result && result.error) || "操作失败" });
+            setTimeout(refreshRetirePending, 1500);
+            return;
+          }
+          await refreshRetirePending();
+        } catch (error) {
+          renderRetirePending({ error: `操作失败：${error.message}` });
+        } finally {
+          button.disabled = false;
+        }
+      });
+      refreshRetirePending();
     }
 
     const iperfBtn = document.getElementById("iperfRunBtn");

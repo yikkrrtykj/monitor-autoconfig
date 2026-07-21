@@ -1055,6 +1055,38 @@ def update_incident(incident_id: int, data: dict) -> dict:
     raise KeyError(f"incident {incident_id} not found")
 
 
+def bridge_retire_pending() -> dict:
+    """Fetch the bridge's pending-delete device list (48h+ offline, unconfirmed)."""
+    try:
+        with urllib.request.urlopen(f"{BRIDGE_URL}/retire/pending", timeout=8) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception as exc:
+        return {"ok": False, "error": f"无法连接告警服务：{exc}", "pending": []}
+
+
+def bridge_retire_resolve(data: dict) -> dict:
+    """Forward a confirm/keep decision to the bridge (which owns the state)."""
+    payload = json.dumps({
+        "key": str(data.get("key") or ""),
+        "action": str(data.get("action") or ""),
+        "token": str(data.get("token") or ""),
+    }).encode("utf-8")
+    request_obj = urllib.request.Request(
+        f"{BRIDGE_URL}/retire/resolve", data=payload, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request_obj, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            return json.loads(exc.read().decode("utf-8", errors="replace") or "{}")
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"告警服务返回 HTTP {exc.code}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"无法连接告警服务：{exc}"}
+
+
 def send_test_alert() -> dict:
     """Ask the Feishu bridge to push a test card, so operators can confirm the
     alert path works before an event without waiting for a real incident."""
@@ -1911,6 +1943,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/network/dhcp/settings":
                 require_auth(self)
                 self._send_json(get_dhcp_settings())
+            elif path == "/network/retire/pending":
+                require_auth(self)
+                self._send_json(bridge_retire_pending())
             elif path == "/network/dhcp":
                 # 必须鉴权：它返回核心交换机的地址池/接口信息，force=1 还会真实
                 # 发起特权 Telnet 会话——绝不能让未登录方触发。
@@ -1992,6 +2027,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/network/iperf3":
                 require_auth(self)
                 self._send_json(run_iperf_test(data))
+            elif path == "/network/retire/resolve":
+                require_auth(self)
+                self._send_json(bridge_retire_resolve(data))
             elif path == "/network/dhcp/test":
                 require_auth(self)
                 self._send_json(test_dhcp_connection())

@@ -26,7 +26,26 @@ def test_deploy_rebuilds_local_images_after_repository_updates():
     deploy = read("deploy.sh")
 
     assert "docker compose up -d --remove-orphans --build" in deploy
-    assert "docker compose restart bigscreen platform-api alertmanager-feishu-bridge" in deploy
+    # Restart each source-mounted service individually so one absent service
+    # under set -e cannot fail a deploy whose stack already came up fine.
+    assert "for service in bigscreen platform-api alertmanager-feishu-bridge" in deploy
+    assert 'docker compose restart "$service" ||' in deploy
+
+
+def test_feishu_ws_sidecar_is_profile_gated_and_optional():
+    compose = read("docker-compose.yml")
+    env = read(".env.example")
+    apply = read("apply-env.sh")
+    # The long-connection sidecar only runs behind the feishu profile, so a
+    # deployment without a self-built app never starts it.
+    assert "feishu-ws:" in compose
+    assert 'profiles: ["feishu"]' in compose
+    # Setting the app id auto-activates the profile so operators don't hand-edit
+    # COMPOSE_PROFILES after pasting the secret.
+    assert "FEISHU_APP_ID" in apply and "feishu" in apply
+    # Confirmation must be documented as working without the app (console panel).
+    assert "待删除设备" in env or "控制台" in env
+    assert "FEISHU_APP_ID=" in env
 
 
 def test_named_volume_and_bind_mount_contract_is_not_mixed():

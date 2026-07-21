@@ -585,6 +585,14 @@
     }
   }
 
+  async function fetchRetirePending() {
+    try {
+      return await platformApi("/network/retire/pending", { timeoutMs: 10000 });
+    } catch (error) {
+      return { ok: false, pending: [], error: error.message || "待删除列表不可用" };
+    }
+  }
+
   function patchPlatform(path, payload) {
     return platformApi(path, { method: "PATCH", body: JSON.stringify(payload || {}) });
   }
@@ -670,6 +678,7 @@
     fetchApplyStatus,
     postPlatform,
     fetchIperfStatus,
+    fetchRetirePending,
     patchPlatform,
     fetchIncidents,
     fetchDeliveryManifest,

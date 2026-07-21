@@ -130,3 +130,65 @@ def test_bridge_health_reports_missing_token_and_dead_watcher(monkeypatch):
     assert health["ready"] is False
     assert health["tokenConfigured"] is False
     assert health["deadWatchers"] == ["device-down"]
+
+
+def test_retire_confirm_card_has_buttons_only_when_app_configured():
+    state = {
+        "name": "access-7", "ip": "192.168.10.27", "job": "infra-dist-ping",
+        "down_since": 100.0, "pending_token": "tok-9",
+    }
+    # 配了自建应用：带两个回传按钮，value 携带 key/token/action
+    interactive = bridge.build_retire_confirm_card(state, "infra-dist-ping|192.168.10.27", True)
+    elements = interactive["card"]["body"]["elements"]
+    buttons = [e for e in elements if e.get("tag") == "button"]
+    assert len(buttons) == 2
+    actions = {b["behaviors"][0]["value"]["action"] for b in buttons}
+    assert actions == {"retire_delete", "retire_keep"}
+    assert all(b["behaviors"][0]["value"]["token"] == "tok-9" for b in buttons)
+    assert all(b["behaviors"][0]["type"] == "callback" for b in buttons)
+
+    # 没配应用：退化为纯通知卡（无按钮），提示到控制台确认
+    plain = bridge.build_retire_confirm_card(state, "k", False)
+    assert not [e for e in plain["card"]["body"]["elements"] if e.get("tag") == "button"]
+    assert "控制台" in plain["card"]["body"]["elements"][0]["content"]
+
+
+def test_pending_delete_notify_downgrades_to_webhook_when_app_send_fails(monkeypatch):
+    key = "infra-dist-ping|192.168.10.27"
+    states = {key: {
+        "name": "access-7", "ip": "192.168.10.27", "job": "infra-dist-ping",
+        "down_since": 100.0, "pending_delete": True, "pending_token": "t",
+        "pending_notified": False, "pending_last_notified": None,
+    }}
+    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "cli_x")
+    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "secret")
+    # 应用发卡失败 -> 必须回退到 webhook 通知卡
+    monkeypatch.setattr(bridge, "send_feishu_app_card", lambda card: False)
+    webhook_calls = []
+    monkeypatch.setattr(bridge, "send_feishu", lambda card: webhook_calls.append(card) or True)
+
+    changed = bridge.notify_pending_delete_states(states, 1000.0)
+    assert changed is True
+    assert states[key]["pending_notified"] is True
+    assert len(webhook_calls) == 1
+
+    # 已通知后不重复发（DEVICE_PENDING_DELETE_REALERT_SECONDS=0）
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_REALERT_SECONDS", 0)
+    webhook_calls.clear()
+    assert bridge.notify_pending_delete_states(states, 5000.0) is False
+    assert not webhook_calls
+
+
+def test_pending_delete_notify_not_committed_when_all_sends_fail(monkeypatch):
+    key = "infra-dist-ping|192.168.10.27"
+    states = {key: {
+        "name": "access-7", "ip": "192.168.10.27", "job": "infra-dist-ping",
+        "down_since": 100.0, "pending_delete": True, "pending_token": "t",
+        "pending_notified": False, "pending_last_notified": None,
+    }}
+    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "")
+    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "")
+    monkeypatch.setattr(bridge, "send_feishu", lambda card: False)
+    # 发送失败时不置 notified，下轮还会重试
+    assert bridge.notify_pending_delete_states(states, 1000.0) is False
+    assert states[key]["pending_notified"] is False

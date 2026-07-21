@@ -178,6 +178,11 @@ services:
       DEVICE_REENROLL_AFTER_SECONDS: "${DEVICE_REENROLL_AFTER_SECONDS:-172800}"
       DEVICE_REENROLL_JOBS: "${DEVICE_REENROLL_JOBS:-infra-dist-ping}"
       DEVICE_LIBRENMS_SYNC_RETRY_SECONDS: "${DEVICE_LIBRENMS_SYNC_RETRY_SECONDS:-60}"
+      DEVICE_PENDING_DELETE_REALERT_SECONDS: "${DEVICE_PENDING_DELETE_REALERT_SECONDS:-0}"
+      # 飞书自建应用(可选)：填了才有卡片内"确认删除/保留"按钮 + feishu-ws 长连接。
+      FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
+      FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
+      FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"
       DEVICE_ONLINE_FROM_PING: "${DEVICE_ONLINE_FROM_PING:-false}"
       DEVICE_AUTO_ADD_FROM_PING: "${DEVICE_AUTO_ADD_FROM_PING:-true}"
       DEVICE_AUTO_ADD_SNMP_JOBS: "${DEVICE_AUTO_ADD_SNMP_JOBS:-infra-core-ping,infra-dist-ping}"
@@ -329,6 +334,31 @@ services:
       UP_INFLUXDB_DISABLE: "true"
     ports:
       - "${UNPOLLER_BIND:-127.0.0.1}:${UNPOLLER_PORT:-9130}:9130"
+    networks:
+      - monitor
+
+  # 飞书长连接回调边车：接收待删除确认卡的"确认删除/保留"按钮点击（长连接
+  # 模式主动外连飞书云端，内网无需公网/端口映射）。只在配置了自建应用时启动
+  # （feishu 这个 profile），把结果转给告警桥执行删除/保留。没配就不起这个容器，
+  # 确认仍可在控制台"待删除设备"面板完成。
+  feishu-ws:
+    image: ${PYTHON_SLIM_IMAGE_WS:-monitor-feishu-ws:local}
+    build:
+      context: ./docker/feishu-ws
+    container_name: feishu-ws
+    restart: unless-stopped
+    profiles: ["feishu"]
+    volumes:
+      - ./feishu-ws-client.py:/feishu-ws-client.py:ro
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      TZ: Asia/Shanghai
+      FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
+      FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
+      BRIDGE_URL: "http://alertmanager-feishu-bridge:5005"
+    entrypoint: ["python3", "/feishu-ws-client.py"]
+    depends_on:
+      - alertmanager-feishu-bridge
     networks:
       - monitor
 

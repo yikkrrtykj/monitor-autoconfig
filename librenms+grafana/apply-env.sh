@@ -193,6 +193,17 @@ fi
 # created. A plain restart leaves the old values in the container, so include
 # it in the recreate set whenever the UniFi compose profile is enabled.
 COMPOSE_PROFILES_VALUE=$(render_env_value COMPOSE_PROFILES)
+# The Feishu long-connection sidecar only runs when a self-built app is
+# configured. Activating the "feishu" profile from the app id keeps operators
+# from having to hand-edit COMPOSE_PROFILES after pasting the app secret.
+FEISHU_APP_ID_VALUE=$(render_env_value FEISHU_APP_ID)
+if [ -n "$FEISHU_APP_ID_VALUE" ]; then
+  case ",${COMPOSE_PROFILES_VALUE}," in
+    *,feishu,*) : ;;
+    *) COMPOSE_PROFILES_VALUE="${COMPOSE_PROFILES_VALUE:+${COMPOSE_PROFILES_VALUE},}feishu" ;;
+  esac
+  export COMPOSE_PROFILES="$COMPOSE_PROFILES_VALUE"
+fi
 REMOVE_UNPOLLER=false
 case ",${COMPOSE_PROFILES_VALUE}," in
   *,unifi,*) SERVICES="${SERVICES}  unpoller
@@ -202,6 +213,10 @@ case ",${COMPOSE_PROFILES_VALUE}," in
       REMOVE_UNPOLLER=true
     fi
     ;;
+esac
+case ",${COMPOSE_PROFILES_VALUE}," in
+  *,feishu,*) SERVICES="${SERVICES}  feishu-ws
+" ;;
 esac
 
 compose_up() {

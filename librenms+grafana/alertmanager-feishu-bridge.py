@@ -76,6 +76,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import re
+import secrets
 import ssl
 import sys
 import threading
@@ -156,11 +157,24 @@ DEVICE_DOWN_JOBS = os.environ.get(
     "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-fw-unit-ping,infra-isp-ping,infra-srv-ping",
 )
 # Event access/distribution switches are often deployed for only a few days.
-# At 48 hours offline, retire its old outage automatically. If it returns later,
-# start a fresh lifecycle and send a new-device card instead of a recovery card.
+# At 48 hours offline, ASK a human before touching anything: mark the device
+# pending-delete and push a Feishu confirm card. LibreNMS records are only
+# deleted after explicit confirmation (console panel, or in-card buttons when
+# a Feishu app is configured) — never automatically, so a self-healed device,
+# a suppressed downstream victim, or a transient API error can't lose data.
+# If the device comes back before anyone confirms, it starts a fresh lifecycle
+# (new-device card, no stale recovery card) and keeps its LibreNMS history.
 DEVICE_REENROLL_AFTER_SECONDS = int(os.environ.get("DEVICE_REENROLL_AFTER_SECONDS", "172800"))
 DEVICE_REENROLL_JOBS = os.environ.get("DEVICE_REENROLL_JOBS", "infra-dist-ping")
 DEVICE_LIBRENMS_SYNC_RETRY_SECONDS = int(os.environ.get("DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", "60"))
+# 待删除确认卡的重发间隔；0 = 只发一次，之后一直安静等确认。
+DEVICE_PENDING_DELETE_REALERT_SECONDS = int(os.environ.get("DEVICE_PENDING_DELETE_REALERT_SECONDS", "0"))
+# 飞书自建应用（可选）：配置后待删除确认卡带"确认删除/保留"回传按钮，配合
+# feishu-ws 长连接边车在飞书里直接确认，人在外网也能操作。留空则确认卡退化
+# 为纯通知，确认动作在赛事控制台完成。
+FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
+FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
+FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "").strip()
 DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "false").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_FROM_PING = os.environ.get("DEVICE_AUTO_ADD_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-core-ping,infra-dist-ping")
@@ -362,6 +376,12 @@ def load_device_down_states():
             "name": str(value.get("name") or ""),
             "ip": str(value.get("ip") or ""),
             "job": str(value.get("job") or ""),
+            "pending_delete": bool(value.get("pending_delete", False)),
+            "pending_since": _as_float(value.get("pending_since")),
+            "pending_token": str(value.get("pending_token") or ""),
+            "pending_notified": bool(value.get("pending_notified", False)),
+            "pending_last_notified": _as_float(value.get("pending_last_notified")),
+            "pending_snoozed_until": _as_float(value.get("pending_snoozed_until")),
         }
     return loaded
 
@@ -369,7 +389,7 @@ def load_device_down_states():
 def save_device_down_states(states):
     active_or_retired = {}
     for key, state in states.items():
-        if not state.get("alerting") and not state.get("retired"):
+        if not state.get("alerting") and not state.get("retired") and not state.get("pending_delete"):
             continue
         active_or_retired[str(key)] = {
             "down_since": state.get("down_since"),
@@ -385,6 +405,12 @@ def save_device_down_states(states):
             "job": state.get("job") or "",
             "alerting": bool(state.get("alerting")),
             "retired": bool(state.get("retired")),
+            "pending_delete": bool(state.get("pending_delete", False)),
+            "pending_since": state.get("pending_since"),
+            "pending_token": state.get("pending_token") or "",
+            "pending_notified": bool(state.get("pending_notified", False)),
+            "pending_last_notified": state.get("pending_last_notified"),
+            "pending_snoozed_until": state.get("pending_snoozed_until"),
         }
     with DEVICE_DOWN_STATE_LOCK:
         _save_json_dict(DEVICE_DOWN_STATE_FILE, active_or_retired)
@@ -1003,6 +1029,49 @@ def build_isp_data_missing_card(missing_seconds, recovered=False):
     return _make_card(next_event_title(), f"{header_emoji} 外网流量采集告警", color, "\n".join(lines))
 
 
+def build_retire_confirm_card(state, key, interactive):
+    """离线满 48h 的确认卡。interactive=True（配了自建应用）带回传按钮；
+    否则给出到控制台处理的提示。删除永远只在人工确认后发生。"""
+    name = state.get("name") or state.get("ip") or "?"
+    ip = state.get("ip") or ""
+    dev = f"{name} ({ip})" if ip and ip != name else name
+    offline = format_duration(max(0, time.time() - (_as_float(state.get("down_since")) or time.time())))
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"🖥 设备：{dev}",
+        f"⏳ 已离线：{offline}",
+        "❓ 是否删除它在 LibreNMS 的记录？删除后若再次上线将按新设备重新纳管。",
+        "🔒 不确认就一直保留，不会自动删除。",
+        f"⏰ 时间：{ts}",
+    ]
+    extra = None
+    if interactive:
+        def _button(text, style, action):
+            return {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": text},
+                "type": style,
+                "width": "default",
+                "margin": "8px 8px 0px 0px",
+                "behaviors": [{
+                    "type": "callback",
+                    "value": {
+                        "action": action,
+                        "key": key,
+                        "token": state.get("pending_token") or "",
+                        "device": dev,
+                    },
+                }],
+            }
+        extra = [
+            _button("确认删除", "danger", "retire_delete"),
+            _button("保留设备", "default", "retire_keep"),
+        ]
+    else:
+        lines.append("👉 请到赛事控制台『待删除设备』面板确认删除或保留。")
+    return _make_card(next_event_title(), "🟠 设备待删除确认", "orange", "\n".join(lines), extra_elements=extra)
+
+
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dev = f"{name} ({ip})" if ip and ip != name else (name or ip or "?")
@@ -1101,8 +1170,8 @@ def _card_preview_title(title, subtitle):
     return preview[:120]
 
 
-def _make_card(title, subtitle, color, body_md):
-    return {
+def _make_card(title, subtitle, color, body_md, extra_elements=None):
+    card = {
         "msg_type": "interactive",
         "card": {
             "schema": "2.0",
@@ -1138,6 +1207,9 @@ def _make_card(title, subtitle, color, body_md):
             },
         },
     }
+    if extra_elements:
+        card["card"]["body"]["elements"].extend(extra_elements)
+    return card
 
 
 def _feishu_response_result(response_text):
@@ -1203,6 +1275,111 @@ def send_feishu(card):
                 time.sleep(delay)
     mark_delivery_health(False, last_error)
     return False
+
+
+_FEISHU_APP_TOKEN = {"token": "", "expires_at": 0.0}
+_FEISHU_APP_TOKEN_LOCK = threading.Lock()
+_FEISHU_APP_CHAT = {"chat_id": ""}
+
+
+def feishu_app_configured():
+    return bool(FEISHU_APP_ID and FEISHU_APP_SECRET)
+
+
+def _feishu_api_post(path, payload, token=""):
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = request.Request(
+        f"https://open.feishu.cn{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+    )
+    with request.urlopen(req, timeout=8) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+
+
+def _feishu_tenant_token():
+    """Cached tenant_access_token；过期前 120 秒刷新。失败返回空串。"""
+    now = time.time()
+    with _FEISHU_APP_TOKEN_LOCK:
+        if _FEISHU_APP_TOKEN["token"] and now < _FEISHU_APP_TOKEN["expires_at"] - 120:
+            return _FEISHU_APP_TOKEN["token"]
+    try:
+        data = _feishu_api_post(
+            "/open-apis/auth/v3/tenant_access_token/internal",
+            {"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET},
+        )
+    except Exception as exc:
+        log(f"[APP] tenant token request failed: {exc}")
+        return ""
+    if data.get("code") != 0 or not data.get("tenant_access_token"):
+        log(f"[APP] tenant token rejected: code={data.get('code')} msg={str(data.get('msg'))[:120]}")
+        return ""
+    with _FEISHU_APP_TOKEN_LOCK:
+        _FEISHU_APP_TOKEN["token"] = data["tenant_access_token"]
+        _FEISHU_APP_TOKEN["expires_at"] = now + float(data.get("expire") or 3600)
+        return _FEISHU_APP_TOKEN["token"]
+
+
+def _feishu_app_chat_id(token):
+    """FEISHU_CHAT_ID 优先；未配置则取机器人所在的第一个群并记日志。"""
+    if FEISHU_CHAT_ID:
+        return FEISHU_CHAT_ID
+    if _FEISHU_APP_CHAT["chat_id"]:
+        return _FEISHU_APP_CHAT["chat_id"]
+    try:
+        req = request.Request(
+            "https://open.feishu.cn/open-apis/im/v1/chats?page_size=20",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+    except Exception as exc:
+        log(f"[APP] chat list failed: {exc}")
+        return ""
+    items = ((data.get("data") or {}).get("items")) or []
+    for item in items:
+        chat_id = str((item or {}).get("chat_id") or "")
+        if chat_id:
+            _FEISHU_APP_CHAT["chat_id"] = chat_id
+            log(f"[APP] auto-selected chat {chat_id} ({str((item or {}).get('name'))[:40]}); "
+                "set FEISHU_CHAT_ID to pin a specific group")
+            return chat_id
+    log("[APP] bot is not in any chat; add the app bot to the alert group")
+    return ""
+
+
+def send_feishu_app_card(card):
+    """通过自建应用机器人发交互卡片（带回传按钮）。失败返回 False。"""
+    if DRY_RUN:
+        log(f"[DRY][APP] would send interactive card: {card['card']['header']['title']['content']}")
+        return True
+    if not feishu_app_configured():
+        return False
+    token = _feishu_tenant_token()
+    if not token:
+        return False
+    chat_id = _feishu_app_chat_id(token)
+    if not chat_id:
+        return False
+    try:
+        data = _feishu_api_post(
+            "/open-apis/im/v1/messages?receive_id_type=chat_id",
+            {
+                "receive_id": chat_id,
+                "msg_type": "interactive",
+                "content": json.dumps(card["card"], ensure_ascii=False),
+            },
+            token=token,
+        )
+    except Exception as exc:
+        log(f"[APP] interactive card send failed: {exc}")
+        return False
+    if data.get("code") != 0:
+        log(f"[APP] interactive card rejected: code={data.get('code')} msg={str(data.get('msg'))[:160]}")
+        return False
+    return True
 
 
 def send_device_online_once(card, *identity_values):
@@ -2010,62 +2187,186 @@ def recovery_ready(state, now, sample_ts, recover_stable):
 
 
 def device_retirement_due(state, job, now):
-    """Return True when a temporary device's old outage must be retired."""
+    """True when an outage has aged past 48h and deserves a HUMAN confirm card.
+
+    只有真正告警过的离线（alerting）才进入待删除——根因抑制下的下游"受害者"
+    (alerting=False) 和从未见过 UP 的候选设备不问、不删。到点也只是标记 +
+    发确认卡，任何删除都等人工点确认。
+    """
     jobs = {item.strip() for item in DEVICE_REENROLL_JOBS.split(",") if item.strip()}
     down_since = _as_float(state.get("down_since"))
+    snoozed_until = _as_float(state.get("pending_snoozed_until")) or 0
     return bool(
         job in jobs
         and DEVICE_REENROLL_AFTER_SECONDS > 0
         and down_since is not None
-        and (state.get("alerting") or state.get("seen_up"))
+        and state.get("alerting")
+        and not state.get("pending_delete")
+        and not state.get("retired")
+        and now >= snoozed_until
         and now - down_since >= DEVICE_REENROLL_AFTER_SECONDS
     )
 
 
-def retire_expired_device_states(states, now):
-    """End 48-hour outages even while their targets are absent from Prometheus."""
-    retired_keys = []
+# 待删除状态的跨线程共享：watcher 线程标记/清除，HTTP 线程（控制台代理、
+# 飞书长连接边车回调）确认删除或保留。只锁小段状态修改，网络调用都在锁外。
+DEVICE_DOWN_STATES = {}
+RETIRE_LOCK = threading.Lock()
+
+
+def mark_pending_delete_states(states, now):
+    """Flag 48h-old alerted outages as pending-delete. Never deletes anything."""
+    marked = []
+    with RETIRE_LOCK:
+        for key, state in states.items():
+            if not device_retirement_due(state, state.get("job", ""), now):
+                continue
+            state["pending_delete"] = True
+            state["pending_since"] = now
+            state["pending_token"] = secrets.token_urlsafe(16)
+            state["pending_notified"] = False
+            state["pending_last_notified"] = None
+            marked.append(key)
+    return marked
+
+
+def notify_pending_delete_states(states, now):
+    """Send (or re-send) confirm cards for pending devices, delivery-confirmed."""
+    changed = False
     for key, state in states.items():
-        if not device_retirement_due(state, state.get("job", ""), now):
+        if not state.get("pending_delete"):
             continue
+        due = not state.get("pending_notified")
+        if not due and DEVICE_PENDING_DELETE_REALERT_SECONDS > 0:
+            last = _as_float(state.get("pending_last_notified")) or 0
+            due = now - last >= DEVICE_PENDING_DELETE_REALERT_SECONDS
+        if not due:
+            continue
+        interactive = feishu_app_configured()
+        card = build_retire_confirm_card(state, key, interactive)
+        delivered = send_feishu_app_card(card) if interactive else False
+        if not delivered:
+            # 应用没配/发送失败都退回 webhook 通知卡（无按钮，控制台确认）
+            delivered = send_feishu(build_retire_confirm_card(state, key, False))
+        if delivered:
+            state["pending_notified"] = True
+            state["pending_last_notified"] = now
+            changed = True
+            log(f"[DOWN] PENDING-DELETE confirm card sent for {state.get('name')} ({state.get('ip')})")
+    return changed
+
+
+def _clear_pending_fields(state):
+    state["pending_delete"] = False
+    state["pending_since"] = None
+    state["pending_token"] = ""
+    state["pending_notified"] = False
+    state["pending_last_notified"] = None
+
+
+def _target_currently_up(job, ip):
+    """删除前的最后一道防线：Prometheus 里这个目标现在是通的就拒绝删除。
+    序列不存在（目标已被移出配置）视为不在线，允许删。"""
+    if not job or not ip:
+        return False
+    try:
+        safe_job = job if re.match(r"^[A-Za-z0-9_:.-]+$", job) else ""
+        safe_ip = ip if re.match(r"^[0-9a-fA-F:.]+$", ip) else ""
+        if not safe_job or not safe_ip:
+            return False
+        query = f'max_over_time(probe_success{{job="{safe_job}",target_ip="{safe_ip}"}}[30s])'
+        for item in prometheus_query(query):
+            value = float((item.get("value") or [None, "0"])[1])
+            if value >= 1:
+                return True
+    except Exception as exc:
+        log(f"[DOWN] retire reachability check failed for {ip}: {exc} (treating as offline)")
+    return False
+
+
+def list_pending_delete_devices():
+    with RETIRE_LOCK:
+        pending = []
+        for key, state in DEVICE_DOWN_STATES.items():
+            if not state.get("pending_delete"):
+                continue
+            pending.append({
+                "key": key,
+                "name": state.get("name") or state.get("ip") or "?",
+                "ip": state.get("ip") or "",
+                "job": state.get("job") or "",
+                "downSince": _as_float(state.get("down_since")),
+                "pendingSince": _as_float(state.get("pending_since")),
+                "token": state.get("pending_token") or "",
+            })
+    pending.sort(key=lambda item: item.get("pendingSince") or 0)
+    return pending
+
+
+def resolve_pending_delete(key, action, token):
+    """Confirm (delete) or keep a pending device. Returns a result dict.
+
+    delete：先校验 token，再实时复查可达性——设备当前在线就拒绝；随后删
+    LibreNMS 记录并转入"已退役"生命周期（回来按新设备处理）。
+    keep：清除待删除标记，继续监控；48 小时后仍离线才会再次询问。
+    """
+    with RETIRE_LOCK:
+        state = DEVICE_DOWN_STATES.get(str(key or ""))
+        if not state or not state.get("pending_delete"):
+            return {"ok": False, "error": "该设备不在待删除列表（可能已处理或已恢复在线）"}
+        expected = state.get("pending_token") or ""
+        if not expected or not secrets.compare_digest(str(token or ""), expected):
+            return {"ok": False, "error": "确认口令不匹配，请刷新待删除列表后重试"}
+        name = state.get("name") or state.get("ip") or "?"
+        ip = state.get("ip") or ""
+        job = state.get("job") or ""
+
+    if action == "keep":
+        with RETIRE_LOCK:
+            _clear_pending_fields(state)
+            state["pending_snoozed_until"] = time.time() + max(1, DEVICE_REENROLL_AFTER_SECONDS)
+        save_device_down_states(DEVICE_DOWN_STATES)
+        log(f"[DOWN] PENDING-DELETE kept by operator: {name} ({ip})")
+        return {"ok": True, "action": "keep", "message": f"已保留 {name}，继续监控"}
+    if action != "delete":
+        return {"ok": False, "error": "action 必须是 delete 或 keep"}
+
+    # 网络调用都在锁外
+    if _target_currently_up(job, ip):
+        with RETIRE_LOCK:
+            _clear_pending_fields(state)
+        save_device_down_states(DEVICE_DOWN_STATES)
+        log(f"[DOWN] PENDING-DELETE refused, target is back online: {name} ({ip})")
+        return {"ok": False, "error": f"{name} 当前在线，已取消删除并恢复正常监控"}
+    result = delete_librenms_device(ip)
+    if result not in ("deleted", "missing"):
+        return {"ok": False, "error": "LibreNMS 删除失败（API 不可达或未授权），设备保持待删除，请稍后重试"}
+    with RETIRE_LOCK:
+        _clear_pending_fields(state)
         state["alerting"] = False
         state["retired"] = True
-        state["retired_at"] = now
+        state["retired_at"] = time.time()
         state["down_since"] = None
         state["up_since"] = None
         state["seen_up"] = False
         state["online_sent"] = False
         state["online_pending"] = False
-        state["librenms_deleted"] = False
+        state["librenms_deleted"] = True
         state["librenms_readded"] = False
         state["librenms_sync_last_attempt"] = 0
-        retired_keys.append(key)
-    return retired_keys
-
-
-def sync_retired_librenms_deletions(states, now):
-    """Delete newly retired LibreNMS devices, with bounded retries."""
-    changed = False
-    retry_after = max(1, DEVICE_LIBRENMS_SYNC_RETRY_SECONDS)
-    for state in states.values():
-        if not state.get("retired") or state.get("librenms_deleted"):
-            continue
-        last_attempt = _as_float(state.get("librenms_sync_last_attempt"), 0) or 0
-        if now - last_attempt < retry_after:
-            continue
-        state["librenms_sync_last_attempt"] = now
-        changed = True
-        result = delete_librenms_device(state.get("ip"))
-        if result in ("deleted", "missing"):
-            state["librenms_deleted"] = True
-            state["librenms_sync_last_attempt"] = 0
-    return changed
+        state["pending_snoozed_until"] = None
+    save_device_down_states(DEVICE_DOWN_STATES)
+    log(f"[DOWN] PENDING-DELETE confirmed, LibreNMS record removed: {name} ({ip})")
+    return {"ok": True, "action": "delete", "message": f"已删除 {name} 的 LibreNMS 记录；再次上线将按新设备处理"}
 
 
 def prepare_reenrolled_librenms_device(state, name, ip, now):
-    """Create the fresh LibreNMS record before announcing a new lifecycle."""
-    if not state.get("librenms_deleted"):
-        return False
+    """Ensure a LibreNMS record exists before announcing a new lifecycle.
+
+    不再要求"必须先删除成功"：确认制下删除只发生在人工确认里；设备自行
+    回来的场景 LibreNMS 记录本来就还在（add 返回 exists 直接复用，历史保留），
+    LibreNMS API 不可用也不会把回来的设备卡在永不纳管的悬空状态。
+    """
     if state.get("librenms_readded"):
         return True
     retry_after = max(1, DEVICE_LIBRENMS_SYNC_RETRY_SECONDS)
@@ -2119,7 +2420,10 @@ def device_down_watcher():
     sample_window = max(1, DEVICE_DOWN_SAMPLE_WINDOW_SECONDS)
     query = 'min_over_time(probe_success{job=~"%s"}[%ss])' % ("|".join(safe_jobs), sample_window)
     time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
-    states = load_device_down_states()
+    # 共享全局注册表：HTTP 线程（控制台/飞书回调的待删除确认）也要访问
+    DEVICE_DOWN_STATES.clear()
+    DEVICE_DOWN_STATES.update(load_device_down_states())
+    states = DEVICE_DOWN_STATES
     last_status_log = 0.0
     last_name_refresh = 0.0
     librenms_names = {}
@@ -2138,17 +2442,6 @@ def device_down_watcher():
 
     while True:
         now = time.time()
-        retired_keys = retire_expired_device_states(states, now)
-        if retired_keys:
-            for retired_key in retired_keys:
-                retired_state = states[retired_key]
-                log(
-                    f"[DOWN] RETIRED {retired_state.get('job')} "
-                    f"{retired_state.get('name')} ({retired_state.get('ip')}) after 48h offline"
-                )
-        librenms_state_changed = sync_retired_librenms_deletions(states, now)
-        if retired_keys or librenms_state_changed:
-            save_device_down_states(states)
         if now - last_name_refresh >= 60:
             try:
                 librenms_names = fetch_librenms_name_cache()
@@ -2273,6 +2566,22 @@ def device_down_watcher():
                             save_device_down_states(states)
             else:
                 previous_down_since = state.get("down_since")
+                if state.get("pending_delete"):
+                    # 待确认期间设备自己回来了：撤销待删除，按“新生命周期”走
+                    # （发新设备上线卡，而不是一张 48h+ 的陈旧恢复卡）。
+                    # LibreNMS 记录从未被删，历史保留。
+                    with RETIRE_LOCK:
+                        _clear_pending_fields(state)
+                        state["pending_snoozed_until"] = None
+                        state["alerting"] = False
+                        state["retired"] = True
+                        state["retired_at"] = sample_ts or now
+                        state["online_sent"] = False
+                        state["online_pending"] = False
+                        state["librenms_readded"] = False
+                        state["librenms_sync_last_attempt"] = 0
+                    log(f"[DOWN] PENDING-DELETE cancelled, device returned: {job} {name} ({ip})")
+                    save_device_down_states(states)
                 was_retired = bool(state.get("retired"))
                 state["last_up_at"] = sample_ts or now
                 first_up_after_candidate_down = (not state["seen_up"] and state.get("ignored_initial_down"))
@@ -2333,6 +2642,20 @@ def device_down_watcher():
                 else:
                     state["down_since"] = None
                     state["up_since"] = None
+
+        # 48h 待删除标记放在样本处理之后：本轮已经 UP 的设备先清掉了状态，
+        # 桥接重启后残留的陈旧 down_since 不会在设备实际在线时误发确认卡。
+        # 标记只发确认卡，删除永远等人工确认（控制台或飞书卡片按钮）。
+        marked_keys = mark_pending_delete_states(states, now)
+        for marked_key in marked_keys:
+            marked = states[marked_key]
+            log(
+                f"[DOWN] PENDING-DELETE {marked.get('job')} "
+                f"{marked.get('name')} ({marked.get('ip')}) offline 48h+, waiting for confirmation"
+            )
+        notified = notify_pending_delete_states(states, now)
+        if marked_keys or notified:
+            save_device_down_states(states)
 
         time.sleep(DEVICE_DOWN_POLL_INTERVAL)
 
@@ -3423,7 +3746,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_librenms()
         if self.path == "/test-alert":
             return self._handle_test_alert()
+        if self.path == "/retire/resolve":
+            return self._handle_retire_resolve()
         return self._send(404, b"not found")
+
+    def _handle_retire_resolve(self):
+        payload = self._read_json()
+        result = resolve_pending_delete(
+            str(payload.get("key") or ""),
+            str(payload.get("action") or "").strip().lower(),
+            str(payload.get("token") or ""),
+        )
+        status = 200 if result.get("ok") else 400
+        return self._send(status, json.dumps(result, ensure_ascii=False).encode("utf-8"),
+                          "application/json; charset=utf-8")
 
     def _handle_librenms(self):
         payload = self._read_json()
@@ -3458,6 +3794,12 @@ class Handler(BaseHTTPRequestHandler):
             status = 200 if not payload.get("deadWatchers") else 503
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             return self._send(status, body, "application/json; charset=utf-8")
+        if self.path == "/retire/pending":
+            body = json.dumps(
+                {"ok": True, "pending": list_pending_delete_devices()},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            return self._send(200, body, "application/json; charset=utf-8")
         return self._send(404, b"not found")
 
     def log_message(self, fmt, *args):
