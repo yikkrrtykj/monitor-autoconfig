@@ -521,7 +521,10 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
             # 关闭自动发现时，带 ping 探测目标的行同样不该被公网 IP 卡死
             # （IP 只影响拓扑展示，预检会把 bad 升级成部署阻塞项）。
             if isp_auto_discovery or item.get("ping"):
-                add("warn", f"{path}.ip", "运营商公网 IP 未填：拓扑不展示该线路、LibreNMS 不加 ping 设备；带宽/网关仍按名称自动绑定")
+                # Automatic mode discovers the WAN interface and gateway from
+                # the firewall. Name + bandwidth is the normal configuration,
+                # so an omitted public IP must not produce a warning banner.
+                pass
             else:
                 add("bad", f"{path}.ip", "运营商公网 IP 必填，用于拓扑展示并加入 LibreNMS")
         else:

@@ -1380,6 +1380,53 @@ def parse_cisco_dhcp_conflicts(text: str) -> list[str]:
     return list(dict.fromkeys(addresses))
 
 
+def parse_cisco_dhcp_excluded(text: str) -> list[str]:
+    """Expand IOS DHCP exclusions without reading the full binding table."""
+    addresses: set[ipaddress.IPv4Address] = set()
+    for match in re.finditer(
+        r"(?im)^\s*ip\s+dhcp\s+excluded-address\s+"
+        r"(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(\d{1,3}(?:\.\d{1,3}){3}))?\s*$",
+        str(text or "").replace("\r", ""),
+    ):
+        try:
+            start = ipaddress.IPv4Address(match.group(1))
+            end = ipaddress.IPv4Address(match.group(2) or match.group(1))
+        except ipaddress.AddressValueError:
+            continue
+        if end < start:
+            start, end = end, start
+        # Refuse pathological output instead of allocating millions of entries.
+        if int(end) - int(start) > 65535:
+            continue
+        addresses.update(ipaddress.IPv4Address(value) for value in range(int(start), int(end) + 1))
+    return [str(value) for value in sorted(addresses)]
+
+
+def attach_dhcp_pool_exclusions(pools: list[dict], excluded_addresses: list[str]) -> None:
+    """Attach exact exclusions that fall inside each returned pool range."""
+    parsed = []
+    for value in excluded_addresses:
+        try:
+            parsed.append(ipaddress.IPv4Address(value))
+        except ipaddress.AddressValueError:
+            continue
+    for pool in pools:
+        bounds = re.match(
+            r"^\s*(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})\s*$",
+            str(pool.get("range") or ""),
+        )
+        if not bounds:
+            pool["excludedAddresses"] = []
+            continue
+        try:
+            start = ipaddress.IPv4Address(bounds.group(1))
+            end = ipaddress.IPv4Address(bounds.group(2))
+        except ipaddress.AddressValueError:
+            pool["excludedAddresses"] = []
+            continue
+        pool["excludedAddresses"] = [str(value) for value in parsed if start <= value <= end]
+
+
 def parse_cisco_dhcp_statistics(text: str) -> dict:
     source = str(text or "").replace("\r", "")
 
@@ -1511,6 +1558,7 @@ def collect_cisco_dhcp(host: str) -> dict:
         for key, command in (
             ("conflicts", "show ip dhcp conflict"),
             ("statistics", "show ip dhcp server statistics"),
+            ("excluded", "show running-config | include ^ip dhcp excluded-address"),
         ):
             output = _telnet_command(session, command)
             if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", output):
@@ -1520,6 +1568,8 @@ def collect_cisco_dhcp(host: str) -> dict:
         pools = parse_cisco_dhcp_pools(pool_output)
         conflicts = parse_cisco_dhcp_conflicts(optional_outputs["conflicts"])
         statistics = parse_cisco_dhcp_statistics(optional_outputs["statistics"])
+        excluded_addresses = parse_cisco_dhcp_excluded(optional_outputs["excluded"])
+        attach_dhcp_pool_exclusions(pools, excluded_addresses)
         total = sum(pool["total"] for pool in pools)
         leased = sum(pool["leased"] for pool in pools)
         excluded = sum(pool["excluded"] for pool in pools)
@@ -1530,6 +1580,7 @@ def collect_cisco_dhcp(host: str) -> dict:
             "source": "devices.core.ip",
             "pools": pools,
             "conflicts": conflicts,
+            "excludedAddresses": excluded_addresses,
             "statistics": statistics,
             "summary": {
                 "poolCount": len(pools),
@@ -1883,6 +1934,7 @@ def run_iperf_test(data: dict) -> dict:
     if direction in ("download", "both"):
         directions.append(("download", True))
     started_monotonic = time.monotonic()
+    deadline = started_monotonic + IPERF3_TIMEOUT
     _set_iperf_status(
         ok=True,
         state="running",
@@ -1899,7 +1951,9 @@ def run_iperf_test(data: dict) -> dict:
         finishedAt=None,
         _startedMonotonic=started_monotonic,
         elapsedSeconds=0,
-        maxSeconds=IPERF3_TIMEOUT * len(directions),
+        # One cap covers the entire task. A blocked public node must not consume
+        # the timeout once for upload and then a second time for download.
+        maxSeconds=IPERF3_TIMEOUT,
         message="正在准备测速",
     )
     try:
@@ -1907,9 +1961,6 @@ def run_iperf_test(data: dict) -> dict:
         preferred_ports = list(ports)
         for direction_index, (direction_name, reverse) in enumerate(directions):
             _set_iperf_status(directionIndex=direction_index + 1)
-            # 每个方向独立的超时预算：双向测速时上传不吃掉下载的时间，
-            # 否则第二个方向的剩余预算可能被压到 1 秒而虚假超时。
-            deadline = time.monotonic() + IPERF3_TIMEOUT
             result = _run_iperf_direction(
                 host, preferred_ports, duration, parallel, reverse, deadline,
                 direction_index, len(directions),

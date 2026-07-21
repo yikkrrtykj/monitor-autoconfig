@@ -182,7 +182,7 @@ services:
       DEVICE_REENROLL_JOBS: "${DEVICE_REENROLL_JOBS:-infra-dist-ping}"
       DEVICE_LIBRENMS_SYNC_RETRY_SECONDS: "${DEVICE_LIBRENMS_SYNC_RETRY_SECONDS:-60}"
       DEVICE_PENDING_DELETE_REALERT_SECONDS: "${DEVICE_PENDING_DELETE_REALERT_SECONDS:-0}"
-      # 飞书自建应用(可选)：填了才有卡片内"确认删除/保留"按钮 + feishu-ws 长连接。
+      # 飞书自建应用：配置后普通告警优先走应用，且启用确认按钮 + feishu-ws 长连接。
       FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
       FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"

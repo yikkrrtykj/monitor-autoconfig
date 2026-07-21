@@ -171,9 +171,9 @@ DEVICE_REENROLL_JOBS = os.environ.get("DEVICE_REENROLL_JOBS", "infra-dist-ping")
 DEVICE_LIBRENMS_SYNC_RETRY_SECONDS = int(os.environ.get("DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", "60"))
 # 待删除确认卡的重发间隔；0 = 只发一次，之后一直安静等确认。
 DEVICE_PENDING_DELETE_REALERT_SECONDS = int(os.environ.get("DEVICE_PENDING_DELETE_REALERT_SECONDS", "0"))
-# 飞书自建应用（可选）：配置后待删除确认卡带"确认删除/保留"回传按钮，配合
-# feishu-ws 长连接边车在飞书里直接确认，人在外网也能操作。留空则确认卡退化
-# 为纯通知，确认动作在赛事控制台完成。
+# 飞书自建应用（推荐）：配置后普通告警优先由应用发送，待删除确认卡还带
+# “确认删除/保留”回传按钮；feishu-ws 长连接让外网用户也能直接确认。
+# 留空则使用群机器人 Webhook，确认动作在赛事控制台完成。
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
 FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "").strip()
@@ -460,13 +460,15 @@ def bridge_health_payload():
             watchers[name] = state
         delivery = dict(DELIVERY_HEALTH)
     dead = sorted(name for name, state in watchers.items() if not state.get("alive"))
-    token_ready = bool(TOKEN) or DRY_RUN
+    app_ready = bool(FEISHU_APP_ID and FEISHU_APP_SECRET)
+    token_ready = bool(TOKEN) or app_ready or DRY_RUN
     ready = token_ready and not dead
     return {
         "ok": True,
         "ready": ready,
         "dryRun": DRY_RUN,
         "tokenConfigured": bool(TOKEN),
+        "appConfigured": app_ready,
         "deadWatchers": dead,
         "watchers": watchers,
         "delivery": delivery,
@@ -1239,7 +1241,7 @@ def _feishu_response_result(response_text):
     return ok, detail or f"code={code}"
 
 
-def send_feishu(card):
+def _send_feishu_webhook(card):
     if DRY_RUN:
         log(f"[DRY] would POST card: {card['card']['header']['title']['content']}")
         mark_delivery_health(True)
@@ -1383,6 +1385,16 @@ def send_feishu_app_card(card):
         log(f"[APP] interactive card rejected: code={data.get('code')} msg={str(data.get('msg'))[:160]}")
         return False
     return True
+
+
+def send_feishu(card):
+    """Prefer the approved app bot; retain the webhook as a safe fallback."""
+    if feishu_app_configured():
+        if send_feishu_app_card(card):
+            mark_delivery_health(True)
+            return True
+        log("[APP] app delivery failed; falling back to FEISHU_ROBOT_TOKEN")
+    return _send_feishu_webhook(card)
 
 
 def send_device_online_once(card, *identity_values):
@@ -1885,8 +1897,11 @@ def classify_interconnect(lag_up, member_ups):
       down     - aggregate protocol/oper state is down, or every member is down
       unknown  - no member visibility (switch lacks ifStackTable); nothing to say
     """
+    # Without ifStack member visibility an administratively-up but unused LAG is
+    # indistinguishable from a failed interconnect. Alerting it produced false
+    # cards after every deployment whose online-member field was only "?".
     if not member_ups:
-        return "down" if lag_up is False else "unknown"
+        return "unknown"
     if not lag_up:
         return "down"
     any_down = not all(member_ups)
@@ -2325,7 +2340,8 @@ def notify_pending_delete_states(states, now):
         delivered = send_feishu_app_card(card) if interactive else False
         if not delivered:
             # 应用没配/发送失败都退回 webhook 通知卡（无按钮，控制台确认）
-            delivered = send_feishu(build_retire_confirm_card(state, key, False))
+            fallback_card = build_retire_confirm_card(state, key, False)
+            delivered = _send_feishu_webhook(fallback_card) if interactive else send_feishu(fallback_card)
         if delivered:
             state["pending_notified"] = True
             state["pending_last_notified"] = now
@@ -3876,13 +3892,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_test_alert(self):
         self._read_json()  # drain body
-        if not TOKEN and not DRY_RUN:
-            result = {"ok": False, "error": "未配置飞书机器人 Token（FEISHU_ROBOT_TOKEN）"}
+        if not TOKEN and not feishu_app_configured() and not DRY_RUN:
+            result = {"ok": False, "error": "未配置飞书应用机器人或群机器人 Token"}
         else:
             sent = send_feishu(build_test_card())
             result = {"ok": bool(sent), "dryRun": DRY_RUN}
             if not sent and not DRY_RUN:
-                result["error"] = "飞书返回失败，请检查 Token / 群机器人是否有效"
+                result["error"] = "飞书返回失败，请检查应用凭证、目标群或群机器人 Token"
         log(f"[TEST] test alert requested -> {result}")
         return self._send(200, json.dumps(result).encode("utf-8"), "application/json; charset=utf-8")
 

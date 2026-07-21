@@ -1481,7 +1481,7 @@
       result.textContent = "配置已保存，正在测试核心交换机连接…";
       const connection = await testDhcpConnection();
       result.className = `network-tool-result ${connection.privileged ? "good" : "warn"}`;
-      result.textContent = `核心 IP 和 Telnet 信息已保存。${connection.message} · ${connection.host}:${connection.port} · ${connection.latencyMs} ms`;
+      result.textContent = `核心 IP 和 Telnet 信息已保存。${connection.message} · ${connection.host}:${connection.port} · 完整连接与登录耗时 ${connection.latencyMs} ms（不是 Ping 延迟）`;
     } catch (error) {
       result.className = "network-tool-result bad";
       result.textContent = settingsSaved
@@ -1900,16 +1900,14 @@
       </section>
       <section class="config-section">
         <h3>ISP</h3>
-        <p class="config-section-note">自动发现会从防火墙 SNMP 的 WAN 接口名/描述识别运营商，并从路由表自动发现网关探测地址。带宽按"运营商名"绑定：名称与防火墙 WAN 口名/别名一致（或留空按行顺序对应 WAN 口）。网关探测地址一般留空自动发现；公网 IP 用于拓扑展示并加入 LibreNMS，不填只影响拓扑。</p>
+        <p class="config-section-note">自动发现会从防火墙 SNMP 识别 WAN 接口，并从路由表发现网关。每条线路只需填写与防火墙一致的 WAN 口名/别名和带宽；不再要求公网 IP 或网关地址。</p>
         <div class="config-fields">
           ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox", compactCheck: true })}
           ${configInput("isp.max_bandwidth_mbps", "未填带宽时按 Mbps", { number: true, placeholder: "可留空，内部默认 1000" })}
           ${configInput("isp.wan_if_filter", "WAN 口识别关键词", { placeholder: "telecom,telcom,unicom,isp,WAN" })}
         </div>
         ${configListRows("isp", lastEditableConfig.isp.links, [
-          { key: "name", label: "运营商名（可选）", placeholder: "与防火墙 WAN 口名一致以绑定带宽" },
-          { key: "ip", label: "运营商公网 IP", placeholder: "用于拓扑展示，可留空" },
-          { key: "ping", label: "外网网关探测地址", placeholder: "留空自动从防火墙路由表发现" },
+          { key: "name", label: "WAN 口名/别名", placeholder: "例如 telecom、eth1 或电信" },
           { key: "bandwidth_mbps", label: "单线带宽", number: true }
         ])}
       </section>
@@ -3202,6 +3200,75 @@
     `;
   }
 
+  function dhcpRangeAddresses(rangeText, limit = 4096) {
+    const match = String(rangeText || "").match(/^\s*(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})\s*$/);
+    if (!match) return [];
+    const toNumber = (value) => {
+      const parts = value.split(".").map(Number);
+      if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+      return (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256) + parts[3];
+    };
+    const toAddress = (value) => [24, 16, 8, 0].map((shift) => Math.floor(value / (2 ** shift)) % 256).join(".");
+    const start = toNumber(match[1]);
+    const end = toNumber(match[2]);
+    if (start == null || end == null || end < start || end - start + 1 > limit) return [];
+    return Array.from({ length: end - start + 1 }, (_item, index) => toAddress(start + index));
+  }
+
+  function compactDhcpAddresses(values) {
+    const toNumber = (value) => {
+      const parts = String(value || "").split(".").map(Number);
+      if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+      return (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256) + parts[3];
+    };
+    const entries = [...new Set(values || [])]
+      .map((ip) => ({ ip, number: toNumber(ip) }))
+      .filter((item) => item.number != null)
+      .sort((left, right) => left.number - right.number);
+    const ranges = [];
+    for (const entry of entries) {
+      const current = ranges[ranges.length - 1];
+      if (current && entry.number === current.endNumber + 1) {
+        current.end = entry.ip;
+        current.endNumber = entry.number;
+      } else {
+        ranges.push({ start: entry.ip, end: entry.ip, endNumber: entry.number });
+      }
+    }
+    return ranges.map((range) => range.start === range.end ? range.start : `${range.start}–${range.end}`).join("、");
+  }
+
+  function dhcpAddressMap(pool, conflicts) {
+    const addresses = dhcpRangeAddresses(pool.range);
+    if (!addresses.length) return '<div class="dhcp-address-note">交换机未返回可展开的地址范围。</div>';
+    const excluded = new Set(pool.excludedAddresses || []);
+    const conflictSet = new Set(conflicts || []);
+    const excludedList = [...excluded];
+    const exclusionNote = excludedList.length
+      ? `排除地址：${compactDhcpAddresses(excludedList)}`
+      : (Number(pool.excluded || 0) ? "交换机返回了排除数量，但未返回具体排除配置" : "没有排除地址");
+    return `
+      <section class="dhcp-address-map" aria-label="${escapeHtml(pool.name || "地址池")} IP 地址格">
+        <div class="dhcp-address-map-head">
+          <div class="dhcp-address-legend">
+            <span><i class="pool"></i>池内地址</span>
+            <span><i class="excluded"></i>排除</span>
+            <span><i class="conflict"></i>冲突</span>
+          </div>
+          <span class="dhcp-exclusion-list">${escapeHtml(exclusionNote)}</span>
+        </div>
+        <div class="dhcp-address-grid">
+          ${addresses.map((ip) => {
+            const status = conflictSet.has(ip) ? "conflict" : excluded.has(ip) ? "excluded" : "pool";
+            const label = ip.slice(ip.lastIndexOf("."));
+            const statusText = status === "conflict" ? "冲突" : status === "excluded" ? "排除" : "池内（不逐项读取租约）";
+            return `<span class="dhcp-address-cell ${status}" title="${escapeHtml(`${ip} · ${statusText}`)}" aria-label="${escapeHtml(`${ip} ${statusText}`)}">${escapeHtml(label)}</span>`;
+          }).join("")}
+        </div>
+      </section>
+    `;
+  }
+
   function renderDhcpDashboard(payload) {
     const summary = payload.summary || {};
     const pools = payload.pools || [];
@@ -3251,6 +3318,7 @@
               <div><dt>剩余</dt><dd>${Number(pool.available || 0)}</dd></div>
               <div><dt>排除</dt><dd>${Number(pool.excluded || 0)}</dd></div>
             </dl>
+            ${dhcpAddressMap(pool, conflicts)}
           </article>
         `;
       }).join("") : `<div class="dhcp-empty">核心交换机当前没有返回 DHCP 地址池。</div>`;

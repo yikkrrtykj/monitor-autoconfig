@@ -238,6 +238,8 @@
   border: 1px solid var(--linear-hairline);
   border-radius: 10px;
   background: var(--linear-surface-1);
+  content-visibility: auto;
+  contain-intrinsic-size: 620px;
 }
 
 .dhcp-pool-card.warn { border-color: rgba(245, 197, 66, 0.5); }
@@ -314,6 +316,92 @@
   margin: 0;
   color: var(--linear-ink-muted);
   font-size: 15px;
+}
+
+.dhcp-address-map {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--linear-hairline);
+}
+
+.dhcp-address-map-head {
+  display: grid;
+  gap: 6px;
+}
+
+.dhcp-address-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--linear-ink-subtle);
+  font-size: 10px;
+}
+
+.dhcp-address-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dhcp-address-legend i {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--linear-hairline-strong);
+  border-radius: 2px;
+  background: var(--linear-surface-3);
+}
+
+.dhcp-address-legend i.excluded {
+  border-color: rgba(245, 197, 66, 0.72);
+  background: rgba(245, 197, 66, 0.28);
+}
+
+.dhcp-address-legend i.conflict {
+  border-color: rgba(255, 107, 130, 0.8);
+  background: rgba(255, 107, 130, 0.32);
+}
+
+.dhcp-exclusion-list,
+.dhcp-address-note {
+  color: var(--linear-ink-muted);
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.dhcp-address-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(27px, 1fr));
+  gap: 3px;
+}
+
+.dhcp-address-cell {
+  display: grid;
+  min-width: 0;
+  height: 23px;
+  place-items: center;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 4px;
+  background: var(--linear-surface-2);
+  color: var(--linear-ink-subtle);
+  cursor: default;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dhcp-address-cell.excluded {
+  border-color: rgba(245, 197, 66, 0.72);
+  background: rgba(245, 197, 66, 0.22);
+  color: #f5d66b;
+  font-weight: 700;
+}
+
+.dhcp-address-cell.conflict {
+  border-color: rgba(255, 107, 130, 0.8);
+  background: rgba(255, 107, 130, 0.25);
+  color: #ff92a5;
+  font-weight: 700;
 }
 
 .dhcp-empty {
@@ -1588,12 +1676,7 @@
 }
 
 .config-list[data-config-list="isp"] .config-list-row {
-  grid-template-columns:
-    minmax(92px, 0.9fr)
-    minmax(130px, 1.1fr)
-    minmax(130px, 1.1fr)
-    minmax(76px, 0.6fr)
-    58px;
+  grid-template-columns: minmax(160px, 1fr) minmax(110px, 0.55fr) 58px;
 }
 
 .config-list-row button,

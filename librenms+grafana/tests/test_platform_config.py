@@ -306,8 +306,7 @@ isp:
 
 
 def test_isp_link_with_ping_target_not_blocked_when_discovery_off():
-    # 关闭自动发现但行里有 ping 探测目标：公网 IP 只影响拓扑展示，降为 warn，
-    # 预检不再把这种可用配置当成部署阻塞项
+    # 关闭自动发现但行里有 ping 探测目标时，公网 IP 不是必需项。
     config = platform_config.parse_simple_yaml("""
 devices:
   core:
@@ -320,7 +319,7 @@ isp:
 """)
     issues = platform_config.validate_config(config)
     assert not [item for item in issues if item["level"] == "bad" and item["path"] == "isp.links[0].ip"]
-    assert [item for item in issues if item["level"] == "warn" and item["path"] == "isp.links[0].ip"]
+    assert not [item for item in issues if item["path"] == "isp.links[0].ip"]
 
 
 def test_isp_bandwidth_only_link_is_allowed_with_auto_discovery():
@@ -336,7 +335,7 @@ isp:
 """)
     issues = platform_config.validate_config(config)
     assert not [item for item in issues if item["level"] == "bad" and item["path"] == "isp.links[0].ip"]
-    assert [item for item in issues if item["level"] == "warn" and item["path"] == "isp.links[0].ip"]
+    assert not [item for item in issues if item["path"] == "isp.links[0].ip"]
     env = platform_config.render_env(config)
     assert env["ISP_GATEWAY_AUTO_DISCOVER"] == "true"
     assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "*:1000,telecom:500"

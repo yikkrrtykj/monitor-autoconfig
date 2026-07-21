@@ -69,6 +69,24 @@ def test_feishu_network_failure_is_not_acknowledged(monkeypatch):
     assert len(calls) == 3
 
 
+def test_approved_app_bot_is_preferred_for_normal_alerts(monkeypatch):
+    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "cli_x")
+    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "secret")
+    monkeypatch.setattr(bridge, "send_feishu_app_card", lambda _card: True)
+    monkeypatch.setattr(bridge, "_send_feishu_webhook", lambda _card: (_ for _ in ()).throw(AssertionError("webhook should not run")))
+
+    assert bridge.send_feishu(_card()) is True
+
+
+def test_normal_alert_falls_back_to_webhook_when_app_delivery_fails(monkeypatch):
+    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "cli_x")
+    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "secret")
+    monkeypatch.setattr(bridge, "send_feishu_app_card", lambda _card: False)
+    monkeypatch.setattr(bridge, "_send_feishu_webhook", lambda _card: True)
+
+    assert bridge.send_feishu(_card()) is True
+
+
 def test_online_dedupe_is_committed_only_after_delivery(monkeypatch, tmp_path):
     state_file = tmp_path / "online.json"
     outcomes = iter([False, True])
@@ -184,7 +202,7 @@ def test_pending_delete_notify_downgrades_to_webhook_when_app_send_fails(monkeyp
     # 应用发卡失败 -> 必须回退到 webhook 通知卡
     monkeypatch.setattr(bridge, "send_feishu_app_card", lambda card: False)
     webhook_calls = []
-    monkeypatch.setattr(bridge, "send_feishu", lambda card: webhook_calls.append(card) or True)
+    monkeypatch.setattr(bridge, "_send_feishu_webhook", lambda card: webhook_calls.append(card) or True)
 
     changed = bridge.notify_pending_delete_states(states, 1000.0)
     assert changed is True

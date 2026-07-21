@@ -145,6 +145,25 @@ def test_iperf_defaults_to_hong_kong_preset(monkeypatch, tmp_path):
     assert calls[0][calls[0].index("-p") + 1] == "5201"
 
 
+def test_iperf_bidirectional_test_shares_one_total_deadline(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    api.IPERF3_TIMEOUT = 60
+    deadlines = []
+
+    def fake_direction(_host, _ports, _duration, _parallel, reverse, deadline, *_args):
+        deadlines.append(deadline)
+        return {"mbps": 100.0, "seconds": 3.0, "bytes": 1, "retransmits": 0,
+                "sender": {}, "receiver": {}, "intervals": [], "port": 5201,
+                "reverse": reverse}
+
+    monkeypatch.setattr(api, "_run_iperf_direction", fake_direction)
+    result = api.run_iperf_test({"duration": 3, "parallel": 1, "direction": "both"})
+
+    assert len(result["results"]) == 2
+    assert deadlines[0] == deadlines[1]
+    assert api.iperf_status_payload()["maxSeconds"] == 60
+
+
 def test_cisco_dhcp_pool_parser_reports_capacity_and_thresholds(tmp_path):
     api = load_api(tmp_path)
 
@@ -187,6 +206,21 @@ Malformed messages 1
         "expiredBindings": 7,
         "malformedMessages": 1,
     }
+
+
+def test_cisco_dhcp_exclusions_expand_and_attach_to_matching_pool(tmp_path):
+    api = load_api(tmp_path)
+    exclusions = api.parse_cisco_dhcp_excluded("""
+ip dhcp excluded-address 192.168.40.1 192.168.40.3
+ip dhcp excluded-address 192.168.40.10
+ip dhcp excluded-address 192.168.41.1
+""")
+    pools = api.parse_cisco_dhcp_pools(DHCP_POOL_OUTPUT)
+    api.attach_dhcp_pool_exclusions(pools, exclusions)
+
+    assert exclusions == ["192.168.40.1", "192.168.40.2", "192.168.40.3", "192.168.40.10", "192.168.41.1"]
+    assert pools[0]["excludedAddresses"] == ["192.168.40.1", "192.168.40.2", "192.168.40.3", "192.168.40.10"]
+    assert pools[1]["excludedAddresses"] == ["192.168.41.1"]
 
 
 def test_dhcp_dashboard_reuses_configured_core_and_short_cache(monkeypatch, tmp_path):
@@ -246,6 +280,9 @@ def test_dhcp_collection_uses_one_session_and_skips_full_binding_list(monkeypatc
             "show ip dhcp pool": DHCP_POOL_OUTPUT,
             "show ip dhcp conflict": "No conflicts detected",
             "show ip dhcp server statistics": "Automatic bindings 194",
+            "show running-config | include ^ip dhcp excluded-address": (
+                "ip dhcp excluded-address 192.168.40.1 192.168.40.10"
+            ),
         }.get(command, "")
 
     monkeypatch.setattr(api, "_telnet_command", fake_command)
@@ -259,8 +296,10 @@ def test_dhcp_collection_uses_one_session_and_skips_full_binding_list(monkeypatc
         "show ip dhcp pool",
         "show ip dhcp conflict",
         "show ip dhcp server statistics",
+        "show running-config | include ^ip dhcp excluded-address",
     ]
     assert "show ip dhcp binding" not in commands
+    assert result["pools"][0]["excludedAddresses"] == [f"192.168.40.{value}" for value in range(1, 11)]
     assert session.closed is True
 
 

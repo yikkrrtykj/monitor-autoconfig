@@ -262,7 +262,7 @@ def test_classify_interconnect_distinguishes_degraded_from_down():
     assert bridge.classify_interconnect(False, [False]) == "down"
     # No member visibility (no ifStackTable) -> nothing to say.
     assert bridge.classify_interconnect(True, []) == "unknown"
-    assert bridge.classify_interconnect(False, []) == "down"
+    assert bridge.classify_interconnect(False, []) == "unknown"
 
 
 def test_interconnect_fetch_skips_admin_down_bundle(monkeypatch):

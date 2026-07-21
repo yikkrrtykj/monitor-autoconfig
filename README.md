@@ -233,6 +233,11 @@ cd librenms+grafana
 | UniFi | 使用 UniFi AP 时填控制器地址和只读账号 |
 | 飞书机器人 Token | 留空则不推飞书；多台监控可以复用同一个 token，但会推到同一个群且可能重复告警 |
 
+飞书企业自建应用审批通过后，把 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 写入
+`librenms+grafana/.env` 并将应用机器人加入告警群。配置后普通告警优先使用
+应用机器人，Webhook Token 仅作为发送失败时的回退；长连接目前处理卡片按钮，
+尚未处理群内 `@机器人` 查询命令。
+
 ## 交换机侧配置
 
 至少要让交换机把 syslog 发到监控服务器：
