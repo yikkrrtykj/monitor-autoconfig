@@ -88,6 +88,8 @@ DRY_RUN = os.environ.get("FEISHU_BRIDGE_DRY_RUN", "").lower() in ("1", "true", "
 FEISHU_SEND_MAX_ATTEMPTS = max(1, int(os.environ.get("FEISHU_SEND_MAX_ATTEMPTS", "3")))
 FEISHU_SEND_RETRY_BASE_SECONDS = max(0.0, float(os.environ.get("FEISHU_SEND_RETRY_BASE_SECONDS", "1")))
 FEISHU_FAILED_EVENT_RETRY_SECONDS = max(1, int(os.environ.get("FEISHU_FAILED_EVENT_RETRY_SECONDS", "30")))
+FEISHU_FAILED_EVENT_MAX_ATTEMPTS = max(1, int(os.environ.get("FEISHU_FAILED_EVENT_MAX_ATTEMPTS", "5")))
+FEISHU_FAILED_EVENT_TTL_SECONDS = max(60, int(os.environ.get("FEISHU_FAILED_EVENT_TTL_SECONDS", "600")))
 
 LIBRENMS_URL = os.environ.get("LIBRENMS_URL", "").rstrip("/")
 LIBRENMS_API_TOKEN = os.environ.get("LIBRENMS_API_TOKEN", "")
@@ -272,6 +274,7 @@ SEVERITY_COLOR = {
 
 EVENT_ID_LOCK = threading.Lock()
 DEVICE_ONLINE_STATE_LOCK = threading.Lock()
+DEVICE_ONLINE_INFLIGHT = set()
 DEVICE_DOWN_STATE_LOCK = threading.Lock()
 HEALTH_LOCK = threading.Lock()
 WATCHER_THREADS = {}
@@ -1387,8 +1390,9 @@ def send_device_online_once(card, *identity_values):
     clean = {str(value).strip() for value in identity_values if str(value or "").strip()}
     if not clean:
         return False
-    # Serialize check -> send -> commit so the AP and LibreNMS watcher cannot
-    # both deliver the same device while still avoiding a false persisted mark.
+    # Reserve the identities under the lock, but never hold it across network
+    # I/O. A failed Feishu request may take many seconds and must not stall the
+    # AP and LibreNMS watchers that share this de-duplication state.
     with DEVICE_ONLINE_STATE_LOCK:
         items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
         if clean & items:
@@ -1396,8 +1400,15 @@ def send_device_online_once(card, *identity_values):
                 items.update(clean)
                 _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
             return True
-        if not send_feishu(card):
+        if clean & DEVICE_ONLINE_INFLIGHT:
             return False
+        DEVICE_ONLINE_INFLIGHT.update(clean)
+    delivered = send_feishu(card)
+    with DEVICE_ONLINE_STATE_LOCK:
+        DEVICE_ONLINE_INFLIGHT.difference_update(clean)
+        if not delivered:
+            return False
+        items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
         items.update(clean)
         return _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
 
@@ -1550,6 +1561,19 @@ def _if_oper_is_up(metric, value):
         metric.get("ifOperStatus")
         or metric.get("ifOperStatus_label")
         or metric.get("ifOperStatus_state")
+    )
+    if status_label:
+        if value < 0.5:
+            return None
+        return str(status_label).lower() == "up"
+    return int(value) == 1
+
+
+def _if_admin_is_up(metric, value):
+    status_label = (
+        metric.get("ifAdminStatus")
+        or metric.get("ifAdminStatus_label")
+        or metric.get("ifAdminStatus_state")
     )
     if status_label:
         if value < 0.5:
@@ -1899,6 +1923,25 @@ def fetch_interconnect_members(jobs_regex):
 
 def fetch_interconnect_ports(jobs_regex):
     results = prometheus_query(f'ifOperStatus{{job=~"{jobs_regex}"}}')
+    try:
+        admin_results = prometheus_query(f'ifAdminStatus{{job=~"{jobs_regex}"}}')
+    except Exception as exc:
+        log(f"[LINK] ifAdminStatus lookup failed; skipping admin-state filter: {exc}")
+        admin_results = []
+    admin_up = {}
+    for item in admin_results:
+        metric = item.get("metric") or {}
+        ip = metric.get("target_ip") or metric.get("instance") or ""
+        ifindex = metric.get("ifIndex")
+        if not (ip and ifindex):
+            continue
+        try:
+            value = float((item.get("value") or [None, "nan"])[1])
+        except (TypeError, ValueError):
+            continue
+        state = _if_admin_is_up(metric, value)
+        if state is not None:
+            admin_up[(ip, ifindex)] = state
     # Per-interface name + up/down for every interface (physical members too), so
     # an aggregate's member ifIndexes resolve to real port names and states.
     index_names = {}
@@ -1915,8 +1958,11 @@ def fetch_interconnect_ports(jobs_regex):
         except (TypeError, ValueError):
             continue
         member_up = _if_oper_is_up(metric, value)
-        # Unknown/stale status counts as up so a missing sample never fakes a degrade.
-        index_up[(ip, ifindex)] = True if member_up is None else bool(member_up)
+        # Ignore inactive enum series; only the active status sample may update
+        # the member state. Missing samples still default to up below so they
+        # cannot manufacture a degraded alert.
+        if member_up is not None:
+            index_up[(ip, ifindex)] = bool(member_up)
     members_map = fetch_interconnect_members(jobs_regex)
 
     ports = []
@@ -1934,6 +1980,10 @@ def fetch_interconnect_ports(jobs_regex):
         ip = metric.get("target_ip") or metric.get("instance") or ""
         port = _port_label(metric)
         ifindex = metric.get("ifIndex")
+        # Administratively disabled or unused backup bundles are intentional,
+        # not outages. Only alert interfaces whose admin state is up/unknown.
+        if admin_up.get((ip, ifindex)) is False:
+            continue
         members = []
         for member_idx in members_map.get((ip, ifindex), []):
             name = index_names.get((ip, member_idx))
@@ -2002,7 +2052,9 @@ def interconnect_watcher():
             log(f"[LINK] watched aggregates total={len(ports)} degraded={degraded}")
             last_status_log = now
 
+        seen_keys = set()
         for port in ports:
+            seen_keys.add(port["key"])
             ip = port.get("ip") or ""
             if ip in librenms_names:
                 port["device"] = librenms_names[ip]
@@ -2013,7 +2065,10 @@ def interconnect_watcher():
                 "alerting": False,
                 "down_members": [],
                 "handoff_logged": False,
+                "missing_since": None,
             })
+            state["last_port"] = dict(port)
+            state["missing_since"] = None
 
             # Alert both reduced redundancy and a fully/protocol-down aggregate.
             # The peer may remain reachable through another path, so handing the
@@ -2058,6 +2113,29 @@ def interconnect_watcher():
                     state["down_since"] = None
                     state["down_members"] = []
                     state["handoff_logged"] = False
+
+        # A removed/renamed/admin-shut aggregate disappears from the filtered
+        # series. Do not leave its old alert armed forever: after one alert
+        # hold interval, close it using the last observed labels.
+        for key, state in list(states.items()):
+            if key in seen_keys:
+                continue
+            if not state.get("alerting"):
+                states.pop(key, None)
+                continue
+            if state.get("missing_since") is None:
+                state["missing_since"] = now
+            if now - state["missing_since"] < INTERCONNECT_ALERT_FOR_SECONDS:
+                continue
+            event = dict(state.get("last_port") or {})
+            event["down_members"] = state.get("down_members") or []
+            event["up_members"] = []
+            event["peer_switch"] = state.get("peer_switch") or ""
+            event["duration"] = max(0, now - (state.get("down_since") or now))
+            event["status"] = "healthy"
+            log(f"[LINK] RECOVER vanished aggregate {event.get('device', '?')} {event.get('port', '?')}")
+            if send_feishu(build_interconnect_card(event, recovered=True)):
+                states.pop(key, None)
 
         time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
 
@@ -3357,14 +3435,37 @@ def syslog_watcher():
                     "event": event,
                     "retry_at": now + FEISHU_FAILED_EVENT_RETRY_SECONDS,
                     "attempts": int(previous.get("attempts", 0)) + 1,
+                    "first_failed_at": previous.get("first_failed_at", now),
                 }
         _remember_recent_event(host, event, now)
 
     def _flush_failed_events(now):
-        for item in list(_failed_events.values()):
+        for dedupe_key, item in list(_failed_events.items()):
+            attempts = int(item.get("attempts", 0))
+            age = now - float(item.get("first_failed_at", now))
+            if attempts >= FEISHU_FAILED_EVENT_MAX_ATTEMPTS or age >= FEISHU_FAILED_EVENT_TTL_SECONDS:
+                log(
+                    f"[SYSLOG] discard undeliverable {item['event'].get('kind')} "
+                    f"from {item['host']} after attempts={attempts} age={int(age)}s"
+                )
+                _failed_events.pop(dedupe_key, None)
+                _last_sent[dedupe_key] = now
+                continue
             if now < item.get("retry_at", 0):
                 continue
             _send_network_event(item["host"], item["message"], item["event"], now)
+
+    def _drop_failed_for_port(host, port):
+        normalized = _normalize_iface_key(port)
+        for dedupe_key, item in list(_failed_events.items()):
+            if item.get("host") != host:
+                continue
+            if _normalize_iface_key(_network_event_port(item.get("event") or {})) == normalized:
+                log(
+                    f"[SYSLOG] cancel stale failed {item['event'].get('kind')} "
+                    f"for recovered {host} {port}"
+                )
+                _failed_events.pop(dedupe_key, None)
 
     def _drop_pending_lower_for(host, port, priority):
         key = _port_key(host, port)
@@ -3424,6 +3525,7 @@ def syslog_watcher():
             return False
         key = _port_key(host, port)
         _pending_events.pop(key, None)
+        _drop_failed_for_port(host, port)
         active = _active_events.get(key)
         if not active:
             return False

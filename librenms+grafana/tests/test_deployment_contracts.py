@@ -113,7 +113,8 @@ def test_offline_bundle_excludes_live_secrets_and_requires_integrity_check():
     for excluded in ("./.git", "./.env", "./event-config.yml", "./platform-state"):
         assert f"--exclude='{excluded}'" in package
     assert "--profile '*' config --images" in package
-    assert "images.tar.sha256" not in package  # generated generically by sha256_file
+    assert "--exclude='./images.tar.sha256'" in package
+    assert '(cd "$OUT_DIR" && sha256_file images.tar)' in package
     assert "verify_image_archive" in installer
     assert "images.tar not found" in installer
     assert 'docker image inspect "$image"' in installer

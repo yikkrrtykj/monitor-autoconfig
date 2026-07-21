@@ -118,7 +118,7 @@ def snmp_sysname(ip: str, community: str, timeout: int = 1) -> str:
     """Return the device sysName, or "" when SNMP does not answer."""
     try:
         result = subprocess.run(
-            ["snmpget", "-v2c", "-c", community, "-Ovq", "-t", str(timeout), "-r", "0", ip, SYS_NAME_OID],
+            ["snmpget", "-v2c", "-c", community, "-Ovq", "-t", str(timeout), "-r", "1", ip, SYS_NAME_OID],
             capture_output=True, text=True, timeout=timeout + 3,
         )
     except Exception:
@@ -133,12 +133,13 @@ def snmp_sysname(ip: str, community: str, timeout: int = 1) -> str:
 
 def discover(ips, community, probe_snmp=snmp_sysname, probe_ping=ping_alive,
              workers=32, ping_timeout=1, snmp_timeout=1) -> dict[str, str]:
-    """Map SNMP-responsive switch candidates to their display names.
+    """Map live switch candidates to their display names.
 
     ICMP is only a diagnostic hint: it cannot prove a host is a switch, and an
     ACL may block ping on a perfectly healthy switch. Every bounded candidate
-    is therefore SNMP-probed; ping-only hosts are excluded, while SNMP-live,
-    ICMP-blocked devices remain discoverable.
+    is therefore SNMP-probed. SNMP supplies the preferred name, but an
+    ICMP-live candidate remains as an IP-labelled target when a transient SNMP
+    timeout occurs so its ping/offline monitoring does not disappear.
     """
     if not ips:
         return {}
@@ -155,7 +156,8 @@ def discover(ips, community, probe_snmp=snmp_sysname, probe_ping=ping_alive,
         elif name:
             results[ip] = ip            # SNMP answered but sysName itself is an IP
         elif ping_alive_map.get(ip):
-            print(f"[switch-discovery] skip ping-only non-SNMP host {ip}", file=sys.stderr)
+            results[ip] = ip
+            print(f"[switch-discovery] keep ping-live SNMP-missing host {ip} as IP placeholder", file=sys.stderr)
     return results
 
 

@@ -28,7 +28,7 @@ def test_excluded_ips_expands_named_and_ranged_entries():
     }
 
 
-def test_discover_keeps_only_snmp_responsive_hosts():
+def test_discover_keeps_ping_live_host_when_snmp_temporarily_fails():
     hostnames = {"192.168.10.11": "core-sw-01"}      # answers SNMP
     pingable = {"192.168.10.11", "192.168.10.12"}    # .12 answers ping only
     ips = ["192.168.10.11", "192.168.10.12", "192.168.10.13"]  # .13 is offline
@@ -40,8 +40,10 @@ def test_discover_keeps_only_snmp_responsive_hosts():
         probe_ping=lambda ip, timeout=1: ip in pingable,
         workers=4,
     )
-    assert results == {"192.168.10.11": "core-sw-01"}
-    assert "192.168.10.12" not in results  # ping-only server/controller is not a switch
+    assert results == {
+        "192.168.10.11": "core-sw-01",
+        "192.168.10.12": "192.168.10.12",
+    }
     assert "192.168.10.13" not in results  # offline -> not added
 
 
@@ -60,7 +62,10 @@ def test_discover_snmp_probes_icmp_blocked_hosts_too():
         probe_ping=lambda ip, timeout=1: ip == "192.168.10.11",
         workers=8,
     )
-    assert results == {"192.168.10.12": "sw-12"}
+    assert results == {
+        "192.168.10.11": "192.168.10.11",
+        "192.168.10.12": "sw-12",
+    }
     # Worker scheduling does not promise callback order; verify the discovery
     # sweep covered every candidate exactly once instead.
     assert sorted(snmp_calls, key=lambda ip: int(ip.rsplit(".", 1)[1])) == [

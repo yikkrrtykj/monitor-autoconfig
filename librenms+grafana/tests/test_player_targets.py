@@ -583,6 +583,17 @@ class TestCrossSourceTargetDedup:
         merged = gpt.dedupe_player_targets(static, [], scan)
         assert merged == static
 
+    def test_live_lower_priority_ip_survives_stale_mapping(self, monkeypatch):
+        static = [self._target(2, 1, "192.168.41.30", "static")]
+        scan = [self._target(2, 1, "192.168.41.31", "wireless-scan")]
+        candidates = gpt.dedupe_player_targets(static, [], scan, dedupe_seats=False)
+        monkeypatch.setattr(gpt, "ping_host", lambda ip, _timeout=1: ip.endswith(".31"))
+
+        live = gpt.verify_targets_alive(candidates, workers=1)
+        merged = gpt.dedupe_player_targets(live)
+
+        assert merged == scan
+
     def test_same_seat_on_different_networks_is_preserved(self):
         wired = [self._target(2, 1, "192.168.40.30", "snmp", "wired")]
         wireless = [self._target(2, 1, "192.168.41.30", "static", "wireless")]

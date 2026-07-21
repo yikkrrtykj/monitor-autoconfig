@@ -115,3 +115,37 @@ def test_rollback_restores_a_paired_snapshot_and_applies_it(monkeypatch, tmp_pat
     assert json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "old"
     assert api.ENV_PATH.read_text(encoding="utf-8") == "CUSTOM=paired-old\n"
     assert api.read_apply_status("rollback-test-01")["state"] == "succeeded"
+
+
+def test_repeated_rollback_walks_back_without_restoring_guard(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    seed(api, "old")
+    api.save_config(config_text("new"), "admin", "first")
+    api.save_config(config_text("newer"), "admin", "second")
+    monkeypatch.setattr(api, "run_apply_command", lambda: {
+        "applied": True, "needsRedeploy": False, "applyOutput": "ok",
+    })
+
+    first = api.rollback_config("admin", "rollback", "rollback-test-02")
+    second = api.rollback_config("admin", "rollback", "rollback-test-03")
+
+    assert first["restored"]["transactionId"] != second["restored"]["transactionId"]
+    assert json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "old"
+    assert all(
+        api.read_json_file(path / "metadata.json", {}).get("action") != "config.rollback.guard"
+        for path in api.list_config_snapshots()
+    )
+
+
+def test_generated_state_retention_is_bounded(tmp_path):
+    api = load_api(tmp_path)
+    seed(api)
+    api.TRANSACTION_RETENTION = 2
+    api.APPLY_STATUS_RETENTION = 3
+
+    for index in range(5):
+        api.create_config_snapshot(f"test.{index}")
+        api.write_apply_status(f"retention-{index:04d}", "succeeded")
+
+    assert len(list(api.TRANSACTION_DIR.iterdir())) == 2
+    assert len(list(api.APPLY_STATUS_DIR.glob("*.json"))) == 3

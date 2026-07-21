@@ -55,6 +55,35 @@ def test_session_lifecycle():
         assert token not in api.SESSIONS
 
 
+def test_login_failures_lock_both_ip_and_account():
+    with tempfile.TemporaryDirectory() as tmp:
+        api = load_platform_api(Path(tmp))
+        api.ensure_dirs()
+        api.AUTH_FAILURE_LIMIT = 3
+        api.AUTH_LOCK_SECONDS = 60
+        api.AUTH_FAILURES.clear()
+
+        for _attempt in range(2):
+            try:
+                api.login_auth("admin", "wrong", "192.0.2.10")
+            except api.AuthError as exc:
+                assert exc.status == 401
+        try:
+            api.login_auth("admin", "wrong", "192.0.2.10")
+        except api.AuthError as exc:
+            assert exc.status == 429
+            assert exc.payload["retryAfter"] > 0
+        else:
+            raise AssertionError("third failed login must lock the source")
+
+        try:
+            api.login_auth("admin", "global", "192.0.2.11")
+        except api.AuthError as exc:
+            assert exc.status == 429  # account-wide lock also applies
+        else:
+            raise AssertionError("locked account must reject a correct password")
+
+
 def request_json(url: str, payload=None, cookie: str = ""):
     body = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
     request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})

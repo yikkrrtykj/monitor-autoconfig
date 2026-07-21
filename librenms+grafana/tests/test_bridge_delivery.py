@@ -90,6 +90,25 @@ def test_online_dedupe_is_committed_only_after_delivery(monkeypatch, tmp_path):
     assert len(calls) == 2
 
 
+def test_online_delivery_does_not_hold_state_lock_during_network_io(monkeypatch, tmp_path):
+    state_file = tmp_path / "online.json"
+    lock_was_free = []
+
+    def fake_send(_card):
+        acquired = bridge.DEVICE_ONLINE_STATE_LOCK.acquire(blocking=False)
+        lock_was_free.append(acquired)
+        if acquired:
+            bridge.DEVICE_ONLINE_STATE_LOCK.release()
+        return True
+
+    monkeypatch.setattr(bridge, "DEVICE_ONLINE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(bridge, "send_feishu", fake_send)
+    bridge.DEVICE_ONLINE_INFLIGHT.clear()
+
+    assert bridge.send_device_online_once(_card(), "switch-1", "10.0.0.1") is True
+    assert lock_was_free == [True]
+
+
 def test_new_lifecycle_online_card_bypasses_lifetime_dedupe(monkeypatch, tmp_path):
     state_file = tmp_path / "online.json"
     state_file.write_text(json.dumps(["switch-1", "10.0.0.1"]), encoding="utf-8")

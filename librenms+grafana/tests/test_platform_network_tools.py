@@ -264,6 +264,32 @@ def test_dhcp_collection_uses_one_session_and_skips_full_binding_list(monkeypatc
     assert session.closed is True
 
 
+def test_telnet_command_handles_more_prompts_and_strict_device_prompt(tmp_path):
+    api = load_api(tmp_path)
+
+    class FakeSession:
+        def __init__(self):
+            self.writes = []
+            self.outputs = iter([
+                (1, None, b"show ip dhcp pool\r\nfirst page\r\n--More--"),
+                (0, None, b"second page\r\ncore-sw#\r\n"),
+            ])
+
+        def write(self, data):
+            self.writes.append(data)
+
+        def expect(self, _patterns, _timeout):
+            return next(self.outputs)
+
+    session = FakeSession()
+    output = api._telnet_command(session, "show ip dhcp pool")
+
+    assert output == "first page\nsecond page"
+    assert session.writes == [b"show ip dhcp pool\n", b" "]
+    assert api.re.search(api.CISCO_PROMPT_RE, b"counter value is >\r\n") is None
+    assert api.re.search(api.CISCO_PROMPT_RE, b"core-sw#\r\n") is not None
+
+
 def test_dhcp_connection_test_only_checks_login_and_privilege(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")

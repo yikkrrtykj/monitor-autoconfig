@@ -265,6 +265,36 @@ def test_classify_interconnect_distinguishes_degraded_from_down():
     assert bridge.classify_interconnect(False, []) == "down"
 
 
+def test_interconnect_fetch_skips_admin_down_bundle(monkeypatch):
+    oper = [{
+        "metric": {
+            "job": "infra-switch-ifmib", "target_ip": "10.0.0.1",
+            "ifIndex": "10", "ifName": "Po1",
+        },
+        "value": [0, "2"],
+    }]
+    admin = [{
+        "metric": {
+            "job": "infra-switch-ifmib", "target_ip": "10.0.0.1",
+            "ifIndex": "10", "ifName": "Po1",
+        },
+        "value": [0, "2"],
+    }]
+
+    def query(expr):
+        if expr.startswith("ifOperStatus"):
+            return oper
+        if expr.startswith("ifAdminStatus"):
+            return admin
+        if expr.startswith("ifStackStatus"):
+            return []
+        raise AssertionError(expr)
+
+    monkeypatch.setattr(bridge, "prometheus_query", query)
+
+    assert bridge.fetch_interconnect_ports("infra-switch-ifmib") == []
+
+
 def test_interconnect_card_names_the_down_physical_port_and_peer(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
     event = {

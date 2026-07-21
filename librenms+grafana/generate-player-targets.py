@@ -791,7 +791,7 @@ def merge_dedup_targets(path_b_targets, path_a_targets):
     return merged
 
 
-def dedupe_player_targets(*priority_groups):
+def dedupe_player_targets(*priority_groups, dedupe_seats=True):
     """Merge source groups from highest to lowest priority.
 
     Explicit static mappings beat SNMP discovery, which beats synthetic
@@ -814,10 +814,11 @@ def dedupe_player_targets(*priority_groups):
                 str(labels.get("seat") or ""),
                 str(labels.get("network") or ""),
             )
-            if ip in seen_ips or seat_key in seen_seats:
+            if ip in seen_ips or (dedupe_seats and seat_key in seen_seats):
                 continue
             seen_ips.add(ip)
-            seen_seats.add(seat_key)
+            if dedupe_seats:
+                seen_seats.add(seat_key)
             merged.append(target)
     return merged
 
@@ -1002,13 +1003,23 @@ def main():
 
             discovered_targets.extend(merged)
 
-    all_targets = dedupe_player_targets(static_targets, discovered_targets, scan_targets)
+    # Keep alternate IPs for the same seat until the active-ping pass chooses
+    # live candidates. Otherwise a stale high-priority mapping can suppress a
+    # lower-priority live address and leave the seat with no target at all.
+    all_targets = dedupe_player_targets(
+        static_targets,
+        discovered_targets,
+        scan_targets,
+        dedupe_seats=False,
+    )
     dropped_duplicates = len(static_targets) + len(discovered_targets) + len(scan_targets) - len(all_targets)
     if dropped_duplicates:
         print(f"[INFO] removed {dropped_duplicates} duplicate player target(s) across sources", file=sys.stderr)
 
     if env_bool("PLAYER_VERIFY_PING", default=True) and all_targets:
         all_targets = verify_targets_alive(all_targets)
+
+    all_targets = dedupe_player_targets(all_targets)
 
     all_targets.sort(key=lambda t: (
         int(t["labels"]["team"]),

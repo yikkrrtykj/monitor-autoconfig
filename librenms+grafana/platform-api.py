@@ -91,7 +91,19 @@ AUTH_COOKIE_SECURE = os.environ.get("PLATFORM_COOKIE_SECURE", "false").lower() i
 AUTH_SESSION_SECONDS = max(600, int(float(os.environ.get("PLATFORM_SESSION_HOURS", "8")) * 3600))
 PASSWORD_MIN_LENGTH = max(10, int(os.environ.get("PLATFORM_PASSWORD_MIN_LENGTH", "10")))
 PASSWORD_HASH_ITERATIONS = 260_000
+AUTH_FAILURE_WINDOW_SECONDS = max(30, int(os.environ.get("PLATFORM_AUTH_FAILURE_WINDOW_SECONDS", "300")))
+AUTH_FAILURE_LIMIT = max(3, int(os.environ.get("PLATFORM_AUTH_FAILURE_LIMIT", "5")))
+AUTH_LOCK_SECONDS = max(30, int(os.environ.get("PLATFORM_AUTH_LOCK_SECONDS", "900")))
+TRANSACTION_RETENTION = max(5, int(os.environ.get("PLATFORM_TRANSACTION_RETENTION", "50")))
+APPLY_STATUS_RETENTION = max(10, int(os.environ.get("PLATFORM_APPLY_STATUS_RETENTION", "200")))
 SESSIONS: dict[str, dict] = {}
+AUTH_FAILURES: dict[str, dict] = {}
+AUTH_FAILURES_LOCK = threading.Lock()
+
+CISCO_PROMPT_RE = br"(?m)^[A-Za-z0-9_.:/()\[\]-]+[>#][ \t]*\r?$"
+CISCO_PRIV_PROMPT_RE = br"(?m)^[A-Za-z0-9_.:/()\[\]-]+#[ \t]*\r?$"
+CISCO_USER_PROMPT_RE = br"(?m)^[A-Za-z0-9_.:/()\[\]-]+>[ \t]*\r?$"
+CISCO_MORE_RE = br"(?i)--More--|<---\s*More\s*--->"
 
 
 class AuthError(Exception):
@@ -205,6 +217,30 @@ def apply_status_path(operation_id: str) -> Path:
     return APPLY_STATUS_DIR / f"{operation_id}.json"
 
 
+def prune_retained_paths(paths, keep: int) -> None:
+    """Remove only the oldest generated state entries beyond ``keep``."""
+    ordered = sorted(
+        (path for path in paths if path.exists()),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+    for path in ordered[max(1, keep):]:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        except OSError as exc:
+            print(f"[platform-api] state retention cleanup failed for {path}: {exc}", flush=True)
+
+
+def prune_generated_state() -> None:
+    if TRANSACTION_DIR.exists():
+        prune_retained_paths(TRANSACTION_DIR.iterdir(), TRANSACTION_RETENTION)
+    if APPLY_STATUS_DIR.exists():
+        prune_retained_paths(APPLY_STATUS_DIR.glob("*.json"), APPLY_STATUS_RETENTION)
+
+
 def write_apply_status(operation_id: str, state: str, **detail) -> dict:
     payload = {
         "ok": state in ("succeeded", "pending"),
@@ -214,6 +250,7 @@ def write_apply_status(operation_id: str, state: str, **detail) -> dict:
         **detail,
     }
     write_json_file(apply_status_path(operation_id), payload)
+    prune_generated_state()
     return payload
 
 
@@ -246,13 +283,31 @@ def create_config_snapshot(action: str, actor: str = "", note: str = "") -> dict
     if ENV_PATH.exists():
         shutil.copy2(ENV_PATH, directory / ".env")
     write_json_file(directory / "metadata.json", meta)
+    prune_generated_state()
     return {**meta, "path": str(directory)}
 
 
 def list_config_snapshots() -> list[Path]:
     if not TRANSACTION_DIR.exists():
         return []
-    return sorted((path for path in TRANSACTION_DIR.iterdir() if path.is_dir()), reverse=True)
+    eligible = []
+    for path in TRANSACTION_DIR.iterdir():
+        if not path.is_dir():
+            continue
+        meta = read_json_file(path / "metadata.json", {})
+        if meta.get("action") == "config.rollback.guard" or meta.get("consumedAt"):
+            continue
+        eligible.append(path)
+    return sorted(eligible, reverse=True)
+
+
+def mark_config_snapshot_consumed(directory: Path) -> None:
+    meta_path = directory / "metadata.json"
+    meta = read_json_file(meta_path, {})
+    if not meta:
+        return
+    meta["consumedAt"] = int(time.time())
+    write_json_file(meta_path, meta)
 
 
 def restore_config_snapshot(directory: Path) -> dict:
@@ -436,11 +491,70 @@ def require_auth(handler: BaseHTTPRequestHandler, allow_must_change: bool = Fals
     return {"username": session.get("username") or store.get("username") or AUTH_ADMIN_USER}
 
 
-def login_auth(username: str, password: str) -> tuple[dict, str]:
+def _auth_failure_keys(username: str, client_ip: str) -> tuple[str, str]:
+    return f"ip:{client_ip or 'unknown'}", f"user:{str(username or '').strip().lower()}"
+
+
+def _auth_lock_remaining(username: str, client_ip: str, now: float | None = None) -> int:
+    now = time.time() if now is None else now
+    with AUTH_FAILURES_LOCK:
+        remaining = 0
+        for key in _auth_failure_keys(username, client_ip):
+            state = AUTH_FAILURES.get(key) or {}
+            locked_until = float(state.get("lockedUntil") or 0)
+            if locked_until > now:
+                remaining = max(remaining, int(locked_until - now + 0.999))
+            elif state:
+                recent = [stamp for stamp in state.get("failures", []) if now - stamp <= AUTH_FAILURE_WINDOW_SECONDS]
+                if recent:
+                    state["failures"] = recent
+                else:
+                    AUTH_FAILURES.pop(key, None)
+        return remaining
+
+
+def _record_auth_failure(username: str, client_ip: str, now: float | None = None) -> int:
+    now = time.time() if now is None else now
+    locked_until = 0.0
+    with AUTH_FAILURES_LOCK:
+        for key in _auth_failure_keys(username, client_ip):
+            state = AUTH_FAILURES.setdefault(key, {"failures": [], "lockedUntil": 0.0})
+            recent = [stamp for stamp in state.get("failures", []) if now - stamp <= AUTH_FAILURE_WINDOW_SECONDS]
+            recent.append(now)
+            state["failures"] = recent
+            if len(recent) >= AUTH_FAILURE_LIMIT:
+                state["lockedUntil"] = max(float(state.get("lockedUntil") or 0), now + AUTH_LOCK_SECONDS)
+            locked_until = max(locked_until, float(state.get("lockedUntil") or 0))
+    return max(0, int(locked_until - now + 0.999))
+
+
+def _clear_auth_failures(username: str, client_ip: str) -> None:
+    with AUTH_FAILURES_LOCK:
+        for key in _auth_failure_keys(username, client_ip):
+            AUTH_FAILURES.pop(key, None)
+
+
+def login_auth(username: str, password: str, client_ip: str = "") -> tuple[dict, str]:
+    remaining = _auth_lock_remaining(username, client_ip)
+    if remaining:
+        raise AuthError(
+            HTTPStatus.TOO_MANY_REQUESTS,
+            f"登录失败次数过多，请在 {remaining} 秒后重试",
+            authenticated=False,
+            retryAfter=remaining,
+        )
     store = read_auth_store()
     if username != store.get("username") or not verify_password(password, store.get("passwordHash", "")):
-        time.sleep(0.2)
+        remaining = _record_auth_failure(username, client_ip)
+        if remaining:
+            raise AuthError(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                f"登录失败次数过多，请在 {remaining} 秒后重试",
+                authenticated=False,
+                retryAfter=remaining,
+            )
         raise AuthError(HTTPStatus.UNAUTHORIZED, "账号或密码错误", authenticated=False)
+    _clear_auth_failures(username, client_ip)
     token = create_session(store["username"])
     return {
         "ok": True,
@@ -973,6 +1087,7 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
             }
 
         state = "succeeded" if apply_result.get("applied") else "pending"
+        mark_config_snapshot_consumed(target)
         append_history("config.rollback", actor, note, {
             "operationId": operation_id,
             "targetTransactionId": restored.get("transactionId"),
@@ -1290,15 +1405,28 @@ def _telnet_expect(session, patterns: list[bytes], step: str):
 
 def _telnet_command(session, command: str) -> str:
     session.write(command.encode("ascii") + b"\n")
-    _index, _match, output = _telnet_expect(session, [br"[>#]\s*$"], f"执行 {command} ")
+    chunks = []
+    for _page in range(100):
+        index, _match, output = _telnet_expect(
+            session,
+            [CISCO_PROMPT_RE, CISCO_MORE_RE],
+            f"执行 {command} ",
+        )
+        chunks.append(output)
+        if index == 0:
+            break
+        session.write(b" ")
+    else:
+        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机分页输出超过安全上限")
+    output = "".join(chunks)
+    output = re.sub(r"(?i)--More--|<---\s*More\s*--->", "", output)
+    output = output.replace("\x08", "")
     lines = output.replace("\r", "").splitlines()
     if lines and lines[0].strip() == command:
         lines.pop(0)
-    if lines and re.search(r"[>#]\s*$", lines[-1]):
+    if lines and re.fullmatch(r"[A-Za-z0-9_.:/()\[\]-]+[>#]\s*", lines[-1]):
         lines.pop()
     cleaned = "\n".join(lines).strip()
-    if "--More--" in cleaned:
-        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机未能关闭分页输出")
     return cleaned
 
 
@@ -1313,9 +1441,9 @@ def _open_cisco_telnet(host: str):
             "尚未配置核心交换机 Telnet 密码，请先在赛事控制台填写",
         )
     session = Telnet(host, settings["port"], DHCP_SWITCH_TIMEOUT)
-    username_prompt = br"(?i)(?:user ?name|login):\s*$"
-    password_prompt = br"(?i)password:\s*$"
-    command_prompt = br"[>#]\s*$"
+    username_prompt = br"(?im)^(?:user ?name|login):[ \t]*\r?$"
+    password_prompt = br"(?im)^password:[ \t]*\r?$"
+    command_prompt = CISCO_PROMPT_RE
     failed_prompt = br"(?i)(?:login invalid|authentication failed|access denied)"
     index, _match, _output = _telnet_expect(
         session,
@@ -1352,14 +1480,14 @@ def _open_cisco_telnet(host: str):
             session.write(b"enable\n")
             enable_index, _match, _output = _telnet_expect(
                 session,
-                [password_prompt, br"#\s*$", failed_prompt, br">\s*$"],
+                [password_prompt, CISCO_PRIV_PROMPT_RE, failed_prompt, CISCO_USER_PROMPT_RE],
                 "进入特权模式",
             )
             if enable_index == 0:
                 session.write(enable_password.encode("utf-8") + b"\n")
                 enable_index, _match, _output = _telnet_expect(
                     session,
-                    [br"#\s*$", failed_prompt, password_prompt, br">\s*$"],
+                    [CISCO_PRIV_PROMPT_RE, failed_prompt, password_prompt, CISCO_USER_PROMPT_RE],
                     "特权密码验证",
                 )
             elif enable_index == 1:
@@ -1976,7 +2104,11 @@ class Handler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path.rstrip("/") or "/"
             data = self._body()
             if path == "/auth/login":
-                payload, cookie = login_auth(str(data.get("username") or ""), str(data.get("password") or ""))
+                payload, cookie = login_auth(
+                    str(data.get("username") or ""),
+                    str(data.get("password") or ""),
+                    str((self.client_address or ("", 0))[0]),
+                )
                 self._send_json(payload, headers={"Set-Cookie": cookie})
             elif path == "/auth/change-password":
                 payload, cookie = change_password_auth(self, data)
