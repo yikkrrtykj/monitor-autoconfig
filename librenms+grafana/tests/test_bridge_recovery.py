@@ -128,6 +128,28 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
     assert state.get("retired") is not True
 
 
+def test_bot_pending_delete_command_returns_interactive_cards(monkeypatch):
+    key = "infra-dist-ping|192.168.10.81"
+    bridge.DEVICE_DOWN_STATES.clear()
+    bridge.DEVICE_DOWN_STATES[key] = {
+        "pending_delete": True,
+        "pending_since": 200,
+        "pending_token": "token-81",
+        "down_since": 100,
+        "name": "falak-studio5",
+        "ip": "192.168.10.81",
+        "job": "infra-dist-ping",
+    }
+    result = bridge.handle_bot_query("待删除设备")
+    assert result["ok"] is True
+    assert len(result["cards"]) == 1
+    elements = result["cards"][0]["card"]["body"]["elements"]
+    buttons = [item for item in elements if item.get("tag") == "button"]
+    assert [item["text"]["content"] for item in buttons] == ["确认删除", "保留设备"]
+    assert buttons[0]["behaviors"][0]["value"]["token"] == "token-81"
+    bridge.DEVICE_DOWN_STATES.clear()
+
+
 def test_reenrolled_device_sends_new_online_card_and_clears_old_outage(monkeypatch):
     state = {
         "alerting": False,

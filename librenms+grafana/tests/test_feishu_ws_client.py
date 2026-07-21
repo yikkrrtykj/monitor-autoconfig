@@ -39,3 +39,16 @@ def test_duplicate_message_is_reserved_once(monkeypatch):
     monkeypatch.setattr(client.time, "time", lambda: 1000)
     assert client._reserve_message("om_same") is True
     assert client._reserve_message("om_same") is False
+
+
+def test_process_message_replies_with_each_interactive_card(monkeypatch):
+    cards = [
+        {"msg_type": "interactive", "card": {"schema": "2.0", "header": {"title": {"content": "a"}}}},
+        {"msg_type": "interactive", "card": {"schema": "2.0", "header": {"title": {"content": "b"}}}},
+    ]
+    calls = []
+    monkeypatch.setattr(client, "query_via_bridge", lambda _command: {"ok": True, "cards": cards})
+    monkeypatch.setattr(client, "reply_to_message", lambda message_id, text="", card=None: calls.append((message_id, text, card)))
+    monkeypatch.setattr(client.time, "sleep", lambda _seconds: None)
+    client._process_message("om_cards", "待删除设备")
+    assert [item[2] for item in calls] == cards

@@ -145,6 +145,53 @@ def test_bot_network_status_and_offline_shortcuts(monkeypatch):
     assert "RTS2" in offline["text"]
 
 
+def test_bot_full_fiber_audit_returns_summary_and_grouped_details(monkeypatch):
+    devices = [
+        {"device_id": 1, "display": "RTS1", "hostname": "192.168.10.31", "disabled": 0},
+        {"device_id": 2, "display": "RTS2", "hostname": "192.168.10.32", "disabled": 0},
+    ]
+    readings = {
+        1: [
+            {"sensor_descr": "Gi1/0/1 Rx Power", "sensor_current": -26.0},
+            {"sensor_descr": "Gi1/0/2 Rx Power", "sensor_current": -3.0},
+        ],
+        2: [{"sensor_descr": "Gi1/0/8 Rx Power", "sensor_current": -23.5}],
+    }
+    monkeypatch.setattr(bridge, "LIBRENMS_URL", "http://librenms")
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "token")
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda _token: devices)
+    monkeypatch.setattr(
+        bridge,
+        "fetch_librenms_dbm_sensors",
+        lambda _token, device_id: readings[device_id],
+    )
+
+    result = bridge.handle_bot_query("光功率巡检")
+    assert result["ok"] is True
+    assert len(result["cards"]) == 2
+    summary = result["cards"][0]["card"]["body"]["elements"][0]["content"]
+    details = result["cards"][1]["card"]["body"]["elements"][0]["content"]
+    assert "已检查光功率：** 3" in summary
+    assert "发现异常：** 2" in summary
+    assert "严重" in details and "警告" in details
+    assert "RTS1" in details and "RTS2" in details
+
+
+def test_uplink_audit_counts_physical_ports_toward_core():
+    edges = [
+        {"from_ip": "10.0.0.1", "to_ip": "10.0.0.2", "to_port": "Te1/0/1, Te2/0/1"},
+        {"from_ip": "10.0.0.2", "to_ip": "10.0.0.3", "to_port": "Gi1/0/1"},
+    ]
+    rows = bridge.audit_uplink_redundancy(
+        edges,
+        {"10.0.0.2": "access-a", "10.0.0.3": "access-b"},
+        "10.0.0.1",
+    )
+    by_ip = {item["ip"]: item for item in rows}
+    assert by_ip["10.0.0.2"]["redundant"] is True
+    assert by_ip["10.0.0.3"]["redundant"] is False
+
+
 def test_dbm_query_falls_back_to_device_health_when_global_sensor_page_is_incomplete(monkeypatch):
     def fake_get(_token, path, timeout=15):
         if path.startswith("/api/v0/resources/sensors"):

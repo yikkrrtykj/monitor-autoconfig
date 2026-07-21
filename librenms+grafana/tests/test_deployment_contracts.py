@@ -123,6 +123,15 @@ def test_retired_isp_history_is_filtered_by_current_prometheus_targets():
     assert "!infraCurrentTargets.has(name)" in app
 
 
+def test_topology_isp_discovery_can_read_librenms_interface_inventory():
+    compose = read("docker-compose.yml")
+    topology = compose.split("  topology-collector:", 1)[1].split("  bigscreen:", 1)[0]
+
+    assert "./librenms-data:/librenms-data:ro" in topology
+    assert 'LIBRENMS_URL: "http://librenms:8000"' in topology
+    assert 'LIBRENMS_TOKEN_FILE: "/librenms-data/librenms-api-token"' in topology
+
+
 def test_feishu_bridge_does_not_create_librenms_transport():
     auto_config = read("librenms-auto-config.sh")
 

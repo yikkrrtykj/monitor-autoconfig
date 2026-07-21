@@ -153,6 +153,8 @@ DEVICE_DOWN_REQUIRE_SEEN_UP = os.environ.get("DEVICE_DOWN_REQUIRE_SEEN_UP", "tru
 DEVICE_DOWN_ROOT_CAUSE_ENABLED = os.environ.get("DEVICE_DOWN_ROOT_CAUSE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 TOPOLOGY_EDGES_FILE = os.environ.get("TOPOLOGY_EDGES_FILE", "/etc/prometheus/targets/topology/edges.json")
 LIBRENMS_CORE_IP = os.environ.get("LIBRENMS_CORE_IP", "").strip()
+FIBER_WARN_DBM = float(os.environ.get("FIBER_WARN_DBM", "-15") or "-15")
+FIBER_CRITICAL_DBM = float(os.environ.get("FIBER_CRITICAL_DBM", "-25") or "-25")
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "1"))
 DEVICE_DOWN_SAMPLE_WINDOW_SECONDS = int(os.environ.get("DEVICE_DOWN_SAMPLE_WINDOW_SECONDS", "5"))
 DEVICE_DOWN_JOBS = os.environ.get(
@@ -532,14 +534,17 @@ def _librenms_get_json(token, path, timeout=15):
 
 
 BOT_HELP_TEXT = (
-    "运维查询：\n"
+    "运维查询与巡检：\n"
     "• 网络状态 — 在线/离线设备概览\n"
     "• 离线设备 — 只列当前离线设备\n"
+    "• 待删除设备 — 在当前飞书会话发确认删除/保留卡片\n"
+    "• 光功率巡检 — 全网 dBm 汇总，异常时附明细\n"
+    "• 上联冗余巡检 — 按当前 LLDP/CDP 拓扑检查双上联\n"
     "• 设备 <设备名或 IP> — 单台详情\n"
     "• 光功率 <设备名或 IP> [接口]\n"
     "• 异常光功率 <设备名或 IP> [接口]\n"
     "示例：光功率 192.168.10.31 Gi1/0/1\n"
-    "查询读取 LibreNMS 已采集的数据，不会额外轮询交换机。"
+    "巡检读取 LibreNMS 和已经采集的拓扑，不会修改交换机配置。"
 )
 
 
@@ -652,6 +657,216 @@ def fetch_librenms_dbm_sensors(token, device_id):
     return list(by_id.values()) if by_id else sensors
 
 
+def _fiber_audit_level(sensor):
+    current = _number(sensor.get("sensor_current"))
+    if current is None:
+        return "unknown"
+    if current < FIBER_CRITICAL_DBM:
+        return "critical"
+    if current < FIBER_WARN_DBM:
+        return "warning"
+    return "good"
+
+
+def build_fiber_audit_cards(token, devices):
+    """Reference-style full-network dBm audit: one summary, then details."""
+    active = [item for item in devices if str(item.get("disabled") or "0").strip().lower()
+              not in ("1", "true", "yes") and item.get("device_id") is not None]
+    sensors_by_device = {}
+    failures = []
+
+    def fetch(device):
+        return device, fetch_librenms_dbm_sensors(token, device.get("device_id"))
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(active)))) as pool:
+        futures = {pool.submit(fetch, device): device for device in active}
+        for future in as_completed(futures):
+            device = futures[future]
+            try:
+                returned_device, sensors = future.result()
+                sensors_by_device[str(returned_device.get("device_id"))] = sensors
+            except Exception as exc:
+                failures.append(_device_display(device))
+                log(f"[BOT] full fiber audit failed for {_device_display(device)}: {exc}")
+
+    checked = 0
+    issues = []
+    for device in active:
+        for sensor in sensors_by_device.get(str(device.get("device_id")), []):
+            current = _number(sensor.get("sensor_current"))
+            if current is None:
+                continue
+            checked += 1
+            level = _fiber_audit_level(sensor)
+            if level in ("critical", "warning"):
+                issues.append({
+                    "level": level,
+                    "device": _device_display(device),
+                    "ip": _device_ip(device),
+                    "interface": str(sensor.get("sensor_descr") or sensor.get("sensor_index") or "未知接口"),
+                    "value": current,
+                })
+
+    issue_count = len(issues)
+    summary = [
+        f"**检查设备：** {len(active)} 台",
+        f"✅ **已检查光功率：** {checked} 项",
+    ]
+    if issue_count:
+        summary.extend([
+            f"⚠️ **发现异常：** {issue_count} 项",
+            f"结果：发现 {issue_count} 项低于 {FIBER_WARN_DBM:g} dBm",
+        ])
+    else:
+        summary.append(f"结果：未发现低于 {FIBER_WARN_DBM:g} dBm 的光功率")
+    if failures:
+        summary.append(f"未读取成功：{len(failures)} 台（" + "、".join(failures[:8]) + "）")
+    cards = [_make_card(
+        "光功率巡检",
+        "📡 全网 Fiber dBm Check",
+        "orange" if issue_count or failures else "green",
+        "\n".join(summary),
+    )]
+    if not issues:
+        return cards
+
+    ordered = sorted(issues, key=lambda item: (0 if item["level"] == "critical" else 1,
+                                                item["device"], item["interface"]))
+    for offset in range(0, len(ordered), 30):
+        chunk = ordered[offset:offset + 30]
+        lines = []
+        current_level = None
+        for item in chunk:
+            if item["level"] != current_level:
+                current_level = item["level"]
+                if current_level == "critical":
+                    lines.append(f"🚨 **严重（< {FIBER_CRITICAL_DBM:g} dBm）**")
+                else:
+                    lines.append(
+                        f"⚠️ **警告（{FIBER_CRITICAL_DBM:g} 至 {FIBER_WARN_DBM:g} dBm）**"
+                    )
+            location = f"{item['device']} ({item['ip']})" if item["ip"] else item["device"]
+            lines.append(f"• **{location}**\n  {item['interface']}：`{item['value']:.2f} dBm`")
+        lines.append("✅ 明细结束" if offset + len(chunk) >= len(ordered) else "下页继续…")
+        cards.append(_make_card(
+            f"光功率异常明细 {offset // 30 + 1}",
+            f"Fiber dBm Details · {offset + 1}-{offset + len(chunk)} / {len(ordered)}",
+            "red" if any(item["level"] == "critical" for item in chunk) else "orange",
+            "\n".join(lines),
+        ))
+    return cards
+
+
+def _load_switch_audit_inventory(edges):
+    path = os.path.join(os.path.dirname(TOPOLOGY_EDGES_FILE), "switch_targets.json")
+    inventory = {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            entries = json.load(handle)
+        for entry in entries if isinstance(entries, list) else []:
+            labels = entry.get("labels") or {}
+            for ip in entry.get("targets") or []:
+                inventory[str(ip)] = str(labels.get("display_name") or ip)
+    except Exception:
+        pass
+    if inventory:
+        return inventory
+    for edge in edges:
+        for side in ("from", "to"):
+            ip = str(edge.get(f"{side}_ip") or "").strip()
+            name = str(edge.get(f"{side}_sysname") or ip).strip()
+            if ip and ip != _topology_core_ip() and not re.search(r"(?:^|[-_])(?:fw|firewall)(?:$|[-_])", name, re.I):
+                inventory[ip] = name
+    return inventory
+
+
+def audit_uplink_redundancy(edges, inventory, core_ip):
+    adjacency = {}
+    for edge in edges:
+        left = str(edge.get("from_ip") or "").strip()
+        right = str(edge.get("to_ip") or "").strip()
+        if not left or not right or left == right:
+            continue
+        adjacency.setdefault(left, set()).add(right)
+        adjacency.setdefault(right, set()).add(left)
+    depth = {core_ip: 0} if core_ip else {}
+    queue = [core_ip] if core_ip else []
+    for node in queue:
+        for neighbor in adjacency.get(node, set()):
+            if neighbor not in depth:
+                depth[neighbor] = depth[node] + 1
+                queue.append(neighbor)
+
+    rows = []
+    for ip, name in sorted(inventory.items(), key=lambda item: item[1].casefold()):
+        ports = set()
+        for edge in edges:
+            if str(edge.get("from_ip") or "") == ip:
+                neighbor = str(edge.get("to_ip") or "")
+                raw_ports = edge.get("from_port") or ""
+            elif str(edge.get("to_ip") or "") == ip:
+                neighbor = str(edge.get("from_ip") or "")
+                raw_ports = edge.get("to_port") or ""
+            else:
+                continue
+            if ip not in depth or neighbor not in depth or depth[neighbor] >= depth[ip]:
+                continue
+            for port in re.split(r"\s*,\s*", str(raw_ports)):
+                if port.strip():
+                    ports.add(port.strip())
+        rows.append({
+            "ip": ip,
+            "name": name,
+            "ports": sorted(ports),
+            "reachable": ip in depth,
+            "redundant": len(ports) >= 2,
+        })
+    return rows
+
+
+def build_uplink_audit_cards():
+    edges = load_topology_edges()
+    inventory = _load_switch_audit_inventory(edges)
+    rows = audit_uplink_redundancy(edges, inventory, _topology_core_ip())
+    issues = [item for item in rows if not item["redundant"]]
+    summary = [
+        f"✅ **已检查接入/汇聚交换机：** {len(rows)} 台",
+        f"⚠️ **无双上联或无法判定：** {len(issues)} 台",
+        "结果：全部设备都有冗余上联" if rows and not issues else f"结果：{len(issues)} 台需要检查上联冗余",
+    ]
+    if not rows:
+        summary.append("当前拓扑尚无可检查的交换机，请等待 LLDP/CDP 采集完成。")
+    cards = [_make_card(
+        "上联冗余巡检",
+        "🔗 Uplink Redundancy Check",
+        "green" if rows and not issues else "orange",
+        "\n".join(summary),
+    )]
+    if issues:
+        lines = []
+        for item in issues[:50]:
+            if not item["reachable"]:
+                detail = "未出现在从核心出发的拓扑路径中"
+            elif item["ports"]:
+                detail = "仅识别到一个上联：" + "、".join(item["ports"])
+            else:
+                detail = "未识别到朝向核心的上联端口"
+            lines.append(f"• **{item['name']} ({item['ip']})**\n  {detail}")
+        if len(issues) > 50:
+            lines.append(f"另有 {len(issues) - 50} 台未展开")
+        lines.append("✅ 明细结束")
+        cards.append(_make_card("上联巡检异常明细", "Uplink Details", "orange", "\n".join(lines)))
+    return cards
+
+
+def build_pending_delete_query_cards():
+    with RETIRE_LOCK:
+        states = [(key, dict(state)) for key, state in DEVICE_DOWN_STATES.items()
+                  if state.get("pending_delete")]
+    states.sort(key=lambda item: _as_float(item[1].get("pending_since")) or 0)
+    return [build_retire_confirm_card(state, key, True) for key, state in states[:20]]
+
+
 def _format_uptime(seconds):
     try:
         value = max(0, int(seconds or 0))
@@ -697,16 +912,31 @@ def _device_status_summary(devices, offline_only=False):
 
 
 def handle_bot_query(text):
-    """Execute a read-only Feishu command against already-polled LibreNMS data."""
+    """Execute a Feishu query/audit command against already-polled data."""
     command = re.sub(r"\s+", " ", str(text or "")).strip()
     if not command or command.casefold() in {"帮助", "help", "?", "命令"}:
         return {"ok": True, "text": BOT_HELP_TEXT}
 
-    status_cmd = command.casefold() in {"网络状态", "状态", "总览"}
-    offline_cmd = command.casefold() in {"离线设备", "离线", "掉线设备"}
+    folded = command.casefold()
+    status_cmd = folded in {"网络状态", "状态", "总览"}
+    offline_cmd = folded in {"离线设备", "离线", "掉线设备"}
+    pending_cmd = folded in {"待删除设备", "待删除", "测试删除", "pending delete"}
+    fiber_audit_cmd = folded in {"光功率巡检", "光模块巡检", "全网光功率", "check_fiber", "check fiber"}
+    uplink_audit_cmd = folded in {"上联冗余巡检", "上联巡检", "冗余巡检", "check_uplinks", "check uplinks"}
     optical = re.match(r"^(查|查询)?(异常)?光功率(?:\s+(.+))?$", command, re.IGNORECASE)
     device_cmd = re.match(r"^(查|查询)?设备(?:\s+(.+))?$", command, re.IGNORECASE)
-    if not optical and not device_cmd and not status_cmd and not offline_cmd:
+    if pending_cmd:
+        cards = build_pending_delete_query_cards()
+        if not cards:
+            return {"ok": True, "text": "🟢 当前没有待删除设备。"}
+        return {
+            "ok": True,
+            "text": f"当前有 {len(cards)} 台待确认设备。",
+            "cards": cards,
+        }
+    if uplink_audit_cmd:
+        return {"ok": True, "text": "上联冗余巡检完成。", "cards": build_uplink_audit_cards()}
+    if not optical and not device_cmd and not status_cmd and not offline_cmd and not fiber_audit_cmd:
         return {"ok": True, "text": f"未识别命令。\n{BOT_HELP_TEXT}"}
 
     token = _librenms_token()
@@ -719,6 +949,12 @@ def handle_bot_query(text):
         return {"ok": False, "text": "读取 LibreNMS 设备列表失败，请稍后再试。"}
     if status_cmd or offline_cmd:
         return {"ok": True, "text": _device_status_summary(devices, offline_only=offline_cmd)}
+    if fiber_audit_cmd:
+        return {
+            "ok": True,
+            "text": "光功率巡检完成。",
+            "cards": build_fiber_audit_cards(token, devices),
+        }
 
     argument = (optical.group(3) if optical else device_cmd.group(2)) or ""
     device_term, interface_term = _split_device_and_interface(argument)

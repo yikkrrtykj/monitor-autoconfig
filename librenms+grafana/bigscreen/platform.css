@@ -358,8 +358,8 @@
 }
 
 .dhcp-address-legend i.used {
-  border-color: rgba(83, 166, 255, 0.8);
-  background: rgba(83, 166, 255, 0.32);
+  border-color: rgba(77, 210, 123, 0.82);
+  background: rgba(77, 210, 123, 0.32);
 }
 
 .dhcp-address-legend i.conflict {
@@ -421,9 +421,9 @@
 }
 
 .dhcp-address-cell.used {
-  border-color: rgba(83, 166, 255, 0.82);
-  background: rgba(83, 166, 255, 0.25);
-  color: #8bc5ff;
+  border-color: rgba(77, 210, 123, 0.88);
+  background: rgba(77, 210, 123, 0.28);
+  color: #8be5a8;
   font-weight: 700;
 }
 

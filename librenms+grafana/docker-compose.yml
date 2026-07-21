@@ -489,6 +489,9 @@ services:
       - ./discover-isp-targets.py:/discover-isp-targets.py:ro
       - ./platform_config.py:/platform_config.py:ro
       - ./.env:/config/.env:ro
+      # Firewall IP-MIB is hidden on some appliances. LibreNMS' discovered
+      # interface inventory is the authoritative automatic fallback.
+      - ./librenms-data:/librenms-data:ro
     environment:
       TZ: Asia/Shanghai
       SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
@@ -518,6 +521,9 @@ services:
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-}"
       ISP_PING: "${ISP_PING:-}"
       ISP_DISCOVERY_SNMP_TIMEOUT: "${ISP_DISCOVERY_SNMP_TIMEOUT:-2}"
+      LIBRENMS_URL: "http://librenms:8000"
+      LIBRENMS_API_TOKEN: "${LIBRENMS_API_TOKEN:-}"
+      LIBRENMS_TOKEN_FILE: "/librenms-data/librenms-api-token"
       # WAN addresses can change independently of LLDP. Re-read them every
       # minute without increasing the heavier switch/topology walk frequency.
       ISP_DISCOVERY_REFRESH_INTERVAL: "${ISP_DISCOVERY_REFRESH_INTERVAL:-60}"

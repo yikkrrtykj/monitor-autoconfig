@@ -220,6 +220,16 @@ IP address       Client-ID/              Lease expiration        Type
     assert "0100.1122.3344.55" in bindings[0]["detail"]
 
 
+def test_cisco_dhcp_binding_parser_keeps_wrapped_address_only_rows(tmp_path):
+    api = load_api(tmp_path)
+    bindings = api.parse_cisco_dhcp_bindings("""
+IP address       Client-ID/              Lease expiration        Type
+192.168.58.121
+                    0100.1122.3344.55    Jul 22 2026 10:00 AM    Automatic
+""")
+    assert bindings == [{"ip": "192.168.58.121", "detail": ""}]
+
+
 def test_cisco_dhcp_exclusions_expand_and_attach_to_matching_pool(tmp_path):
     api = load_api(tmp_path)
     exclusions = api.parse_cisco_dhcp_excluded("""

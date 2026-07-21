@@ -1468,7 +1468,10 @@ def parse_cisco_dhcp_bindings(text: str) -> list[dict]:
     bindings = []
     seen = set()
     for line in str(text or "").replace("\r", "").splitlines():
-        match = re.match(r"^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+(.+?)\s*$", line)
+        # A few IOS-XE trains wrap the Client-ID/detail columns onto the next
+        # line, leaving the address by itself.  The address is still an active
+        # binding and must not disappear merely because its detail is blank.
+        match = re.match(r"^\s*(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(.+?))?\s*$", line)
         if not match:
             continue
         try:
@@ -1480,7 +1483,7 @@ def parse_cisco_dhcp_bindings(text: str) -> list[dict]:
         seen.add(address)
         bindings.append({
             "ip": address,
-            "detail": re.sub(r"\s+", " ", match.group(2)).strip()[:512],
+            "detail": re.sub(r"\s+", " ", match.group(2) or "").strip()[:512],
         })
         if len(bindings) >= 65536:
             break
@@ -1669,6 +1672,10 @@ def get_dhcp_bindings() -> dict:
             "host": host,
             "bindings": bindings,
             "usedAddresses": [item["ip"] for item in bindings],
+            "parserWarning": (
+                "show ip dhcp binding 当前未返回可解析的活动地址"
+                if not bindings else ""
+            ),
             "capturedAt": int(time.time()),
         }
     except DiagnosticError:

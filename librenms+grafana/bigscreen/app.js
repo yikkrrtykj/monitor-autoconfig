@@ -3366,8 +3366,11 @@
     const warningText = (payload.warnings || []).join("；");
     setText(
       "dhcpFootnote",
-      `${warningText ? `${warningText} · ` : ""}地址池数量自动刷新；完整租约只在点击“查询已用 IP”时读取。`
+      `${warningText ? `${warningText} · ` : ""}地址池数量自动刷新；进入页面时读取一次完整租约，可随时手动重查。`
     );
+    if (!dhcpBindingPayload && !dhcpBindingsRefreshing) {
+      window.setTimeout(refreshDhcpBindings, 0);
+    }
   }
 
   async function refreshDhcpBindings() {
@@ -3385,7 +3388,12 @@
         const captured = payload.capturedAt
           ? new Date(payload.capturedAt * 1000).toLocaleTimeString("zh-CN", { hour12: false })
           : "刚刚";
-        status.textContent = `已标出 ${Number((payload.usedAddresses || []).length)} 个 · ${captured}`;
+        const returned = Number((payload.usedAddresses || []).length);
+        const expected = (dhcpLastPayload && dhcpLastPayload.pools || [])
+          .reduce((sum, pool) => sum + Number(pool.leased || 0), 0);
+        status.textContent = returned === 0 && expected > 0
+          ? `交换机统计已租用 ${expected} 个，但租约明细未解析；${payload.parserWarning || "请重试或检查命令输出"}`
+          : `已用地址（绿色）${returned} 个 · ${captured}`;
       }
       if (dhcpLastPayload) renderDhcpDashboard(dhcpLastPayload);
     } catch (error) {

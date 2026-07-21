@@ -241,6 +241,64 @@ def test_public_wan_addresses_survive_when_firewall_hides_route_table():
     assert payload[0]["labels"]["discovery_source"] == "subnet_gateway"
 
 
+def test_librenms_inventory_fallback_maps_current_public_addresses_and_prefixes():
+    addresses = [
+        {"ipv4_address": "101.95.176.198", "ipv4_prefixlen": "30", "port_id": "10"},
+        {"ipv4_address": "192.168.9.11", "ipv4_prefixlen": "24", "port_id": "11"},
+        {"ipv4_address": "116.238.242.155", "ipv4_prefixlen": "29", "port_id": "12"},
+        {"ipv4_address": "116.128.201.226", "ipv4_prefixlen": "28", "port_id": "14"},
+        {"ipv4_address": "61.169.238.58", "ipv4_prefixlen": "29", "port_id": "16"},
+    ]
+    ports = [
+        {"port_id": "10", "ifIndex": "1", "ifName": "ethernet0/0"},
+        {"port_id": "11", "ifIndex": "2", "ifName": "ethernet0/1"},
+        {"port_id": "12", "ifIndex": "3", "ifName": "ethernet0/2"},
+        {"port_id": "14", "ifIndex": "5", "ifName": "ethernet0/4"},
+        {"port_id": "16", "ifIndex": "7", "ifName": "ethernet0/6"},
+    ]
+    results = disco.discover_from_librenms(
+        addresses,
+        ports,
+        ["telecom-100M-long", "telecom-1000M", "unicom-1000M", "telecom-100M"],
+    )
+    assert [(item["name"], item["wan_ip"], item["gateway"]) for item in results] == [
+        ("telecom-100M-long", "101.95.176.198", "101.95.176.197"),
+        ("telecom-1000M", "116.238.242.155", "116.238.242.153"),
+        ("unicom-1000M", "116.128.201.226", "116.128.201.225"),
+        ("telecom-100M", "61.169.238.58", "61.169.238.57"),
+    ]
+    assert {item["source"] for item in results} == {"librenms_subnet_gateway"}
+
+
+def test_librenms_inventory_binds_by_wan_alias_before_interface_order():
+    results = disco.discover_from_librenms(
+        [
+            {"ipv4_address": "61.169.238.58", "ipv4_prefixlen": "29", "port_id": "1"},
+            {"ipv4_address": "101.95.176.198", "ipv4_prefixlen": "30", "port_id": "2"},
+        ],
+        [
+            {"port_id": "1", "ifIndex": "1", "ifAlias": "telecom-100M"},
+            {"port_id": "2", "ifIndex": "2", "ifAlias": "telecom-100M-long"},
+        ],
+        ["telecom-100M-long", "telecom-100M"],
+    )
+    assert [(item["name"], item["wan_ip"]) for item in results] == [
+        ("telecom-100M", "61.169.238.58"),
+        ("telecom-100M-long", "101.95.176.198"),
+    ]
+
+
+def test_pppoe_slash32_is_inventory_only_not_a_fake_self_ping():
+    results = disco.discover_from_librenms(
+        [{"ipv4_address": "8.8.8.8", "ipv4_prefixlen": "32", "port_id": "8"}],
+        [{"port_id": "8", "ifIndex": "8", "ifAlias": "pppoe-telecom"}],
+        ["pppoe-telecom"],
+    )
+    assert results[0]["gateway"] == ""
+    assert results[0]["source"] == "librenms_interface_only"
+    assert disco.build_file_sd(results, set()) == []
+
+
 def test_target_ips_parses_named_lists():
     assert disco.target_ips("FW:192.168.9.1, 192.168.9.2\ntelecom:1.2.3.4") == [
         "192.168.9.1", "192.168.9.2", "1.2.3.4",

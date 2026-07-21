@@ -75,7 +75,11 @@ def query_via_bridge(text: str) -> dict:
         headers={"Content-Type": "application/json"}, method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        # Full-network fiber audits may fan out across many LibreNMS devices.
+        # Message handling is already asynchronous, so allow the internal
+        # request to finish instead of returning a false timeout at 30 seconds.
+        timeout = 90 if re.search(r"巡检|check[_ ]?(?:fiber|uplinks)", text, re.I) else 30
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8") or "{}")
     except Exception as exc:  # noqa: BLE001 - converted to a user-visible reply
         log(f"bot query bridge failed: {exc}")
@@ -102,12 +106,20 @@ def tenant_access_token() -> str:
         return _TENANT_TOKEN["value"]
 
 
-def reply_to_message(message_id: str, text: str) -> None:
+def reply_to_message(message_id: str, text: str = "", card: dict | None = None) -> None:
     token = tenant_access_token()
-    payload = json.dumps({
-        "msg_type": "text",
-        "content": json.dumps({"text": text}, ensure_ascii=False),
-    }, ensure_ascii=False).encode("utf-8")
+    if card:
+        card_content = card.get("card") if card.get("msg_type") == "interactive" else card
+        message = {
+            "msg_type": "interactive",
+            "content": json.dumps(card_content, ensure_ascii=False),
+        }
+    else:
+        message = {
+            "msg_type": "text",
+            "content": json.dumps({"text": text}, ensure_ascii=False),
+        }
+    payload = json.dumps(message, ensure_ascii=False).encode("utf-8")
     encoded_id = urllib.parse.quote(str(message_id), safe="")
     req = urllib.request.Request(
         f"https://open.feishu.cn/open-apis/im/v1/messages/{encoded_id}/reply",
@@ -169,7 +181,14 @@ def _process_message(message_id: str, command: str) -> None:
     result = query_via_bridge(command)
     reply = str(result.get("text") or result.get("error") or "查询失败，请稍后再试。")
     try:
-        reply_to_message(message_id, reply)
+        cards = [item for item in (result.get("cards") or []) if isinstance(item, dict)]
+        if cards:
+            for position, card in enumerate(cards):
+                reply_to_message(message_id, card=card)
+                if position + 1 < len(cards):
+                    time.sleep(0.15)
+        else:
+            reply_to_message(message_id, reply)
         log(f"replied to message {message_id}: {command[:80]}")
     except Exception as exc:  # noqa: BLE001 - event loop must stay alive
         log(f"reply to {message_id} failed: {exc}")

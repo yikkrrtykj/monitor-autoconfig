@@ -28,6 +28,9 @@ Env vars:
   ISP_PING                    manual targets, their IPs are excluded here
   ISP_TARGETS_FILE            output path (default /targets/isp_targets.json)
   ISP_DISCOVERY_SNMP_TIMEOUT  per-walk SNMP timeout seconds (default 2)
+  LIBRENMS_URL                API fallback URL (default http://librenms:8000)
+  LIBRENMS_API_TOKEN          API token fallback when token file is absent
+  LIBRENMS_TOKEN_FILE         token file (default /librenms-data/librenms-api-token)
 """
 from __future__ import annotations
 
@@ -37,6 +40,8 @@ import os
 import re
 import subprocess
 import sys
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 
 OID_IF_DESCR = ".1.3.6.1.2.1.2.2.1.2"
 OID_IF_NAME = ".1.3.6.1.2.1.31.1.1.1.1"
@@ -301,9 +306,141 @@ def collect(ip: str, community: str, keywords: list[str], timeout: int = 2,
     return discover_from_walks(walks, keywords, configured_names)
 
 
+def _prefix_gateway(wan_ip: str, prefixlen: object) -> str:
+    try:
+        prefix = int(prefixlen)
+    except (TypeError, ValueError):
+        prefix = 32
+    # PPPoE/point-to-point addresses are commonly /32. Their session peer is
+    # not the first address of an IP subnet, so do not ping the firewall's own
+    # public address and claim that it is a carrier gateway.
+    if prefix >= 31:
+        return ""
+    return _subnet_gateway(wan_ip, str(prefix))
+
+
+def discover_from_librenms(addresses: list[dict], ports: list[dict],
+                            configured_names: list[str] | None = None) -> list[dict[str, str]]:
+    """Map LibreNMS' device IP inventory to the same records as SNMP discovery.
+
+    Hillstone can expose interface counters through SNMP while hiding both
+    IP-MIB and the standard route tables. LibreNMS already has the current
+    interface addresses from its device discovery, so use that inventory as a
+    second source instead of retaining stale public IPs in configuration.
+    """
+    port_by_id = {str(item.get("port_id")): item for item in ports if item.get("port_id") is not None}
+    rows = []
+    seen = set()
+    for address in addresses:
+        wan_ip = str(address.get("ipv4_address") or "").strip()
+        if wan_ip in seen or not _public_wan_address(wan_ip):
+            continue
+        seen.add(wan_ip)
+        port = port_by_id.get(str(address.get("port_id"))) or {}
+        labels = [str(port.get(field) or "").strip() for field in
+                  ("ifAlias", "ifName", "ifDescr") if str(port.get(field) or "").strip()]
+        label = next((str(port.get(field) or "").strip() for field in
+                      ("ifAlias", "ifName", "ifDescr") if str(port.get(field) or "").strip()), wan_ip)
+        try:
+            order = int(port.get("ifIndex"))
+        except (TypeError, ValueError):
+            try:
+                order = int(address.get("port_id"))
+            except (TypeError, ValueError):
+                order = 2 ** 31
+        gateway = _prefix_gateway(wan_ip, address.get("ipv4_prefixlen"))
+        rows.append({
+            "gateway": gateway,
+            "name": label,
+            "wan_ip": wan_ip,
+            "_ifindex": order,
+            "_labels": labels,
+            "source": "librenms_subnet_gateway" if gateway else "librenms_interface_only",
+        })
+
+    rows.sort(key=lambda item: (item["_ifindex"], item["wan_ip"]))
+    clean_names = [str(name).strip() for name in (configured_names or []) if str(name).strip()]
+    unused_names = list(clean_names)
+    # Interface alias/name is the primary binding. This survives adding/removing
+    # a WAN port without shifting every later carrier row onto the wrong line.
+    for item in rows:
+        label_keys = {value.casefold() for value in item.pop("_labels", [])}
+        matched = next((name for name in unused_names if name.casefold() in label_keys), "")
+        if matched:
+            item["name"] = matched
+            unused_names.remove(matched)
+    # Backward-compatible fallback for generic ethernet0/x interfaces where the
+    # operator has not yet set aliases on the firewall.
+    for item in rows:
+        if unused_names and item["name"] not in clean_names:
+            item["name"] = unused_names.pop(0)
+        item.pop("_ifindex", None)
+    return rows
+
+
+def _api_json(base_url: str, token: str, path: str, timeout: int = 10) -> dict:
+    req = urlrequest.Request(
+        f"{base_url.rstrip('/')}{path}",
+        headers={"X-Auth-Token": token},
+    )
+    with urlrequest.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+
+
+def _librenms_token() -> str:
+    path = os.environ.get("LIBRENMS_TOKEN_FILE", "/librenms-data/librenms-api-token")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            token = handle.read().strip()
+            if token:
+                return token
+    except OSError:
+        pass
+    return os.environ.get("LIBRENMS_API_TOKEN", "").strip()
+
+
+def collect_from_librenms(firewall_targets: list[str], configured_names: list[str] | None = None,
+                           api_get=_api_json) -> list[dict[str, str]]:
+    """Read the current WAN address inventory from LibreNMS' official API."""
+    base_url = os.environ.get("LIBRENMS_URL", "http://librenms:8000").rstrip("/")
+    token = _librenms_token()
+    if not base_url or not token:
+        return []
+    try:
+        devices = api_get(base_url, token, "/api/v0/devices").get("devices") or []
+    except Exception as exc:
+        print(f"[isp-discovery] LibreNMS device lookup failed: {exc}", file=sys.stderr)
+        return []
+
+    for target in firewall_targets:
+        device = next((item for item in devices if target in {
+            str(item.get("ip") or "").strip(),
+            str(item.get("hostname") or "").strip(),
+        }), None)
+        if not device:
+            continue
+        ref = device.get("device_id") or device.get("hostname") or target
+        encoded = urlparse.quote(str(ref), safe="")
+        try:
+            addresses = api_get(base_url, token, f"/api/v0/devices/{encoded}/ip").get("addresses") or []
+            query = urlparse.urlencode({
+                "columns": "port_id,ifIndex,ifName,ifDescr,ifAlias",
+            })
+            ports = api_get(base_url, token, f"/api/v0/devices/{encoded}/ports?{query}").get("ports") or []
+            results = discover_from_librenms(addresses, ports, configured_names)
+        except Exception as exc:
+            print(f"[isp-discovery] LibreNMS WAN inventory failed for {target}: {exc}", file=sys.stderr)
+            continue
+        if results:
+            return results
+    return []
+
+
 def build_file_sd(results: list[dict[str, str]], exclude: set[str]) -> list[dict]:
     payload = []
     for item in results:
+        if not item.get("gateway"):
+            continue  # PPPoE /31-/32: interface is monitored, but no fake gateway ping
         if item["gateway"] in exclude:
             continue  # already a manual ISP_PING target -- manual naming wins
         labels = {"display_name": item["name"]}
@@ -352,15 +489,23 @@ def main() -> None:
         results = collect(ip, community, keywords, timeout, configured_names=configured_names)
         if results:
             break
+    if not results:
+        results = collect_from_librenms(firewall_targets, configured_names)
     payload = build_file_sd(results, manual)
     write_file_sd(out, payload)
     if results:
-        summary = ", ".join(f"{item['name']}={item['gateway']}" for item in results)
-        print(f"[isp-discovery] found {len(results)} ISP gateway(s): {summary}"
-              f" ({len(results) - len(payload)} already manual)", file=sys.stderr)
+        summary = ", ".join(
+            f"{item['name']}={item['gateway']}"
+            if item.get("gateway") else f"{item['name']}={item['wan_ip']} (interface only)"
+            for item in results
+        )
+        interface_only = sum(1 for item in results if not item.get("gateway"))
+        print(f"[isp-discovery] found {len(results)} ISP interface(s): {summary}"
+              f" ({len(results) - len(payload) - interface_only} already manual, "
+              f"{interface_only} without a safe gateway target)", file=sys.stderr)
     else:
-        print("[isp-discovery] no default-route next hops readable from firewall SNMP; "
-              "keep manual ISP_PING entries", file=sys.stderr)
+        print("[isp-discovery] neither firewall SNMP nor LibreNMS exposed current public WAN "
+              "addresses; keep manual ISP_PING entries", file=sys.stderr)
 
 
 if __name__ == "__main__":
