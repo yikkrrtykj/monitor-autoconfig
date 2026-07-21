@@ -230,6 +230,40 @@ def test_proactive_alert_chat_uses_name_and_never_guesses_between_groups(monkeyp
     assert bridge._feishu_app_chat_id("token") == ""
 
 
+def test_proactive_alert_chat_paginates_large_bot_group_list(monkeypatch):
+    responses = iter([
+        _FakeResponse({
+            "code": 0,
+            "data": {
+                "items": [{"chat_id": "oc_shanghai", "name": "上海赛事告警"}],
+                "has_more": True,
+                "page_token": "next page",
+            },
+        }),
+        _FakeResponse({
+            "code": 0,
+            "data": {
+                "items": [{"chat_id": "oc_overseas", "name": "海外赛事告警"}],
+                "has_more": False,
+            },
+        }),
+    ])
+    urls = []
+
+    def fake_urlopen(req, timeout):
+        urls.append(req.full_url)
+        return next(responses)
+
+    monkeypatch.setattr(bridge.request, "urlopen", fake_urlopen)
+    bridge._FEISHU_APP_CHAT["chat_id"] = ""
+    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "海外赛事告警")
+    monkeypatch.setattr(bridge, "EVENT_NAME", "")
+
+    assert bridge._feishu_app_chat_id("token") == "oc_overseas"
+    assert "page_size=100" in urls[0]
+    assert "page_token=next%20page" in urls[1]
+
+
 def test_online_dedupe_is_committed_only_after_delivery(monkeypatch, tmp_path):
     state_file = tmp_path / "online.json"
     outcomes = iter([False, True])
@@ -325,12 +359,27 @@ def test_retire_confirm_card_has_buttons_only_when_app_configured():
     actions = {b["behaviors"][0]["value"]["action"] for b in buttons}
     assert actions == {"retire_delete", "retire_keep"}
     assert all(b["behaviors"][0]["value"]["token"] == "tok-9" for b in buttons)
+    assert all(b["behaviors"][0]["value"]["site_id"] == bridge.FEISHU_SITE_ID for b in buttons)
     assert all(b["behaviors"][0]["type"] == "callback" for b in buttons)
 
     # 没配应用：退化为纯通知卡（无按钮），提示到控制台确认
     plain = bridge.build_retire_confirm_card(state, "k", False)
     assert not [e for e in plain["card"]["body"]["elements"] if e.get("tag") == "button"]
     assert "控制台" in plain["card"]["body"]["elements"][0]["content"]
+
+
+def test_bridge_gateway_api_requires_configured_bearer_token(monkeypatch):
+    handler = object.__new__(bridge.Handler)
+    replies = []
+    handler.headers = {}
+    handler._send = lambda status, body=b"OK", content_type="text/plain": replies.append((status, body))
+    monkeypatch.setattr(bridge, "FEISHU_BRIDGE_API_TOKEN", "site-secret")
+
+    assert handler._require_gateway_auth() is False
+    assert replies[-1][0] == 401
+
+    handler.headers = {"Authorization": "Bearer site-secret"}
+    assert handler._require_gateway_auth() is True
 
 
 def test_pending_delete_notify_downgrades_to_webhook_when_app_send_fails(monkeypatch):

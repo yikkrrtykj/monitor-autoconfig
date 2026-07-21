@@ -77,6 +77,7 @@ DHCP_SWITCH_PORT = max(1, min(65535, int(os.environ.get("PLATFORM_DHCP_SWITCH_PO
 DHCP_SWITCH_TIMEOUT = max(3, min(30, int(os.environ.get("PLATFORM_DHCP_SWITCH_TIMEOUT", "8"))))
 DHCP_REFRESH_SECONDS = max(30, min(300, int(os.environ.get("PLATFORM_DHCP_REFRESH_SECONDS", "60"))))
 BRIDGE_URL = os.environ.get("PLATFORM_BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
+BRIDGE_API_TOKEN = os.environ.get("FEISHU_BRIDGE_API_TOKEN", "").strip()
 # The console's 赛前体检 queries these by service name (same docker network).
 PRECHECK_PROM_URL = os.environ.get("PLATFORM_PRECHECK_PROM_URL", "http://prometheus:9090")
 PRECHECK_GRAFANA_URL = os.environ.get("PLATFORM_PRECHECK_GRAFANA_URL", "http://grafana:3000")
@@ -629,9 +630,20 @@ def config_payload(text: str | None = None) -> dict:
                 ("feishu_app_id", "FEISHU_APP_ID"),
                 ("feishu_app_secret", "FEISHU_APP_SECRET"),
                 ("feishu_chat_id", "FEISHU_CHAT_ID"),
+                ("feishu_mode", "FEISHU_GATEWAY_MODE"),
+                ("feishu_site_id", "FEISHU_SITE_ID"),
+                ("feishu_default_site_id", "FEISHU_DEFAULT_SITE_ID"),
+                ("feishu_bridge_api_token", "FEISHU_BRIDGE_API_TOKEN"),
             ):
                 if config_key not in alerts and existing_env.get(env_key):
                     alerts[config_key] = existing_env[env_key]
+            if "feishu_sites" not in alerts and existing_env.get("FEISHU_SITE_ROUTES"):
+                try:
+                    routes = json.loads(existing_env["FEISHU_SITE_ROUTES"])
+                except json.JSONDecodeError:
+                    routes = []
+                if isinstance(routes, list):
+                    alerts["feishu_sites"] = routes
     issues = validate_config(config)
     env = render_env(config, existing_env)
     return {
@@ -1186,10 +1198,21 @@ def update_incident(incident_id: int, data: dict) -> dict:
     raise KeyError(f"incident {incident_id} not found")
 
 
+def _bridge_api_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if BRIDGE_API_TOKEN:
+        headers["Authorization"] = f"Bearer {BRIDGE_API_TOKEN}"
+    return headers
+
+
 def bridge_retire_pending() -> dict:
     """Fetch the bridge's pending-delete device list (48h+ offline, unconfirmed)."""
+    request_obj = urllib.request.Request(
+        f"{BRIDGE_URL}/retire/pending",
+        headers=_bridge_api_headers(),
+    )
     try:
-        with urllib.request.urlopen(f"{BRIDGE_URL}/retire/pending", timeout=8) as resp:
+        with urllib.request.urlopen(request_obj, timeout=8) as resp:
             return json.loads(resp.read().decode("utf-8") or "{}")
     except Exception as exc:
         return {"ok": False, "error": f"无法连接告警服务：{exc}", "pending": []}
@@ -1204,7 +1227,7 @@ def bridge_retire_resolve(data: dict) -> dict:
     }).encode("utf-8")
     request_obj = urllib.request.Request(
         f"{BRIDGE_URL}/retire/resolve", data=payload, method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=_bridge_api_headers(),
     )
     try:
         with urllib.request.urlopen(request_obj, timeout=15) as resp:
@@ -1223,7 +1246,7 @@ def send_test_alert() -> dict:
     alert path works before an event without waiting for a real incident."""
     request = urllib.request.Request(
         f"{BRIDGE_URL}/test-alert", data=b"{}", method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=_bridge_api_headers(),
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as resp:

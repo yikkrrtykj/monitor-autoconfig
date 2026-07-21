@@ -45,6 +45,13 @@ alerts:
   feishu_app_id:
   feishu_app_secret:
   feishu_chat_id:
+  # local=单套监控；hub=唯一飞书长连接中心；site=只发送本站告警，不建立长连接
+  feishu_mode: local
+  feishu_site_id:
+  feishu_bridge_api_token:
+  feishu_default_site_id:
+  # hub 模式填写。每个群只绑定一个站点，token 与对应站点上方令牌一致。
+  feishu_sites: []
 
 security:
   grafana_anonymous: true

@@ -14,6 +14,13 @@ LibreNMS deletion. The response updates the card in place and shows a toast.
 Env:
   FEISHU_APP_ID / FEISHU_APP_SECRET  self-built app credentials (required)
   BRIDGE_URL   bridge base URL (default http://alertmanager-feishu-bridge:5005)
+  FEISHU_GATEWAY_MODE local (default) or hub.  Site-only deployments must not
+                      start this client.
+  FEISHU_SITE_ID      stable id of the local monitoring site
+  FEISHU_SITE_ROUTES  JSON list used by hub mode; each item contains site_id,
+                      chat_id, bridge_url and bridge_token
+  FEISHU_DEFAULT_SITE_ID optional route for direct (p2p) bot messages
+  FEISHU_BRIDGE_API_TOKEN token used for the local bridge in local mode
 
 Feishu console prerequisites (one-time, see .env.example):
   自建应用 -> 开启机器人能力 -> 事件与回调选择"使用长连接接收" ->
@@ -35,6 +42,11 @@ import urllib.request
 APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
+GATEWAY_MODE = os.environ.get("FEISHU_GATEWAY_MODE", "local").strip().lower() or "local"
+SITE_ID = os.environ.get("FEISHU_SITE_ID", "").strip() or "local"
+DEFAULT_SITE_ID = os.environ.get("FEISHU_DEFAULT_SITE_ID", "").strip()
+BRIDGE_API_TOKEN = os.environ.get("FEISHU_BRIDGE_API_TOKEN", "").strip()
+SITE_ROUTES_RAW = os.environ.get("FEISHU_SITE_ROUTES", "").strip()
 _TENANT_TOKEN = {"value": "", "expires_at": 0.0}
 _TOKEN_LOCK = threading.Lock()
 _SEEN_MESSAGES: dict[str, float] = {}
@@ -45,16 +57,103 @@ def log(message: str) -> None:
     print(f"[feishu-ws] {message}", file=sys.stderr, flush=True)
 
 
-def resolve_via_bridge(value: dict) -> dict:
+def parse_site_routes(raw: str) -> list[dict]:
+    """Parse the hub's explicit chat/site routing table.
+
+    Never infer a route by list position: sending a Shanghai command to an
+    overseas bridge is worse than returning a visible configuration error.
+    """
+    if not str(raw or "").strip():
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        log(f"invalid FEISHU_SITE_ROUTES JSON: {exc}")
+        return []
+    if isinstance(payload, dict):
+        payload = payload.get("sites", [])
+    if not isinstance(payload, list):
+        log("FEISHU_SITE_ROUTES must be a JSON list")
+        return []
+    routes = []
+    seen_sites = set()
+    seen_chats = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        site_id = str(item.get("site_id") or item.get("site") or "").strip()
+        chat_id = str(item.get("chat_id") or "").strip()
+        bridge_url = str(item.get("bridge_url") or "").strip().rstrip("/")
+        bridge_token = str(item.get("bridge_token") or item.get("token") or "").strip()
+        if not site_id or not chat_id or not bridge_url:
+            log(f"ignored incomplete Feishu site route: site={site_id or '-'} chat={chat_id or '-'}")
+            continue
+        if site_id in seen_sites or chat_id in seen_chats:
+            log(f"ignored duplicate Feishu site route: site={site_id} chat={chat_id}")
+            continue
+        if not bridge_url.startswith(("http://", "https://")):
+            log(f"ignored invalid bridge URL for {site_id}: {bridge_url}")
+            continue
+        routes.append({
+            "site_id": site_id,
+            "chat_id": chat_id,
+            "bridge_url": bridge_url,
+            "bridge_token": bridge_token,
+        })
+        seen_sites.add(site_id)
+        seen_chats.add(chat_id)
+    return routes
+
+
+SITE_ROUTES = parse_site_routes(SITE_ROUTES_RAW)
+LOCAL_ROUTE = {
+    "site_id": SITE_ID,
+    "chat_id": "",
+    "bridge_url": BRIDGE_URL,
+    "bridge_token": BRIDGE_API_TOKEN,
+}
+
+
+def _route_by_site(site_id: str) -> dict | None:
+    if GATEWAY_MODE != "hub":
+        return LOCAL_ROUTE
+    wanted = str(site_id or "").strip()
+    if not wanted:
+        wanted = DEFAULT_SITE_ID
+    matches = [route for route in SITE_ROUTES if route["site_id"] == wanted]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _route_for_message(message) -> dict | None:
+    if GATEWAY_MODE != "hub":
+        return LOCAL_ROUTE
+    chat_type = str(_field(message, "chat_type", "") or "").lower()
+    if chat_type == "p2p":
+        return _route_by_site(DEFAULT_SITE_ID)
+    chat_id = str(_field(message, "chat_id", "") or "").strip()
+    matches = [route for route in SITE_ROUTES if route["chat_id"] == chat_id]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _bridge_headers(route: dict) -> dict:
+    headers = {"Content-Type": "application/json"}
+    token = str(route.get("bridge_token") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def resolve_via_bridge(value: dict, route: dict | None = None) -> dict:
     """Forward the button's value to the bridge; it validates token + state."""
+    route = route or LOCAL_ROUTE
     payload = json.dumps({
         "key": str(value.get("key") or ""),
         "action": "delete" if value.get("action") == "retire_delete" else "keep",
         "token": str(value.get("token") or ""),
     }).encode("utf-8")
     req = urllib.request.Request(
-        f"{BRIDGE_URL}/retire/resolve", data=payload,
-        headers={"Content-Type": "application/json"}, method="POST",
+        f"{route['bridge_url']}/retire/resolve", data=payload,
+        headers=_bridge_headers(route), method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
@@ -68,11 +167,12 @@ def resolve_via_bridge(value: dict) -> dict:
         return {"ok": False, "error": f"无法连接告警服务：{exc}"}
 
 
-def query_via_bridge(text: str) -> dict:
+def query_via_bridge(text: str, route: dict | None = None) -> dict:
+    route = route or LOCAL_ROUTE
     payload = json.dumps({"text": text}, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
-        f"{BRIDGE_URL}/bot/query", data=payload,
-        headers={"Content-Type": "application/json"}, method="POST",
+        f"{route['bridge_url']}/bot/query", data=payload,
+        headers=_bridge_headers(route), method="POST",
     )
     try:
         # Full-network fiber audits may fan out across many LibreNMS devices.
@@ -177,8 +277,8 @@ def _reserve_message(message_id: str) -> bool:
         return True
 
 
-def _process_message(message_id: str, command: str) -> None:
-    result = query_via_bridge(command)
+def _process_message(message_id: str, command: str, route: dict | None = None) -> None:
+    result = query_via_bridge(command, route)
     reply = str(result.get("text") or result.get("error") or "查询失败，请稍后再试。")
     try:
         cards = [item for item in (result.get("cards") or []) if isinstance(item, dict)]
@@ -189,7 +289,7 @@ def _process_message(message_id: str, command: str) -> None:
                     time.sleep(0.15)
         else:
             reply_to_message(message_id, reply)
-        log(f"replied to message {message_id}: {command[:80]}")
+        log(f"replied to message {message_id} site={(route or LOCAL_ROUTE).get('site_id')}: {command[:80]}")
     except Exception as exc:  # noqa: BLE001 - event loop must stay alive
         log(f"reply to {message_id} failed: {exc}")
 
@@ -202,11 +302,22 @@ def on_message(data):
     if not message_id or not _reserve_message(message_id):
         return None
     command = extract_command(message) or "帮助"
-    log(f"message command {command[:120]!r} id={message_id}")
+    route = _route_for_message(message)
+    if route is None:
+        chat_id = str(_field(message, "chat_id", "") or "")
+        log(f"no site route for chat={chat_id or '-'} command={command[:120]!r}")
+        threading.Thread(
+            target=reply_to_message,
+            args=(message_id, "该群尚未绑定监控站点，请在中心配置 chat_id → site_id 路由。"),
+            daemon=True,
+            name=f"feishu-unrouted-{message_id[-8:]}",
+        ).start()
+        return None
+    log(f"message command {command[:120]!r} id={message_id} site={route['site_id']}")
     # A LibreNMS query may take several seconds. Acknowledge the event handler
     # immediately and send the reply asynchronously so Feishu does not retry it.
     threading.Thread(
-        target=_process_message, args=(message_id, command), daemon=True,
+        target=_process_message, args=(message_id, command, route), daemon=True,
         name=f"feishu-query-{message_id[-8:]}",
     ).start()
     return None
@@ -260,8 +371,12 @@ def on_card_action(data):
         return None  # 其它卡片的回传交给未来的处理器，别误吞
     operator = getattr(getattr(data, "event", None), "operator", None)
     who = getattr(operator, "open_id", "") or getattr(operator, "user_id", "") or "?"
-    log(f"card action {value.get('action')} key={value.get('key')} by={who}")
-    result = resolve_via_bridge(value)
+    route = _route_by_site(str(value.get("site_id") or ""))
+    log(f"card action {value.get('action')} key={value.get('key')} site={value.get('site_id') or '-'} by={who}")
+    if route is None:
+        result = {"ok": False, "error": "卡片所属监控站点未配置或已移除，请联系管理员。"}
+    else:
+        result = resolve_via_bridge(value, route)
     log(f"bridge result: {json.dumps(result, ensure_ascii=False)[:200]}")
     return build_response(value, result)
 
@@ -272,6 +387,16 @@ def main() -> None:
             "Configure the self-built app in .env to enable in-card confirmation.")
         while True:
             time.sleep(3600)
+
+    if GATEWAY_MODE == "site":
+        log("FEISHU_GATEWAY_MODE=site: this deployment must not own a Feishu long connection; sleeping")
+        while True:
+            time.sleep(3600)
+    if GATEWAY_MODE == "hub":
+        if not SITE_ROUTES:
+            log("FEISHU_GATEWAY_MODE=hub but no valid FEISHU_SITE_ROUTES were configured")
+        else:
+            log(f"hub routes loaded: {', '.join(route['site_id'] for route in SITE_ROUTES)}")
 
     import lark_oapi as lark
 

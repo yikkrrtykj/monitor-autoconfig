@@ -250,6 +250,30 @@ def split_values(value: Any) -> list[str]:
     return [str(item).strip() for item in raw_items if str(item).strip()]
 
 
+def feishu_site_routes(value: Any) -> list[dict[str, str]]:
+    """Normalize the central bot's explicit site routing table."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value) if value.strip() else []
+        except json.JSONDecodeError:
+            return []
+    if isinstance(value, dict):
+        value = value.get("sites", [])
+    if not isinstance(value, list):
+        return []
+    routes = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        routes.append({
+            "site_id": str(item.get("site_id") or item.get("site") or "").strip(),
+            "chat_id": str(item.get("chat_id") or "").strip(),
+            "bridge_url": str(item.get("bridge_url") or "").strip().rstrip("/"),
+            "bridge_token": str(item.get("bridge_token") or item.get("token") or "").strip(),
+        })
+    return routes
+
+
 def named_targets(items: list[dict[str, Any]], key: str = "ip") -> str:
     targets = []
     for item in items or []:
@@ -353,6 +377,9 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             devices[key] = {}
     if not isinstance(config["isp"].get("links", []), list):
         config["isp"]["links"] = []
+    alerts = config["alerts"]
+    if "feishu_sites" in alerts and not isinstance(alerts.get("feishu_sites"), list):
+        alerts["feishu_sites"] = []
     return config
 
 
@@ -377,12 +404,16 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     raw_isp = config.get("isp") if isinstance(config.get("isp"), dict) else {}
     if "links" in raw_isp and not isinstance(raw_isp.get("links"), list):
         add("bad", "isp.links", "isp.links 必须是列表")
+    raw_alerts = config.get("alerts") if isinstance(config.get("alerts"), dict) else {}
+    if "feishu_sites" in raw_alerts and not isinstance(raw_alerts.get("feishu_sites"), list):
+        add("bad", "alerts.feishu_sites", "alerts.feishu_sites 必须是列表")
 
     config = normalize_config(config)
     event = config["event"]
     devices = config["devices"]
     networks = config["networks"]
     isp = config["isp"]
+    alerts = config["alerts"]
 
     def valid_ip(value: Any) -> bool:
         try:
@@ -552,6 +583,48 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
             add("bad", "unifi.user", "启用 UniFi 时必须填写只读账号")
         if not str(unifi.get("password") or "").strip():
             add("bad", "unifi.password", "启用 UniFi 时必须填写密码")
+
+    feishu_mode = str(alerts.get("feishu_mode") or "local").strip().lower()
+    if feishu_mode not in ("local", "hub", "site"):
+        add("bad", "alerts.feishu_mode", "飞书模式只能是 local、hub 或 site")
+    feishu_site_id = str(alerts.get("feishu_site_id") or "").strip()
+    app_configured = bool(str(alerts.get("feishu_app_id") or "").strip())
+    if app_configured and feishu_mode in ("hub", "site"):
+        if not feishu_site_id:
+            add("bad", "alerts.feishu_site_id", "中心/站点模式必须填写唯一站点 ID")
+        elif not re.fullmatch(r"[A-Za-z0-9_.-]+", feishu_site_id):
+            add("bad", "alerts.feishu_site_id", "站点 ID 只能包含字母、数字、点、下划线和短横线")
+        if not str(alerts.get("feishu_bridge_api_token") or "").strip():
+            add("bad", "alerts.feishu_bridge_api_token", "中心/站点模式必须配置站点 API 令牌")
+
+    routes = feishu_site_routes(alerts.get("feishu_sites"))
+    if app_configured and feishu_mode == "hub" and not routes:
+        add("bad", "alerts.feishu_sites", "中心模式至少需要一个群与监控站点路由")
+    seen_site_ids: set[str] = set()
+    seen_chat_ids: set[str] = set()
+    for index, route in enumerate(routes):
+        path = f"alerts.feishu_sites[{index}]"
+        site_id = route["site_id"]
+        chat_id = route["chat_id"]
+        bridge_url = route["bridge_url"]
+        if not site_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", site_id):
+            add("bad", f"{path}.site_id", "路由站点 ID 缺失或格式无效")
+        elif site_id in seen_site_ids:
+            add("bad", f"{path}.site_id", f"站点 ID {site_id} 重复")
+        if not chat_id.startswith("oc_"):
+            add("bad", f"{path}.chat_id", "中心路由必须填写 oc_ 开头的群 Chat ID")
+        elif chat_id in seen_chat_ids:
+            add("bad", f"{path}.chat_id", f"群 Chat ID {chat_id} 重复")
+        parsed_bridge = urlparse(bridge_url)
+        if parsed_bridge.scheme not in ("http", "https") or not parsed_bridge.netloc:
+            add("bad", f"{path}.bridge_url", "站点 Bridge URL 必须是完整 HTTP/HTTPS 地址")
+        if not route["bridge_token"]:
+            add("bad", f"{path}.bridge_token", "每个站点路由必须填写独立 API 令牌")
+        seen_site_ids.add(site_id)
+        seen_chat_ids.add(chat_id)
+    default_site = str(alerts.get("feishu_default_site_id") or "").strip()
+    if feishu_mode == "hub" and default_site and default_site not in seen_site_ids:
+        add("bad", "alerts.feishu_default_site_id", "默认站点 ID 不在中心路由表中")
     return issues
 
 
@@ -582,6 +655,24 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     feishu_app_id = alerts.get("feishu_app_id") if "feishu_app_id" in alerts else existing.get("FEISHU_APP_ID", "")
     feishu_app_secret = alerts.get("feishu_app_secret") if "feishu_app_secret" in alerts else existing.get("FEISHU_APP_SECRET", "")
     feishu_chat_id = alerts.get("feishu_chat_id") if "feishu_chat_id" in alerts else existing.get("FEISHU_CHAT_ID", "")
+    feishu_mode = str(
+        alerts.get("feishu_mode") if "feishu_mode" in alerts else existing.get("FEISHU_GATEWAY_MODE", "local")
+    ).strip().lower() or "local"
+    feishu_site_id = alerts.get("feishu_site_id") if "feishu_site_id" in alerts else existing.get("FEISHU_SITE_ID", "")
+    feishu_default_site_id = (
+        alerts.get("feishu_default_site_id")
+        if "feishu_default_site_id" in alerts
+        else existing.get("FEISHU_DEFAULT_SITE_ID", "")
+    )
+    feishu_bridge_api_token = (
+        alerts.get("feishu_bridge_api_token")
+        if "feishu_bridge_api_token" in alerts
+        else existing.get("FEISHU_BRIDGE_API_TOKEN", "")
+    )
+    if "feishu_sites" in alerts:
+        feishu_routes = feishu_site_routes(alerts.get("feishu_sites"))
+    else:
+        feishu_routes = feishu_site_routes(existing.get("FEISHU_SITE_ROUTES", ""))
     core_ping = named_targets([{"ip": core.get("ip")}], "ip") if core.get("ip") else ""
     firewall_ping = named_targets([firewall], "ip")
     firewall_snmp = named_targets([firewall], "snmp")
@@ -637,7 +728,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "COMPOSE_PROFILES": compose_profiles(
             existing.get("COMPOSE_PROFILES", ""),
             bool(unifi.get("enabled")),
-            bool(feishu_app_id),
+            bool(feishu_app_id) and feishu_mode in ("local", "hub"),
         ),
         "UNIFI_CONTROLLER_URL": unifi.get("controller_url", ""),
         "UNIFI_CONTROLLER_USER": unifi.get("user", ""),
@@ -648,6 +739,11 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "FEISHU_APP_ID": feishu_app_id,
         "FEISHU_APP_SECRET": feishu_app_secret,
         "FEISHU_CHAT_ID": feishu_chat_id,
+        "FEISHU_GATEWAY_MODE": feishu_mode,
+        "FEISHU_SITE_ID": feishu_site_id,
+        "FEISHU_DEFAULT_SITE_ID": feishu_default_site_id,
+        "FEISHU_BRIDGE_API_TOKEN": feishu_bridge_api_token,
+        "FEISHU_SITE_ROUTES": json.dumps(feishu_routes, ensure_ascii=False, separators=(",", ":")),
         "SYSLOG_ALERT_TYPES": alerts.get("syslog_alert_types", "native_vlan_mismatch,errdisable,bpduguard,loopback"),
         "GRAFANA_ANONYMOUS_ENABLED": str(bool(security.get("grafana_anonymous", True))).lower(),
     }

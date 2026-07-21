@@ -193,17 +193,30 @@ fi
 # created. A plain restart leaves the old values in the container, so include
 # it in the recreate set whenever the UniFi compose profile is enabled.
 COMPOSE_PROFILES_VALUE=$(render_env_value COMPOSE_PROFILES)
-# The Feishu long-connection sidecar only runs when a self-built app is
-# configured. Activating the "feishu" profile from the app id keeps operators
-# from having to hand-edit COMPOSE_PROFILES after pasting the app secret.
+# The Feishu long-connection sidecar runs only on a local/single deployment or
+# the designated multi-site hub. A site still uses the shared app credentials
+# to send cards, but must not open another WebSocket client (Feishu distributes
+# each event to one random client in the application cluster).
 FEISHU_APP_ID_VALUE=$(render_env_value FEISHU_APP_ID)
-if [ -n "$FEISHU_APP_ID_VALUE" ]; then
+FEISHU_GATEWAY_MODE_VALUE=$(render_env_value FEISHU_GATEWAY_MODE)
+FEISHU_GATEWAY_MODE_VALUE=${FEISHU_GATEWAY_MODE_VALUE:-local}
+if [ -n "$FEISHU_APP_ID_VALUE" ] && [ "$FEISHU_GATEWAY_MODE_VALUE" != "site" ]; then
   case ",${COMPOSE_PROFILES_VALUE}," in
     *,feishu,*) : ;;
     *) COMPOSE_PROFILES_VALUE="${COMPOSE_PROFILES_VALUE:+${COMPOSE_PROFILES_VALUE},}feishu" ;;
   esac
-  export COMPOSE_PROFILES="$COMPOSE_PROFILES_VALUE"
+else
+  filtered_profiles=""
+  old_ifs=$IFS
+  IFS=,
+  for profile in $COMPOSE_PROFILES_VALUE; do
+    [ "$profile" = "feishu" ] && continue
+    filtered_profiles="${filtered_profiles}${filtered_profiles:+,}${profile}"
+  done
+  IFS=$old_ifs
+  COMPOSE_PROFILES_VALUE=$filtered_profiles
 fi
+export COMPOSE_PROFILES="$COMPOSE_PROFILES_VALUE"
 REMOVE_UNPOLLER=false
 case ",${COMPOSE_PROFILES_VALUE}," in
   *,unifi,*) SERVICES="${SERVICES}  unpoller
@@ -217,6 +230,15 @@ esac
 case ",${COMPOSE_PROFILES_VALUE}," in
   *,feishu,*) SERVICES="${SERVICES}  feishu-ws
 " ;;
+esac
+REMOVE_FEISHU_WS=false
+case ",${COMPOSE_PROFILES_VALUE}," in
+  *,feishu,*) : ;;
+  *)
+    if docker inspect feishu-ws >/dev/null 2>&1; then
+      REMOVE_FEISHU_WS=true
+    fi
+    ;;
 esac
 
 compose_up() {
@@ -232,6 +254,10 @@ fi
 if [ "$REMOVE_UNPOLLER" = "true" ]; then
   echo "[apply-env] UniFi profile disabled; removing the existing unpoller container."
   docker rm -f unpoller >/dev/null
+fi
+if [ "$REMOVE_FEISHU_WS" = "true" ]; then
+  echo "[apply-env] Feishu site mode enabled; removing the local long-connection client."
+  docker rm -f feishu-ws >/dev/null
 fi
 
 echo "[apply-env] Done. Watch LibreNMS config progress with:"

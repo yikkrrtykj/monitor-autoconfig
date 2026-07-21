@@ -8,6 +8,8 @@ runs on python:3-slim with no requirements.txt.
 Env:
   FEISHU_BRIDGE_PORT      listen port (default 5005)
   FEISHU_ROBOT_TOKEN      Feishu bot webhook token
+  FEISHU_SITE_ID          stable site id embedded into interactive card actions
+  FEISHU_BRIDGE_API_TOKEN optional bearer token protecting hub-routed APIs
   FEISHU_BRIDGE_DRY_RUN   true = log payloads, never POST to Feishu
   FEISHU_SEND_MAX_ATTEMPTS retry attempts for each Feishu delivery (default 3)
   FEISHU_SEND_RETRY_BASE_SECONDS exponential retry base delay (default 1)
@@ -180,6 +182,8 @@ DEVICE_PENDING_DELETE_REALERT_SECONDS = int(os.environ.get("DEVICE_PENDING_DELET
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
 FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "").strip()
+FEISHU_SITE_ID = os.environ.get("FEISHU_SITE_ID", "").strip() or "local"
+FEISHU_BRIDGE_API_TOKEN = os.environ.get("FEISHU_BRIDGE_API_TOKEN", "").strip()
 EVENT_NAME = os.environ.get("EVENT_NAME", "").strip()
 DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "false").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_FROM_PING = os.environ.get("DEVICE_AUTO_ADD_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
@@ -1562,6 +1566,7 @@ def build_retire_confirm_card(state, key, interactive):
                         "key": key,
                         "token": state.get("pending_token") or "",
                         "device": dev,
+                        "site_id": FEISHU_SITE_ID,
                     },
                 }],
             }
@@ -1837,16 +1842,28 @@ def _feishu_app_chat_id(token):
     if _FEISHU_APP_CHAT["chat_id"]:
         return _FEISHU_APP_CHAT["chat_id"]
     try:
-        req = request.Request(
-            "https://open.feishu.cn/open-apis/im/v1/chats?page_size=20",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        with request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+        items = []
+        page_token = ""
+        for _page in range(20):
+            query = "page_size=100"
+            if page_token:
+                query += f"&page_token={parse.quote(page_token, safe='')}"
+            req = request.Request(
+                f"https://open.feishu.cn/open-apis/im/v1/chats?{query}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+            page = data.get("data") or {}
+            items.extend(item for item in (page.get("items") or []) if item.get("chat_id"))
+            if not page.get("has_more"):
+                break
+            page_token = str(page.get("page_token") or "")
+            if not page_token:
+                break
     except Exception as exc:
         log(f"[APP] chat list failed: {exc}")
         return ""
-    items = [item for item in (((data.get("data") or {}).get("items")) or []) if item.get("chat_id")]
 
     def match_name(value):
         wanted = str(value or "").strip().casefold()
@@ -4385,14 +4402,43 @@ class Handler(BaseHTTPRequestHandler):
 
         return {"name": "LibreNMS transport test", "raw": text}
 
+    def _gateway_authorized(self):
+        """Protect APIs that a central Feishu gateway can call across sites.
+
+        Empty tokens preserve legacy single-host deployments whose bridge is
+        reachable only on the Docker network. Multi-site deployments set a
+        per-site token and expose the port only on a VPN/firewall allow-list.
+        """
+        if not FEISHU_BRIDGE_API_TOKEN:
+            return True
+        auth = str(self.headers.get("Authorization") or "").strip()
+        provided = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        return bool(provided and secrets.compare_digest(provided, FEISHU_BRIDGE_API_TOKEN))
+
+    def _require_gateway_auth(self):
+        if self._gateway_authorized():
+            return True
+        self._send(
+            401,
+            json.dumps({"ok": False, "error": "飞书中心鉴权失败"}, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
+        return False
+
     def do_POST(self):
         if self.path == "/librenms":
             return self._handle_librenms()
         if self.path == "/test-alert":
+            if not self._require_gateway_auth():
+                return None
             return self._handle_test_alert()
         if self.path == "/retire/resolve":
+            if not self._require_gateway_auth():
+                return None
             return self._handle_retire_resolve()
         if self.path == "/bot/query":
+            if not self._require_gateway_auth():
+                return None
             return self._handle_bot_query()
         return self._send(404, b"not found")
 
@@ -4451,6 +4497,8 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             return self._send(status, body, "application/json; charset=utf-8")
         if self.path == "/retire/pending":
+            if not self._require_gateway_auth():
+                return None
             body = json.dumps(
                 {"ok": True, "pending": list_pending_delete_devices()},
                 ensure_ascii=False,

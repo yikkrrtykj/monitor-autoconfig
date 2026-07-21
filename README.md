@@ -229,9 +229,11 @@ cd librenms+grafana
 | WAN 口名/别名 | 与防火墙 SNMP 返回的接口名或别名一致；网关由路由表自动发现，不需要填写公网 IP 或网关 |
 | 默认/单链路带宽 | 用于饱和判断；对称线路填一个 Mbps 数值，不对称线路固定按“下载/上传”填写（如 `1000/100`）；饱和阈值默认 90% |
 | UniFi | 使用 UniFi AP 时填控制器地址和只读账号 |
-| 飞书机器人 Token | 留空则不推飞书；多台监控可以复用同一个 token，但会推到同一个群且可能重复告警 |
+| 飞书机器人 Token | 旧 Webhook 回退通道；不同群通常使用不同 Token |
 | 飞书应用 App ID / App Secret | 审批通过的企业自建应用凭据；普通告警优先使用应用机器人，旧 Token 作为失败回退 |
 | 主动告警群 | 可填群名或 `oc_...` Chat ID；机器人只在一个群时可留空，多群时必须指定，避免告警发错场地 |
+| 飞书接入模式 | `local` 单站点；`hub` 多站点唯一长连接中心；`site` 其它监控站点 |
+| 本站点 ID / API 令牌 | 多站点时必填；站点 ID 全局唯一，令牌建议用 `openssl rand -hex 32` 生成 |
 
 飞书企业自建应用审批通过后，在 `/control` 的“告警”区填写 App ID、App Secret，
 把应用机器人加入告警群，再点“应用配置”。旧版只写在 `.env` 的凭据会自动带入
@@ -240,6 +242,46 @@ cd librenms+grafana
 `查光功率 <名称/IP> [接口]`、`查异常光功率 <名称/IP> [接口]` 和 `帮助`。
 光功率读取 LibreNMS 已采集的 dBm 传感器及阈值，不会额外轮询交换机。
 `im.message.receive_v1` 是在“事件与回调”里添加的事件类型，不是权限管理页里的权限名。
+
+### 一个 LibreBOT 管理多个监控项目
+
+飞书同一应用的多个长连接属于集群而不是广播，一条消息或卡片回调只会交给其中
+随机一个客户端。因此不能让上海、海外等每台监控服务器都连接同一个 App ID。
+本项目的多站点模式固定只有一台 `hub` 建立飞书长连接，其它服务器使用 `site`：
+
+1. 所有站点填写同一个 `FEISHU_APP_ID/FEISHU_APP_SECRET`，但各自填写不同的
+   `FEISHU_CHAT_ID`、`FEISHU_SITE_ID` 和 `FEISHU_BRIDGE_API_TOKEN`。
+2. 选一台网络能访问所有站点 Bridge 的服务器设为 `hub`；其它服务器设为 `site`。
+3. 在 hub 控制台的“多站点中心路由”中逐行填写站点 ID、群 `oc_...` Chat ID、
+   Bridge URL 和该站点 API 令牌。群内 `@LibreBOT` 按 chat_id 路由，删除卡片按
+   卡片内的 site_id 路由，不按名称或列表顺序猜测。
+4. 站点 Bridge 默认只绑定 `127.0.0.1:5005`。中心需要跨服务器访问时，把该站点
+   `.env` 的 `FEISHU_BRIDGE_BIND` 改成 VPN 地址，并在主机防火墙中只放行 hub；
+   公网场景应使用 HTTPS 反向代理，不要直接暴露 5005。
+
+示例：
+
+```yaml
+alerts:
+  feishu_app_id: cli_shared
+  feishu_app_secret: shared-secret
+  feishu_mode: hub
+  feishu_site_id: shanghai
+  feishu_bridge_api_token: shanghai-random-token
+  feishu_default_site_id: shanghai
+  feishu_sites:
+    - site_id: shanghai
+      chat_id: oc_shanghai
+      bridge_url: http://alertmanager-feishu-bridge:5005
+      bridge_token: shanghai-random-token
+    - site_id: overseas-1
+      chat_id: oc_overseas
+      bridge_url: https://overseas-monitor.example.com/feishu-bridge
+      bridge_token: overseas-random-token
+```
+
+海外站点只需把 `feishu_mode` 改为 `site`，设置自己的站点 ID、群和令牌；应用配置
+时会自动停止该服务器的 `feishu-ws` 容器，但主动告警发送能力仍然保留。
 
 ## 交换机侧配置
 

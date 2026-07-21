@@ -1691,8 +1691,14 @@
     value.unifi = { enabled: false, password: "", sites: "all", verify_ssl: false, ...(value.unifi || {}) };
     value.alerts = {
       syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback",
+      feishu_mode: "local",
+      feishu_site_id: "",
+      feishu_default_site_id: "",
+      feishu_bridge_api_token: "",
+      feishu_sites: [],
       ...(value.alerts || {})
     };
+    value.alerts.feishu_sites = asConfigArray(value.alerts.feishu_sites);
     value.security = { ...(value.security || {}), grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
     return value;
   }
@@ -1789,7 +1795,8 @@
       access_switches: "接入交换机",
       switches: "交换机",
       servers: "服务器",
-      isp: "ISP"
+      isp: "ISP",
+      feishu_sites: "飞书站点路由"
     };
     const supportsRange = name === "stage_switches" || name === "access_switches";
     return `
@@ -1805,7 +1812,7 @@
             ${columns.map((column) => `
               <label>
                 <span>${escapeHtml(column.label)}</span>
-                <input data-config-key="${escapeHtml(column.key)}"${column.number ? ' data-config-number="1"' : ""} type="${column.number ? "number" : "text"}" value="${escapeHtml(configScalar(row[column.key]))}" placeholder="${escapeHtml(column.placeholder || "")}" />
+                <input data-config-key="${escapeHtml(column.key)}"${column.number ? ' data-config-number="1"' : ""} type="${escapeHtml(column.inputType || (column.number ? "number" : "text"))}" value="${escapeHtml(configScalar(row[column.key]))}" placeholder="${escapeHtml(column.placeholder || "")}" />
               </label>
             `).join("")}
             <button type="button" data-config-remove="${escapeHtml(name)}" data-index="${index}">删除</button>
@@ -1943,13 +1950,29 @@
       </section>
       <section class="config-section">
         <h3>告警</h3>
-        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。App Secret 仅在已登录的赛事控制台编辑，应用时会写入本机 .env。群内 @ 查询会自动回复原群，不需要填写目标群；下面的群名/Chat ID 仅用于系统主动推送告警。</p>
+        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。单站点选 local。多个项目共用一个机器人时，只在中心选 hub 并建立长连接，其它服务器选 site；中心按群 Chat ID 将 @查询和卡片按钮路由到对应站点。</p>
         <div class="config-fields">
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
           ${configInput("alerts.feishu_chat_id", "主动告警群（群名或 Chat ID，可选）", { placeholder: "单群可留空；多群填写群名或 oc_..." })}
+          ${configInput("alerts.feishu_mode", "飞书接入模式", { type: "select", choices: [
+            { value: "local", label: "单站点（local）" },
+            { value: "hub", label: "多站点中心（hub）" },
+            { value: "site", label: "多站点成员（site）" }
+          ] })}
+          ${configInput("alerts.feishu_site_id", "本站点 ID", { placeholder: "例如 shanghai、overseas-1" })}
+          ${configInput("alerts.feishu_bridge_api_token", "本站点 API 令牌", { inputType: "password", placeholder: "中心/站点模式必须填写，建议 32 字节随机值" })}
+          ${configInput("alerts.feishu_default_site_id", "私聊默认站点 ID（中心可选）", { placeholder: "必须是下方路由中的 site_id" })}
         </div>
+        <h4>多站点中心路由（仅 hub 填写）</h4>
+        <p class="config-section-note">每个告警群绑定一个站点。Bridge URL 必须能从中心服务器访问；远端建议使用 VPN 地址或 HTTPS，令牌必须与该站点的“本站点 API 令牌”一致。</p>
+        ${configListRows("feishu_sites", lastEditableConfig.alerts.feishu_sites, [
+          { key: "site_id", label: "站点 ID", placeholder: "overseas-1" },
+          { key: "chat_id", label: "群 Chat ID", placeholder: "oc_..." },
+          { key: "bridge_url", label: "站点 Bridge URL", placeholder: "https://站点地址:5005" },
+          { key: "bridge_token", label: "站点 API 令牌", inputType: "password" }
+        ])}
       </section>
       <section class="config-section">
         <h3>安全</h3>
@@ -1994,7 +2017,8 @@
       stage_switches: ["devices", "stage_switches"],
       access_switches: ["devices", "access_switches"],
       servers: ["devices", "servers"],
-      isp: ["isp", "links"]
+      isp: ["isp", "links"],
+      feishu_sites: ["alerts", "feishu_sites"]
     };
     Object.entries(listMappings).forEach(([name, path]) => {
       const list = form.querySelector(`[data-config-list="${name}"]`);

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -123,6 +124,85 @@ alerts:
     assert env["FEISHU_APP_ID"] == ""
     assert env["FEISHU_APP_SECRET"] == ""
     assert env["COMPOSE_PROFILES"] == "custom"
+
+
+def test_feishu_hub_renders_explicit_multi_site_routes():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+alerts:
+  feishu_app_id: cli_shared
+  feishu_app_secret: shared-secret
+  feishu_mode: hub
+  feishu_site_id: shanghai
+  feishu_bridge_api_token: sh-secret
+  feishu_default_site_id: shanghai
+  feishu_sites:
+    - site_id: shanghai
+      chat_id: oc_shanghai
+      bridge_url: http://alertmanager-feishu-bridge:5005
+      bridge_token: sh-secret
+    - site_id: overseas-1
+      chat_id: oc_overseas
+      bridge_url: https://overseas.example/bridge
+      bridge_token: os-secret
+""")
+    assert not [item for item in platform_config.validate_config(config) if item["level"] == "bad"]
+    env = platform_config.render_env(config, {})
+    assert env["FEISHU_GATEWAY_MODE"] == "hub"
+    assert env["FEISHU_SITE_ID"] == "shanghai"
+    assert env["FEISHU_DEFAULT_SITE_ID"] == "shanghai"
+    assert env["COMPOSE_PROFILES"] == "feishu"
+    routes = json.loads(env["FEISHU_SITE_ROUTES"])
+    assert [item["site_id"] for item in routes] == ["shanghai", "overseas-1"]
+
+
+def test_feishu_site_mode_keeps_app_sending_but_disables_ws_profile():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+alerts:
+  feishu_app_id: cli_shared
+  feishu_app_secret: shared-secret
+  feishu_chat_id: oc_overseas
+  feishu_mode: site
+  feishu_site_id: overseas-1
+  feishu_bridge_api_token: os-secret
+""")
+    assert not [item for item in platform_config.validate_config(config) if item["level"] == "bad"]
+    env = platform_config.render_env(config, {"COMPOSE_PROFILES": "custom,feishu"})
+    assert env["FEISHU_APP_ID"] == "cli_shared"
+    assert env["FEISHU_CHAT_ID"] == "oc_overseas"
+    assert env["FEISHU_GATEWAY_MODE"] == "site"
+    assert env["COMPOSE_PROFILES"] == "custom"
+
+
+def test_feishu_hub_rejects_duplicate_or_unprotected_routes():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+alerts:
+  feishu_app_id: cli_shared
+  feishu_mode: hub
+  feishu_site_id: shanghai
+  feishu_bridge_api_token: sh-secret
+  feishu_sites:
+    - site_id: shanghai
+      chat_id: oc_same
+      bridge_url: http://bridge-a:5005
+      bridge_token: secret-a
+    - site_id: shanghai
+      chat_id: oc_same
+      bridge_url: http://bridge-b:5005
+      bridge_token:
+""")
+    bad = [item for item in platform_config.validate_config(config) if item["level"] == "bad"]
+    assert any("站点 ID" in item["message"] and "重复" in item["message"] for item in bad)
+    assert any("群 Chat ID" in item["message"] and "重复" in item["message"] for item in bad)
+    assert any("API 令牌" in item["message"] for item in bad)
 
 
 def test_merge_env_preserves_unknown_keys(tmp_path):
