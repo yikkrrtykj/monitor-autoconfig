@@ -318,11 +318,16 @@ def isp_bandwidth_config(isp: dict[str, Any]) -> str:
     return ",".join(entries)
 
 
-def compose_profiles(existing: Any, unifi_enabled: bool) -> str:
+def compose_profiles(existing: Any, unifi_enabled: bool, feishu_enabled: bool = False) -> str:
     profiles = [item.strip() for item in str(existing or "").split(",") if item.strip()]
-    profiles = [item for item in profiles if item != "unifi"]
+    # Both profiles are managed from the console.  Recompute them on every
+    # render so removing credentials actually disables the corresponding
+    # optional service instead of leaving a stale profile in .env.
+    profiles = [item for item in profiles if item not in ("unifi", "feishu")]
     if unifi_enabled:
         profiles.append("unifi")
+    if feishu_enabled:
+        profiles.append("feishu")
     return ",".join(dict.fromkeys(profiles))
 
 
@@ -572,6 +577,11 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     servers = devices.get("servers") or []
     isp_links = isp.get("links") or []
     snmp_community = snmp.get("community") or existing.get("SNMP_COMMUNITY", "global")
+    # Legacy installs kept these only in .env.  Missing YAML keys preserve that
+    # value, while an explicitly blank console field intentionally clears it.
+    feishu_app_id = alerts.get("feishu_app_id") if "feishu_app_id" in alerts else existing.get("FEISHU_APP_ID", "")
+    feishu_app_secret = alerts.get("feishu_app_secret") if "feishu_app_secret" in alerts else existing.get("FEISHU_APP_SECRET", "")
+    feishu_chat_id = alerts.get("feishu_chat_id") if "feishu_chat_id" in alerts else existing.get("FEISHU_CHAT_ID", "")
     core_ping = named_targets([{"ip": core.get("ip")}], "ip") if core.get("ip") else ""
     firewall_ping = named_targets([firewall], "ip")
     firewall_snmp = named_targets([firewall], "snmp")
@@ -624,13 +634,20 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "BIGSCREEN_ISP_MAX_BANDWIDTH": isp_bandwidth_config(isp),
         "ISP_SATURATION_PERCENT": str(isp.get("saturation_percent") if isp.get("saturation_percent") not in (None, "") else "90"),
         "ISP_DOWN_FOR_SECONDS": str(isp.get("down_for_seconds") if isp.get("down_for_seconds") not in (None, "") else "10"),
-        "COMPOSE_PROFILES": compose_profiles(existing.get("COMPOSE_PROFILES", ""), bool(unifi.get("enabled"))),
+        "COMPOSE_PROFILES": compose_profiles(
+            existing.get("COMPOSE_PROFILES", ""),
+            bool(unifi.get("enabled")),
+            bool(feishu_app_id),
+        ),
         "UNIFI_CONTROLLER_URL": unifi.get("controller_url", ""),
         "UNIFI_CONTROLLER_USER": unifi.get("user", ""),
         "UNIFI_CONTROLLER_PASS": unifi.get("password") or existing.get("UNIFI_CONTROLLER_PASS", ""),
         "UNIFI_CONTROLLER_SITES": unifi.get("sites", "all"),
         "UNIFI_CONTROLLER_VERIFY_SSL": str(bool(unifi.get("verify_ssl", False))).lower(),
         "FEISHU_ROBOT_TOKEN": alerts.get("feishu_robot_token") or existing.get("FEISHU_ROBOT_TOKEN", ""),
+        "FEISHU_APP_ID": feishu_app_id,
+        "FEISHU_APP_SECRET": feishu_app_secret,
+        "FEISHU_CHAT_ID": feishu_chat_id,
         "SYSLOG_ALERT_TYPES": alerts.get("syslog_alert_types", "native_vlan_mismatch,errdisable,bpduguard,loopback"),
         "GRAFANA_ANONYMOUS_ENABLED": str(bool(security.get("grafana_anonymous", True))).lower(),
     }

@@ -17,7 +17,7 @@
     escapeHtml, escapeRegex, escapeLabel, metricName, formatPing, formatPingText,
     formatUptime, formatBits, formatTime, niceMax, average,
     networkLabel, seatLabel, gaugeColor, gaugePercent,
-    linePathFromPoints, buildCsv, formatTimestampFull
+    linePathFromPoints, buildCsv, formatTimestampFull, groupAddressesByCBlock
   } = window.BSUtils;
   const {
     prometheusBaseUrl, fetchWithTimeout,
@@ -1900,15 +1900,15 @@
       </section>
       <section class="config-section">
         <h3>ISP</h3>
-        <p class="config-section-note">自动发现会从防火墙 SNMP 识别 WAN 接口，并从路由表发现网关。每条线路只需填写与防火墙一致的 WAN 口名/别名和带宽；不再要求公网 IP 或网关地址。</p>
+        <p class="config-section-note">自动发现会从防火墙 SNMP 识别 WAN 接口，并从路由表发现网关。每条线路只需填写与防火墙一致的 WAN 口名/别名和带宽；不再要求公网 IP 或网关地址。对称线路填一个 Mbps 数值；不对称线路固定按“下载/上传”填写，例如 1000/100。</p>
         <div class="config-fields">
           ${configInput("isp.auto_discovery", "自动发现 ISP", { type: "checkbox", compactCheck: true })}
-          ${configInput("isp.max_bandwidth_mbps", "未填带宽时按 Mbps", { number: true, placeholder: "可留空，内部默认 1000" })}
+          ${configInput("isp.max_bandwidth_mbps", "默认带宽（下载/上传 Mbps）", { placeholder: "例如 1000 或 1000/100；留空默认 1000" })}
           ${configInput("isp.wan_if_filter", "WAN 口识别关键词", { placeholder: "telecom,telcom,unicom,isp,WAN" })}
         </div>
         ${configListRows("isp", lastEditableConfig.isp.links, [
           { key: "name", label: "WAN 口名/别名", placeholder: "例如 telecom、eth1 或电信" },
-          { key: "bandwidth_mbps", label: "单线带宽", number: true }
+          { key: "bandwidth_mbps", label: "单线带宽（下载/上传 Mbps）", placeholder: "例如 1000 或 1000/100" }
         ])}
       </section>
       <section class="config-section">
@@ -1924,8 +1924,12 @@
       </section>
       <section class="config-section">
         <h3>告警</h3>
+        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。App Secret 仅在已登录的赛事控制台编辑，应用时会写入本机 .env。</p>
         <div class="config-fields">
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
+          ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
+          ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
+          ${configInput("alerts.feishu_chat_id", "告警群 Chat ID（可选）", { placeholder: "留空自动选择机器人所在的第一个群" })}
         </div>
       </section>
       <section class="config-section">
@@ -3241,6 +3245,7 @@
   function dhcpAddressMap(pool, conflicts) {
     const addresses = dhcpRangeAddresses(pool.range);
     if (!addresses.length) return '<div class="dhcp-address-note">交换机未返回可展开的地址范围。</div>';
+    const addressBlocks = groupAddressesByCBlock(addresses);
     const excluded = new Set(pool.excludedAddresses || []);
     const conflictSet = new Set(conflicts || []);
     const excludedList = [...excluded];
@@ -3257,13 +3262,20 @@
           </div>
           <span class="dhcp-exclusion-list">${escapeHtml(exclusionNote)}</span>
         </div>
-        <div class="dhcp-address-grid">
-          ${addresses.map((ip) => {
-            const status = conflictSet.has(ip) ? "conflict" : excluded.has(ip) ? "excluded" : "pool";
-            const label = ip.slice(ip.lastIndexOf("."));
-            const statusText = status === "conflict" ? "冲突" : status === "excluded" ? "排除" : "池内（不逐项读取租约）";
-            return `<span class="dhcp-address-cell ${status}" title="${escapeHtml(`${ip} · ${statusText}`)}" aria-label="${escapeHtml(`${ip} ${statusText}`)}">${escapeHtml(label)}</span>`;
-          }).join("")}
+        <div class="dhcp-address-blocks">
+          ${addressBlocks.map((block) => `
+            <div class="dhcp-address-block">
+              <strong>${escapeHtml(`${block.prefix}.0/24`)}</strong>
+              <div class="dhcp-address-grid">
+                ${block.addresses.map((ip) => {
+                  const status = conflictSet.has(ip) ? "conflict" : excluded.has(ip) ? "excluded" : "pool";
+                  const label = ip.slice(ip.lastIndexOf("."));
+                  const statusText = status === "conflict" ? "冲突" : status === "excluded" ? "排除" : "池内（不逐项读取租约）";
+                  return `<span class="dhcp-address-cell ${status}" title="${escapeHtml(`${ip} · ${statusText}`)}" aria-label="${escapeHtml(`${ip} ${statusText}`)}">${escapeHtml(label)}</span>`;
+                }).join("")}
+              </div>
+            </div>
+          `).join("")}
         </div>
       </section>
     `;
@@ -3305,8 +3317,9 @@
     if (poolsElement) {
       poolsElement.innerHTML = pools.length ? pools.map((pool) => {
         const pct = Math.max(0, Math.min(100, Number(pool.utilization || 0)));
+        const addressBlockCount = groupAddressesByCBlock(dhcpRangeAddresses(pool.range)).length;
         return `
-          <article class="dhcp-pool-card ${escapeHtml(pool.level || "good")}">
+          <article class="dhcp-pool-card ${escapeHtml(pool.level || "good")}${addressBlockCount > 1 ? " multi-block" : ""}">
             <header>
               <div><strong>${escapeHtml(pool.name || "未命名地址池")}</strong><span>${escapeHtml(pool.range || "交换机未返回地址范围")}</span></div>
               <b>${pct.toFixed(1)}%</b>

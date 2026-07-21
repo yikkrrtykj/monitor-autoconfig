@@ -238,12 +238,16 @@
   border: 1px solid var(--linear-hairline);
   border-radius: 10px;
   background: var(--linear-surface-1);
-  content-visibility: auto;
-  contain-intrinsic-size: 620px;
 }
 
 .dhcp-pool-card.warn { border-color: rgba(245, 197, 66, 0.5); }
 .dhcp-pool-card.bad { border-color: rgba(255, 107, 130, 0.55); }
+
+@media (min-width: 760px) {
+  .dhcp-pool-card.multi-block {
+    grid-column: span 2;
+  }
+}
 
 .dhcp-pool-card header {
   display: flex;
@@ -368,6 +372,24 @@
   font-size: 10px;
   line-height: 1.55;
   overflow-wrap: anywhere;
+}
+
+.dhcp-address-blocks {
+  display: grid;
+  gap: 10px;
+}
+
+.dhcp-address-block {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.dhcp-address-block > strong {
+  color: var(--linear-ink-muted);
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
 }
 
 .dhcp-address-grid {

@@ -42,6 +42,9 @@ unifi:
 
 alerts:
   feishu_robot_token:
+  feishu_app_id:
+  feishu_app_secret:
+  feishu_chat_id:
 
 security:
   grafana_anonymous: true

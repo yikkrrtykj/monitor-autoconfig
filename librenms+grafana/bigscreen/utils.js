@@ -260,6 +260,21 @@
     return "\uFEFF" + rows.map((row) => row.map(csvField).join(",")).join("\r\n");
   }
 
+  function groupAddressesByCBlock(addresses) {
+    const blocks = [];
+    (addresses || []).forEach((ip) => {
+      const prefix = String(ip || "").split(".").slice(0, 3).join(".");
+      if (prefix.split(".").length !== 3) return;
+      let block = blocks[blocks.length - 1];
+      if (!block || block.prefix !== prefix) {
+        block = { prefix, addresses: [] };
+        blocks.push(block);
+      }
+      block.addresses.push(ip);
+    });
+    return blocks;
+  }
+
   const ns = {
     escapeHtml,
     escapeRegex,
@@ -284,6 +299,7 @@
     formatTimestampFull,
     csvField,
     buildCsv,
+    groupAddressesByCBlock,
     compactPortLabel,
     isPortLikeLabel,
     isAggPortName

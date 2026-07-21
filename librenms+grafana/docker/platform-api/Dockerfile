@@ -6,4 +6,4 @@ FROM python:3.13-slim
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends iperf3 \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir telnetlib3==4.0.5
+    && pip install --no-cache-dir telnetlib3==4.0.5 lark-oapi==1.7.1

@@ -614,10 +614,26 @@ def parse_config_text(text: str):
 
 
 def config_payload(text: str | None = None) -> dict:
-    text = read_config_text() if text is None else text
+    editing_existing = text is None
+    text = read_config_text() if editing_existing else text
     config = parse_config_text(text)
+    existing_env = read_env(ENV_PATH)
+    # Migrate legacy .env-only application credentials into the authenticated
+    # editor model.  They are then visible beside the old webhook token and are
+    # persisted to event-config.yml on the next save/apply.  Do not do this for
+    # submitted text: an operator must still be able to clear a credential.
+    if editing_existing:
+        alerts = config.setdefault("alerts", {})
+        if isinstance(alerts, dict):
+            for config_key, env_key in (
+                ("feishu_app_id", "FEISHU_APP_ID"),
+                ("feishu_app_secret", "FEISHU_APP_SECRET"),
+                ("feishu_chat_id", "FEISHU_CHAT_ID"),
+            ):
+                if config_key not in alerts and existing_env.get(env_key):
+                    alerts[config_key] = existing_env[env_key]
     issues = validate_config(config)
-    env = render_env(config, read_env(ENV_PATH))
+    env = render_env(config, existing_env)
     return {
         "ok": True,
         "text": text,

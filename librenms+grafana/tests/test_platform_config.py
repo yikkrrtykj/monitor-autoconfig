@@ -67,6 +67,64 @@ def test_parse_validate_render_env():
     assert env["GRAFANA_ANONYMOUS_ENABLED"] == "false"
 
 
+def test_feishu_application_credentials_render_from_console_and_enable_profile():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+alerts:
+  feishu_robot_token: old-webhook
+  feishu_app_id: cli_console
+  feishu_app_secret: app-secret
+  feishu_chat_id: oc_alert_group
+""")
+    env = platform_config.render_env(config, {"COMPOSE_PROFILES": "custom,unifi"})
+    assert env["FEISHU_APP_ID"] == "cli_console"
+    assert env["FEISHU_APP_SECRET"] == "app-secret"
+    assert env["FEISHU_CHAT_ID"] == "oc_alert_group"
+    assert env["FEISHU_ROBOT_TOKEN"] == "old-webhook"
+    assert env["COMPOSE_PROFILES"] == "custom,feishu"
+
+
+def test_existing_feishu_credentials_survive_an_unrelated_console_save():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+alerts:
+  feishu_robot_token:
+""")
+    env = platform_config.render_env(config, {
+        "FEISHU_APP_ID": "cli_existing",
+        "FEISHU_APP_SECRET": "existing-secret",
+        "FEISHU_CHAT_ID": "oc_existing",
+    })
+    assert env["FEISHU_APP_ID"] == "cli_existing"
+    assert env["FEISHU_APP_SECRET"] == "existing-secret"
+    assert env["FEISHU_CHAT_ID"] == "oc_existing"
+    assert env["COMPOSE_PROFILES"] == "feishu"
+
+
+def test_explicitly_blank_feishu_credentials_disable_the_managed_profile():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+alerts:
+  feishu_app_id:
+  feishu_app_secret:
+  feishu_chat_id:
+""")
+    env = platform_config.render_env(config, {
+        "FEISHU_APP_ID": "cli_existing",
+        "FEISHU_APP_SECRET": "existing-secret",
+        "COMPOSE_PROFILES": "feishu,custom",
+    })
+    assert env["FEISHU_APP_ID"] == ""
+    assert env["FEISHU_APP_SECRET"] == ""
+    assert env["COMPOSE_PROFILES"] == "custom"
+
+
 def test_merge_env_preserves_unknown_keys(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text("CUSTOM_KEEP=1\nEVENT_NAME=old\n", encoding="utf-8")

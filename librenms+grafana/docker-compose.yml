@@ -345,9 +345,12 @@ services:
   # （feishu 这个 profile），把结果转给告警桥执行删除/保留。没配就不起这个容器，
   # 确认仍可在控制台"待删除设备"面板完成。
   feishu-ws:
-    image: ${PYTHON_SLIM_IMAGE_WS:-monitor-feishu-ws:local}
-    build:
-      context: ./docker/feishu-ws
+    # Reuse the platform image: deploy.sh always builds it, and it already
+    # carries the small lark-oapi dependency.  This keeps console-side apply
+    # from trying to build a second local image through a host path that may
+    # not be visible from inside the platform-api container.
+    image: ${PLATFORM_API_IMAGE:-monitor-platform-api:local}
+    pull_policy: never
     container_name: feishu-ws
     restart: unless-stopped
     profiles: ["feishu"]

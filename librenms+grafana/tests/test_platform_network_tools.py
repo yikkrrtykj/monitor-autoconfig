@@ -465,6 +465,39 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     assert "stopDhcpRefresh()" in app
 
 
+def test_network_overview_precedes_dhcp_and_non_24_pools_are_grouped_by_c_block(tmp_path):
+    api = load_api(tmp_path)
+    root = api.Path(__file__).resolve().parents[1]
+    pages = (root / "bigscreen" / "pages.js").read_text(encoding="utf-8")
+    app = (root / "bigscreen" / "app.js").read_text(encoding="utf-8")
+    css = (root / "bigscreen" / "platform.css").read_text(encoding="utf-8")
+
+    assert pages.index('id: "infra"') < pages.index('id: "dhcp"')
+    assert "dhcp-address-blocks" in app
+    assert "${block.prefix}.0/24" in app
+    assert 'addressBlockCount > 1 ? " multi-block"' in app
+    assert ".dhcp-address-block" in css
+    assert ".dhcp-pool-card.multi-block" in css
+    assert "content-visibility: auto" not in css
+
+
+def test_config_editor_migrates_legacy_feishu_env_credentials(tmp_path):
+    api = load_api(tmp_path)
+    api.CONFIG_PATH.write_text(
+        "devices:\n  core:\n    ip: 192.168.10.254\nalerts:\n  feishu_robot_token:\n",
+        encoding="utf-8",
+    )
+    api.ENV_PATH.write_text(
+        "FEISHU_APP_ID=cli_legacy\nFEISHU_APP_SECRET=legacy-secret\nFEISHU_CHAT_ID=oc_legacy\n",
+        encoding="utf-8",
+    )
+
+    payload = api.config_payload()
+    assert payload["config"]["alerts"]["feishu_app_id"] == "cli_legacy"
+    assert payload["config"]["alerts"]["feishu_app_secret"] == "legacy-secret"
+    assert payload["config"]["alerts"]["feishu_chat_id"] == "oc_legacy"
+
+
 def test_iperf_internal_targets_gated_by_env(tmp_path):
     api = load_api(tmp_path)
     # 字面量内网/环回地址一律判内网;公网字面量放行

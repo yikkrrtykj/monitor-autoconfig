@@ -36,6 +36,7 @@ def test_feishu_ws_sidecar_is_profile_gated_and_optional():
     compose = read("docker-compose.yml")
     env = read(".env.example")
     apply = read("apply-env.sh")
+    platform_dockerfile = read("docker/platform-api/Dockerfile")
     # The long-connection sidecar only runs behind the feishu profile, so a
     # deployment without a self-built app never starts it.
     assert "feishu-ws:" in compose
@@ -43,6 +44,13 @@ def test_feishu_ws_sidecar_is_profile_gated_and_optional():
     # Setting the app id auto-activates the profile so operators don't hand-edit
     # COMPOSE_PROFILES after pasting the secret.
     assert "FEISHU_APP_ID" in apply and "feishu" in apply
+    # Console apply runs inside platform-api, so the sidecar must not require a
+    # second local build context that only exists on the host filesystem.
+    feishu_service = compose.split("  feishu-ws:", 1)[1].split("  player-targets:", 1)[0]
+    assert "${PLATFORM_API_IMAGE:-monitor-platform-api:local}" in feishu_service
+    assert "docker/feishu-ws" not in feishu_service
+    assert "pull_policy: never" in feishu_service
+    assert "lark-oapi==1.7.1" in platform_dockerfile
     # Confirmation must be documented as working without the app (console panel).
     assert "待删除设备" in env or "控制台" in env
     assert "FEISHU_APP_ID=" in env
@@ -89,6 +97,16 @@ def test_control_number_inputs_do_not_expose_or_react_to_wheel_spinners():
     assert 'input[type="number"]::-webkit-inner-spin-button' in css
     assert "-webkit-appearance: none" in css
     assert "-moz-appearance: textfield" in css
+
+
+def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
+    app = read("bigscreen/app.js")
+
+    assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in app
+    assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in app
+    assert 'configInput("alerts.feishu_chat_id", "告警群 Chat ID（可选）"' in app
+    assert "下载/上传" in app
+    assert "1000/100" in app
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

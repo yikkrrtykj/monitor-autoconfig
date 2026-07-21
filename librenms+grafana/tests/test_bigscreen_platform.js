@@ -11,6 +11,17 @@ const {
   lintSwitchPair,
   lintSwitchScene
 } = require(path.resolve(__dirname, "../bigscreen/platform.js"));
+const { groupAddressesByCBlock } = require(path.resolve(__dirname, "../bigscreen/utils.js"));
+
+const dhcpAddresses = [];
+for (let third = 60; third <= 63; third += 1) {
+  const start = third === 60 ? 1 : 0;
+  const end = third === 63 ? 254 : 255;
+  for (let last = start; last <= end; last += 1) dhcpAddresses.push(`192.168.${third}.${last}`);
+}
+const dhcpBlocks = groupAddressesByCBlock(dhcpAddresses);
+assert.deepStrictEqual(dhcpBlocks.map((block) => block.prefix), ["192.168.60", "192.168.61", "192.168.62", "192.168.63"]);
+assert.strictEqual(dhcpBlocks.reduce((sum, block) => sum + block.addresses.length, 0), 1022);
 
 const players = [
   { team: 1, seat: 1, ip: "10.1.1.11", success: true, latency: 0.012 },

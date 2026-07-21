@@ -10,8 +10,8 @@
   window.BIGSCREEN_PAGES = [
     { id: "home", path: "/", label: "首页", title: "选择比赛人数", description: "选择当前赛制和需要查看的网络页面" },
     { id: "control", path: "/control", label: "赛事控制台", title: "赛事控制台", description: "基础配置、问题清单、拓扑诊断、配置巡检和报告导出" },
-    { id: "dhcp", path: "/dhcp", label: "DHCP", title: "DHCP 地址池", description: "按需查看核心交换机地址池使用情况" },
     { id: "infra", path: "/infra", label: "网络总览", title: "网络总览", description: "核心网络、丢包和 ISP 流量" },
+    { id: "dhcp", path: "/dhcp", label: "DHCP", title: "DHCP 地址池", description: "按需查看核心交换机地址池使用情况" },
     { id: "evidence", path: "/latency", label: "延迟查询", title: "延迟查询", description: "按队伍座位查询延迟和断线" },
     { id: "incident", path: "/incident", label: "卡顿分析", title: "卡顿根因分析", description: "输入卡顿时间点，自动关联基础设施/同台选手/ISP 流量" },
     { id: "topology", path: "/topology", label: "网络拓扑", title: "网络拓扑图", description: "ISP → 防火墙 → 核心 → 接入交换机的实时状态拓扑" },
