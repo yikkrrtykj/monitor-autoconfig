@@ -222,7 +222,7 @@
 
 .dhcp-pools {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-content: start;
   gap: 12px;
   min-width: 0;
@@ -243,11 +243,7 @@
 .dhcp-pool-card.warn { border-color: rgba(245, 197, 66, 0.5); }
 .dhcp-pool-card.bad { border-color: rgba(255, 107, 130, 0.55); }
 
-@media (min-width: 760px) {
-  .dhcp-pool-card.multi-block {
-    grid-column: span 2;
-  }
-}
+.dhcp-pool-card.multi-block { grid-column: span 3; }
 
 .dhcp-pool-card header {
   display: flex;
@@ -361,6 +357,11 @@
   background: rgba(245, 197, 66, 0.28);
 }
 
+.dhcp-address-legend i.used {
+  border-color: rgba(83, 166, 255, 0.8);
+  background: rgba(83, 166, 255, 0.32);
+}
+
 .dhcp-address-legend i.conflict {
   border-color: rgba(255, 107, 130, 0.8);
   background: rgba(255, 107, 130, 0.32);
@@ -416,6 +417,13 @@
   border-color: rgba(245, 197, 66, 0.72);
   background: rgba(245, 197, 66, 0.22);
   color: #f5d66b;
+  font-weight: 700;
+}
+
+.dhcp-address-cell.used {
+  border-color: rgba(83, 166, 255, 0.82);
+  background: rgba(83, 166, 255, 0.25);
+  color: #8bc5ff;
   font-weight: 700;
 }
 
@@ -2143,6 +2151,20 @@
 .network-tool-result.bad { border-color: rgba(255, 107, 107, 0.5); color: #ff9292; }
 .network-tool-result.loading { color: var(--linear-ink-dim, #9aa0b5); }
 
+.retire-pending-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.retire-pending-row + .retire-pending-row {
+  border-top: 1px solid var(--linear-hairline);
+}
+
+.retire-pending-row > span { overflow-wrap: anywhere; }
+
 .network-result-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
@@ -2932,6 +2954,12 @@ a.seat-slot:hover {
   .dhcp-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .dhcp-pools {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dhcp-pool-card.multi-block { grid-column: span 2; }
 }
 
 /* ==================== 手机端适配 ====================
@@ -3052,6 +3080,8 @@ a.seat-slot:hover {
     grid-template-columns: minmax(0, 1fr);
     overflow: visible;
   }
+
+  .dhcp-pool-card.multi-block { grid-column: auto; }
 
   .flow-links {
     grid-template-columns: minmax(0, 1fr);

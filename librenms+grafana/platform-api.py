@@ -1458,6 +1458,35 @@ def parse_cisco_dhcp_statistics(text: str) -> dict:
     }
 
 
+def parse_cisco_dhcp_bindings(text: str) -> list[dict]:
+    """Parse active addresses from IOS/IOS-XE ``show ip dhcp binding``.
+
+    Cisco has added columns across releases, so only the stable leading IPv4
+    address is structural.  The remaining one-line detail is retained for the
+    operator's hover text without guessing at a particular column layout.
+    """
+    bindings = []
+    seen = set()
+    for line in str(text or "").replace("\r", "").splitlines():
+        match = re.match(r"^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        try:
+            address = str(ipaddress.IPv4Address(match.group(1)))
+        except ipaddress.AddressValueError:
+            continue
+        if address in seen:
+            continue
+        seen.add(address)
+        bindings.append({
+            "ip": address,
+            "detail": re.sub(r"\s+", " ", match.group(2)).strip()[:512],
+        })
+        if len(bindings) >= 65536:
+            break
+    return bindings
+
+
 def _telnet_expect(session, patterns: list[bytes], step: str):
     index, match, output = session.expect(patterns, DHCP_SWITCH_TIMEOUT)
     decoded = (output or b"").decode("utf-8", errors="replace")
@@ -1620,6 +1649,40 @@ def collect_cisco_dhcp(host: str) -> dict:
                 session.close()
             except Exception:
                 pass
+
+
+def get_dhcp_bindings() -> dict:
+    """Read exact leases only after the operator explicitly requests them."""
+    host = configured_core_switch_host()
+    if not DHCP_LOCK.acquire(blocking=False):
+        raise DiagnosticError(HTTPStatus.CONFLICT, "DHCP 面板正在读取交换机，请稍后再查询已用 IP")
+    session = None
+    try:
+        session = _open_cisco_telnet(host)
+        _telnet_command(session, "terminal length 0")
+        output = _telnet_command(session, "show ip dhcp binding")
+        if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", output):
+            raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机不支持 show ip dhcp binding")
+        bindings = parse_cisco_dhcp_bindings(output)
+        return {
+            "ok": True,
+            "host": host,
+            "bindings": bindings,
+            "usedAddresses": [item["ip"] for item in bindings],
+            "capturedAt": int(time.time()),
+        }
+    except DiagnosticError:
+        raise
+    except (EOFError, OSError) as exc:
+        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"无法读取核心交换机 DHCP 租约：{exc}")
+    finally:
+        if session is not None:
+            try:
+                session.write(b"exit\n")
+                session.close()
+            except Exception:
+                pass
+        DHCP_LOCK.release()
 
 
 def test_dhcp_connection() -> dict:
@@ -2138,6 +2201,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/network/dhcp/settings":
                 require_auth(self)
                 self._send_json(get_dhcp_settings())
+            elif path == "/network/dhcp/bindings":
+                require_auth(self)
+                self._send_json(get_dhcp_bindings())
             elif path == "/network/retire/pending":
                 require_auth(self)
                 self._send_json(bridge_retire_pending())

@@ -84,7 +84,12 @@ def test_rfc1213_fallback_single_default_route():
     walks[disco.OID_ROUTE_DEFAULT_NEXTHOP] = {disco.OID_ROUTE_DEFAULT_NEXTHOP: "100.64.1.1"}
     walks[disco.OID_ROUTE_DEFAULT_IFINDEX] = {disco.OID_ROUTE_DEFAULT_IFINDEX: "1"}
     results = disco.discover_from_walks(walks, disco.wan_keywords("电信,联通"))
-    assert [(item["name"], item["gateway"]) for item in results] == [("电信", "100.64.1.1")]
+    assert [(item["name"], item["gateway"]) for item in results] == [
+        ("电信", "100.64.1.1"),
+        # The standby WAN has no active default route, but its current public
+        # address must still stay visible in topology.
+        ("联通", "100.65.1.1"),
+    ]
 
 
 def test_lan_default_route_and_duplicates_are_dropped():
@@ -217,6 +222,23 @@ def test_generic_interface_names_use_public_default_routes_and_console_names():
         ("telcom-100M-长期", "101.95.176.198", "101.95.176.197"),
         ("unicom-1000M", "116.128.201.226", "116.128.201.225"),
     ]
+
+
+def test_public_wan_addresses_survive_when_firewall_hides_route_table():
+    """Current WAN IPs remain visible even when standard route OIDs are empty."""
+    walks = _hillstone_walks()
+    walks[disco.OID_CIDR_DEFAULT_NEXTHOP] = {}
+    walks[disco.OID_CIDR_DEFAULT_IFINDEX] = {}
+    names = ["电信-100M", "联通-1000M"]
+
+    results = disco.discover_from_walks(walks, disco.wan_keywords("电信,联通"), names)
+
+    assert [(item["name"], item["wan_ip"], item["gateway"], item["source"]) for item in results] == [
+        ("电信-100M", "100.64.1.2", "100.64.1.1", "subnet_gateway"),
+        ("联通-1000M", "100.65.1.2", "100.65.1.1", "subnet_gateway"),
+    ]
+    payload = disco.build_file_sd(results, exclude=set())
+    assert payload[0]["labels"]["discovery_source"] == "subnet_gateway"
 
 
 def test_target_ips_parses_named_lists():

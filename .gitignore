@@ -8,6 +8,7 @@ librenms-data/
 # 每台服务器配置不同，不要提交
 librenms+grafana/.env
 librenms+grafana/grafana-provisioning-rendered/
+librenms+grafana/.deploy-local-image.sha256
 
 # 系统文件
 .DS_Store

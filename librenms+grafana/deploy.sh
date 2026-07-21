@@ -215,12 +215,37 @@ render_grafana_provisioning
 pull_images
 pull_base_images
 
-echo "[deploy] Building local service images and starting monitoring stack..."
+echo "[deploy] Checking local service images and starting monitoring stack..."
 docker compose rm -sf grafana-provisioning-render >/dev/null 2>&1 || true
-# --build is required after repository updates: otherwise an existing
-# monitor-*:local image may keep an older Dockerfile layer (for example a
-# player-tools image created before iperf3 was added).
-docker compose up -d --remove-orphans --build
+# Application source is bind-mounted, so a normal git pull does not require a
+# Docker rebuild. Rebuild only when a local image is missing or a Dockerfile
+# changed; this avoids repeatedly contacting apt/apk/pip on restricted links.
+image_stamp="$SCRIPT_DIR/.deploy-local-image.sha256"
+image_hash=""
+if command -v sha256sum >/dev/null 2>&1; then
+  image_hash=$(
+    find docker -type f -name Dockerfile -print | sort | while IFS= read -r file; do sha256sum "$file"; done \
+      | sha256sum | awk '{print $1}'
+  )
+fi
+images_ready=true
+for image in monitor-grafana-setup:local monitor-platform-api:local monitor-rsyslog:local monitor-player-tools:local; do
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    images_ready=false
+    break
+  fi
+done
+previous_hash=$([ -f "$image_stamp" ] && cat "$image_stamp" || true)
+if [ -n "$image_hash" ] && [ "$image_hash" = "$previous_hash" ] && [ "$images_ready" = true ]; then
+  echo "[deploy] Local image Dockerfiles unchanged; skipping rebuild."
+  docker compose up -d --remove-orphans
+else
+  echo "[deploy] Local image missing or Dockerfile changed; building once (layers are cached)."
+  docker compose up -d --remove-orphans --build
+  if [ -n "$image_hash" ]; then
+    printf '%s\n' "$image_hash" > "$image_stamp"
+  fi
+fi
 
 # These services load bind-mounted source only when their process starts. A
 # normal `compose up` may keep an existing container when only source files

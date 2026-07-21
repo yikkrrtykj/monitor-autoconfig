@@ -208,6 +208,18 @@ Malformed messages 1
     }
 
 
+def test_cisco_dhcp_binding_parser_accepts_ios_variants(tmp_path):
+    api = load_api(tmp_path)
+    bindings = api.parse_cisco_dhcp_bindings("""
+IP address       Client-ID/              Lease expiration        Type
+192.168.40.21    0100.1122.3344.55       Jul 22 2026 10:00 AM    Automatic
+192.168.41.8     aabb.ccdd.eeff          Infinite                Manual
+""")
+
+    assert [item["ip"] for item in bindings] == ["192.168.40.21", "192.168.41.8"]
+    assert "0100.1122.3344.55" in bindings[0]["detail"]
+
+
 def test_cisco_dhcp_exclusions_expand_and_attach_to_matching_pool(tmp_path):
     api = load_api(tmp_path)
     exclusions = api.parse_cisco_dhcp_excluded("""
@@ -301,6 +313,30 @@ def test_dhcp_collection_uses_one_session_and_skips_full_binding_list(monkeypatc
     assert "show ip dhcp binding" not in commands
     assert result["pools"][0]["excludedAddresses"] == [f"192.168.40.{value}" for value in range(1, 11)]
     assert session.closed is True
+
+
+def test_full_dhcp_bindings_are_only_read_by_manual_endpoint(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
+    commands = []
+
+    class FakeSession:
+        def write(self, _data):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(api, "_open_cisco_telnet", lambda _host: FakeSession())
+    monkeypatch.setattr(api, "_telnet_command", lambda _session, command: (
+        commands.append(command) or
+        ("192.168.40.21 0100.1122.3344.55 Jul 22 2026 Automatic" if command == "show ip dhcp binding" else "")
+    ))
+
+    result = api.get_dhcp_bindings()
+
+    assert result["usedAddresses"] == ["192.168.40.21"]
+    assert commands == ["terminal length 0", "show ip dhcp binding"]
 
 
 def test_telnet_command_handles_more_prompts_and_strict_device_prompt(tmp_path):
@@ -478,6 +514,9 @@ def test_network_overview_precedes_dhcp_and_non_24_pools_are_grouped_by_c_block(
     assert 'addressBlockCount > 1 ? " multi-block"' in app
     assert ".dhcp-address-block" in css
     assert ".dhcp-pool-card.multi-block" in css
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
+    assert "查询已用 IP" in app
+    assert "/network/dhcp/bindings" in (root / "bigscreen" / "api.js").read_text(encoding="utf-8")
     assert "content-visibility: auto" not in css
 
 

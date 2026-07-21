@@ -532,11 +532,13 @@ def _librenms_get_json(token, path, timeout=15):
 
 
 BOT_HELP_TEXT = (
-    "可用命令：\n"
-    "• 查设备 <设备名或 IP>\n"
-    "• 查光功率 <设备名或 IP> [接口]\n"
-    "• 查异常光功率 <设备名或 IP> [接口]\n"
-    "示例：查光功率 192.168.10.31 Gi1/0/1\n"
+    "运维查询：\n"
+    "• 网络状态 — 在线/离线设备概览\n"
+    "• 离线设备 — 只列当前离线设备\n"
+    "• 设备 <设备名或 IP> — 单台详情\n"
+    "• 光功率 <设备名或 IP> [接口]\n"
+    "• 异常光功率 <设备名或 IP> [接口]\n"
+    "示例：光功率 192.168.10.31 Gi1/0/1\n"
     "查询读取 LibreNMS 已采集的数据，不会额外轮询交换机。"
 )
 
@@ -666,22 +668,47 @@ def _split_device_and_interface(argument):
     return (parts[0], parts[1] if len(parts) > 1 else "") if parts else ("", "")
 
 
+def _device_is_online(device):
+    try:
+        status = bool(int(device.get("status") or 0))
+    except (TypeError, ValueError):
+        status = str(device.get("status") or "").strip().lower() in ("true", "up", "online")
+    try:
+        disabled = bool(int(device.get("disabled") or 0))
+    except (TypeError, ValueError):
+        disabled = str(device.get("disabled") or "").strip().lower() in ("true", "yes")
+    return status and not disabled
+
+
+def _device_status_summary(devices, offline_only=False):
+    active = [device for device in devices if not str(device.get("disabled") or "0").strip().lower() in ("1", "true", "yes")]
+    offline = [device for device in active if not _device_is_online(device)]
+    if offline_only and not offline:
+        return "🟢 当前没有离线设备。"
+    lines = [] if offline_only else [f"网络状态：🟢 在线 {len(active) - len(offline)} / 🔴 离线 {len(offline)} / 共 {len(active)} 台"]
+    if offline:
+        lines.append("离线设备：")
+        lines.extend(f"• {_device_display(item)}（{_device_ip(item) or 'IP 未知'}）" for item in offline[:20])
+        if len(offline) > 20:
+            lines.append(f"• 另有 {len(offline) - 20} 台未展开")
+    elif not offline_only:
+        lines.append("全部设备在线。")
+    return "\n".join(lines)
+
+
 def handle_bot_query(text):
     """Execute a read-only Feishu command against already-polled LibreNMS data."""
     command = re.sub(r"\s+", " ", str(text or "")).strip()
     if not command or command.casefold() in {"帮助", "help", "?", "命令"}:
         return {"ok": True, "text": BOT_HELP_TEXT}
 
+    status_cmd = command.casefold() in {"网络状态", "状态", "总览"}
+    offline_cmd = command.casefold() in {"离线设备", "离线", "掉线设备"}
     optical = re.match(r"^(查|查询)?(异常)?光功率(?:\s+(.+))?$", command, re.IGNORECASE)
     device_cmd = re.match(r"^(查|查询)?设备(?:\s+(.+))?$", command, re.IGNORECASE)
-    if not optical and not device_cmd:
+    if not optical and not device_cmd and not status_cmd and not offline_cmd:
         return {"ok": True, "text": f"未识别命令。\n{BOT_HELP_TEXT}"}
 
-    argument = (optical.group(3) if optical else device_cmd.group(2)) or ""
-    device_term, interface_term = _split_device_and_interface(argument)
-    if not device_term:
-        usage = "查光功率 <设备名或 IP> [接口]" if optical else "查设备 <设备名或 IP>"
-        return {"ok": False, "text": f"请指定设备。用法：{usage}"}
     token = _librenms_token()
     if not token or not LIBRENMS_URL:
         return {"ok": False, "text": "LibreNMS API 尚未就绪，请稍后再试。"}
@@ -690,6 +717,14 @@ def handle_bot_query(text):
     except Exception as exc:
         log(f"[BOT] device query failed: {exc}")
         return {"ok": False, "text": "读取 LibreNMS 设备列表失败，请稍后再试。"}
+    if status_cmd or offline_cmd:
+        return {"ok": True, "text": _device_status_summary(devices, offline_only=offline_cmd)}
+
+    argument = (optical.group(3) if optical else device_cmd.group(2)) or ""
+    device_term, interface_term = _split_device_and_interface(argument)
+    if not device_term:
+        usage = "光功率 <设备名或 IP> [接口]" if optical else "设备 <设备名或 IP>"
+        return {"ok": False, "text": f"请指定设备。用法：{usage}"}
     matches = _match_librenms_devices(devices, device_term)
     if not matches:
         return {"ok": False, "text": f"没有找到设备：{device_term}"}
@@ -701,7 +736,7 @@ def handle_bot_query(text):
     ip = _device_ip(device)
 
     if device_cmd:
-        online = bool(int(device.get("status") or 0)) and not bool(int(device.get("disabled") or 0))
+        online = _device_is_online(device)
         status = "🟢 在线" if online else "🔴 离线或停用"
         model = str(device.get("hardware") or "未知型号").strip()
         version = str(device.get("version") or "").strip()

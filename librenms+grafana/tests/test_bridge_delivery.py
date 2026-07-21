@@ -125,6 +125,26 @@ def test_bot_device_and_optical_queries_use_librenms_data(monkeypatch):
     assert "Rx Power" in abnormal["text"]
 
 
+def test_bot_network_status_and_offline_shortcuts(monkeypatch):
+    devices = [
+        {"display": "core", "hostname": "192.168.10.254", "status": 1, "disabled": 0},
+        {"display": "RTS2", "hostname": "192.168.10.32", "status": 0, "disabled": 0},
+        {"display": "retired", "hostname": "192.168.10.99", "status": 0, "disabled": 1},
+    ]
+    monkeypatch.setattr(bridge, "LIBRENMS_URL", "http://librenms")
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "token")
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda _token: devices)
+
+    summary = bridge.handle_bot_query("网络状态")
+    assert "在线 1" in summary["text"]
+    assert "离线 1" in summary["text"]
+    assert "RTS2" in summary["text"]
+    assert "retired" not in summary["text"]
+
+    offline = bridge.handle_bot_query("离线设备")
+    assert "RTS2" in offline["text"]
+
+
 def test_dbm_query_falls_back_to_device_health_when_global_sensor_page_is_incomplete(monkeypatch):
     def fake_get(_token, path, timeout=15):
         if path.startswith("/api/v0/resources/sensors"):

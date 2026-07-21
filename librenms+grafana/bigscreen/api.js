@@ -619,6 +619,10 @@
     return platformApi(`/network/dhcp${query}`, { timeoutMs: 30000 });
   }
 
+  function fetchDhcpBindings() {
+    return platformApi("/network/dhcp/bindings", { timeoutMs: 45000 });
+  }
+
   function testDhcpConnection() {
     return platformApi("/network/dhcp/test", {
       method: "POST",
@@ -684,6 +688,7 @@
     fetchIncidents,
     fetchDeliveryManifest,
     fetchDhcpDashboard,
+    fetchDhcpBindings,
     testDhcpConnection,
     fetchDhcpSettings,
     saveDhcpSettings

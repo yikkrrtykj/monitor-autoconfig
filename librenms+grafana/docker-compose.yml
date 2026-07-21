@@ -518,6 +518,9 @@ services:
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-}"
       ISP_PING: "${ISP_PING:-}"
       ISP_DISCOVERY_SNMP_TIMEOUT: "${ISP_DISCOVERY_SNMP_TIMEOUT:-2}"
+      # WAN addresses can change independently of LLDP. Re-read them every
+      # minute without increasing the heavier switch/topology walk frequency.
+      ISP_DISCOVERY_REFRESH_INTERVAL: "${ISP_DISCOVERY_REFRESH_INTERVAL:-60}"
     entrypoint:
       - /bin/sh
       - -c
@@ -533,10 +536,26 @@ services:
         }
 
         load_runtime_env() {
-          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES SWITCH_DISCOVERY_RANGE TOPOLOGY_REFRESH_INTERVAL ISP_GATEWAY_AUTO_DISCOVER FIREWALL_SNMP_TARGETS FIREWALL_SNMP_COMMUNITY FIREWALL_WAN_IF_FILTER BIGSCREEN_ISP_NAMES ISP_PING; do
+          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES SWITCH_DISCOVERY_RANGE TOPOLOGY_REFRESH_INTERVAL ISP_GATEWAY_AUTO_DISCOVER FIREWALL_SNMP_TARGETS FIREWALL_SNMP_COMMUNITY FIREWALL_WAN_IF_FILTER BIGSCREEN_ISP_NAMES ISP_PING ISP_DISCOVERY_REFRESH_INTERVAL; do
             load_env_key "$$key"
           done
         }
+
+        isp_discovery_loop() {
+          while true; do
+            load_runtime_env
+            if ! output="$$(python3 /discover-isp-targets.py 2>&1)"; then
+              printf '%s\n' "$$output" | while IFS= read -r line; do echo "[isp-discovery] $$line"; done
+            else
+              printf '%s\n' "$$output" | while IFS= read -r line; do echo "[isp-discovery] $$line"; done
+            fi
+            sleep "$${ISP_DISCOVERY_REFRESH_INTERVAL:-60}"
+          done
+        }
+
+        isp_discovery_loop &
+        isp_pid=$$!
+        trap 'kill "$$isp_pid" 2>/dev/null || true; wait "$$isp_pid" 2>/dev/null || true; exit 0' TERM INT
 
         while true; do
           load_runtime_env
@@ -545,11 +564,6 @@ services:
             exit 1
           fi
           printf '%s\n' "$$output" | while IFS= read -r line; do echo "[switch-discovery] $$line"; done
-          if ! output="$$(python3 /discover-isp-targets.py 2>&1)"; then
-            printf '%s\n' "$$output" | while IFS= read -r line; do echo "[isp-discovery] $$line"; done
-            exit 1
-          fi
-          printf '%s\n' "$$output" | while IFS= read -r line; do echo "[isp-discovery] $$line"; done
           if ! output="$$(python3 /generate-topology-edges.py 2>&1)"; then
             printf '%s\n' "$$output" | while IFS= read -r line; do echo "[topology] $$line"; done
             exit 1

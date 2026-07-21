@@ -8,6 +8,10 @@ RFC1213 ipRouteTable). WAN aliases remain useful hints, but generic names such a
 ethernet0/0 also work when the route ifIndex points at a public interface.
 Discovered gateways are written to a Prometheus file_sd; console ISP row names
 are applied in interface order so ping, bandwidth, alerts and topology agree.
+Some firewalls do not expose either standard route table over SNMP.  In that
+case the public address and subnet on each WAN interface are used to derive the
+usual first-host carrier gateway, so topology keeps the current WAN address
+instead of showing an empty placeholder.
 
 Manual entries win: any discovered gateway whose IP is already listed in
 ISP_PING is skipped, so hand-tuned names/targets are never duplicated. Not
@@ -131,6 +135,19 @@ def _public_wan_address(value: str) -> bool:
     )
 
 
+def _subnet_gateway(wan_ip: str, mask: str) -> str:
+    """Best-effort carrier next hop for route-table-less static WAN links."""
+    try:
+        network = ipaddress.IPv4Network((wan_ip, mask), strict=False)
+        if network.prefixlen <= 30:
+            candidate = ipaddress.IPv4Address(int(network.network_address) + 1)
+            if str(candidate) != wan_ip and candidate < network.broadcast_address:
+                return str(candidate)
+    except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, ValueError):
+        pass
+    return wan_ip
+
+
 def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str],
                         configured_names: list[str] | None = None) -> list[dict[str, str]]:
     """Pure mapping from raw SNMP walks to [{gateway, name, wan_ip}]."""
@@ -177,6 +194,7 @@ def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str],
 
     results: list[dict[str, str]] = []
     seen_gateways: set[str] = set()
+    represented_ifindexes: set[int] = set()
     for gateway, route_ifindex in next_hops:
         if gateway in seen_gateways or gateway in ("0.0.0.0",):
             continue
@@ -202,11 +220,32 @@ def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str],
         if ifindex is None:
             continue  # default route not on a WAN interface -- not an ISP line
         seen_gateways.add(gateway)
+        represented_ifindexes.add(ifindex)
         results.append({
             "gateway": gateway,
             "name": labels.get(ifindex) or gateway,
             "wan_ip": interface_ips.get(ifindex, ""),
             "_ifindex": ifindex,
+            "source": "gateway",
+        })
+
+    # Hillstone and a number of other firewalls expose IP-MIB but hide both
+    # standard route tables.  The old behaviour then discarded four perfectly
+    # readable public WAN addresses and left four "无数据" placeholders.  Keep
+    # every public WAN interface in the inventory. Static carrier subnets in
+    # this installation use the conventional first usable address as gateway;
+    # derive that from the SNMP netmask rather than probing the firewall's own
+    # WAN address (which may reject hairpin ICMP). A later poll automatically
+    # replaces this estimate with the real gateway if the route table appears.
+    for ifindex, wan_ip in sorted(interface_ips.items()):
+        if ifindex in represented_ifindexes or not _public_wan_address(wan_ip):
+            continue
+        results.append({
+            "gateway": _subnet_gateway(wan_ip, addr_mask.get(wan_ip, "255.255.255.255")),
+            "name": labels.get(ifindex) or wan_ip,
+            "wan_ip": wan_ip,
+            "_ifindex": ifindex,
+            "source": "subnet_gateway",
         })
 
     # The console's ISP rows are ordered to match the firewall WAN rows.  When
@@ -270,6 +309,8 @@ def build_file_sd(results: list[dict[str, str]], exclude: set[str]) -> list[dict
         labels = {"display_name": item["name"]}
         if item.get("wan_ip"):
             labels["wan_ip"] = item["wan_ip"]
+        if item.get("source"):
+            labels["discovery_source"] = item["source"]
         payload.append({"targets": [item["gateway"]], "labels": labels})
     return payload
 

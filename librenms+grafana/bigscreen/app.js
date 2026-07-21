@@ -29,7 +29,7 @@
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
     fetchPlatformConfig, fetchApplyStatus, postPlatform, fetchIperfStatus, fetchRetirePending, patchPlatform, fetchIncidents,
-    fetchDhcpDashboard, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
+    fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
   const {
     buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel
@@ -56,6 +56,9 @@
   let dhcpSeq = 0;
   let dhcpRefreshing = false;
   let dhcpHasData = false;
+  let dhcpLastPayload = null;
+  let dhcpBindingPayload = null;
+  let dhcpBindingsRefreshing = false;
   let activePageId = "";
   let activeRoute = "";
   let gaugeSeq = 0;
@@ -3258,12 +3261,15 @@
     return ranges.map((range) => range.start === range.end ? range.start : `${range.start}–${range.end}`).join("、");
   }
 
-  function dhcpAddressMap(pool, conflicts) {
+  function dhcpAddressMap(pool, conflicts, bindingPayload) {
     const addresses = dhcpRangeAddresses(pool.range);
     if (!addresses.length) return '<div class="dhcp-address-note">交换机未返回可展开的地址范围。</div>';
     const addressBlocks = groupAddressesByCBlock(addresses);
     const excluded = new Set(pool.excludedAddresses || []);
     const conflictSet = new Set(conflicts || []);
+    const bindingDetails = new Map((bindingPayload && bindingPayload.bindings || [])
+      .map((item) => [String(item.ip || ""), String(item.detail || "")]));
+    const used = new Set(bindingPayload && bindingPayload.usedAddresses || []);
     const excludedList = [...excluded];
     const exclusionNote = excludedList.length
       ? `排除地址：${compactDhcpAddresses(excludedList)}`
@@ -3273,6 +3279,7 @@
         <div class="dhcp-address-map-head">
           <div class="dhcp-address-legend">
             <span><i class="pool"></i>池内地址</span>
+            <span><i class="used"></i>已用</span>
             <span><i class="excluded"></i>排除</span>
             <span><i class="conflict"></i>冲突</span>
           </div>
@@ -3284,9 +3291,11 @@
               <strong>${escapeHtml(`${block.prefix}.0/24`)}</strong>
               <div class="dhcp-address-grid">
                 ${block.addresses.map((ip) => {
-                  const status = conflictSet.has(ip) ? "conflict" : excluded.has(ip) ? "excluded" : "pool";
+                  const status = conflictSet.has(ip) ? "conflict" : excluded.has(ip) ? "excluded" : used.has(ip) ? "used" : "pool";
                   const label = ip.slice(ip.lastIndexOf("."));
-                  const statusText = status === "conflict" ? "冲突" : status === "excluded" ? "排除" : "池内（不逐项读取租约）";
+                  const statusText = status === "conflict" ? "冲突" : status === "excluded" ? "排除" : status === "used"
+                    ? `已用${bindingDetails.get(ip) ? ` · ${bindingDetails.get(ip)}` : ""}`
+                    : (bindingPayload ? "未在当前租约表中" : "池内（点击“查询已用 IP”后标色）");
                   return `<span class="dhcp-address-cell ${status}" title="${escapeHtml(`${ip} · ${statusText}`)}" aria-label="${escapeHtml(`${ip} ${statusText}`)}">${escapeHtml(label)}</span>`;
                 }).join("")}
               </div>
@@ -3298,6 +3307,7 @@
   }
 
   function renderDhcpDashboard(payload) {
+    dhcpLastPayload = payload;
     const summary = payload.summary || {};
     const pools = payload.pools || [];
     const conflicts = payload.conflicts || [];
@@ -3347,7 +3357,7 @@
               <div><dt>剩余</dt><dd>${Number(pool.available || 0)}</dd></div>
               <div><dt>排除</dt><dd>${Number(pool.excluded || 0)}</dd></div>
             </dl>
-            ${dhcpAddressMap(pool, conflicts)}
+            ${dhcpAddressMap(pool, conflicts, dhcpBindingPayload)}
           </article>
         `;
       }).join("") : `<div class="dhcp-empty">核心交换机当前没有返回 DHCP 地址池。</div>`;
@@ -3356,8 +3366,34 @@
     const warningText = (payload.warnings || []).join("；");
     setText(
       "dhcpFootnote",
-      `${warningText ? `${warningText} · ` : ""}页面切走或浏览器标签隐藏后停止刷新；不会读取完整租约明细。`
+      `${warningText ? `${warningText} · ` : ""}地址池数量自动刷新；完整租约只在点击“查询已用 IP”时读取。`
     );
+  }
+
+  async function refreshDhcpBindings() {
+    if (activePageId !== "dhcp" || dhcpBindingsRefreshing) return;
+    const button = document.getElementById("dhcpBindings");
+    const status = document.getElementById("dhcpBindingsStatus");
+    dhcpBindingsRefreshing = true;
+    if (button) button.disabled = true;
+    if (status) status.textContent = "正在读取完整租约…";
+    try {
+      const payload = await fetchDhcpBindings();
+      if (activePageId !== "dhcp") return;
+      dhcpBindingPayload = payload;
+      if (status) {
+        const captured = payload.capturedAt
+          ? new Date(payload.capturedAt * 1000).toLocaleTimeString("zh-CN", { hour12: false })
+          : "刚刚";
+        status.textContent = `已标出 ${Number((payload.usedAddresses || []).length)} 个 · ${captured}`;
+      }
+      if (dhcpLastPayload) renderDhcpDashboard(dhcpLastPayload);
+    } catch (error) {
+      if (status) status.textContent = `已用 IP 查询失败：${error.message || "未知错误"}`;
+    } finally {
+      dhcpBindingsRefreshing = false;
+      if (button) button.disabled = false;
+    }
   }
 
   function scheduleDhcpRefresh(seconds = 60) {
@@ -3420,6 +3456,11 @@
     if (refreshButton && !refreshButton.dataset.bound) {
       refreshButton.addEventListener("click", () => refreshDhcpDashboard(true));
       refreshButton.dataset.bound = "1";
+    }
+    const bindingsButton = document.getElementById("dhcpBindings");
+    if (bindingsButton && !bindingsButton.dataset.bound) {
+      bindingsButton.addEventListener("click", refreshDhcpBindings);
+      bindingsButton.dataset.bound = "1";
     }
     refreshDhcpDashboard(false);
   }
