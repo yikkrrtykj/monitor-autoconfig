@@ -111,6 +111,22 @@
   - 明确赛事配置、DHCP 私密设置、告警状态、LibreNMS、Prometheus、Grafana 和 Loki 各自的持久化位置。
   - 做一次“备份—重装—恢复”演练并记录步骤；备份不得把测试 Webhook 或交换机密码提交到 Git。
 
+## P3b：代码审查遗留问题（已审出、待逐个处理）
+
+合并分支上跑了多轮代码审查，下面这些是已确认但**尚未修复**的问题——它们要么涉及行为判断、要么和上面 P1 条目重叠，没有随手改进已推送的分支，避免在大分支里堆行为变更。按影响排序：
+
+- [ ] **告警投递阻塞 1 秒轮询循环（bridge，中）**：`send_feishu` 失败时会重试约 18 秒（3 次 ×5s + 退避），而它在 `device_down_watcher` 的 1 秒轮询里同步调用。飞书不可达时多台设备离线会让轮询退化到每 3 分钟一轮，恢复判定/根因抑制全部拖慢；限流时还会变成自我加剧的重试风暴。建议：投递失败进队列异步重试 + 每状态退避，别阻塞轮询。与 P1 iPerf3 改后台任务是同类改造。
+- [ ] **在线卡发送时持网络 I/O 锁（bridge，中）**：`send_device_online_once` 在 `DEVICE_ONLINE_STATE_LOCK` 里做飞书网络调用（可能 18 秒），会连带卡住 device/AP 两个看门狗。建议：发送移出锁，只在提交去重键时短暂持锁。
+- [ ] **syslog 失败事件重试无复检/无上限（bridge，中）**：失败告警 30 秒后无条件重发，期间的 link-up 恢复信号因原告警未 armed 被丢弃 → 事故在飞书里看起来永不恢复；永久失败（token 撤销）则每 30 秒重试且不清理。建议：重试前复检状态、设次数上限与过期。
+- [ ] **互联链路 LAG 告警不恢复 / 误报（bridge，中）**：① degraded 告警后聚合口在 SNMP 里消失（换设备）会停在 unknown，恢复卡永不发；② `classify_interconnect` 对 `lag_up` 为假直接判 down，管理 shut 或未接线的备用 Port-channel 会一直误报"聚合链路 DOWN"（`INTERCONNECT_PORT_FILTER` 默认含 po/ae/be 等短前缀，且没查 ifAdminStatus）。建议：加 ifAdminStatus 过滤 + 消失键的清理/恢复。
+- [ ] **回滚在两个坏状态间乒乓（platform-api，中）**：`rollback_config` 会把当前（坏）状态存成 guard 快照且成为最新快照，连点两次回滚会把刚逃离的坏配置又装回来。建议：回滚排除/清理 guard 快照，或按历史顺序回退。
+- [ ] **快照/apply-status 目录无限增长（platform-api，低-中）**：每次 save/apply/rollback 都留快照目录和状态文件，只有 history.json 限 200 条，其余不清理，长期自动保存会撑满状态卷。建议：加保留上限与清理。
+- [ ] **登录暴力破解只靠 0.2s sleep（platform-api，中）**：无按 IP/账号的计数或锁定，线程化服务下并行连接可绕过；默认 admin/global 未改密时风险更高。建议：加按 IP/账号的失败计数与锁定窗口。
+- [ ] **交换机发现单次 SNMP 失败即剔除在线交换机（discover-switch，中）**：`snmp_sysname` 用 `-r 0` 无重试，正在转发但 SNMP 挂起/community 不符/丢一个包的在线交换机会被移出目标文件，连 ping/离线告警一起消失。旧行为会保留为 IP 占位目标。建议：ICMP 通但 SNMP 失败时保留为占位目标，别彻底剔除。
+- [ ] **选手目标去重可能丢掉在线选手（generate-player-targets，中）**：`dedupe_player_targets` 按 (team,seat,network) 去重且在存活校验之前跑，无线扫描的合成 seat 标签或同 seat 的新旧 IP 会互相顶掉，可能让某座位最终零目标。建议：去重放到存活校验之后，或保留同 seat 多 IP 让 ping 选活的。
+- [ ] **Telnet 提示符/分页处理（platform-api，中）**：`[>#]\s*$` 非多行匹配，输出行以 >/# 结尾会提前截断导致 DHCP 数字算错；交换机分页 `--More--` 永不匹配会耗满每条命令超时。建议：先发 `terminal length 0` 并处理 --More--，配合 TODO 里"补真实 IOS 样本"一起做。
+- [ ] **低危项**：DHCP 缓存无锁的良性竞争（cacheAge 偶发偏大）；3.13 开发机若无 telnetlib3 则模块导入失败（生产镜像已装，仅影响本地开发）。
+
 ## 暂不做 / 保持现状
 
 - 不迁移 DHCP 服务到 Kea/Stork；Cisco 核心继续提供 DHCP，当前页面只做只读展示。
