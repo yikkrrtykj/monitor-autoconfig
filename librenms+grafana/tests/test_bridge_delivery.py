@@ -90,6 +90,19 @@ def test_online_dedupe_is_committed_only_after_delivery(monkeypatch, tmp_path):
     assert len(calls) == 2
 
 
+def test_new_lifecycle_online_card_bypasses_lifetime_dedupe(monkeypatch, tmp_path):
+    state_file = tmp_path / "online.json"
+    state_file.write_text(json.dumps(["switch-1", "10.0.0.1"]), encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(bridge, "DEVICE_ONLINE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(bridge, "send_feishu", lambda card: calls.append(card) or True)
+
+    assert bridge.send_device_online_new_lifecycle(_card(), "switch-1", "10.0.0.1") is True
+    assert len(calls) == 1
+    assert set(json.loads(state_file.read_text(encoding="utf-8"))) == {"switch-1", "10.0.0.1"}
+
+
 def test_librenms_webhook_returns_502_when_feishu_fails(monkeypatch):
     handler = object.__new__(bridge.Handler)
     handler._read_json = lambda: {"name": "test rule", "state": 1}

@@ -38,6 +38,33 @@ def test_librenms_display_update_resolves_ip_to_device_id(monkeypatch):
     assert bridge._librenms_device_ref_for_ip("token", "192.168.200.207") == "192.168.200.207"
 
 
+def test_librenms_device_delete_uses_resolved_device_id(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return json.dumps([{"status": "ok"}]).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        requests.append((req.get_method(), req.full_url, req.data, timeout))
+        return Response()
+
+    monkeypatch.setattr(bridge, "LIBRENMS_URL", "http://librenms")
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "token")
+    monkeypatch.setattr(bridge, "_find_librenms_device_by_ip", lambda token, ip: {"device_id": 42})
+    monkeypatch.setattr(bridge.request, "urlopen", fake_urlopen)
+
+    assert bridge.delete_librenms_device("192.168.10.27") == "deleted"
+    assert requests == [("DELETE", "http://librenms/api/v0/devices/42", None, 10)]
+
+
 def test_already_exists_is_rejected_when_api_has_no_matching_device(monkeypatch):
     monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda token: [])
     assert bridge._confirm_librenms_device_exists(

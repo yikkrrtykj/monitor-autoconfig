@@ -215,9 +215,17 @@ render_grafana_provisioning
 pull_images
 pull_base_images
 
-echo "[deploy] Starting monitoring stack..."
+echo "[deploy] Building local service images and starting monitoring stack..."
 docker compose rm -sf grafana-provisioning-render >/dev/null 2>&1 || true
-docker compose up -d --remove-orphans
+# --build is required after repository updates: otherwise an existing
+# monitor-*:local image may keep an older Dockerfile layer (for example a
+# player-tools image created before iperf3 was added).
+docker compose up -d --remove-orphans --build
+
+# These services load bind-mounted source only when their process starts. A
+# normal `compose up` may keep an existing container when only source files
+# changed, leaving nginx's copied web files or Python's imported modules stale.
+docker compose restart bigscreen platform-api alertmanager-feishu-bridge
 
 echo "[deploy] Current service status:"
 docker compose ps

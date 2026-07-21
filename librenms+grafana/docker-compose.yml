@@ -131,7 +131,7 @@ services:
       start_period: 30s
 
   alertmanager-feishu-bridge:
-    image: ${PYTHON_SLIM_IMAGE:-python:3.12-slim}
+    image: ${PYTHON_SLIM_IMAGE:-python:3.13-slim}
     container_name: alertmanager-feishu-bridge
     restart: unless-stopped
     volumes:
@@ -175,6 +175,9 @@ services:
       DEVICE_DOWN_POLL_INTERVAL: "${DEVICE_DOWN_POLL_INTERVAL:-1}"
       DEVICE_DOWN_SAMPLE_WINDOW_SECONDS: "${DEVICE_DOWN_SAMPLE_WINDOW_SECONDS:-5}"
       DEVICE_DOWN_JOBS: "${DEVICE_DOWN_JOBS:-infra-core-ping,infra-dist-ping,infra-fw-ping,infra-fw-unit-ping,infra-isp-ping,infra-srv-ping}"
+      DEVICE_REENROLL_AFTER_SECONDS: "${DEVICE_REENROLL_AFTER_SECONDS:-172800}"
+      DEVICE_REENROLL_JOBS: "${DEVICE_REENROLL_JOBS:-infra-dist-ping}"
+      DEVICE_LIBRENMS_SYNC_RETRY_SECONDS: "${DEVICE_LIBRENMS_SYNC_RETRY_SECONDS:-60}"
       DEVICE_ONLINE_FROM_PING: "${DEVICE_ONLINE_FROM_PING:-false}"
       DEVICE_AUTO_ADD_FROM_PING: "${DEVICE_AUTO_ADD_FROM_PING:-true}"
       DEVICE_AUTO_ADD_SNMP_JOBS: "${DEVICE_AUTO_ADD_SNMP_JOBS:-infra-core-ping,infra-dist-ping}"
@@ -518,7 +521,9 @@ services:
         done
 
   platform-api:
-    image: ${PYTHON_SLIM_IMAGE:-python:3.12-slim}
+    image: ${PLATFORM_API_IMAGE:-monitor-platform-api:local}
+    build:
+      context: ./docker/platform-api
     container_name: platform-api
     restart: unless-stopped
     working_dir: /workspace
@@ -554,6 +559,20 @@ services:
       PLATFORM_APPLY_COMMAND: "${PLATFORM_APPLY_COMMAND:-/bin/sh /workspace/apply-env.sh}"
       PLATFORM_APPLY_TIMEOUT: "${PLATFORM_APPLY_TIMEOUT:-300}"
       PLATFORM_APPLY_VERIFY_TIMEOUT: "${PLATFORM_APPLY_VERIFY_TIMEOUT:-90}"
+      # Manual pre-match bandwidth test. The client is installed directly in
+      # this image, so Windows Docker Desktop does not need a host docker CLI.
+      PLATFORM_IPERF3_COMMAND: "${PLATFORM_IPERF3_COMMAND:-iperf3}"
+      PLATFORM_IPERF3_TIMEOUT: "${PLATFORM_IPERF3_TIMEOUT:-60}"
+      PLATFORM_IPERF3_CONNECT_TIMEOUT_MS: "${PLATFORM_IPERF3_CONNECT_TIMEOUT_MS:-3000}"
+      # Read-only Cisco DHCP dashboard. The switch address comes from the event
+      # config's devices.core.ip; credentials stay in the private platform-state
+      # volume (the environment values below remain migration/fallback inputs).
+      PLATFORM_DHCP_SWITCH_USERNAME: "${PLATFORM_DHCP_SWITCH_USERNAME:-}"
+      PLATFORM_DHCP_SWITCH_PASSWORD: "${PLATFORM_DHCP_SWITCH_PASSWORD:-}"
+      PLATFORM_DHCP_SWITCH_ENABLE_PASSWORD: "${PLATFORM_DHCP_SWITCH_ENABLE_PASSWORD:-}"
+      PLATFORM_DHCP_SWITCH_PORT: "${PLATFORM_DHCP_SWITCH_PORT:-23}"
+      PLATFORM_DHCP_SWITCH_TIMEOUT: "${PLATFORM_DHCP_SWITCH_TIMEOUT:-8}"
+      PLATFORM_DHCP_REFRESH_SECONDS: "${PLATFORM_DHCP_REFRESH_SECONDS:-60}"
       DOCKER_CLI_PLUGIN_EXTRA_DIRS: "/host/usr/libexec/docker/cli-plugins:/host/usr/lib/docker/cli-plugins:/host/usr/local/lib/docker/cli-plugins"
       # Container binaries first (python3 etc.); host /host/usr/bin last, only for
       # what the slim image lacks (docker). Host-first ran the host's python3,

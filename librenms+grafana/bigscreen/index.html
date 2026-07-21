@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20260623b" />
-    <link rel="stylesheet" href="./platform.css?v=20260628c" />
+    <link rel="stylesheet" href="./platform.css?v=20260718c" />
   </head>
   <body>
     <main class="screen">
@@ -210,6 +210,21 @@
           </div>
         </div>
       </section>
+      <section class="dhcp-panel" id="dhcpPanel" aria-label="DHCP 地址池" hidden>
+        <div class="dhcp-toolbar">
+          <div>
+            <strong>核心交换机 DHCP</strong>
+            <span id="dhcpConnection">等待读取核心配置</span>
+          </div>
+          <span class="dhcp-actions">
+            <button type="button" id="dhcpRefresh" title="立即从核心交换机刷新">立即刷新</button>
+          </span>
+        </div>
+        <div class="dhcp-status" id="dhcpStatus">打开页面后自动读取，离开页面即停止刷新。</div>
+        <div class="dhcp-summary" id="dhcpSummary"></div>
+        <div class="dhcp-pools" id="dhcpPools"></div>
+        <div class="dhcp-footnote" id="dhcpFootnote"></div>
+      </section>
       <section class="topology-panel" id="topologyPanel" aria-label="网络拓扑" hidden>
         <div class="topology-toolbar">
           <span class="topology-legend">
@@ -266,13 +281,13 @@
       </section>
     </main>
     <script src="./config.js?v=20260623a"></script>
-    <script src="./pages.js?v=20260623a"></script>
+    <script src="./pages.js?v=20260717b"></script>
     <script src="./utils.js?v=20260623a"></script>
-    <script src="./api.js?v=20260628a"></script>
+    <script src="./api.js?v=20260718c"></script>
     <script src="./players.js?v=20260623a"></script>
     <script src="./incident.js?v=20260623a"></script>
     <script src="./topology.js?v=20260623a"></script>
     <script src="./platform.js?v=20260627a"></script>
-    <script src="./app.js?v=20260628f"></script>
+    <script src="./app.js?v=20260718c"></script>
   </body>
 </html>

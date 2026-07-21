@@ -10,12 +10,12 @@
   window.BIGSCREEN_PAGES = [
     { id: "home", path: "/", label: "首页", title: "选择比赛人数", description: "选择当前赛制和需要查看的网络页面" },
     { id: "control", path: "/control", label: "赛事控制台", title: "赛事控制台", description: "基础配置、问题清单、拓扑诊断、配置巡检和报告导出" },
+    { id: "dhcp", path: "/dhcp", label: "DHCP", title: "DHCP 地址池", description: "按需查看核心交换机地址池使用情况" },
     { id: "infra", path: "/infra", label: "网络总览", title: "网络总览", description: "核心网络、丢包和 ISP 流量" },
     { id: "evidence", path: "/latency", label: "延迟查询", title: "延迟查询", description: "按队伍座位查询延迟和断线" },
     { id: "incident", path: "/incident", label: "卡顿分析", title: "卡顿根因分析", description: "输入卡顿时间点，自动关联基础设施/同台选手/ISP 流量" },
     { id: "topology", path: "/topology", label: "网络拓扑", title: "网络拓扑图", description: "ISP → 防火墙 → 核心 → 接入交换机的实时状态拓扑" },
     { id: "wireless", path: "/wireless", label: "无线总览", title: "无线异常总览", description: "查看当前 WiFi 连接和异常" },
-    { id: "seat-check", path: "/seat-check", label: "座位核对", title: "赛前座位核对", description: "按赛制核对队伍座位在线" },
     { id: "match-5v5", path: "/match-5v5", label: "5v5", title: "5v5 对战", description: "舞台左 vs 舞台右", kind: "match", teams: [1, 2], teamSize: 5, trendMode: "per-seat" },
     { id: "tournament-6", path: "/tournament-6", label: "6队", title: "6 队赛", description: "6 队上下两排布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6], teamSize: 4, groups: [[1, 2, 3], [4, 5, 6]], trendMode: "groups" },
     { id: "tournament-64-2layer", path: "/tournament-64-2layer", label: "64人 2层", title: "64 人二层", description: "16 队四人布局", kind: "tournament", teams: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], teamSize: 4, groups: [[9, 10, 11, 12, 13, 14, 15, 16], [1, 2, 3, 4, 5, 6, 7, 8]] },

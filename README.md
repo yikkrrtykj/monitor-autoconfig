@@ -108,9 +108,9 @@ chmod +x *.sh
 ./deploy.sh
 ```
 
-`deploy.sh` 会自动：探测本机 IP 写入 `SERVER_IP`、逐个拉镜像并自动重试、渲染 Grafana 配置、`docker compose up -d` 启动全部服务。
+`deploy.sh` 会自动：探测本机 IP 写入 `SERVER_IP`、逐个拉镜像并自动重试、渲染 Grafana 配置、重新构建本地工具镜像并启动全部服务。仓库里的 Dockerfile 更新后不需要手工执行构建命令。
 
-拉镜像日志里 `monitor-rsyslog:local`、`monitor-player-tools:local`、`monitor-grafana-setup:local` 三个镜像报 403/pull access denied 是正常的：它们是本地构建镜像，仓库里本来就没有，`up` 阶段会用仓库里的 Dockerfile 自动构建，不影响部署。
+拉镜像日志里 `monitor-rsyslog:local`、`monitor-player-tools:local`、`monitor-platform-api:local`、`monitor-grafana-setup:local` 这些镜像报 403/pull access denied 是正常的：它们是本地构建镜像，仓库里本来就没有，部署脚本会用仓库里的 Dockerfile 自动构建。
 
 ### 5. 启动后检查
 
@@ -139,7 +139,7 @@ docker compose ps
 git fetch origin
 git checkout -B codex/remove-quality-heatmap origin/codex/remove-quality-heatmap
 cd librenms+grafana
-docker compose up -d
+./deploy.sh
 ```
 
 ## 控制台
@@ -161,6 +161,33 @@ http://服务器IP:8088/control
 | 事故流转 / 事故库 | 记录事故、恢复时间和复盘线索 |
 | 离线部署包 | 查看离线镜像、文件和安装脚本清单 |
 | 交换机配置巡检 | 粘贴 Cisco `show run` 片段，检查现场风险 |
+| 核心交换机 Telnet | 填写登录信息并执行只读连接测试；密码不随赛事配置导出 |
+
+### DHCP 地址池页面
+
+打开 `http://服务器IP:8088/dhcp` 可查看核心交换机上的 Cisco DHCP 地址池、已租用/剩余地址、使用率和冲突地址。页面直接复用基础配置里的“核心 IP”，不会重复维护设备地址。
+
+登录赛事控制台后，在基础配置的“核心 / 防火墙”区域中找到“核心交换机 Telnet”，填写核心 IP、用户名、登录密码、Enable 密码和端口，点击“保存核心配置并测试”。该按钮会先保存当前基础配置，再保存 Telnet 信息并使用刚填写的核心 IP 测试，不需要分两次保存。密码单独保存在本机 Docker 状态卷中，页面不会回显明文，也不会随赛事配置导出。
+
+旧安装仍可继续用 `librenms+grafana/.env` 作为默认值：
+
+```text
+PLATFORM_DHCP_SWITCH_USERNAME=
+PLATFORM_DHCP_SWITCH_PASSWORD=交换机登录密码
+PLATFORM_DHCP_SWITCH_ENABLE_PASSWORD=
+```
+
+支持“用户名 + 密码”和仅密码两种 Telnet 登录。页面打开且浏览器标签可见时才采集，默认每 60 秒使用一个会话读取一次；切换页面或隐藏标签后停止，手动连续点击也不会突破 30 秒的后台保护间隔。为了降低核心负荷，面板不定期读取完整的 `show ip dhcp binding` 列表。
+
+DHCP 页面只负责显示地址池和立即刷新，不重复放置账号密码或连接测试。未配置时点击“去赛事控制台配置”会直接定位到核心交换机 Telnet 区域。
+
+### iPerf3 出口测速
+
+赛事控制台的“赛前工具”提供手动 iPerf3 TCP 上传/下载测试。默认使用香港公共节点，并提供香港、新加坡、土耳其伊斯坦布尔、印度尼西亚和自定义选项。每个公共地区可从公共列表中的多个服务器继续选择，地址和端口由预设自动填写并锁定；只有选择“自定义”时才可手工填写服务器和端口。开始前使用页面内确认面板，不会弹出浏览器原生确认框。
+
+iPerf3 客户端已经包含在 `monitor-platform-api:local` Docker 镜像中，服务器宿主机不需要单独安装，也不再依赖容器内执行 Docker 命令。正常双向测试约 20 秒；公共节点繁忙时会自动尝试同组其他端口，页面会显示当前方向、端口、已用时间和进度，整次任务默认最多 60 秒。完成后显示接收端全程平均速率、总传输量、TCP 重传、发送端/接收端总计，以及默认每秒一个区间的传输量和平均速率。测试会真实占用出口带宽，只应在赛前手动运行。
+
+平台 API 已使用 Python 3.13 镜像，并在镜像内自动安装 `telnetlib3` 兼容库。服务器宿主机升级 Python 不需要新建服务或额外手工安装 Telnet 组件。
 
 基础配置按钮：
 

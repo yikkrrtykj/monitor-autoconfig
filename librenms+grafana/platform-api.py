@@ -1,7 +1,8 @@
 """Platform API for event config, incidents, and the offline-deploy manifest.
 
-This service is intentionally small and dependency-free. It owns the writable
-platform state while the bigscreen remains a static UI served by nginx.
+This service is intentionally small. It owns the writable platform state while
+the bigscreen remains a static UI served by nginx. Cisco Telnet uses the pinned
+telnetlib3 compatibility module so the service also works on Python 3.13+.
 """
 from __future__ import annotations
 
@@ -23,6 +24,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+try:
+    from telnetlib3.telnetlib import Telnet
+except ImportError:  # Python 3.12 developer/test fallback; production pins telnetlib3.
+    from telnetlib import Telnet
+
 from platform_config import (
     default_config_text,
     dump_simple_yaml,
@@ -42,6 +48,7 @@ EXAMPLE_PATH = Path(os.environ.get("EVENT_CONFIG_EXAMPLE", str(WORKDIR / "event-
 ENV_PATH = Path(os.environ.get("ENV_FILE", str(WORKDIR / ".env")))
 INCIDENT_PATH = STATE_DIR / "incidents.json"
 AUTH_PATH = STATE_DIR / "auth.json"
+DHCP_SETTINGS_PATH = STATE_DIR / "dhcp-settings.json"
 HISTORY_DIR = STATE_DIR / "history"
 TRANSACTION_DIR = HISTORY_DIR / "transactions"
 APPLY_STATUS_DIR = STATE_DIR / "apply-status"
@@ -51,6 +58,18 @@ APPLY_COMMAND = os.environ.get("PLATFORM_APPLY_COMMAND", "/bin/sh /workspace/app
 APPLY_TIMEOUT = max(30, int(os.environ.get("PLATFORM_APPLY_TIMEOUT", "300")))
 APPLY_VERIFY_TIMEOUT = max(10, int(os.environ.get("PLATFORM_APPLY_VERIFY_TIMEOUT", "90")))
 MAX_REQUEST_BODY_BYTES = max(1024, int(os.environ.get("PLATFORM_MAX_REQUEST_BODY_BYTES", str(1024 * 1024))))
+IPERF3_COMMAND = os.environ.get(
+    "PLATFORM_IPERF3_COMMAND",
+    "iperf3",
+)
+IPERF3_TIMEOUT = max(20, min(300, int(os.environ.get("PLATFORM_IPERF3_TIMEOUT", "60"))))
+IPERF3_CONNECT_TIMEOUT_MS = max(500, min(10000, int(os.environ.get("PLATFORM_IPERF3_CONNECT_TIMEOUT_MS", "3000"))))
+DHCP_SWITCH_USERNAME = os.environ.get("PLATFORM_DHCP_SWITCH_USERNAME", "").strip()
+DHCP_SWITCH_PASSWORD = os.environ.get("PLATFORM_DHCP_SWITCH_PASSWORD", "")
+DHCP_SWITCH_ENABLE_PASSWORD = os.environ.get("PLATFORM_DHCP_SWITCH_ENABLE_PASSWORD", "")
+DHCP_SWITCH_PORT = max(1, min(65535, int(os.environ.get("PLATFORM_DHCP_SWITCH_PORT", "23"))))
+DHCP_SWITCH_TIMEOUT = max(3, min(30, int(os.environ.get("PLATFORM_DHCP_SWITCH_TIMEOUT", "8"))))
+DHCP_REFRESH_SECONDS = max(30, min(300, int(os.environ.get("PLATFORM_DHCP_REFRESH_SECONDS", "60"))))
 BRIDGE_URL = os.environ.get("PLATFORM_BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
 # The console's 赛前体检 queries these by service name (same docker network).
 PRECHECK_PROM_URL = os.environ.get("PLATFORM_PRECHECK_PROM_URL", "http://prometheus:9090")
@@ -70,6 +89,13 @@ SESSIONS: dict[str, dict] = {}
 
 
 class AuthError(Exception):
+    def __init__(self, status: int, message: str, **extra):
+        super().__init__(message)
+        self.status = status
+        self.payload = {"ok": False, "error": message, **extra}
+
+
+class DiagnosticError(Exception):
     def __init__(self, status: int, message: str, **extra):
         super().__init__(message)
         self.status = status
@@ -96,6 +122,22 @@ def read_json_file(path: Path, fallback):
 # Serializes config-mutating requests so the now-threaded server can't interleave
 # two saves/applies writing the same files.
 WRITE_LOCK = threading.Lock()
+# Network diagnostics are deliberately manual and single-flight. This prevents
+# accidental double-clicks from running two bandwidth tests or several CLI
+# sessions against an older switch at the same time.
+IPERF_LOCK = threading.Lock()
+IPERF_STATUS_LOCK = threading.Lock()
+IPERF_STATUS: dict = {
+    "ok": True,
+    "state": "idle",
+    "phase": "idle",
+    "percent": 0,
+    "message": "尚未开始测速",
+}
+# Only one switch session may run at a time. The short cache also collapses
+# simultaneous requests from multiple browser tabs into one CLI query.
+DHCP_LOCK = threading.Lock()
+DHCP_CACHE: dict = {}
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -112,6 +154,24 @@ def write_json_file(path: Path, payload) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def dhcp_connection_settings() -> dict:
+    """Return runtime Telnet settings, preferring the private console store."""
+    stored = read_json_file(DHCP_SETTINGS_PATH, {})
+    if not isinstance(stored, dict):
+        stored = {}
+    try:
+        port = int(stored.get("port", DHCP_SWITCH_PORT))
+    except (TypeError, ValueError):
+        port = DHCP_SWITCH_PORT
+    return {
+        "username": str(stored.get("username", DHCP_SWITCH_USERNAME) or "").strip(),
+        "password": str(stored.get("password", DHCP_SWITCH_PASSWORD) or ""),
+        "enablePassword": str(stored.get("enablePassword", DHCP_SWITCH_ENABLE_PASSWORD) or ""),
+        "port": max(1, min(65535, port)),
+        "source": "console" if DHCP_SETTINGS_PATH.exists() else "environment",
+    }
 
 
 def new_operation_id(prefix: str = "op") -> str:
@@ -991,6 +1051,681 @@ def send_test_alert() -> dict:
         return {"ok": False, "error": f"无法连接告警服务：{exc}"}
 
 
+def validate_network_host(value: str, field: str = "服务器") -> str:
+    """Accept an IPv4 address or a conservative DNS hostname.
+
+    The value is always passed as one subprocess argument / socket hostname; it
+    is never interpolated into a shell command.
+    """
+    host = str(value or "").strip().rstrip(".")
+    if not host or len(host) > 253:
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, f"{field}不能为空")
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", host):
+        if any(int(part) > 255 for part in host.split(".")):
+            raise DiagnosticError(HTTPStatus.BAD_REQUEST, f"{field} IP 地址无效")
+        return host
+    labels = host.split(".")
+    if any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in labels):
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, f"{field}格式无效")
+    return host
+
+
+def configured_core_switch_host() -> str:
+    """Return the one configured core switch IP used by the DHCP dashboard."""
+    config = parse_config_text(read_config_text())
+    devices = config.get("devices") if isinstance(config.get("devices"), dict) else {}
+    core = devices.get("core") if isinstance(devices.get("core"), dict) else {}
+    host = str(core.get("ip") or "").strip()
+    if not host:
+        # Keep older .env-only installations working while making event-config
+        # the canonical source for new deployments.
+        raw = str(read_env(ENV_PATH).get("CORE_SWITCH_PING") or "").split(",", 1)[0].strip()
+        if ":" in raw:
+            raw = raw.rsplit(":", 1)[-1].strip()
+        host = raw
+    if not host:
+        raise DiagnosticError(HTTPStatus.UNPROCESSABLE_ENTITY, "基础配置里还没有填写核心 IP")
+    return validate_network_host(host, "核心 IP")
+
+
+def get_dhcp_settings() -> dict:
+    settings = dhcp_connection_settings()
+    return {
+        "ok": True,
+        "host": configured_core_switch_host(),
+        "username": settings["username"],
+        "port": settings["port"],
+        "passwordConfigured": bool(settings["password"]),
+        "enablePasswordConfigured": bool(settings["enablePassword"]),
+        "source": settings["source"],
+        "timeoutSeconds": DHCP_SWITCH_TIMEOUT,
+        "refreshSeconds": DHCP_REFRESH_SECONDS,
+    }
+
+
+def save_dhcp_settings(data: dict) -> dict:
+    if not WRITE_ENABLED:
+        raise DiagnosticError(HTTPStatus.FORBIDDEN, "当前环境不允许保存 Telnet 配置")
+    current = dhcp_connection_settings()
+    username = str(data.get("username", current["username"]) or "").strip()
+    password_input = data.get("password")
+    enable_input = data.get("enablePassword")
+    password = current["password"] if password_input in (None, "") else str(password_input)
+    enable_password = current["enablePassword"] if enable_input in (None, "") else str(enable_input)
+    try:
+        port = int(data.get("port", current["port"]))
+    except (TypeError, ValueError):
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 端口必须是数字")
+    if not 1 <= port <= 65535:
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 端口必须在 1-65535 之间")
+    if len(username) > 128:
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 用户名过长")
+    if len(password) > 512 or len(enable_password) > 512:
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 密码过长")
+    write_json_file(DHCP_SETTINGS_PATH, {
+        "username": username,
+        "password": password,
+        "enablePassword": enable_password,
+        "port": port,
+        "updatedAt": int(time.time()),
+    })
+    try:
+        os.chmod(DHCP_SETTINGS_PATH, 0o600)
+    except OSError:
+        pass
+    DHCP_CACHE.clear()
+    return get_dhcp_settings()
+
+
+def _dhcp_number(block: str, label: str) -> int:
+    match = re.search(rf"(?im)^\s*{re.escape(label)}\s*:\s*(\d+)\s*$", block)
+    return int(match.group(1)) if match else 0
+
+
+def parse_cisco_dhcp_pools(text: str) -> list[dict]:
+    """Parse the stable fields from Cisco IOS/IOS-XE `show ip dhcp pool`."""
+    source = str(text or "").replace("\r", "")
+    starts = list(re.finditer(r"(?im)^\s*Pool\s+(.+?)\s*:\s*$", source))
+    pools: list[dict] = []
+    for index, match in enumerate(starts):
+        block = source[match.end():starts[index + 1].start() if index + 1 < len(starts) else len(source)]
+        total = _dhcp_number(block, "Total addresses")
+        leased = _dhcp_number(block, "Leased addresses")
+        excluded = _dhcp_number(block, "Excluded addresses")
+        usable = max(0, total - excluded)
+        available = max(0, usable - leased)
+        address_range = ""
+        range_match = re.search(
+            r"(?m)(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})",
+            block,
+        )
+        if range_match:
+            address_range = f"{range_match.group(1)} - {range_match.group(2)}"
+        utilization = round((leased / usable * 100) if usable else 0, 1)
+        pools.append({
+            "name": match.group(1).strip(),
+            "range": address_range,
+            "total": total,
+            "leased": leased,
+            "excluded": excluded,
+            "available": available,
+            "utilization": utilization,
+            "level": "bad" if utilization >= 90 else "warn" if utilization >= 80 else "good",
+        })
+    return pools
+
+
+def parse_cisco_dhcp_conflicts(text: str) -> list[str]:
+    source = str(text or "").replace("\r", "")
+    addresses = re.findall(r"(?m)^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+", source)
+    return list(dict.fromkeys(addresses))
+
+
+def parse_cisco_dhcp_statistics(text: str) -> dict:
+    source = str(text or "").replace("\r", "")
+
+    def value(label: str) -> int:
+        match = re.search(rf"(?im)^\s*{re.escape(label)}\s+(\d+)\s*$", source)
+        return int(match.group(1)) if match else 0
+
+    return {
+        "automaticBindings": value("Automatic bindings"),
+        "manualBindings": value("Manual bindings"),
+        "expiredBindings": value("Expired bindings"),
+        "malformedMessages": value("Malformed messages"),
+    }
+
+
+def _telnet_expect(session, patterns: list[bytes], step: str):
+    index, match, output = session.expect(patterns, DHCP_SWITCH_TIMEOUT)
+    decoded = (output or b"").decode("utf-8", errors="replace")
+    if index < 0:
+        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"核心交换机 Telnet {step}超时")
+    return index, match, decoded
+
+
+def _telnet_command(session, command: str) -> str:
+    session.write(command.encode("ascii") + b"\n")
+    _index, _match, output = _telnet_expect(session, [br"[>#]\s*$"], f"执行 {command} ")
+    lines = output.replace("\r", "").splitlines()
+    if lines and lines[0].strip() == command:
+        lines.pop(0)
+    if lines and re.search(r"[>#]\s*$", lines[-1]):
+        lines.pop()
+    cleaned = "\n".join(lines).strip()
+    if "--More--" in cleaned:
+        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机未能关闭分页输出")
+    return cleaned
+
+
+def _open_cisco_telnet(host: str):
+    settings = dhcp_connection_settings()
+    username = settings["username"]
+    password = settings["password"]
+    enable_password = settings["enablePassword"]
+    if not password:
+        raise DiagnosticError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "尚未配置核心交换机 Telnet 密码，请先在赛事控制台填写",
+        )
+    session = Telnet(host, settings["port"], DHCP_SWITCH_TIMEOUT)
+    username_prompt = br"(?i)(?:user ?name|login):\s*$"
+    password_prompt = br"(?i)password:\s*$"
+    command_prompt = br"[>#]\s*$"
+    failed_prompt = br"(?i)(?:login invalid|authentication failed|access denied)"
+    index, _match, _output = _telnet_expect(
+        session,
+        [username_prompt, password_prompt, command_prompt, failed_prompt],
+        "登录",
+    )
+    if index == 3:
+        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机拒绝 Telnet 登录")
+    if index == 0:
+        if not username:
+            raise DiagnosticError(HTTPStatus.SERVICE_UNAVAILABLE, "交换机要求用户名，但尚未配置 Telnet 用户名")
+        session.write(username.encode("utf-8") + b"\n")
+        index, _match, _output = _telnet_expect(
+            session,
+            [password_prompt, command_prompt, failed_prompt],
+            "用户名验证",
+        )
+        if index == 2:
+            raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机拒绝 Telnet 用户名")
+        if index == 1:
+            return session
+        index = 0
+    if index in (0, 1):
+        session.write(password.encode("utf-8") + b"\n")
+        index, match, _output = _telnet_expect(
+            session,
+            [command_prompt, failed_prompt, password_prompt],
+            "密码验证",
+        )
+        if index != 0:
+            raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机 Telnet 密码错误")
+        prompt = (match.group(0) if match else b"").strip()
+        if prompt.endswith(b">") and enable_password:
+            session.write(b"enable\n")
+            enable_index, _match, _output = _telnet_expect(
+                session,
+                [password_prompt, br"#\s*$", failed_prompt, br">\s*$"],
+                "进入特权模式",
+            )
+            if enable_index == 0:
+                session.write(enable_password.encode("utf-8") + b"\n")
+                enable_index, _match, _output = _telnet_expect(
+                    session,
+                    [br"#\s*$", failed_prompt, password_prompt, br">\s*$"],
+                    "特权密码验证",
+                )
+            elif enable_index == 1:
+                enable_index = 0
+            if enable_index != 0:
+                raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机 Enable 密码错误")
+    return session
+
+
+def collect_cisco_dhcp(host: str) -> dict:
+    session = None
+    warnings: list[str] = []
+    try:
+        session = _open_cisco_telnet(host)
+        _telnet_command(session, "terminal length 0")
+        pool_output = _telnet_command(session, "show ip dhcp pool")
+        if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", pool_output):
+            raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机不支持 show ip dhcp pool")
+
+        optional_outputs = {}
+        for key, command in (
+            ("conflicts", "show ip dhcp conflict"),
+            ("statistics", "show ip dhcp server statistics"),
+        ):
+            output = _telnet_command(session, command)
+            if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", output):
+                warnings.append(f"交换机不支持 {command}")
+                output = ""
+            optional_outputs[key] = output
+        pools = parse_cisco_dhcp_pools(pool_output)
+        conflicts = parse_cisco_dhcp_conflicts(optional_outputs["conflicts"])
+        statistics = parse_cisco_dhcp_statistics(optional_outputs["statistics"])
+        total = sum(pool["total"] for pool in pools)
+        leased = sum(pool["leased"] for pool in pools)
+        excluded = sum(pool["excluded"] for pool in pools)
+        usable = max(0, total - excluded)
+        return {
+            "ok": True,
+            "host": host,
+            "source": "devices.core.ip",
+            "pools": pools,
+            "conflicts": conflicts,
+            "statistics": statistics,
+            "summary": {
+                "poolCount": len(pools),
+                "total": total,
+                "leased": leased,
+                "excluded": excluded,
+                "available": max(0, usable - leased),
+                "utilization": round((leased / usable * 100) if usable else 0, 1),
+                "conflictCount": len(conflicts),
+            },
+            "warnings": warnings,
+        }
+    except DiagnosticError:
+        raise
+    except (EOFError, OSError) as exc:
+        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"无法读取核心交换机 DHCP：{exc}")
+    finally:
+        if session is not None:
+            try:
+                session.write(b"exit\n")
+                session.close()
+            except Exception:
+                pass
+
+
+def test_dhcp_connection() -> dict:
+    """Test the configured core switch login without collecting DHCP data."""
+    host = configured_core_switch_host()
+    if not DHCP_LOCK.acquire(blocking=False):
+        raise DiagnosticError(HTTPStatus.CONFLICT, "DHCP 面板正在读取交换机，请稍后再测试连接")
+    session = None
+    started = time.monotonic()
+    try:
+        session = _open_cisco_telnet(host)
+        privilege_output = _telnet_command(session, "show privilege")
+        match = re.search(r"(?i)privilege\s+level\s+(?:is\s+)?(\d+)", privilege_output)
+        privilege_level = int(match.group(1)) if match else None
+        privileged = privilege_level == 15
+        if privilege_level is None:
+            message = "Telnet 登录成功，交换机未返回权限级别"
+        elif privileged:
+            message = "Telnet 登录成功，已进入特权模式"
+        else:
+            message = f"Telnet 登录成功，当前权限级别 {privilege_level}"
+        settings = dhcp_connection_settings()
+        return {
+            "ok": True,
+            "host": host,
+            "port": settings["port"],
+            "login": True,
+            "privileged": privileged,
+            "privilegeLevel": privilege_level,
+            "latencyMs": round((time.monotonic() - started) * 1000),
+            "message": message,
+            "testedAt": int(time.time()),
+        }
+    except DiagnosticError:
+        raise
+    except (EOFError, OSError) as exc:
+        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"无法连接核心交换机 Telnet：{exc}")
+    finally:
+        if session is not None:
+            try:
+                session.write(b"exit\n")
+                session.close()
+            except Exception:
+                pass
+        DHCP_LOCK.release()
+
+
+def _cached_dhcp_payload(refreshing: bool = False) -> dict | None:
+    payload = DHCP_CACHE.get("payload")
+    if not payload:
+        return None
+    age = max(0, time.monotonic() - float(DHCP_CACHE.get("monotonic") or 0))
+    return {**payload, "cached": True, "cacheAgeSeconds": round(age, 1), "refreshing": refreshing}
+
+
+def get_dhcp_dashboard(force: bool = False) -> dict:
+    host = configured_core_switch_host()
+    cached = _cached_dhcp_payload()
+    cache_seconds = max(10, DHCP_REFRESH_SECONDS - 5)
+    # Even the manual refresh button cannot create more than one switch session
+    # every 30 seconds. This keeps the read-only endpoint harmless if a browser
+    # is double-clicked or several operators open it together.
+    hard_minimum_seconds = 30
+    if (
+        cached
+        and cached.get("host") == host
+        and (
+            cached.get("cacheAgeSeconds", cache_seconds) < hard_minimum_seconds
+            or (not force and cached.get("cacheAgeSeconds", cache_seconds) < cache_seconds)
+        )
+    ):
+        return cached
+    if not DHCP_LOCK.acquire(blocking=False):
+        busy = _cached_dhcp_payload(refreshing=True)
+        if busy and busy.get("host") == host:
+            return busy
+        raise DiagnosticError(HTTPStatus.CONFLICT, "DHCP 面板正在刷新，请稍后再试")
+    try:
+        # Recheck after acquiring the lock in case another request just finished.
+        cached = _cached_dhcp_payload()
+        if (
+            cached
+            and cached.get("host") == host
+            and (
+                cached.get("cacheAgeSeconds", cache_seconds) < hard_minimum_seconds
+                or (not force and cached.get("cacheAgeSeconds", cache_seconds) < cache_seconds)
+            )
+        ):
+            return cached
+        payload = {
+            **collect_cisco_dhcp(host),
+            "capturedAt": int(time.time()),
+            "refreshSeconds": DHCP_REFRESH_SECONDS,
+            "cached": False,
+            "cacheAgeSeconds": 0,
+            "refreshing": False,
+        }
+        DHCP_CACHE.clear()
+        DHCP_CACHE.update({"payload": payload, "monotonic": time.monotonic()})
+        return payload
+    finally:
+        DHCP_LOCK.release()
+
+
+def parse_port_range(value, default: str = "5201-5210", max_ports: int = 10) -> list[int]:
+    text = str(value if value not in (None, "") else default).strip()
+    match = re.fullmatch(r"(\d{1,5})(?:\s*-\s*(\d{1,5}))?", text)
+    if not match:
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "端口应为单个端口或范围，例如 5201-5210")
+    start = int(match.group(1))
+    end = int(match.group(2) or start)
+    if not (1 <= start <= end <= 65535):
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "端口范围无效")
+    if end - start + 1 > max_ports:
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, f"一次最多尝试 {max_ports} 个端口")
+    return list(range(start, end + 1))
+
+
+def parse_iperf3_json(text: str) -> dict:
+    raw = str(text or "").strip()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("iperf3 未返回可解析的 JSON")
+        payload = json.loads(raw[start:end + 1])
+    if payload.get("error"):
+        raise ValueError(str(payload["error"]))
+    ending = payload.get("end") or {}
+    received = ending.get("sum_received") or {}
+    sent = ending.get("sum_sent") or {}
+    fallback = ending.get("sum") or {}
+    bits_per_second = received.get("bits_per_second")
+    if bits_per_second is None:
+        bits_per_second = sent.get("bits_per_second", fallback.get("bits_per_second"))
+    if bits_per_second is None:
+        raise ValueError("iperf3 结果中没有速率数据")
+
+    def endpoint_stats(value: dict) -> dict:
+        return {
+            "mbps": round(float(value.get("bits_per_second") or 0) / 1_000_000, 2),
+            "bytes": int(value.get("bytes") or 0),
+            "seconds": round(float(value.get("seconds") or 0), 2),
+            "retransmits": int(value.get("retransmits") or 0),
+        }
+
+    intervals = []
+    for item in payload.get("intervals") or []:
+        interval = item.get("sum") or {}
+        if not interval and item.get("streams"):
+            streams = item["streams"]
+            interval = {
+                "start": min(float(stream.get("start") or 0) for stream in streams),
+                "end": max(float(stream.get("end") or 0) for stream in streams),
+                "seconds": max(float(stream.get("seconds") or 0) for stream in streams),
+                "bytes": sum(int(stream.get("bytes") or 0) for stream in streams),
+                "bits_per_second": sum(float(stream.get("bits_per_second") or 0) for stream in streams),
+                "retransmits": sum(int(stream.get("retransmits") or 0) for stream in streams),
+            }
+        if not interval:
+            continue
+        intervals.append({
+            "start": round(float(interval.get("start") or 0), 2),
+            "end": round(float(interval.get("end") or 0), 2),
+            "seconds": round(float(interval.get("seconds") or 0), 2),
+            "bytes": int(interval.get("bytes") or 0),
+            "mbps": round(float(interval.get("bits_per_second") or 0) / 1_000_000, 2),
+            "retransmits": int(interval["retransmits"]) if interval.get("retransmits") is not None else None,
+        })
+
+    sender = endpoint_stats(sent or fallback)
+    receiver = endpoint_stats(received or fallback)
+    return {
+        "mbps": round(float(bits_per_second) / 1_000_000, 2),
+        "seconds": round(float(received.get("seconds") or sent.get("seconds") or fallback.get("seconds") or 0), 2),
+        "retransmits": int(sent.get("retransmits") or 0),
+        "bytes": receiver["bytes"],
+        "sender": sender,
+        "receiver": receiver,
+        "intervals": intervals,
+    }
+
+
+def _set_iperf_status(**updates) -> None:
+    with IPERF_STATUS_LOCK:
+        IPERF_STATUS.update(updates)
+
+
+def iperf_status_payload() -> dict:
+    with IPERF_STATUS_LOCK:
+        payload = dict(IPERF_STATUS)
+    started = payload.pop("_startedMonotonic", None)
+    if started is not None:
+        payload["elapsedSeconds"] = round(max(0, time.monotonic() - started), 1)
+    else:
+        payload.setdefault("elapsedSeconds", 0)
+    return payload
+
+
+def _iperf_error_summary(stdout: str, stderr: str, returncode: int) -> str:
+    raw = (stderr or stdout or f"退出码 {returncode}").strip()
+    try:
+        payload = json.loads(raw)
+        raw = str(payload.get("error") or raw)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    lowered = raw.lower()
+    if "control socket has closed unexpectedly" in lowered:
+        return "服务器中途关闭连接"
+    if "server is busy" in lowered:
+        return "服务器正忙"
+    if "unable to connect" in lowered or "connection refused" in lowered:
+        return "无法连接"
+    return re.sub(r"\s+", " ", raw)[-160:]
+
+
+def _run_iperf_direction(host: str, ports: list[int], duration: int, parallel: int, reverse: bool,
+                         deadline: float, direction_index: int, direction_total: int) -> dict:
+    attempts: list[str] = []
+    direction_name = "download" if reverse else "upload"
+    direction_label = "下载" if reverse else "上传"
+    for attempt_index, port in enumerate(ports, 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        progress = ((direction_index + (attempt_index - 1) / max(1, len(ports))) / direction_total) * 100
+        _set_iperf_status(
+            state="running",
+            phase=direction_name,
+            direction=direction_name,
+            currentPort=port,
+            attempt=attempt_index,
+            totalAttempts=len(ports),
+            percent=round(progress, 1),
+            message=f"正在测试{direction_label}，端口 {port}（第 {attempt_index}/{len(ports)} 个）",
+        )
+        command = [
+            *shlex.split(IPERF3_COMMAND),
+            "-c", host,
+            "-p", str(port),
+            "--connect-timeout", str(IPERF3_CONNECT_TIMEOUT_MS),
+            "-t", str(duration),
+            "-P", str(parallel),
+            "-J",
+        ]
+        if reverse:
+            command.append("-R")
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(WORKDIR),
+                env=_host_exec_env(),
+                capture_output=True,
+                text=True,
+                timeout=max(1, min(duration + 5, remaining)),
+                check=False,
+            )
+        except FileNotFoundError:
+            raise DiagnosticError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "找不到 iPerf3 客户端，请重新运行 deploy.sh 构建 platform-api 镜像",
+            )
+        except subprocess.TimeoutExpired:
+            attempts.append(f"{port}: 超时")
+            continue
+
+        output = (completed.stdout or "").strip()
+        error = (completed.stderr or "").strip()
+        if completed.returncode == 0:
+            try:
+                result = parse_iperf3_json(output)
+                _set_iperf_status(
+                    percent=round(((direction_index + 1) / direction_total) * 100, 1),
+                    message=f"{direction_label}完成，端口 {port}",
+                )
+                return {**result, "port": port}
+            except (ValueError, TypeError) as exc:
+                attempts.append(f"{port}: {exc}")
+        else:
+            attempts.append(f"{port}: {_iperf_error_summary(output, error, completed.returncode)}")
+    detail = "；".join(attempts[-4:]) or "没有端口完成测试"
+    raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"iperf3 测速失败：{detail}")
+
+
+def run_iperf_test(data: dict) -> dict:
+    host = validate_network_host(
+        data.get("server") or "speedtest.hkg12.hk.leaseweb.net",
+        "测速服务器",
+    )
+    ports = parse_port_range(data.get("ports"), "5201-5210", 10)
+    try:
+        duration = int(data.get("duration") or 10)
+        parallel = int(data.get("parallel") or 10)
+    except (TypeError, ValueError):
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "测试时长和并发数必须是整数")
+    if not 3 <= duration <= 30:
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "测试时长必须在 3-30 秒之间")
+    if not 1 <= parallel <= 20:
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "并发数必须在 1-20 之间")
+    direction = str(data.get("direction") or "both").strip().lower()
+    if direction not in ("upload", "download", "both"):
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "测速方向无效")
+    if not IPERF_LOCK.acquire(blocking=False):
+        raise DiagnosticError(HTTPStatus.CONFLICT, "已有 iperf3 测速正在运行，请稍后再试")
+    directions = []
+    if direction in ("upload", "both"):
+        directions.append(("upload", False))
+    if direction in ("download", "both"):
+        directions.append(("download", True))
+    started_monotonic = time.monotonic()
+    _set_iperf_status(
+        ok=True,
+        state="running",
+        phase="preparing",
+        server=host,
+        currentPort=None,
+        attempt=0,
+        totalAttempts=len(ports),
+        direction="",
+        directionIndex=0,
+        directionTotal=len(directions),
+        percent=0,
+        startedAt=int(time.time()),
+        finishedAt=None,
+        _startedMonotonic=started_monotonic,
+        elapsedSeconds=0,
+        maxSeconds=IPERF3_TIMEOUT,
+        message="正在准备测速",
+    )
+    try:
+        deadline = time.monotonic() + IPERF3_TIMEOUT
+        results = []
+        preferred_ports = list(ports)
+        for direction_index, (direction_name, reverse) in enumerate(directions):
+            _set_iperf_status(directionIndex=direction_index + 1)
+            result = _run_iperf_direction(
+                host, preferred_ports, duration, parallel, reverse, deadline,
+                direction_index, len(directions),
+            )
+            results.append({"direction": direction_name, **result})
+            preferred_ports = [result["port"], *[port for port in ports if port != result["port"]]]
+        payload = {
+            "ok": True,
+            "protocol": "TCP",
+            "server": host,
+            "requestedPorts": f"{ports[0]}-{ports[-1]}" if len(ports) > 1 else str(ports[0]),
+            "duration": duration,
+            "parallel": parallel,
+            "results": results,
+        }
+        _set_iperf_status(
+            state="complete",
+            phase="complete",
+            percent=100,
+            finishedAt=int(time.time()),
+            _startedMonotonic=None,
+            elapsedSeconds=round(time.monotonic() - started_monotonic, 1),
+            message="测速完成",
+        )
+        return payload
+    except DiagnosticError as exc:
+        _set_iperf_status(
+            state="failed",
+            phase="failed",
+            finishedAt=int(time.time()),
+            _startedMonotonic=None,
+            elapsedSeconds=round(time.monotonic() - started_monotonic, 1),
+            message=exc.payload.get("error", str(exc)),
+        )
+        raise
+    except Exception as exc:
+        _set_iperf_status(
+            state="failed",
+            phase="failed",
+            finishedAt=int(time.time()),
+            _startedMonotonic=None,
+            elapsedSeconds=round(time.monotonic() - started_monotonic, 1),
+            message=str(exc),
+        )
+        raise
+    finally:
+        IPERF_LOCK.release()
+
+
 def delivery_manifest() -> dict:
     compose = WORKDIR / "docker-compose.yml"
     files = [
@@ -1097,6 +1832,15 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/delivery/manifest":
                 require_auth(self)
                 self._send_json(delivery_manifest())
+            elif path == "/network/iperf3/status":
+                require_auth(self)
+                self._send_json(iperf_status_payload())
+            elif path == "/network/dhcp/settings":
+                require_auth(self)
+                self._send_json(get_dhcp_settings())
+            elif path == "/network/dhcp":
+                force = (parse_qs(parsed_url.query).get("force") or [""])[-1].lower() in ("1", "true", "yes")
+                self._send_json(get_dhcp_dashboard(force))
             elif path == "/config/download":
                 # The single round-trippable config file: export this, edit or archive
                 # it, then re-import it via /config/import.
@@ -1110,6 +1854,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
         except AuthError as exc:
+            self._send_json(exc.payload, exc.status)
+        except DiagnosticError as exc:
             self._send_json(exc.payload, exc.status)
         except Exception as exc:
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -1165,9 +1911,21 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/pre-check":
                 require_auth(self)
                 self._send_json(run_precheck())
+            elif path == "/network/iperf3":
+                require_auth(self)
+                self._send_json(run_iperf_test(data))
+            elif path == "/network/dhcp/test":
+                require_auth(self)
+                self._send_json(test_dhcp_connection())
+            elif path == "/network/dhcp/settings":
+                require_auth(self)
+                with WRITE_LOCK:
+                    self._send_json(save_dhcp_settings(data))
             else:
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
         except AuthError as exc:
+            self._send_json(exc.payload, exc.status)
+        except DiagnosticError as exc:
             self._send_json(exc.payload, exc.status)
         except PermissionError as exc:
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.FORBIDDEN)

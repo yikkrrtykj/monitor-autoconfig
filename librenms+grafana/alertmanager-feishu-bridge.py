@@ -50,6 +50,9 @@ Env:
   DEVICE_DOWN_SAMPLE_WINDOW_SECONDS recent probe window to catch short flaps (default 5)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
   DEVICE_DOWN_STATE_FILE  persisted active down alerts (default /bridge-state/device-down-alerts.json)
+  DEVICE_REENROLL_AFTER_SECONDS offline age at which selected devices auto-retire (default 172800)
+  DEVICE_REENROLL_JOBS    comma list of temporary-device jobs (default infra-dist-ping)
+  DEVICE_LIBRENMS_SYNC_RETRY_SECONDS retry interval for retire/delete/re-add API calls (default 60)
   DEVICE_ONLINE_FROM_PING true = send online card when a candidate first comes up
                             (default false; SNMP/LibreNMS online cards are preferred)
   DEVICE_AUTO_ADD_FROM_PING true = add newly reachable switch candidates to LibreNMS by SNMP
@@ -152,6 +155,12 @@ DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
     "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-fw-unit-ping,infra-isp-ping,infra-srv-ping",
 )
+# Event access/distribution switches are often deployed for only a few days.
+# At 48 hours offline, retire its old outage automatically. If it returns later,
+# start a fresh lifecycle and send a new-device card instead of a recovery card.
+DEVICE_REENROLL_AFTER_SECONDS = int(os.environ.get("DEVICE_REENROLL_AFTER_SECONDS", "172800"))
+DEVICE_REENROLL_JOBS = os.environ.get("DEVICE_REENROLL_JOBS", "infra-dist-ping")
+DEVICE_LIBRENMS_SYNC_RETRY_SECONDS = int(os.environ.get("DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", "60"))
 DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "false").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_FROM_PING = os.environ.get("DEVICE_AUTO_ADD_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-core-ping,infra-dist-ping")
@@ -338,7 +347,14 @@ def load_device_down_states():
             continue
         loaded[str(key)] = {
             "down_since": _as_float(value.get("down_since")),
-            "alerting": bool(value.get("alerting", True)),
+            "alerting": bool(value.get("alerting", not value.get("retired"))),
+            "retired": bool(value.get("retired", False)),
+            "retired_at": _as_float(value.get("retired_at")),
+            # Do not migrate the old disabled marker: a retired device from the
+            # previous version still needs one permanent DELETE after upgrade.
+            "librenms_deleted": bool(value.get("librenms_deleted", False)),
+            "librenms_readded": bool(value.get("librenms_readded", False)),
+            "librenms_sync_last_attempt": _as_float(value.get("librenms_sync_last_attempt"), 0),
             "seen_up": bool(value.get("seen_up", True)),
             "ignored_initial_down": False,
             "last_up_at": _as_float(value.get("last_up_at")),
@@ -351,22 +367,27 @@ def load_device_down_states():
 
 
 def save_device_down_states(states):
-    active = {}
+    active_or_retired = {}
     for key, state in states.items():
-        if not state.get("alerting"):
+        if not state.get("alerting") and not state.get("retired"):
             continue
-        active[str(key)] = {
+        active_or_retired[str(key)] = {
             "down_since": state.get("down_since"),
+            "retired_at": state.get("retired_at"),
+            "librenms_deleted": bool(state.get("librenms_deleted", False)),
+            "librenms_readded": bool(state.get("librenms_readded", False)),
+            "librenms_sync_last_attempt": state.get("librenms_sync_last_attempt"),
             "last_up_at": state.get("last_up_at"),
             "seen_up": bool(state.get("seen_up", True)),
             "online_sent": bool(state.get("online_sent", False)),
             "name": state.get("name") or "",
             "ip": state.get("ip") or "",
             "job": state.get("job") or "",
-            "alerting": True,
+            "alerting": bool(state.get("alerting")),
+            "retired": bool(state.get("retired")),
         }
     with DEVICE_DOWN_STATE_LOCK:
-        _save_json_dict(DEVICE_DOWN_STATE_FILE, active)
+        _save_json_dict(DEVICE_DOWN_STATE_FILE, active_or_retired)
 
 
 EVENT_ID = max(
@@ -541,6 +562,50 @@ def update_librenms_device_display(ip, name, log_prefix="[WATCHER]"):
     except Exception as exc:
         log(f"{log_prefix} LibreNMS display sync failed for {ip}: {exc}")
         return False
+
+
+def delete_librenms_device(ip, log_prefix="[DOWN]"):
+    """Permanently delete a retired LibreNMS device.
+
+    Returns ``deleted`` when DELETE succeeds, ``missing`` when LibreNMS has no
+    matching device, and an empty string for retryable API/auth failures.
+    """
+    token = _librenms_token()
+    if not token or not LIBRENMS_URL or not ip:
+        return ""
+    try:
+        device = _find_librenms_device_by_ip(token, ip)
+    except Exception as exc:
+        log(f"{log_prefix} LibreNMS lookup failed for {ip}: {exc}")
+        return ""
+    if not device:
+        log(f"{log_prefix} LibreNMS has no device record for {ip}; deletion already complete")
+        return "missing"
+    device_ref = device.get("device_id") or device.get("hostname") or ip
+    encoded_ref = parse.quote(str(device_ref), safe="")
+    req = request.Request(
+        f"{LIBRENMS_URL}/api/v0/devices/{encoded_ref}",
+        headers={"X-Auth-Token": token},
+        method="DELETE",
+    )
+    try:
+        with request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        entries = data if isinstance(data, list) else [data]
+        if any(str(item.get("status") or "").lower() == "ok" for item in entries if isinstance(item, dict)):
+            log(f"{log_prefix} LibreNMS retired device deleted permanently: {ip}")
+            return "deleted"
+        log(f"{log_prefix} LibreNMS device deletion failed for {ip}: {str(raw)[:160]}")
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
+        log(f"{log_prefix} LibreNMS device deletion HTTP {exc.code} for {ip}: {body[:160]}")
+    except Exception as exc:
+        log(f"{log_prefix} LibreNMS device deletion failed for {ip}: {exc}")
+    return ""
 
 
 def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"):
@@ -1158,6 +1223,19 @@ def send_device_online_once(card, *identity_values):
             return False
         items.update(clean)
         return _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
+
+
+def send_device_online_new_lifecycle(card, *identity_values):
+    """Deliver a new-device card even when this IP/name was notified before.
+
+    Re-enrollment is an explicit new lifecycle, so the normal lifetime de-dupe
+    must not suppress it. Keep the identities recorded after delivery so the
+    regular LibreNMS watcher does not send a duplicate card.
+    """
+    if not send_feishu(card):
+        return False
+    mark_device_online_notified(*identity_values)
+    return True
 
 
 def _norm_label(value):
@@ -1915,6 +1993,96 @@ def recovery_ready(state, now, sample_ts, recover_stable):
     return (now - state["up_since"]) >= recover_stable
 
 
+def device_retirement_due(state, job, now):
+    """Return True when a temporary device's old outage must be retired."""
+    jobs = {item.strip() for item in DEVICE_REENROLL_JOBS.split(",") if item.strip()}
+    down_since = _as_float(state.get("down_since"))
+    return bool(
+        job in jobs
+        and DEVICE_REENROLL_AFTER_SECONDS > 0
+        and down_since is not None
+        and (state.get("alerting") or state.get("seen_up"))
+        and now - down_since >= DEVICE_REENROLL_AFTER_SECONDS
+    )
+
+
+def retire_expired_device_states(states, now):
+    """End 48-hour outages even while their targets are absent from Prometheus."""
+    retired_keys = []
+    for key, state in states.items():
+        if not device_retirement_due(state, state.get("job", ""), now):
+            continue
+        state["alerting"] = False
+        state["retired"] = True
+        state["retired_at"] = now
+        state["down_since"] = None
+        state["up_since"] = None
+        state["seen_up"] = False
+        state["online_sent"] = False
+        state["online_pending"] = False
+        state["librenms_deleted"] = False
+        state["librenms_readded"] = False
+        state["librenms_sync_last_attempt"] = 0
+        retired_keys.append(key)
+    return retired_keys
+
+
+def sync_retired_librenms_deletions(states, now):
+    """Delete newly retired LibreNMS devices, with bounded retries."""
+    changed = False
+    retry_after = max(1, DEVICE_LIBRENMS_SYNC_RETRY_SECONDS)
+    for state in states.values():
+        if not state.get("retired") or state.get("librenms_deleted"):
+            continue
+        last_attempt = _as_float(state.get("librenms_sync_last_attempt"), 0) or 0
+        if now - last_attempt < retry_after:
+            continue
+        state["librenms_sync_last_attempt"] = now
+        changed = True
+        result = delete_librenms_device(state.get("ip"))
+        if result in ("deleted", "missing"):
+            state["librenms_deleted"] = True
+            state["librenms_sync_last_attempt"] = 0
+    return changed
+
+
+def prepare_reenrolled_librenms_device(state, name, ip, now):
+    """Create the fresh LibreNMS record before announcing a new lifecycle."""
+    if not state.get("librenms_deleted"):
+        return False
+    if state.get("librenms_readded"):
+        return True
+    retry_after = max(1, DEVICE_LIBRENMS_SYNC_RETRY_SECONDS)
+    last_attempt = _as_float(state.get("librenms_sync_last_attempt"), 0) or 0
+    if now - last_attempt < retry_after:
+        return False
+    state["librenms_sync_last_attempt"] = now
+    result = add_librenms_snmp_device(ip, name=name, log_prefix="[DOWN]")
+    if result in ("added", "exists"):
+        state["librenms_readded"] = True
+        return True
+    return False
+
+
+def notify_device_reenrolled(state, name, ip):
+    """Send the fresh online card and close the old outage only after delivery."""
+    card = build_device_online_card({"display": name, "ip": ip})
+    if not send_device_online_new_lifecycle(card, name, ip):
+        return False
+    state["alerting"] = False
+    state["retired"] = False
+    state["retired_at"] = None
+    state["down_since"] = None
+    state["up_since"] = None
+    state["seen_up"] = True
+    state["online_sent"] = True
+    state["online_pending"] = False
+    state["librenms_deleted"] = False
+    state["librenms_readded"] = False
+    state["librenms_sync_last_attempt"] = None
+    return True
+
+
 def device_down_watcher():
     """Fast device-down alerts off Prometheus blackbox ICMP (probe_success).
 
@@ -1954,6 +2122,17 @@ def device_down_watcher():
 
     while True:
         now = time.time()
+        retired_keys = retire_expired_device_states(states, now)
+        if retired_keys:
+            for retired_key in retired_keys:
+                retired_state = states[retired_key]
+                log(
+                    f"[DOWN] RETIRED {retired_state.get('job')} "
+                    f"{retired_state.get('name')} ({retired_state.get('ip')}) after 48h offline"
+                )
+        librenms_state_changed = sync_retired_librenms_deletions(states, now)
+        if retired_keys or librenms_state_changed:
+            save_device_down_states(states)
         if now - last_name_refresh >= 60:
             try:
                 librenms_names = fetch_librenms_name_cache()
@@ -2022,6 +2201,11 @@ def device_down_watcher():
             default_state = {
                 "down_since": None,
                 "alerting": False,
+                "retired": False,
+                "retired_at": None,
+                "librenms_deleted": False,
+                "librenms_readded": False,
+                "librenms_sync_last_attempt": None,
                 "seen_up": False,
                 "ignored_initial_down": False,
                 "last_up_at": None,
@@ -2067,10 +2251,13 @@ def device_down_watcher():
                         log(f"[DOWN] ALERT {job} {name} ({ip}) DOWN downstream={downstream}")
                         if send_feishu(build_device_down_card(name, ip, recovered=False, offline_seconds=offline, job=job, downstream=downstream)):
                             state["alerting"] = True
+                            state["retired"] = False
+                            state["retired_at"] = None
                             state["seen_up"] = True
                             save_device_down_states(states)
             else:
                 previous_down_since = state.get("down_since")
+                was_retired = bool(state.get("retired"))
                 state["last_up_at"] = sample_ts or now
                 first_up_after_candidate_down = (not state["seen_up"] and state.get("ignored_initial_down"))
                 if not state["seen_up"]:
@@ -2078,7 +2265,8 @@ def device_down_watcher():
                     state["ignored_initial_down"] = False
                     log(f"[DOWN] armed {job} {name} ({ip}) after first UP")
                     if (
-                        DEVICE_AUTO_ADD_FROM_PING
+                        not was_retired
+                        and DEVICE_AUTO_ADD_FROM_PING
                         and job in auto_add_jobs
                         and ip
                         and not known_by_librenms
@@ -2089,6 +2277,18 @@ def device_down_watcher():
                     if first_up_after_candidate_down and DEVICE_ONLINE_FROM_PING and not state["online_sent"]:
                         state["online_pending"] = True
                         log(f"[DOWN] online detected from ping: {job} {name} ({ip})")
+                if was_retired:
+                    log(f"[DOWN] REENROLL {job} {name} ({ip}) as a new device")
+                    if not prepare_reenrolled_librenms_device(state, name, ip, now):
+                        log(f"[DOWN] REENROLL LibreNMS delete/re-add pending {job} {name} ({ip})")
+                        save_device_down_states(states)
+                        continue
+                    if notify_device_reenrolled(state, name, ip):
+                        log(f"[DOWN] NEW LIFECYCLE {job} {name} ({ip}) online card delivered")
+                    else:
+                        log(f"[DOWN] REENROLL delivery pending {job} {name} ({ip})")
+                    save_device_down_states(states)
+                    continue
                 if DEVICE_ONLINE_FROM_PING and state.get("online_pending") and not state["online_sent"]:
                     if send_device_online_once(build_device_online_card({
                             "display": name,

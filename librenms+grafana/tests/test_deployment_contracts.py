@@ -18,6 +18,15 @@ def test_release_images_are_pinned_and_defaults_are_consistent():
     assert "SNMP_COMMUNITY=global" in example
     assert "COMPOSE_PROFILES=\n" in example
     assert "SNMP_COMMUNITY:-public" not in compose
+    assert "python:3.13-slim" in compose
+    assert "monitor-platform-api:local" in compose
+
+
+def test_deploy_rebuilds_local_images_after_repository_updates():
+    deploy = read("deploy.sh")
+
+    assert "docker compose up -d --remove-orphans --build" in deploy
+    assert "docker compose restart bigscreen platform-api alertmanager-feishu-bridge" in deploy
 
 
 def test_named_volume_and_bind_mount_contract_is_not_mixed():
@@ -61,6 +70,13 @@ def test_control_number_inputs_do_not_expose_or_react_to_wheel_spinners():
     assert 'input[type="number"]::-webkit-inner-spin-button' in css
     assert "-webkit-appearance: none" in css
     assert "-moz-appearance: textfield" in css
+
+
+def test_feishu_bridge_does_not_create_librenms_transport():
+    auto_config = read("librenms-auto-config.sh")
+
+    assert "configure_feishu_transport" not in auto_config
+    assert "INSERT INTO alert_transports" not in auto_config
 
 
 def test_apply_failure_does_not_mass_delete_services():

@@ -1732,83 +1732,6 @@ try {
 PHP
 }
 
-ALERT_TRANSPORT_IDS=""
-
-configure_feishu_transport() {
-  echo ""
-  echo "[5/6] Setting up Feishu alert transport..."
-
-  if [ -z "$FEISHU_ROBOT_TOKEN" ]; then
-    echo "  FEISHU_ROBOT_TOKEN not set, alert rules will be created without push transport"
-    ALERT_TRANSPORT_IDS=""
-    return 0
-  fi
-
-  _ft_out=$(php <<'PHP'
-<?php
-try {
-    $host = getenv('DB_HOST') ?: 'librenms-db';
-    $database = getenv('DB_NAME') ?: 'librenms';
-    $dbUser = getenv('DB_USER') ?: 'librenms';
-    $dbPass = getenv('DB_PASSWORD') ?: (getenv('DB_PASS') ?: 'librenms');
-
-    $pdo = new PDO(
-        "mysql:host={$host};dbname={$database};charset=utf8mb4",
-        $dbUser,
-        $dbPass,
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
-
-    $name = 'Feishu';
-    $exists = $pdo->prepare('SELECT transport_id FROM alert_transports WHERE transport_name = ? LIMIT 1');
-    $exists->execute([$name]);
-    $transportId = $exists->fetchColumn();
-
-    $config = json_encode([
-        'api-method' => 'POST',
-        'api-as-form' => false,
-        'api-url' => 'http://alertmanager-feishu-bridge:5005/librenms',
-        'api-options' => '',
-        'api-headers' => 'Content-Type=application/json',
-        'api-body' => '{"state":"{{ state }}","name":"{{ name }}","severity":"{{ severity }}","hostname":"{{ hostname }}","sysName":"{{ sysName }}","ip":"{{ ip }}","timestamp":"{{ timestamp }}","uid":"{{ uid }}","elapsed":"{{ elapsed }}"}',
-        'api-auth-username' => '',
-        'api-auth-password' => '',
-    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-    if ($transportId) {
-        $upd = $pdo->prepare('UPDATE alert_transports SET transport_type = ?, is_default = 1, transport_config = ? WHERE transport_id = ?');
-        $upd->execute(['api', $config, $transportId]);
-        echo "updated:{$transportId}";
-        exit(0);
-    }
-
-    $ins = $pdo->prepare('INSERT INTO alert_transports (transport_name, transport_type, is_default, transport_config) VALUES (?, ?, 1, ?)');
-    $ins->execute([$name, 'api', $config]);
-    echo 'created:' . $pdo->lastInsertId();
-    exit(0);
-} catch (Throwable $e) {
-    echo 'ERROR: ' . $e->getMessage();
-    exit(1);
-}
-PHP
-  ) || true
-
-  case "$_ft_out" in
-    created:*)
-      ALERT_TRANSPORT_IDS="${_ft_out#created:}"
-      echo "  Feishu transport created (id=$ALERT_TRANSPORT_IDS, → bridge /librenms)"
-      ;;
-    updated:*)
-      ALERT_TRANSPORT_IDS="${_ft_out#updated:}"
-      echo "  Feishu transport updated (id=$ALERT_TRANSPORT_IDS, → bridge /librenms)"
-      ;;
-    *)
-      ALERT_TRANSPORT_IDS=""
-      echo "  WARNING: Could not create Feishu transport: $_ft_out"
-      ;;
-  esac
-}
-
 cleanup_legacy_alert_rules() {
   echo ""
   echo "  Cleaning legacy broken LibreNMS alert rules..."
@@ -2018,7 +1941,6 @@ configure_isp_port_speed_overrides
 configure_home_dashboard
 configure_down_port_ignores
 configure_stp_noise_suppression
-configure_feishu_transport
 
 # Configure alert rules
 echo ""
@@ -2140,6 +2062,6 @@ echo "  3. 添加 UniFi AP 或调整 LIBRENMS_DISCOVERY_TARGETS / FIREWALL_DISCO
 if [ -z "$FEISHU_ROBOT_TOKEN" ]; then
   echo "  4. 填写 FEISHU_ROBOT_TOKEN 后重启以启用飞书告警推送"
 else
-  echo "  4. 飞书告警已配置 → alertmanager-feishu-bridge:5005/librenms"
+  echo "  4. 飞书告警已配置 → 现有 alertmanager-feishu-bridge"
 fi
 echo ""

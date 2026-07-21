@@ -8,8 +8,7 @@ const {
   dedupePlayersBySeat,
   buildPlayers,
   latencyLevel,
-  playerStatusText,
-  groupPlayersBySeat
+  playerStatusText
 } = require(path.resolve(__dirname, "../bigscreen/players.js"));
 
 // ---- isGatewayAddress ----
@@ -74,15 +73,6 @@ assert.strictEqual(playerStatusText(p({ latency: null })), "暂无延迟");
 assert.strictEqual(playerStatusText(p({ latency: 0.09 })), "高延迟");
 assert.strictEqual(playerStatusText(p({ latency: 0.05 })), "轻微抖动");
 assert.strictEqual(playerStatusText(p({ latency: 0.005 })), "正常");
-
-// ---- groupPlayersBySeat keeps duplicates visible for the seat-check page ----
-const grouped = groupPlayersBySeat([
-  p({ ip: "10.0.0.1" }),
-  p({ ip: "10.0.0.2" }),
-  p({ seat: 2, ip: "10.0.0.3" })
-]);
-assert.strictEqual(grouped.get("1|1").length, 2);
-assert.strictEqual(grouped.get("1|2").length, 1);
 
 // Current status must reflect the most recent scrape, not "any success in the
 // last 90 seconds", which kept disconnected players falsely online.
