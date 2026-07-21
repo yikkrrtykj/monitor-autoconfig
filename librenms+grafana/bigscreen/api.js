@@ -452,6 +452,7 @@
         job: item.metric.job,
         instance: item.metric.instance || item.metric.target_ip,
         targetIp: item.metric.target_ip || item.metric.instance,
+        wanIp: item.metric.wan_ip || "",
         displayName,
         success: item.value >= 1,
         latency: null
@@ -694,4 +695,3 @@
     window.BSApi = ns;
   }
 }());
-

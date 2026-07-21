@@ -54,7 +54,10 @@
         return {
           kind: "isp",
           name,
-          ip: target.targetIp || configuredIp,
+          // Ping probes the carrier gateway, while operators need the actual
+          // firewall WAN/public address on the topology card.
+          ip: target.wanIp || configuredIp || target.targetIp,
+          probeIp: target.targetIp,
           level: topologyNodeLevel(target),
           latency: target.latency,
           success: target.success
@@ -75,7 +78,8 @@
       isps.push({
         kind: "isp",
         name: target.displayName,
-        ip: target.targetIp,
+        ip: target.wanIp || target.targetIp,
+        probeIp: target.targetIp,
         level: topologyNodeLevel(target),
         latency: target.latency,
         success: target.success

@@ -104,9 +104,20 @@ def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
 
     assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in app
     assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in app
-    assert 'configInput("alerts.feishu_chat_id", "告警群 Chat ID（可选）"' in app
+    assert 'configInput("alerts.feishu_chat_id", "主动告警群（群名或 Chat ID，可选）"' in app
     assert "下载/上传" in app
     assert "1000/100" in app
+
+    ws = read("feishu-ws-client.py")
+    assert ".register_p2_im_message_receive_v1(on_message)" in ws
+    assert 'f"{BRIDGE_URL}/bot/query"' in ws
+
+
+def test_retired_isp_history_is_filtered_by_current_prometheus_targets():
+    app = read("bigscreen/app.js")
+    assert "infraCurrentTargets" in app
+    assert "fetchTopologyTargets()" in app
+    assert "!infraCurrentTargets.has(name)" in app
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

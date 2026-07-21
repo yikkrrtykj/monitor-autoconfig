@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Feishu long-connection callback client for in-card confirm buttons.
+"""Feishu long-connection client for card callbacks and @ query commands.
 
 The bridge sends "device pending delete" cards with 确认删除/保留 buttons via
 the Feishu app bot. This sidecar keeps an OUTBOUND WebSocket to Feishu's cloud
@@ -17,20 +17,28 @@ Env:
 
 Feishu console prerequisites (one-time, see .env.example):
   自建应用 -> 开启机器人能力 -> 事件与回调选择"使用长连接接收" ->
-  订阅卡片回传交互(card.action.trigger) -> 把应用机器人加进告警群。
+  订阅卡片回传交互(card.action.trigger) 和接收消息(im.message.receive_v1)
+  -> 把应用机器人加进告警群。
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
+_TENANT_TOKEN = {"value": "", "expires_at": 0.0}
+_TOKEN_LOCK = threading.Lock()
+_SEEN_MESSAGES: dict[str, float] = {}
+_SEEN_LOCK = threading.Lock()
 
 
 def log(message: str) -> None:
@@ -58,6 +66,131 @@ def resolve_via_bridge(value: dict) -> dict:
             return {"ok": False, "error": f"告警服务返回 HTTP {exc.code}"}
     except Exception as exc:  # noqa: BLE001 - surfaced to the operator as a toast
         return {"ok": False, "error": f"无法连接告警服务：{exc}"}
+
+
+def query_via_bridge(text: str) -> dict:
+    payload = json.dumps({"text": text}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{BRIDGE_URL}/bot/query", data=payload,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception as exc:  # noqa: BLE001 - converted to a user-visible reply
+        log(f"bot query bridge failed: {exc}")
+        return {"ok": False, "text": "查询监控数据失败，请稍后再试。"}
+
+
+def tenant_access_token() -> str:
+    now = time.time()
+    with _TOKEN_LOCK:
+        if _TENANT_TOKEN["value"] and now < _TENANT_TOKEN["expires_at"] - 120:
+            return _TENANT_TOKEN["value"]
+    payload = json.dumps({"app_id": APP_ID, "app_secret": APP_SECRET}).encode("utf-8")
+    req = urllib.request.Request(
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        data=payload, headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8") or "{}")
+    if data.get("code") != 0 or not data.get("tenant_access_token"):
+        raise RuntimeError(f"tenant token rejected: {data.get('code')} {data.get('msg')}")
+    with _TOKEN_LOCK:
+        _TENANT_TOKEN["value"] = data["tenant_access_token"]
+        _TENANT_TOKEN["expires_at"] = now + float(data.get("expire") or 3600)
+        return _TENANT_TOKEN["value"]
+
+
+def reply_to_message(message_id: str, text: str) -> None:
+    token = tenant_access_token()
+    payload = json.dumps({
+        "msg_type": "text",
+        "content": json.dumps({"text": text}, ensure_ascii=False),
+    }, ensure_ascii=False).encode("utf-8")
+    encoded_id = urllib.parse.quote(str(message_id), safe="")
+    req = urllib.request.Request(
+        f"https://open.feishu.cn/open-apis/im/v1/messages/{encoded_id}/reply",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8") or "{}")
+    if data.get("code") != 0:
+        raise RuntimeError(f"reply rejected: {data.get('code')} {data.get('msg')}")
+
+
+def _field(value, name, default=None):
+    return value.get(name, default) if isinstance(value, dict) else getattr(value, name, default)
+
+
+def extract_command(message) -> str:
+    try:
+        content = json.loads(str(_field(message, "content", "") or "{}"))
+    except json.JSONDecodeError:
+        content = {}
+    text = str(content.get("text") or "")
+    for mention in (_field(message, "mentions", []) or []):
+        key = str(_field(mention, "key", "") or "")
+        if key:
+            text = text.replace(key, " ")
+    # Defensive fallback for SDK/model variants where mentions were omitted but
+    # the placeholder remains in text.
+    text = re.sub(r"@_user_\d+", " ", text)
+    return " ".join(text.split())
+
+
+def should_handle_message(message) -> bool:
+    chat_type = str(_field(message, "chat_type", "") or "").lower()
+    # The app may have the sensitive "all group messages" permission.  Ignore
+    # ordinary group chatter and react only when the robot was explicitly @'d.
+    if chat_type != "p2p" and not (_field(message, "mentions", []) or []):
+        return False
+    return str(_field(message, "message_type", "") or "").lower() == "text"
+
+
+def _reserve_message(message_id: str) -> bool:
+    now = time.time()
+    with _SEEN_LOCK:
+        for key, seen_at in list(_SEEN_MESSAGES.items()):
+            if now - seen_at > 600:
+                _SEEN_MESSAGES.pop(key, None)
+        if message_id in _SEEN_MESSAGES:
+            return False
+        _SEEN_MESSAGES[message_id] = now
+        return True
+
+
+def _process_message(message_id: str, command: str) -> None:
+    result = query_via_bridge(command)
+    reply = str(result.get("text") or result.get("error") or "查询失败，请稍后再试。")
+    try:
+        reply_to_message(message_id, reply)
+        log(f"replied to message {message_id}: {command[:80]}")
+    except Exception as exc:  # noqa: BLE001 - event loop must stay alive
+        log(f"reply to {message_id} failed: {exc}")
+
+
+def on_message(data):
+    message = _field(_field(data, "event"), "message")
+    if not message or not should_handle_message(message):
+        return None
+    message_id = str(_field(message, "message_id", "") or "")
+    if not message_id or not _reserve_message(message_id):
+        return None
+    command = extract_command(message) or "帮助"
+    log(f"message command {command[:120]!r} id={message_id}")
+    # A LibreNMS query may take several seconds. Acknowledge the event handler
+    # immediately and send the reply asynchronously so Feishu does not retry it.
+    threading.Thread(
+        target=_process_message, args=(message_id, command), daemon=True,
+        name=f"feishu-query-{message_id[-8:]}",
+    ).start()
+    return None
 
 
 def build_response(value: dict, result: dict):
@@ -125,6 +258,7 @@ def main() -> None:
 
     handler = (
         lark.EventDispatcherHandler.builder("", "")
+        .register_p2_im_message_receive_v1(on_message)
         .register_p2_card_action_trigger(on_card_action)
         .build()
     )

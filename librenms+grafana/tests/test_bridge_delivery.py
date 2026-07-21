@@ -87,6 +87,82 @@ def test_normal_alert_falls_back_to_webhook_when_app_delivery_fails(monkeypatch)
     assert bridge.send_feishu(_card()) is True
 
 
+def test_bot_device_and_optical_queries_use_librenms_data(monkeypatch):
+    devices = [{
+        "device_id": 7,
+        "display": "RTS1",
+        "sysName": "rts1.example",
+        "hostname": "192.168.10.31",
+        "ip": "192.168.10.31",
+        "status": 1,
+        "hardware": "C9300-24T",
+        "version": "17.9",
+        "uptime": 90061,
+    }]
+    sensors = [
+        {"sensor_descr": "Gi1/0/1 Tx Power", "sensor_current": -2.1,
+         "sensor_limit": 2, "sensor_limit_low": -12},
+        {"sensor_descr": "Gi1/0/1 Rx Power", "sensor_current": -15.2,
+         "sensor_limit": 2, "sensor_limit_low": -12},
+    ]
+    monkeypatch.setattr(bridge, "LIBRENMS_URL", "http://librenms")
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "token")
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda _token: devices)
+    monkeypatch.setattr(bridge, "fetch_librenms_dbm_sensors", lambda _token, _device_id: sensors)
+
+    device = bridge.handle_bot_query("查设备 RTS1")
+    assert device["ok"] is True
+    assert "C9300-24T" in device["text"]
+    assert "在线" in device["text"]
+
+    optical = bridge.handle_bot_query("查光功率 192.168.10.31 Gi1/0/1")
+    assert optical["ok"] is True
+    assert "Tx Power：-2.10 dBm" in optical["text"]
+    assert "Rx Power：-15.20 dBm（低于下限 -12）" in optical["text"]
+
+    abnormal = bridge.handle_bot_query("查异常光功率 RTS1")
+    assert "Tx Power" not in abnormal["text"]
+    assert "Rx Power" in abnormal["text"]
+
+
+def test_dbm_query_falls_back_to_device_health_when_global_sensor_page_is_incomplete(monkeypatch):
+    def fake_get(_token, path, timeout=15):
+        if path.startswith("/api/v0/resources/sensors"):
+            return {"sensors": []}
+        if path.endswith("/health/device_dbm"):
+            return {"graphs": [{"sensor_id": 91, "desc": "Gi1/0/1 Rx Power"}]}
+        if path.endswith("/health/device_dbm/91"):
+            return {"graphs": [{
+                "sensor_id": 91, "device_id": 7, "sensor_class": "dbm",
+                "sensor_descr": "Gi1/0/1 Rx Power", "sensor_current": -3.2,
+            }]}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(bridge, "_librenms_get_json", fake_get)
+    sensors = bridge.fetch_librenms_dbm_sensors("token", 7)
+    assert len(sensors) == 1
+    assert sensors[0]["sensor_current"] == -3.2
+
+
+def test_proactive_alert_chat_uses_name_and_never_guesses_between_groups(monkeypatch):
+    chats = _FakeResponse({
+        "code": 0,
+        "data": {"items": [
+            {"chat_id": "oc_shanghai", "name": "上海赛事告警"},
+            {"chat_id": "oc_beijing", "name": "北京赛事告警"},
+        ]},
+    })
+    monkeypatch.setattr(bridge.request, "urlopen", lambda _req, timeout: chats)
+    bridge._FEISHU_APP_CHAT["chat_id"] = ""
+    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "北京赛事告警")
+    monkeypatch.setattr(bridge, "EVENT_NAME", "")
+    assert bridge._feishu_app_chat_id("token") == "oc_beijing"
+
+    bridge._FEISHU_APP_CHAT["chat_id"] = ""
+    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "")
+    assert bridge._feishu_app_chat_id("token") == ""
+
+
 def test_online_dedupe_is_committed_only_after_delivery(monkeypatch, tmp_path):
     state_file = tmp_path / "online.json"
     outcomes = iter([False, True])

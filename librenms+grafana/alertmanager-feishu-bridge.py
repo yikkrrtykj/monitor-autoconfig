@@ -70,6 +70,7 @@ Env:
   INTERCONNECT_ALERT_JOBS comma list of SNMP jobs to watch
   INTERCONNECT_PORT_FILTER comma list of interface keywords/prefixes
 """
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from http.cookiejar import CookieJar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -177,6 +178,7 @@ DEVICE_PENDING_DELETE_REALERT_SECONDS = int(os.environ.get("DEVICE_PENDING_DELET
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
 FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "").strip()
+EVENT_NAME = os.environ.get("EVENT_NAME", "").strip()
 DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "false").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_FROM_PING = os.environ.get("DEVICE_AUTO_ADD_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-core-ping,infra-dist-ping")
@@ -518,6 +520,230 @@ def fetch_librenms_devices(token):
     )
     with request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8")).get("devices", [])
+
+
+def _librenms_get_json(token, path, timeout=15):
+    req = request.Request(
+        f"{LIBRENMS_URL}{path}",
+        headers={"X-Auth-Token": token},
+    )
+    with request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+
+
+BOT_HELP_TEXT = (
+    "可用命令：\n"
+    "• 查设备 <设备名或 IP>\n"
+    "• 查光功率 <设备名或 IP> [接口]\n"
+    "• 查异常光功率 <设备名或 IP> [接口]\n"
+    "示例：查光功率 192.168.10.31 Gi1/0/1\n"
+    "查询读取 LibreNMS 已采集的数据，不会额外轮询交换机。"
+)
+
+
+def _device_display(device):
+    return str(
+        device.get("display") or device.get("sysName") or device.get("hostname")
+        or device.get("ip") or device.get("device_id") or "未知设备"
+    ).strip()
+
+
+def _device_ip(device):
+    return str(device.get("ip") or device.get("hostname") or "").strip()
+
+
+def _match_librenms_devices(devices, needle):
+    term = str(needle or "").strip().casefold()
+    if not term:
+        return []
+    exact = []
+    partial = []
+    for device in devices:
+        fields = {
+            str(device.get(key) or "").strip().casefold()
+            for key in ("display", "sysName", "hostname", "ip", "device_id")
+            if str(device.get(key) or "").strip()
+        }
+        if term in fields:
+            exact.append(device)
+        elif any(term in field for field in fields):
+            partial.append(device)
+    return exact or partial
+
+
+def _number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def optical_sensor_state(sensor):
+    current = _number(sensor.get("sensor_current"))
+    if current is None:
+        return "unknown", "⚪", "无读数"
+    high = _number(sensor.get("sensor_limit"))
+    high_warn = _number(sensor.get("sensor_limit_warn"))
+    low = _number(sensor.get("sensor_limit_low"))
+    low_warn = _number(sensor.get("sensor_limit_low_warn"))
+    if high is not None and current >= high:
+        return "bad", "🔴", f"高于上限 {high:g}"
+    if low is not None and current <= low:
+        return "bad", "🔴", f"低于下限 {low:g}"
+    if high_warn is not None and current >= high_warn:
+        return "warn", "🟡", f"高于预警 {high_warn:g}"
+    if low_warn is not None and current <= low_warn:
+        return "warn", "🟡", f"低于预警 {low_warn:g}"
+    return "good", "🟢", "正常"
+
+
+def fetch_librenms_dbm_sensors(token, device_id):
+    # resources/sensors returns the current value and LibreNMS limits in one
+    # request.  Filter again client-side because older LibreNMS releases ignore
+    # the query parameters rather than rejecting them.
+    query = parse.urlencode({"device_id": device_id, "sensor_class": "dbm"})
+    data = _librenms_get_json(token, f"/api/v0/resources/sensors?{query}")
+    wanted = str(device_id)
+    sensors = [
+        sensor for sensor in (data.get("sensors") or [])
+        if str(sensor.get("device_id")) == wanted
+        and str(sensor.get("sensor_class") or "").lower() == "dbm"
+        and str(sensor.get("sensor_deleted") or "0").strip().lower() not in ("1", "true", "yes")
+    ]
+    by_id = {str(sensor.get("sensor_id")): sensor for sensor in sensors if sensor.get("sensor_id") is not None}
+
+    # Some LibreNMS versions ignore the resources query filters and paginate the
+    # global sensor list. The device health route is authoritative for which dBm
+    # sensors belong to this switch; fetch any missing rows concurrently.
+    encoded_ref = parse.quote(wanted, safe="")
+    try:
+        health = _librenms_get_json(token, f"/api/v0/devices/{encoded_ref}/health/device_dbm")
+    except Exception:
+        if sensors:
+            return sensors
+        raise
+    entries = health.get("graphs") or []
+    missing = [
+        str(item.get("sensor_id")) for item in entries
+        if item.get("sensor_id") is not None and str(item.get("sensor_id")) not in by_id
+    ][:128]
+
+    def fetch_one(sensor_id):
+        detail = _librenms_get_json(
+            token,
+            f"/api/v0/devices/{encoded_ref}/health/device_dbm/{parse.quote(sensor_id, safe='')}",
+        )
+        rows = detail.get("graphs") or []
+        return rows[0] if rows else None
+
+    if missing:
+        with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
+            futures = {pool.submit(fetch_one, sensor_id): sensor_id for sensor_id in missing}
+            for future in as_completed(futures):
+                try:
+                    sensor = future.result()
+                except Exception as exc:
+                    log(f"[BOT] dBm sensor {futures[future]} read failed: {exc}")
+                    continue
+                if sensor:
+                    by_id[str(sensor.get("sensor_id") or futures[future])] = sensor
+    return list(by_id.values()) if by_id else sensors
+
+
+def _format_uptime(seconds):
+    try:
+        value = max(0, int(seconds or 0))
+    except (TypeError, ValueError):
+        return "未知"
+    days, remain = divmod(value, 86400)
+    hours, remain = divmod(remain, 3600)
+    minutes = remain // 60
+    return f"{days}天 {hours}小时 {minutes}分" if days else f"{hours}小时 {minutes}分"
+
+
+def _split_device_and_interface(argument):
+    parts = str(argument or "").strip().split(None, 1)
+    return (parts[0], parts[1] if len(parts) > 1 else "") if parts else ("", "")
+
+
+def handle_bot_query(text):
+    """Execute a read-only Feishu command against already-polled LibreNMS data."""
+    command = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not command or command.casefold() in {"帮助", "help", "?", "命令"}:
+        return {"ok": True, "text": BOT_HELP_TEXT}
+
+    optical = re.match(r"^(查|查询)?(异常)?光功率(?:\s+(.+))?$", command, re.IGNORECASE)
+    device_cmd = re.match(r"^(查|查询)?设备(?:\s+(.+))?$", command, re.IGNORECASE)
+    if not optical and not device_cmd:
+        return {"ok": True, "text": f"未识别命令。\n{BOT_HELP_TEXT}"}
+
+    argument = (optical.group(3) if optical else device_cmd.group(2)) or ""
+    device_term, interface_term = _split_device_and_interface(argument)
+    if not device_term:
+        usage = "查光功率 <设备名或 IP> [接口]" if optical else "查设备 <设备名或 IP>"
+        return {"ok": False, "text": f"请指定设备。用法：{usage}"}
+    token = _librenms_token()
+    if not token or not LIBRENMS_URL:
+        return {"ok": False, "text": "LibreNMS API 尚未就绪，请稍后再试。"}
+    try:
+        devices = fetch_librenms_devices(token)
+    except Exception as exc:
+        log(f"[BOT] device query failed: {exc}")
+        return {"ok": False, "text": "读取 LibreNMS 设备列表失败，请稍后再试。"}
+    matches = _match_librenms_devices(devices, device_term)
+    if not matches:
+        return {"ok": False, "text": f"没有找到设备：{device_term}"}
+    if len(matches) > 1:
+        choices = "、".join(f"{_device_display(item)}({_device_ip(item)})" for item in matches[:8])
+        return {"ok": False, "text": f"匹配到多个设备，请输入更完整的名称或 IP：\n{choices}"}
+    device = matches[0]
+    name = _device_display(device)
+    ip = _device_ip(device)
+
+    if device_cmd:
+        online = bool(int(device.get("status") or 0)) and not bool(int(device.get("disabled") or 0))
+        status = "🟢 在线" if online else "🔴 离线或停用"
+        model = str(device.get("hardware") or "未知型号").strip()
+        version = str(device.get("version") or "").strip()
+        return {
+            "ok": True,
+            "text": (
+                f"设备：{name}\nIP：{ip or '未知'}\n状态：{status}\n"
+                f"型号：{model}{f' / {version}' if version else ''}\n"
+                f"运行时间：{_format_uptime(device.get('uptime'))}"
+            ),
+        }
+
+    try:
+        sensors = fetch_librenms_dbm_sensors(token, device.get("device_id"))
+    except Exception as exc:
+        log(f"[BOT] optical query failed for {name}: {exc}")
+        return {"ok": False, "text": f"读取 {name} 的光功率失败，请稍后再试。"}
+    if interface_term:
+        wanted = interface_term.casefold()
+        sensors = [s for s in sensors if wanted in str(s.get("sensor_descr") or "").casefold()]
+    abnormal_only = bool(optical.group(2))
+    rows = []
+    for sensor in sorted(sensors, key=lambda item: str(item.get("sensor_descr") or "")):
+        level, icon, detail = optical_sensor_state(sensor)
+        if abnormal_only and level not in ("bad", "warn"):
+            continue
+        current = _number(sensor.get("sensor_current"))
+        value = "无读数" if current is None else f"{current:.2f} dBm"
+        descr = str(sensor.get("sensor_descr") or sensor.get("sensor_index") or "未知接口")
+        suffix = "" if detail == "正常" else f"（{detail}）"
+        rows.append(f"{icon} {descr}：{value}{suffix}")
+    if not rows:
+        if sensors and abnormal_only:
+            return {"ok": True, "text": f"{name}（{ip}）未发现超出 LibreNMS 阈值的光功率。"}
+        target = f"，接口包含“{interface_term}”" if interface_term else ""
+        return {"ok": False, "text": f"{name}（{ip}）没有可用的 dBm 光功率数据{target}。"}
+    shown = rows[:40]
+    more = f"\n另有 {len(rows) - len(shown)} 项，请加接口名缩小范围。" if len(rows) > len(shown) else ""
+    return {
+        "ok": True,
+        "text": f"光功率：{name}（{ip}）\n" + "\n".join(shown) + more,
+    }
 
 
 def _find_librenms_device_by_ip(token, ip):
@@ -1328,8 +1554,14 @@ def _feishu_tenant_token():
 
 
 def _feishu_app_chat_id(token):
-    """FEISHU_CHAT_ID 优先；未配置则取机器人所在的第一个群并记日志。"""
-    if FEISHU_CHAT_ID:
+    """Resolve the proactive alert group safely.
+
+    Incoming @ queries always reply to their source message and do not use this
+    setting.  For proactive alerts an ``oc_`` id is accepted directly; a group
+    name is resolved from the bot's chat list.  With several groups we never
+    silently choose the first one, which could send one venue's alert elsewhere.
+    """
+    if FEISHU_CHAT_ID.startswith("oc_"):
         return FEISHU_CHAT_ID
     if _FEISHU_APP_CHAT["chat_id"]:
         return _FEISHU_APP_CHAT["chat_id"]
@@ -1343,15 +1575,38 @@ def _feishu_app_chat_id(token):
     except Exception as exc:
         log(f"[APP] chat list failed: {exc}")
         return ""
-    items = ((data.get("data") or {}).get("items")) or []
-    for item in items:
-        chat_id = str((item or {}).get("chat_id") or "")
-        if chat_id:
-            _FEISHU_APP_CHAT["chat_id"] = chat_id
-            log(f"[APP] auto-selected chat {chat_id} ({str((item or {}).get('name'))[:40]}); "
-                "set FEISHU_CHAT_ID to pin a specific group")
-            return chat_id
-    log("[APP] bot is not in any chat; add the app bot to the alert group")
+    items = [item for item in (((data.get("data") or {}).get("items")) or []) if item.get("chat_id")]
+
+    def match_name(value):
+        wanted = str(value or "").strip().casefold()
+        if not wanted:
+            return []
+        exact = [item for item in items if str(item.get("name") or "").strip().casefold() == wanted]
+        if exact:
+            return exact
+        return [item for item in items if wanted in str(item.get("name") or "").strip().casefold()]
+
+    candidates = match_name(FEISHU_CHAT_ID) if FEISHU_CHAT_ID else match_name(EVENT_NAME)
+    reason = "configured group name" if FEISHU_CHAT_ID else "event name"
+    if len(candidates) == 1:
+        item = candidates[0]
+    elif not FEISHU_CHAT_ID and not candidates and len(items) == 1:
+        item = items[0]
+        reason = "only bot group"
+    else:
+        if not items:
+            log("[APP] bot is not in any chat; add the app bot to the alert group")
+        elif FEISHU_CHAT_ID:
+            log(f"[APP] alert group name '{FEISHU_CHAT_ID}' is missing or ambiguous")
+        else:
+            names = ", ".join(str(entry.get("name") or entry.get("chat_id")) for entry in items[:10])
+            log(f"[APP] bot belongs to multiple groups ({names}); set FEISHU_CHAT_ID to a group name or oc_ id")
+        return ""
+    chat_id = str(item.get("chat_id") or "")
+    if chat_id:
+        _FEISHU_APP_CHAT["chat_id"] = chat_id
+        log(f"[APP] selected chat {chat_id} ({str(item.get('name'))[:40]}) by {reason}")
+        return chat_id
     return ""
 
 
@@ -3866,7 +4121,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_test_alert()
         if self.path == "/retire/resolve":
             return self._handle_retire_resolve()
+        if self.path == "/bot/query":
+            return self._handle_bot_query()
         return self._send(404, b"not found")
+
+    def _handle_bot_query(self):
+        payload = self._read_json()
+        result = handle_bot_query(str(payload.get("text") or ""))
+        log(f"[BOT] query={str(payload.get('text') or '')[:120]!r} ok={result.get('ok')}")
+        return self._send(
+            200,
+            json.dumps(result, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
 
     def _handle_retire_resolve(self):
         payload = self._read_json()

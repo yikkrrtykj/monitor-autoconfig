@@ -74,7 +74,7 @@ window.BIGSCREEN_CONFIG.ispNames = "";
 window.BIGSCREEN_CONFIG.ispAutoDiscovery = "true";
 window.BIGSCREEN_CONFIG.ispIps = "";
 const autoIspLayers = buildTopologyLayers([
-  target("infra-isp-ping", "telcom", "219.140.134.161"),
+  { ...target("infra-isp-ping", "telcom", "219.140.134.161"), wanIp: "101.95.176.198" },
   target("infra-isp-ping", "unicom", "113.57.164.49"),
   target("infra-core-ping", "Core", "192.168.10.254")
 ]);
@@ -83,6 +83,8 @@ assert.deepStrictEqual(
   ["telcom", "unicom"],
   "auto-discover shows only discovered ISPs, no ISP1/ISP2 placeholders"
 );
+assert.strictEqual(autoIspLayers.isps.find((node) => node.name === "telcom").ip, "101.95.176.198", "topology shows WAN IP, not probe gateway");
+assert.strictEqual(autoIspLayers.isps.find((node) => node.name === "telcom").probeIp, "219.140.134.161");
 window.BIGSCREEN_CONFIG.ispNames = "ISP1,ISP2";
 window.BIGSCREEN_CONFIG.ispAutoDiscovery = "false";
 window.BIGSCREEN_CONFIG.ispIps = "ISP1:203.170.210.114,ISP2:202.133.189.82";

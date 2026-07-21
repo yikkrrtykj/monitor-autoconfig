@@ -48,6 +48,7 @@
   let chartTimer = null;
   let seenUpTimer = null;
   let infraSeenUp = null;  // Set of "deployed" (ever-online) infra instance names; null/empty = show all
+  let infraCurrentTargets = null; // Current Prometheus targets; removes retired ISP/history series immediately
   let tournamentTimer = null;
   let opsTimer = null;
   let controlTimer = null;
@@ -770,7 +771,18 @@
   // so its long-window query does not run every 5s. Keep it on API failure.
   async function refreshInfraSeenUp() {
     try {
-      infraSeenUp = activeSeriesNames(await prometheusInstant(activeInfraPingQuery()));
+      const [seenItems, currentTargets] = await Promise.all([
+        prometheusInstant(activeInfraPingQuery()),
+        fetchTopologyTargets()
+      ]);
+      infraSeenUp = activeSeriesNames(seenItems);
+      infraCurrentTargets = new Set();
+      currentTargets.forEach((target) => {
+        [target.instance, target.targetIp, target.displayName]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+          .forEach((value) => infraCurrentTargets.add(value));
+      });
     } catch (error) {
       // transient failure: keep the previous set
     }
@@ -779,8 +791,12 @@
   // Drop infra items/series that have never been online (configured-but-absent
   // ping targets). Falls back to showing all until the set is known or empty.
   function filterDeployed(list, getName) {
-    if (!infraSeenUp || infraSeenUp.size === 0) return list;
-    return list.filter((entry) => infraSeenUp.has(getName(entry)));
+    return list.filter((entry) => {
+      const name = getName(entry);
+      if (infraCurrentTargets && infraCurrentTargets.size && !infraCurrentTargets.has(name)) return false;
+      if (infraSeenUp && infraSeenUp.size && !infraSeenUp.has(name)) return false;
+      return true;
+    });
   }
 
   async function refreshGauges() {
@@ -1481,7 +1497,7 @@
       result.textContent = "配置已保存，正在测试核心交换机连接…";
       const connection = await testDhcpConnection();
       result.className = `network-tool-result ${connection.privileged ? "good" : "warn"}`;
-      result.textContent = `核心 IP 和 Telnet 信息已保存。${connection.message} · ${connection.host}:${connection.port} · 完整连接与登录耗时 ${connection.latencyMs} ms（不是 Ping 延迟）`;
+      result.textContent = `核心 IP 和 Telnet 信息已保存。${connection.message} · ${connection.host}:${connection.port}`;
     } catch (error) {
       result.className = "network-tool-result bad";
       result.textContent = settingsSaved
@@ -1924,12 +1940,12 @@
       </section>
       <section class="config-section">
         <h3>告警</h3>
-        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。App Secret 仅在已登录的赛事控制台编辑，应用时会写入本机 .env。</p>
+        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。App Secret 仅在已登录的赛事控制台编辑，应用时会写入本机 .env。群内 @ 查询会自动回复原群，不需要填写目标群；下面的群名/Chat ID 仅用于系统主动推送告警。</p>
         <div class="config-fields">
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
-          ${configInput("alerts.feishu_chat_id", "告警群 Chat ID（可选）", { placeholder: "留空自动选择机器人所在的第一个群" })}
+          ${configInput("alerts.feishu_chat_id", "主动告警群（群名或 Chat ID，可选）", { placeholder: "单群可留空；多群填写群名或 oc_..." })}
         </div>
       </section>
       <section class="config-section">
@@ -3976,7 +3992,7 @@
       // 与网络总览一致：隐藏从没上线过的设备（按 instance 名匹配 seen-up 集合）。
       const seenUp = activeSeriesNames(seenItems);
       const targets = seenUp.size
-        ? allTargets.filter((t) => t.job === "infra-fw-unit-snmp" || seenUp.has(t.instance))
+        ? allTargets.filter((t) => t.job === "infra-fw-unit-snmp" || t.job === "infra-isp-ping" || seenUp.has(t.instance))
         : allTargets;
       const layers = buildTopologyLayers(targets);
       const containerWidth = Math.max(640, canvas.clientWidth || 1200);

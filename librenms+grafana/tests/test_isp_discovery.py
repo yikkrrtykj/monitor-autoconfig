@@ -169,6 +169,56 @@ def test_foreign_carrier_names_match_by_keyword():
     assert {item["name"] for item in results} == {"Vodafone-Line", "Singtel"}
 
 
+def test_generic_interface_names_use_public_default_routes_and_console_names():
+    """A firewall may expose only ethernet0/x while the console owns the labels."""
+    walks = {
+        disco.OID_IF_ALIAS: {},
+        disco.OID_IF_NAME: {
+            f"{disco.OID_IF_NAME}.1": "ethernet0/0",
+            f"{disco.OID_IF_NAME}.3": "ethernet0/2",
+            f"{disco.OID_IF_NAME}.5": "ethernet0/4",
+            f"{disco.OID_IF_NAME}.7": "ethernet0/6",
+            f"{disco.OID_IF_NAME}.9": "ethernet0/8",
+        },
+        disco.OID_IP_AD_ENT_IFINDEX: {
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.101.95.176.198": "1",
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.116.238.242.155": "3",
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.116.128.201.226": "5",
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.61.169.238.58": "7",
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.192.168.9.1": "9",
+        },
+        disco.OID_IP_AD_ENT_NETMASK: {
+            f"{disco.OID_IP_AD_ENT_NETMASK}.101.95.176.198": "255.255.255.252",
+            f"{disco.OID_IP_AD_ENT_NETMASK}.116.238.242.155": "255.255.255.248",
+            f"{disco.OID_IP_AD_ENT_NETMASK}.116.128.201.226": "255.255.255.240",
+            f"{disco.OID_IP_AD_ENT_NETMASK}.61.169.238.58": "255.255.255.248",
+            f"{disco.OID_IP_AD_ENT_NETMASK}.192.168.9.1": "255.255.255.0",
+        },
+        disco.OID_CIDR_DEFAULT_NEXTHOP: {
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.101.95.176.197": "101.95.176.197",
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.116.238.242.153": "116.238.242.153",
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.116.128.201.225": "116.128.201.225",
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.61.169.238.57": "61.169.238.57",
+            f"{disco.OID_CIDR_DEFAULT_NEXTHOP}.0.192.168.9.254": "192.168.9.254",
+        },
+        disco.OID_CIDR_DEFAULT_IFINDEX: {
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.101.95.176.197": "1",
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.116.238.242.153": "3",
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.116.128.201.225": "5",
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.61.169.238.57": "7",
+            f"{disco.OID_CIDR_DEFAULT_IFINDEX}.0.192.168.9.254": "9",
+        },
+    }
+    names = ["telcom-100M-长期", "telcom-1000M", "unicom-1000M", "telcom-100M"]
+    results = disco.discover_from_walks(walks, disco.wan_keywords("telecom,unicom,WAN"), names)
+    assert [(item["name"], item["wan_ip"], item["gateway"]) for item in results] == [
+        ("telcom-1000M", "116.238.242.155", "116.238.242.153"),
+        ("telcom-100M", "61.169.238.58", "61.169.238.57"),
+        ("telcom-100M-长期", "101.95.176.198", "101.95.176.197"),
+        ("unicom-1000M", "116.128.201.226", "116.128.201.225"),
+    ]
+
+
 def test_target_ips_parses_named_lists():
     assert disco.target_ips("FW:192.168.9.1, 192.168.9.2\ntelecom:1.2.3.4") == [
         "192.168.9.1", "192.168.9.2", "1.2.3.4",
