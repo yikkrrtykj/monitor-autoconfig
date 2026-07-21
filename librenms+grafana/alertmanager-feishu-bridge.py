@@ -1566,7 +1566,10 @@ def isp_bandwidth_watcher():
             if data_missing_alerting:
                 missing = now - data_missing_since if data_missing_since else 0
                 log(f"[ISP] WAN traffic series recovered after {int(missing)}s gap")
-                send_feishu(build_isp_data_missing_card(missing, recovered=True))
+                # 发送成功才清警报位；失败下轮重试，恢复卡不能悄悄丢
+                if not send_feishu(build_isp_data_missing_card(missing, recovered=True)):
+                    time.sleep(ISP_ALERT_POLL_INTERVAL)
+                    continue
             data_seen = True
             data_missing_since = None
             data_missing_alerting = False
@@ -1574,12 +1577,14 @@ def isp_bandwidth_watcher():
             if data_missing_since is None:
                 data_missing_since = now
             elif not data_missing_alerting and now - data_missing_since >= ISP_DATA_MISSING_ALERT_SECONDS:
-                data_missing_alerting = True
                 log(
                     "[ISP] ALERT WAN traffic series missing for "
                     f"{int(now - data_missing_since)}s; check firewall SNMP and FIREWALL_WAN_IF_FILTER"
                 )
-                send_feishu(build_isp_data_missing_card(now - data_missing_since, recovered=False))
+                # 与设备/带宽告警一致：投递确认后才置位，失败则下轮重发。
+                # "监控静默丢数据"的警报自己更不能被静默丢掉。
+                if send_feishu(build_isp_data_missing_card(now - data_missing_since, recovered=False)):
+                    data_missing_alerting = True
 
         if now - last_status_log >= ISP_ALERT_STATUS_INTERVAL:
             log_isp_status(rates, bandwidth_cfg)
@@ -3445,8 +3450,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            body = json.dumps(bridge_health_payload(), ensure_ascii=False).encode("utf-8")
-            return self._send(200, body, "application/json; charset=utf-8")
+            payload = bridge_health_payload()
+            # 看门狗线程死掉时必须以非 2xx 暴露——compose 健康检查和 apply 后的
+            # 运行时验证都只看状态码，永远 200 会让"设备离线监控已停"完全隐形。
+            # 仅未配置 Feishu token 不算 503：那是合法的未启用状态（ready=false
+            # 会在预检 JSON 里说明），503 了反而会让每次 apply 都被误判回滚。
+            status = 200 if not payload.get("deadWatchers") else 503
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            return self._send(status, body, "application/json; charset=utf-8")
         return self._send(404, b"not found")
 
     def log_message(self, fmt, *args):

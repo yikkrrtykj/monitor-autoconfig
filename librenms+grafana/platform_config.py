@@ -505,7 +505,10 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         add("warn", "networks.player_subnets", "没有配置选手有线网段")
     if not networks.get("switch_management_ranges"):
         add("warn", "networks.switch_management_ranges", "建议填写交换机管理网段，方便 LibreNMS 自动发现")
-    if not isp.get("auto_discovery") and not isp.get("links"):
+    # auto_discovery 缺省视为开启——所有读取处必须用同一个默认值，
+    # 否则同一份配置在相邻两条校验里被同时当成"开"和"关"。
+    isp_auto_discovery = bool(isp.get("auto_discovery", True))
+    if not isp_auto_discovery and not isp.get("links"):
         add("warn", "isp.links", "关闭自动发现时建议配置 ISP 探测目标")
     for idx, item in enumerate(isp.get("links") or []):
         path = f"isp.links[{idx}]"
@@ -515,7 +518,9 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         if item and not item.get("ip"):
             # 自动发现开着时，只填"名称+带宽"来绑定 WAN 口带宽是合法用法：
             # 网关 ping 目标从防火墙路由表自动发现，公网 IP 只影响拓扑展示。
-            if isp.get("auto_discovery", True):
+            # 关闭自动发现时，带 ping 探测目标的行同样不该被公网 IP 卡死
+            # （IP 只影响拓扑展示，预检会把 bad 升级成部署阻塞项）。
+            if isp_auto_discovery or item.get("ping"):
                 add("warn", f"{path}.ip", "运营商公网 IP 未填：拓扑不展示该线路、LibreNMS 不加 ping 设备；带宽/网关仍按名称自动绑定")
             else:
                 add("bad", f"{path}.ip", "运营商公网 IP 必填，用于拓扑展示并加入 LibreNMS")

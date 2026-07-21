@@ -225,7 +225,11 @@ docker compose up -d --remove-orphans --build
 # These services load bind-mounted source only when their process starts. A
 # normal `compose up` may keep an existing container when only source files
 # changed, leaving nginx's copied web files or Python's imported modules stale.
-docker compose restart bigscreen platform-api alertmanager-feishu-bridge
+# Restart individually with || true: under `set -e`, one absent/not-yet-created
+# service must not abort the deploy after the stack already came up fine.
+for service in bigscreen platform-api alertmanager-feishu-bridge; do
+  docker compose restart "$service" || echo "[deploy] WARN: restart $service failed (service missing or not running)"
+done
 
 echo "[deploy] Current service status:"
 docker compose ps

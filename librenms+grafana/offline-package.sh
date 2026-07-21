@@ -88,6 +88,9 @@ tar \
   --exclude='./grafana-provisioning-rendered' \
   --exclude='./librenms-rrdcached-journal' \
   --exclude='./*.tar.gz' \
+  --exclude='./images.tar' \
+  --exclude='./images.tar.sha256' \
+  --exclude='./image-list.txt' \
   -cf - . | tar -xf - -C "$OUT_DIR"
 
 cat > "$OUT_DIR/OFFLINE-README.txt" <<'EOF'

@@ -398,3 +398,45 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     assert "/seat-check" not in app
     assert 'document.visibilityState === "hidden"' in app
     assert "stopDhcpRefresh()" in app
+
+
+def test_iperf_internal_targets_gated_by_env(tmp_path):
+    api = load_api(tmp_path)
+    # 字面量内网/环回地址一律判内网;公网字面量放行
+    assert api._iperf_target_is_internal("192.168.10.5") is True
+    assert api._iperf_target_is_internal("10.0.0.1") is True
+    assert api._iperf_target_is_internal("127.0.0.1") is True
+    assert api._iperf_target_is_internal("169.254.169.254") is True
+    assert api._iperf_target_is_internal("23.249.58.14") is False
+    # 默认开关关闭
+    assert api.IPERF3_ALLOW_INTERNAL is False
+    with pytest.raises(api.DiagnosticError) as exc:
+        api.run_iperf_test({"server": "192.168.10.5"})
+    assert "PLATFORM_IPERF3_ALLOW_INTERNAL" in str(exc.value.payload.get("error"))
+    # 打开开关后内网地址通过校验(走到端口/参数阶段而不是被内网拦截)
+    api.IPERF3_ALLOW_INTERNAL = True
+    try:
+        with pytest.raises(api.DiagnosticError) as exc2:
+            api.run_iperf_test({"server": "192.168.10.5", "duration": 99})
+        assert "测试时长" in str(exc2.value.payload.get("error"))
+    finally:
+        api.IPERF3_ALLOW_INTERNAL = False
+
+
+def test_iperf_json_rejects_non_object_payloads(tmp_path):
+    api = load_api(tmp_path)
+    for bad in ("[1,2,3]", "42", '"text"'):
+        with pytest.raises(ValueError):
+            api.parse_iperf3_json(bad)
+    # 非 dict 的嵌套结构不炸 AttributeError,按 ValueError 处理
+    with pytest.raises(ValueError):
+        api.parse_iperf3_json(json.dumps({"end": [], "intervals": "x"}))
+
+
+def test_dhcp_credentials_reject_control_characters(tmp_path):
+    api = load_api(tmp_path)
+    api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
+    with pytest.raises(api.DiagnosticError):
+        api.save_dhcp_settings({"username": "admin\nshow run", "password": "x", "enablePassword": "", "port": 23})
+    with pytest.raises(api.DiagnosticError):
+        api.save_dhcp_settings({"username": "admin", "password": "pass\r\nenable", "enablePassword": "", "port": 23})

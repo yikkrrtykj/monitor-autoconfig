@@ -173,9 +173,28 @@ def test_dhcp_get_preserves_diagnostic_http_status():
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            status, _, payload = request_json(
-                f"http://127.0.0.1:{server.server_port}/network/dhcp"
-            )
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            # 未登录必须 401：这个接口会驱动对核心交换机的特权 Telnet 会话
+            status, _, payload = request_json(f"{base_url}/network/dhcp")
+            assert status == 401
+            assert payload["error"] == "需要登录"
+
+            status, headers, _ = request_json(f"{base_url}/auth/login", {
+                "username": "admin",
+                "password": "global",
+            })
+            assert status == 200
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+            status, headers, _ = request_json(f"{base_url}/auth/change-password", {
+                "currentPassword": "global",
+                "newPassword": "StrongPass2026",
+                "confirmPassword": "StrongPass2026",
+            }, cookie=cookie)
+            assert status == 200
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+
+            # 登录后 DiagnosticError 的 HTTP 状态原样透传
+            status, _, payload = request_json(f"{base_url}/network/dhcp", cookie=cookie)
             assert status == 503
             assert payload == {"ok": False, "error": "尚未配置交换机密码"}
         finally:

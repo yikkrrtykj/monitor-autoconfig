@@ -2565,10 +2565,10 @@
           result.innerHTML = `
             <div class="network-result-summary">
               ${(response.results || []).map((item) => `
-                <div><span>${labels[item.direction] || item.direction} · 接收端平均</span><strong>${Number(item.mbps || 0).toFixed(2)} Mbps</strong><small>${formatIperfBytes(item.bytes)} · 端口 ${item.port} · 重传 ${Number(item.retransmits || 0)}</small></div>
+                <div><span>${labels[item.direction] || escapeHtml(item.direction)} · 接收端平均</span><strong>${Number(item.mbps || 0).toFixed(2)} Mbps</strong><small>${formatIperfBytes(item.bytes)} · 端口 ${Number(item.port) || "?"} · 重传 ${Number(item.retransmits || 0)}</small></div>
               `).join("")}
             </div>
-            <p class="network-result-note">${escapeHtml(protocol)} · 服务器 ${escapeHtml(response.server)} · ${response.parallel} 路并发 · 单向 ${response.duration} 秒</p>
+            <p class="network-result-note">${escapeHtml(protocol)} · 服务器 ${escapeHtml(response.server)} · ${Number(response.parallel) || "?"} 路并发 · 单向 ${Number(response.duration) || "?"} 秒</p>
             <div class="iperf-direction-details">
               ${(response.results || []).map((item) => iperfDirectionDetails(item, protocol)).join("")}
             </div>

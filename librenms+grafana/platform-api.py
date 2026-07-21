@@ -9,15 +9,18 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
 import shutil
 import shlex
 import secrets
+import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -64,6 +67,9 @@ IPERF3_COMMAND = os.environ.get(
 )
 IPERF3_TIMEOUT = max(20, min(300, int(os.environ.get("PLATFORM_IPERF3_TIMEOUT", "60"))))
 IPERF3_CONNECT_TIMEOUT_MS = max(500, min(10000, int(os.environ.get("PLATFORM_IPERF3_CONNECT_TIMEOUT_MS", "3000"))))
+# 默认只允许公网测速目标。自定义公网节点随便填；只有要测内网 iperf3 服务器时
+# 才需要打开这个开关——否则测速接口会变成对内网的 TCP 端口探测器。
+IPERF3_ALLOW_INTERNAL = os.environ.get("PLATFORM_IPERF3_ALLOW_INTERNAL", "").lower() in ("1", "true", "yes", "on")
 DHCP_SWITCH_USERNAME = os.environ.get("PLATFORM_DHCP_SWITCH_USERNAME", "").strip()
 DHCP_SWITCH_PASSWORD = os.environ.get("PLATFORM_DHCP_SWITCH_PASSWORD", "")
 DHCP_SWITCH_ENABLE_PASSWORD = os.environ.get("PLATFORM_DHCP_SWITCH_ENABLE_PASSWORD", "")
@@ -149,10 +155,18 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def write_json_file(path: Path, payload) -> None:
+def write_json_file(path: Path, payload, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if mode is None:
+        tmp.write_text(text, encoding="utf-8")
+    else:
+        # 含密钥的文件（如 DHCP Telnet 密码）从创建那一刻就必须是私有权限，
+        # 不能先按默认 umask 落盘再补 chmod——那样存在世界可读的窗口。
+        fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
     tmp.replace(path)
 
 
@@ -643,7 +657,11 @@ def run_precheck() -> dict:
 
     # 5. 飞书告警链路
     try:
-        bridge_health = _http_json(f"{BRIDGE_URL}/health")
+        try:
+            bridge_health = _http_json(f"{BRIDGE_URL}/health")
+        except urllib.error.HTTPError as exc:
+            # 看门狗线程死亡时桥接按 503 返回同样的 JSON——读出来照常展示细节
+            bridge_health = json.loads(exc.read().decode("utf-8", errors="replace") or "{}")
         if not bridge_health.get("ready"):
             details = []
             if not bridge_health.get("tokenConfigured") and not bridge_health.get("dryRun"):
@@ -1070,6 +1088,36 @@ def validate_network_host(value: str, field: str = "服务器") -> str:
     return host
 
 
+def _iperf_target_is_internal(host: str) -> bool:
+    """True when the target is (or resolves to) a non-public address.
+
+    覆盖私网/环回/链路本地/保留/组播/未指定地址；域名会先解析再逐个地址判断，
+    防止用一个解析到内网的域名绕过。解析失败按"非内网"放行——反正 iperf3
+    连不上会给出明确报错，这里不用抢先拦。
+    """
+    def non_public(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        return (
+            addr.is_private or addr.is_loopback or addr.is_link_local
+            or addr.is_reserved or addr.is_multicast or addr.is_unspecified
+        )
+
+    try:
+        return non_public(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    for info in infos:
+        try:
+            if non_public(ipaddress.ip_address(info[4][0])):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def configured_core_switch_host() -> str:
     """Return the one configured core switch IP used by the DHCP dashboard."""
     config = parse_config_text(read_config_text())
@@ -1122,17 +1170,21 @@ def save_dhcp_settings(data: dict) -> dict:
         raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 用户名过长")
     if len(password) > 512 or len(enable_password) > 512:
         raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 密码过长")
+    # 凭据会被原样写进 Telnet 会话，换行/控制字符等于向交换机注入额外命令行。
+    for value in (username, password, enable_password):
+        if any(ord(ch) < 0x20 or ch == "\x7f" for ch in value):
+            raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 凭据不能包含换行或控制字符")
     write_json_file(DHCP_SETTINGS_PATH, {
         "username": username,
         "password": password,
         "enablePassword": enable_password,
         "port": port,
         "updatedAt": int(time.time()),
-    })
+    }, mode=0o600)
     try:
         os.chmod(DHCP_SETTINGS_PATH, 0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        print(f"[platform-api] dhcp settings chmod failed: {exc}", flush=True)
     DHCP_CACHE.clear()
     return get_dhcp_settings()
 
@@ -1468,12 +1520,20 @@ def parse_iperf3_json(text: str) -> dict:
         if start < 0 or end <= start:
             raise ValueError("iperf3 未返回可解析的 JSON")
         payload = json.loads(raw[start:end + 1])
+    # 合法但非对象的 JSON（裸数组/数字/被代理截断的响应）必须走 ValueError，
+    # 否则 AttributeError 会越过调用方的逐端口重试直接把整次测速打成 500。
+    if not isinstance(payload, dict):
+        raise ValueError("iperf3 返回的 JSON 不是对象")
     if payload.get("error"):
         raise ValueError(str(payload["error"]))
-    ending = payload.get("end") or {}
-    received = ending.get("sum_received") or {}
-    sent = ending.get("sum_sent") or {}
-    fallback = ending.get("sum") or {}
+
+    def _as_dict(value) -> dict:
+        return value if isinstance(value, dict) else {}
+
+    ending = _as_dict(payload.get("end"))
+    received = _as_dict(ending.get("sum_received"))
+    sent = _as_dict(ending.get("sum_sent"))
+    fallback = _as_dict(ending.get("sum"))
     bits_per_second = received.get("bits_per_second")
     if bits_per_second is None:
         bits_per_second = sent.get("bits_per_second", fallback.get("bits_per_second"))
@@ -1490,9 +1550,14 @@ def parse_iperf3_json(text: str) -> dict:
 
     intervals = []
     for item in payload.get("intervals") or []:
-        interval = item.get("sum") or {}
+        if not isinstance(item, dict):
+            continue
+        interval = _as_dict(item.get("sum"))
         if not interval and item.get("streams"):
-            streams = item["streams"]
+            streams = [stream for stream in item["streams"] if isinstance(stream, dict)]
+        else:
+            streams = []
+        if not interval and streams:
             interval = {
                 "start": min(float(stream.get("start") or 0) for stream in streams),
                 "end": max(float(stream.get("end") or 0) for stream in streams),
@@ -1631,6 +1696,12 @@ def run_iperf_test(data: dict) -> dict:
         data.get("server") or "speedtest.hkg12.hk.leaseweb.net",
         "测速服务器",
     )
+    if not IPERF3_ALLOW_INTERNAL and _iperf_target_is_internal(host):
+        raise DiagnosticError(
+            HTTPStatus.BAD_REQUEST,
+            "测速目标是内网地址。默认仅允许公网节点；确需测内网请在 .env 设置 "
+            "PLATFORM_IPERF3_ALLOW_INTERNAL=true 后重新应用配置",
+        )
     ports = parse_port_range(data.get("ports"), "5201-5210", 10)
     try:
         duration = int(data.get("duration") or 10)
@@ -1668,15 +1739,17 @@ def run_iperf_test(data: dict) -> dict:
         finishedAt=None,
         _startedMonotonic=started_monotonic,
         elapsedSeconds=0,
-        maxSeconds=IPERF3_TIMEOUT,
+        maxSeconds=IPERF3_TIMEOUT * len(directions),
         message="正在准备测速",
     )
     try:
-        deadline = time.monotonic() + IPERF3_TIMEOUT
         results = []
         preferred_ports = list(ports)
         for direction_index, (direction_name, reverse) in enumerate(directions):
             _set_iperf_status(directionIndex=direction_index + 1)
+            # 每个方向独立的超时预算：双向测速时上传不吃掉下载的时间，
+            # 否则第二个方向的剩余预算可能被压到 1 秒而虚假超时。
+            deadline = time.monotonic() + IPERF3_TIMEOUT
             result = _run_iperf_direction(
                 host, preferred_ports, duration, parallel, reverse, deadline,
                 direction_index, len(directions),
@@ -1839,6 +1912,9 @@ class Handler(BaseHTTPRequestHandler):
                 require_auth(self)
                 self._send_json(get_dhcp_settings())
             elif path == "/network/dhcp":
+                # 必须鉴权：它返回核心交换机的地址池/接口信息，force=1 还会真实
+                # 发起特权 Telnet 会话——绝不能让未登录方触发。
+                require_auth(self)
                 force = (parse_qs(parsed_url.query).get("force") or [""])[-1].lower() in ("1", "true", "yes")
                 self._send_json(get_dhcp_dashboard(force))
             elif path == "/config/download":
@@ -1904,7 +1980,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(save_config(data.get("text", ""), auth["username"], "import"))
             elif path == "/incidents":
                 require_auth(self)
-                self._send_json({"ok": True, "incident": new_incident(data)})
+                # incidents.json 也是读-改-写，threaded server 下并发提交会互相覆盖
+                with WRITE_LOCK:
+                    self._send_json({"ok": True, "incident": new_incident(data)})
             elif path == "/test-alert":
                 require_auth(self)
                 self._send_json(send_test_alert())
@@ -1938,7 +2016,8 @@ class Handler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path.rstrip("/")
             parts = [unquote(part) for part in path.split("/") if part]
             if len(parts) == 2 and parts[0] == "incidents":
-                incident = update_incident(int(parts[1]), self._body())
+                with WRITE_LOCK:
+                    incident = update_incident(int(parts[1]), self._body())
                 self._send_json({"ok": True, "incident": incident})
             else:
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)

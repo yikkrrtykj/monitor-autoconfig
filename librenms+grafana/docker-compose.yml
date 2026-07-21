@@ -563,6 +563,7 @@ services:
       # this image, so Windows Docker Desktop does not need a host docker CLI.
       PLATFORM_IPERF3_COMMAND: "${PLATFORM_IPERF3_COMMAND:-iperf3}"
       PLATFORM_IPERF3_TIMEOUT: "${PLATFORM_IPERF3_TIMEOUT:-60}"
+      PLATFORM_IPERF3_ALLOW_INTERNAL: "${PLATFORM_IPERF3_ALLOW_INTERNAL:-false}"
       PLATFORM_IPERF3_CONNECT_TIMEOUT_MS: "${PLATFORM_IPERF3_CONNECT_TIMEOUT_MS:-3000}"
       # Read-only Cisco DHCP dashboard. The switch address comes from the event
       # config's devices.core.ip; credentials stay in the private platform-state
