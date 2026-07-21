@@ -1426,25 +1426,36 @@ def _dedupe_wan_labels(results):
     ISP 网关自动发现的重名编号规则一致（同样按 ifIndex 升序），带宽配置
     写 电信-1/电信-2（或 电信1，匹配时忽略符号）即可分线绑定。单线不受影响。
     """
-    indexes = {}
+    # 每条物理线以 ifIndex 标识（同口的 in/out 共用一个 ifIndex）。ifIndex 缺失
+    # 或重复时退回按“同 label 同方向内出现次序”区分——fetch_wan_rates 先扫完 in
+    # 再扫 out，同一物理口在两个方向的次序一致，所以后缀在 in/out 间也一致。
+    # 这样即便 ifIndex 全缺，两条同名线也不会塌缩成同一个状态键。
+    occ = {}
     for sample in results:
         try:
             ifi = int(sample.get("if_index"))
         except (TypeError, ValueError):
-            ifi = 2**31
-        sample["_ifindex"] = ifi
-        indexes.setdefault(sample["label"], set()).add(ifi)
+            ifi = None
+        dir_key = (sample["label"], sample["direction"])
+        seq = occ.get(dir_key, 0)
+        occ[dir_key] = seq + 1
+        # 有 ifIndex 用 (0, ifIndex)，无则用 (1, 次序)，保证可排序且方向无关。
+        sample["_line"] = (0, ifi) if ifi is not None else (1, seq)
+
+    idents = {}
+    for sample in results:
+        idents.setdefault(sample["label"], set()).add(sample["_line"])
     ranks = {
-        label: {ifi: pos + 1 for pos, ifi in enumerate(sorted(values))}
-        for label, values in indexes.items()
+        label: {ident: pos + 1 for pos, ident in enumerate(sorted(values))}
+        for label, values in idents.items()
         if len(values) > 1
     }
     for sample in results:
         label = sample["label"]
         if label in ranks:
-            sample["label"] = f"{label}-{ranks[label][sample['_ifindex']]}"
+            sample["label"] = f"{label}-{ranks[label][sample['_line']]}"
         sample["key"] = f"{sample['label']}|{sample['direction']}"
-        sample.pop("_ifindex", None)
+        sample.pop("_line", None)
     return results
 
 

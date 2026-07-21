@@ -76,6 +76,23 @@ def test_duplicate_wan_labels_get_ifindex_suffixes():
     }
 
 
+def test_duplicate_wan_labels_without_ifindex_still_split():
+    # ifIndex 全缺（SNMP 未给 ifIndex 标签）时，两条同名线仍要分成 -1/-2，
+    # 不能塌缩到同一个状态键，且 in/out 后缀一致。
+    def sample(label, direction):
+        return {"key": f"{label}|{direction}", "label": label,
+                "direction": direction, "value_bps": 0.0, "if_index": None}
+
+    rates = bridge._dedupe_wan_labels([
+        sample("电信", "in"), sample("电信", "in"),
+        sample("电信", "out"), sample("电信", "out"),
+    ])
+    keys = [item["key"] for item in rates]
+    assert sorted(keys) == ["电信-1|in", "电信-1|out", "电信-2|in", "电信-2|out"]
+    # 每条线在 in 和 out 各出现一次（后缀跨方向一致）
+    assert keys.count("电信-1|in") == 1 and keys.count("电信-1|out") == 1
+
+
 def test_isp_data_missing_card_states():
     alert = bridge.build_isp_data_missing_card(130, recovered=False)
     body = alert["card"]["body"]["elements"][0]["content"]
@@ -94,5 +111,6 @@ if __name__ == "__main__":
     test_counter_glitch_limit_disabled_or_invalid()
     test_most_specific_bandwidth_entry_wins_over_generic()
     test_duplicate_wan_labels_get_ifindex_suffixes()
+    test_duplicate_wan_labels_without_ifindex_still_split()
     test_isp_data_missing_card_states()
     print("ISP bandwidth tests passed")
