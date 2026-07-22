@@ -107,12 +107,12 @@ def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
 
     assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in app
     assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in app
-    assert 'configInput("alerts.feishu_chat_id", "告警及巡检群名称")' in app
+    assert 'configInput("alerts.feishu_chat_id", "本监控的告警及巡检群名称")' in app
     assert "下载/上传" in app
     assert "1000/100" in app
 
     ws = read("feishu-ws-client.py")
-    assert "poll_shared_group_commands" in ws
+    assert "poll_site_group_commands" in ws
     assert "/open-apis/im/v1/messages?" in ws
     assert 'f"{BRIDGE_URL}/bot/query"' in ws
 

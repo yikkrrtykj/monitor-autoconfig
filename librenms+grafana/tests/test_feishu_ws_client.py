@@ -72,7 +72,7 @@ def test_history_message_uses_body_content_and_event_prefix(monkeypatch):
     assert card["card"]["header"]["title"]["content"] == "光功率巡检"
 
 
-def test_resolve_shared_group_by_exact_name(monkeypatch):
+def test_resolve_site_group_by_exact_name(monkeypatch):
     monkeypatch.setattr(client, "CHAT_TARGET", "统一监控群")
     monkeypatch.setattr(client, "_api_get", lambda _path, _token: {
         "code": 0,
@@ -84,7 +84,7 @@ def test_resolve_shared_group_by_exact_name(monkeypatch):
     assert client.resolve_command_chat("token") == "oc_right"
 
 
-def test_shared_polling_baselines_old_messages_then_handles_new_once(monkeypatch):
+def test_site_polling_baselines_old_messages_then_handles_new_once(monkeypatch):
     old = {
         "message_id": "om_old", "message_type": "text", "chat_type": "group",
         "create_time": "100", "body": {"content": '{"text":"@_user_1 帮助"}'},

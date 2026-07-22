@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Feishu client for card callbacks and shared-group @ query commands.
+"""Feishu client for card callbacks and per-site-group @ query commands.
 
 The bridge sends "device pending delete" cards with 确认删除/保留 buttons via
 the Feishu app bot. This sidecar keeps an OUTBOUND WebSocket to Feishu's cloud
@@ -13,7 +13,7 @@ LibreNMS deletion. The response updates the card in place and shows a toast.
 
 Env:
   FEISHU_APP_ID / FEISHU_APP_SECRET  self-built app credentials (required)
-  FEISHU_CHAT_ID group name or oc_ chat id used by every monitoring instance
+  FEISHU_CHAT_ID this physical monitor's group name or oc_ chat id
   EVENT_NAME     local company/event name shown before every result
   BRIDGE_URL   bridge base URL (default http://alertmanager-feishu-bridge:5005)
 
@@ -155,7 +155,7 @@ def _api_get(path: str, token: str) -> dict:
 
 
 def resolve_command_chat(token: str) -> str:
-    """Resolve the one shared command/alert group without guessing."""
+    """Resolve this physical monitor's command/alert group without guessing."""
     if CHAT_TARGET.startswith("oc_"):
         return CHAT_TARGET
     wanted = CHAT_TARGET.casefold()
@@ -315,7 +315,7 @@ def process_polled_messages(items: list[dict], *, baseline: bool = False) -> int
         if not _reserve_message(message_id):
             continue
         command = extract_command(message) or "帮助"
-        log(f"shared-group command {command[:120]!r} id={message_id}")
+        log(f"site-group command {command[:120]!r} id={message_id}")
         threading.Thread(
             target=_process_message, args=(message_id, command), daemon=True,
             name=f"feishu-query-{message_id[-8:]}",
@@ -324,8 +324,8 @@ def process_polled_messages(items: list[dict], *, baseline: bool = False) -> int
     return handled
 
 
-def poll_shared_group_commands() -> None:
-    """Let every isolated monitor independently consume the same group commands."""
+def poll_site_group_commands() -> None:
+    """Consume only the group configured for this physical monitor/site."""
     chat_id = ""
     initialized = False
     while True:
@@ -333,14 +333,14 @@ def poll_shared_group_commands() -> None:
             token = tenant_access_token()
             if not chat_id:
                 chat_id = resolve_command_chat(token)
-                log(f"shared command group resolved: {chat_id}; event={EVENT_NAME or '未命名'}")
+                log(f"site command group resolved: {chat_id}; event={EVENT_NAME or '未命名'}")
             items = fetch_chat_messages(token, chat_id)
             process_polled_messages(items, baseline=not initialized)
             if not initialized:
                 initialized = True
-                log(f"shared command polling ready; baseline={len(items)} messages")
+                log(f"site command polling ready; baseline={len(items)} messages")
         except Exception as exc:  # noqa: BLE001 - keep polling after cloud/network failures
-            log(f"shared command polling failed: {exc}")
+            log(f"site command polling failed: {exc}")
             chat_id = ""
         time.sleep(POLL_SECONDS)
 
@@ -433,9 +433,9 @@ def main() -> None:
 
     if CHAT_TARGET:
         threading.Thread(
-            target=poll_shared_group_commands,
+            target=poll_site_group_commands,
             daemon=True,
-            name="feishu-shared-command-poller",
+            name="feishu-site-command-poller",
         ).start()
 
     builder = lark.EventDispatcherHandler.builder("", "")

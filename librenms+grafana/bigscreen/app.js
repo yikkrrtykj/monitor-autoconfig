@@ -1943,12 +1943,12 @@
       </section>
       <section class="config-section">
         <h3>告警</h3>
-        <p class="config-section-note">所有监控使用同一个飞书应用和同一个群。每台监控填写各自的“赛事名称”，同一条群内巡检命令会收到公司及各比赛现场分别返回的结果；告警和巡检结果都会显示赛事名称。</p>
+        <p class="config-section-note">所有监控可共用同一个飞书应用，但每台物理监控填写各自的“赛事名称”和“告警及巡检群名称”。机器人加入所有群后，每台监控只处理自己的群，告警和巡检结果都会显示赛事名称。</p>
         <div class="config-fields">
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
-          ${configInput("alerts.feishu_chat_id", "告警及巡检群名称")}
+          ${configInput("alerts.feishu_chat_id", "本监控的告警及巡检群名称")}
         </div>
       </section>
       <section class="config-section">
