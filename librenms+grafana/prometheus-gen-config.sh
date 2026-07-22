@@ -41,6 +41,9 @@ SNMP_UPTIME_SCRAPE_INTERVAL="${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
 # Port-channel / LAG interconnect status needs ifOperStatus. Keep this separate
 # from uptime so the fast link watcher does not make all SNMP jobs heavy.
 SWITCH_IFMIB_SCRAPE_INTERVAL="${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
+# StackWise table is tiny and only used for an on-demand audit; 30s keeps the
+# result fresh without adding IF-MIB-level polling load to access switches.
+STACKWISE_SCRAPE_INTERVAL="${STACKWISE_SCRAPE_INTERVAL:-30s}"
 # UniFi Poller（unpoller）抓取：仅在配置了控制器地址时启用。AP 掉线告警默认
 # 10s 确认，Prometheus 这里也保持 10s 抓取，避免控制器状态更新后还多等一轮。
 UNIFI_CONTROLLER_URL="${UNIFI_CONTROLLER_URL:-}"
@@ -280,6 +283,10 @@ write_snmp_job "infra-switch-snmp"   "$SWITCH_SNMP_TARGETS"           "system_up
 write_snmp_job "infra-fw-snmp"       "$FIREWALL_SNMP_UPTIME_TARGETS"  "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
 write_snmp_job "infra-fw-unit-snmp"  "$FIREWALL_UNIT_SNMP_TARGETS"    "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
 write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     "if_mib"        "$SWITCH_IFMIB_SCRAPE_INTERVAL"
+# Cisco StackWise is kept separate from IF-MIB: unsupported/non-Cisco edge
+# switches simply expose no csw* series, while real stacks are available to the
+# on-demand Feishu network audit without adding an extra operator command.
+write_snmp_job "infra-switch-stackwise" "$SWITCH_SNMP_TARGETS"         "cisco_stackwise" "$STACKWISE_SCRAPE_INTERVAL" "$SWITCH_TARGETS_FILE"
 
 # Firewall SNMP
 cat >> "$CONFIG_FILE" <<EOF

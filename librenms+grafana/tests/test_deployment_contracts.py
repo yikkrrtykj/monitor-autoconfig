@@ -145,6 +145,19 @@ def test_feishu_bridge_does_not_create_librenms_transport():
     assert "INSERT INTO alert_transports" not in auto_config
 
 
+def test_cisco_stackwise_uses_dedicated_low_frequency_snmp_module():
+    compose = read("docker-compose.yml")
+    prometheus = read("prometheus-gen-config.sh")
+    env = read(".env.example")
+
+    assert "cisco_stackwise:" in compose
+    assert "1.3.6.1.4.1.9.9.500.1.2.1.1.6" in compose
+    assert '--config.file=/tmp/snmp-stackwise.yml' in compose
+    assert 'write_snmp_job "infra-switch-stackwise"' in prometheus
+    assert '"cisco_stackwise" "$STACKWISE_SCRAPE_INTERVAL"' in prometheus
+    assert "STACKWISE_SCRAPE_INTERVAL=30s" in env
+
+
 def test_apply_failure_does_not_mass_delete_services():
     script = read("apply-env.sh")
 

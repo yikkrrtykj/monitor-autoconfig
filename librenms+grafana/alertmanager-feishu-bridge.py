@@ -218,6 +218,10 @@ SYSNAME_STATE_FILE = os.environ.get(
     "SYSNAME_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "device-sysnames.json"),
 )
+STACKWISE_STATE_FILE = os.environ.get(
+    "STACKWISE_STATE_FILE",
+    os.path.join(BRIDGE_STATE_DIR, "cisco-stackwise.json"),
+)
 # UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 controller 数据
 # 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
 UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
@@ -281,6 +285,7 @@ EVENT_ID_LOCK = threading.Lock()
 DEVICE_ONLINE_STATE_LOCK = threading.Lock()
 DEVICE_ONLINE_INFLIGHT = set()
 DEVICE_DOWN_STATE_LOCK = threading.Lock()
+STACKWISE_STATE_LOCK = threading.Lock()
 HEALTH_LOCK = threading.Lock()
 WATCHER_THREADS = {}
 WATCHER_HEALTH = {}
@@ -538,7 +543,7 @@ def _librenms_get_json(token, path, timeout=15):
 
 BOT_HELP_TEXT = (
     "运维查询与巡检：\n"
-    "• 网络巡检 — 全网设备在线/离线汇总，离线时附明细\n"
+    "• 网络巡检 — 全网在线/离线汇总，并检查思科堆叠成员、角色和版本状态\n"
     "• 待删除设备 — 在当前飞书会话发确认删除/保留卡片\n"
     "• 光功率巡检 — 全网 dBm 汇总，异常时附明细\n"
     "• 上联冗余巡检 — 结合 LLDP/CDP 和 Port-Channel 成员检查冗余\n"
@@ -1003,6 +1008,204 @@ def _device_status_summary(devices, offline_only=False):
     return "\n".join(lines)
 
 
+STACKWISE_ROLE_NAMES = {
+    1: "主控",
+    2: "成员",
+    3: "非成员",
+    4: "备用",
+}
+STACKWISE_STATE_NAMES = {
+    1: "等待其它成员上线",
+    2: "选举或兼容性检查中",
+    3: "正在加入",
+    4: "正常",
+    5: "SDM 模板不一致",
+    6: "系统版本不一致",
+    7: "功能不一致",
+    8: "新主控初始化中",
+    9: "已配置但未在线",
+    10: "无效状态",
+    11: "成员已移除",
+}
+
+
+def _prometheus_sample_number(item):
+    try:
+        return int(float((item.get("value") or [None, "nan"])[1]))
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return None
+
+
+def evaluate_cisco_stackwise_samples(samples, baseline=None, device_names=None):
+    """Join StackWise Prometheus series and skip devices that are truly single.
+
+    Cisco exposes this MIB on some standalone switches too.  A device only
+    becomes a stack when two table rows are visible or a previously learned
+    healthy member count proves that it used to be one.  The latter catches a
+    member that vanishes completely instead of remaining in `removed` state.
+    """
+    baseline = copy.deepcopy(baseline or {})
+    device_names = device_names or {}
+    grouped = {}
+    for item in samples or []:
+        labels = item.get("metric") or {}
+        metric_name = str(labels.get("__name__") or "")
+        if metric_name not in {
+            "cswRingRedundant", "cswSwitchNumCurrent", "cswSwitchRole", "cswSwitchState",
+        }:
+            continue
+        target = str(labels.get("target_ip") or labels.get("instance") or "").strip()
+        if not target:
+            continue
+        value = _prometheus_sample_number(item)
+        if value is None:
+            continue
+        group = grouped.setdefault(target, {
+            "target": target,
+            "name": str(device_names.get(target) or labels.get("instance") or target),
+            "ring": None,
+            "members": {},
+        })
+        if metric_name == "cswRingRedundant":
+            group["ring"] = value
+            continue
+        entity = str(labels.get("entPhysicalIndex") or "").strip()
+        if not entity:
+            continue
+        member = group["members"].setdefault(entity, {"entity": entity})
+        if metric_name == "cswSwitchNumCurrent":
+            member["number"] = value
+        elif metric_name == "cswSwitchRole":
+            member["role"] = value
+        elif metric_name == "cswSwitchState":
+            member["state"] = value
+
+    results = []
+    now = int(time.time())
+    for target, group in grouped.items():
+        members = list(group["members"].values())
+        learned = baseline.get(target) if isinstance(baseline.get(target), dict) else {}
+        learned_name = str(learned.get("name") or "").strip()
+        if learned_name and group["name"] != target and learned_name != group["name"]:
+            # The IP has been reused by another named device/project.  Do not
+            # carry an old stack's expected member count onto the replacement.
+            learned = {}
+            baseline.pop(target, None)
+        expected = int(_as_float(learned.get("members"), 0) or 0)
+        if len(members) < 2 and expected < 2:
+            # Standalone Cisco edge switch: intentionally absent from the audit.
+            continue
+        members.sort(key=lambda item: (item.get("number", 2**31), item["entity"]))
+        issues = []
+        if expected >= 2 and len(members) != expected:
+            issues.append(f"成员数量由 {expected} 变为 {len(members)}")
+
+        numbers = [item.get("number") for item in members if item.get("number") is not None]
+        if len(numbers) != len(set(numbers)):
+            issues.append("检测到重复成员编号")
+        for member in members:
+            number = member.get("number")
+            prefix = f"成员 {number}" if number is not None else f"实体 {member['entity']}"
+            state = member.get("state")
+            if state is None:
+                issues.append(f"{prefix} 状态无数据")
+            elif state != 4:
+                issues.append(f"{prefix}：{STACKWISE_STATE_NAMES.get(state, f'未知状态 {state}')}")
+            role = member.get("role")
+            if state == 4 and role not in (1, 2, 4):
+                role_text = STACKWISE_ROLE_NAMES.get(role, "无数据" if role is None else f"未知角色 {role}")
+                issues.append(f"{prefix}：角色{role_text}")
+
+        ready_members = [item for item in members if item.get("state") == 4]
+        masters = [item for item in ready_members if item.get("role") == 1]
+        if len(masters) != 1:
+            issues.append(f"主控角色异常（当前 {len(masters)} 个）")
+        if group.get("ring") == 2:
+            issues.append("堆叠环不冗余，请检查 StackWise 线缆")
+
+        current_healthy = (
+            len(members) >= 2
+            and len(ready_members) == len(members)
+            and len(masters) == 1
+            and all(item.get("role") in (1, 2, 4) for item in members)
+            and group.get("ring") != 2
+        )
+        if current_healthy:
+            # First healthy observation establishes the baseline.  A healthy,
+            # deliberate resize is reported once, then becomes the new normal.
+            baseline[target] = {
+                "members": len(members),
+                "name": group["name"],
+                "updated_at": now,
+            }
+        elif expected >= 2:
+            baseline[target] = {
+                "members": expected,
+                "name": group["name"],
+                "updated_at": learned.get("updated_at") or now,
+            }
+        group.update({
+            "members": members,
+            "expected": expected or len(members),
+            "issues": issues,
+            "healthy": not issues,
+        })
+        results.append(group)
+    results.sort(key=lambda item: (item["healthy"], item["name"].casefold()))
+    return results, baseline
+
+
+def build_cisco_stackwise_audit_cards(devices):
+    query = (
+        '{job="infra-switch-stackwise",'
+        '__name__=~"cswRingRedundant|cswSwitchNumCurrent|cswSwitchRole|cswSwitchState"}'
+    )
+    samples = prometheus_query(query)
+    device_names = {}
+    for device in devices or []:
+        ip = _device_ip(device)
+        if ip:
+            device_names[ip] = _device_display(device)
+    with STACKWISE_STATE_LOCK:
+        old_baseline = _load_json_dict(STACKWISE_STATE_FILE)
+        stacks, new_baseline = evaluate_cisco_stackwise_samples(
+            samples, old_baseline, device_names,
+        )
+        if new_baseline != old_baseline:
+            _save_json_dict(STACKWISE_STATE_FILE, new_baseline)
+    if not stacks:
+        return []
+
+    failed = [item for item in stacks if not item["healthy"]]
+    lines = [
+        f"✅ **已识别思科堆叠：** {len(stacks)} 组",
+        f"🟢 **正常：** {len(stacks) - len(failed)} 组",
+        f"⚠️ **异常：** {len(failed)} 组",
+        "单台 Edge 交换机已自动跳过。",
+        "",
+    ]
+    for stack in stacks[:30]:
+        roles = {}
+        for member in stack["members"]:
+            role = STACKWISE_ROLE_NAMES.get(member.get("role"), "角色未知")
+            roles[role] = roles.get(role, 0) + 1
+        role_text = " / ".join(f"{name} {count}" for name, count in roles.items()) or "角色无数据"
+        location = f"{stack['name']} ({stack['target']})" if stack["name"] != stack["target"] else stack["target"]
+        if stack["healthy"]:
+            ring = "，环路冗余正常" if stack.get("ring") == 1 else ""
+            lines.append(f"• 🟢 **{location}**：{len(stack['members'])} 成员，{role_text}{ring}")
+        else:
+            lines.append(f"• 🔴 **{location}**：" + "；".join(stack["issues"]))
+    if len(stacks) > 30:
+        lines.append(f"另有 {len(stacks) - 30} 组未展开。")
+    return [_make_card(
+        "网络巡检 · 思科堆叠",
+        "Cisco StackWise Audit",
+        "orange" if failed else "green",
+        "\n".join(lines),
+    )]
+
+
 def handle_bot_query(text):
     """Execute a Feishu query/audit command against already-polled data."""
     command = re.sub(r"\s+", " ", str(text or "")).strip()
@@ -1040,7 +1243,16 @@ def handle_bot_query(text):
         log(f"[BOT] device query failed: {exc}")
         return {"ok": False, "text": "读取 LibreNMS 设备列表失败，请稍后再试。"}
     if network_audit_cmd:
-        return {"ok": True, "text": _device_status_summary(devices, offline_only=False)}
+        result = {"ok": True, "text": _device_status_summary(devices, offline_only=False)}
+        try:
+            cards = build_cisco_stackwise_audit_cards(devices)
+        except Exception as exc:
+            # Online/offline巡检不能因为厂商私有 MIB 暂时不可读而整体失败。
+            log(f"[BOT] Cisco StackWise audit unavailable: {exc}")
+            cards = []
+        if cards:
+            result["cards"] = cards
+        return result
     if fiber_audit_cmd:
         return {
             "ok": True,

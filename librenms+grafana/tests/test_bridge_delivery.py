@@ -105,6 +105,7 @@ def test_bot_network_audit_merges_status_and_offline_details(monkeypatch):
     monkeypatch.setattr(bridge, "LIBRENMS_URL", "http://librenms")
     monkeypatch.setattr(bridge, "_librenms_token", lambda: "token")
     monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda _token: devices)
+    monkeypatch.setattr(bridge, "build_cisco_stackwise_audit_cards", lambda _devices: [])
 
     summary = bridge.handle_bot_query("网络巡检")
     assert "在线 1" in summary["text"]
@@ -117,6 +118,96 @@ def test_bot_network_audit_merges_status_and_offline_details(monkeypatch):
     assert bridge.handle_bot_query("离线设备")["text"] == summary["text"]
     assert "设备 <设备名或 IP>" not in bridge.BOT_HELP_TEXT
     assert bridge.handle_bot_query("查设备 RTS2")["text"].startswith("未识别命令")
+
+
+def _stack_sample(name, target, value, entity="", instance="core"):
+    labels = {
+        "__name__": name,
+        "job": "infra-switch-stackwise",
+        "target_ip": target,
+        "instance": instance,
+    }
+    if entity:
+        labels["entPhysicalIndex"] = entity
+    return {"metric": labels, "value": [1, str(value)]}
+
+
+def _two_member_stack(state_two=4, ring=1):
+    samples = [_stack_sample("cswRingRedundant", "10.0.0.1", ring)]
+    for entity, number, role, state in (("1001", 1, 1, 4), ("2001", 2, 4, state_two)):
+        samples.extend([
+            _stack_sample("cswSwitchNumCurrent", "10.0.0.1", number, entity),
+            _stack_sample("cswSwitchRole", "10.0.0.1", role, entity),
+            _stack_sample("cswSwitchState", "10.0.0.1", state, entity),
+        ])
+    return samples
+
+
+def test_stackwise_audit_skips_standalone_cisco_edge_switch():
+    samples = [
+        _stack_sample("cswSwitchNumCurrent", "10.0.0.2", 1, "1001", instance="edge-1"),
+        _stack_sample("cswSwitchRole", "10.0.0.2", 1, "1001", instance="edge-1"),
+        _stack_sample("cswSwitchState", "10.0.0.2", 4, "1001", instance="edge-1"),
+    ]
+    stacks, baseline = bridge.evaluate_cisco_stackwise_samples(samples)
+    assert stacks == []
+    assert baseline == {}
+
+
+def test_stackwise_audit_drops_old_count_when_ip_is_reused_by_new_device():
+    samples = [
+        _stack_sample("cswSwitchNumCurrent", "10.0.0.2", 1, "1001", instance="new-edge"),
+        _stack_sample("cswSwitchRole", "10.0.0.2", 1, "1001", instance="new-edge"),
+        _stack_sample("cswSwitchState", "10.0.0.2", 4, "1001", instance="new-edge"),
+    ]
+    stacks, baseline = bridge.evaluate_cisco_stackwise_samples(
+        samples, {"10.0.0.2": {"members": 2, "name": "old-stack"}},
+    )
+    assert stacks == []
+    assert baseline == {}
+
+
+def test_stackwise_audit_learns_healthy_stack_and_reports_roles():
+    stacks, baseline = bridge.evaluate_cisco_stackwise_samples(_two_member_stack())
+    assert len(stacks) == 1
+    assert stacks[0]["healthy"] is True
+    assert baseline["10.0.0.1"]["members"] == 2
+    assert [item["role"] for item in stacks[0]["members"]] == [1, 4]
+
+
+def test_stackwise_audit_reports_version_mismatch_and_broken_ring():
+    stacks, _baseline = bridge.evaluate_cisco_stackwise_samples(
+        _two_member_stack(state_two=6, ring=2),
+    )
+    assert stacks[0]["healthy"] is False
+    assert any("版本不一致" in issue for issue in stacks[0]["issues"])
+    assert any("环不冗余" in issue for issue in stacks[0]["issues"])
+
+
+def test_stackwise_audit_uses_learned_count_when_member_row_disappears():
+    samples = [
+        _stack_sample("cswRingRedundant", "10.0.0.1", 2),
+        _stack_sample("cswSwitchNumCurrent", "10.0.0.1", 1, "1001"),
+        _stack_sample("cswSwitchRole", "10.0.0.1", 1, "1001"),
+        _stack_sample("cswSwitchState", "10.0.0.1", 4, "1001"),
+    ]
+    stacks, baseline = bridge.evaluate_cisco_stackwise_samples(
+        samples, {"10.0.0.1": {"members": 2, "name": "core"}},
+    )
+    assert len(stacks) == 1
+    assert any("成员数量由 2 变为 1" in issue for issue in stacks[0]["issues"])
+    assert baseline["10.0.0.1"]["members"] == 2
+
+
+def test_network_audit_attaches_stackwise_card(monkeypatch):
+    monkeypatch.setattr(bridge, "LIBRENMS_URL", "http://librenms")
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "token")
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda _token: [])
+    card = {"card": {"header": {"title": {"content": "网络巡检 · 思科堆叠"}}}}
+    monkeypatch.setattr(bridge, "build_cisco_stackwise_audit_cards", lambda _devices: [card])
+    result = bridge.handle_bot_query("网络巡检")
+    assert result["cards"] == [card]
+    assert "网络巡检" in bridge.BOT_HELP_TEXT and "思科堆叠" in bridge.BOT_HELP_TEXT
 
 
 def test_bot_full_fiber_audit_returns_summary_and_grouped_details(monkeypatch):
