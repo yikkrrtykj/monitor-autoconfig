@@ -45,6 +45,8 @@ _TENANT_TOKEN = {"value": "", "expires_at": 0.0}
 _TOKEN_LOCK = threading.Lock()
 _SEEN_MESSAGES: dict[str, float] = {}
 _SEEN_LOCK = threading.Lock()
+_POLL_READY = False
+_POLL_STATE_LOCK = threading.Lock()
 
 
 def log(message: str) -> None:
@@ -147,8 +149,23 @@ def _api_get(path: str, token: str) -> dict:
         f"https://open.feishu.cn{path}",
         headers={"Authorization": f"Bearer {token}"},
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8") or "{}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw or "{}")
+            detail = f"code={payload.get('code')} msg={payload.get('msg')}"
+        except json.JSONDecodeError:
+            detail = raw[:500] or str(exc)
+        if path.startswith("/open-apis/im/v1/chats"):
+            hint = "需要应用身份权限 im:chat（获取与更新群组信息）"
+        elif path.startswith("/open-apis/im/v1/messages"):
+            hint = "需要应用身份权限 im:message:readonly，并保留 im:message.group_msg"
+        else:
+            hint = "请检查飞书应用权限"
+        raise RuntimeError(f"Feishu HTTP {exc.code}: {detail}; {hint}") from exc
     if data.get("code") != 0:
         raise RuntimeError(f"Feishu API rejected: {data.get('code')} {data.get('msg')}")
     return data
@@ -326,6 +343,7 @@ def process_polled_messages(items: list[dict], *, baseline: bool = False) -> int
 
 def poll_site_group_commands() -> None:
     """Consume only the group configured for this physical monitor/site."""
+    global _POLL_READY
     chat_id = ""
     initialized = False
     while True:
@@ -339,18 +357,24 @@ def poll_site_group_commands() -> None:
             if not initialized:
                 initialized = True
                 log(f"site command polling ready; baseline={len(items)} messages")
+            with _POLL_STATE_LOCK:
+                _POLL_READY = True
         except Exception as exc:  # noqa: BLE001 - keep polling after cloud/network failures
             log(f"site command polling failed: {exc}")
+            with _POLL_STATE_LOCK:
+                _POLL_READY = False
             chat_id = ""
         time.sleep(POLL_SECONDS)
 
 
 def on_message(data):
-    # When a common command group is configured, every monitor polls history so
-    # all sites answer. Long-connection message delivery is intentionally not
-    # used because Feishu load-balances one event to only one client instance.
-    if CHAT_TARGET:
-        return None
+    # Prefer per-site history polling when available. If the newly required
+    # read permissions have not been granted yet, retain the original
+    # long-connection @ event path so existing single-site installations keep
+    # working exactly as before.
+    with _POLL_STATE_LOCK:
+        if _POLL_READY:
+            return None
     message = _field(_field(data, "event"), "message")
     if not message or not should_handle_message(message):
         return None
@@ -438,10 +462,12 @@ def main() -> None:
             name="feishu-site-command-poller",
         ).start()
 
-    builder = lark.EventDispatcherHandler.builder("", "")
-    if not CHAT_TARGET:
-        builder = builder.register_p2_im_message_receive_v1(on_message)
-    handler = builder.register_p2_card_action_trigger(on_card_action).build()
+    handler = (
+        lark.EventDispatcherHandler.builder("", "")
+        .register_p2_im_message_receive_v1(on_message)
+        .register_p2_card_action_trigger(on_card_action)
+        .build()
+    )
     while True:
         try:
             log("starting long-connection client")

@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -82,6 +83,48 @@ def test_resolve_site_group_by_exact_name(monkeypatch):
         ]},
     })
     assert client.resolve_command_chat("token") == "oc_right"
+
+
+def test_api_http_error_reports_required_permission(monkeypatch):
+    http_error = client.urllib.error.HTTPError(
+        "https://open.feishu.cn/open-apis/im/v1/chats", 400, "Bad Request", {},
+        io.BytesIO(b'{"code":99991672,"msg":"Access denied"}'),
+    )
+    monkeypatch.setattr(
+        client.urllib.request,
+        "urlopen",
+        lambda _req, timeout: (_ for _ in ()).throw(http_error),
+    )
+    try:
+        client._api_get("/open-apis/im/v1/chats?page_size=100", "token")
+    except RuntimeError as exc:
+        assert "99991672" in str(exc)
+        assert "im:chat" in str(exc)
+    else:
+        raise AssertionError("missing permission error was not surfaced")
+
+
+def test_long_connection_message_remains_fallback_until_polling_is_ready(monkeypatch):
+    calls = []
+
+    class ImmediateThread:
+        def __init__(self, target, args, **_kwargs):
+            self.target, self.args = target, args
+
+        def start(self):
+            calls.append(self.args)
+
+    client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "_POLL_READY", False)
+    monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message("@_user_1 帮助"))))
+    assert calls == [("om_123", "帮助")]
+
+    calls.clear()
+    client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "_POLL_READY", True)
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message("@_user_1 帮助"))))
+    assert calls == []
 
 
 def test_site_polling_baselines_old_messages_then_handles_new_once(monkeypatch):

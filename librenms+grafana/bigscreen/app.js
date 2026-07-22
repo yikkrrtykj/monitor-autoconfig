@@ -1943,7 +1943,7 @@
       </section>
       <section class="config-section">
         <h3>告警</h3>
-        <p class="config-section-note">所有监控可共用同一个飞书应用，但每台物理监控填写各自的“赛事名称”和“告警及巡检群名称”。机器人加入所有群后，每台监控只处理自己的群，告警和巡检结果都会显示赛事名称。</p>
+        <p class="config-section-note">所有监控可共用同一个飞书应用，但每台物理监控填写各自的“赛事名称”和“告警及巡检群名称”。现有长连接权限可继续使用；多套物理监控共用应用并要求严格按群处理时，再增加 im:chat、im:message:readonly 和 im:message.group_msg。</p>
         <div class="config-fields">
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
