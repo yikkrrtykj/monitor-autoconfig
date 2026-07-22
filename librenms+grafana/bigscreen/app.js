@@ -1796,7 +1796,7 @@
       switches: "交换机",
       servers: "服务器",
       isp: "ISP",
-      feishu_sites: "飞书站点路由"
+      feishu_sites: "比赛现场"
     };
     const supportsRange = name === "stage_switches" || name === "access_switches";
     return `
@@ -1955,7 +1955,7 @@
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
-          ${configInput("alerts.feishu_chat_id", "告警群名称", { placeholder: "例如：英雄电竞上海站告警群" })}
+          ${configInput("alerts.feishu_chat_id", "告警群名称")}
           ${configInput("alerts.feishu_mode", "飞书接入模式", { type: "select", choices: [
             { value: "local", label: "单站点（local）" },
             { value: "hub", label: "多站点中心（hub）" },
@@ -1967,7 +1967,7 @@
           <p class="config-section-note">本机自动使用上方“赛事名称”。这里只添加其它现场；比赛名称必须与现场服务器的“赛事名称”完全一致。</p>
           ${configListRows("feishu_sites", lastEditableConfig.alerts.feishu_sites, [
             { key: "site_id", label: "比赛名称", placeholder: "英雄电竞上海站" },
-            { key: "chat_id", label: "告警群名称", placeholder: "英雄电竞上海站告警群" },
+            { key: "chat_id", label: "告警群名称" },
             { key: "bridge_url", label: "现场监控地址", placeholder: "https://现场监控地址:5005" }
           ])}
         </div>
@@ -3073,6 +3073,7 @@
           if (listName === "access_switches") next.devices.access_switches.push({ ip: "" });
           if (listName === "servers") next.devices.servers.push({ name: "", ip: "" });
           if (listName === "isp") next.isp.links.push({ name: "", ping: "", ip: "", bandwidth_mbps: "" });
+          if (listName === "feishu_sites") next.alerts.feishu_sites.push({ site_id: "", chat_id: "", bridge_url: "" });
         }
         if (rangeButton) {
           const listName = rangeButton.dataset.configAddRange;
@@ -3094,6 +3095,7 @@
           if (listName === "access_switches") next.devices.access_switches.splice(index, 1);
           if (listName === "servers") next.devices.servers.splice(index, 1);
           if (listName === "isp") next.isp.links.splice(index, 1);
+          if (listName === "feishu_sites") next.alerts.feishu_sites.splice(index, 1);
         }
         renderControlConfigForm(next);
         configForm.dataset.dirty = "1";
