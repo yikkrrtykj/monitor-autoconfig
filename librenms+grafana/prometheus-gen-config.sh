@@ -21,6 +21,10 @@ PLAYER_TARGETS_FILE="${PLAYER_TARGETS_FILE:-/etc/prometheus/player_targets.json}
 # container). Used as a file_sd source so only switches that actually answer are
 # pinged/SNMP-scraped, each already named by its real hostname.
 SWITCH_TARGETS_FILE="${SWITCH_TARGETS_FILE:-/etc/prometheus/targets/topology/switch_targets.json}"
+# Only confirmed multi-member StackWise devices.  A low-frequency detector in
+# topology-collector writes this file so standalone Edge switches never receive
+# the heavier 30-second StackWise table walk.
+STACKWISE_TARGETS_FILE="${STACKWISE_TARGETS_FILE:-/etc/prometheus/targets/topology/stackwise_targets.json}"
 # ISP 网关自动发现结果（topology 容器从防火墙 SNMP 路由表读出的默认路由下一跳），
 # 和手工 ISP_PING 一起进 infra-isp-ping。
 ISP_TARGETS_FILE="${ISP_TARGETS_FILE:-/etc/prometheus/targets/topology/isp_targets.json}"
@@ -41,8 +45,8 @@ SNMP_UPTIME_SCRAPE_INTERVAL="${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
 # Port-channel / LAG interconnect status needs ifOperStatus. Keep this separate
 # from uptime so the fast link watcher does not make all SNMP jobs heavy.
 SWITCH_IFMIB_SCRAPE_INTERVAL="${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
-# StackWise table is tiny and only used for an on-demand audit; 30s keeps the
-# result fresh without adding IF-MIB-level polling load to access switches.
+# StackWise tables are only polled for devices confirmed as real stacks. 30s
+# keeps member-loss results fresh without loading standalone access switches.
 STACKWISE_SCRAPE_INTERVAL="${STACKWISE_SCRAPE_INTERVAL:-30s}"
 # Cisco CPU/memory tables contain only a handful of counters. One 60-second
 # scrape is enough for sustained alerts and avoids another high-frequency walk.
@@ -286,10 +290,9 @@ write_snmp_job "infra-switch-snmp"   "$SWITCH_SNMP_TARGETS"           "system_up
 write_snmp_job "infra-fw-snmp"       "$FIREWALL_SNMP_UPTIME_TARGETS"  "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
 write_snmp_job "infra-fw-unit-snmp"  "$FIREWALL_UNIT_SNMP_TARGETS"    "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
 write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     "if_mib"        "$SWITCH_IFMIB_SCRAPE_INTERVAL"
-# Cisco StackWise is kept separate from IF-MIB: unsupported/non-Cisco edge
-# switches simply expose no csw* series, while real stacks are available to the
-# on-demand Feishu network audit without adding an extra operator command.
-write_snmp_job "infra-switch-stackwise" "$SWITCH_SNMP_TARGETS"         "cisco_stackwise" "$STACKWISE_SCRAPE_INTERVAL" "$SWITCH_TARGETS_FILE"
+# Cisco StackWise is kept separate from IF-MIB and receives only the file_sd
+# targets confirmed by the low-frequency cswSwitchNumCurrent discovery walk.
+write_snmp_job "infra-switch-stackwise" ""                           "cisco_stackwise" "$STACKWISE_SCRAPE_INTERVAL" "$STACKWISE_TARGETS_FILE"
 write_snmp_job "infra-switch-resources" "$SWITCH_SNMP_TARGETS"         "cisco_resources" "$SWITCH_RESOURCE_SCRAPE_INTERVAL" "$SWITCH_TARGETS_FILE"
 
 # Firewall SNMP

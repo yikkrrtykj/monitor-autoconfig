@@ -153,9 +153,16 @@ def test_cisco_stackwise_uses_dedicated_low_frequency_snmp_module():
     assert "cisco_stackwise:" in compose
     assert "1.3.6.1.4.1.9.9.500.1.2.1.1.6" in compose
     assert '--config.file=/tmp/snmp-stackwise.yml' in compose
-    assert 'write_snmp_job "infra-switch-stackwise"' in prometheus
-    assert '"cisco_stackwise" "$STACKWISE_SCRAPE_INTERVAL"' in prometheus
+    assert "./discover-stackwise-targets.py:/discover-stackwise-targets.py:ro" in compose
+    assert 'STACKWISE_TARGETS_FILE: "/targets/stackwise_targets.json"' in compose
+    assert "python3 /discover-stackwise-targets.py" in compose
+    assert (
+        'write_snmp_job "infra-switch-stackwise" ""                           '
+        '"cisco_stackwise" "$STACKWISE_SCRAPE_INTERVAL" "$STACKWISE_TARGETS_FILE"'
+    ) in prometheus
+    assert 'write_snmp_job "infra-switch-stackwise" "$SWITCH_SNMP_TARGETS"' not in prometheus
     assert "STACKWISE_SCRAPE_INTERVAL=30s" in env
+    assert "STACKWISE_DISCOVERY_TIMEOUT=1" in env
 
 
 def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_thresholds():

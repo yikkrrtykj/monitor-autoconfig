@@ -109,6 +109,7 @@ services:
       UNIFI_SCRAPE_INTERVAL: "${UNIFI_SCRAPE_INTERVAL:-10s}"
       PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
       SWITCH_TARGETS_FILE: "/etc/prometheus/targets/topology/switch_targets.json"
+      STACKWISE_TARGETS_FILE: "/etc/prometheus/targets/topology/stackwise_targets.json"
     volumes:
       - prometheus-data:/prometheus
       - player-targets-data:/etc/prometheus/targets
@@ -601,6 +602,7 @@ services:
       - topology-data:/targets
       - ./generate-topology-edges.py:/generate-topology-edges.py:ro
       - ./discover-switch-targets.py:/discover-switch-targets.py:ro
+      - ./discover-stackwise-targets.py:/discover-stackwise-targets.py:ro
       - ./discover-isp-targets.py:/discover-isp-targets.py:ro
       - ./platform_config.py:/platform_config.py:ro
       - ./.env:/config/.env:ro
@@ -622,6 +624,11 @@ services:
       # jobs read. Probing a sparse /24 stays cheap; tune the caps if needed.
       SWITCH_DISCOVERY_RANGE: "${SWITCH_DISCOVERY_RANGE:-}"
       SWITCH_TARGETS_FILE: "/targets/switch_targets.json"
+      # A low-cost StackWise member-number walk is run during the topology
+      # loop. Only confirmed multi-member stacks enter the 30-second SNMP job.
+      STACKWISE_TARGETS_FILE: "/targets/stackwise_targets.json"
+      STACKWISE_DISCOVERY_TIMEOUT: "${STACKWISE_DISCOVERY_TIMEOUT:-1}"
+      STACKWISE_DISCOVERY_WORKERS: "${STACKWISE_DISCOVERY_WORKERS:-8}"
       SWITCH_DISCOVERY_WORKERS: "${SWITCH_DISCOVERY_WORKERS:-32}"
       SWITCH_DISCOVERY_MAX_HOSTS: "${SWITCH_DISCOVERY_MAX_HOSTS:-1024}"
       SWITCH_DISCOVERY_PING_TIMEOUT: "${SWITCH_DISCOVERY_PING_TIMEOUT:-1}"
@@ -685,6 +692,11 @@ services:
             exit 1
           fi
           printf '%s\n' "$$output" | while IFS= read -r line; do echo "[switch-discovery] $$line"; done
+          if ! output="$$(python3 /discover-stackwise-targets.py 2>&1)"; then
+            printf '%s\n' "$$output" | while IFS= read -r line; do echo "[stackwise-discovery] $$line"; done
+            exit 1
+          fi
+          printf '%s\n' "$$output" | while IFS= read -r line; do echo "[stackwise-discovery] $$line"; done
           if ! output="$$(python3 /generate-topology-edges.py 2>&1)"; then
             printf '%s\n' "$$output" | while IFS= read -r line; do echo "[topology] $$line"; done
             exit 1
