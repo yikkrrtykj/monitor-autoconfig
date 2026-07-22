@@ -15,90 +15,23 @@ disappear during the fault.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from ipaddress import IPv4Address, IPv4Network
+from ipaddress import IPv4Address
+
+from target_utils import (
+    build_file_sd,
+    load_file_sd_targets as load_file_sd,
+    merge_display_names,
+    parse_named_ipv4_targets as configured_targets,
+    write_json_atomic as write_file_sd,
+)
 
 STACK_MEMBER_NUMBER_OID = "1.3.6.1.4.1.9.9.500.1.2.1.1.1"
 DEFAULT_OUTPUT = "/targets/stackwise_targets.json"
-
-
-def expand_range(item: str) -> list[str]:
-    """Expand an IP, last-octet/full range, or CIDR after an optional name."""
-    item = (item or "").strip()
-    if not item:
-        return []
-    if ":" in item:
-        item = item.split(":", 1)[1].strip()
-    if "/" in item:
-        try:
-            return [str(ip) for ip in IPv4Network(item, strict=False).hosts()]
-        except ValueError:
-            return []
-    if "-" not in item:
-        try:
-            return [str(IPv4Address(item))]
-        except ValueError:
-            return []
-    start_raw, end_raw = [part.strip() for part in item.split("-", 1)]
-    try:
-        start = IPv4Address(start_raw)
-        end = IPv4Address(
-            f"{start_raw.rsplit('.', 1)[0]}.{end_raw}"
-            if re.fullmatch(r"\d{1,3}", end_raw) else end_raw
-        )
-    except ValueError:
-        return []
-    if int(end) < int(start) or int(end) - int(start) > 4096:
-        return []
-    return [str(IPv4Address(value)) for value in range(int(start), int(end) + 1)]
-
-
-def configured_targets(raw: str) -> dict[str, str]:
-    """Return IP -> display name for the project's NAME:IP target syntax."""
-    targets: dict[str, str] = {}
-    for entry in re.split(r"[,\n]+", raw or ""):
-        entry = entry.strip()
-        if not entry:
-            continue
-        name = entry.split(":", 1)[0].strip() if ":" in entry else ""
-        ips = expand_range(entry)
-        for index, ip in enumerate(ips, start=1):
-            if not name or name == ip:
-                display_name = ip
-            elif len(ips) == 1:
-                display_name = name
-            else:
-                display_name = f"{name}{index}"
-            targets[ip] = display_name
-    return targets
-
-
-def load_file_sd(path: str) -> dict[str, str]:
-    try:
-        with open(path, encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, ValueError):
-        return {}
-    targets: dict[str, str] = {}
-    if not isinstance(payload, list):
-        return targets
-    for entry in payload:
-        if not isinstance(entry, dict):
-            continue
-        labels = entry.get("labels") if isinstance(entry.get("labels"), dict) else {}
-        name = str(labels.get("display_name") or "").strip()
-        for value in entry.get("targets") or []:
-            try:
-                ip = str(IPv4Address(str(value).strip()))
-            except ValueError:
-                continue
-            targets[ip] = name or ip
-    return targets
 
 
 def stack_member_count(ip: str, community: str, timeout: int = 1) -> int | None:
@@ -144,23 +77,6 @@ def select_stacks(
     return selected, confirmed, retained
 
 
-def build_file_sd(results: dict[str, str]) -> list[dict]:
-    return [
-        {"targets": [ip], "labels": {"display_name": name}}
-        for ip, name in sorted(results.items(), key=lambda item: int(IPv4Address(item[0])))
-    ]
-
-
-def write_file_sd(path: str, payload: list[dict]) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    temporary = f"{path}.tmp"
-    with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-    os.replace(temporary, path)
-
-
 def main() -> None:
     output = os.environ.get("STACKWISE_TARGETS_FILE", DEFAULT_OUTPUT)
     switch_file = os.environ.get("SWITCH_TARGETS_FILE", "/targets/switch_targets.json")
@@ -168,10 +84,11 @@ def main() -> None:
     timeout = max(1, int(os.environ.get("STACKWISE_DISCOVERY_TIMEOUT", "1") or "1"))
     workers = max(1, int(os.environ.get("STACKWISE_DISCOVERY_WORKERS", "8") or "8"))
 
-    candidates: dict[str, str] = {}
+    # Auto-discovered targets are the lowest-priority source: their IP
+    # placeholder must never overwrite a configured/known device name.
+    candidates = load_file_sd(switch_file)
     for key in ("CORE_SWITCH_PING", "DIST_SWITCH_PING", "TOURNAMENT_SWITCHES"):
-        candidates.update(configured_targets(os.environ.get(key, "")))
-    candidates.update(load_file_sd(switch_file))
+        candidates = merge_display_names(candidates, configured_targets(os.environ.get(key, "")))
 
     previous = load_file_sd(output)
     ordered_ips = sorted(candidates, key=lambda value: int(IPv4Address(value)))

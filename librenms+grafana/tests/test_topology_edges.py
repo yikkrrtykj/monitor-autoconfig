@@ -13,6 +13,26 @@ sys.modules["generate_topology_edges"] = gte
 _spec.loader.exec_module(gte)
 
 
+def test_topology_snmp_calls_are_bounded_and_do_not_retry(monkeypatch):
+    calls = []
+
+    class Result:
+        stdout = '"core"\n'
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Result()
+
+    monkeypatch.setenv("TOPOLOGY_SNMP_TIMEOUT", "2")
+    monkeypatch.setenv("TOPOLOGY_SNMP_RETRIES", "0")
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    assert gte.snmpget("192.168.10.254", "global", gte.SYS_NAME_OID) == "core"
+    command, kwargs = calls[0]
+    assert command[command.index("-t") + 1] == "2.0"
+    assert command[command.index("-r") + 1] == "0"
+    assert kwargs["timeout"] == 4.0
+
+
 # ---- strip_string_value() ----
 
 class TestStripStringValue:

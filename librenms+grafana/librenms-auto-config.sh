@@ -684,6 +684,60 @@ snmp_reachable() {
     "$ip" 1.3.6.1.2.1.1.1.0 > /dev/null 2>&1
 }
 
+api_result_field() {
+  field=$1
+  python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    value = data.get(sys.argv[1], "") if isinstance(data, dict) else ""
+    if not value and sys.argv[1] == "message" and isinstance(data, dict):
+        value = data.get("error", "")
+    print(value)
+except Exception:
+    pass
+' "$field"
+}
+
+device_add_payload() {
+  DEVICE_IP="$1" DEVICE_NAME="$2" DEVICE_COMMUNITY="$3" DEVICE_SNMPVER="$SNMP_VERSION" \
+    python3 -c '
+import json, os
+payload = {
+    "hostname": os.environ["DEVICE_IP"],
+    "snmpver": os.environ["DEVICE_SNMPVER"],
+    "community": os.environ["DEVICE_COMMUNITY"],
+    "port": 161,
+    "transport": "udp",
+    "poller_group": 0,
+    "disabled": False,
+}
+if os.environ.get("DEVICE_NAME"):
+    payload["display_name"] = os.environ["DEVICE_NAME"]
+print(json.dumps(payload, ensure_ascii=False))
+'
+}
+
+sync_device_snmp_api() {
+  ip=$1
+  community=$2
+  payload=$(DEVICE_COMMUNITY="$community" DEVICE_SNMPVER="$SNMP_VERSION" python3 -c '
+import json, os
+print(json.dumps({
+    "field": ["community", "snmpver", "port", "transport", "snmp_disable"],
+    "data": [os.environ["DEVICE_COMMUNITY"], os.environ["DEVICE_SNMPVER"], 161, "udp", 0],
+}, ensure_ascii=False))
+')
+  result=$(curl -s -X PATCH "$LIBRENMS_URL/api/v0/devices/$ip" \
+    -H "X-Auth-Token: $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$payload" 2>/dev/null)
+  status=$(printf '%s' "$result" | api_result_field status)
+  [ "$status" = "ok" ]
+}
+
 add_device_api() {
   name=$1
   ip=$2
@@ -691,34 +745,28 @@ add_device_api() {
 
   [ -z "$API_TOKEN" ] && return 1
 
-  # display_name 留空时不下发，让 LibreNMS 轮询后用设备自身的 sysName/hostname
-  # 作为显示名（例如交换机里配置的 hostname douyu-stage-1），而不是脚本按 IP 末位
-  # 编造的 Stage/Device 名——那会盖掉真实主机名。
-  if [ -n "$name" ]; then
-    _display_field="\"display_name\": \"$name\","
-  else
-    _display_field=""
-  fi
-
+  payload=$(device_add_payload "$ip" "$name" "$community")
   result=$(curl -s -X POST "$LIBRENMS_URL/api/v0/devices" \
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{
-      \"hostname\": \"$ip\",
-      $_display_field
-      \"version\": \"$SNMP_VERSION\",
-      \"community\": \"$community\",
-      \"port\": 161,
-      \"transport\": \"udp\",
-      \"poller_group\": 0,
-      \"disabled\": false
-    }" 2>/dev/null)
+    -d "$payload" 2>/dev/null)
 
-  msg=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message', d.get('error', 'unknown')))" 2>/dev/null || echo "parse error")
-  status=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status', ''))" 2>/dev/null || true)
-  echo "  ${name:-$ip} ($ip): $msg"
+  msg=$(printf '%s' "$result" | api_result_field message)
+  status=$(printf '%s' "$result" | api_result_field status)
+  if [ "$status" = "ok" ]; then
+    echo "  ${name:-$ip} ($ip): ${msg:-added}"
+    return 0
+  fi
 
-  [ "$status" = "ok" ]
+  # POST returns a duplicate error for an existing device.  Older code stopped
+  # here, so changing the project SNMP community never updated devices already
+  # stored in LibreNMS. Keep every discovered device aligned with current env.
+  if sync_device_snmp_api "$ip" "$community"; then
+    echo "  ${name:-$ip} ($ip): existing device SNMP settings synchronized"
+    return 0
+  fi
+  echo "  ${name:-$ip} ($ip): ${msg:-add/update failed}"
+  return 1
 }
 
 add_device_cli() {
@@ -741,7 +789,7 @@ add_ping_device_api() {
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
     -d "{\"hostname\":\"$ip\",\"display_name\":\"$name\",\"snmp_disable\":true,\"os\":\"ping\",\"sysName\":\"$name\",\"hardware\":\"ICMP\"}" 2>/dev/null)
-  msg=$(echo "$result" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message',d.get('error','?')))" 2>/dev/null || echo "parse error")
+  msg=$(printf '%s' "$result" | api_result_field message)
   echo "  $name ($ip): $msg"
 }
 

@@ -43,6 +43,8 @@ import sys
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
+from target_utils import write_json_atomic as write_file_sd
+
 OID_IF_DESCR = ".1.3.6.1.2.1.2.2.1.2"
 OID_IF_NAME = ".1.3.6.1.2.1.31.1.1.1.1"
 OID_IF_ALIAS = ".1.3.6.1.2.1.31.1.1.1.18"
@@ -450,16 +452,6 @@ def build_file_sd(results: list[dict[str, str]], exclude: set[str]) -> list[dict
             labels["discovery_source"] = item["source"]
         payload.append({"targets": [item["gateway"]], "labels": labels})
     return payload
-
-
-def write_file_sd(path: str, payload: list[dict]) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
 
 
 def main() -> None:

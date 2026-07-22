@@ -604,6 +604,7 @@ services:
       - ./discover-switch-targets.py:/discover-switch-targets.py:ro
       - ./discover-stackwise-targets.py:/discover-stackwise-targets.py:ro
       - ./discover-isp-targets.py:/discover-isp-targets.py:ro
+      - ./target_utils.py:/target_utils.py:ro
       - ./platform_config.py:/platform_config.py:ro
       - ./.env:/config/.env:ro
       # Firewall IP-MIB is hidden on some appliances. LibreNMS' discovered
@@ -633,6 +634,10 @@ services:
       SWITCH_DISCOVERY_MAX_HOSTS: "${SWITCH_DISCOVERY_MAX_HOSTS:-1024}"
       SWITCH_DISCOVERY_PING_TIMEOUT: "${SWITCH_DISCOVERY_PING_TIMEOUT:-1}"
       SWITCH_DISCOVERY_SNMP_TIMEOUT: "${SWITCH_DISCOVERY_SNMP_TIMEOUT:-1}"
+      # Bound each LLDP/CDP request so topology refresh cannot monopolize a
+      # weak switch's SNMP agent or make LibreNMS mark it offline.
+      TOPOLOGY_SNMP_TIMEOUT: "${TOPOLOGY_SNMP_TIMEOUT:-2}"
+      TOPOLOGY_SNMP_RETRIES: "${TOPOLOGY_SNMP_RETRIES:-0}"
       # ISP 网关自动发现：从防火墙 SNMP 读 WAN 口地址和默认路由下一跳，
       # 写 isp_targets.json 给 infra-isp-ping；手工 ISP_PING 条目优先。
       ISP_GATEWAY_AUTO_DISCOVER: "${ISP_GATEWAY_AUTO_DISCOVER:-true}"

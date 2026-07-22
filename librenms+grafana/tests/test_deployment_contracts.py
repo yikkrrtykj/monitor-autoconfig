@@ -33,6 +33,7 @@ def test_deploy_rebuilds_local_images_only_when_dockerfiles_change():
     # under set -e cannot fail a deploy whose stack already came up fine.
     assert "for service in bigscreen platform-api alertmanager-feishu-bridge feishu-ws" in deploy
     assert 'docker compose restart "$service" ||' in deploy
+    assert "docker compose up -d --force-recreate --no-deps librenms-config" in deploy
 
 
 def test_feishu_ws_sidecar_is_profile_gated_and_optional():
@@ -136,6 +137,9 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert "./librenms-data:/librenms-data:ro" in topology
     assert 'LIBRENMS_URL: "http://librenms:8000"' in topology
     assert 'LIBRENMS_TOKEN_FILE: "/librenms-data/librenms-api-token"' in topology
+    assert "./target_utils.py:/target_utils.py:ro" in topology
+    assert 'TOPOLOGY_SNMP_TIMEOUT: "${TOPOLOGY_SNMP_TIMEOUT:-2}"' in topology
+    assert 'TOPOLOGY_SNMP_RETRIES: "${TOPOLOGY_SNMP_RETRIES:-0}"' in topology
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
@@ -143,6 +147,15 @@ def test_feishu_bridge_does_not_create_librenms_transport():
 
     assert "configure_feishu_transport" not in auto_config
     assert "INSERT INTO alert_transports" not in auto_config
+
+
+def test_existing_librenms_devices_receive_current_snmp_credentials():
+    auto_config = read("librenms-auto-config.sh")
+
+    assert '"snmpver": os.environ["DEVICE_SNMPVER"]' in auto_config
+    assert "sync_device_snmp_api" in auto_config
+    assert 'curl -s -X PATCH "$LIBRENMS_URL/api/v0/devices/$ip"' in auto_config
+    assert '"field": ["community", "snmpver", "port", "transport", "snmp_disable"]' in auto_config
 
 
 def test_cisco_stackwise_uses_dedicated_low_frequency_snmp_module():

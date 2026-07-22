@@ -1010,7 +1010,7 @@ def _device_is_online(device):
 
 
 def _device_status_summary(devices, offline_only=False):
-    active = [device for device in devices if not str(device.get("disabled") or "0").strip().lower() in ("1", "true", "yes")]
+    active = [device for device in devices if str(device.get("disabled") or "0").strip().lower() not in ("1", "true", "yes")]
     offline = [device for device in active if not _device_is_online(device)]
     if offline_only and not offline:
         return "🟢 当前没有离线设备。"

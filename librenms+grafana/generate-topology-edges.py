@@ -13,6 +13,8 @@ Env vars:
                              TOURNAMENT_SWITCHES + auto-discovered switches from
                              SWITCH_TARGETS_FILE (default /targets/switch_targets.json).
   TOPOLOGY_SNMP_COMMUNITY    SNMPv2c community (default: SNMP_COMMUNITY).
+  TOPOLOGY_SNMP_TIMEOUT      per-request timeout seconds (default: 2).
+  TOPOLOGY_SNMP_RETRIES      retries per request (default: 0).
   TOPOLOGY_OUTPUT_DIR        where to write edges.json / legacy empty files
                              (default: /etc/prometheus/targets/topology).
 """
@@ -23,6 +25,8 @@ import re
 import subprocess
 import sys
 from ipaddress import IPv4Address
+
+from target_utils import expand_ipv4_entry, write_json_atomic
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
 IF_NAME_OID = "1.3.6.1.2.1.31.1.1.1.1"
@@ -38,20 +42,40 @@ CDP_CACHE_DEVICE_ID_OID = "1.3.6.1.4.1.9.9.23.1.2.1.1.6"
 CDP_CACHE_DEVICE_PORT_OID = "1.3.6.1.4.1.9.9.23.1.2.1.1.7"
 
 
-def snmpwalk(host, community, oid, timeout=15):
-    cmd = ["snmpwalk", "-v2c", "-c", community, "-O", "n", "-t", str(timeout), host, oid]
+def _snmp_limits(timeout=None, retries=None):
+    timeout = float(timeout if timeout is not None else os.environ.get("TOPOLOGY_SNMP_TIMEOUT", "2"))
+    retries = int(retries if retries is not None else os.environ.get("TOPOLOGY_SNMP_RETRIES", "0"))
+    return max(0.2, timeout), max(0, retries)
+
+
+def snmpwalk(host, community, oid, timeout=None, retries=None):
+    timeout, retries = _snmp_limits(timeout, retries)
+    cmd = [
+        "snmpwalk", "-v2c", "-c", community, "-O", "n",
+        "-t", str(timeout), "-r", str(retries), host, oid,
+    ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=timeout * (retries + 1) + 2,
+        )
         return result.stdout
     except Exception as exc:
         print(f"[WARN] snmpwalk {host} {oid}: {exc}", file=sys.stderr)
         return ""
 
 
-def snmpget(host, community, oid, timeout=8):
-    cmd = ["snmpget", "-v2c", "-c", community, "-O", "qv", "-t", str(timeout), host, oid]
+def snmpget(host, community, oid, timeout=None, retries=None):
+    timeout, retries = _snmp_limits(timeout, retries)
+    cmd = [
+        "snmpget", "-v2c", "-c", community, "-O", "qv",
+        "-t", str(timeout), "-r", str(retries), host, oid,
+    ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=timeout * (retries + 1) + 2,
+        )
         return result.stdout.strip().strip('"')
     except Exception as exc:
         print(f"[WARN] snmpget {host} {oid}: {exc}", file=sys.stderr)
@@ -310,42 +334,10 @@ def load_device_list():
 
 
 def expand_device_entry(entry):
-    entry = entry.strip()
-    if not entry:
-        return []
-    ip_part = entry.split(":", 1)[1].strip() if ":" in entry else entry
-    if not ip_part:
-        return []
-    if "-" not in ip_part:
-        try:
-            IPv4Address(ip_part)
-        except ValueError:
-            return []
-        return [ip_part]
-
-    start_ip, end_part = [part.strip() for part in ip_part.split("-", 1)]
-    try:
-        start = IPv4Address(start_ip)
-    except ValueError:
-        return []
-    if "." in end_part:
-        try:
-            end = IPv4Address(end_part)
-        except ValueError:
-            return []
-    else:
-        octets = start_ip.split(".")
-        octets[-1] = end_part
-        try:
-            end = IPv4Address(".".join(octets))
-        except ValueError:
-            return []
-    if int(end) < int(start):
-        return []
-    if int(end) - int(start) + 1 > 4096:
-        print(f"[WARN] topology range too large, skipped: {entry}", file=sys.stderr)
-        return []
-    return [str(IPv4Address(value)) for value in range(int(start), int(end) + 1)]
+    targets = expand_ipv4_entry(entry)
+    if not targets and entry.strip():
+        print(f"[WARN] invalid/oversized topology target skipped: {entry}", file=sys.stderr)
+    return targets
 
 
 def poll_device(ip, community):
@@ -526,11 +518,7 @@ def build_edges(devices, name_index):
 
 
 def atomic_write_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+    write_json_atomic(path, data, sort_keys=True)
 
 
 def main():

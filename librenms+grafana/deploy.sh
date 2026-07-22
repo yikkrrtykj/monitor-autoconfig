@@ -255,6 +255,10 @@ fi
 for service in bigscreen platform-api alertmanager-feishu-bridge feishu-ws; do
   docker compose restart "$service" || echo "[deploy] WARN: restart $service failed (service missing or not running)"
 done
+# librenms-config is a one-shot container. Recreate it as well so source-only
+# auto-config fixes (including existing-device SNMP credential synchronization)
+# are applied by a normal deploy, not only after a console Apply operation.
+docker compose up -d --force-recreate --no-deps librenms-config || echo "[deploy] WARN: recreate librenms-config failed"
 
 echo "[deploy] Current service status:"
 docker compose ps

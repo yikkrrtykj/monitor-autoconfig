@@ -29,68 +29,20 @@ Env vars:
 """
 from __future__ import annotations
 
-import json
 import os
-import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from ipaddress import IPv4Address, IPv4Network
+
+from target_utils import (
+    build_file_sd,
+    expand_ipv4_targets as expand_targets,
+    is_ipv4,
+    write_json_atomic as write_file_sd,
+)
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
 DEFAULT_MAX_HOSTS = 1024
-
-
-def expand_range(item: str) -> list[str]:
-    """Expand one entry into individual IPs. Handles an optional "name:" prefix,
-    single IPs, last-octet ("a.b.c.11-30") and full ranges, and CIDR blocks
-    ("a.b.c.0/24" -> usable host addresses)."""
-    item = (item or "").strip()
-    if not item:
-        return []
-    if ":" in item:
-        item = item.split(":", 1)[1].strip()
-    if not item:
-        return []
-    if "/" in item:
-        try:
-            return [str(ip) for ip in IPv4Network(item, strict=False).hosts()]
-        except ValueError:
-            return []
-    if "-" not in item:
-        try:
-            return [str(IPv4Address(item))]
-        except ValueError:
-            return []
-    start_raw, end_raw = [part.strip() for part in item.split("-", 1)]
-    try:
-        start = IPv4Address(start_raw)
-    except ValueError:
-        return []
-    if re.fullmatch(r"\d{1,3}", end_raw):
-        try:
-            end = IPv4Address(f"{start_raw.rsplit('.', 1)[0]}.{end_raw}")
-        except ValueError:
-            return []
-    else:
-        try:
-            end = IPv4Address(end_raw)
-        except ValueError:
-            return []
-    if int(end) < int(start) or int(end) - int(start) > 4096:
-        return []
-    return [str(IPv4Address(int(start) + offset)) for offset in range(int(end) - int(start) + 1)]
-
-
-def expand_targets(raw: str) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for part in re.split(r"[,\n]+", raw or ""):
-        for ip in expand_range(part):
-            if ip not in seen:
-                seen.add(ip)
-                out.append(ip)
-    return out
 
 
 def excluded_ips(*raws: str) -> set[str]:
@@ -101,7 +53,7 @@ def excluded_ips(*raws: str) -> set[str]:
 
 
 def looks_like_ip(value: str) -> bool:
-    return bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", str(value or "")))
+    return is_ipv4(value)
 
 
 def ping_alive(ip: str, timeout: int = 1) -> bool:
@@ -118,7 +70,7 @@ def snmp_sysname(ip: str, community: str, timeout: int = 1) -> str:
     """Return the device sysName, or "" when SNMP does not answer."""
     try:
         result = subprocess.run(
-            ["snmpget", "-v2c", "-c", community, "-Ovq", "-t", str(timeout), "-r", "1", ip, SYS_NAME_OID],
+            ["snmpget", "-v2c", "-c", community, "-Ovq", "-t", str(timeout), "-r", "0", ip, SYS_NAME_OID],
             capture_output=True, text=True, timeout=timeout + 3,
         )
     except Exception:
@@ -159,23 +111,6 @@ def discover(ips, community, probe_snmp=snmp_sysname, probe_ping=ping_alive,
             results[ip] = ip
             print(f"[switch-discovery] keep ping-live SNMP-missing host {ip} as IP placeholder", file=sys.stderr)
     return results
-
-
-def build_file_sd(results: dict[str, str]) -> list[dict]:
-    return [
-        {"targets": [ip], "labels": {"display_name": name}}
-        for ip, name in sorted(results.items(), key=lambda kv: int(IPv4Address(kv[0])))
-    ]
-
-
-def write_file_sd(path: str, payload: list[dict]) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
 
 
 def main() -> None:

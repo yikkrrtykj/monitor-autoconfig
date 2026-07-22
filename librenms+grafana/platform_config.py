@@ -379,7 +379,6 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         add("bad", "isp.links", "isp.links 必须是列表")
 
     config = normalize_config(config)
-    event = config["event"]
     devices = config["devices"]
     networks = config["networks"]
     isp = config["isp"]
