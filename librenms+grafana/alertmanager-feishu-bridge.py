@@ -390,6 +390,7 @@ def load_device_down_states():
             "pending_notified": bool(value.get("pending_notified", False)),
             "pending_last_notified": _as_float(value.get("pending_last_notified")),
             "pending_snoozed_until": _as_float(value.get("pending_snoozed_until")),
+            "pending_event_title": str(value.get("pending_event_title") or ""),
         }
     return loaded
 
@@ -419,6 +420,7 @@ def save_device_down_states(states):
             "pending_notified": bool(state.get("pending_notified", False)),
             "pending_last_notified": state.get("pending_last_notified"),
             "pending_snoozed_until": state.get("pending_snoozed_until"),
+            "pending_event_title": state.get("pending_event_title") or "",
         }
     with DEVICE_DOWN_STATE_LOCK:
         _save_json_dict(DEVICE_DOWN_STATE_FILE, active_or_retired)
@@ -536,15 +538,10 @@ def _librenms_get_json(token, path, timeout=15):
 
 BOT_HELP_TEXT = (
     "运维查询与巡检：\n"
-    "• 网络状态 — 在线/离线设备概览\n"
-    "• 离线设备 — 只列当前离线设备\n"
+    "• 网络巡检 — 全网设备在线/离线汇总，离线时附明细\n"
     "• 待删除设备 — 在当前飞书会话发确认删除/保留卡片\n"
     "• 光功率巡检 — 全网 dBm 汇总，异常时附明细\n"
-    "• 上联冗余巡检 — 按当前 LLDP/CDP 拓扑检查双上联\n"
-    "• 设备 <设备名或 IP> — 单台详情\n"
-    "• 光功率 <设备名或 IP> [接口]\n"
-    "• 异常光功率 <设备名或 IP> [接口]\n"
-    "示例：光功率 192.168.10.31 Gi1/0/1\n"
+    "• 上联冗余巡检 — 结合 LLDP/CDP 和 Port-Channel 成员检查冗余\n"
     "巡检读取 LibreNMS 和已经采集的拓扑，不会修改交换机配置。"
 )
 
@@ -781,7 +778,44 @@ def _load_switch_audit_inventory(edges):
     return inventory
 
 
-def audit_uplink_redundancy(edges, inventory, core_ip):
+def _audit_port_key(value):
+    """Normalize physical and aggregate interface spellings for audit joins."""
+    token = str(value or "").strip().lower().replace(" ", "")
+    for full, short in (
+        ("hundredgigabitethernet", "hu"),
+        ("twentyfivegigabitethernet", "twe"),
+        ("fortygigabitethernet", "fo"),
+        ("tengigabitethernet", "te"),
+        ("gigabitethernet", "gi"),
+        ("fastethernet", "fa"),
+        ("port-channel", "po"),
+        ("portchannel", "po"),
+    ):
+        if token.startswith(full):
+            return short + token[len(full):]
+    return token
+
+
+def _aggregate_for_uplink(ip, uplinks, aggregates):
+    """Find a configured LAG whose interface or physical member is in the LLDP path."""
+    port_keys = {_audit_port_key(item.get("port")) for item in uplinks if item.get("port")}
+    ifindexes = {str(item.get("ifindex")) for item in uplinks if item.get("ifindex") not in (None, "")}
+    candidates = []
+    for aggregate in aggregates or []:
+        if str(aggregate.get("ip") or "").strip() != ip:
+            continue
+        aggregate_key = _audit_port_key(aggregate.get("port"))
+        members = aggregate.get("members") or []
+        member_keys = {_audit_port_key(item.get("name")) for item in members if item.get("name")}
+        member_indexes = {str(item.get("ifindex")) for item in members if item.get("ifindex") not in (None, "")}
+        if aggregate_key in port_keys or port_keys.intersection(member_keys) or ifindexes.intersection(member_indexes):
+            candidates.append(aggregate)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: len(item.get("members") or []))
+
+
+def audit_uplink_redundancy(edges, inventory, core_ip, aggregates=None):
     adjacency = {}
     for edge in edges:
         left = str(edge.get("from_ip") or "").strip()
@@ -800,27 +834,48 @@ def audit_uplink_redundancy(edges, inventory, core_ip):
 
     rows = []
     for ip, name in sorted(inventory.items(), key=lambda item: item[1].casefold()):
-        ports = set()
+        uplinks = []
         for edge in edges:
             if str(edge.get("from_ip") or "") == ip:
                 neighbor = str(edge.get("to_ip") or "")
                 raw_ports = edge.get("from_port") or ""
+                ifindex = edge.get("from_ifindex")
             elif str(edge.get("to_ip") or "") == ip:
                 neighbor = str(edge.get("from_ip") or "")
                 raw_ports = edge.get("to_port") or ""
+                ifindex = edge.get("to_ifindex")
             else:
                 continue
             if ip not in depth or neighbor not in depth or depth[neighbor] >= depth[ip]:
                 continue
             for port in re.split(r"\s*,\s*", str(raw_ports)):
                 if port.strip():
-                    ports.add(port.strip())
+                    uplinks.append({"port": port.strip(), "ifindex": ifindex})
+        ports = sorted({item["port"] for item in uplinks})
+        aggregate = _aggregate_for_uplink(ip, uplinks, aggregates)
+        members = list((aggregate or {}).get("members") or [])
+        active_members = [item for item in members if item.get("up")]
+        if aggregate and members:
+            redundant = bool(aggregate.get("lag_up")) and len(members) >= 2 and len(active_members) >= 2
+            audit_state = "healthy" if redundant else "degraded"
+        elif aggregate:
+            # A visible Port-Channel without ifStack member data cannot safely be
+            # called a single uplink.
+            redundant = None
+            audit_state = "unknown-members"
+        else:
+            redundant = len(ports) >= 2
+            audit_state = "healthy" if redundant else "single"
         rows.append({
             "ip": ip,
             "name": name,
-            "ports": sorted(ports),
+            "ports": ports,
             "reachable": ip in depth,
-            "redundant": len(ports) >= 2,
+            "redundant": redundant,
+            "audit_state": audit_state,
+            "aggregate": (aggregate or {}).get("port") or "",
+            "members": [item.get("name") or "?" for item in members],
+            "active_members": [item.get("name") or "?" for item in active_members],
         })
     return rows
 
@@ -828,19 +883,35 @@ def audit_uplink_redundancy(edges, inventory, core_ip):
 def build_uplink_audit_cards():
     edges = load_topology_edges()
     inventory = _load_switch_audit_inventory(edges)
-    rows = audit_uplink_redundancy(edges, inventory, _topology_core_ip())
-    issues = [item for item in rows if not item["redundant"]]
+    aggregates = []
+    jobs = [item.strip() for item in INTERCONNECT_ALERT_JOBS.split(",") if item.strip()]
+    safe_jobs = [item for item in jobs if re.match(r"^[A-Za-z0-9_:.-]+$", item)]
+    if safe_jobs:
+        try:
+            aggregates = fetch_interconnect_ports("|".join(safe_jobs))
+        except Exception as exc:
+            log(f"[BOT] Port-Channel member audit unavailable: {exc}")
+    rows = audit_uplink_redundancy(edges, inventory, _topology_core_ip(), aggregates)
+    issues = [item for item in rows if item["redundant"] is False]
+    unknown = [item for item in rows if item["redundant"] is None]
+    if rows and not issues and not unknown:
+        result_text = "结果：全部设备都有冗余上联"
+    elif issues:
+        result_text = f"结果：{len(issues)} 台需要检查上联冗余"
+    else:
+        result_text = f"结果：{len(unknown)} 台已识别 Port-Channel，但成员关系不可读"
     summary = [
         f"✅ **已检查接入/汇聚交换机：** {len(rows)} 台",
-        f"⚠️ **无双上联或无法判定：** {len(issues)} 台",
-        "结果：全部设备都有冗余上联" if rows and not issues else f"结果：{len(issues)} 台需要检查上联冗余",
+        f"⚠️ **单上联或聚合成员不足：** {len(issues)} 台",
+        f"ℹ️ **Port-Channel 成员不可读：** {len(unknown)} 台",
+        result_text,
     ]
     if not rows:
         summary.append("当前拓扑尚无可检查的交换机，请等待 LLDP/CDP 采集完成。")
     cards = [_make_card(
         "上联冗余巡检",
         "🔗 Uplink Redundancy Check",
-        "green" if rows and not issues else "orange",
+        "green" if rows and not issues and not unknown else "orange",
         "\n".join(summary),
     )]
     if issues:
@@ -848,6 +919,10 @@ def build_uplink_audit_cards():
         for item in issues[:50]:
             if not item["reachable"]:
                 detail = "未出现在从核心出发的拓扑路径中"
+            elif item["aggregate"]:
+                active = "、".join(item["active_members"]) or "无"
+                all_members = "、".join(item["members"]) or "未读取到成员"
+                detail = f"{item['aggregate']} 成员：{all_members}；当前在线：{active}"
             elif item["ports"]:
                 detail = "仅识别到一个上联：" + "、".join(item["ports"])
             else:
@@ -857,13 +932,29 @@ def build_uplink_audit_cards():
             lines.append(f"另有 {len(issues) - 50} 台未展开")
         lines.append("✅ 明细结束")
         cards.append(_make_card("上联巡检异常明细", "Uplink Details", "orange", "\n".join(lines)))
+    if unknown:
+        lines = [
+            f"• **{item['name']} ({item['ip']})**\n  已识别 {item['aggregate']}，但设备未提供 ifStack 成员关系"
+            for item in unknown[:50]
+        ]
+        lines.append("这些设备不按单上联报错；需设备支持 IF-MIB ifStackTable 才能核对成员数。")
+        cards.append(_make_card("上联巡检待确认", "Uplink Member Visibility", "blue", "\n".join(lines)))
     return cards
 
 
 def build_pending_delete_query_cards():
+    assigned_title = False
     with RETIRE_LOCK:
-        states = [(key, dict(state)) for key, state in DEVICE_DOWN_STATES.items()
-                  if state.get("pending_delete")]
+        states = []
+        for key, state in DEVICE_DOWN_STATES.items():
+            if not state.get("pending_delete"):
+                continue
+            if not state.get("pending_event_title"):
+                state["pending_event_title"] = next_event_title()
+                assigned_title = True
+            states.append((key, dict(state)))
+    if assigned_title:
+        save_device_down_states(DEVICE_DOWN_STATES)
     states.sort(key=lambda item: _as_float(item[1].get("pending_since")) or 0)
     return [build_retire_confirm_card(state, key, True) for key, state in states[:20]]
 
@@ -919,13 +1010,13 @@ def handle_bot_query(text):
         return {"ok": True, "text": BOT_HELP_TEXT}
 
     folded = command.casefold()
-    status_cmd = folded in {"网络状态", "状态", "总览"}
-    offline_cmd = folded in {"离线设备", "离线", "掉线设备"}
+    network_audit_cmd = folded in {
+        "网络巡检", "网络状态", "状态", "总览", "离线设备", "离线", "掉线设备",
+        "check_network", "check network",
+    }
     pending_cmd = folded in {"待删除设备", "待删除", "测试删除", "pending delete"}
     fiber_audit_cmd = folded in {"光功率巡检", "光模块巡检", "全网光功率", "check_fiber", "check fiber"}
     uplink_audit_cmd = folded in {"上联冗余巡检", "上联巡检", "冗余巡检", "check_uplinks", "check uplinks"}
-    optical = re.match(r"^(查|查询)?(异常)?光功率(?:\s+(.+))?$", command, re.IGNORECASE)
-    device_cmd = re.match(r"^(查|查询)?设备(?:\s+(.+))?$", command, re.IGNORECASE)
     if pending_cmd:
         cards = build_pending_delete_query_cards()
         if not cards:
@@ -937,7 +1028,7 @@ def handle_bot_query(text):
         }
     if uplink_audit_cmd:
         return {"ok": True, "text": "上联冗余巡检完成。", "cards": build_uplink_audit_cards()}
-    if not optical and not device_cmd and not status_cmd and not offline_cmd and not fiber_audit_cmd:
+    if not network_audit_cmd and not fiber_audit_cmd:
         return {"ok": True, "text": f"未识别命令。\n{BOT_HELP_TEXT}"}
 
     token = _librenms_token()
@@ -948,75 +1039,14 @@ def handle_bot_query(text):
     except Exception as exc:
         log(f"[BOT] device query failed: {exc}")
         return {"ok": False, "text": "读取 LibreNMS 设备列表失败，请稍后再试。"}
-    if status_cmd or offline_cmd:
-        return {"ok": True, "text": _device_status_summary(devices, offline_only=offline_cmd)}
+    if network_audit_cmd:
+        return {"ok": True, "text": _device_status_summary(devices, offline_only=False)}
     if fiber_audit_cmd:
         return {
             "ok": True,
             "text": "光功率巡检完成。",
             "cards": build_fiber_audit_cards(token, devices),
         }
-
-    argument = (optical.group(3) if optical else device_cmd.group(2)) or ""
-    device_term, interface_term = _split_device_and_interface(argument)
-    if not device_term:
-        usage = "光功率 <设备名或 IP> [接口]" if optical else "设备 <设备名或 IP>"
-        return {"ok": False, "text": f"请指定设备。用法：{usage}"}
-    matches = _match_librenms_devices(devices, device_term)
-    if not matches:
-        return {"ok": False, "text": f"没有找到设备：{device_term}"}
-    if len(matches) > 1:
-        choices = "、".join(f"{_device_display(item)}({_device_ip(item)})" for item in matches[:8])
-        return {"ok": False, "text": f"匹配到多个设备，请输入更完整的名称或 IP：\n{choices}"}
-    device = matches[0]
-    name = _device_display(device)
-    ip = _device_ip(device)
-
-    if device_cmd:
-        online = _device_is_online(device)
-        status = "🟢 在线" if online else "🔴 离线或停用"
-        model = str(device.get("hardware") or "未知型号").strip()
-        version = str(device.get("version") or "").strip()
-        return {
-            "ok": True,
-            "text": (
-                f"设备：{name}\nIP：{ip or '未知'}\n状态：{status}\n"
-                f"型号：{model}{f' / {version}' if version else ''}\n"
-                f"运行时间：{_format_uptime(device.get('uptime'))}"
-            ),
-        }
-
-    try:
-        sensors = fetch_librenms_dbm_sensors(token, device.get("device_id"))
-    except Exception as exc:
-        log(f"[BOT] optical query failed for {name}: {exc}")
-        return {"ok": False, "text": f"读取 {name} 的光功率失败，请稍后再试。"}
-    if interface_term:
-        wanted = interface_term.casefold()
-        sensors = [s for s in sensors if wanted in str(s.get("sensor_descr") or "").casefold()]
-    abnormal_only = bool(optical.group(2))
-    rows = []
-    for sensor in sorted(sensors, key=lambda item: str(item.get("sensor_descr") or "")):
-        level, icon, detail = optical_sensor_state(sensor)
-        if abnormal_only and level not in ("bad", "warn"):
-            continue
-        current = _number(sensor.get("sensor_current"))
-        value = "无读数" if current is None else f"{current:.2f} dBm"
-        descr = str(sensor.get("sensor_descr") or sensor.get("sensor_index") or "未知接口")
-        suffix = "" if detail == "正常" else f"（{detail}）"
-        rows.append(f"{icon} {descr}：{value}{suffix}")
-    if not rows:
-        if sensors and abnormal_only:
-            return {"ok": True, "text": f"{name}（{ip}）未发现超出 LibreNMS 阈值的光功率。"}
-        target = f"，接口包含“{interface_term}”" if interface_term else ""
-        return {"ok": False, "text": f"{name}（{ip}）没有可用的 dBm 光功率数据{target}。"}
-    shown = rows[:40]
-    more = f"\n另有 {len(rows) - len(shown)} 项，请加接口名缩小范围。" if len(rows) > len(shown) else ""
-    return {
-        "ok": True,
-        "text": f"光功率：{name}（{ip}）\n" + "\n".join(shown) + more,
-    }
-
 
 def _find_librenms_device_by_ip(token, ip):
     for device in fetch_librenms_devices(token):
@@ -1572,7 +1602,9 @@ def build_retire_confirm_card(state, key, interactive):
         ]
     else:
         lines.append("👉 请到赛事控制台『待删除设备』面板确认删除或保留。")
-    return _make_card(next_event_title(), "🟠 设备待删除确认", "orange", "\n".join(lines), extra_elements=extra)
+    title = state.get("pending_event_title") or next_event_title()
+    state["pending_event_title"] = title
+    return _make_card(title, "🟠 设备待删除确认", "orange", "\n".join(lines), extra_elements=extra)
 
 
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
@@ -2546,12 +2578,17 @@ def fetch_interconnect_ports(jobs_regex):
             name = index_names.get((ip, member_idx))
             if not name or name == port:
                 continue
-            members.append({"name": name, "up": index_up.get((ip, member_idx), True)})
+            members.append({
+                "name": name,
+                "ifindex": member_idx,
+                "up": index_up.get((ip, member_idx), True),
+            })
         ports.append({
             "key": "|".join([metric.get("job", ""), ip, ifindex or port]),
             "device": metric.get("display_name") or metric.get("instance") or ip or "?",
             "ip": ip,
             "port": port,
+            "ifindex": ifindex,
             "alias": metric.get("ifAlias") or "",
             "lag_up": bool(up),
             "members": members,
@@ -2861,6 +2898,7 @@ def mark_pending_delete_states(states, now):
             state["pending_token"] = secrets.token_urlsafe(16)
             state["pending_notified"] = False
             state["pending_last_notified"] = None
+            state["pending_event_title"] = next_event_title()
             marked.append(key)
     return marked
 
@@ -2898,6 +2936,7 @@ def _clear_pending_fields(state):
     state["pending_token"] = ""
     state["pending_notified"] = False
     state["pending_last_notified"] = None
+    state["pending_event_title"] = ""
 
 
 def _target_currently_up(job, ip):

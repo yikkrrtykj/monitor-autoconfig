@@ -96,45 +96,7 @@ def test_every_outgoing_card_is_prefixed_with_event_name(monkeypatch):
     assert bridge._with_event_name(decorated)["card"]["header"]["title"]["content"] == "【EWC 上海站】 test"
 
 
-def test_bot_device_and_optical_queries_use_librenms_data(monkeypatch):
-    devices = [{
-        "device_id": 7,
-        "display": "RTS1",
-        "sysName": "rts1.example",
-        "hostname": "192.168.10.31",
-        "ip": "192.168.10.31",
-        "status": 1,
-        "hardware": "C9300-24T",
-        "version": "17.9",
-        "uptime": 90061,
-    }]
-    sensors = [
-        {"sensor_descr": "Gi1/0/1 Tx Power", "sensor_current": -2.1,
-         "sensor_limit": 2, "sensor_limit_low": -12},
-        {"sensor_descr": "Gi1/0/1 Rx Power", "sensor_current": -15.2,
-         "sensor_limit": 2, "sensor_limit_low": -12},
-    ]
-    monkeypatch.setattr(bridge, "LIBRENMS_URL", "http://librenms")
-    monkeypatch.setattr(bridge, "_librenms_token", lambda: "token")
-    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda _token: devices)
-    monkeypatch.setattr(bridge, "fetch_librenms_dbm_sensors", lambda _token, _device_id: sensors)
-
-    device = bridge.handle_bot_query("查设备 RTS1")
-    assert device["ok"] is True
-    assert "C9300-24T" in device["text"]
-    assert "在线" in device["text"]
-
-    optical = bridge.handle_bot_query("查光功率 192.168.10.31 Gi1/0/1")
-    assert optical["ok"] is True
-    assert "Tx Power：-2.10 dBm" in optical["text"]
-    assert "Rx Power：-15.20 dBm（低于下限 -12）" in optical["text"]
-
-    abnormal = bridge.handle_bot_query("查异常光功率 RTS1")
-    assert "Tx Power" not in abnormal["text"]
-    assert "Rx Power" in abnormal["text"]
-
-
-def test_bot_network_status_and_offline_shortcuts(monkeypatch):
+def test_bot_network_audit_merges_status_and_offline_details(monkeypatch):
     devices = [
         {"display": "core", "hostname": "192.168.10.254", "status": 1, "disabled": 0},
         {"display": "RTS2", "hostname": "192.168.10.32", "status": 0, "disabled": 0},
@@ -144,14 +106,17 @@ def test_bot_network_status_and_offline_shortcuts(monkeypatch):
     monkeypatch.setattr(bridge, "_librenms_token", lambda: "token")
     monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda _token: devices)
 
-    summary = bridge.handle_bot_query("网络状态")
+    summary = bridge.handle_bot_query("网络巡检")
     assert "在线 1" in summary["text"]
     assert "离线 1" in summary["text"]
     assert "RTS2" in summary["text"]
     assert "retired" not in summary["text"]
 
-    offline = bridge.handle_bot_query("离线设备")
-    assert "RTS2" in offline["text"]
+    # Legacy status/offline spellings remain aliases but now return the same
+    # combined network audit rather than separate single-purpose commands.
+    assert bridge.handle_bot_query("离线设备")["text"] == summary["text"]
+    assert "设备 <设备名或 IP>" not in bridge.BOT_HELP_TEXT
+    assert bridge.handle_bot_query("查设备 RTS2")["text"].startswith("未识别命令")
 
 
 def test_bot_full_fiber_audit_returns_summary_and_grouped_details(monkeypatch):
@@ -199,6 +164,26 @@ def test_uplink_audit_counts_physical_ports_toward_core():
     by_ip = {item["ip"]: item for item in rows}
     assert by_ip["10.0.0.2"]["redundant"] is True
     assert by_ip["10.0.0.3"]["redundant"] is False
+
+
+def test_uplink_audit_matches_lldp_physical_port_to_port_channel_members():
+    edges = [{
+        "from_ip": "10.0.0.1", "to_ip": "10.0.0.2",
+        "to_port": "GigabitEthernet27", "to_ifindex": "27",
+    }]
+    aggregates = [{
+        "ip": "10.0.0.2", "port": "Po1", "ifindex": "400", "lag_up": True,
+        "members": [
+            {"name": "Gi27", "ifindex": "27", "up": True},
+            {"name": "Gi28", "ifindex": "28", "up": True},
+        ],
+    }]
+    row = bridge.audit_uplink_redundancy(
+        edges, {"10.0.0.2": "access-a"}, "10.0.0.1", aggregates,
+    )[0]
+    assert row["aggregate"] == "Po1"
+    assert row["members"] == ["Gi27", "Gi28"]
+    assert row["redundant"] is True
 
 
 def test_dbm_query_falls_back_to_device_health_when_global_sensor_page_is_incomplete(monkeypatch):
@@ -355,11 +340,15 @@ def test_pending_delete_notify_downgrades_to_webhook_when_app_send_fails(monkeyp
     monkeypatch.setattr(bridge, "send_feishu_app_card", lambda card: False)
     webhook_calls = []
     monkeypatch.setattr(bridge, "_send_feishu_webhook", lambda card: webhook_calls.append(card) or True)
+    event_titles = []
+    monkeypatch.setattr(bridge, "next_event_title", lambda: event_titles.append("#77") or "#77")
 
     changed = bridge.notify_pending_delete_states(states, 1000.0)
     assert changed is True
     assert states[key]["pending_notified"] is True
     assert len(webhook_calls) == 1
+    assert event_titles == ["#77"]
+    assert webhook_calls[0]["card"]["header"]["title"]["content"].startswith("#77 ")
 
     # 已通知后不重复发（DEVICE_PENDING_DELETE_REALERT_SECONDS=0）
     monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_REALERT_SECONDS", 0)
