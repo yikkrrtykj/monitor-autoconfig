@@ -1692,12 +1692,12 @@
     value.alerts = {
       syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback",
       feishu_mode: "local",
-      feishu_site_id: "",
-      feishu_default_site_id: "",
       feishu_sites: [],
       ...(value.alerts || {})
     };
     delete value.alerts.feishu_bridge_api_token;
+    delete value.alerts.feishu_site_id;
+    delete value.alerts.feishu_default_site_id;
     value.alerts.feishu_sites = asConfigArray(value.alerts.feishu_sites);
     value.security = { ...(value.security || {}), grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
     return value;
@@ -1961,16 +1961,16 @@
             { value: "hub", label: "多站点中心（hub）" },
             { value: "site", label: "多站点成员（site）" }
           ] })}
-          ${configInput("alerts.feishu_site_id", "项目/比赛名称", { placeholder: "例如：公司监控、英雄电竞上海站" })}
-          ${configInput("alerts.feishu_default_site_id", "私聊默认项目（中心可选）", { placeholder: "填写项目/比赛名称" })}
         </div>
-        <h4>多站点中心路由（仅 hub 填写）</h4>
-        <p class="config-section-note">公司本项目会由上方名称和群名称自动加入。这里只添加其它比赛现场；群 Chat ID 和内部令牌均自动处理，只需填写比赛名称、群名称和现场监控地址。</p>
-        ${configListRows("feishu_sites", lastEditableConfig.alerts.feishu_sites, [
-          { key: "site_id", label: "项目/比赛名称", placeholder: "英雄电竞上海站" },
-          { key: "chat_id", label: "告警群名称", placeholder: "英雄电竞上海站告警群" },
-          { key: "bridge_url", label: "现场监控地址", placeholder: "https://现场监控地址:5005" }
-        ])}
+        <div data-feishu-hub-config ${lastEditableConfig.alerts.feishu_mode === "hub" ? "" : "hidden"}>
+          <h4>其它比赛现场（仅多站点中心填写）</h4>
+          <p class="config-section-note">本机自动使用上方“赛事名称”。这里只添加其它现场；比赛名称必须与现场服务器的“赛事名称”完全一致。</p>
+          ${configListRows("feishu_sites", lastEditableConfig.alerts.feishu_sites, [
+            { key: "site_id", label: "比赛名称", placeholder: "英雄电竞上海站" },
+            { key: "chat_id", label: "告警群名称", placeholder: "英雄电竞上海站告警群" },
+            { key: "bridge_url", label: "现场监控地址", placeholder: "https://现场监控地址:5005" }
+          ])}
+        </div>
       </section>
       <section class="config-section">
         <h3>安全</h3>
@@ -1979,6 +1979,13 @@
         </div>
       </section>
     `;
+    const feishuMode = form.querySelector('[data-config-path="alerts.feishu_mode"]');
+    const feishuHubConfig = form.querySelector("[data-feishu-hub-config]");
+    if (feishuMode && feishuHubConfig) {
+      const syncFeishuMode = () => { feishuHubConfig.hidden = feishuMode.value !== "hub"; };
+      feishuMode.addEventListener("change", syncFeishuMode);
+      syncFeishuMode();
+    }
     if (telnetDraft) {
       document.getElementById("controlDhcpUsername").value = telnetDraft.username;
       document.getElementById("controlDhcpPassword").value = telnetDraft.password;
@@ -2034,6 +2041,7 @@
       }
       value[path[0]][path[1]] = rows;
     });
+    if (value.alerts.feishu_mode !== "hub") value.alerts.feishu_sites = [];
     if (value.devices) {
       value.devices.switches = [];
     }

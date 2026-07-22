@@ -604,13 +604,13 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     feishu_mode = str(alerts.get("feishu_mode") or "local").strip().lower()
     if feishu_mode not in ("local", "hub", "site"):
         add("bad", "alerts.feishu_mode", "飞书模式只能是 local、hub 或 site")
-    feishu_site_id = str(alerts.get("feishu_site_id") or "").strip()
+    feishu_site_id = str(event.get("name") or alerts.get("feishu_site_id") or "").strip()
     app_configured = bool(str(alerts.get("feishu_app_id") or "").strip())
     if app_configured and feishu_mode in ("hub", "site"):
         if not feishu_site_id:
-            add("bad", "alerts.feishu_site_id", "中心/站点模式必须填写项目或比赛名称")
+            add("bad", "event.name", "中心/站点模式必须填写上方赛事名称")
         elif not valid_feishu_site_name(feishu_site_id):
-            add("bad", "alerts.feishu_site_id", "项目或比赛名称不能超过 80 个字符")
+            add("bad", "event.name", "赛事名称不能超过 80 个字符")
 
     routes = feishu_site_routes(alerts.get("feishu_sites"))
     if app_configured and feishu_mode == "hub" and not routes and not str(alerts.get("feishu_chat_id") or "").strip():
@@ -640,10 +640,6 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
                 add("bad", f"{path}.bridge_url", "监控地址必须是完整 HTTP/HTTPS 地址")
         seen_site_ids.add(site_key)
         seen_chat_targets.add(chat_key)
-    default_site = str(alerts.get("feishu_default_site_id") or "").strip()
-    known_sites = {*seen_site_ids, feishu_site_id.casefold()} if feishu_site_id else seen_site_ids
-    if feishu_mode == "hub" and default_site and default_site.casefold() not in known_sites:
-        add("bad", "alerts.feishu_default_site_id", "私聊默认项目不在中心路由表中")
     return issues
 
 
@@ -677,12 +673,9 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     feishu_mode = str(
         alerts.get("feishu_mode") if "feishu_mode" in alerts else existing.get("FEISHU_GATEWAY_MODE", "local")
     ).strip().lower() or "local"
-    feishu_site_id = alerts.get("feishu_site_id") if "feishu_site_id" in alerts else existing.get("FEISHU_SITE_ID", "")
-    feishu_default_site_id = (
-        alerts.get("feishu_default_site_id")
-        if "feishu_default_site_id" in alerts
-        else existing.get("FEISHU_DEFAULT_SITE_ID", "")
-    )
+    legacy_site_id = alerts.get("feishu_site_id") if "feishu_site_id" in alerts else existing.get("FEISHU_SITE_ID", "")
+    feishu_site_id = str(event.get("name") or legacy_site_id or "").strip()
+    feishu_default_site_id = feishu_site_id if feishu_mode == "hub" else ""
     configured_bridge_token = (
         alerts.get("feishu_bridge_api_token")
         if "feishu_bridge_api_token" in alerts
@@ -692,6 +685,8 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         feishu_routes = feishu_site_routes(alerts.get("feishu_sites"))
     else:
         feishu_routes = feishu_site_routes(existing.get("FEISHU_SITE_ROUTES", ""))
+    if feishu_mode != "hub":
+        feishu_routes = []
     feishu_bridge_api_token = feishu_internal_token(feishu_app_secret, feishu_site_id) or str(
         configured_bridge_token or ""
     ).strip()

@@ -128,6 +128,8 @@ alerts:
 
 def test_feishu_hub_auto_adds_local_project_and_derives_internal_tokens():
     config = platform_config.parse_simple_yaml("""
+event:
+  name: 公司监控
 devices:
   core:
     ip: 192.168.10.254
@@ -136,8 +138,6 @@ alerts:
   feishu_app_secret: shared-secret
   feishu_chat_id: 公司监控告警群
   feishu_mode: hub
-  feishu_site_id: 公司监控
-  feishu_default_site_id: 公司监控
   feishu_sites:
     - site_id: 英雄电竞上海站
       chat_id: 英雄电竞上海站告警群
@@ -159,6 +159,8 @@ alerts:
 
 def test_feishu_site_mode_keeps_app_sending_but_disables_ws_profile():
     config = platform_config.parse_simple_yaml("""
+event:
+  name: 英雄电竞上海站
 devices:
   core:
     ip: 192.168.10.254
@@ -167,7 +169,6 @@ alerts:
   feishu_app_secret: shared-secret
   feishu_chat_id: 英雄电竞上海站告警群
   feishu_mode: site
-  feishu_site_id: 英雄电竞上海站
 """)
     assert not [item for item in platform_config.validate_config(config) if item["level"] == "bad"]
     env = platform_config.render_env(config, {"COMPOSE_PROFILES": "custom,feishu"})
@@ -180,6 +181,8 @@ alerts:
 
 def test_feishu_hub_rejects_duplicate_projects_groups_and_missing_remote_address():
     config = platform_config.parse_simple_yaml("""
+event:
+  name: 公司监控
 devices:
   core:
     ip: 192.168.10.254
@@ -187,7 +190,6 @@ alerts:
   feishu_app_id: cli_shared
   feishu_app_secret: shared-secret
   feishu_mode: hub
-  feishu_site_id: 公司监控
   feishu_chat_id: 公司群
   feishu_sites:
     - site_id: 同一比赛

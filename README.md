@@ -233,7 +233,7 @@ cd librenms+grafana
 | 飞书应用 App ID / App Secret | 审批通过的企业自建应用凭据；普通告警优先使用应用机器人，旧 Token 作为失败回退 |
 | 主动告警群 | 可填群名或 `oc_...` Chat ID；机器人只在一个群时可留空，多群时必须指定，避免告警发错场地 |
 | 飞书接入模式 | `local` 单站点；`hub` 多站点唯一长连接中心；`site` 其它监控站点 |
-| 项目/比赛名称 | 多站点时填写，例如“公司监控”或“英雄电竞上海站”；内部鉴权令牌由系统自动生成 |
+| 项目/比赛名称 | 自动使用页面上方已有的“赛事名称”，无需重复填写；内部鉴权令牌也自动生成 |
 
 飞书企业自建应用审批通过后，在 `/control` 的“告警”区填写 App ID、App Secret，
 把应用机器人加入告警群，再点“应用配置”。旧版只写在 `.env` 的凭据会自动带入
@@ -249,8 +249,8 @@ cd librenms+grafana
 随机一个客户端。因此不能让上海、海外等每台监控服务器都连接同一个 App ID。
 本项目的多站点模式固定只有一台 `hub` 建立飞书长连接，其它服务器使用 `site`：
 
-1. 所有站点填写同一个 `FEISHU_APP_ID/FEISHU_APP_SECRET`，各自填写自己的
-   项目/比赛名称和告警群名称；内部 API 令牌由系统自动生成。
+1. 所有站点填写同一个 `FEISHU_APP_ID/FEISHU_APP_SECRET` 和自己的告警群名称；
+   项目名称直接使用已有 `event.name`，内部 API 令牌自动生成。
 2. 选一台网络能访问所有站点 Bridge 的服务器设为 `hub`；其它服务器设为 `site`。
 3. hub 自身根据上方项目和群名称自动建立本地路由；其它现场只需在中心路由填写
    比赛名称、群名称和现场监控地址。群名称会自动解析成 Chat ID，内部令牌也会自动生成。
@@ -261,20 +261,20 @@ cd librenms+grafana
 示例：
 
 ```yaml
+event:
+  name: 公司监控
 alerts:
   feishu_app_id: cli_shared
   feishu_app_secret: shared-secret
   feishu_chat_id: 公司监控告警群
   feishu_mode: hub
-  feishu_site_id: 公司监控
-  feishu_default_site_id: 公司监控
   feishu_sites:
     - site_id: 英雄电竞上海站
       chat_id: 英雄电竞上海站告警群
       bridge_url: https://overseas-monitor.example.com/feishu-bridge
 ```
 
-海外站点只需把 `feishu_mode` 改为 `site`，设置自己的比赛名称和告警群名称；应用配置
+海外站点只需把 `feishu_mode` 改为 `site`，并设置上方赛事名称和自己的告警群名称；应用配置
 时会自动停止该服务器的 `feishu-ws` 容器，但主动告警发送能力仍然保留。
 
 ## 交换机侧配置
