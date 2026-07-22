@@ -1691,6 +1691,8 @@
     value.unifi = { enabled: false, password: "", sites: "all", verify_ssl: false, ...(value.unifi || {}) };
     value.alerts = {
       syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback",
+      cpu_alert_percent: 70,
+      memory_alert_percent: 80,
       ...(value.alerts || {})
     };
     value.security = { ...(value.security || {}), grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
@@ -1949,7 +1951,10 @@
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
           ${configInput("alerts.feishu_chat_id", "本监控的告警及巡检群名称")}
+          ${configInput("alerts.cpu_alert_percent", "交换机 CPU 告警阈值（%）", { number: true })}
+          ${configInput("alerts.memory_alert_percent", "交换机内存告警阈值（%）", { number: true })}
         </div>
+        <p class="config-section-note">CPU 达到阈值持续 5 分钟才告警，内存持续 10 分钟才告警；分别低于阈值 10% 并稳定 2 分钟后恢复。默认 70% / 80%，40% 不会告警。</p>
       </section>
       <section class="config-section">
         <h3>安全</h3>

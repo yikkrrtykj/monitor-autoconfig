@@ -86,6 +86,37 @@ alerts:
     assert env["COMPOSE_PROFILES"] == "custom,feishu"
 
 
+def test_switch_resource_thresholds_render_with_recovery_hysteresis():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+alerts:
+  cpu_alert_percent: 75
+  memory_alert_percent: 85
+""")
+    env = platform_config.render_env(config)
+    assert env["DEVICE_CPU_ALERT_PERCENT"] == "75"
+    assert env["DEVICE_CPU_RECOVER_PERCENT"] == "65"
+    assert env["DEVICE_MEMORY_ALERT_PERCENT"] == "85"
+    assert env["DEVICE_MEMORY_RECOVER_PERCENT"] == "75"
+
+
+def test_switch_resource_thresholds_must_be_percentages():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+alerts:
+  cpu_alert_percent: 110
+  memory_alert_percent: nope
+""")
+    issues = platform_config.validate_config(config)
+    paths = {item["path"] for item in issues if item["level"] == "bad"}
+    assert "alerts.cpu_alert_percent" in paths
+    assert "alerts.memory_alert_percent" in paths
+
+
 def test_existing_feishu_credentials_survive_an_unrelated_console_save():
     config = platform_config.parse_simple_yaml("""
 devices:

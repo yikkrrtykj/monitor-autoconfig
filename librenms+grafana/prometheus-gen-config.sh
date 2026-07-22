@@ -44,6 +44,9 @@ SWITCH_IFMIB_SCRAPE_INTERVAL="${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
 # StackWise table is tiny and only used for an on-demand audit; 30s keeps the
 # result fresh without adding IF-MIB-level polling load to access switches.
 STACKWISE_SCRAPE_INTERVAL="${STACKWISE_SCRAPE_INTERVAL:-30s}"
+# Cisco CPU/memory tables contain only a handful of counters. One 60-second
+# scrape is enough for sustained alerts and avoids another high-frequency walk.
+SWITCH_RESOURCE_SCRAPE_INTERVAL="${SWITCH_RESOURCE_SCRAPE_INTERVAL:-60s}"
 # UniFi Poller（unpoller）抓取：仅在配置了控制器地址时启用。AP 掉线告警默认
 # 10s 确认，Prometheus 这里也保持 10s 抓取，避免控制器状态更新后还多等一轮。
 UNIFI_CONTROLLER_URL="${UNIFI_CONTROLLER_URL:-}"
@@ -287,6 +290,7 @@ write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     "if_mib"  
 # switches simply expose no csw* series, while real stacks are available to the
 # on-demand Feishu network audit without adding an extra operator command.
 write_snmp_job "infra-switch-stackwise" "$SWITCH_SNMP_TARGETS"         "cisco_stackwise" "$STACKWISE_SCRAPE_INTERVAL" "$SWITCH_TARGETS_FILE"
+write_snmp_job "infra-switch-resources" "$SWITCH_SNMP_TARGETS"         "cisco_resources" "$SWITCH_RESOURCE_SCRAPE_INTERVAL" "$SWITCH_TARGETS_FILE"
 
 # Firewall SNMP
 cat >> "$CONFIG_FILE" <<EOF

@@ -158,6 +158,23 @@ def test_cisco_stackwise_uses_dedicated_low_frequency_snmp_module():
     assert "STACKWISE_SCRAPE_INTERVAL=30s" in env
 
 
+def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_thresholds():
+    compose = read("docker-compose.yml")
+    prometheus = read("prometheus-gen-config.sh")
+    app = read("bigscreen/app.js")
+    env = read(".env.example")
+
+    assert "cisco_resources:" in compose
+    assert "1.3.6.1.4.1.9.9.109.1.1.1.1.8" in compose
+    assert "1.3.6.1.4.1.9.9.48.1.1.1.6" in compose
+    assert '--config.file=/tmp/snmp-cisco-resources.yml' in compose
+    assert 'write_snmp_job "infra-switch-resources"' in prometheus
+    assert '"cisco_resources" "$SWITCH_RESOURCE_SCRAPE_INTERVAL"' in prometheus
+    assert "SWITCH_RESOURCE_SCRAPE_INTERVAL=60s" in env
+    assert 'configInput("alerts.cpu_alert_percent", "交换机 CPU 告警阈值（%）"' in app
+    assert 'configInput("alerts.memory_alert_percent", "交换机内存告警阈值（%）"' in app
+
+
 def test_apply_failure_does_not_mass_delete_services():
     script = read("apply-env.sh")
 

@@ -112,6 +112,10 @@ def test_bot_network_audit_merges_status_and_offline_details(monkeypatch):
     assert "离线 1" in summary["text"]
     assert "RTS2" in summary["text"]
     assert "retired" not in summary["text"]
+    status_body = summary["cards"][0]["card"]["body"]["elements"][0]["content"]
+    assert "core" in status_body and "RTS2" in status_body
+    assert "retired" not in status_body
+    assert status_body.index("RTS2") < status_body.index("core")
 
     # Legacy status/offline spellings remain aliases but now return the same
     # combined network audit rather than separate single-purpose commands.
@@ -206,8 +210,55 @@ def test_network_audit_attaches_stackwise_card(monkeypatch):
     card = {"card": {"header": {"title": {"content": "网络巡检 · 思科堆叠"}}}}
     monkeypatch.setattr(bridge, "build_cisco_stackwise_audit_cards", lambda _devices: [card])
     result = bridge.handle_bot_query("网络巡检")
-    assert result["cards"] == [card]
+    assert len(result["cards"]) == 2
+    assert result["cards"][0]["card"]["header"]["title"]["content"].startswith("网络巡检 · 设备状态")
+    assert result["cards"][1] == card
     assert "网络巡检" in bridge.BOT_HELP_TEXT and "思科堆叠" in bridge.BOT_HELP_TEXT
+
+
+def _resource_sample(name, target, value, instance="RTS1", pool="1"):
+    return {
+        "metric": {
+            "__name__": name,
+            "job": "infra-switch-resources",
+            "target_ip": target,
+            "instance": instance,
+            "ciscoMemoryPoolType": pool,
+        },
+        "value": [1, str(value)],
+    }
+
+
+def test_cisco_resource_samples_prefer_revised_cpu_and_compute_worst_memory_pool():
+    rows = bridge.parse_cisco_resource_samples([
+        _resource_sample("cpmCPUTotal5min", "10.0.0.1", 99),
+        _resource_sample("cpmCPUTotal5minRev", "10.0.0.1", 72),
+        _resource_sample("ciscoMemoryPoolUsed", "10.0.0.1", 800, pool="1"),
+        _resource_sample("ciscoMemoryPoolFree", "10.0.0.1", 200, pool="1"),
+        _resource_sample("ciscoMemoryPoolUsed", "10.0.0.1", 20, pool="2"),
+        _resource_sample("ciscoMemoryPoolFree", "10.0.0.1", 80, pool="2"),
+    ])
+    by_kind = {row["kind"]: row for row in rows}
+    assert by_kind["cpu"]["value"] == 72
+    assert by_kind["memory"]["value"] == 80
+    assert by_kind["memory"]["pool"] == "1"
+
+
+def test_resource_alert_requires_duration_and_hysteresis_before_recovery():
+    state, action = bridge.evaluate_resource_alert_state({}, 75, 100, 70, 300, 60, 120)
+    assert action is None
+    state, action = bridge.evaluate_resource_alert_state(state, 75, 399, 70, 300, 60, 120)
+    assert action is None
+    state, action = bridge.evaluate_resource_alert_state(state, 75, 400, 70, 300, 60, 120)
+    assert action == "alert"
+    state["alerting"] = True
+    state["alert_started"] = state["active_since"]
+    state, action = bridge.evaluate_resource_alert_state(state, 65, 500, 70, 300, 60, 120)
+    assert action is None and state["recover_since"] is None
+    state, action = bridge.evaluate_resource_alert_state(state, 55, 600, 70, 300, 60, 120)
+    assert action is None
+    state, action = bridge.evaluate_resource_alert_state(state, 55, 720, 70, 300, 60, 120)
+    assert action == "recover"
 
 
 def test_bot_full_fiber_audit_returns_summary_and_grouped_details(monkeypatch):

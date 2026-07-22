@@ -541,6 +541,8 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         add("bad", "isp.max_bandwidth_mbps", "默认 ISP 带宽必须为正数，或使用 下行/上行 格式")
     check_positive(isp.get("saturation_percent"), "isp.saturation_percent", "ISP 饱和阈值", 0, 100)
     check_positive(isp.get("down_for_seconds"), "isp.down_for_seconds", "ISP 断线确认时间", 0)
+    check_positive(config["alerts"].get("cpu_alert_percent"), "alerts.cpu_alert_percent", "交换机 CPU 告警阈值", 0, 100)
+    check_positive(config["alerts"].get("memory_alert_percent"), "alerts.memory_alert_percent", "交换机内存告警阈值", 0, 100)
 
     unifi = config["unifi"]
     if unifi.get("enabled"):
@@ -582,6 +584,8 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     feishu_app_id = alerts.get("feishu_app_id") if "feishu_app_id" in alerts else existing.get("FEISHU_APP_ID", "")
     feishu_app_secret = alerts.get("feishu_app_secret") if "feishu_app_secret" in alerts else existing.get("FEISHU_APP_SECRET", "")
     feishu_chat_id = alerts.get("feishu_chat_id") if "feishu_chat_id" in alerts else existing.get("FEISHU_CHAT_ID", "")
+    cpu_alert_percent = float(alerts.get("cpu_alert_percent") if alerts.get("cpu_alert_percent") not in (None, "") else 70)
+    memory_alert_percent = float(alerts.get("memory_alert_percent") if alerts.get("memory_alert_percent") not in (None, "") else 80)
     core_ping = named_targets([{"ip": core.get("ip")}], "ip") if core.get("ip") else ""
     firewall_ping = named_targets([firewall], "ip")
     firewall_snmp = named_targets([firewall], "snmp")
@@ -648,6 +652,10 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "FEISHU_APP_ID": feishu_app_id,
         "FEISHU_APP_SECRET": feishu_app_secret,
         "FEISHU_CHAT_ID": feishu_chat_id,
+        "DEVICE_CPU_ALERT_PERCENT": f"{cpu_alert_percent:g}",
+        "DEVICE_CPU_RECOVER_PERCENT": f"{max(0, cpu_alert_percent - 10):g}",
+        "DEVICE_MEMORY_ALERT_PERCENT": f"{memory_alert_percent:g}",
+        "DEVICE_MEMORY_RECOVER_PERCENT": f"{max(0, memory_alert_percent - 10):g}",
         "SYSLOG_ALERT_TYPES": alerts.get("syslog_alert_types", "native_vlan_mismatch,errdisable,bpduguard,loopback"),
         "GRAFANA_ANONYMOUS_ENABLED": str(bool(security.get("grafana_anonymous", True))).lower(),
     }

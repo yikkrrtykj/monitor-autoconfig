@@ -104,6 +104,7 @@ services:
       SNMP_UPTIME_SCRAPE_INTERVAL: "${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
       SWITCH_IFMIB_SCRAPE_INTERVAL: "${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
       STACKWISE_SCRAPE_INTERVAL: "${STACKWISE_SCRAPE_INTERVAL:-30s}"
+      SWITCH_RESOURCE_SCRAPE_INTERVAL: "${SWITCH_RESOURCE_SCRAPE_INTERVAL:-60s}"
       UNIFI_CONTROLLER_URL: "${UNIFI_CONTROLLER_URL:-}"
       UNIFI_SCRAPE_INTERVAL: "${UNIFI_SCRAPE_INTERVAL:-10s}"
       PLAYER_TARGETS_FILE: "/etc/prometheus/targets/player_targets.json"
@@ -183,6 +184,15 @@ services:
       DEVICE_REENROLL_JOBS: "${DEVICE_REENROLL_JOBS:-infra-dist-ping}"
       DEVICE_LIBRENMS_SYNC_RETRY_SECONDS: "${DEVICE_LIBRENMS_SYNC_RETRY_SECONDS:-60}"
       DEVICE_PENDING_DELETE_REALERT_SECONDS: "${DEVICE_PENDING_DELETE_REALERT_SECONDS:-0}"
+      DEVICE_RESOURCE_ALERT_ENABLED: "${DEVICE_RESOURCE_ALERT_ENABLED:-true}"
+      DEVICE_RESOURCE_ALERT_POLL_INTERVAL: "${DEVICE_RESOURCE_ALERT_POLL_INTERVAL:-30}"
+      DEVICE_CPU_ALERT_PERCENT: "${DEVICE_CPU_ALERT_PERCENT:-70}"
+      DEVICE_CPU_ALERT_FOR_SECONDS: "${DEVICE_CPU_ALERT_FOR_SECONDS:-300}"
+      DEVICE_CPU_RECOVER_PERCENT: "${DEVICE_CPU_RECOVER_PERCENT:-60}"
+      DEVICE_MEMORY_ALERT_PERCENT: "${DEVICE_MEMORY_ALERT_PERCENT:-80}"
+      DEVICE_MEMORY_ALERT_FOR_SECONDS: "${DEVICE_MEMORY_ALERT_FOR_SECONDS:-600}"
+      DEVICE_MEMORY_RECOVER_PERCENT: "${DEVICE_MEMORY_RECOVER_PERCENT:-70}"
+      DEVICE_RESOURCE_RECOVER_SECONDS: "${DEVICE_RESOURCE_RECOVER_SECONDS:-120}"
       # 飞书自建应用：配置后普通告警优先走应用，且启用确认按钮 + feishu-ws 长连接。
       FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
@@ -330,10 +340,52 @@ services:
                   10: invalid
                   11: removed
         EOF
+        cat > /tmp/snmp-cisco-resources.yml <<'EOF'
+        modules:
+          cisco_resources:
+            walk:
+              - 1.3.6.1.4.1.9.9.109.1.1.1.1.5
+              - 1.3.6.1.4.1.9.9.109.1.1.1.1.8
+              - 1.3.6.1.4.1.9.9.48.1.1.1.5
+              - 1.3.6.1.4.1.9.9.48.1.1.1.6
+            max_repetitions: 25
+            retries: 2
+            timeout: 5s
+            metrics:
+              - name: cpmCPUTotal5min
+                oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.5
+                type: gauge
+                help: Cisco CPU busy percentage over the last five minutes (legacy object).
+                indexes:
+                  - labelname: cpmCPUTotalIndex
+                    type: gauge
+              - name: cpmCPUTotal5minRev
+                oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.8
+                type: gauge
+                help: Cisco CPU busy percentage over the last five minutes.
+                indexes:
+                  - labelname: cpmCPUTotalIndex
+                    type: gauge
+              - name: ciscoMemoryPoolUsed
+                oid: 1.3.6.1.4.1.9.9.48.1.1.1.5
+                type: gauge
+                help: Bytes currently used in a Cisco memory pool.
+                indexes:
+                  - labelname: ciscoMemoryPoolType
+                    type: gauge
+              - name: ciscoMemoryPoolFree
+                oid: 1.3.6.1.4.1.9.9.48.1.1.1.6
+                type: gauge
+                help: Bytes currently free in a Cisco memory pool.
+                indexes:
+                  - labelname: ciscoMemoryPoolType
+                    type: gauge
+        EOF
         exec /bin/snmp_exporter \
           --config.file=/etc/snmp_exporter/snmp.yml \
           --config.file=/tmp/snmp-system.yml \
           --config.file=/tmp/snmp-stackwise.yml \
+          --config.file=/tmp/snmp-cisco-resources.yml \
           --config.file=/tmp/snmp-auth.yml
     environment:
       SNMP_AUTH: "${SNMP_AUTH:-global}"
