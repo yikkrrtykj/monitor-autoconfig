@@ -252,7 +252,7 @@ fi
 # changed, leaving nginx's copied web files or Python's imported modules stale.
 # Restart individually with || true: under `set -e`, one absent/not-yet-created
 # service must not abort the deploy after the stack already came up fine.
-for service in bigscreen platform-api alertmanager-feishu-bridge; do
+for service in bigscreen platform-api alertmanager-feishu-bridge feishu-ws; do
   docker compose restart "$service" || echo "[deploy] WARN: restart $service failed (service missing or not running)"
 done
 

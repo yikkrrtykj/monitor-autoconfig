@@ -31,7 +31,7 @@ def test_deploy_rebuilds_local_images_only_when_dockerfiles_change():
     assert "docker image inspect" in deploy
     # Restart each source-mounted service individually so one absent service
     # under set -e cannot fail a deploy whose stack already came up fine.
-    assert "for service in bigscreen platform-api alertmanager-feishu-bridge" in deploy
+    assert "for service in bigscreen platform-api alertmanager-feishu-bridge feishu-ws" in deploy
     assert 'docker compose restart "$service" ||' in deploy
 
 
