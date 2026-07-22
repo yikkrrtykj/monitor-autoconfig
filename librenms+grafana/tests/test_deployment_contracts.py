@@ -158,6 +158,16 @@ def test_existing_librenms_devices_receive_current_snmp_credentials():
     assert '"field": ["community", "snmpver", "port", "transport", "snmp_disable"]' in auto_config
 
 
+def test_librenms_discovery_icmp_gates_snmp_checks():
+    auto_config = read("librenms-auto-config.sh")
+
+    assert 'fping -a -r 0 -t "$LIBRENMS_DISCOVERY_PING_TIMEOUT_MS"' in auto_config
+    assert 'done < "$discovery_reachable"' in auto_config
+    assert auto_config.index("ping_filter_targets \"$discovery_candidates\"") < auto_config.index(
+        'while read -r ip; do\n  [ -z "$ip" ] && continue\n\n  # 不再按 IP'
+    )
+
+
 def test_cisco_stackwise_uses_dedicated_low_frequency_snmp_module():
     compose = read("docker-compose.yml")
     prometheus = read("prometheus-gen-config.sh")

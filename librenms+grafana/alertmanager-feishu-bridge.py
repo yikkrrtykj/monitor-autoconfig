@@ -568,15 +568,39 @@ BOT_HELP_TEXT = (
 )
 
 
-def _device_display(device):
-    return str(
-        device.get("display") or device.get("sysName") or device.get("hostname")
-        or device.get("ip") or device.get("device_id") or "未知设备"
-    ).strip()
-
-
 def _device_ip(device):
     return str(device.get("ip") or device.get("hostname") or "").strip()
+
+
+def _looks_like_ip(value):
+    return bool(re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", str(value or "")))
+
+
+def _first_non_ip(*values):
+    for value in values:
+        value = str(value or "").strip()
+        if value and not _looks_like_ip(value) and not re.fullmatch(r"\d+", value):
+            return value
+    return ""
+
+
+def _best_device_name(device, discovered_name=""):
+    return (
+        _first_non_ip(
+            discovered_name,
+            device.get("display"),
+            device.get("sysName"),
+            device.get("hostname"),
+        )
+        or _device_ip(device)
+        or str(device.get("device_id") or "未知设备")
+    )
+
+
+def _device_display(device, discovered_names=None):
+    ip = _device_ip(device)
+    discovered_name = (discovered_names or {}).get(ip, "")
+    return str(_best_device_name(device, discovered_name)).strip()
 
 
 def _match_librenms_devices(devices, needle):
@@ -1009,23 +1033,67 @@ def _device_is_online(device):
     return status and not disabled
 
 
-def _device_status_summary(devices, offline_only=False):
+def parse_network_reachability_samples(samples):
+    """Collapse current blackbox ICMP samples to one reachability row per IP."""
+    observations = {}
+    for item in samples or []:
+        labels = item.get("metric") or {}
+        ip = str(labels.get("target_ip") or "").strip()
+        if not ip:
+            continue
+        try:
+            reachable = float((item.get("value") or [None, "0"])[1]) >= 1
+        except (TypeError, ValueError, IndexError):
+            continue
+        row = observations.setdefault(ip, {"reachable": False, "name": ""})
+        row["reachable"] = row["reachable"] or reachable
+        name = _first_non_ip(labels.get("display_name"), labels.get("instance"))
+        if name:
+            row["name"] = name
+    return observations
+
+
+def fetch_network_reachability():
+    jobs = [item.strip() for item in DEVICE_DOWN_JOBS.split(",") if item.strip()]
+    safe_jobs = [item for item in jobs if re.match(r"^[A-Za-z0-9_:.-]+$", item)]
+    if not safe_jobs:
+        return {}
+    jobs_regex = "|".join(safe_jobs)
+    query = (
+        'max by (target_ip, display_name, instance) '
+        f'(last_over_time(probe_success{{job=~"{jobs_regex}"}}[90s]))'
+    )
+    return parse_network_reachability_samples(prometheus_query(query))
+
+
+def _device_observed_state(device, observations=None):
+    observation = (observations or {}).get(_device_ip(device))
+    if observation is None:
+        return "online" if _device_is_online(device) else "offline"
+    return "online" if observation.get("reachable") else "offline"
+
+
+def _device_status_summary(devices, offline_only=False, observations=None):
     active = [device for device in devices if str(device.get("disabled") or "0").strip().lower() not in ("1", "true", "yes")]
-    offline = [device for device in active if not _device_is_online(device)]
+    offline = [device for device in active if _device_observed_state(device, observations) == "offline"]
     if offline_only and not offline:
         return "🟢 当前没有离线设备。"
-    lines = [] if offline_only else [f"网络状态：🟢 在线 {len(active) - len(offline)} / 🔴 离线 {len(offline)} / 共 {len(active)} 台"]
+    reachable_count = len(active) - len(offline)
+    lines = [] if offline_only else [
+        f"网络状态：🟢 在线 {reachable_count} / 🔴 离线 {len(offline)} / 共 {len(active)} 台"
+    ]
     if offline:
         lines.append("离线设备：")
-        lines.extend(f"• {_device_display(item)}（{_device_ip(item) or 'IP 未知'}）" for item in offline[:20])
+        names = {ip: row.get("name", "") for ip, row in (observations or {}).items()}
+        lines.extend(f"• {_device_display(item, names)}（{_device_ip(item) or 'IP 未知'}）" for item in offline[:20])
         if len(offline) > 20:
             lines.append(f"• 另有 {len(offline) - 20} 台未展开")
     elif not offline_only:
-        lines.append("全部设备在线。")
+        lines.append("全部设备网络可达。")
     return "\n".join(lines)
 
 
-def build_network_device_status_cards(devices, page_size=35):
+def build_network_device_status_cards(devices, observations=None, page_size=35):
     """Render every active LibreNMS device before vendor-specific audits.
 
     The Feishu client sends cards instead of the result's plain-text fallback
@@ -1037,27 +1105,34 @@ def build_network_device_status_cards(devices, page_size=35):
         device for device in (devices or [])
         if str(device.get("disabled") or "0").strip().lower() not in ("1", "true", "yes")
     ]
+    names = {ip: row.get("name", "") for ip, row in (observations or {}).items()}
+    state_order = {"offline": 0, "online": 1}
     active.sort(key=lambda item: (
-        _device_is_online(item),
-        _device_display(item).casefold(),
+        state_order[_device_observed_state(item, observations)],
+        _device_display(item, names).casefold(),
         _device_ip(item),
     ))
-    offline_count = sum(1 for device in active if not _device_is_online(device))
-    online_count = len(active) - offline_count
+    states = [_device_observed_state(device, observations) for device in active]
+    offline_count = states.count("offline")
+    reachable_count = len(active) - offline_count
     chunks = [active[index:index + page_size] for index in range(0, len(active), page_size)] or [[]]
     cards = []
     for page, chunk in enumerate(chunks, start=1):
         lines = []
         if page == 1:
             lines.extend([
-                f"✅ 在线：**{online_count} 台**",
-                f"🔴 离线：**{offline_count} 台**",
+                f"✅ 网络可达：**{reachable_count} 台**",
+                f"🔴 网络离线：**{offline_count} 台**",
                 f"📋 合计：**{len(active)} 台**",
                 "",
             ])
         for device in chunk:
-            marker = "🟢" if _device_is_online(device) else "🔴"
-            lines.append(f"• {marker} **{_device_display(device)}**（{_device_ip(device) or 'IP 未知'}）")
+            state = _device_observed_state(device, observations)
+            marker = {"online": "🟢", "offline": "🔴"}[state]
+            lines.append(
+                f"• {marker} **{_device_display(device, names)}**"
+                f"（{_device_ip(device) or 'IP 未知'}）"
+            )
         if not chunk:
             lines.append("暂无启用的 LibreNMS 设备。")
         suffix = f"（{page}/{len(chunks)}）" if len(chunks) > 1 else ""
@@ -1305,8 +1380,16 @@ def handle_bot_query(text):
         log(f"[BOT] device query failed: {exc}")
         return {"ok": False, "text": "读取 LibreNMS 设备列表失败，请稍后再试。"}
     if network_audit_cmd:
-        result = {"ok": True, "text": _device_status_summary(devices, offline_only=False)}
-        cards = build_network_device_status_cards(devices)
+        try:
+            observations = fetch_network_reachability()
+        except Exception as exc:
+            observations = {}
+            log(f"[BOT] current Ping reachability unavailable; using LibreNMS status: {exc}")
+        result = {
+            "ok": True,
+            "text": _device_status_summary(devices, offline_only=False, observations=observations),
+        }
+        cards = build_network_device_status_cards(devices, observations=observations)
         try:
             cards.extend(build_cisco_stackwise_audit_cards(devices))
         except Exception as exc:
@@ -1505,27 +1588,6 @@ def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"
     except Exception as exc:
         log(f"{log_prefix} SNMP auto-add failed for {name or ip} ({ip}): {exc}")
         return ""
-
-
-def _looks_like_ip(value):
-    return bool(re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", str(value or "")))
-
-
-def _first_non_ip(*values):
-    for value in values:
-        value = str(value or "").strip()
-        if value and not _looks_like_ip(value) and not re.fullmatch(r"\d+", value):
-            return value
-    return ""
-
-
-def _best_device_name(dev):
-    return (
-        _first_non_ip(dev.get("display"), dev.get("sysName"), dev.get("hostname"))
-        or dev.get("ip")
-        or dev.get("hostname")
-        or ""
-    )
 
 
 def _has_meaningful_device_name(dev):

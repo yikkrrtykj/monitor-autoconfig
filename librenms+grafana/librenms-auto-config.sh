@@ -9,6 +9,7 @@ SNMP_COMMUNITY="${LIBRENMS_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-global}}"
 SNMP_VERSION="${SNMP_VERSION:-v2c}"
 SNMP_TIMEOUT="${SNMP_TIMEOUT:-1}"
 SNMP_RETRIES="${SNMP_RETRIES:-0}"
+LIBRENMS_DISCOVERY_PING_TIMEOUT_MS="${LIBRENMS_DISCOVERY_PING_TIMEOUT_MS:-500}"
 CORE_SWITCH_PING="${CORE_SWITCH_PING:-}"
 # 核心 IP：优先 LIBRENMS_CORE_IP；留空则取 CORE_SWITCH_PING 第一条的 IP（去掉 "名称:" 前缀和 "-范围"）；都空兜底 .254
 if [ -n "${LIBRENMS_CORE_IP:-}" ]; then
@@ -682,6 +683,22 @@ snmp_reachable() {
 
   snmpget -v2c -c "$SNMP_COMMUNITY" -t "$SNMP_TIMEOUT" -r "$SNMP_RETRIES" \
     "$ip" 1.3.6.1.2.1.1.1.0 > /dev/null 2>&1
+}
+
+ping_filter_targets() {
+  input_file=$1
+  output_file=$2
+
+  if ! command -v fping > /dev/null 2>&1; then
+    echo "  WARNING: fping not found; cannot ICMP-gate discovery, keeping configured targets"
+    cp "$input_file" "$output_file"
+    return 0
+  fi
+
+  # One fping process probes the whole range concurrently. A non-zero exit is
+  # normal when some addresses are down; -a writes only responsive addresses.
+  fping -a -r 0 -t "$LIBRENMS_DISCOVERY_PING_TIMEOUT_MS" \
+    -f "$input_file" > "$output_file" 2>/dev/null || true
 }
 
 api_result_field() {
@@ -1933,10 +1950,20 @@ echo ""
 echo "[4/6] Discovering SNMP devices..."
 echo "  Targets: $DISCOVERY_TARGETS"
 echo "  SNMP Community: $SNMP_COMMUNITY"
+echo "  ICMP Gate: timeout ${LIBRENMS_DISCOVERY_PING_TIMEOUT_MS}ms"
 echo "  SNMP Probe: timeout ${SNMP_TIMEOUT}s, retries $SNMP_RETRIES"
 echo ""
 
-expand_targets "$DISCOVERY_TARGETS" | while read -r ip; do
+discovery_candidates=$(mktemp)
+discovery_reachable=$(mktemp)
+trap 'rm -f "$discovery_candidates" "$discovery_reachable"' EXIT
+expand_targets "$DISCOVERY_TARGETS" | sort -u > "$discovery_candidates"
+ping_filter_targets "$discovery_candidates" "$discovery_reachable"
+candidate_count=$(wc -l < "$discovery_candidates" | tr -d ' ')
+reachable_count=$(wc -l < "$discovery_reachable" | tr -d ' ')
+echo "  ICMP Gate: $candidate_count candidates -> $reachable_count reachable; SNMP checks only reachable IPs"
+
+while read -r ip; do
   [ -z "$ip" ] && continue
 
   # 不再按 IP 末位编造名字；留空让 LibreNMS 用设备真实 sysName/hostname。
@@ -1946,7 +1973,7 @@ expand_targets "$DISCOVERY_TARGETS" | while read -r ip; do
   else
     echo "  $ip: No SNMP response, skipped"
   fi
-done
+done < "$discovery_reachable"
 
 echo ""
 echo "[4b/5] Adding ping-only devices (ISP / Firewall / Servers)..."

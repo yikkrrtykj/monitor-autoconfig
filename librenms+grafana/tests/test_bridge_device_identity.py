@@ -30,6 +30,61 @@ def test_generic_stack_platform_is_not_reported_as_exact_model():
     assert bridge._clean_device_model("C29xx Stacking") == ""
 
 
+def test_device_display_skips_ip_placeholder_and_uses_sysname():
+    device = {
+        "display": "192.168.10.18",
+        "sysName": "Broadcast_WS-C2960X-24TS-L",
+        "hostname": "192.168.10.18",
+        "ip": "192.168.10.18",
+    }
+    assert bridge._device_display(device) == "Broadcast_WS-C2960X-24TS-L"
+
+
+def test_device_display_prefers_current_discovered_name():
+    device = {
+        "display": "192.168.10.254",
+        "sysName": "192.168.10.254",
+        "hostname": "192.168.10.254",
+        "ip": "192.168.10.254",
+    }
+    assert bridge._device_display(
+        device, {"192.168.10.254": "Global_SW3850-12XS_STACK"}
+    ) == "Global_SW3850-12XS_STACK"
+
+
+def test_network_status_uses_ping_for_names_and_reachability():
+    devices = [
+        {"display": "192.168.10.18", "hostname": "192.168.10.18", "status": 0},
+        {"display": "192.168.200.88", "hostname": "192.168.200.88", "status": 0},
+        {"display": "192.168.10.11", "hostname": "192.168.10.11", "status": 1},
+    ]
+    observations = bridge.parse_network_reachability_samples([
+        {
+            "metric": {
+                "target_ip": "192.168.10.18",
+                "display_name": "Broadcast_WS-C2960X-24TS-L",
+            },
+            "value": [1, "1"],
+        },
+        {
+            "metric": {"target_ip": "192.168.200.88", "display_name": "old-server"},
+            "value": [1, "0"],
+        },
+        {
+            "metric": {"target_ip": "192.168.10.11", "display_name": "Global-new-stack"},
+            "value": [1, "1"],
+        },
+    ])
+
+    cards = bridge.build_network_device_status_cards(devices, observations=observations)
+    text = json.dumps(cards, ensure_ascii=False)
+    assert "网络可达：**2 台**" in text
+    assert "网络离线：**1 台**" in text
+    assert "Broadcast_WS-C2960X-24TS-L" in text
+    assert "old-server" in text
+    assert '🟢 **Broadcast_WS-C2960X-24TS-L**' in text
+
+
 def test_librenms_display_update_resolves_ip_to_device_id(monkeypatch):
     monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda token: [
         {"device_id": 42, "hostname": "ap-tech-room", "ip": "192.168.200.204"},
