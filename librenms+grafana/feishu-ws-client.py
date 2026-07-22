@@ -17,8 +17,9 @@ Env:
   FEISHU_GATEWAY_MODE local (default) or hub.  Site-only deployments must not
                       start this client.
   FEISHU_SITE_ID      stable id of the local monitoring site
-  FEISHU_SITE_ROUTES  JSON list used by hub mode; each item contains site_id,
-                      chat_id, bridge_url and bridge_token
+  FEISHU_SITE_ROUTES  JSON list used by hub mode; each item contains project
+                      name, group name (or chat id), and bridge URL. Tokens are
+                      derived automatically from the shared app secret.
   FEISHU_DEFAULT_SITE_ID optional route for direct (p2p) bot messages
   FEISHU_BRIDGE_API_TOKEN token used for the local bridge in local mode
 
@@ -29,6 +30,8 @@ Feishu console prerequisites (one-time, see .env.example):
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -51,10 +54,19 @@ _TENANT_TOKEN = {"value": "", "expires_at": 0.0}
 _TOKEN_LOCK = threading.Lock()
 _SEEN_MESSAGES: dict[str, float] = {}
 _SEEN_LOCK = threading.Lock()
+_ROUTE_LOCK = threading.Lock()
 
 
 def log(message: str) -> None:
     print(f"[feishu-ws] {message}", file=sys.stderr, flush=True)
+
+
+def derived_bridge_token(site_id: str) -> str:
+    site = str(site_id or "").strip()
+    if not APP_SECRET or not site:
+        return ""
+    message = f"monitor-autoconfig/feishu-bridge/{site}".encode("utf-8")
+    return hmac.new(APP_SECRET.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
 def parse_site_routes(raw: str) -> list[dict]:
@@ -84,11 +96,13 @@ def parse_site_routes(raw: str) -> list[dict]:
         site_id = str(item.get("site_id") or item.get("site") or "").strip()
         chat_id = str(item.get("chat_id") or "").strip()
         bridge_url = str(item.get("bridge_url") or "").strip().rstrip("/")
-        bridge_token = str(item.get("bridge_token") or item.get("token") or "").strip()
+        bridge_token = str(item.get("bridge_token") or item.get("token") or "").strip() or derived_bridge_token(site_id)
         if not site_id or not chat_id or not bridge_url:
             log(f"ignored incomplete Feishu site route: site={site_id or '-'} chat={chat_id or '-'}")
             continue
-        if site_id in seen_sites or chat_id in seen_chats:
+        site_key = site_id.casefold()
+        chat_key = chat_id.casefold()
+        if site_key in seen_sites or chat_key in seen_chats:
             log(f"ignored duplicate Feishu site route: site={site_id} chat={chat_id}")
             continue
         if not bridge_url.startswith(("http://", "https://")):
@@ -100,8 +114,8 @@ def parse_site_routes(raw: str) -> list[dict]:
             "bridge_url": bridge_url,
             "bridge_token": bridge_token,
         })
-        seen_sites.add(site_id)
-        seen_chats.add(chat_id)
+        seen_sites.add(site_key)
+        seen_chats.add(chat_key)
     return routes
 
 
@@ -131,7 +145,27 @@ def _route_for_message(message) -> dict | None:
     if chat_type == "p2p":
         return _route_by_site(DEFAULT_SITE_ID)
     chat_id = str(_field(message, "chat_id", "") or "").strip()
-    matches = [route for route in SITE_ROUTES if route["chat_id"] == chat_id]
+    with _ROUTE_LOCK:
+        matches = [
+            route for route in SITE_ROUTES
+            if str(route.get("resolved_chat_id") or route["chat_id"]) == chat_id
+        ]
+    if len(matches) == 1:
+        return matches[0]
+    try:
+        chat_name = _chat_name_for_id(chat_id)
+    except Exception as exc:  # noqa: BLE001 - leave the message visibly unrouted
+        log(f"cannot resolve Feishu group name for {chat_id}: {exc}")
+        return None
+    wanted = chat_name.casefold()
+    with _ROUTE_LOCK:
+        matches = [
+            route for route in SITE_ROUTES
+            if not route["chat_id"].startswith("oc_") and route["chat_id"].casefold() == wanted
+        ]
+        if len(matches) == 1:
+            matches[0]["resolved_chat_id"] = chat_id
+            log(f"resolved group '{chat_name}' to {chat_id} for project {matches[0]['site_id']}")
     return matches[0] if len(matches) == 1 else None
 
 
@@ -204,6 +238,21 @@ def tenant_access_token() -> str:
         _TENANT_TOKEN["value"] = data["tenant_access_token"]
         _TENANT_TOKEN["expires_at"] = now + float(data.get("expire") or 3600)
         return _TENANT_TOKEN["value"]
+
+
+def _chat_name_for_id(chat_id: str) -> str:
+    token = tenant_access_token()
+    encoded = urllib.parse.quote(str(chat_id or ""), safe="")
+    req = urllib.request.Request(
+        f"https://open.feishu.cn/open-apis/im/v1/chats/{encoded}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8") or "{}")
+    name = str((data.get("data") or {}).get("name") or "").strip()
+    if data.get("code") != 0 or not name:
+        raise RuntimeError(f"chat lookup rejected: {data.get('code')} {data.get('msg')}")
+    return name
 
 
 def reply_to_message(message_id: str, text: str = "", card: dict | None = None) -> None:
@@ -308,7 +357,7 @@ def on_message(data):
         log(f"no site route for chat={chat_id or '-'} command={command[:120]!r}")
         threading.Thread(
             target=reply_to_message,
-            args=(message_id, "该群尚未绑定监控站点，请在中心配置 chat_id → site_id 路由。"),
+            args=(message_id, "该群尚未绑定监控项目，请在中心填写比赛名称、群名称和监控地址。"),
             daemon=True,
             name=f"feishu-unrouted-{message_id[-8:]}",
         ).start()

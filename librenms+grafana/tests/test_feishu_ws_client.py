@@ -79,6 +79,27 @@ def test_hub_routes_group_messages_by_exact_chat_id(monkeypatch):
     assert client._route_for_message(_message("帮助", chat_type="p2p", mentions=False))["site_id"] == "shanghai"
 
 
+def test_hub_resolves_exact_group_name_without_operator_chat_id(monkeypatch):
+    routes = client.parse_site_routes(json.dumps([{
+        "site_id": "英雄电竞上海站",
+        "chat_id": "英雄电竞上海站告警群",
+        "bridge_url": "http://event-monitor:5005",
+        "bridge_token": "site-secret",
+    }], ensure_ascii=False))
+    lookups = []
+    monkeypatch.setattr(client, "GATEWAY_MODE", "hub")
+    monkeypatch.setattr(client, "SITE_ROUTES", routes)
+    monkeypatch.setattr(
+        client,
+        "_chat_name_for_id",
+        lambda chat_id: lookups.append(chat_id) or "英雄电竞上海站告警群",
+    )
+
+    assert client._route_for_message(_message("帮助", chat_id="oc_runtime"))["site_id"] == "英雄电竞上海站"
+    assert client._route_for_message(_message("帮助", chat_id="oc_runtime"))["site_id"] == "英雄电竞上海站"
+    assert lookups == ["oc_runtime"]
+
+
 def test_bridge_requests_carry_the_per_site_bearer_token(monkeypatch):
     route = {
         "site_id": "overseas-1",

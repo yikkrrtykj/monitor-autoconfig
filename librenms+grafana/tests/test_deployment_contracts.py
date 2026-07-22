@@ -114,9 +114,13 @@ def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
 
     assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in app
     assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in app
-    assert 'configInput("alerts.feishu_chat_id", "主动告警群（群名或 Chat ID，可选）"' in app
+    assert 'configInput("alerts.feishu_chat_id", "告警群名称"' in app
     assert 'configInput("alerts.feishu_mode", "飞书接入模式"' in app
+    assert 'configInput("alerts.feishu_site_id", "项目/比赛名称"' in app
+    assert 'configInput("alerts.feishu_bridge_api_token"' not in app
     assert 'configListRows("feishu_sites"' in app
+    assert '{ key: "chat_id", label: "告警群名称"' in app
+    assert '{ key: "bridge_token"' not in app
     assert "下载/上传" in app
     assert "1000/100" in app
 

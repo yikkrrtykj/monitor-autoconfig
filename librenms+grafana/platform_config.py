@@ -9,6 +9,8 @@ does not need PyYAML.
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import ipaddress
 import re
 import sys
@@ -272,6 +274,21 @@ def feishu_site_routes(value: Any) -> list[dict[str, str]]:
             "bridge_token": str(item.get("bridge_token") or item.get("token") or "").strip(),
         })
     return routes
+
+
+def feishu_internal_token(app_secret: Any, site_id: Any) -> str:
+    """Derive the private hub-to-site token so operators never copy one."""
+    secret = str(app_secret or "").strip()
+    site = str(site_id or "").strip()
+    if not secret or not site:
+        return ""
+    message = f"monitor-autoconfig/feishu-bridge/{site}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def valid_feishu_site_name(value: Any) -> bool:
+    site = str(value or "").strip()
+    return bool(site and len(site) <= 80 and not re.search(r"[\x00-\x1f\x7f]", site))
 
 
 def named_targets(items: list[dict[str, Any]], key: str = "ip") -> str:
@@ -591,40 +608,42 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     app_configured = bool(str(alerts.get("feishu_app_id") or "").strip())
     if app_configured and feishu_mode in ("hub", "site"):
         if not feishu_site_id:
-            add("bad", "alerts.feishu_site_id", "中心/站点模式必须填写唯一站点 ID")
-        elif not re.fullmatch(r"[A-Za-z0-9_.-]+", feishu_site_id):
-            add("bad", "alerts.feishu_site_id", "站点 ID 只能包含字母、数字、点、下划线和短横线")
-        if not str(alerts.get("feishu_bridge_api_token") or "").strip():
-            add("bad", "alerts.feishu_bridge_api_token", "中心/站点模式必须配置站点 API 令牌")
+            add("bad", "alerts.feishu_site_id", "中心/站点模式必须填写项目或比赛名称")
+        elif not valid_feishu_site_name(feishu_site_id):
+            add("bad", "alerts.feishu_site_id", "项目或比赛名称不能超过 80 个字符")
 
     routes = feishu_site_routes(alerts.get("feishu_sites"))
-    if app_configured and feishu_mode == "hub" and not routes:
-        add("bad", "alerts.feishu_sites", "中心模式至少需要一个群与监控站点路由")
+    if app_configured and feishu_mode == "hub" and not routes and not str(alerts.get("feishu_chat_id") or "").strip():
+        add("bad", "alerts.feishu_chat_id", "中心模式必须填写本项目群名称")
     seen_site_ids: set[str] = set()
-    seen_chat_ids: set[str] = set()
+    seen_chat_targets: set[str] = set()
     for index, route in enumerate(routes):
         path = f"alerts.feishu_sites[{index}]"
         site_id = route["site_id"]
-        chat_id = route["chat_id"]
+        chat_target = route["chat_id"]
         bridge_url = route["bridge_url"]
-        if not site_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", site_id):
-            add("bad", f"{path}.site_id", "路由站点 ID 缺失或格式无效")
-        elif site_id in seen_site_ids:
-            add("bad", f"{path}.site_id", f"站点 ID {site_id} 重复")
-        if not chat_id.startswith("oc_"):
-            add("bad", f"{path}.chat_id", "中心路由必须填写 oc_ 开头的群 Chat ID")
-        elif chat_id in seen_chat_ids:
-            add("bad", f"{path}.chat_id", f"群 Chat ID {chat_id} 重复")
-        parsed_bridge = urlparse(bridge_url)
-        if parsed_bridge.scheme not in ("http", "https") or not parsed_bridge.netloc:
-            add("bad", f"{path}.bridge_url", "站点 Bridge URL 必须是完整 HTTP/HTTPS 地址")
-        if not route["bridge_token"]:
-            add("bad", f"{path}.bridge_token", "每个站点路由必须填写独立 API 令牌")
-        seen_site_ids.add(site_id)
-        seen_chat_ids.add(chat_id)
+        site_key = site_id.casefold()
+        chat_key = chat_target.casefold()
+        if not valid_feishu_site_name(site_id):
+            add("bad", f"{path}.site_id", "项目或比赛名称缺失或超过 80 个字符")
+        elif site_key in seen_site_ids:
+            add("bad", f"{path}.site_id", f"项目或比赛名称 {site_id} 重复")
+        if not chat_target:
+            add("bad", f"{path}.chat_id", "必须填写群名称或 Chat ID")
+        elif chat_key in seen_chat_targets:
+            add("bad", f"{path}.chat_id", f"群名称或 Chat ID {chat_target} 重复")
+        if not bridge_url and site_id != feishu_site_id:
+            add("bad", f"{path}.bridge_url", "远程项目必须填写监控地址")
+        elif bridge_url:
+            parsed_bridge = urlparse(bridge_url)
+            if parsed_bridge.scheme not in ("http", "https") or not parsed_bridge.netloc:
+                add("bad", f"{path}.bridge_url", "监控地址必须是完整 HTTP/HTTPS 地址")
+        seen_site_ids.add(site_key)
+        seen_chat_targets.add(chat_key)
     default_site = str(alerts.get("feishu_default_site_id") or "").strip()
-    if feishu_mode == "hub" and default_site and default_site not in seen_site_ids:
-        add("bad", "alerts.feishu_default_site_id", "默认站点 ID 不在中心路由表中")
+    known_sites = {*seen_site_ids, feishu_site_id.casefold()} if feishu_site_id else seen_site_ids
+    if feishu_mode == "hub" and default_site and default_site.casefold() not in known_sites:
+        add("bad", "alerts.feishu_default_site_id", "私聊默认项目不在中心路由表中")
     return issues
 
 
@@ -664,7 +683,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         if "feishu_default_site_id" in alerts
         else existing.get("FEISHU_DEFAULT_SITE_ID", "")
     )
-    feishu_bridge_api_token = (
+    configured_bridge_token = (
         alerts.get("feishu_bridge_api_token")
         if "feishu_bridge_api_token" in alerts
         else existing.get("FEISHU_BRIDGE_API_TOKEN", "")
@@ -673,6 +692,21 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         feishu_routes = feishu_site_routes(alerts.get("feishu_sites"))
     else:
         feishu_routes = feishu_site_routes(existing.get("FEISHU_SITE_ROUTES", ""))
+    feishu_bridge_api_token = feishu_internal_token(feishu_app_secret, feishu_site_id) or str(
+        configured_bridge_token or ""
+    ).strip()
+    if feishu_mode == "hub" and feishu_site_id and feishu_chat_id:
+        if not any(route["site_id"].casefold() == str(feishu_site_id).casefold() for route in feishu_routes):
+            feishu_routes.insert(0, {
+                "site_id": str(feishu_site_id).strip(),
+                "chat_id": str(feishu_chat_id).strip(),
+                "bridge_url": "http://alertmanager-feishu-bridge:5005",
+                "bridge_token": feishu_bridge_api_token,
+            })
+    for route in feishu_routes:
+        if not route["bridge_url"] and route["site_id"].casefold() == str(feishu_site_id).casefold():
+            route["bridge_url"] = "http://alertmanager-feishu-bridge:5005"
+        route["bridge_token"] = feishu_internal_token(feishu_app_secret, route["site_id"]) or route["bridge_token"]
     core_ping = named_targets([{"ip": core.get("ip")}], "ip") if core.get("ip") else ""
     firewall_ping = named_targets([firewall], "ip")
     firewall_snmp = named_targets([firewall], "snmp")

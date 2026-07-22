@@ -1694,10 +1694,10 @@
       feishu_mode: "local",
       feishu_site_id: "",
       feishu_default_site_id: "",
-      feishu_bridge_api_token: "",
       feishu_sites: [],
       ...(value.alerts || {})
     };
+    delete value.alerts.feishu_bridge_api_token;
     value.alerts.feishu_sites = asConfigArray(value.alerts.feishu_sites);
     value.security = { ...(value.security || {}), grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
     return value;
@@ -1950,28 +1950,26 @@
       </section>
       <section class="config-section">
         <h3>告警</h3>
-        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。单站点选 local。多个项目共用一个机器人时，只在中心选 hub 并建立长连接，其它服务器选 site；中心按群 Chat ID 将 @查询和卡片按钮路由到对应站点。</p>
+        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。单站点选 local。多个项目共用一个机器人时，只在中心选 hub 并建立长连接，其它服务器选 site；中心按群名称自动区分 @查询和卡片操作。</p>
         <div class="config-fields">
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
-          ${configInput("alerts.feishu_chat_id", "主动告警群（群名或 Chat ID，可选）", { placeholder: "单群可留空；多群填写群名或 oc_..." })}
+          ${configInput("alerts.feishu_chat_id", "告警群名称", { placeholder: "例如：英雄电竞上海站告警群" })}
           ${configInput("alerts.feishu_mode", "飞书接入模式", { type: "select", choices: [
             { value: "local", label: "单站点（local）" },
             { value: "hub", label: "多站点中心（hub）" },
             { value: "site", label: "多站点成员（site）" }
           ] })}
-          ${configInput("alerts.feishu_site_id", "本站点 ID", { placeholder: "例如 shanghai、overseas-1" })}
-          ${configInput("alerts.feishu_bridge_api_token", "本站点 API 令牌", { inputType: "password", placeholder: "中心/站点模式必须填写，建议 32 字节随机值" })}
-          ${configInput("alerts.feishu_default_site_id", "私聊默认站点 ID（中心可选）", { placeholder: "必须是下方路由中的 site_id" })}
+          ${configInput("alerts.feishu_site_id", "项目/比赛名称", { placeholder: "例如：公司监控、英雄电竞上海站" })}
+          ${configInput("alerts.feishu_default_site_id", "私聊默认项目（中心可选）", { placeholder: "填写项目/比赛名称" })}
         </div>
         <h4>多站点中心路由（仅 hub 填写）</h4>
-        <p class="config-section-note">每个告警群绑定一个站点。Bridge URL 必须能从中心服务器访问；远端建议使用 VPN 地址或 HTTPS，令牌必须与该站点的“本站点 API 令牌”一致。</p>
+        <p class="config-section-note">公司本项目会由上方名称和群名称自动加入。这里只添加其它比赛现场；群 Chat ID 和内部令牌均自动处理，只需填写比赛名称、群名称和现场监控地址。</p>
         ${configListRows("feishu_sites", lastEditableConfig.alerts.feishu_sites, [
-          { key: "site_id", label: "站点 ID", placeholder: "overseas-1" },
-          { key: "chat_id", label: "群 Chat ID", placeholder: "oc_..." },
-          { key: "bridge_url", label: "站点 Bridge URL", placeholder: "https://站点地址:5005" },
-          { key: "bridge_token", label: "站点 API 令牌", inputType: "password" }
+          { key: "site_id", label: "项目/比赛名称", placeholder: "英雄电竞上海站" },
+          { key: "chat_id", label: "告警群名称", placeholder: "英雄电竞上海站告警群" },
+          { key: "bridge_url", label: "现场监控地址", placeholder: "https://现场监控地址:5005" }
         ])}
       </section>
       <section class="config-section">

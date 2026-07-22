@@ -633,7 +633,6 @@ def config_payload(text: str | None = None) -> dict:
                 ("feishu_mode", "FEISHU_GATEWAY_MODE"),
                 ("feishu_site_id", "FEISHU_SITE_ID"),
                 ("feishu_default_site_id", "FEISHU_DEFAULT_SITE_ID"),
-                ("feishu_bridge_api_token", "FEISHU_BRIDGE_API_TOKEN"),
             ):
                 if config_key not in alerts and existing_env.get(env_key):
                     alerts[config_key] = existing_env[env_key]

@@ -48,9 +48,8 @@ alerts:
   # local=单套监控；hub=唯一飞书长连接中心；site=只发送本站告警，不建立长连接
   feishu_mode: local
   feishu_site_id:
-  feishu_bridge_api_token:
   feishu_default_site_id:
-  # hub 模式填写。每个群只绑定一个站点，token 与对应站点上方令牌一致。
+  # hub 模式填写其它现场；本项目路由自动建立，群名自动解析，内部令牌自动生成。
   feishu_sites: []
 
 security:
