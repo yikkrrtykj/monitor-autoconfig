@@ -1691,14 +1691,8 @@
     value.unifi = { enabled: false, password: "", sites: "all", verify_ssl: false, ...(value.unifi || {}) };
     value.alerts = {
       syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback",
-      feishu_mode: "local",
-      feishu_sites: [],
       ...(value.alerts || {})
     };
-    delete value.alerts.feishu_bridge_api_token;
-    delete value.alerts.feishu_site_id;
-    delete value.alerts.feishu_default_site_id;
-    value.alerts.feishu_sites = asConfigArray(value.alerts.feishu_sites);
     value.security = { ...(value.security || {}), grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
     return value;
   }
@@ -1795,8 +1789,7 @@
       access_switches: "接入交换机",
       switches: "交换机",
       servers: "服务器",
-      isp: "ISP",
-      feishu_sites: "比赛现场"
+      isp: "ISP"
     };
     const supportsRange = name === "stage_switches" || name === "access_switches";
     return `
@@ -1812,7 +1805,7 @@
             ${columns.map((column) => `
               <label>
                 <span>${escapeHtml(column.label)}</span>
-                <input data-config-key="${escapeHtml(column.key)}"${column.number ? ' data-config-number="1"' : ""} type="${escapeHtml(column.inputType || (column.number ? "number" : "text"))}" value="${escapeHtml(configScalar(row[column.key]))}" placeholder="${escapeHtml(column.placeholder || "")}" />
+                <input data-config-key="${escapeHtml(column.key)}"${column.number ? ' data-config-number="1"' : ""} type="${column.number ? "number" : "text"}" value="${escapeHtml(configScalar(row[column.key]))}" placeholder="${escapeHtml(column.placeholder || "")}" />
               </label>
             `).join("")}
             <button type="button" data-config-remove="${escapeHtml(name)}" data-index="${index}">删除</button>
@@ -1950,26 +1943,12 @@
       </section>
       <section class="config-section">
         <h3>告警</h3>
-        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。单站点选 local。多个项目共用一个机器人时，只在中心选 hub 并建立长连接，其它服务器选 site；中心按群名称自动区分 @查询和卡片操作。</p>
+        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。App Secret 仅在已登录的赛事控制台编辑，应用时会写入本机 .env。群内 @ 查询会自动回复原群，不需要填写目标群；下面的群名/Chat ID 仅用于系统主动推送告警。</p>
         <div class="config-fields">
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
-          ${configInput("alerts.feishu_chat_id", "告警群名称")}
-          ${configInput("alerts.feishu_mode", "飞书接入模式", { type: "select", choices: [
-            { value: "local", label: "单站点（local）" },
-            { value: "hub", label: "多站点中心（hub）" },
-            { value: "site", label: "多站点成员（site）" }
-          ] })}
-        </div>
-        <div data-feishu-hub-config ${lastEditableConfig.alerts.feishu_mode === "hub" ? "" : "hidden"}>
-          <h4>其它比赛现场（仅多站点中心填写）</h4>
-          <p class="config-section-note">本机自动使用上方“赛事名称”。这里只添加其它现场；比赛名称必须与现场服务器的“赛事名称”完全一致。</p>
-          ${configListRows("feishu_sites", lastEditableConfig.alerts.feishu_sites, [
-            { key: "site_id", label: "比赛名称", placeholder: "英雄电竞上海站" },
-            { key: "chat_id", label: "告警群名称" },
-            { key: "bridge_url", label: "现场监控地址", placeholder: "https://现场监控地址:5005" }
-          ])}
+          ${configInput("alerts.feishu_chat_id", "主动告警群（群名或 Chat ID，可选）", { placeholder: "单群可留空；多群填写群名或 oc_..." })}
         </div>
       </section>
       <section class="config-section">
@@ -1979,13 +1958,6 @@
         </div>
       </section>
     `;
-    const feishuMode = form.querySelector('[data-config-path="alerts.feishu_mode"]');
-    const feishuHubConfig = form.querySelector("[data-feishu-hub-config]");
-    if (feishuMode && feishuHubConfig) {
-      const syncFeishuMode = () => { feishuHubConfig.hidden = feishuMode.value !== "hub"; };
-      feishuMode.addEventListener("change", syncFeishuMode);
-      syncFeishuMode();
-    }
     if (telnetDraft) {
       document.getElementById("controlDhcpUsername").value = telnetDraft.username;
       document.getElementById("controlDhcpPassword").value = telnetDraft.password;
@@ -2022,8 +1994,7 @@
       stage_switches: ["devices", "stage_switches"],
       access_switches: ["devices", "access_switches"],
       servers: ["devices", "servers"],
-      isp: ["isp", "links"],
-      feishu_sites: ["alerts", "feishu_sites"]
+      isp: ["isp", "links"]
     };
     Object.entries(listMappings).forEach(([name, path]) => {
       const list = form.querySelector(`[data-config-list="${name}"]`);
@@ -2041,7 +2012,6 @@
       }
       value[path[0]][path[1]] = rows;
     });
-    if (value.alerts.feishu_mode !== "hub") value.alerts.feishu_sites = [];
     if (value.devices) {
       value.devices.switches = [];
     }
@@ -3073,7 +3043,6 @@
           if (listName === "access_switches") next.devices.access_switches.push({ ip: "" });
           if (listName === "servers") next.devices.servers.push({ name: "", ip: "" });
           if (listName === "isp") next.isp.links.push({ name: "", ping: "", ip: "", bandwidth_mbps: "" });
-          if (listName === "feishu_sites") next.alerts.feishu_sites.push({ site_id: "", chat_id: "", bridge_url: "" });
         }
         if (rangeButton) {
           const listName = rangeButton.dataset.configAddRange;
@@ -3095,7 +3064,6 @@
           if (listName === "access_switches") next.devices.access_switches.splice(index, 1);
           if (listName === "servers") next.devices.servers.splice(index, 1);
           if (listName === "isp") next.isp.links.splice(index, 1);
-          if (listName === "feishu_sites") next.alerts.feishu_sites.splice(index, 1);
         }
         renderControlConfigForm(next);
         configForm.dataset.dirty = "1";

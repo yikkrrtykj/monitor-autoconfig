@@ -57,13 +57,6 @@ def test_feishu_ws_sidecar_is_profile_gated_and_optional():
     # Confirmation must be documented as working without the app (console panel).
     assert "待删除设备" in env or "控制台" in env
     assert "FEISHU_APP_ID=" in env
-    assert "FEISHU_GATEWAY_MODE=local" in env
-    assert "FEISHU_SITE_ROUTES=[]" in env
-    assert 'FEISHU_GATEWAY_MODE_VALUE' in apply
-    assert '!= "site"' in apply
-    deploy = read("deploy.sh")
-    assert "feishu_gateway_mode=$(env_value FEISHU_GATEWAY_MODE .env" in deploy
-    assert "docker rm -f feishu-ws" in deploy
 
 
 def test_named_volume_and_bind_mount_contract_is_not_mixed():
@@ -114,26 +107,13 @@ def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
 
     assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in app
     assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in app
-    assert 'configInput("alerts.feishu_chat_id", "告警群名称"' in app
-    assert 'configInput("alerts.feishu_mode", "飞书接入模式"' in app
-    assert 'configInput("alerts.feishu_site_id"' not in app
-    assert 'configInput("alerts.feishu_default_site_id"' not in app
-    assert 'configInput("alerts.feishu_bridge_api_token"' not in app
-    assert 'configListRows("feishu_sites"' in app
-    assert "data-feishu-hub-config" in app
-    assert 'feishuHubConfig.hidden = feishuMode.value !== "hub"' in app
-    assert 'next.alerts.feishu_sites.push({ site_id: "", chat_id: "", bridge_url: "" })' in app
-    assert 'next.alerts.feishu_sites.splice(index, 1)' in app
-    assert '{ key: "chat_id", label: "告警群名称"' in app
-    assert '{ key: "bridge_token"' not in app
+    assert 'configInput("alerts.feishu_chat_id", "主动告警群（群名或 Chat ID，可选）"' in app
     assert "下载/上传" in app
     assert "1000/100" in app
 
     ws = read("feishu-ws-client.py")
     assert ".register_p2_im_message_receive_v1(on_message)" in ws
-    assert 'f"{route[\'bridge_url\']}/bot/query"' in ws
-    assert "FEISHU_SITE_ROUTES" in ws
-    assert "site_id" in ws
+    assert 'f"{BRIDGE_URL}/bot/query"' in ws
 
 
 def test_retired_isp_history_is_filtered_by_current_prometheus_targets():

@@ -186,8 +186,6 @@ services:
       FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
       FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"
-      FEISHU_SITE_ID: "${FEISHU_SITE_ID:-local}"
-      FEISHU_BRIDGE_API_TOKEN: "${FEISHU_BRIDGE_API_TOKEN:-}"
       EVENT_NAME: "${EVENT_NAME:-}"
       DEVICE_ONLINE_FROM_PING: "${DEVICE_ONLINE_FROM_PING:-false}"
       DEVICE_AUTO_ADD_FROM_PING: "${DEVICE_AUTO_ADD_FROM_PING:-true}"
@@ -340,15 +338,13 @@ services:
       UP_INFLUXDB_DISABLE: "true"
     ports:
       - "${UNPOLLER_BIND:-127.0.0.1}:${UNPOLLER_PORT:-9130}:9130"
-      # Multi-site mode: keep localhost by default. Bind this to a VPN address
-      # only when the central Feishu gateway must reach this site's bridge.
-      - "${FEISHU_BRIDGE_BIND:-127.0.0.1}:${FEISHU_BRIDGE_HOST_PORT:-5005}:5005"
     networks:
       - monitor
 
-  # 飞书长连接回调边车：local 单站点或 hub 中心启动；site 成员站点不启动。
-  # hub 按 chat_id/site_id 把 @查询和待删除按钮转给正确站点 Bridge，避免同一
-  # 应用的多个长连接随机消费事件。没配应用时仍可在控制台确认待删除设备。
+  # 飞书长连接回调边车：接收待删除确认卡的"确认删除/保留"按钮点击（长连接
+  # 模式主动外连飞书云端，内网无需公网/端口映射）。只在配置了自建应用时启动
+  # （feishu 这个 profile），把结果转给告警桥执行删除/保留。没配就不起这个容器，
+  # 确认仍可在控制台"待删除设备"面板完成。
   feishu-ws:
     # Reuse the platform image: deploy.sh always builds it, and it already
     # carries the small lark-oapi dependency.  This keeps console-side apply
@@ -366,11 +362,6 @@ services:
       TZ: Asia/Shanghai
       FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
-      FEISHU_GATEWAY_MODE: "${FEISHU_GATEWAY_MODE:-local}"
-      FEISHU_SITE_ID: "${FEISHU_SITE_ID:-local}"
-      FEISHU_DEFAULT_SITE_ID: "${FEISHU_DEFAULT_SITE_ID:-}"
-      FEISHU_SITE_ROUTES: "${FEISHU_SITE_ROUTES:-[]}"
-      FEISHU_BRIDGE_API_TOKEN: "${FEISHU_BRIDGE_API_TOKEN:-}"
       BRIDGE_URL: "http://alertmanager-feishu-bridge:5005"
     entrypoint: ["python3", "/feishu-ws-client.py"]
     depends_on:
@@ -610,7 +601,6 @@ services:
       PLATFORM_STATE_DIR: "/workspace/platform-state"
       # Feishu bridge, used by the console's "发送测试告警" button.
       PLATFORM_BRIDGE_URL: "${PLATFORM_BRIDGE_URL:-http://alertmanager-feishu-bridge:5005}"
-      FEISHU_BRIDGE_API_TOKEN: "${FEISHU_BRIDGE_API_TOKEN:-}"
       # "赛前体检" button runs pre-match-check.sh against the stack (by service name).
       PLATFORM_PRECHECK_PROM_URL: "${PLATFORM_PRECHECK_PROM_URL:-http://prometheus:9090}"
       PLATFORM_PRECHECK_GRAFANA_URL: "${PLATFORM_PRECHECK_GRAFANA_URL:-http://grafana:3000}"

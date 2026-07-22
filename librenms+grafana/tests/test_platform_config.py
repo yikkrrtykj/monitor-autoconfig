@@ -1,5 +1,4 @@
 import importlib.util
-import json
 from pathlib import Path
 
 
@@ -124,85 +123,6 @@ alerts:
     assert env["FEISHU_APP_ID"] == ""
     assert env["FEISHU_APP_SECRET"] == ""
     assert env["COMPOSE_PROFILES"] == "custom"
-
-
-def test_feishu_hub_auto_adds_local_project_and_derives_internal_tokens():
-    config = platform_config.parse_simple_yaml("""
-event:
-  name: 公司监控
-devices:
-  core:
-    ip: 192.168.10.254
-alerts:
-  feishu_app_id: cli_shared
-  feishu_app_secret: shared-secret
-  feishu_chat_id: 公司监控告警群
-  feishu_mode: hub
-  feishu_sites:
-    - site_id: 英雄电竞上海站
-      chat_id: 英雄电竞上海站告警群
-      bridge_url: https://overseas.example/bridge
-""")
-    assert not [item for item in platform_config.validate_config(config) if item["level"] == "bad"]
-    env = platform_config.render_env(config, {})
-    assert env["FEISHU_GATEWAY_MODE"] == "hub"
-    assert env["FEISHU_SITE_ID"] == "公司监控"
-    assert env["FEISHU_DEFAULT_SITE_ID"] == "公司监控"
-    assert env["COMPOSE_PROFILES"] == "feishu"
-    assert env["FEISHU_BRIDGE_API_TOKEN"] == platform_config.feishu_internal_token("shared-secret", "公司监控")
-    routes = json.loads(env["FEISHU_SITE_ROUTES"])
-    assert [item["site_id"] for item in routes] == ["公司监控", "英雄电竞上海站"]
-    assert routes[0]["chat_id"] == "公司监控告警群"
-    assert routes[0]["bridge_url"] == "http://alertmanager-feishu-bridge:5005"
-    assert routes[1]["bridge_token"] == platform_config.feishu_internal_token("shared-secret", "英雄电竞上海站")
-
-
-def test_feishu_site_mode_keeps_app_sending_but_disables_ws_profile():
-    config = platform_config.parse_simple_yaml("""
-event:
-  name: 英雄电竞上海站
-devices:
-  core:
-    ip: 192.168.10.254
-alerts:
-  feishu_app_id: cli_shared
-  feishu_app_secret: shared-secret
-  feishu_chat_id: 英雄电竞上海站告警群
-  feishu_mode: site
-""")
-    assert not [item for item in platform_config.validate_config(config) if item["level"] == "bad"]
-    env = platform_config.render_env(config, {"COMPOSE_PROFILES": "custom,feishu"})
-    assert env["FEISHU_APP_ID"] == "cli_shared"
-    assert env["FEISHU_CHAT_ID"] == "英雄电竞上海站告警群"
-    assert env["FEISHU_GATEWAY_MODE"] == "site"
-    assert env["FEISHU_BRIDGE_API_TOKEN"] == platform_config.feishu_internal_token("shared-secret", "英雄电竞上海站")
-    assert env["COMPOSE_PROFILES"] == "custom"
-
-
-def test_feishu_hub_rejects_duplicate_projects_groups_and_missing_remote_address():
-    config = platform_config.parse_simple_yaml("""
-event:
-  name: 公司监控
-devices:
-  core:
-    ip: 192.168.10.254
-alerts:
-  feishu_app_id: cli_shared
-  feishu_app_secret: shared-secret
-  feishu_mode: hub
-  feishu_chat_id: 公司群
-  feishu_sites:
-    - site_id: 同一比赛
-      chat_id: 同一群
-      bridge_url: http://bridge-a:5005
-    - site_id: 同一比赛
-      chat_id: 同一群
-      bridge_url:
-""")
-    bad = [item for item in platform_config.validate_config(config) if item["level"] == "bad"]
-    assert any("项目或比赛名称" in item["message"] and "重复" in item["message"] for item in bad)
-    assert any("群名称或 Chat ID" in item["message"] and "重复" in item["message"] for item in bad)
-    assert any("远程项目" in item["message"] for item in bad)
 
 
 def test_merge_env_preserves_unknown_keys(tmp_path):

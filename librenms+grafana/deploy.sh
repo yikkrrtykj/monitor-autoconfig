@@ -247,15 +247,6 @@ else
   fi
 fi
 
-# A server changed from local/hub to site must stop its old WebSocket client.
-# Compose profiles can hide a service without necessarily deleting an existing
-# container, so remove it explicitly to preserve the single-client invariant.
-feishu_gateway_mode=$(env_value FEISHU_GATEWAY_MODE .env 2>/dev/null || printf 'local')
-if [ "$feishu_gateway_mode" = "site" ] && docker inspect feishu-ws >/dev/null 2>&1; then
-  echo "[deploy] Feishu site mode enabled; removing the local long-connection client."
-  docker rm -f feishu-ws >/dev/null
-fi
-
 # These services load bind-mounted source only when their process starts. A
 # normal `compose up` may keep an existing container when only source files
 # changed, leaving nginx's copied web files or Python's imported modules stale.

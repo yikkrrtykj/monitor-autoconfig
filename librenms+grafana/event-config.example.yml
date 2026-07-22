@@ -45,10 +45,6 @@ alerts:
   feishu_app_id:
   feishu_app_secret:
   feishu_chat_id:
-  # local=单套监控；hub=唯一飞书长连接中心；site=只发送本站告警，不建立长连接
-  feishu_mode: local
-  # hub 模式填写其它现场；本项目自动使用 event.name，私聊默认本项目。
-  feishu_sites: []
 
 security:
   grafana_anonymous: true
