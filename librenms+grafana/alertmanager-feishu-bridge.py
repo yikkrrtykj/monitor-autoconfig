@@ -71,6 +71,7 @@ Env:
   INTERCONNECT_PORT_FILTER comma list of interface keywords/prefixes
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import copy
 from datetime import datetime
 from http.cookiejar import CookieJar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1714,6 +1715,22 @@ def _make_card(title, subtitle, color, body_md, extra_elements=None):
     return card
 
 
+def _with_event_name(card):
+    """Prefix every outgoing alert with this monitor's company/event name."""
+    if not EVENT_NAME:
+        return card
+    decorated = copy.deepcopy(card)
+    payload = decorated.get("card") if isinstance(decorated, dict) else None
+    header = payload.get("header") if isinstance(payload, dict) else None
+    title = header.get("title") if isinstance(header, dict) else None
+    if isinstance(title, dict):
+        prefix = f"【{EVENT_NAME}】"
+        content = str(title.get("content") or "")
+        if not content.startswith(prefix):
+            title["content"] = f"{prefix} {content}".strip()
+    return decorated
+
+
 def _feishu_response_result(response_text):
     """Return (ok, detail) for a Feishu webhook JSON response.
 
@@ -1739,6 +1756,7 @@ def _feishu_response_result(response_text):
 
 
 def _send_feishu_webhook(card):
+    card = _with_event_name(card)
     if DRY_RUN:
         log(f"[DRY] would POST card: {card['card']['header']['title']['content']}")
         mark_delivery_health(True)
@@ -1852,10 +1870,7 @@ def _feishu_app_chat_id(token):
         wanted = str(value or "").strip().casefold()
         if not wanted:
             return []
-        exact = [item for item in items if str(item.get("name") or "").strip().casefold() == wanted]
-        if exact:
-            return exact
-        return [item for item in items if wanted in str(item.get("name") or "").strip().casefold()]
+        return [item for item in items if str(item.get("name") or "").strip().casefold() == wanted]
 
     candidates = match_name(FEISHU_CHAT_ID) if FEISHU_CHAT_ID else match_name(EVENT_NAME)
     reason = "configured group name" if FEISHU_CHAT_ID else "event name"
@@ -1883,6 +1898,7 @@ def _feishu_app_chat_id(token):
 
 def send_feishu_app_card(card):
     """通过自建应用机器人发交互卡片（带回传按钮）。失败返回 False。"""
+    card = _with_event_name(card)
     if DRY_RUN:
         log(f"[DRY][APP] would send interactive card: {card['card']['header']['title']['content']}")
         return True

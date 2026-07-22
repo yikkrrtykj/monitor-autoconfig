@@ -1943,12 +1943,12 @@
       </section>
       <section class="config-section">
         <h3>告警</h3>
-        <p class="config-section-note">普通告警优先使用审批通过的自建应用机器人；旧 Webhook Token 保留为失败回退。App Secret 仅在已登录的赛事控制台编辑，应用时会写入本机 .env。群内 @ 查询会自动回复原群，不需要填写目标群；下面的群名/Chat ID 仅用于系统主动推送告警。</p>
+        <p class="config-section-note">所有监控使用同一个飞书应用和同一个群。每台监控填写各自的“赛事名称”，同一条群内巡检命令会收到公司及各比赛现场分别返回的结果；告警和巡检结果都会显示赛事名称。</p>
         <div class="config-fields">
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
-          ${configInput("alerts.feishu_chat_id", "主动告警群（群名或 Chat ID，可选）", { placeholder: "单群可留空；多群填写群名或 oc_..." })}
+          ${configInput("alerts.feishu_chat_id", "告警及巡检群名称")}
         </div>
       </section>
       <section class="config-section">

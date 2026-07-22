@@ -52,3 +52,61 @@ def test_process_message_replies_with_each_interactive_card(monkeypatch):
     monkeypatch.setattr(client.time, "sleep", lambda _seconds: None)
     client._process_message("om_cards", "待删除设备")
     assert [item[2] for item in calls] == cards
+
+
+def test_history_message_uses_body_content_and_event_prefix(monkeypatch):
+    message = {
+        "message_id": "om_history",
+        "message_type": "text",
+        "chat_type": "group",
+        "body": {"content": json.dumps({"text": "@_user_1 光功率巡检"}, ensure_ascii=False)},
+        "mentions": [{"key": "@_user_1", "name": "LibreBOT"}],
+        "sender": {"sender_type": "user"},
+    }
+    assert client.extract_command(message) == "光功率巡检"
+    monkeypatch.setattr(client, "EVENT_NAME", "EWC 上海站")
+    assert client._decorate_text("检查完成") == "【EWC 上海站】\n检查完成"
+    card = {"msg_type": "interactive", "card": {"header": {"title": {"content": "光功率巡检"}}}}
+    decorated = client._decorate_card(card)
+    assert decorated["card"]["header"]["title"]["content"] == "【EWC 上海站】 光功率巡检"
+    assert card["card"]["header"]["title"]["content"] == "光功率巡检"
+
+
+def test_resolve_shared_group_by_exact_name(monkeypatch):
+    monkeypatch.setattr(client, "CHAT_TARGET", "统一监控群")
+    monkeypatch.setattr(client, "_api_get", lambda _path, _token: {
+        "code": 0,
+        "data": {"items": [
+            {"chat_id": "oc_wrong", "name": "统一监控群-旧"},
+            {"chat_id": "oc_right", "name": "统一监控群"},
+        ]},
+    })
+    assert client.resolve_command_chat("token") == "oc_right"
+
+
+def test_shared_polling_baselines_old_messages_then_handles_new_once(monkeypatch):
+    old = {
+        "message_id": "om_old", "message_type": "text", "chat_type": "group",
+        "create_time": "100", "body": {"content": '{"text":"@_user_1 帮助"}'},
+        "mentions": [{"key": "@_user_1"}], "sender": {"sender_type": "user"},
+    }
+    new = {
+        "message_id": "om_new", "message_type": "text", "chat_type": "group",
+        "create_time": "200", "body": {"content": '{"text":"@_user_1 光功率巡检"}'},
+        "mentions": [{"key": "@_user_1"}], "sender": {"sender_type": "user"},
+    }
+    calls = []
+
+    class ImmediateThread:
+        def __init__(self, target, args, **_kwargs):
+            self.target, self.args = target, args
+
+        def start(self):
+            calls.append(self.args)
+
+    client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
+    assert client.process_polled_messages([old], baseline=True) == 0
+    assert client.process_polled_messages([old, new]) == 1
+    assert client.process_polled_messages([new]) == 0
+    assert calls == [("om_new", "光功率巡检")]

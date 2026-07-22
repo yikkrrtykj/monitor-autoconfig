@@ -362,6 +362,8 @@ services:
       TZ: Asia/Shanghai
       FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
+      FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"
+      EVENT_NAME: "${EVENT_NAME:-}"
       BRIDGE_URL: "http://alertmanager-feishu-bridge:5005"
     entrypoint: ["python3", "/feishu-ws-client.py"]
     depends_on:

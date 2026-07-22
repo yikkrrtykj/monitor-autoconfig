@@ -107,13 +107,19 @@ def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
 
     assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in app
     assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in app
-    assert 'configInput("alerts.feishu_chat_id", "主动告警群（群名或 Chat ID，可选）"' in app
+    assert 'configInput("alerts.feishu_chat_id", "告警及巡检群名称")' in app
     assert "下载/上传" in app
     assert "1000/100" in app
 
     ws = read("feishu-ws-client.py")
-    assert ".register_p2_im_message_receive_v1(on_message)" in ws
+    assert "poll_shared_group_commands" in ws
+    assert "/open-apis/im/v1/messages?" in ws
     assert 'f"{BRIDGE_URL}/bot/query"' in ws
+
+    compose = read("docker-compose.yml")
+    feishu_service = compose.split("  feishu-ws:", 1)[1].split("  player-targets:", 1)[0]
+    assert 'FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"' in feishu_service
+    assert 'EVENT_NAME: "${EVENT_NAME:-}"' in feishu_service
 
 
 def test_retired_isp_history_is_filtered_by_current_prometheus_targets():

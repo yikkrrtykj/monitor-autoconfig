@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Feishu long-connection client for card callbacks and @ query commands.
+"""Feishu client for card callbacks and shared-group @ query commands.
 
 The bridge sends "device pending delete" cards with 确认删除/保留 buttons via
 the Feishu app bot. This sidecar keeps an OUTBOUND WebSocket to Feishu's cloud
@@ -13,6 +13,8 @@ LibreNMS deletion. The response updates the card in place and shows a toast.
 
 Env:
   FEISHU_APP_ID / FEISHU_APP_SECRET  self-built app credentials (required)
+  FEISHU_CHAT_ID group name or oc_ chat id used by every monitoring instance
+  EVENT_NAME     local company/event name shown before every result
   BRIDGE_URL   bridge base URL (default http://alertmanager-feishu-bridge:5005)
 
 Feishu console prerequisites (one-time, see .env.example):
@@ -22,6 +24,7 @@ Feishu console prerequisites (one-time, see .env.example):
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -34,6 +37,9 @@ import urllib.request
 
 APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
+CHAT_TARGET = os.environ.get("FEISHU_CHAT_ID", "").strip()
+EVENT_NAME = os.environ.get("EVENT_NAME", "").strip()
+POLL_SECONDS = max(2.0, float(os.environ.get("FEISHU_COMMAND_POLL_SECONDS", "5") or 5))
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
 _TENANT_TOKEN = {"value": "", "expires_at": 0.0}
 _TOKEN_LOCK = threading.Lock()
@@ -136,13 +142,73 @@ def reply_to_message(message_id: str, text: str = "", card: dict | None = None) 
         raise RuntimeError(f"reply rejected: {data.get('code')} {data.get('msg')}")
 
 
+def _api_get(path: str, token: str) -> dict:
+    req = urllib.request.Request(
+        f"https://open.feishu.cn{path}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8") or "{}")
+    if data.get("code") != 0:
+        raise RuntimeError(f"Feishu API rejected: {data.get('code')} {data.get('msg')}")
+    return data
+
+
+def resolve_command_chat(token: str) -> str:
+    """Resolve the one shared command/alert group without guessing."""
+    if CHAT_TARGET.startswith("oc_"):
+        return CHAT_TARGET
+    wanted = CHAT_TARGET.casefold()
+    items = []
+    page_token = ""
+    while True:
+        query = {"page_size": "100"}
+        if page_token:
+            query["page_token"] = page_token
+        data = _api_get(f"/open-apis/im/v1/chats?{urllib.parse.urlencode(query)}", token)
+        page = data.get("data") or {}
+        items.extend(item for item in (page.get("items") or []) if item.get("chat_id"))
+        if not page.get("has_more") or not page.get("page_token"):
+            break
+        page_token = str(page["page_token"])
+    if wanted:
+        matches = [
+            item for item in items
+            if str(item.get("name") or "").strip().casefold() == wanted
+        ]
+    else:
+        matches = items if len(items) == 1 else []
+    if len(matches) != 1:
+        names = "、".join(str(item.get("name") or item.get("chat_id")) for item in items[:10])
+        if wanted:
+            raise RuntimeError(f"群名称不存在或不唯一：{CHAT_TARGET}；机器人当前群：{names or '无'}")
+        raise RuntimeError(f"机器人加入了多个群，请填写告警及巡检群名称：{names or '无'}")
+    return str(matches[0]["chat_id"])
+
+
+def fetch_chat_messages(token: str, chat_id: str) -> list[dict]:
+    query = urllib.parse.urlencode({
+        "container_id_type": "chat",
+        "container_id": chat_id,
+        "sort_type": "ByCreateTimeDesc",
+        "page_size": "50",
+    })
+    data = _api_get(f"/open-apis/im/v1/messages?{query}", token)
+    return [item for item in ((data.get("data") or {}).get("items") or []) if isinstance(item, dict)]
+
+
 def _field(value, name, default=None):
     return value.get(name, default) if isinstance(value, dict) else getattr(value, name, default)
 
 
+def _message_content(message) -> str:
+    body = _field(message, "body")
+    return str(_field(body, "content", "") or _field(message, "content", "") or "")
+
+
 def extract_command(message) -> str:
     try:
-        content = json.loads(str(_field(message, "content", "") or "{}"))
+        content = json.loads(_message_content(message) or "{}")
     except json.JSONDecodeError:
         content = {}
     text = str(content.get("text") or "")
@@ -162,18 +228,26 @@ def should_handle_message(message) -> bool:
     # ordinary group chatter and react only when the robot was explicitly @'d.
     if chat_type != "p2p" and not (_field(message, "mentions", []) or []):
         return False
-    return str(_field(message, "message_type", "") or "").lower() == "text"
+    message_type = _field(message, "message_type", "") or _field(message, "msg_type", "")
+    return str(message_type or "").lower() == "text"
+
+
+def _is_app_message(message) -> bool:
+    sender = _field(message, "sender") or {}
+    return str(_field(sender, "sender_type", "") or "").lower() in {"app", "bot"}
 
 
 def _reserve_message(message_id: str) -> bool:
     now = time.time()
     with _SEEN_LOCK:
-        for key, seen_at in list(_SEEN_MESSAGES.items()):
-            if now - seen_at > 600:
-                _SEEN_MESSAGES.pop(key, None)
         if message_id in _SEEN_MESSAGES:
             return False
         _SEEN_MESSAGES[message_id] = now
+        # Polling repeatedly returns the latest history page. Keep command IDs
+        # for the process lifetime so an old command is never replayed after a
+        # time-based cache expiry; cap only as a long-term memory guard.
+        while len(_SEEN_MESSAGES) > 10000:
+            _SEEN_MESSAGES.pop(next(iter(_SEEN_MESSAGES)))
         return True
 
 
@@ -181,20 +255,102 @@ def _process_message(message_id: str, command: str) -> None:
     result = query_via_bridge(command)
     reply = str(result.get("text") or result.get("error") or "查询失败，请稍后再试。")
     try:
-        cards = [item for item in (result.get("cards") or []) if isinstance(item, dict)]
+        cards = [_decorate_card(item) for item in (result.get("cards") or []) if isinstance(item, dict)]
         if cards:
             for position, card in enumerate(cards):
                 reply_to_message(message_id, card=card)
                 if position + 1 < len(cards):
                     time.sleep(0.15)
         else:
-            reply_to_message(message_id, reply)
+            reply_to_message(message_id, _decorate_text(reply))
         log(f"replied to message {message_id}: {command[:80]}")
     except Exception as exc:  # noqa: BLE001 - event loop must stay alive
         log(f"reply to {message_id} failed: {exc}")
 
 
+def _event_prefix() -> str:
+    return f"【{EVENT_NAME}】" if EVENT_NAME else ""
+
+
+def _decorate_text(text: str) -> str:
+    prefix = _event_prefix()
+    return f"{prefix}\n{text}" if prefix and not str(text).startswith(prefix) else str(text)
+
+
+def _decorate_card(card: dict) -> dict:
+    prefix = _event_prefix()
+    if not prefix:
+        return card
+    decorated = copy.deepcopy(card)
+    payload = decorated.get("card") if decorated.get("msg_type") == "interactive" else decorated
+    header = payload.get("header") if isinstance(payload, dict) else None
+    title = header.get("title") if isinstance(header, dict) else None
+    if isinstance(title, dict):
+        content = str(title.get("content") or "")
+        if not content.startswith(prefix):
+            title["content"] = f"{prefix} {content}".strip()
+    return decorated
+
+
+def process_polled_messages(items: list[dict], *, baseline: bool = False) -> int:
+    """Reserve the initial history, then execute every newly observed @ command."""
+    handled = 0
+
+    def created_at(item):
+        try:
+            return int(str(item.get("create_time") or "0") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    ordered = sorted(items, key=created_at)
+    for message in ordered:
+        message_id = str(_field(message, "message_id", "") or "")
+        if not message_id:
+            continue
+        if baseline:
+            _reserve_message(message_id)
+            continue
+        if _is_app_message(message) or not should_handle_message(message):
+            continue
+        if not _reserve_message(message_id):
+            continue
+        command = extract_command(message) or "帮助"
+        log(f"shared-group command {command[:120]!r} id={message_id}")
+        threading.Thread(
+            target=_process_message, args=(message_id, command), daemon=True,
+            name=f"feishu-query-{message_id[-8:]}",
+        ).start()
+        handled += 1
+    return handled
+
+
+def poll_shared_group_commands() -> None:
+    """Let every isolated monitor independently consume the same group commands."""
+    chat_id = ""
+    initialized = False
+    while True:
+        try:
+            token = tenant_access_token()
+            if not chat_id:
+                chat_id = resolve_command_chat(token)
+                log(f"shared command group resolved: {chat_id}; event={EVENT_NAME or '未命名'}")
+            items = fetch_chat_messages(token, chat_id)
+            process_polled_messages(items, baseline=not initialized)
+            if not initialized:
+                initialized = True
+                log(f"shared command polling ready; baseline={len(items)} messages")
+        except Exception as exc:  # noqa: BLE001 - keep polling after cloud/network failures
+            log(f"shared command polling failed: {exc}")
+            chat_id = ""
+        time.sleep(POLL_SECONDS)
+
+
 def on_message(data):
+    # When a common command group is configured, every monitor polls history so
+    # all sites answer. Long-connection message delivery is intentionally not
+    # used because Feishu load-balances one event to only one client instance.
+    if CHAT_TARGET:
+        return None
     message = _field(_field(data, "event"), "message")
     if not message or not should_handle_message(message):
         return None
@@ -234,7 +390,7 @@ def build_response(value: dict, result: dict):
         "data": {
             "schema": "2.0",
             "header": {
-                "title": {"tag": "plain_text", "content": "设备待删除确认"},
+                "title": {"tag": "plain_text", "content": f"{_event_prefix()} 设备待删除确认".strip()},
                 "subtitle": {"tag": "plain_text", "content": "已处理" if ok else "处理失败"},
                 "template": template,
             },
@@ -275,12 +431,17 @@ def main() -> None:
 
     import lark_oapi as lark
 
-    handler = (
-        lark.EventDispatcherHandler.builder("", "")
-        .register_p2_im_message_receive_v1(on_message)
-        .register_p2_card_action_trigger(on_card_action)
-        .build()
-    )
+    if CHAT_TARGET:
+        threading.Thread(
+            target=poll_shared_group_commands,
+            daemon=True,
+            name="feishu-shared-command-poller",
+        ).start()
+
+    builder = lark.EventDispatcherHandler.builder("", "")
+    if not CHAT_TARGET:
+        builder = builder.register_p2_im_message_receive_v1(on_message)
+    handler = builder.register_p2_card_action_trigger(on_card_action).build()
     while True:
         try:
             log("starting long-connection client")

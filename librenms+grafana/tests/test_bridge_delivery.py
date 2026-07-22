@@ -87,6 +87,15 @@ def test_normal_alert_falls_back_to_webhook_when_app_delivery_fails(monkeypatch)
     assert bridge.send_feishu(_card()) is True
 
 
+def test_every_outgoing_card_is_prefixed_with_event_name(monkeypatch):
+    monkeypatch.setattr(bridge, "EVENT_NAME", "EWC 上海站")
+    original = _card()
+    decorated = bridge._with_event_name(original)
+    assert decorated["card"]["header"]["title"]["content"] == "【EWC 上海站】 test"
+    assert original["card"]["header"]["title"]["content"] == "test"
+    assert bridge._with_event_name(decorated)["card"]["header"]["title"]["content"] == "【EWC 上海站】 test"
+
+
 def test_bot_device_and_optical_queries_use_librenms_data(monkeypatch):
     devices = [{
         "device_id": 7,
