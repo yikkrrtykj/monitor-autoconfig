@@ -17,6 +17,8 @@ Env vars:
   TOPOLOGY_SNMP_RETRIES      retries per request (default: 0).
   TOPOLOGY_OUTPUT_DIR        where to write edges.json / legacy empty files
                              (default: /etc/prometheus/targets/topology).
+  SERVER_PING                named server targets; ARP/FDB resolves their real
+                             access switch and port when SNMP exposes both.
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
@@ -26,7 +28,7 @@ import subprocess
 import sys
 from ipaddress import IPv4Address
 
-from target_utils import expand_ipv4_entry, write_json_atomic
+from target_utils import expand_ipv4_entry, parse_named_ipv4_targets, write_json_atomic
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
 IF_NAME_OID = "1.3.6.1.2.1.31.1.1.1.1"
@@ -40,6 +42,14 @@ LLDP_REM_SYS_NAME_OID = "1.0.8802.1.1.2.1.4.1.1.9"
 CDP_CACHE_ADDRESS_OID = "1.3.6.1.4.1.9.9.23.1.2.1.1.4"
 CDP_CACHE_DEVICE_ID_OID = "1.3.6.1.4.1.9.9.23.1.2.1.1.6"
 CDP_CACHE_DEVICE_PORT_OID = "1.3.6.1.4.1.9.9.23.1.2.1.1.7"
+
+# Server attachment discovery.  The L3 gateway supplies IP -> MAC/VLAN through
+# its ARP table; exact FDB lookups on the switches then identify the access
+# port without walking every switch's full MAC table.
+IP_NET_TO_MEDIA_PHYS_ADDRESS_OID = "1.3.6.1.2.1.4.22.1.2"
+DOT1Q_TP_FDB_PORT_OID = "1.3.6.1.2.1.17.7.1.2.2.1.2"
+DOT1D_TP_FDB_PORT_OID = "1.3.6.1.2.1.17.4.3.1.2"
+DOT1D_BASE_PORT_IFINDEX_OID = "1.3.6.1.2.1.17.1.4.1.2"
 
 
 def _snmp_limits(timeout=None, retries=None):
@@ -211,6 +221,58 @@ def parse_cdp_address(output):
     return out
 
 
+def normalize_mac(value):
+    """Return a lower-case colon-separated MAC, or None for invalid values."""
+    text = strip_string_value(str(value or ""))
+    tokens = re.findall(r"(?i)(?<![0-9a-f])[0-9a-f]{2}(?![0-9a-f])", text)
+    if len(tokens) != 6:
+        compact = re.sub(r"[^0-9a-fA-F]", "", text)
+        if len(compact) != 12:
+            return None
+        tokens = [compact[index:index + 2] for index in range(0, 12, 2)]
+    return ":".join(token.lower() for token in tokens)
+
+
+def parse_arp_table(output, ifname_map):
+    """ipNetToMediaPhysAddress walk -> {IPv4: {mac, ifindex, vlan}}."""
+    records = {}
+    for line in output.strip().split("\n"):
+        parts, value = parse_oid_value(line)
+        if not parts or len(parts) < 5:
+            continue
+        try:
+            ifindex = int(parts[-5])
+            ip = str(IPv4Address(".".join(parts[-4:])))
+        except ValueError:
+            continue
+        mac = normalize_mac(value)
+        if not mac:
+            continue
+        ifname = str(ifname_map.get(ifindex) or "")
+        vlan_match = re.search(r"(?i)\b(?:vlanif|vlan|vl)[\s_-]*([0-9]+)\b", ifname)
+        records[ip] = {
+            "mac": mac,
+            "ifindex": ifindex,
+            "vlan": int(vlan_match.group(1)) if vlan_match else None,
+        }
+    return records
+
+
+def _positive_int(value):
+    match = re.search(r"\b([0-9]+)\b", str(value or ""))
+    if not match:
+        return None
+    number = int(match.group(1))
+    return number if number > 0 else None
+
+
+def mac_oid_suffix(mac):
+    normalized = normalize_mac(mac)
+    if not normalized:
+        return ""
+    return ".".join(str(int(token, 16)) for token in normalized.split(":"))
+
+
 def normalize_hostname(name):
     if not name:
         return ""
@@ -343,6 +405,7 @@ def expand_device_entry(entry):
 def poll_device(ip, community):
     sysname = snmpget(ip, community, SYS_NAME_OID)
     ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
+    arp = parse_arp_table(snmpwalk(ip, community, IP_NET_TO_MEDIA_PHYS_ADDRESS_OID), ifname)
     loc_port_desc = parse_lldp_loc_port_desc(snmpwalk(ip, community, LLDP_LOC_PORT_DESC_OID))
     rem_sys = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_SYS_NAME_OID))
     rem_port_desc = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_PORT_DESC_OID))
@@ -354,6 +417,7 @@ def poll_device(ip, community):
         "ip": ip,
         "sysname": sysname,
         "ifname": ifname,
+        "arp": arp,
         "loc_port_desc": loc_port_desc,
         "rem_sys": rem_sys,
         "rem_port_desc": rem_port_desc,
@@ -517,6 +581,173 @@ def build_edges(devices, name_index):
     return resolve_endpoint_conflicts(list(edges_by_key.values())), placeholder_neighbors
 
 
+def _env_target_ips(name):
+    ips = []
+    for entry in os.environ.get(name, "").split(","):
+        ips.extend(expand_device_entry(entry))
+    return ips
+
+
+def _graph_depths(edges, root_ips):
+    adjacency = {}
+    for edge in edges:
+        left = edge.get("from_ip")
+        right = edge.get("to_ip")
+        if not left or not right:
+            continue
+        adjacency.setdefault(left, set()).add(right)
+        adjacency.setdefault(right, set()).add(left)
+    depths = {}
+    queue = []
+    for ip in root_ips:
+        depths[ip] = 0
+        queue.append(ip)
+    while queue:
+        ip = queue.pop(0)
+        for neighbor in adjacency.get(ip, ()):
+            if neighbor in depths:
+                continue
+            depths[neighbor] = depths[ip] + 1
+            queue.append(neighbor)
+    return depths
+
+
+def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
+    """Resolve one MAC to a switch ifIndex using exact Q-BRIDGE/BRIDGE GETs."""
+    suffix = mac_oid_suffix(mac)
+    if not suffix:
+        return None
+
+    lookups = []
+    if vlan is not None:
+        lookups.append((community, f"{DOT1Q_TP_FDB_PORT_OID}.{vlan}.{suffix}"))
+        # Classic Cisco IOS exposes per-VLAN BRIDGE-MIB through community@vlan.
+        lookups.append((f"{community}@{vlan}", f"{DOT1D_TP_FDB_PORT_OID}.{suffix}"))
+    else:
+        lookups.append((community, f"{DOT1D_TP_FDB_PORT_OID}.{suffix}"))
+
+    for query_community, oid in lookups:
+        bridge_port = _positive_int(snmpget(ip, query_community, oid))
+        if bridge_port is None:
+            continue
+        if bridge_port in ifname_map:
+            return bridge_port
+        for mapping_community in (query_community, community):
+            ifindex = _positive_int(snmpget(
+                ip,
+                mapping_community,
+                f"{DOT1D_BASE_PORT_IFINDEX_OID}.{bridge_port}",
+            ))
+            if ifindex is not None:
+                return ifindex
+    return None
+
+
+def discover_server_edges(devices, edges, servers, community):
+    """Locate configured servers at their real access switch via ARP + FDB."""
+    if not servers or not devices:
+        return []
+
+    arp_by_server = {}
+    for device in devices.values():
+        for server_ip in servers:
+            record = device.get("arp", {}).get(server_ip)
+            if record:
+                arp_by_server.setdefault(server_ip, []).append(record)
+
+    switch_link_endpoints = set()
+    for edge in edges:
+        if edge.get("from_ip") in devices and edge.get("from_ifindex") is not None:
+            switch_link_endpoints.add((edge["from_ip"], edge["from_ifindex"]))
+        if edge.get("to_ip") in devices and edge.get("to_ifindex") is not None:
+            switch_link_endpoints.add((edge["to_ip"], edge["to_ifindex"]))
+
+    firewall_ips = set(_env_target_ips("FIREWALL_PING"))
+    switch_devices = {
+        ip: device for ip, device in devices.items()
+        if ip not in firewall_ips and device.get("ifname")
+    }
+    core_ips = _env_target_ips("CORE_SWITCH_PING")
+    depths = _graph_depths(edges, core_ips)
+    found = []
+
+    for server_ip, server_name in servers.items():
+        records = arp_by_server.get(server_ip, [])
+        unique_records = {
+            (record["mac"], record.get("vlan"))
+            for record in records if record.get("mac")
+        }
+        if not unique_records:
+            print(
+                f"[WARN] server {server_name} ({server_ip}): no ARP entry; "
+                "keeping core fallback",
+                file=sys.stderr,
+            )
+            continue
+
+        candidates = []
+        tasks = {}
+        with ThreadPoolExecutor(max_workers=min(16, max(1, len(switch_devices) * len(unique_records)))) as executor:
+            for switch_ip, device in switch_devices.items():
+                for mac, vlan in unique_records:
+                    future = executor.submit(
+                        lookup_fdb_ifindex,
+                        switch_ip,
+                        community,
+                        vlan,
+                        mac,
+                        device.get("ifname", {}),
+                    )
+                    tasks[future] = (switch_ip, mac, vlan)
+            for future in as_completed(tasks):
+                switch_ip, mac, vlan = tasks[future]
+                try:
+                    ifindex = future.result()
+                except Exception as exc:
+                    print(f"[WARN] FDB lookup {switch_ip} {server_ip}: {exc}", file=sys.stderr)
+                    continue
+                if ifindex is None:
+                    continue
+                candidates.append({
+                    "switch_ip": switch_ip,
+                    "ifindex": ifindex,
+                    "mac": mac,
+                    "vlan": vlan,
+                    "is_uplink": (switch_ip, ifindex) in switch_link_endpoints,
+                    "depth": depths.get(switch_ip, -1),
+                })
+
+        access_candidates = [candidate for candidate in candidates if not candidate["is_uplink"]]
+        if not access_candidates:
+            # Seeing a MAC only on switch-to-switch uplinks does not identify its
+            # physical attachment. Keep the UI fallback rather than inventing one.
+            print(
+                f"[WARN] server {server_name} ({server_ip}): MAC was not found "
+                "on a confirmed access port; keeping core fallback",
+                file=sys.stderr,
+            )
+            continue
+        best = max(access_candidates, key=lambda candidate: candidate["depth"])
+        parent = switch_devices[best["switch_ip"]]
+        found.append({
+            "from_ip": best["switch_ip"],
+            "from_sysname": parent.get("sysname"),
+            "from_port": parent.get("ifname", {}).get(best["ifindex"]),
+            "from_ifindex": best["ifindex"],
+            "to_ip": server_ip,
+            "to_sysname": server_name,
+            "to_port": None,
+            "to_ifindex": None,
+            "source": "fdb",
+        })
+        print(
+            f"[INFO] server {server_name} ({server_ip}) attached to "
+            f"{best['switch_ip']} {parent.get('ifname', {}).get(best['ifindex']) or best['ifindex']}",
+            file=sys.stderr,
+        )
+    return found
+
+
 def atomic_write_json(path, data):
     write_json_atomic(path, data, sort_keys=True)
 
@@ -533,7 +764,7 @@ def main():
         atomic_write_json(os.path.join(output_dir, "rates.json"), [])
         return 0
 
-    print(f"[INFO] polling LLDP+CDP on {len(device_ips)} device(s)", file=sys.stderr)
+    print(f"[INFO] polling LLDP+CDP+ARP on {len(device_ips)} device(s)", file=sys.stderr)
     devices = {}
     with ThreadPoolExecutor(max_workers=min(16, len(device_ips))) as executor:
         futures = {executor.submit(poll_device, ip, community): ip for ip in device_ips}
@@ -554,6 +785,20 @@ def main():
 
     name_index = build_name_index(devices)
     edges, placeholders = build_edges(devices, name_index)
+    servers = parse_named_ipv4_targets(os.environ.get("SERVER_PING", ""))
+    already_linked = {
+        ip for edge in edges for ip in (edge.get("from_ip"), edge.get("to_ip"))
+        if ip in servers
+    }
+    unresolved_servers = {
+        ip: name for ip, name in servers.items() if ip not in already_linked
+    }
+    edges.extend(discover_server_edges(
+        devices,
+        edges,
+        unresolved_servers,
+        community,
+    ))
     uplink_targets = []
 
     atomic_write_json(os.path.join(output_dir, "edges.json"), edges)

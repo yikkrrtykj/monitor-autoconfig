@@ -204,9 +204,6 @@
       const shift = minX < 20 ? 20 - minX : (maxX > canvasWidth - 20 ? canvasWidth - 20 - maxX : 0);
       return nodes.map((node) => ({ ...node, x: node.x + shift }));
     };
-    const serverRow = (hasServers && coreRow.length)
-      ? placeServerRow(layers.servers, serverRowY)
-      : [];
     // Build the access-switch (dist) layer as a tree from the discovered edges:
     // switches that uplink to the core sit in the main row; a switch whose uplink
     // lands on ANOTHER access switch is drawn in a layer below its parent
@@ -312,6 +309,41 @@
     const distTree = placeDistTree();
     const distRow = distTree.nodes;
     const distDepthByIp = distTree.depthByIp;
+    const baseServerRow = (hasServers && coreRow.length)
+      ? placeServerRow(layers.servers, serverRowY)
+      : [];
+    const serverIps = new Set(baseServerRow.map((server) => server.ip).filter(Boolean));
+    const infrastructureByIp = new Map(
+      [...coreRow, ...distRow].filter((node) => node.ip).map((node) => [node.ip, node])
+    );
+    const serverParentByIp = new Map();
+    (Array.isArray(lldpEdges) ? lldpEdges : []).forEach((edge) => {
+      if (serverIps.has(edge.from_ip) && infrastructureByIp.has(edge.to_ip)) {
+        serverParentByIp.set(edge.from_ip, edge.to_ip);
+      } else if (serverIps.has(edge.to_ip) && infrastructureByIp.has(edge.from_ip)) {
+        serverParentByIp.set(edge.to_ip, edge.from_ip);
+      }
+    });
+    const siblingsByParent = new Map();
+    baseServerRow.forEach((server) => {
+      const parentIp = serverParentByIp.get(server.ip);
+      if (!parentIp) return;
+      if (!siblingsByParent.has(parentIp)) siblingsByParent.set(parentIp, []);
+      siblingsByParent.get(parentIp).push(server.ip);
+    });
+    const serverRow = baseServerRow.map((server) => {
+      const parentIp = serverParentByIp.get(server.ip);
+      const parent = infrastructureByIp.get(parentIp);
+      if (!parent) return server;
+      const siblings = siblingsByParent.get(parentIp) || [server.ip];
+      const siblingIndex = siblings.indexOf(server.ip);
+      const siblingOffset = (siblingIndex - (siblings.length - 1) / 2) * (NODE_W + 16);
+      return {
+        ...server,
+        x: Math.max(20, parent.x + parent.w / 2 - NODE_W / 2 + siblingOffset),
+        y: Math.max(coreRow[0].y + NODE_H + 20, parent.y - NODE_H - DIST_LINK_GAP),
+      };
+    });
 
     const allNodes = [...ispRow, ...fwRow, ...coreRow, ...distRow, ...serverRow];
     const nodeByIp = new Map();
@@ -346,6 +378,7 @@
 
     const lldpLinks = [];
     const lldpCoveredPairs = new Set();
+    const discoveredServerIps = new Set();
     if (Array.isArray(lldpEdges) && lldpEdges.length) {
       const groupedEdges = new Map();
       lldpEdges.forEach((edge) => {
@@ -384,6 +417,8 @@
           aggregated: detail.aggregated
         });
         lldpCoveredPairs.add(pairKey);
+        if (group.from.kind === "server" && group.from.ip) discoveredServerIps.add(group.from.ip);
+        if (group.to.kind === "server" && group.to.ip) discoveredServerIps.add(group.to.ip);
       });
     }
 
@@ -401,7 +436,10 @@
       if (distDepthByIp.has(d.ip)) return;
       coreRow.forEach((core) => pushCrossLink(core, d, d.level));
     });
-    serverRow.forEach((s) => coreRow.forEach((core) => pushCrossLink(core, s, s.level)));
+    serverRow.forEach((s) => {
+      if (discoveredServerIps.has(s.ip)) return;
+      coreRow.forEach((core) => pushCrossLink(core, s, s.level));
+    });
     links.push(...lldpLinks);
 
     const isCoreDistLink = (link) => (

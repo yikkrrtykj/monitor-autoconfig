@@ -275,6 +275,88 @@ class TestParseCdp:
         assert gte.parse_cdp_address(out) == {(10101, 1): "192.168.10.23"}
 
 
+class TestServerAttachmentDiscovery:
+    def test_parse_arp_table_includes_vlan_and_mac(self):
+        output = (
+            ".1.3.6.1.2.1.4.22.1.2.42.192.168.42.203 "
+            "= Hex-STRING: 00 11 22 AA BB CC"
+        )
+        assert gte.parse_arp_table(output, {42: "Vlan42"}) == {
+            "192.168.42.203": {
+                "mac": "00:11:22:aa:bb:cc",
+                "ifindex": 42,
+                "vlan": 42,
+            }
+        }
+
+    def test_exact_qbridge_lookup_maps_bridge_port_to_ifindex(self, monkeypatch):
+        responses = {
+            f"{gte.DOT1Q_TP_FDB_PORT_OID}.42.0.17.34.170.187.204": "7",
+            f"{gte.DOT1D_BASE_PORT_IFINDEX_OID}.7": "10110",
+        }
+        monkeypatch.setattr(
+            gte,
+            "snmpget",
+            lambda _ip, _community, oid, **_kwargs: responses.get(oid, ""),
+        )
+        assert gte.lookup_fdb_ifindex(
+            "192.168.10.11",
+            "global",
+            42,
+            "00:11:22:aa:bb:cc",
+            {10110: "Gi1/0/10"},
+        ) == 10110
+
+    def test_deepest_non_uplink_switch_wins(self, monkeypatch):
+        devices = {
+            "192.168.10.254": {
+                "ip": "192.168.10.254",
+                "sysname": "core",
+                "ifname": {5001: "Po1", 42: "Vlan42"},
+                "arp": {
+                    "192.168.42.203": {
+                        "mac": "00:11:22:aa:bb:cc",
+                        "ifindex": 42,
+                        "vlan": 42,
+                    }
+                },
+            },
+            "192.168.10.11": {
+                "ip": "192.168.10.11",
+                "sysname": "Global-new-stack",
+                "ifname": {5001: "Po1", 10110: "Gi1/0/10"},
+                "arp": {},
+            },
+        }
+        edges = [{
+            "from_ip": "192.168.10.254",
+            "from_ifindex": 5001,
+            "to_ip": "192.168.10.11",
+            "to_ifindex": 5001,
+        }]
+        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setattr(
+            gte,
+            "lookup_fdb_ifindex",
+            lambda ip, *_args, **_kwargs: {
+                "192.168.10.254": 5001,
+                "192.168.10.11": 10110,
+            }.get(ip),
+        )
+        found = gte.discover_server_edges(
+            devices,
+            edges,
+            {"192.168.42.203": "sdwan"},
+            "global",
+        )
+        assert len(found) == 1
+        assert found[0]["from_ip"] == "192.168.10.11"
+        assert found[0]["from_port"] == "Gi1/0/10"
+        assert found[0]["to_ip"] == "192.168.42.203"
+        assert found[0]["source"] == "fdb"
+
+
 # ---- build_edges() via CDP (Cisco gear without LLDP) ----
 
 class TestBuildEdgesCdp:

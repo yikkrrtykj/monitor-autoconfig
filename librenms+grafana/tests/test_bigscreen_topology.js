@@ -241,5 +241,46 @@ assert.ok(hierSvg.includes(">Gi2/0/1</text>"), "child port is rendered as its ow
 assert.ok(hierSvg.includes(">Gi4/0/27</text>"), "second parent port is rendered separately");
 assert.ok(hierSvg.includes(">Gi1/0/24</text>"), "second child port is rendered separately");
 
+// ---- server attachment: an FDB-discovered server belongs to its access switch,
+//      and must not keep the old synthetic core link. ----
+window.BIGSCREEN_CONFIG.serverTargets = "sdwan:192.168.42.203";
+const serverAttachmentTargets = [
+  target("infra-core-ping", "Core", "192.168.10.254"),
+  target("infra-dist-ping", "Global-new-stack", "192.168.10.11"),
+  target("infra-srv-ping", "sdwan", "192.168.42.203"),
+];
+const serverAttachmentEdges = [
+  { from_ip: "192.168.10.254", from_port: "Po1", to_ip: "192.168.10.11", to_port: "Po1" },
+  { from_ip: "192.168.10.11", from_port: "Gi1/0/10", to_ip: "192.168.42.203", to_port: null, source: "fdb" },
+];
+const attachedLayout = topologyLayout(
+  buildTopologyLayers(serverAttachmentTargets),
+  1365,
+  620,
+  serverAttachmentEdges
+);
+const attachedServer = attachedLayout.nodes.find((node) => node.ip === "192.168.42.203");
+const attachedSwitch = attachedLayout.nodes.find((node) => node.ip === "192.168.10.11");
+assert.ok(attachedServer && attachedSwitch);
+assert.strictEqual(
+  Math.round(centerX(attachedServer)),
+  Math.round(centerX(attachedSwitch)),
+  "server is centered above its actual access switch"
+);
+assert.ok(attachedServer.y < attachedSwitch.y);
+assert.strictEqual(
+  attachedLayout.links.filter((link) => [link.from.ip, link.to.ip].includes("192.168.42.203")).length,
+  1,
+  "server has only its discovered access-switch link"
+);
+assert.ok(attachedLayout.links.some((link) =>
+  [link.from.ip, link.to.ip].includes("192.168.42.203") &&
+  [link.from.ip, link.to.ip].includes("192.168.10.11")
+));
+assert.ok(!attachedLayout.links.some((link) =>
+  [link.from.ip, link.to.ip].includes("192.168.42.203") &&
+  [link.from.ip, link.to.ip].includes("192.168.10.254")
+));
+
 console.log("bigscreen topology tests passed");
 
