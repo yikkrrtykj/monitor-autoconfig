@@ -32,7 +32,8 @@
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
   const {
-    buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel
+    buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel,
+    topologyLatencyIp
   } = window.BSTopology;
   const {
     isGatewayAddress, buildPlayers, latencyLevel, playerStatusText
@@ -3918,6 +3919,7 @@
         const node = topologyNodes[idx];
         if (!node) return;
         const syslogUrl = node.ip ? `${window.location.protocol}//${window.location.hostname}:3000/d/device-syslog?var-host=${encodeURIComponent(node.ip)}` : "";
+        const latencyIp = topologyLatencyIp(node);
         detail.hidden = false;
         detail.innerHTML = `
           <header><strong>${escapeHtml(node.name)}</strong><span class="dot ${node.level}"></span></header>
@@ -3928,8 +3930,7 @@
             <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
           </dl>
           <div class="topology-detail-actions">
-            ${node.ip ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(node.ip)}">延迟证据</a>` : ""}
-            <a class="detail-link" href="/incident?at=${encodeURIComponent(dateTimeInputValue(new Date()))}&window=5&threshold=0.05">事故分析</a>
+            ${latencyIp ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(latencyIp)}">延迟</a>` : ""}
             ${syslogUrl ? `<a class="detail-link" href="${escapeHtml(syslogUrl)}">Syslog</a>` : ""}
           </div>
         `;

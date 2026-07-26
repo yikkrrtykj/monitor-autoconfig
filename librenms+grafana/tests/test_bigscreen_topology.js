@@ -20,7 +20,8 @@ const { ispChartMaxBps, getConfiguredIspNames, getIspNames } = require(path.reso
 const {
   buildTopologyLayers,
   topologyLayout,
-  renderTopologySvg
+  renderTopologySvg,
+  topologyLatencyIp
 } = require(path.resolve(__dirname, "../bigscreen/topology.js"));
 
 assert.deepStrictEqual(parseIspBandwidthConfig("ISP1:500,ISP2:500,ISP3:300").perIsp.ISP3, { down: 300, up: 300 });
@@ -85,6 +86,12 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(autoIspLayers.isps.find((node) => node.name === "telcom").ip, "101.95.176.198", "topology shows WAN IP, not probe gateway");
 assert.strictEqual(autoIspLayers.isps.find((node) => node.name === "telcom").probeIp, "219.140.134.161");
+assert.strictEqual(
+  topologyLatencyIp(autoIspLayers.isps.find((node) => node.name === "telcom")),
+  "219.140.134.161",
+  "ISP latency page must query the monitored gateway, not the firewall WAN IP"
+);
+assert.strictEqual(topologyLatencyIp({ kind: "core", ip: "192.168.10.254" }), "192.168.10.254");
 window.BIGSCREEN_CONFIG.ispNames = "ISP1,ISP2";
 window.BIGSCREEN_CONFIG.ispAutoDiscovery = "false";
 window.BIGSCREEN_CONFIG.ispIps = "ISP1:203.170.210.114,ISP2:202.133.189.82";

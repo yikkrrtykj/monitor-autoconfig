@@ -23,6 +23,11 @@
     return "good";
   }
 
+  function topologyLatencyIp(node) {
+    if (!node) return "";
+    return node.kind === "isp" ? (node.probeIp || node.ip || "") : (node.ip || "");
+  }
+
   function buildTopologyLayers(targets) {
     // 自动发现时只用显式配置的名字（通常为空），不要回退 ISP1,ISP2 默认，
     // 否则拓扑会多出两个永远连不通的 ISP1/ISP2 占位节点。
@@ -666,6 +671,7 @@
 
   const ns = {
     topologyNodeLevel,
+    topologyLatencyIp,
     buildTopologyLayers,
     topologyLayout,
     topologyNodeIcon,
