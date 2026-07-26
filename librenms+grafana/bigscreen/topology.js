@@ -331,6 +331,10 @@
       if (!siblingsByParent.has(parentIp)) siblingsByParent.set(parentIp, []);
       siblingsByParent.get(parentIp).push(server.ip);
     });
+    const lowestDistBottom = distRow.reduce(
+      (bottom, node) => Math.max(bottom, node.y + node.h),
+      coreRow[0].y + NODE_H
+    );
     const serverRow = baseServerRow.map((server) => {
       const parentIp = serverParentByIp.get(server.ip);
       const parent = infrastructureByIp.get(parentIp);
@@ -340,8 +344,15 @@
       const siblingOffset = (siblingIndex - (siblings.length - 1) / 2) * (NODE_W + 16);
       return {
         ...server,
-        x: Math.max(20, parent.x + parent.w / 2 - NODE_W / 2 + siblingOffset),
-        y: Math.max(coreRow[0].y + NODE_H + 20, parent.y - NODE_H - DIST_LINK_GAP),
+        x: Math.min(
+          canvasWidth - NODE_W - 20,
+          Math.max(20, parent.x + parent.w / 2 - NODE_W / 2 + siblingOffset)
+        ),
+        // A located server is a downstream leaf. Draw it below the switch
+        // layer so its branch never overlaps the core/access backbone.
+        y: parent.kind === "dist"
+          ? lowestDistBottom + DIST_LINK_GAP
+          : parent.y + NODE_H + DIST_LINK_GAP,
       };
     });
 

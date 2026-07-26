@@ -265,9 +265,12 @@ assert.ok(attachedServer && attachedSwitch);
 assert.strictEqual(
   Math.round(centerX(attachedServer)),
   Math.round(centerX(attachedSwitch)),
-  "server is centered above its actual access switch"
+  "server is centered below its actual access switch"
 );
-assert.ok(attachedServer.y < attachedSwitch.y);
+assert.ok(
+  attachedServer.y >= attachedSwitch.y + attachedSwitch.h + 40,
+  "server is drawn as a downstream branch below the access-switch layer"
+);
 assert.strictEqual(
   attachedLayout.links.filter((link) => [link.from.ip, link.to.ip].includes("192.168.42.203")).length,
   1,
