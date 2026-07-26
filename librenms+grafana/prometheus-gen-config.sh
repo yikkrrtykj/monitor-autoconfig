@@ -42,12 +42,15 @@ RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
 # 不需要跟随全局 5-10s 高频采集；拉长可减轻 2960 等弱 CPU 交换机的控制平面负担，
 # 避免其管理口 ICMP 被周期性 SNMP GET 推迟而出现 ping 尖峰。
 SNMP_UPTIME_SCRAPE_INTERVAL="${SNMP_UPTIME_SCRAPE_INTERVAL:-600s}"
-# Port-channel / LAG interconnect status needs ifOperStatus. Keep this separate
-# from uptime so the fast link watcher does not make all SNMP jobs heavy.
-SWITCH_IFMIB_SCRAPE_INTERVAL="${SWITCH_IFMIB_SCRAPE_INTERVAL:-10s}"
-# StackWise tables are only polled for devices confirmed as real stacks. 30s
-# keeps member-loss results fresh without loading standalone access switches.
-STACKWISE_SCRAPE_INTERVAL="${STACKWISE_SCRAPE_INTERVAL:-30s}"
+# Port-channel / LAG interconnect status needs ifOperStatus. These targets
+# default to the core switches (normally the large stacks), not every Edge
+# switch. Thirty seconds keeps link-state monitoring useful without repeatedly
+# walking hundreds of interfaces on a multi-member stack.
+SWITCH_IFMIB_SCRAPE_INTERVAL="${SWITCH_IFMIB_SCRAPE_INTERVAL:-30s}"
+# StackWise tables are only polled for devices automatically confirmed as real
+# multi-member stacks. A 60-second walk is sufficient for the interactive
+# inspection/audit while avoiding another frequent management-plane burst.
+STACKWISE_SCRAPE_INTERVAL="${STACKWISE_SCRAPE_INTERVAL:-60s}"
 # Cisco CPU/memory tables contain only a handful of counters. One 60-second
 # scrape is enough for sustained alerts and avoids another high-frequency walk.
 SWITCH_RESOURCE_SCRAPE_INTERVAL="${SWITCH_RESOURCE_SCRAPE_INTERVAL:-60s}"

@@ -3,8 +3,8 @@
 
 The full StackWise SNMP module walks several CISCO-STACKWISE-MIB tables.  Some
 standalone/older Cisco switches do not implement those tables cleanly and make
-the exporter wait for every retry.  Running that module against every switch
-every 30 seconds can therefore compete with LibreNMS polling and delay ICMP.
+the exporter wait for every retry. Running that module against every switch can
+therefore compete with LibreNMS polling and delay ICMP.
 
 This detector walks only the ``cswSwitchNumCurrent`` member-number column during
 the 10-minute topology discovery loop, with no retry and a one-second timeout.

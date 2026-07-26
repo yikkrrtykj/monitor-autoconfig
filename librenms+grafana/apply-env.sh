@@ -92,6 +92,8 @@ migrate_legacy_defaults() {
   migrate_env_default UNIFI_AP_POLL_INTERVAL 15 5
   migrate_env_default UNIFI_CONTROLLER_REFRESH_SECONDS 60 10
   migrate_env_default UNIFI_SCRAPE_INTERVAL 30s 10s
+  migrate_env_default SWITCH_IFMIB_SCRAPE_INTERVAL 10s 30s
+  migrate_env_default STACKWISE_SCRAPE_INTERVAL 30s 60s
 }
 
 # Keep .env in sync with event-config.yml (the console's source of truth) before

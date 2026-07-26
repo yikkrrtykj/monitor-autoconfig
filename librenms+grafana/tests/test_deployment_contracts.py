@@ -184,7 +184,14 @@ def test_cisco_stackwise_uses_dedicated_low_frequency_snmp_module():
         '"cisco_stackwise" "$STACKWISE_SCRAPE_INTERVAL" "$STACKWISE_TARGETS_FILE"'
     ) in prometheus
     assert 'write_snmp_job "infra-switch-stackwise" "$SWITCH_SNMP_TARGETS"' not in prometheus
-    assert "STACKWISE_SCRAPE_INTERVAL=30s" in env
+    assert 'SWITCH_IFMIB_SCRAPE_INTERVAL: "${SWITCH_IFMIB_SCRAPE_INTERVAL:-30s}"' in compose
+    assert 'STACKWISE_SCRAPE_INTERVAL: "${STACKWISE_SCRAPE_INTERVAL:-60s}"' in compose
+    assert "SWITCH_IFMIB_SCRAPE_INTERVAL=30s" in env
+    assert "STACKWISE_SCRAPE_INTERVAL=60s" in env
+    for script_name in ("deploy.sh", "apply-env.sh"):
+        script = read(script_name)
+        assert "migrate_env_default SWITCH_IFMIB_SCRAPE_INTERVAL 10s 30s" in script
+        assert "migrate_env_default STACKWISE_SCRAPE_INTERVAL 30s 60s" in script
     assert "STACKWISE_DISCOVERY_TIMEOUT=1" in env
 
 
