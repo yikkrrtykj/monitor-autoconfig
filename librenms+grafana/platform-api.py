@@ -1490,6 +1490,38 @@ def parse_cisco_dhcp_bindings(text: str) -> list[dict]:
     return bindings
 
 
+def parse_cisco_arp_entries(text: str) -> list[dict]:
+    """Parse complete IPv4 neighbours from Cisco ``show ip arp`` output."""
+    entries = []
+    seen = set()
+    for line in str(text or "").replace("\r", "").splitlines():
+        if re.search(r"(?i)\bincomplete\b", line):
+            continue
+        match = re.match(
+            r"^\s*(?:Internet|IP)\s+"
+            r"(\d{1,3}(?:\.\d{1,3}){3})\s+"
+            r"(\S+)\s+([0-9A-Fa-f.:-]{11,})\s+\S+(?:\s+(.+?))?\s*$",
+            line,
+        )
+        if not match:
+            continue
+        try:
+            address = str(ipaddress.IPv4Address(match.group(1)))
+        except ipaddress.AddressValueError:
+            continue
+        if address in seen:
+            continue
+        seen.add(address)
+        interface = re.sub(r"\s+", " ", match.group(4) or "").strip()
+        detail = f"ARP {match.group(3)}"
+        if interface:
+            detail += f" · {interface}"
+        entries.append({"ip": address, "detail": detail})
+        if len(entries) >= 65536:
+            break
+    return entries
+
+
 def _telnet_expect(session, patterns: list[bytes], step: str):
     index, match, output = session.expect(patterns, DHCP_SWITCH_TIMEOUT)
     decoded = (output or b"").decode("utf-8", errors="replace")
@@ -1655,7 +1687,7 @@ def collect_cisco_dhcp(host: str) -> dict:
 
 
 def get_dhcp_bindings() -> dict:
-    """Read exact leases only after the operator explicitly requests them."""
+    """Read exact leases and current ARP neighbours on operator request."""
     host = configured_core_switch_host()
     if not DHCP_LOCK.acquire(blocking=False):
         raise DiagnosticError(HTTPStatus.CONFLICT, "DHCP 面板正在读取交换机，请稍后再查询已用 IP")
@@ -1667,15 +1699,26 @@ def get_dhcp_bindings() -> dict:
         if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", output):
             raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机不支持 show ip dhcp binding")
         bindings = parse_cisco_dhcp_bindings(output)
+        arp_output = _telnet_command(session, "show ip arp")
+        arp_warning = ""
+        if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", arp_output):
+            arp_output = _telnet_command(session, "show arp")
+        if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", arp_output):
+            arp_output = ""
+            arp_warning = "交换机不支持读取 ARP 表，无法判断固定排除地址是否正在使用"
+        arp_entries = parse_cisco_arp_entries(arp_output)
         return {
             "ok": True,
             "host": host,
             "bindings": bindings,
             "usedAddresses": [item["ip"] for item in bindings],
+            "arpEntries": arp_entries,
+            "observedAddresses": [item["ip"] for item in arp_entries],
             "parserWarning": (
                 "show ip dhcp binding 当前未返回可解析的活动地址"
                 if not bindings else ""
             ),
+            "arpWarning": arp_warning,
             "capturedAt": int(time.time()),
         }
     except DiagnosticError:

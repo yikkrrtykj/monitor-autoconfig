@@ -34,11 +34,12 @@ const api = require(path.resolve(__dirname, "../bigscreen/api.js"));
   assert.strictEqual(renamed[0].originalName, "192.168.10.32");
   assert.strictEqual(renamed[1].name, "Member1");
 
-  // 运行时长：90 天以内保持"天"，超过换算成"月"（按 30 天）。
+  // 运行时长：90 天以内保持"天"，超过换算成"月"，超过 12 个月换算成"年"。
   assert.deepStrictEqual(utils.formatUptime(59.22 * 86400), { value: "59.22", unit: "天" });
   assert.deepStrictEqual(utils.formatUptime(89 * 86400), { value: "89.00", unit: "天" });
   assert.deepStrictEqual(utils.formatUptime(184.79 * 86400), { value: "6.2", unit: "月" });
   assert.deepStrictEqual(utils.formatUptime(30 * 86400 * 12), { value: "12.0", unit: "月" });
+  assert.deepStrictEqual(utils.formatUptime(30 * 86400 * 16.6), { value: "1.4", unit: "年" });
 
   // WAN 关键词：以数字结尾的按边界匹配（eth1 不命中 eth10），其它维持包含匹配。
   const wanRe = new RegExp(`.*(${api.wanFilterPattern()}).*`, "i");

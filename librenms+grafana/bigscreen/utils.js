@@ -50,11 +50,16 @@
     if (seconds < 86400) {
       return { value: (seconds / 3600).toFixed(2), unit: "小时" };
     }
-    // 超过 90 天后 "184.79 天" 这种数不直观，换算成月（按 30 天）。
+    // 超过 90 天后 "184.79 天" 这种数不直观，先按 30 天换算成月；
+    // 超过 12 个月再按年显示，避免出现 "16.6 月" 这类读数。
     if (seconds < 90 * 86400) {
       return { value: (seconds / 86400).toFixed(2), unit: "天" };
     }
-    return { value: (seconds / (30 * 86400)).toFixed(1), unit: "月" };
+    const months = seconds / (30 * 86400);
+    if (months <= 12) {
+      return { value: months.toFixed(1), unit: "月" };
+    }
+    return { value: (months / 12).toFixed(1), unit: "年" };
   }
 
   function formatBits(value) {

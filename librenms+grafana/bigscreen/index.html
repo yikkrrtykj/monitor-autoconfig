@@ -217,8 +217,8 @@
             <span id="dhcpConnection">等待读取核心配置</span>
           </div>
           <span class="dhcp-actions">
-            <span id="dhcpBindingsStatus">进入页面后自动查询已用 IP</span>
-            <button type="button" id="dhcpBindings" title="重新读取 show ip dhcp binding 并标出已租用地址">重新查询已用 IP</button>
+            <span id="dhcpBindingsStatus">进入页面后自动查询租约与 ARP</span>
+            <button type="button" id="dhcpBindings" title="重新读取 DHCP 租约与 ARP 表，标出固定排除地址是否已被发现">重新查询地址使用</button>
             <button type="button" id="dhcpRefresh" title="立即从核心交换机刷新">立即刷新</button>
           </span>
         </div>

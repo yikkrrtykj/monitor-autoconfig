@@ -230,6 +230,21 @@ IP address       Client-ID/              Lease expiration        Type
     assert bindings == [{"ip": "192.168.58.121", "detail": ""}]
 
 
+def test_cisco_arp_parser_keeps_only_complete_ipv4_neighbours(tmp_path):
+    api = load_api(tmp_path)
+    entries = api.parse_cisco_arp_entries("""
+Protocol  Address          Age (min)  Hardware Addr   Type   Interface
+Internet  192.168.42.1            2   aabb.ccdd.eeff  ARPA   Vlan42
+Internet  192.168.42.26           -   0011.2233.4455  ARPA   Vlan42
+Internet  192.168.42.27           0   Incomplete      ARPA
+""")
+
+    assert entries == [
+        {"ip": "192.168.42.1", "detail": "ARP aabb.ccdd.eeff · Vlan42"},
+        {"ip": "192.168.42.26", "detail": "ARP 0011.2233.4455 · Vlan42"},
+    ]
+
+
 def test_cisco_dhcp_exclusions_expand_and_attach_to_matching_pool(tmp_path):
     api = load_api(tmp_path)
     exclusions = api.parse_cisco_dhcp_excluded("""
@@ -338,15 +353,21 @@ def test_full_dhcp_bindings_are_only_read_by_manual_endpoint(monkeypatch, tmp_pa
             pass
 
     monkeypatch.setattr(api, "_open_cisco_telnet", lambda _host: FakeSession())
-    monkeypatch.setattr(api, "_telnet_command", lambda _session, command: (
-        commands.append(command) or
-        ("192.168.40.21 0100.1122.3344.55 Jul 22 2026 Automatic" if command == "show ip dhcp binding" else "")
-    ))
+    def fake_command(_session, command):
+        commands.append(command)
+        if command == "show ip dhcp binding":
+            return "192.168.40.21 0100.1122.3344.55 Jul 22 2026 Automatic"
+        if command == "show ip arp":
+            return "Internet  192.168.40.5  1  aabb.ccdd.eeff  ARPA  Vlan40"
+        return ""
+
+    monkeypatch.setattr(api, "_telnet_command", fake_command)
 
     result = api.get_dhcp_bindings()
 
     assert result["usedAddresses"] == ["192.168.40.21"]
-    assert commands == ["terminal length 0", "show ip dhcp binding"]
+    assert result["observedAddresses"] == ["192.168.40.5"]
+    assert commands == ["terminal length 0", "show ip dhcp binding", "show ip arp"]
 
 
 def test_telnet_command_handles_more_prompts_and_strict_device_prompt(tmp_path):

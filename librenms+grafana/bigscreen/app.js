@@ -227,13 +227,16 @@
     return `${teamName({ id: "" }, team)} ${seatLabel(seat)} ${networkLabel(network)}`;
   }
 
-  function renderGaugeGrid(containerId, items, kind, forceRows) {
+  function renderGaugeGrid(containerId, items, kind, forceRows, forceColumns) {
     const container = document.getElementById(containerId);
     const formatter = kind === "ping" ? formatPing : formatUptime;
     const rows = forceRows
       ? Math.max(1, Math.min(items.length, forceRows))
       : Math.max(1, Math.min(items.length, items.length > 8 ? 3 : 2));
-    const columns = Math.max(1, Math.ceil(items.length / rows));
+    const columns = forceColumns
+      ? Math.max(1, forceColumns)
+      : Math.max(1, Math.ceil(items.length / rows));
+    const layout = { rows, columns };
     container.dataset.rows = String(rows);
     container.style.setProperty("--gauge-columns", String(columns));
     container.style.setProperty("--gauge-rows", String(rows));
@@ -241,7 +244,7 @@
 
     if (!items.length) {
       container.innerHTML = '<div class="empty-state">暂无数据</div>';
-      return;
+      return layout;
     }
 
     items.forEach((item) => {
@@ -266,6 +269,7 @@
       `;
       container.appendChild(card);
     });
+    return layout;
   }
 
   function renderNoData(container, message) {
@@ -815,9 +819,18 @@
       const deployed = filterDeployed(pingItems, (item) => item.name);
       const networkPing = dedupeInfraItems(renameListWithInfraMap(deployed.filter((item) => !isServerItem(item)), nameMap), "max");
       const serverPing = dedupeInfraItems(renameListWithInfraMap(deployed.filter(isServerItem), nameMap), "max");
-      renderGaugeGrid("pingGaugeGrid", visibleInfraItems(networkPing), "ping");
-      // Servers aren't stage devices (skip the stage filter); keep them on one row.
-      renderGaugeGrid("pingServerGaugeGrid", serverPing, "ping", 1);
+      const visibleNetworkPing = visibleInfraItems(networkPing);
+      const networkLayout = renderGaugeGrid("pingGaugeGrid", visibleNetworkPing, "ping");
+      // Servers aren't stage devices (skip the stage filter). Keep their cells
+      // the same width as the network-device cells instead of stretching one
+      // server across the entire panel.
+      renderGaugeGrid(
+        "pingServerGaugeGrid",
+        serverPing,
+        "ping",
+        1,
+        Math.max(networkLayout.columns, serverPing.length)
+      );
       // 没有服务器 ping 数据就整段隐藏，不显示"服务器 暂无数据"。
       setVisible("serverGaugesWrap", serverPing.length > 0);
       renderGaugeGrid("uptimeGaugeGrid", visibleInfraItems(dedupeInfraItems(renameListWithInfraMap(uptimeItems, nameMap), "max")), "uptime");
@@ -3274,7 +3287,11 @@
     const conflictSet = new Set(conflicts || []);
     const bindingDetails = new Map((bindingPayload && bindingPayload.bindings || [])
       .map((item) => [String(item.ip || ""), String(item.detail || "")]));
+    const arpDetails = new Map((bindingPayload && bindingPayload.arpEntries || [])
+      .map((item) => [String(item.ip || ""), String(item.detail || "")]));
     const used = new Set(bindingPayload && bindingPayload.usedAddresses || []);
+    const observed = new Set(bindingPayload && bindingPayload.observedAddresses || []);
+    const reservedUsed = new Set([...excluded].filter((ip) => used.has(ip) || observed.has(ip)));
     const excludedList = [...excluded];
     const exclusionNote = excludedList.length
       ? `排除地址：${compactDhcpAddresses(excludedList)}`
@@ -3285,7 +3302,8 @@
           <div class="dhcp-address-legend">
             <span><i class="pool"></i>池内地址</span>
             <span><i class="used"></i>已用</span>
-            <span><i class="excluded"></i>排除</span>
+            <span><i class="excluded"></i>排除（未发现）</span>
+            <span><i class="reserved-used"></i>排除且已发现</span>
             <span><i class="conflict"></i>冲突</span>
           </div>
           <span class="dhcp-exclusion-list">${escapeHtml(exclusionNote)}</span>
@@ -3296,10 +3314,17 @@
               <strong>${escapeHtml(`${block.prefix}.0/24`)}</strong>
               <div class="dhcp-address-grid">
                 ${block.addresses.map((ip) => {
-                  const status = conflictSet.has(ip) ? "conflict" : excluded.has(ip) ? "excluded" : used.has(ip) ? "used" : "pool";
+                  const status = conflictSet.has(ip) ? "conflict"
+                    : reservedUsed.has(ip) ? "reserved-used"
+                    : excluded.has(ip) ? "excluded"
+                    : used.has(ip) ? "used"
+                    : "pool";
                   const label = ip.slice(ip.lastIndexOf("."));
-                  const statusText = status === "conflict" ? "冲突" : status === "excluded" ? "排除" : status === "used"
-                    ? `已用${bindingDetails.get(ip) ? ` · ${bindingDetails.get(ip)}` : ""}`
+                  const statusText = status === "conflict" ? "冲突"
+                    : status === "reserved-used"
+                      ? `排除地址已发现${arpDetails.get(ip) ? ` · ${arpDetails.get(ip)}` : bindingDetails.get(ip) ? ` · ${bindingDetails.get(ip)}` : ""}`
+                    : status === "excluded" ? "排除地址（当前租约和 ARP 表均未发现）" : status === "used"
+                    ? `已租用${bindingDetails.get(ip) ? ` · ${bindingDetails.get(ip)}` : ""}`
                     : (bindingPayload ? "未在当前租约表中" : "池内（点击“查询已用 IP”后标色）");
                   return `<span class="dhcp-address-cell ${status}" title="${escapeHtml(`${ip} · ${statusText}`)}" aria-label="${escapeHtml(`${ip} ${statusText}`)}">${escapeHtml(label)}</span>`;
                 }).join("")}
@@ -3371,7 +3396,7 @@
     const warningText = (payload.warnings || []).join("；");
     setText(
       "dhcpFootnote",
-      `${warningText ? `${warningText} · ` : ""}地址池数量自动刷新；进入页面时读取一次完整租约，可随时手动重查。`
+      `${warningText ? `${warningText} · ` : ""}地址池数量自动刷新；进入页面时读取租约与 ARP 表。排除地址未被发现不代表设备一定离线（设备可能不响应或 ARP 已老化）。`
     );
     if (!dhcpBindingPayload && !dhcpBindingsRefreshing) {
       window.setTimeout(refreshDhcpBindings, 0);
@@ -3384,7 +3409,7 @@
     const status = document.getElementById("dhcpBindingsStatus");
     dhcpBindingsRefreshing = true;
     if (button) button.disabled = true;
-    if (status) status.textContent = "正在读取完整租约…";
+    if (status) status.textContent = "正在读取租约与 ARP 表…";
     try {
       const payload = await fetchDhcpBindings();
       if (activePageId !== "dhcp") return;
@@ -3394,11 +3419,19 @@
           ? new Date(payload.capturedAt * 1000).toLocaleTimeString("zh-CN", { hour12: false })
           : "刚刚";
         const returned = Number((payload.usedAddresses || []).length);
+        const exclusions = new Set((dhcpLastPayload && dhcpLastPayload.pools || [])
+          .flatMap((pool) => pool.excludedAddresses || []));
+        const discovered = new Set([
+          ...(payload.usedAddresses || []),
+          ...(payload.observedAddresses || [])
+        ]);
+        const reservedUsed = [...exclusions].filter((ip) => discovered.has(ip)).length;
         const expected = (dhcpLastPayload && dhcpLastPayload.pools || [])
           .reduce((sum, pool) => sum + Number(pool.leased || 0), 0);
-        status.textContent = returned === 0 && expected > 0
+        const statusText = returned === 0 && expected > 0
           ? `交换机统计已租用 ${expected} 个，但租约明细未解析；${payload.parserWarning || "请重试或检查命令输出"}`
-          : `已用地址（绿色）${returned} 个 · ${captured}`;
+          : `DHCP 租约（绿色）${returned} 个 · 排除且已发现（蓝色）${reservedUsed} 个 · ${captured}`;
+        status.textContent = payload.arpWarning ? `${statusText} · ${payload.arpWarning}` : statusText;
       }
       if (dhcpLastPayload) renderDhcpDashboard(dhcpLastPayload);
     } catch (error) {
