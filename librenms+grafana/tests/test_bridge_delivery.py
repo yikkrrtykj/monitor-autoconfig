@@ -270,6 +270,7 @@ def test_bot_full_fiber_audit_returns_summary_and_grouped_details(monkeypatch):
         1: [
             {"sensor_descr": "Gi1/0/1 Rx Power", "sensor_current": -26.0},
             {"sensor_descr": "Gi1/0/2 Rx Power", "sensor_current": -3.0},
+            {"sensor_descr": "Te2/0/3 Receive Power", "sensor_current": -39.9},
         ],
         2: [{"sensor_descr": "Gi1/0/8 Rx Power", "sensor_current": -23.5}],
     }
@@ -281,6 +282,13 @@ def test_bot_full_fiber_audit_returns_summary_and_grouped_details(monkeypatch):
         "fetch_librenms_dbm_sensors",
         lambda _token, device_id: readings[device_id],
     )
+    monkeypatch.setattr(
+        bridge,
+        "fetch_librenms_port_states",
+        lambda _token, device_id: (
+            [{"ifName": "Te2/0/3", "ifOperStatus": "down"}] if device_id == 1 else []
+        ),
+    )
 
     result = bridge.handle_bot_query("光功率巡检")
     assert result["ok"] is True
@@ -288,9 +296,19 @@ def test_bot_full_fiber_audit_returns_summary_and_grouped_details(monkeypatch):
     summary = result["cards"][0]["card"]["body"]["elements"][0]["content"]
     details = result["cards"][1]["card"]["body"]["elements"][0]["content"]
     assert "已检查光功率：** 3" in summary
+    assert "未接线/无入光：** 1" in summary
     assert "发现异常：** 2" in summary
     assert "严重" in details and "警告" in details
     assert "RTS1" in details and "RTS2" in details
+    assert "Te2/0/3" not in details
+
+
+def test_fiber_audit_ignores_unplugged_dom_floor_and_down_ports():
+    assert bridge._fiber_audit_level({"sensor_current": -39.9}) == "inactive"
+    assert bridge._fiber_sensor_port_status(
+        {"sensor_descr": "Te2/0/3 Receive Power"},
+        [{"ifDescr": "TenGigabitEthernet2/0/3", "ifOperStatus": "down"}],
+    ) == "down"
 
 
 def test_uplink_audit_counts_physical_ports_toward_core():

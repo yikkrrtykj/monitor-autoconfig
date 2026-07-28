@@ -159,6 +159,10 @@ TOPOLOGY_EDGES_FILE = os.environ.get("TOPOLOGY_EDGES_FILE", "/etc/prometheus/tar
 LIBRENMS_CORE_IP = os.environ.get("LIBRENMS_CORE_IP", "").strip()
 FIBER_WARN_DBM = float(os.environ.get("FIBER_WARN_DBM", "-15") or "-15")
 FIBER_CRITICAL_DBM = float(os.environ.get("FIBER_CRITICAL_DBM", "-25") or "-25")
+# DOM-capable modules commonly report a floor near -40 dBm when the receive
+# strand is unplugged.  That is "no optical signal", not a weak live link; port
+# state monitoring already covers an in-use link going down.
+FIBER_NO_SIGNAL_DBM = float(os.environ.get("FIBER_NO_SIGNAL_DBM", "-35") or "-35")
 DEVICE_DOWN_POLL_INTERVAL = int(os.environ.get("DEVICE_DOWN_POLL_INTERVAL", "1"))
 DEVICE_DOWN_SAMPLE_WINDOW_SECONDS = int(os.environ.get("DEVICE_DOWN_SAMPLE_WINDOW_SECONDS", "5"))
 DEVICE_DOWN_JOBS = os.environ.get(
@@ -701,10 +705,48 @@ def fetch_librenms_dbm_sensors(token, device_id):
     return list(by_id.values()) if by_id else sensors
 
 
+def fetch_librenms_port_states(token, device_id):
+    columns = "ifName,ifDescr,ifOperStatus,ifAdminStatus"
+    query = parse.urlencode({"columns": columns})
+    encoded_ref = parse.quote(str(device_id), safe="")
+    data = _librenms_get_json(token, f"/api/v0/devices/{encoded_ref}/ports?{query}")
+    return data.get("ports") or []
+
+
+def _interface_key(value):
+    text = re.sub(r"\s+", "", str(value or "").lower())
+    for full, short in (
+        ("hundredgigabitethernet", "hu"),
+        ("fortygigabitethernet", "fo"),
+        ("twentyfivegigabitethernet", "twe"),
+        ("tengigabitethernet", "te"),
+        ("gigabitethernet", "gi"),
+        ("fastethernet", "fa"),
+    ):
+        text = text.replace(full, short)
+    match = re.search(r"(?:hu|fo|twe|te|gi|fa|eth)\d+(?:/\d+){1,3}", text)
+    return match.group(0) if match else ""
+
+
+def _fiber_sensor_port_status(sensor, ports):
+    sensor_key = _interface_key(
+        sensor.get("sensor_descr") or sensor.get("sensor_index")
+    )
+    if not sensor_key:
+        return ""
+    for port in ports:
+        port_key = _interface_key(port.get("ifName") or port.get("ifDescr"))
+        if port_key == sensor_key:
+            return str(port.get("ifOperStatus") or "").strip().lower()
+    return ""
+
+
 def _fiber_audit_level(sensor):
     current = _number(sensor.get("sensor_current"))
     if current is None:
         return "unknown"
+    if current <= FIBER_NO_SIGNAL_DBM:
+        return "inactive"
     if current < FIBER_CRITICAL_DBM:
         return "critical"
     if current < FIBER_WARN_DBM:
@@ -717,31 +759,51 @@ def build_fiber_audit_cards(token, devices):
     active = [item for item in devices if str(item.get("disabled") or "0").strip().lower()
               not in ("1", "true", "yes") and item.get("device_id") is not None]
     sensors_by_device = {}
+    ports_by_device = {}
     failures = []
 
     def fetch(device):
-        return device, fetch_librenms_dbm_sensors(token, device.get("device_id"))
+        device_id = device.get("device_id")
+        sensors = fetch_librenms_dbm_sensors(token, device_id)
+        try:
+            ports = fetch_librenms_port_states(token, device_id)
+        except Exception as exc:
+            ports = []
+            log(f"[BOT] port states unavailable for {_device_display(device)}: {exc}")
+        return device, sensors, ports
 
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(active)))) as pool:
         futures = {pool.submit(fetch, device): device for device in active}
         for future in as_completed(futures):
             device = futures[future]
             try:
-                returned_device, sensors = future.result()
-                sensors_by_device[str(returned_device.get("device_id"))] = sensors
+                returned_device, sensors, ports = future.result()
+                device_key = str(returned_device.get("device_id"))
+                sensors_by_device[device_key] = sensors
+                ports_by_device[device_key] = ports
             except Exception as exc:
                 failures.append(_device_display(device))
                 log(f"[BOT] full fiber audit failed for {_device_display(device)}: {exc}")
 
     checked = 0
+    inactive = 0
     issues = []
     for device in active:
-        for sensor in sensors_by_device.get(str(device.get("device_id")), []):
+        device_key = str(device.get("device_id"))
+        ports = ports_by_device.get(device_key, [])
+        for sensor in sensors_by_device.get(device_key, []):
             current = _number(sensor.get("sensor_current"))
             if current is None:
                 continue
-            checked += 1
             level = _fiber_audit_level(sensor)
+            port_status = _fiber_sensor_port_status(sensor, ports)
+            if port_status and port_status != "up":
+                inactive += 1
+                continue
+            if level == "inactive":
+                inactive += 1
+                continue
+            checked += 1
             if level in ("critical", "warning"):
                 issues.append({
                     "level": level,
@@ -756,6 +818,8 @@ def build_fiber_audit_cards(token, devices):
         f"**检查设备：** {len(active)} 台",
         f"✅ **已检查光功率：** {checked} 项",
     ]
+    if inactive:
+        summary.append(f"⏭️ **未接线/无入光：** {inactive} 项（已忽略）")
     if issue_count:
         summary.extend([
             f"⚠️ **发现异常：** {issue_count} 项",
