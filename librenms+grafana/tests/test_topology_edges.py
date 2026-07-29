@@ -356,6 +356,72 @@ class TestServerAttachmentDiscovery:
         assert found[0]["to_ip"] == "192.168.42.203"
         assert found[0]["source"] == "fdb"
 
+    def test_physical_access_port_beats_unconfirmed_transit_port_channel(self, monkeypatch):
+        devices = {
+            "192.168.10.254": {
+                "ip": "192.168.10.254",
+                "sysname": "core",
+                "ifname": {5001: "Po1", 42: "Vlan42"},
+                "arp": {
+                    "192.168.42.203": {
+                        "mac": "00:11:22:aa:bb:cc",
+                        "ifindex": 42,
+                        "vlan": 42,
+                    }
+                },
+            },
+            "192.168.10.11": {
+                "ip": "192.168.10.11",
+                "sysname": "Global-new-stack",
+                "ifname": {10110: "Gi6/0/43"},
+                "arp": {},
+            },
+            "192.168.10.47": {
+                "ip": "192.168.10.47",
+                "sysname": "Lan-Server",
+                "ifname": {5001: "Po1", 10101: "Gi1/1/1"},
+                "arp": {},
+            },
+        }
+        # Lan-Server's topology edge names the physical LAG member. Its FDB,
+        # however, reports the logical Po1, so exact endpoint matching alone
+        # cannot identify that observation as transit.
+        edges = [
+            {
+                "from_ip": "192.168.10.254",
+                "from_ifindex": 10001,
+                "to_ip": "192.168.10.11",
+                "to_ifindex": 10001,
+            },
+            {
+                "from_ip": "192.168.10.254",
+                "from_ifindex": 10003,
+                "to_ip": "192.168.10.47",
+                "to_ifindex": 10101,
+            },
+        ]
+        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setattr(
+            gte,
+            "lookup_fdb_ifindex",
+            lambda ip, *_args, **_kwargs: {
+                "192.168.10.11": 10110,
+                "192.168.10.47": 5001,
+            }.get(ip),
+        )
+
+        found = gte.discover_server_edges(
+            devices,
+            edges,
+            {"192.168.42.203": "sdwan"},
+            "global",
+        )
+
+        assert len(found) == 1
+        assert found[0]["from_ip"] == "192.168.10.11"
+        assert found[0]["from_port"] == "Gi6/0/43"
+
 
 # ---- build_edges() via CDP (Cisco gear without LLDP) ----
 

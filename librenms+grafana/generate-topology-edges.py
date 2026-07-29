@@ -708,12 +708,18 @@ def discover_server_edges(devices, edges, servers, community):
                     continue
                 if ifindex is None:
                     continue
+                port_name = device.get("ifname", {}).get(ifindex)
                 candidates.append({
                     "switch_ip": switch_ip,
                     "ifindex": ifindex,
+                    "port_name": port_name,
                     "mac": mac,
                     "vlan": vlan,
                     "is_uplink": (switch_ip, ifindex) in switch_link_endpoints,
+                    # A server MAC learned on Po/LAG is commonly a transit copy
+                    # from another switch. Prefer a physical access interface
+                    # when both observations exist at the same graph depth.
+                    "is_aggregate": normalize_port_name(port_name).startswith("agg"),
                     "depth": depths.get(switch_ip, -1),
                 })
 
@@ -727,7 +733,15 @@ def discover_server_edges(devices, edges, servers, community):
                 file=sys.stderr,
             )
             continue
-        best = max(access_candidates, key=lambda candidate: candidate["depth"])
+        best = max(
+            access_candidates,
+            key=lambda candidate: (
+                candidate["depth"],
+                not candidate["is_aggregate"],
+                candidate["switch_ip"],
+                -candidate["ifindex"],
+            ),
+        )
         parent = switch_devices[best["switch_ip"]]
         found.append({
             "from_ip": best["switch_ip"],
