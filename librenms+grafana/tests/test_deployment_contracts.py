@@ -152,6 +152,16 @@ def test_loss_heatmap_splits_large_device_lists_into_two_columns():
     assert "white-space: nowrap" in css
 
 
+def test_grafana_device_names_survive_low_frequency_snmp_scrapes():
+    dashboard = read("grafana-provisioning/dashboard-json/event-infra.json")
+
+    # sysName is intentionally scraped every ten minutes. Keep its last value
+    # available to Grafana so Ping and loss rows do not alternate between the
+    # hostname and target IP during Prometheus' shorter lookback interval.
+    assert dashboard.count("last_over_time(sysName") == 8
+    assert "max by (target_ip,sysName) (sysName{" not in dashboard
+
+
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     compose = read("docker-compose.yml")
     topology = compose.split("  topology-collector:", 1)[1].split("  bigscreen:", 1)[0]
