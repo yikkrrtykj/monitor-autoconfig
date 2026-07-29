@@ -156,7 +156,8 @@
     const topPad = 22;
     const bottomPad = 22;
     const rowCount = 4;
-    const DIST_LINK_GAP = 42;
+    const DIST_LINK_GAP = 66;
+    const DIST_NODE_GAP = 24;
     const hasServers = !!(layers.servers && layers.servers.length);
     const usableHeight = Math.max(420, canvasHeight || 680) + (hasServers ? 96 : 0);
     const layerGap = Math.max(36, (usableHeight - topPad - bottomPad - NODE_H * rowCount) / (rowCount - 1));
@@ -279,26 +280,63 @@
         if (!item.ip) orderedTopLevel.push(item);
       });
       const placed = new Map();
-      const baseRow = placeRow(orderedTopLevel, rowY(3));
-      baseRow.forEach((n) => { if (n.ip) placed.set(n.ip, n); });
       const childRowH = NODE_H + DIST_LINK_GAP;
-      const placeChildren = (parentNode) => {
-        const kids = (childrenOf.get(parentNode.ip) || [])
+      const subtreeWidthByIp = new Map();
+      const subtreeWidth = (ip, visiting = new Set()) => {
+        if (!ip || visiting.has(ip)) return NODE_W;
+        if (subtreeWidthByIp.has(ip)) return subtreeWidthByIp.get(ip);
+        const nextVisiting = new Set(visiting);
+        nextVisiting.add(ip);
+        const kids = (childrenOf.get(ip) || []).filter((childIp) => distByIp.has(childIp));
+        const childrenWidth = kids.length
+          ? kids.reduce((sum, childIp) => sum + subtreeWidth(childIp, nextVisiting), 0) +
+            (kids.length - 1) * DIST_NODE_GAP
+          : 0;
+        const width = Math.max(NODE_W, childrenWidth);
+        subtreeWidthByIp.set(ip, width);
+        return width;
+      };
+
+      // Allocate each top-level switch the width of its complete descendant tree.
+      // This avoids the old behaviour where every child was centred independently
+      // on its parent and sibling trees eventually occupied the same coordinates.
+      const roots = orderedTopLevel.filter((node) => node && node.ip);
+      const rootsWidth = roots.reduce((sum, root) => sum + subtreeWidth(root.ip), 0) +
+        Math.max(0, roots.length - 1) * DIST_NODE_GAP;
+      let rootCursor = Math.max(20, (canvasWidth - rootsWidth) / 2);
+      const placeSubtree = (item, spanX, spanWidth, y, visiting = new Set()) => {
+        if (!item || !item.ip || visiting.has(item.ip) || placed.has(item.ip)) return;
+        const node = {
+          ...item,
+          x: spanX + (spanWidth - NODE_W) / 2,
+          y,
+          w: NODE_W,
+          h: NODE_H
+        };
+        placed.set(item.ip, node);
+        const nextVisiting = new Set(visiting);
+        nextVisiting.add(item.ip);
+        const kids = (childrenOf.get(item.ip) || [])
           .map((ip) => distByIp.get(ip))
-          .filter((kid) => kid && kid.ip && !placed.has(kid.ip));
-        const count = kids.length;
-        kids.forEach((kid, idx) => {
-          const x = Math.max(20, parentNode.x + (idx - (count - 1) / 2) * (NODE_W + 16));
-          const node = { ...kid, x, y: parentNode.y + childRowH, w: NODE_W, h: NODE_H };
-          placed.set(kid.ip, node);
-          placeChildren(node);
+          .filter((kid) => kid && kid.ip && !nextVisiting.has(kid.ip));
+        const kidsWidth = kids.reduce((sum, kid) => sum + subtreeWidth(kid.ip), 0) +
+          Math.max(0, kids.length - 1) * DIST_NODE_GAP;
+        let childCursor = spanX + (spanWidth - kidsWidth) / 2;
+        kids.forEach((kid) => {
+          const width = subtreeWidth(kid.ip);
+          placeSubtree(kid, childCursor, width, y + childRowH, nextVisiting);
+          childCursor += width + DIST_NODE_GAP;
         });
       };
-      baseRow.forEach((n) => placeChildren(n));
+      roots.forEach((root) => {
+        const width = subtreeWidth(root.ip);
+        placeSubtree(root, rootCursor, width, rowY(3));
+        rootCursor += width + DIST_NODE_GAP;
+      });
       // Safety net: anything not reached above still gets a slot in the main row.
       dists.forEach((d, idx) => {
         if (d.ip && !placed.has(d.ip)) {
-          placed.set(d.ip, { ...d, x: Math.max(20, 20 + idx * (NODE_W + 16)), y: rowY(3), w: NODE_W, h: NODE_H });
+          placed.set(d.ip, { ...d, x: Math.max(20, 20 + idx * (NODE_W + DIST_NODE_GAP)), y: rowY(3), w: NODE_W, h: NODE_H });
         }
       });
       return {
@@ -545,6 +583,12 @@
       const pad = 18;
       return node.x + pad + ((node.w - pad * 2) * slot) / (count - 1);
     };
+    const endpointLabelStagger = (slot, count) => {
+      if (!Number.isFinite(slot) || !Number.isFinite(count) || count <= 1) return 0;
+      // Three lanes keep long interface names readable even when one parent has
+      // many children. The larger dist-row gap above reserves room for them.
+      return (slot % 3) * 12;
+    };
     // Estimate rendered title width (CJK glyphs are ~2x a Latin char) so an
     // over-long switch name gets squeezed to fit the box instead of spilling out.
     const estTextWidth = (text) => {
@@ -622,8 +666,18 @@
         labelAnchor = "start";
         if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
           labelPositions = [
-            { text: link.labelLines[0], x: x + 14, y: y1 + 13, anchor: "start" },
-            { text: link.labelLines[1], x: x + 14, y: y2 - 5, anchor: "start" }
+            {
+              text: link.labelLines[0],
+              x: x + 14,
+              y: y1 + 13 + endpointLabelStagger(link.fromSlot, link.fromSlotCount),
+              anchor: "start"
+            },
+            {
+              text: link.labelLines[1],
+              x: x + 14,
+              y: y2 - 5 - endpointLabelStagger(link.toSlot, link.toSlotCount),
+              anchor: "start"
+            }
           ];
         }
       } else {
@@ -640,8 +694,18 @@
           // A shared two-line label in the middle makes parent/child switch
           // ports look concatenated, especially when the link is diagonal.
           labelPositions = [
-            { text: link.labelLines[0], x: x1, y: y1 + 13, anchor: "middle" },
-            { text: link.labelLines[1], x: x2, y: y2 - 5, anchor: "middle" }
+            {
+              text: link.labelLines[0],
+              x: x1,
+              y: y1 + 13 + endpointLabelStagger(link.fromSlot, link.fromSlotCount),
+              anchor: "middle"
+            },
+            {
+              text: link.labelLines[1],
+              x: x2,
+              y: y2 - 5 - endpointLabelStagger(link.toSlot, link.toSlotCount),
+              anchor: "middle"
+            }
           ];
         }
       }

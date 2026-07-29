@@ -241,6 +241,48 @@ assert.ok(hierSvg.includes(">Gi2/0/1</text>"), "child port is rendered as its ow
 assert.ok(hierSvg.includes(">Gi4/0/27</text>"), "second parent port is rendered separately");
 assert.ok(hierSvg.includes(">Gi1/0/24</text>"), "second child port is rendered separately");
 
+// ---- wide dist fan-out: every branch owns horizontal space and dense parent
+//      interface labels are staggered instead of being drawn on top of each other. ----
+const fanTargets = [
+  target("infra-core-ping", "Core", "192.168.10.254"),
+  target("infra-dist-ping", "Global-new-stack", "192.168.10.11"),
+  target("infra-dist-ping", "RTS2", "192.168.10.32"),
+  target("infra-dist-ping", "RTS1", "192.168.10.31"),
+  target("infra-dist-ping", "PGS-stream1", "192.168.10.51"),
+  target("infra-dist-ping", "PGS-stream2", "192.168.10.52"),
+  target("infra-dist-ping", "Studio-3", "192.168.10.53"),
+];
+const fanEdges = [
+  { from_ip: "192.168.10.254", from_port: "Te1/0/1", to_ip: "192.168.10.11", to_port: "Te1/0/2" },
+  { from_ip: "192.168.10.254", from_port: "Te1/0/7", to_ip: "192.168.10.32", to_port: "Gi27" },
+  { from_ip: "192.168.10.254", from_port: "Te1/0/8", to_ip: "192.168.10.31", to_port: "Gi27" },
+  { from_ip: "192.168.10.11", from_port: "Gi3/0/49", to_ip: "192.168.10.51", to_port: "Gi1/0/25" },
+  { from_ip: "192.168.10.11", from_port: "Gi3/0/50", to_ip: "192.168.10.52", to_port: "Gi0/25" },
+  { from_ip: "192.168.10.11", from_port: "Gi3/0/51", to_ip: "192.168.10.53", to_port: "Gi1/0/49" },
+];
+const fanLayout = topologyLayout(buildTopologyLayers(fanTargets), 1365, 620, fanEdges);
+const fanParent = fanLayout.nodes.find((node) => node.ip === "192.168.10.11");
+const fanChildren = ["192.168.10.51", "192.168.10.52", "192.168.10.53"]
+  .map((ip) => fanLayout.nodes.find((node) => node.ip === ip))
+  .sort((a, b) => a.x - b.x);
+assert.ok(fanParent && fanChildren.every(Boolean));
+fanChildren.slice(1).forEach((child, idx) => {
+  const previous = fanChildren[idx];
+  assert.ok(child.x >= previous.x + previous.w, "sibling switch cards never overlap");
+});
+assert.ok(
+  centerX(fanParent) > centerX(fanChildren[0]) &&
+  centerX(fanParent) < centerX(fanChildren[fanChildren.length - 1]),
+  "parent switch stays centred over its complete child fan-out"
+);
+const fanSvg = renderTopologySvg(fanLayout, 1365);
+const parentPortY = ["Gi3/0/49", "Gi3/0/50", "Gi3/0/51"].map((port) => {
+  const match = fanSvg.match(new RegExp(`<text[^>]+y="([^"]+)"[^>]*>${port}</text>`));
+  assert.ok(match, `${port} is rendered`);
+  return match[1];
+});
+assert.strictEqual(new Set(parentPortY).size, 3, "dense parent interface labels use separate vertical lanes");
+
 // ---- server attachment: an FDB-discovered server belongs to its access switch,
 //      and must not keep the old synthetic core link. ----
 window.BIGSCREEN_CONFIG.serverTargets = "sdwan:192.168.42.203";
