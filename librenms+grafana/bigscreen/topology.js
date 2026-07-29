@@ -754,9 +754,10 @@
         const y1 = link.from.y + link.from.h;
         const x2 = anchorX(link.to, link.toSlot, link.toSlotCount);
         const y2 = link.to.y;
-        d = `M ${x1} ${y1} L ${x2} ${y2}`;
+        const midY = (y1 + y2) / 2;
+        d = `M ${x1} ${y1} C ${x1} ${midY} ${x2} ${midY} ${x2} ${y2}`;
         labelX = (x1 + x2) / 2;
-        labelY = (y1 + y2) / 2 - 5;
+        labelY = midY - 5;
         if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
           // Keep the two endpoint ports visually attached to their own boxes.
           // A shared two-line label in the middle makes parent/child switch

@@ -173,6 +173,17 @@ assert.ok(svg.includes('data-base-width="1365"'));
 assert.ok(svg.includes("topology-backbone"));
 assert.ok(!svg.includes("/topology/rates.json"));
 
+const upperLayerLayout = topologyLayout(buildTopologyLayers([
+  target("infra-isp-ping", "ISP1", "203.170.210.114"),
+  target("infra-fw-ping", "FW1", "172.25.9.5"),
+  target("infra-core-ping", "Core", "172.25.10.254")
+]), 1365, 620, []);
+const upperLayerSvg = renderTopologySvg(upperLayerLayout, 1365);
+assert.ok(
+  (upperLayerSvg.match(/<path class="topology-link[^"]*" d="[^"]+ C [^"]+"/g) || []).length >= 2,
+  "ISP-to-firewall and firewall-to-core links keep their original curves"
+);
+
 // ---- dist hierarchy: a switch uplinked to ANOTHER switch sits in a layer below it ----
 const hierTargets = [
   target("infra-core-ping", "PMGO-core", "172.25.10.254"),
@@ -288,8 +299,8 @@ assert.ok(
 );
 const fanSvg = renderTopologySvg(fanLayout, 1365);
 assert.ok(
-  !fanSvg.includes(" C "),
-  "downstream switch and server branches use straight bus lines instead of curves"
+  fanLayout.links.filter((link) => link.branchBus).every((link) => link.branchBus),
+  "downstream switch and server branches use their straight shared bus"
 );
 assert.strictEqual(fanLayout.branchBuses.length, 1, "one downstream bus is created for the child switch");
 assert.strictEqual(

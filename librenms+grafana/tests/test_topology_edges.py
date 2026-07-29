@@ -486,6 +486,23 @@ class TestBuildEdgesCdp:
         edges, _ = gte.build_edges(devices, gte.build_name_index(devices))
         assert edges == []
 
+    def test_cdp_address_prevents_same_name_ap_becoming_switch_edge(self):
+        devices = self._devices()
+        source = devices["192.168.10.24"]
+        peer = devices["192.168.10.23"]
+        source["cdp_device_id"] = {(10101, 1): peer["sysname"]}
+        source["cdp_device_port"] = {(10101, 1): "Fa0"}
+        source["cdp_address"] = {(10101, 1): "192.168.200.49"}
+        peer["cdp_device_id"] = {}
+        peer["cdp_device_port"] = {}
+        peer["cdp_address"] = {}
+
+        edges, placeholders = gte.build_edges(devices, gte.build_name_index(devices))
+
+        assert edges == []
+        assert len(placeholders) == 1
+        assert placeholders[0]["neighbor_port"] == "Fa0"
+
 
 # ---- load_device_list() merges auto-discovered switches ----
 

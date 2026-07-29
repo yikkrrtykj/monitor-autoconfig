@@ -580,8 +580,12 @@ def build_edges(devices, name_index):
         # ifIndex, and cdpCacheAddress gives the neighbor's IP directly. ---
         for (if_index, dev_index), neighbor_name in device.get("cdp_device_id", {}).items():
             addr_ip = device.get("cdp_address", {}).get((if_index, dev_index))
-            if addr_ip and addr_ip in devices:
-                neighbor_ip = addr_ip
+            if addr_ip:
+                # The advertised management address is authoritative. Do not
+                # fall back to hostname matching when that address belongs to
+                # an unmonitored AP/phone: it may share a name with a monitored
+                # switch and create a convincing but false switch-to-switch edge.
+                neighbor_ip = addr_ip if addr_ip in devices else None
             else:
                 neighbor_ip = name_index.get((neighbor_name or "").strip().lower()) or \
                               name_index.get(normalize_hostname(neighbor_name))
