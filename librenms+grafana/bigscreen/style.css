@@ -624,6 +624,10 @@ body {
   justify-content: space-between;
 }
 
+.heatmap-axis-times > span {
+  white-space: nowrap;
+}
+
 .dense-heatmap .heatmap-rows {
   gap: 2px;
 }

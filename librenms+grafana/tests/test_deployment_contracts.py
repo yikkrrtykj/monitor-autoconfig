@@ -148,6 +148,8 @@ def test_loss_heatmap_splits_large_device_lists_into_two_columns():
     assert "series.slice(splitAt)" in app
     assert ".heatmap.heatmap-split" in css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
+    assert ".heatmap-axis-times > span" in css
+    assert "white-space: nowrap" in css
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
