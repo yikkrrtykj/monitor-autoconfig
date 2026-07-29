@@ -157,7 +157,7 @@
     const bottomPad = 22;
     const rowCount = 4;
     const DIST_LINK_GAP = 66;
-    const DIST_NODE_GAP = 24;
+    const DIST_NODE_GAP = 44;
     const hasServers = !!(layers.servers && layers.servers.length);
     const usableHeight = Math.max(420, canvasHeight || 680) + (hasServers ? 96 : 0);
     const layerGap = Math.max(36, (usableHeight - topPad - bottomPad - NODE_H * rowCount) / (rowCount - 1));
@@ -183,6 +183,23 @@
     const ispRow = placeRow(layers.isps, rowY(0));
     const fwRow = placeRow(layers.firewalls, rowY(1));
     const coreRow = placeRow(layers.cores, rowY(2));
+    const serverIps = new Set((layers.servers || []).map((server) => server.ip).filter(Boolean));
+    const infrastructureIps = new Set(
+      [...(layers.cores || []), ...(layers.dists || [])].map((node) => node.ip).filter(Boolean)
+    );
+    const serverParentByIp = new Map();
+    (Array.isArray(lldpEdges) ? lldpEdges : []).forEach((edge) => {
+      if (serverIps.has(edge.from_ip) && infrastructureIps.has(edge.to_ip)) {
+        serverParentByIp.set(edge.from_ip, edge.to_ip);
+      } else if (serverIps.has(edge.to_ip) && infrastructureIps.has(edge.from_ip)) {
+        serverParentByIp.set(edge.to_ip, edge.from_ip);
+      }
+    });
+    const serverChildrenByParent = new Map();
+    serverParentByIp.forEach((parentIp, serverIp) => {
+      if (!serverChildrenByParent.has(parentIp)) serverChildrenByParent.set(parentIp, []);
+      serverChildrenByParent.get(parentIp).push(serverIp);
+    });
     const placeServerRow = (items, y) => {
       if (!items.length || !coreRow.length) return [];
       const primaryCore = coreRow[Math.floor(coreRow.length / 2)];
@@ -211,7 +228,7 @@
     // (e.g. core -> FOH -> JIESHOU-RIGHT -> JIESHOU-LEFT).
     const placeDistTree = () => {
       const dists = layers.dists;
-      if (!dists.length) return { nodes: [], depthByIp: new Map() };
+      if (!dists.length) return { nodes: [], depthByIp: new Map(), serverSlotsByIp: new Map() };
       const distByIp = new Map();
       dists.forEach((d) => { if (d.ip) distByIp.set(d.ip, d); });
       const coreIps = new Set(coreRow.map((c) => c.ip).filter(Boolean));
@@ -280,6 +297,7 @@
         if (!item.ip) orderedTopLevel.push(item);
       });
       const placed = new Map();
+      const serverSlotsByIp = new Map();
       const childRowH = NODE_H + DIST_LINK_GAP;
       const subtreeWidthByIp = new Map();
       const subtreeWidth = (ip, visiting = new Set()) => {
@@ -288,9 +306,14 @@
         const nextVisiting = new Set(visiting);
         nextVisiting.add(ip);
         const kids = (childrenOf.get(ip) || []).filter((childIp) => distByIp.has(childIp));
-        const childrenWidth = kids.length
-          ? kids.reduce((sum, childIp) => sum + subtreeWidth(childIp, nextVisiting), 0) +
-            (kids.length - 1) * DIST_NODE_GAP
+        const attachedServers = serverChildrenByParent.get(ip) || [];
+        const branchWidths = [
+          ...kids.map((childIp) => subtreeWidth(childIp, nextVisiting)),
+          ...attachedServers.map(() => NODE_W)
+        ];
+        const childrenWidth = branchWidths.length
+          ? branchWidths.reduce((sum, width) => sum + width, 0) +
+            (branchWidths.length - 1) * DIST_NODE_GAP
           : 0;
         const width = Math.max(NODE_W, childrenWidth);
         subtreeWidthByIp.set(ip, width);
@@ -319,13 +342,24 @@
         const kids = (childrenOf.get(item.ip) || [])
           .map((ip) => distByIp.get(ip))
           .filter((kid) => kid && kid.ip && !nextVisiting.has(kid.ip));
-        const kidsWidth = kids.reduce((sum, kid) => sum + subtreeWidth(kid.ip), 0) +
-          Math.max(0, kids.length - 1) * DIST_NODE_GAP;
-        let childCursor = spanX + (spanWidth - kidsWidth) / 2;
-        kids.forEach((kid) => {
-          const width = subtreeWidth(kid.ip);
-          placeSubtree(kid, childCursor, width, y + childRowH, nextVisiting);
-          childCursor += width + DIST_NODE_GAP;
+        const branches = [
+          ...kids.map((kid) => ({ kind: "dist", kid, width: subtreeWidth(kid.ip) })),
+          ...(serverChildrenByParent.get(item.ip) || [])
+            .map((serverIp) => ({ kind: "server", serverIp, width: NODE_W }))
+        ];
+        const branchesWidth = branches.reduce((sum, branch) => sum + branch.width, 0) +
+          Math.max(0, branches.length - 1) * DIST_NODE_GAP;
+        let childCursor = spanX + (spanWidth - branchesWidth) / 2;
+        branches.forEach((branch) => {
+          if (branch.kind === "dist") {
+            placeSubtree(branch.kid, childCursor, branch.width, y + childRowH, nextVisiting);
+          } else {
+            serverSlotsByIp.set(branch.serverIp, {
+              x: childCursor + (branch.width - NODE_W) / 2,
+              y: y + childRowH
+            });
+          }
+          childCursor += branch.width + DIST_NODE_GAP;
         });
       };
       roots.forEach((root) => {
@@ -342,6 +376,7 @@
       return {
         nodes: dists.map((d) => (d.ip ? placed.get(d.ip) : null)).filter(Boolean),
         depthByIp,
+        serverSlotsByIp,
       };
     };
     const distTree = placeDistTree();
@@ -350,18 +385,9 @@
     const baseServerRow = (hasServers && coreRow.length)
       ? placeServerRow(layers.servers, serverRowY)
       : [];
-    const serverIps = new Set(baseServerRow.map((server) => server.ip).filter(Boolean));
     const infrastructureByIp = new Map(
       [...coreRow, ...distRow].filter((node) => node.ip).map((node) => [node.ip, node])
     );
-    const serverParentByIp = new Map();
-    (Array.isArray(lldpEdges) ? lldpEdges : []).forEach((edge) => {
-      if (serverIps.has(edge.from_ip) && infrastructureByIp.has(edge.to_ip)) {
-        serverParentByIp.set(edge.from_ip, edge.to_ip);
-      } else if (serverIps.has(edge.to_ip) && infrastructureByIp.has(edge.from_ip)) {
-        serverParentByIp.set(edge.to_ip, edge.from_ip);
-      }
-    });
     const siblingsByParent = new Map();
     baseServerRow.forEach((server) => {
       const parentIp = serverParentByIp.get(server.ip);
@@ -369,14 +395,14 @@
       if (!siblingsByParent.has(parentIp)) siblingsByParent.set(parentIp, []);
       siblingsByParent.get(parentIp).push(server.ip);
     });
-    const lowestDistBottom = distRow.reduce(
-      (bottom, node) => Math.max(bottom, node.y + node.h),
-      coreRow[0].y + NODE_H
-    );
     const serverRow = baseServerRow.map((server) => {
       const parentIp = serverParentByIp.get(server.ip);
       const parent = infrastructureByIp.get(parentIp);
       if (!parent) return server;
+      const reservedSlot = distTree.serverSlotsByIp.get(server.ip);
+      if (reservedSlot) {
+        return { ...server, x: reservedSlot.x, y: reservedSlot.y };
+      }
       const siblings = siblingsByParent.get(parentIp) || [server.ip];
       const siblingIndex = siblings.indexOf(server.ip);
       const siblingOffset = (siblingIndex - (siblings.length - 1) / 2) * (NODE_W + 16);
@@ -386,11 +412,9 @@
           canvasWidth - NODE_W - 20,
           Math.max(20, parent.x + parent.w / 2 - NODE_W / 2 + siblingOffset)
         ),
-        // A located server is a downstream leaf. Draw it below the switch
-        // layer so its branch never overlaps the core/access backbone.
-        y: parent.kind === "dist"
-          ? lowestDistBottom + DIST_LINK_GAP
-          : parent.y + NODE_H + DIST_LINK_GAP,
+        // A located server is a downstream leaf. When its access switch has
+        // switch children, the reserved slots above keep every leaf on one row.
+        y: parent.y + NODE_H + DIST_LINK_GAP,
       };
     });
 
@@ -583,12 +607,6 @@
       const pad = 18;
       return node.x + pad + ((node.w - pad * 2) * slot) / (count - 1);
     };
-    const endpointLabelStagger = (slot, count) => {
-      if (!Number.isFinite(slot) || !Number.isFinite(count) || count <= 1) return 0;
-      // Three lanes keep long interface names readable even when one parent has
-      // many children. The larger dist-row gap above reserves room for them.
-      return (slot % 3) * 12;
-    };
     // Estimate rendered title width (CJK glyphs are ~2x a Latin char) so an
     // over-long switch name gets squeezed to fit the box instead of spilling out.
     const estTextWidth = (text) => {
@@ -669,13 +687,13 @@
             {
               text: link.labelLines[0],
               x: x + 14,
-              y: y1 + 13 + endpointLabelStagger(link.fromSlot, link.fromSlotCount),
+              y: y1 + 13,
               anchor: "start"
             },
             {
               text: link.labelLines[1],
               x: x + 14,
-              y: y2 - 5 - endpointLabelStagger(link.toSlot, link.toSlotCount),
+              y: y2 - 5,
               anchor: "start"
             }
           ];
@@ -696,14 +714,16 @@
           labelPositions = [
             {
               text: link.labelLines[0],
-              x: x1,
-              y: y1 + 13 + endpointLabelStagger(link.fromSlot, link.fromSlotCount),
+              // Spread parent-side labels along the fanned-out branch. They stay
+              // on one horizontal row while long port names remain separated.
+              x: x1 + (x2 - x1) * 0.45,
+              y: y1 + 13,
               anchor: "middle"
             },
             {
               text: link.labelLines[1],
               x: x2,
-              y: y2 - 5 - endpointLabelStagger(link.toSlot, link.toSlotCount),
+              y: y2 - 5,
               anchor: "middle"
             }
           ];

@@ -4088,7 +4088,11 @@
       // doesn't get squeezed/overlapped; pan & zoom let you explore the rest.
       const maxRow = Math.max(
         layers.isps.length, layers.firewalls.length,
-        layers.cores.length, layers.servers.length, layers.dists.length, 1
+        layers.cores.length,
+        // Attached servers can share the same downstream row as access
+        // switches, so reserve width for both populations together.
+        layers.dists.length + layers.servers.length,
+        1
       );
       const width = Math.max(containerWidth, maxRow * 168 + 48);
       const layout = topologyLayout(layers, width, height, edges);
