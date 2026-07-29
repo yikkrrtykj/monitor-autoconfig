@@ -103,6 +103,15 @@ def test_control_number_inputs_do_not_expose_or_react_to_wheel_spinners():
     assert "-moz-appearance: textfield" in css
 
 
+def test_screen_title_links_back_to_home():
+    html = read("bigscreen/index.html")
+    css = read("bigscreen/platform.css")
+
+    assert 'class="screen-title-link"' in html
+    assert 'id="screenHomeLink" href="/" aria-label="返回首页"' in html
+    assert ".screen-title-link" in css
+
+
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
     app = read("bigscreen/app.js")
 
