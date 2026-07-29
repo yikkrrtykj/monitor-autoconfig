@@ -100,7 +100,9 @@
     }
     const exponent = Math.floor(Math.log10(value));
     const base = value / 10 ** exponent;
-    const niceBase = base <= 1 ? 1 : base <= 2 ? 2 : base <= 5 ? 5 : 10;
+    // Include 2.5 so a 201–250 ms spike uses a 250 ms ceiling instead of
+    // jumping all the way to 500 ms and leaving half the chart empty.
+    const niceBase = base <= 1 ? 1 : base <= 2 ? 2 : base <= 2.5 ? 2.5 : base <= 5 ? 5 : 10;
     return niceBase * 10 ** exponent;
   }
 

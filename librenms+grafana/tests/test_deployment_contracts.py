@@ -195,6 +195,7 @@ def test_bigscreen_ping_trend_uses_stable_two_second_raw_samples():
     assert "pages.js?v=20260730e" in index
     assert "api.js?v=20260730d" in index
     assert "app.js?v=20260730d" in index
+    assert "utils.js?v=20260730f" in index
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():

@@ -4,6 +4,7 @@ const path = require("path");
 global.window = { BIGSCREEN_CONFIG: {}, BIGSCREEN_QUERIES: {} };
 
 const api = require(path.resolve(__dirname, "../bigscreen/api.js"));
+const utils = require(path.resolve(__dirname, "../bigscreen/utils.js"));
 
 // Frozen, manually-advanced clock so rangeWindow() is deterministic.
 let nowSec = 1000000;
@@ -36,6 +37,8 @@ global.fetch = async (url) => {
 };
 
 (async () => {
+  assert.strictEqual(utils.niceMax(0.249), 0.25, "250 ms scale avoids an empty 500 ms ceiling");
+
   // Every page load inside the same 10-second bucket must ask Prometheus for
   // exactly the same timestamps. This prevents reload alignment from changing
   // which raw probes appear in the chart.
