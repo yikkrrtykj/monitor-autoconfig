@@ -734,12 +734,6 @@
   line-height: 1;
 }
 
-.evidence-verdict em {
-  color: var(--linear-ink-muted);
-  font-size: 13px;
-  font-style: normal;
-}
-
 .evidence-verdict.good {
   border-color: rgba(39, 166, 68, 0.5);
 }

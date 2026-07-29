@@ -1179,21 +1179,21 @@
     const failCount = successValues.filter((value) => value < 0.5).length;
 
     if (!latencyValues.length && !successValues.length) {
-      return { level: "unknown", text: "没有查到数据", detail: "这个时间窗口内 Prometheus 没有这名选手的采样。" };
+      return { level: "unknown", text: "没有查到数据" };
     }
     if (failCount > 0) {
-      return { level: "bad", text: "存在断线/探测失败", detail: "在线状态出现失败采样，可以直接截图给裁判确认。" };
+      return { level: "bad", text: "存在断线/探测失败" };
     }
     if (avgLatency !== null && avgLatency >= 0.08) {
-      return { level: "bad", text: "持续高延迟", detail: "平均延迟已经超过 80 ms，属于明显异常。" };
+      return { level: "bad", text: "持续高延迟" };
     }
     if (maxLatency !== null && maxLatency >= 0.1) {
-      return { level: "warn", text: "有高延迟尖峰", detail: "最高延迟超过 100 ms，可能对应玩家反馈的延迟异常瞬间。" };
+      return { level: "warn", text: "有高延迟尖峰" };
     }
     if (maxLatency !== null && maxLatency >= 0.04) {
-      return { level: "warn", text: "有轻微抖动", detail: "有 40 ms 以上波动，建议结合现场体验判断。" };
+      return { level: "warn", text: "有轻微抖动" };
     }
-    return { level: "good", text: "未见明显网络异常", detail: "这个窗口内延迟和在线状态都比较稳定。" };
+    return { level: "good", text: "未见明显网络异常" };
   }
 
   function renderEvidenceSummary(context, latencySeries, successSeries) {
@@ -1211,7 +1211,6 @@
       <div class="evidence-verdict ${verdict.level}">
         <span>${escapeHtml(context.label)}</span>
         <strong>${escapeHtml(verdict.text)}</strong>
-        <em>${escapeHtml(verdict.detail)}</em>
       </div>
       <div class="evidence-kpis">
         <div><span>平均延迟</span><strong>${escapeHtml(avgLatency)}</strong></div>
