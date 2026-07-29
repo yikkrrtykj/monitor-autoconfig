@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 
@@ -160,6 +161,21 @@ def test_grafana_device_names_survive_low_frequency_snmp_scrapes():
     # hostname and target IP during Prometheus' shorter lookback interval.
     assert dashboard.count("last_over_time(sysName") == 8
     assert "max by (target_ip,sysName) (sysName{" not in dashboard
+
+
+def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
+    dashboard = json.loads(read("grafana-provisioning/dashboard-json/event-infra.json"))
+    panel = next(item for item in dashboard["panels"] if item["id"] == 200)
+    target = panel["targets"][0]
+
+    # Grafana's automatic range-query step changes alignment on every refresh.
+    # Read every raw 2-second probe through a fixed window so a one-sample spike
+    # cannot appear or disappear just because the query timestamps moved.
+    assert target["interval"] == "2s"
+    assert target["expr"].count(
+        'max_over_time(probe_icmp_duration_seconds{job=~'
+    ) == 2
+    assert "[10s]" in target["expr"]
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
