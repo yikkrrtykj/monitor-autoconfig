@@ -287,6 +287,10 @@ assert.ok(
   "attached server does not overlap any child switch"
 );
 const fanSvg = renderTopologySvg(fanLayout, 1365);
+assert.ok(
+  !fanSvg.includes(" C "),
+  "downstream switch and server branches use straight lines instead of curves"
+);
 const parentPortPositions = ["Gi3/0/49", "Gi3/0/50", "Gi3/0/51"].map((port) => {
   const match = fanSvg.match(new RegExp(`<text[^>]+x="([^"]+)" y="([^"]+)"[^>]*>${port}</text>`));
   assert.ok(match, `${port} is rendered`);
