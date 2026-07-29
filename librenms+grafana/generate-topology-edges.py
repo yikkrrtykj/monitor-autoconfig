@@ -32,6 +32,7 @@ from target_utils import expand_ipv4_entry, parse_named_ipv4_targets, write_json
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
 IF_NAME_OID = "1.3.6.1.2.1.31.1.1.1.1"
+IF_OPER_STATUS_OID = "1.3.6.1.2.1.2.2.1.8"
 LLDP_LOC_PORT_DESC_OID = "1.0.8802.1.1.2.1.3.7.1.3"
 LLDP_REM_PORT_ID_OID = "1.0.8802.1.1.2.1.4.1.1.7"
 LLDP_REM_PORT_DESC_OID = "1.0.8802.1.1.2.1.4.1.1.8"
@@ -123,6 +124,25 @@ def parse_ifname(output):
         text = strip_string_value(value)
         if text:
             mapping[ifindex] = text
+    return mapping
+
+
+def parse_if_oper_status(output):
+    """ifOperStatus walk -> {ifIndex: status}; 1 means operationally up."""
+    mapping = {}
+    for line in output.strip().split("\n"):
+        parts, value = parse_oid_value(line)
+        if not parts:
+            continue
+        try:
+            ifindex = int(parts[-1])
+        except ValueError:
+            continue
+        parenthesized = re.search(r"\(([0-9]+)\)", value)
+        numeric = re.search(r"(?:INTEGER:\s*)?([0-9]+)\s*$", value, re.IGNORECASE)
+        match = parenthesized or numeric
+        if match:
+            mapping[ifindex] = int(match.group(1))
     return mapping
 
 
@@ -405,6 +425,7 @@ def expand_device_entry(entry):
 def poll_device(ip, community):
     sysname = snmpget(ip, community, SYS_NAME_OID)
     ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
+    ifoper = parse_if_oper_status(snmpwalk(ip, community, IF_OPER_STATUS_OID))
     arp = parse_arp_table(snmpwalk(ip, community, IP_NET_TO_MEDIA_PHYS_ADDRESS_OID), ifname)
     loc_port_desc = parse_lldp_loc_port_desc(snmpwalk(ip, community, LLDP_LOC_PORT_DESC_OID))
     rem_sys = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_SYS_NAME_OID))
@@ -417,6 +438,7 @@ def poll_device(ip, community):
         "ip": ip,
         "sysname": sysname,
         "ifname": ifname,
+        "ifoper": ifoper,
         "arp": arp,
         "loc_port_desc": loc_port_desc,
         "rem_sys": rem_sys,
@@ -502,6 +524,12 @@ def build_edges(devices, name_index):
     edges_by_key = {}
     placeholder_neighbors = []
 
+    def interface_is_usable(device, ifindex):
+        if ifindex is None:
+            return True
+        status = device.get("ifoper", {}).get(ifindex)
+        return status is None or status == 1
+
     for ip, device in devices.items():
         for (tm, loc_port, rem_idx), neighbor_name in device["rem_sys"].items():
             neighbor_ip = name_index.get(neighbor_name.strip().lower()) or \
@@ -526,6 +554,15 @@ def build_edges(devices, name_index):
                 remote_ifindex = resolve_ifindex_by_name(remote_port_name, remote["ifname"])
                 if remote_ifindex is not None:
                     remote_port_name = remote["ifname"].get(remote_ifindex, remote_port_name)
+
+            # LLDP/CDP tables may retain a stale management-port neighbor after
+            # the physical interface has gone down. Keep unknown status for
+            # compatibility, but never emit an edge known to be down at either
+            # resolved endpoint.
+            if not interface_is_usable(device, local_ifindex):
+                continue
+            if remote and not interface_is_usable(remote, remote_ifindex):
+                continue
 
             edge = {
                 "from_ip": ip,
@@ -566,6 +603,11 @@ def build_edges(devices, name_index):
                 remote_ifindex = resolve_ifindex_by_name(remote_port_name, remote["ifname"])
                 if remote_ifindex is not None:
                     remote_port_name = remote["ifname"].get(remote_ifindex, remote_port_name)
+
+            if not interface_is_usable(device, if_index):
+                continue
+            if remote and not interface_is_usable(remote, remote_ifindex):
+                continue
 
             merge_edge(edges_by_key, {
                 "from_ip": ip,

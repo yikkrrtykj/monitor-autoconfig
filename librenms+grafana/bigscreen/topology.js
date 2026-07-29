@@ -547,6 +547,39 @@
     }
 
     const nodeKey = (node) => node.ip || `${node.kind}|${node.name}`;
+    const branchBuses = [];
+    const branchGroups = new Map();
+    links.forEach((link) => {
+      const upper = link.from.y < link.to.y ? link.from : link.to;
+      const lower = upper === link.from ? link.to : link.from;
+      if (
+        upper.kind !== "dist" ||
+        !["dist", "server"].includes(lower.kind) ||
+        lower.y <= upper.y
+      ) return;
+      const key = nodeKey(upper);
+      if (!branchGroups.has(key)) branchGroups.set(key, { parent: upper, links: [] });
+      branchGroups.get(key).links.push({ link, child: lower });
+    });
+    branchGroups.forEach((group) => {
+      const parentX = group.parent.x + group.parent.w / 2;
+      const parentY = group.parent.y + group.parent.h;
+      const childY = Math.min(...group.links.map((item) => item.child.y));
+      const childXs = group.links.map((item) => item.child.x + item.child.w / 2);
+      const bus = {
+        x1: Math.min(parentX, ...childXs),
+        x2: Math.max(parentX, ...childXs),
+        y: parentY + (childY - parentY) / 2,
+        parentX,
+        parentY,
+        severity: group.parent.level || "good"
+      };
+      branchBuses.push(bus);
+      group.links.forEach((item) => {
+        item.link.branchBus = bus;
+      });
+    });
+
     const assignSlots = (side) => {
       const groups = new Map();
       links.forEach((link) => {
@@ -585,6 +618,7 @@
       links,
       haBonds,
       coreBus,
+      branchBuses,
       height: Math.max(usableHeight, allNodes.reduce((m, n) => Math.max(m, n.y + (n.h || 0)), 0) + bottomPad)
     };
   }
@@ -620,6 +654,9 @@
     const coreBus = layout.coreBus
       ? `<path class="topology-link topology-backbone link-${layout.coreBus.severity}" d="M ${layout.coreBus.coreX} ${layout.coreBus.coreY} L ${layout.coreBus.coreX} ${layout.coreBus.y} M ${layout.coreBus.x1} ${layout.coreBus.y} L ${layout.coreBus.x2} ${layout.coreBus.y}" />`
       : "";
+    const branchBuses = (layout.branchBuses || []).map((bus) =>
+      `<path class="topology-link topology-backbone topology-branch-backbone link-${bus.severity}" d="M ${bus.parentX} ${bus.parentY} L ${bus.parentX} ${bus.y} M ${bus.x1} ${bus.y} L ${bus.x2} ${bus.y}" />`
+    ).join("");
 
     const linkPaths = layout.links.map((link) => {
       let labelX;
@@ -627,7 +664,21 @@
       let labelAnchor = "middle";
       let labelPositions = null;
       let d;
-      if (link.busLink && layout.coreBus) {
+      if (link.branchBus) {
+        const childNode = link.from.y > link.to.y ? link.from : link.to;
+        const x = nodeCenterX(childNode);
+        const busY = link.branchBus.y;
+        d = `M ${x} ${busY} L ${x} ${childNode.y}`;
+        labelX = x + 14;
+        labelY = Math.max(busY + 12, childNode.y - 34);
+        labelAnchor = "start";
+        if (Array.isArray(link.labelLines) && link.labelLines.length > 1) {
+          labelPositions = [
+            { text: link.labelLines[0], x: x + 14, y: busY - 8, anchor: "start" },
+            { text: link.labelLines[1], x: x + 14, y: childNode.y - 5, anchor: "start" }
+          ];
+        }
+      } else if (link.busLink && layout.coreBus) {
         const distNode = link.from.kind === "dist" ? link.from : link.to;
         const x = nodeCenterX(distNode);
         d = `M ${x} ${layout.coreBus.y} L ${x} ${distNode.y}`;
@@ -794,6 +845,7 @@
           </filter>
         </defs>
         ${coreBus}
+        ${branchBuses}
         ${linkPaths}
         ${haBonds}
         ${nodes}

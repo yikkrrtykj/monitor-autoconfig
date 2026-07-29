@@ -289,8 +289,15 @@ assert.ok(
 const fanSvg = renderTopologySvg(fanLayout, 1365);
 assert.ok(
   !fanSvg.includes(" C "),
-  "downstream switch and server branches use straight lines instead of curves"
+  "downstream switch and server branches use straight bus lines instead of curves"
 );
+assert.strictEqual(fanLayout.branchBuses.length, 1, "one downstream bus is created for the child switch");
+assert.strictEqual(
+  fanLayout.links.filter((link) => link.branchBus).length,
+  4,
+  "all child switches and the attached server share the parent's downstream bus"
+);
+assert.ok(fanSvg.includes("topology-branch-backbone"), "the downstream horizontal bus is rendered");
 const parentPortPositions = ["Gi3/0/49", "Gi3/0/50", "Gi3/0/51"].map((port) => {
   const match = fanSvg.match(new RegExp(`<text[^>]+x="([^"]+)" y="([^"]+)"[^>]*>${port}</text>`));
   assert.ok(match, `${port} is rendered`);

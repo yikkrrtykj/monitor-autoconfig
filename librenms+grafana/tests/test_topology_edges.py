@@ -70,6 +70,18 @@ class TestParseIfname:
         assert gte.parse_ifname(out) == {5: "Gi1/0/5"}
 
 
+# ---- parse_if_oper_status() ----
+
+class TestParseIfOperStatus:
+    def test_named_and_numeric_values(self):
+        out = (
+            ".1.3.6.1.2.1.2.2.1.8.1 = INTEGER: up(1)\n"
+            ".1.3.6.1.2.1.2.2.1.8.2 = INTEGER: down(2)\n"
+            ".1.3.6.1.2.1.2.2.1.8.3 = INTEGER: 1"
+        )
+        assert gte.parse_if_oper_status(out) == {1: 1, 2: 2, 3: 1}
+
+
 # ---- parse_lldp_loc_port_desc() ----
 
 class TestParseLldpLocPortDesc:
@@ -466,6 +478,13 @@ class TestBuildEdgesCdp:
             sorted([e["from_ip"], e["to_ip"]]) == ["192.168.10.23", "192.168.10.24"]
             for e in edges
         )
+
+    def test_cdp_edge_on_down_remote_management_port_is_discarded(self):
+        devices = self._devices()
+        devices["192.168.10.24"]["ifoper"] = {10101: 1}
+        devices["192.168.10.23"]["ifoper"] = {10149: 2}
+        edges, _ = gte.build_edges(devices, gte.build_name_index(devices))
+        assert edges == []
 
 
 # ---- load_device_list() merges auto-discovered switches ----
