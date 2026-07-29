@@ -23,9 +23,14 @@
   }
 
   function rangeWindow() {
-    const end = Math.floor(Date.now() / 1000);
+    const step = 10;
+    const now = Math.floor(Date.now() / 1000);
+    // Anchor every range query to the same epoch-aligned 10-second buckets.
+    // Otherwise a page reload at :01 and another at :06 evaluate Prometheus
+    // at different timestamps and can select different raw 2-second probes.
+    const end = Math.floor(now / step) * step;
     const start = end - 15 * 60;
-    return { start, end, step: 10 };
+    return { start, end, step };
   }
 
   function fetchWithTimeout(url, options, timeoutMs = 15000) {

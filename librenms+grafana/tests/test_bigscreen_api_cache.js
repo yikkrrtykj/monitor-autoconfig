@@ -36,6 +36,15 @@ global.fetch = async (url) => {
 };
 
 (async () => {
+  // Every page load inside the same 10-second bucket must ask Prometheus for
+  // exactly the same timestamps. This prevents reload alignment from changing
+  // which raw probes appear in the chart.
+  nowSec = 1000007;
+  assert.deepStrictEqual(api.rangeWindow(), { start: 999100, end: 1000000, step: 10 });
+  nowSec = 1000009;
+  assert.deepStrictEqual(api.rangeWindow(), { start: 999100, end: 1000000, step: 10 });
+  nowSec = 1000000;
+
   // Seed 15 minutes of 10s samples ending at "now".
   for (let t = nowSec - 900; t <= nowSec; t += 10) samples.set(t, 0.001);
 
@@ -66,22 +75,25 @@ global.fetch = async (url) => {
   nowSec += 3;
   series = await api.prometheusRangeCached("q");
   assert.strictEqual(calls.length, 2, "no fetch when no new sample is due");
-  assert.ok(series[0].values[0].t >= nowSec - 900, "early-return path still trims the head");
+  assert.ok(series[0].values[0].t >= api.rangeWindow().start, "early-return path still trims the head");
 
   // 4. Cache fully aged out of the window: falls back to a full-window
   //    fetch, and a series with no remaining samples is dropped.
   nowSec += 2000;
   series = await api.prometheusRangeCached("q");
   assert.strictEqual(calls.length, 3);
-  assert.strictEqual(calls[2].start, nowSec - 900, "stale cache triggers a full-window fetch");
+  assert.strictEqual(calls[2].start, Math.floor(nowSec / 10) * 10 - 900, "stale cache triggers a full-window fetch");
   assert.deepStrictEqual(series, [], "aged-out series is removed");
 
   // 5. invalidateRangeCache forces the next call back to a full fetch.
   // (Seed on step-aligned timestamps -- nowSec is no longer a multiple of 10.)
-  for (let t = Math.ceil((nowSec - 900) / 10) * 10; t <= nowSec; t += 10) samples.set(t, 0.003);
+  const alignedEnd = Math.floor(nowSec / 10) * 10;
+  const alignedStart = alignedEnd - 900;
+  for (let t = alignedStart; t <= alignedEnd; t += 10) samples.set(t, 0.003);
   api.invalidateRangeCache();
   series = await api.prometheusRangeCached("q");
-  assert.strictEqual(calls[calls.length - 1].start, nowSec - 900);
+  assert.strictEqual(calls[calls.length - 1].start, alignedStart);
+  assert.strictEqual(calls[calls.length - 1].end, alignedEnd);
   assert.strictEqual(series.length, 1);
   assert.strictEqual(series[0].values[series[0].values.length - 1].v, 0.003);
 

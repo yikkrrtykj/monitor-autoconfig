@@ -178,6 +178,24 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
     assert "[10s]" in target["expr"]
 
 
+def test_bigscreen_ping_trend_uses_fixed_complete_buckets():
+    api = read("bigscreen/api.js")
+    pages = read("bigscreen/pages.js")
+    index = read("bigscreen/index.html")
+
+    # The custom bigscreen is not a Grafana iframe. Its own range query must
+    # use epoch-aligned timestamps and aggregate all five raw 2-second probes
+    # in each 10-second chart bucket.
+    assert "const end = Math.floor(now / step) * step;" in api
+    assert (
+        'max by (instance) (max_over_time(probe_icmp_duration_seconds{job=~'
+        in pages
+    )
+    assert 'phase="rtt"}[10s]))' in pages
+    assert "pages.js?v=20260730c" in index
+    assert "api.js?v=20260730c" in index
+
+
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     compose = read("docker-compose.yml")
     topology = compose.split("  topology-collector:", 1)[1].split("  bigscreen:", 1)[0]
