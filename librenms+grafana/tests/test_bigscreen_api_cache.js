@@ -43,6 +43,7 @@ global.fetch = async (url) => {
   assert.deepStrictEqual(api.rangeWindow(), { start: 999100, end: 1000000, step: 10 });
   nowSec = 1000009;
   assert.deepStrictEqual(api.rangeWindow(), { start: 999100, end: 1000000, step: 10 });
+  assert.deepStrictEqual(api.rangeWindow(2), { start: 999108, end: 1000008, step: 2 });
   nowSec = 1000000;
 
   // Seed 15 minutes of 10s samples ending at "now".

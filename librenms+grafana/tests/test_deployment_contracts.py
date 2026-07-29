@@ -180,6 +180,7 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
 
 def test_bigscreen_ping_trend_uses_fixed_complete_buckets():
     api = read("bigscreen/api.js")
+    app = read("bigscreen/app.js")
     pages = read("bigscreen/pages.js")
     index = read("bigscreen/index.html")
 
@@ -192,8 +193,10 @@ def test_bigscreen_ping_trend_uses_fixed_complete_buckets():
         in pages
     )
     assert 'phase="rtt"}[10s]))' in pages
+    assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
     assert "pages.js?v=20260730c" in index
-    assert "api.js?v=20260730c" in index
+    assert "api.js?v=20260730d" in index
+    assert "app.js?v=20260730d" in index
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():

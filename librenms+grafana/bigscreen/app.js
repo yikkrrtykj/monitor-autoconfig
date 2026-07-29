@@ -870,7 +870,10 @@
     const seq = ++chartSeq;
     try {
       const [pingSeries, lossSeries, ispTraffic] = await Promise.all([
-        prometheusRangeCached(pingTrendQuery),
+        // Match Grafana's 2-second Ping trend resolution. Fixed epoch-aligned
+        // timestamps keep reloads stable, while the denser points render a
+        // one-probe latency event as a narrow spike instead of a broad triangle.
+        prometheusRangeCached(pingTrendQuery, metricName, 2),
         prometheusRangeCached(lossQuery),
         fetchIspTraffic()
       ]);

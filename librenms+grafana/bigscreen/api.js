@@ -22,10 +22,10 @@
     return "/prometheus";
   }
 
-  function rangeWindow() {
-    const step = 10;
+  function rangeWindow(stepSeconds = 10) {
+    const step = Math.max(1, Math.floor(Number(stepSeconds) || 10));
     const now = Math.floor(Date.now() / 1000);
-    // Anchor every range query to the same epoch-aligned 10-second buckets.
+    // Anchor every range query to the same epoch-aligned step boundaries.
     // Otherwise a page reload at :01 and another at :06 evaluate Prometheus
     // at different timestamps and can select different raw 2-second probes.
     const end = Math.floor(now / step) * step;
@@ -102,8 +102,8 @@
       .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }
 
-  async function prometheusRange(query, nameGetter = metricName) {
-    return prometheusRangeFor(query, rangeWindow(), nameGetter);
+  async function prometheusRange(query, nameGetter = metricName, step = 10) {
+    return prometheusRangeFor(query, rangeWindow(step), nameGetter);
   }
 
   // Incremental range cache: the first call fetches the whole 15-minute window;
@@ -119,8 +119,8 @@
     rangeCache.clear();
   }
 
-  async function prometheusRangeCached(query, nameGetter = metricName) {
-    const win = rangeWindow();
+  async function prometheusRangeCached(query, nameGetter = metricName, step = 10) {
+    const win = rangeWindow(step);
     const cacheKey = `${query}|${win.step}`;
     const cached = rangeCache.get(cacheKey);
 
