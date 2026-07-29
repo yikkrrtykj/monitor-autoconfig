@@ -429,7 +429,8 @@
     const allTimes = series.flatMap((item) => item.values.map((point) => point.t));
     const minT = Math.min(...allTimes);
     const maxT = Math.max(...allTimes);
-    const densityClass = series.length > 12 ? "compact-heatmap" : series.length > 8 ? "dense-heatmap" : "";
+    const splitColumns = series.length > 12;
+    const densityClass = splitColumns ? "dense-heatmap heatmap-split" : series.length > 8 ? "dense-heatmap" : "";
     const bucketCount = 60;
     const bucketize = (values) => {
       const span = Math.max(1, maxT - minT);
@@ -447,7 +448,7 @@
       });
       return buckets;
     };
-    const rows = series.map((item) => {
+    const renderRows = (items) => items.map((item) => {
       const cells = bucketize(item.values).map((point) => {
         const missing = point.count === 0 || point.v === null;
         const level = missing ? "missing" : point.v > 0.5 ? "bad" : point.v > 0.01 ? "warn" : "good";
@@ -461,9 +462,28 @@
         </div>
       `;
     }).join("");
+    const renderColumn = (items) => `
+      <div class="heatmap-column" style="--heatmap-rows:${items.length}">
+        <div class="heatmap-rows">${renderRows(items)}</div>
+        <div class="heatmap-axis">
+          <span aria-hidden="true"></span>
+          <span class="heatmap-axis-times"><span>${formatTime(minT)}</span><span>${formatTime((minT + maxT) / 2)}</span><span>${formatTime(maxT)}</span></span>
+        </div>
+      </div>
+    `;
+    if (splitColumns) {
+      const splitAt = Math.ceil(series.length / 2);
+      container.innerHTML = `
+        <div class="heatmap ${densityClass}">
+          ${renderColumn(series.slice(0, splitAt))}
+          ${renderColumn(series.slice(splitAt))}
+        </div>
+      `;
+      return;
+    }
     container.innerHTML = `
       <div class="heatmap ${densityClass}" style="--heatmap-rows:${series.length}">
-        <div class="heatmap-rows">${rows}</div>
+        <div class="heatmap-rows">${renderRows(series)}</div>
         <div class="heatmap-axis">
           <span aria-hidden="true"></span>
           <span class="heatmap-axis-times"><span>${formatTime(minT)}</span><span>${formatTime((minT + maxT) / 2)}</span><span>${formatTime(maxT)}</span></span>

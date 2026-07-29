@@ -139,6 +139,17 @@ def test_retired_isp_history_is_filtered_by_current_prometheus_targets():
     assert "!infraCurrentTargets.has(name)" in app
 
 
+def test_loss_heatmap_splits_large_device_lists_into_two_columns():
+    app = read("bigscreen/app.js")
+    css = read("bigscreen/style.css")
+
+    assert "const splitColumns = series.length > 12" in app
+    assert "series.slice(0, splitAt)" in app
+    assert "series.slice(splitAt)" in app
+    assert ".heatmap.heatmap-split" in css
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
+
+
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     compose = read("docker-compose.yml")
     topology = compose.split("  topology-collector:", 1)[1].split("  bigscreen:", 1)[0]
@@ -149,6 +160,8 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert "./target_utils.py:/target_utils.py:ro" in topology
     assert 'TOPOLOGY_SNMP_TIMEOUT: "${TOPOLOGY_SNMP_TIMEOUT:-2}"' in topology
     assert 'TOPOLOGY_SNMP_RETRIES: "${TOPOLOGY_SNMP_RETRIES:-0}"' in topology
+    assert 'TOPOLOGY_POLL_WORKERS: "${TOPOLOGY_POLL_WORKERS:-4}"' in topology
+    assert 'TOPOLOGY_SNMP_DELAY_MS: "${TOPOLOGY_SNMP_DELAY_MS:-100}"' in topology
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

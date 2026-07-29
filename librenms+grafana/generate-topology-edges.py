@@ -15,6 +15,8 @@ Env vars:
   TOPOLOGY_SNMP_COMMUNITY    SNMPv2c community (default: SNMP_COMMUNITY).
   TOPOLOGY_SNMP_TIMEOUT      per-request timeout seconds (default: 2).
   TOPOLOGY_SNMP_RETRIES      retries per request (default: 0).
+  TOPOLOGY_POLL_WORKERS      devices polled concurrently (default: 4).
+  TOPOLOGY_SNMP_DELAY_MS     pause after each SNMP request (default: 100).
   TOPOLOGY_OUTPUT_DIR        where to write edges.json / legacy empty files
                              (default: /etc/prometheus/targets/topology).
   SERVER_PING                named server targets; ARP/FDB resolves their real
@@ -26,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from ipaddress import IPv4Address
 
 from target_utils import expand_ipv4_entry, parse_named_ipv4_targets, write_json_atomic
@@ -59,6 +62,23 @@ def _snmp_limits(timeout=None, retries=None):
     return max(0.2, timeout), max(0, retries)
 
 
+def _snmp_request_delay():
+    try:
+        delay_ms = float(os.environ.get("TOPOLOGY_SNMP_DELAY_MS", "100") or "100")
+    except ValueError:
+        delay_ms = 100
+    if delay_ms > 0:
+        time.sleep(min(delay_ms, 2000) / 1000)
+
+
+def _topology_poll_workers():
+    try:
+        workers = int(os.environ.get("TOPOLOGY_POLL_WORKERS", "4") or "4")
+    except ValueError:
+        workers = 4
+    return max(1, min(workers, 32))
+
+
 def snmpwalk(host, community, oid, timeout=None, retries=None):
     timeout, retries = _snmp_limits(timeout, retries)
     cmd = [
@@ -74,6 +94,8 @@ def snmpwalk(host, community, oid, timeout=None, retries=None):
     except Exception as exc:
         print(f"[WARN] snmpwalk {host} {oid}: {exc}", file=sys.stderr)
         return ""
+    finally:
+        _snmp_request_delay()
 
 
 def snmpget(host, community, oid, timeout=None, retries=None):
@@ -91,6 +113,8 @@ def snmpget(host, community, oid, timeout=None, retries=None):
     except Exception as exc:
         print(f"[WARN] snmpget {host} {oid}: {exc}", file=sys.stderr)
         return ""
+    finally:
+        _snmp_request_delay()
 
 
 def strip_string_value(value):
@@ -733,7 +757,8 @@ def discover_server_edges(devices, edges, servers, community):
 
         candidates = []
         tasks = {}
-        with ThreadPoolExecutor(max_workers=min(16, max(1, len(switch_devices) * len(unique_records)))) as executor:
+        poll_workers = _topology_poll_workers()
+        with ThreadPoolExecutor(max_workers=min(poll_workers, max(1, len(switch_devices) * len(unique_records)))) as executor:
             for switch_ip, device in switch_devices.items():
                 for mac, vlan in unique_records:
                     future = executor.submit(
@@ -826,7 +851,8 @@ def main():
 
     print(f"[INFO] polling LLDP+CDP+ARP on {len(device_ips)} device(s)", file=sys.stderr)
     devices = {}
-    with ThreadPoolExecutor(max_workers=min(16, len(device_ips))) as executor:
+    poll_workers = _topology_poll_workers()
+    with ThreadPoolExecutor(max_workers=min(poll_workers, len(device_ips))) as executor:
         futures = {executor.submit(poll_device, ip, community): ip for ip in device_ips}
         for future in as_completed(futures):
             ip = futures[future]

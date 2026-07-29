@@ -546,6 +546,21 @@ body {
   overflow: hidden;
 }
 
+.heatmap-column {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 22px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.heatmap.heatmap-split {
+  --heatmap-name-width: clamp(88px, 7vw, 145px);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+  gap: clamp(14px, 1.2vw, 26px);
+}
+
 .heatmap-row {
   display: grid;
   grid-template-columns: var(--heatmap-name-width) minmax(0, 1fr);
@@ -633,6 +648,13 @@ body {
 
 .compact-heatmap .heatmap-cells {
   height: min(9px, 100%);
+}
+
+@media (max-width: 1100px) {
+  .heatmap.heatmap-split {
+    --heatmap-name-width: 92px;
+    gap: 10px;
+  }
 }
 
 .no-data {
