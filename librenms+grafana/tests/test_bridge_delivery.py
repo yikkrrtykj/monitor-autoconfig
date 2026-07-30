@@ -455,6 +455,10 @@ def test_ap_down_and_recovery_titles_are_distinct():
     assert recovered["card"]["header"]["subtitle"]["content"] == "🟢 AP 上线恢复"
 
 
+def test_fast_ap_down_default():
+    assert bridge.UNIFI_AP_DOWN_FOR_SECONDS == 10
+
+
 def test_unifi_controller_state_overrides_stale_prometheus_uptime():
     metric = {"state": "1"}
     metric_online = {"aa:bb:cc:dd:ee:ff": True}

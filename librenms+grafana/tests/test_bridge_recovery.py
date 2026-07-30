@@ -411,6 +411,40 @@ def test_root_cause_card_folds_in_downstream_count(monkeypatch):
     assert "下游" not in plain
 
 
+def test_sysname_change_is_a_notification_not_an_alert(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    card = bridge.build_sysname_change_card("ac", "pgs-ac", ip="192.168.10.56")
+    header = card["card"]["header"]
+
+    assert header["subtitle"]["content"] == "✏️ sysName 变更"
+    assert "告警" not in header["title"]["content"]
+
+
+def test_device_down_and_recovery_titles_are_distinct(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    down = bridge.build_device_down_card(
+        "ac", "192.168.10.56", recovered=False, offline_seconds=11,
+    )
+    recovered = bridge.build_device_down_card(
+        "ac", "192.168.10.56", recovered=True, offline_seconds=425,
+    )
+
+    assert down["card"]["header"]["subtitle"]["content"] == "🔴 设备离线告警"
+    assert recovered["card"]["header"]["subtitle"]["content"] == "🟢 设备上线恢复"
+
+
+def test_librenms_recovery_callback_does_not_reuse_offline_title(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    card = bridge.build_librenms_card({
+        "state": "0",
+        "name": "设备离线告警",
+        "sysName": "ac",
+        "ip": "192.168.10.56",
+    })
+
+    assert card["card"]["header"]["subtitle"]["content"] == "✅ 设备上线恢复"
+
+
 def test_fetch_interconnect_members_maps_aggregate_to_member_ifindexes(monkeypatch):
     # ifStackTable rows: higher=aggregate ifIndex, lower=member ifIndex; 0 is a
     # top/bottom sentinel and must be ignored.

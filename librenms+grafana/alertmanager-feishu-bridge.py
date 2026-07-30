@@ -251,7 +251,7 @@ UNIFI_AP_STATE_FILE = os.environ.get(
 UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "10"))
 UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "5"))
-# sysName 变更告警：bridge 自己轮询 LibreNMS 设备列表，对比每台设备的 sysName，
+# sysName 变更通知：bridge 自己轮询 LibreNMS 设备列表，对比每台设备的 sysName，
 # 变化时推送 旧→新 飞书卡片（LibreNMS 没有可靠的 "changed" 告警算子，webhook 也只带当前值）。
 SYSNAME_CHANGE_ALERT_ENABLED = os.environ.get("SYSNAME_CHANGE_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSNAME_CHANGE_POLL_INTERVAL = int(os.environ.get("SYSNAME_CHANGE_POLL_INTERVAL", "60"))
@@ -1868,6 +1868,10 @@ def build_librenms_card(payload):
 
     recovered = state == "0"
     if recovered:
+        rule_name = {
+            "设备离线告警": "设备上线恢复",
+            "外网 ISP 告警": "外网 ISP 恢复",
+        }.get(rule_name, rule_name)
         color = "green"
         emoji = "✅"
         state_text = "UP"
@@ -1904,7 +1908,7 @@ def build_sysname_change_card(old_name, new_name, ip="", hostname=""):
         f"✏️ sysName：{old_name} → {new_name}",
         f"⏰ 时间：{ts}",
     ]
-    return _make_card(next_event_title(), "✏️ sysName 变更告警", "yellow", "\n".join(lines))
+    return _make_card(next_event_title(), "✏️ sysName 变更", "yellow", "\n".join(lines))
 
 
 def build_test_card():
@@ -2061,7 +2065,10 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downs
         header_emoji = "🔴"
     label = "ISP" if is_isp else "设备"
     label_emoji = "🌐" if is_isp else "🖥"
-    subtitle = "外网 ISP 告警" if is_isp else "设备离线告警"
+    if is_isp:
+        subtitle = "外网 ISP 恢复" if recovered else "外网 ISP 告警"
+    else:
+        subtitle = "设备上线恢复" if recovered else "设备离线告警"
     duration_label = "恢复耗时" if recovered else "断线时间"
     lines = [
         f"{label_emoji} {label}：{dev}",
