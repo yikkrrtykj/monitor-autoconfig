@@ -730,6 +730,14 @@
   font-size: clamp(7px, 0.46vw, 9px);
 }
 
+.screen.infra-mode .gauge-number strong {
+  font-size: clamp(10px, 0.72vw, 15px);
+}
+
+.screen.infra-mode .gauge-number span {
+  font-size: clamp(6px, 0.4vw, 8px);
+}
+
 .screen.infra-mode {
   grid-template-rows: 104px 1fr;
 }
@@ -2602,11 +2610,11 @@
 }
 
 .screen.tournament-mode .gauge-number strong {
-  font-size: clamp(11px, 0.74vw, 15px);
+  font-size: clamp(9px, 0.55vw, 12px);
 }
 
 .screen.tournament-mode .gauge-number span {
-  font-size: 8px;
+  font-size: clamp(6px, 0.36vw, 7px);
 }
 
 .screen.tournament-mode .gauge-number {
