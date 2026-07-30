@@ -455,6 +455,23 @@ def test_ap_down_and_recovery_titles_are_distinct():
     assert recovered["card"]["header"]["subtitle"]["content"] == "🟢 AP 上线恢复"
 
 
+def test_unifi_controller_state_overrides_stale_prometheus_uptime():
+    metric = {"state": "1"}
+    metric_online = {"aa:bb:cc:dd:ee:ff": True}
+    controller = {"online": False}
+
+    assert bridge._resolve_ap_online(
+        "aa:bb:cc:dd:ee:ff", metric, metric_online, controller,
+    ) is False
+
+
+def test_unifi_metrics_are_used_without_controller_state():
+    metric = {"state": "0"}
+
+    assert bridge._resolve_ap_online("ap-1", metric, {}, None) is False
+    assert bridge._resolve_ap_online("ap-1", metric, {"ap-1": True}, None) is True
+
+
 def test_new_lifecycle_online_card_bypasses_lifetime_dedupe(monkeypatch, tmp_path):
     state_file = tmp_path / "online.json"
     state_file.write_text(json.dumps(["switch-1", "10.0.0.1"]), encoding="utf-8")

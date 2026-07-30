@@ -4153,6 +4153,19 @@ def _ap_online_metric_map():
     return online
 
 
+def _resolve_ap_online(key, metric, metric_online, controller_info=None):
+    """Prefer the controller's live state over potentially stale metrics."""
+    if controller_info:
+        return bool(controller_info.get("online"))
+    is_online = metric_online.get(key)
+    if is_online is not None:
+        return is_online
+    label_online = _ap_online_from_labels(metric)
+    if label_online is not None:
+        return label_online
+    return True
+
+
 def _send_pending_ap_deployment(name, ip, model, confirmed_ips, delivered_ips):
     """Retry an AP deployment card until Feishu confirms delivery."""
     if not ip or ip not in confirmed_ips or ip in delivered_ips:
@@ -4213,7 +4226,6 @@ def unifi_ap_watcher():
         controller_aps = fetch_unifi_controller_aps_cached()
         current = {}
         known = {}
-        explicit_online = {}
         for item in results:
             metric = item.get("metric") or {}
             key = metric.get("mac") or metric.get("name") or ""
@@ -4243,16 +4255,7 @@ def unifi_ap_watcher():
                 "source": controller_info.get("source") or "prometheus",
             }
             known[key] = info
-            label_online = _ap_online_from_labels(metric)
-            is_online = metric_online.get(key)
-            if is_online is None and label_online is not None:
-                is_online = label_online
-            if is_online is not None:
-                explicit_online[key] = is_online
-            elif controller_info:
-                is_online = bool(controller_info.get("online"))
-            else:
-                is_online = True
+            is_online = _resolve_ap_online(key, metric, metric_online, controller_info)
             if is_online:
                 current[key] = info
 
@@ -4265,11 +4268,10 @@ def unifi_ap_watcher():
                 "source": controller_info.get("source") or info.get("source") or "controller",
             }
             known[key] = merged
-            if key in explicit_online:
-                if explicit_online[key]:
-                    current[key] = merged
-            elif controller_info.get("online"):
+            if controller_info.get("online"):
                 current[key] = merged
+            else:
+                current.pop(key, None)
 
         # Seen APs: refresh metadata, arm on first sight, recover if was down.
         for key, info in current.items():
