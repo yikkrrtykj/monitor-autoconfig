@@ -74,6 +74,8 @@ from urllib import error, parse, request
 
 PORT = int(os.environ.get("FEISHU_BRIDGE_PORT", "5005"))
 DRY_RUN = os.environ.get("FEISHU_BRIDGE_DRY_RUN", "").lower() in ("1", "true", "yes", "on")
+FEISHU_SEND_MAX_ATTEMPTS = max(1, int(os.environ.get("FEISHU_SEND_MAX_ATTEMPTS", "3")))
+FEISHU_SEND_RETRY_BASE_SECONDS = max(0.0, float(os.environ.get("FEISHU_SEND_RETRY_BASE_SECONDS", "1")))
 
 LIBRENMS_URL = os.environ.get("LIBRENMS_URL", "").rstrip("/")
 LIBRENMS_API_TOKEN = os.environ.get("LIBRENMS_API_TOKEN", "")
@@ -174,7 +176,7 @@ SYSNAME_STATE_FILE = os.environ.get(
 # UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 controller 数据
 # 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
 UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "180"))
+UNIFI_AP_DOWN_FOR_SECONDS = int(os.environ.get("UNIFI_AP_DOWN_FOR_SECONDS", "10"))
 UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "5"))
 # sysName 变更告警：bridge 自己轮询 LibreNMS 设备列表，对比每台设备的 sysName，
 # 变化时推送 旧→新 飞书卡片（LibreNMS 没有可靠的 "changed" 告警算子，webhook 也只带当前值）。
@@ -232,6 +234,7 @@ SEVERITY_COLOR = {
 
 EVENT_ID_LOCK = threading.Lock()
 DEVICE_ONLINE_STATE_LOCK = threading.Lock()
+DEVICE_ONLINE_INFLIGHT = set()
 DEVICE_DOWN_STATE_LOCK = threading.Lock()
 
 
@@ -300,6 +303,31 @@ def mark_device_online_notified(*values):
         items.update(clean)
         return _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
 
+
+
+def send_device_online_once(card, *identity_values):
+    """Persist the online de-duplication keys only after Feishu confirms delivery."""
+    clean = {str(value).strip() for value in identity_values if str(value or "").strip()}
+    if not clean:
+        return False
+    with DEVICE_ONLINE_STATE_LOCK:
+        items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+        if clean & items:
+            if not clean.issubset(items):
+                items.update(clean)
+                _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
+            return True
+        if clean & DEVICE_ONLINE_INFLIGHT:
+            return False
+        DEVICE_ONLINE_INFLIGHT.update(clean)
+    delivered = send_feishu(card)
+    with DEVICE_ONLINE_STATE_LOCK:
+        DEVICE_ONLINE_INFLIGHT.difference_update(clean)
+        if not delivered:
+            return False
+        items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+        items.update(clean)
+        return _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
 
 def _as_float(value, default=None):
     try:
@@ -970,6 +998,25 @@ def _make_card(title, subtitle, color, body_md):
     }
 
 
+def _feishu_response_result(response_text):
+    """Return (ok, detail) for a Feishu webhook JSON response."""
+    try:
+        payload = json.loads(str(response_text or "").strip())
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False, "response is not valid JSON"
+    if not isinstance(payload, dict):
+        return False, "response JSON is not an object"
+    code = payload.get("code")
+    if code is None:
+        code = payload.get("StatusCode", payload.get("status_code"))
+    try:
+        ok = int(code) == 0
+    except (TypeError, ValueError):
+        return False, "response has no recognizable business code"
+    detail = str(payload.get("msg") or payload.get("StatusMessage") or payload.get("message") or "")
+    return ok, detail or f"code={code}"
+
+
 def send_feishu(card):
     if DRY_RUN:
         log(f"[DRY] would POST card: {card['card']['header']['title']['content']}")
@@ -980,18 +1027,27 @@ def send_feishu(card):
     url = f"https://open.feishu.cn/open-apis/bot/v2/hook/{TOKEN}"
     data = json.dumps(card).encode("utf-8")
     req = request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    try:
-        with request.urlopen(req, timeout=5) as resp:
-            response_text = resp.read().decode("utf-8", errors="replace")
-            log(f"feishu response: {response_text[:200]}")
-        return True
-    except error.URLError as exc:
-        log(f"[ERR] feishu request failed: {exc}")
-        return False
-    except Exception as exc:
-        log(f"[ERR] unexpected: {exc}")
-        return False
-
+    for attempt in range(1, FEISHU_SEND_MAX_ATTEMPTS + 1):
+        try:
+            with request.urlopen(req, timeout=5) as resp:
+                response_text = resp.read().decode("utf-8", errors="replace")
+            ok, detail = _feishu_response_result(response_text)
+            if ok:
+                log(f"feishu response: {response_text[:200]}")
+                return True
+            log(
+                f"[ERR] feishu rejected alert attempt "
+                f"{attempt}/{FEISHU_SEND_MAX_ATTEMPTS}: {detail}; response={response_text[:200]}"
+            )
+        except error.URLError as exc:
+            log(f"[ERR] feishu request attempt {attempt}/{FEISHU_SEND_MAX_ATTEMPTS} failed: {exc}")
+        except Exception as exc:
+            log(f"[ERR] unexpected Feishu error attempt {attempt}/{FEISHU_SEND_MAX_ATTEMPTS}: {exc}")
+        if attempt < FEISHU_SEND_MAX_ATTEMPTS:
+            delay = FEISHU_SEND_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            if delay > 0:
+                time.sleep(delay)
+    return False
 
 def _norm_label(value):
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
@@ -2073,6 +2129,7 @@ def unifi_ap_watcher():
     states = {}
     snmp_add_attempted = {}
     snmp_confirmed_exists = set()  # IPs confirmed in LibreNMS — skip future add retries
+    deployment_notification_confirmed = set()
     name_sync_attempted = {}
     name_last_synced = {}  # last display name successfully synced per IP
     last_status_log = 0.0
@@ -2171,16 +2228,21 @@ def unifi_ap_watcher():
                         community=UNIFI_AP_SNMP_COMMUNITY,
                         log_prefix="[AP]",
                     )
-                    if add_result == "exists":
+                    if add_result in ("added", "exists"):
                         snmp_confirmed_exists.add(ip)
-                    if add_result in ("added", "exists") and mark_device_online_notified(name, ip):
-                        action = "added" if add_result == "added" else "first seen (already in LibreNMS)"
-                        log(f"[AP] AP deployment notified: {name} ({ip}), {action}")
-                        send_feishu(build_device_online_card({
-                            "display": name,
-                            "ip": ip,
-                            "hardware": info.get("model") or "",
-                        }))
+            if (
+                UNIFI_AP_SNMP_AUTO_ADD
+                and ip in snmp_confirmed_exists
+                and ip not in deployment_notification_confirmed
+            ):
+                card = build_device_online_card({
+                    "display": name,
+                    "ip": ip,
+                    "hardware": info.get("model") or "",
+                })
+                if send_device_online_once(card, name, ip):
+                    deployment_notification_confirmed.add(ip)
+                    log(f"[AP] AP deployment notification confirmed: {name} ({ip})")
             if ip and sync_name and not add_attempted:
                 last_sync = name_sync_attempted.get(ip, 0)
                 if now - last_sync >= UNIFI_AP_NAME_SYNC_SECONDS:
@@ -2202,10 +2264,12 @@ def unifi_ap_watcher():
             if state["alerting"]:
                 offline = max(0, now - (state.get("down_since") or now))
                 log(f"[AP] RECOVER {name} ({state['ip']}) offline={int(offline)}s")
-                send_feishu(build_ap_down_card(name, state["ip"], state["model"],
-                                               recovered=True, offline_seconds=offline))
-            state["alerting"] = False
-            state["down_since"] = None
+                if send_feishu(build_ap_down_card(name, state["ip"], state["model"],
+                                                  recovered=True, offline_seconds=offline)):
+                    state["alerting"] = False
+                    state["down_since"] = None
+            else:
+                state["down_since"] = None
 
         # Previously-seen APs now missing => down after debounce.
         for key, state in list(states.items()):
@@ -2222,12 +2286,12 @@ def unifi_ap_watcher():
             if state.get("down_since") is None:
                 state["down_since"] = state.get("last_seen") or now
             if not state["alerting"] and now - state["down_since"] >= UNIFI_AP_DOWN_FOR_SECONDS:
-                state["alerting"] = True
                 offline = max(0, now - state["down_since"])
                 name = state.get("name") or key
                 log(f"[AP] ALERT {name} ({state['ip']}) DOWN")
-                send_feishu(build_ap_down_card(name, state["ip"], state["model"],
-                                               recovered=False, offline_seconds=offline))
+                if send_feishu(build_ap_down_card(name, state["ip"], state["model"],
+                                                  recovered=False, offline_seconds=offline)):
+                    state["alerting"] = True
 
         if now - last_status_log >= 60:
             down = sum(1 for s in states.values() if s.get("alerting"))
@@ -2769,10 +2833,10 @@ def device_watcher():
                 else:
                     online_dev["hardware"] = model
                 log(f"[WATCHER] new SNMP device detected: {_best_device_name(online_dev)} ({ip})")
-                send_feishu(build_device_online_card(online_dev))
-                notified.update(keys)
-                model_wait_started.pop(pending_key, None)
-                changed = True
+                if send_device_online_once(build_device_online_card(online_dev), *keys):
+                    notified.update(keys)
+                    model_wait_started.pop(pending_key, None)
+                    changed = True
 
         if changed:
             with DEVICE_ONLINE_STATE_LOCK:
