@@ -836,7 +836,7 @@ def build_isp_bandwidth_card(event, recovered=False):
         f"⏳ {duration_label}：{format_alert_duration(event['duration'], recovered)}",
         f"⏰ 时间：{ts}",
     ]
-    return _make_card(next_event_title(), f"{header_emoji} 外网 ISP 告警", color, "\n".join(lines))
+    return _make_card(next_event_title(), f"{header_emoji} 外网 ISP 流量告警", color, "\n".join(lines))
 
 
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
