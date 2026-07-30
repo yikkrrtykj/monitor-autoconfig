@@ -127,12 +127,16 @@
   }
 
   function stageDevicePattern() {
-    return String(config.stageDeviceFilter || "stage,wutai,舞台")
+    const configured = String(config.stageDeviceFilter || "stage,wutai,舞台")
       .split(",")
       .map((name) => name.trim())
       .filter(Boolean)
       .map(escapeRegex)
       .join("|") || "stage|wutai|舞台";
+    // Some event access switches are deliberately named Lan-Server/Server-SW.
+    // At this point real servers have already been separated into serverPing,
+    // so "server" safely widens only the network-device competition filter.
+    return `${configured}|server`;
   }
 
   function isStageDeviceName(name) {
