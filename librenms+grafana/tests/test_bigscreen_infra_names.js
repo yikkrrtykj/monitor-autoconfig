@@ -34,6 +34,18 @@ const api = require(path.resolve(__dirname, "../bigscreen/api.js"));
   assert.strictEqual(renamed[0].originalName, "192.168.10.32");
   assert.strictEqual(renamed[1].name, "Member1");
 
+  // SERVER_PING 只是监控来源，不代表设备类型。只要同一 IP 被交换机
+  // SNMP 识别，Lan-Server 这类名称也必须留在网络设备栏。
+  const classified = api.partitionInfraPingItems([
+    { name: "Lan-Server", metric: { job: "infra-srv-ping", instance: "Lan-Server", target_ip: "192.168.10.47" } },
+    { name: "sdwan", metric: { job: "infra-srv-ping", instance: "sdwan", target_ip: "192.168.42.203" } },
+    { name: "rts2", metric: { job: "infra-dist-ping", instance: "rts2", target_ip: "192.168.10.32" } }
+  ], [
+    { metric: { job: "infra-switch-snmp", instance: "Lan-Server", target_ip: "192.168.10.47" } }
+  ]);
+  assert.deepStrictEqual(classified.network.map((item) => item.name), ["Lan-Server", "rts2"]);
+  assert.deepStrictEqual(classified.servers.map((item) => item.name), ["sdwan"]);
+
   // 运行时长：90 天以内保持"天"，超过换算成"月"，超过 12 个月换算成"年"。
   assert.deepStrictEqual(utils.formatUptime(59.22 * 86400), { value: "59.22", unit: "天" });
   assert.deepStrictEqual(utils.formatUptime(89 * 86400), { value: "89.00", unit: "天" });

@@ -25,7 +25,7 @@
     prometheusRangeCached, invalidateRangeCache,
     activeInfraPingQuery, activeSeriesNames, filterSeriesByNames,
     fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
-    fetchInfraDeviceNames, renameListWithInfraMap,
+    fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
     fetchPlatformConfig, fetchApplyStatus, postPlatform, fetchIperfStatus, fetchRetirePending, patchPlatform, fetchIncidents,
@@ -833,16 +833,20 @@
   async function refreshGauges() {
     const seq = ++gaugeSeq;
     try {
-      const [pingItems, uptimeItems] = await Promise.all([
+      const [pingItems, uptimeItems, switchSnmpItems] = await Promise.all([
         prometheusQuery(pingGaugeQuery),
-        prometheusQuery(uptimeQuery)
+        prometheusQuery(uptimeQuery),
+        prometheusInstant('last_over_time(up{job="infra-switch-snmp"}[25m])').catch(() => [])
       ]);
       const nameMap = await fetchInfraDeviceNames();
       if (seq !== gaugeSeq) return;
-      const isServerItem = (item) => (item.metric && item.metric.job) === "infra-srv-ping";
       const deployed = filterDeployed(pingItems, (item) => item.name);
-      const networkPing = dedupeInfraItems(renameListWithInfraMap(deployed.filter((item) => !isServerItem(item)), nameMap), "max");
-      const serverPing = dedupeInfraItems(renameListWithInfraMap(deployed.filter(isServerItem), nameMap), "max");
+      const classified = partitionInfraPingItems(
+        renameListWithInfraMap(deployed, nameMap),
+        switchSnmpItems
+      );
+      const networkPing = dedupeInfraItems(classified.network, "max");
+      const serverPing = dedupeInfraItems(classified.servers, "max");
       const visibleNetworkPing = visibleInfraItems(networkPing);
       const networkLayout = renderGaugeGrid("pingGaugeGrid", visibleNetworkPing, "ping");
       // Servers aren't stage devices (skip the stage filter). Keep their cells

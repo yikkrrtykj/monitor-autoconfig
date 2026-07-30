@@ -330,6 +330,41 @@
     return list.map((item) => renameWithInfraMap(item, nameMap));
   }
 
+  function infraIdentityKeys(item) {
+    const metric = (item && item.metric) || {};
+    return [
+      item && item.name,
+      item && item.originalName,
+      metric.target_ip,
+      metric.instance,
+      metric.display_name
+    ]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  // SERVER_PING is a monitoring list, not a reliable device-type declaration.
+  // A managed switch may also be listed there (for example "Lan-Server").
+  // Prefer its observed switch SNMP identity, so names containing "server" do
+  // not move a real switch out of the network-device section.
+  function partitionInfraPingItems(items, switchSnmpItems = []) {
+    const switchKeys = new Set();
+    (items || [])
+      .filter((item) => ((item.metric || {}).job || "") !== "infra-srv-ping")
+      .forEach((item) => infraIdentityKeys(item).forEach((key) => switchKeys.add(key)));
+    (switchSnmpItems || [])
+      .forEach((item) => infraIdentityKeys(item).forEach((key) => switchKeys.add(key)));
+
+    const network = [];
+    const servers = [];
+    (items || []).forEach((item) => {
+      const isServerJob = ((item.metric || {}).job || "") === "infra-srv-ping";
+      const isObservedSwitch = infraIdentityKeys(item).some((key) => switchKeys.has(key));
+      (isServerJob && !isObservedSwitch ? servers : network).push(item);
+    });
+    return { network, servers };
+  }
+
   function filterSeriesByNames(seriesList, names) {
     return seriesList.filter((item) => names.has(item.name));
   }
@@ -677,6 +712,7 @@
     ispChartMaxBps,
     fetchInfraDeviceNames,
     renameListWithInfraMap,
+    partitionInfraPingItems,
     fetchTopologyTargets,
     fetchTopologyEdges,
     fetchRuntimeStatus,
