@@ -951,7 +951,8 @@ def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
         f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
         f"⏰ 时间：{ts}",
     ]
-    return _make_card(next_event_title(), f"{header_emoji} AP 掉线告警", color, "\n".join(lines))
+    subtitle = "AP 上线恢复" if recovered else "AP 掉线告警"
+    return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
 
 
 def _card_preview_title(title, subtitle):
