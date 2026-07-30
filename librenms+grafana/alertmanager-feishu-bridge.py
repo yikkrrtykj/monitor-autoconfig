@@ -2096,7 +2096,8 @@ def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
         f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
         f"⏰ 时间：{ts}",
     ]
-    return _make_card(next_event_title(), f"{header_emoji} AP 掉线告警", color, "\n".join(lines))
+    subtitle = "AP 上线恢复" if recovered else "AP 掉线告警"
+    return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
 
 
 def build_device_resource_card(sample, recovered, duration=0):
@@ -4152,6 +4153,21 @@ def _ap_online_metric_map():
     return online
 
 
+def _send_pending_ap_deployment(name, ip, model, confirmed_ips, delivered_ips):
+    """Retry an AP deployment card until Feishu confirms delivery."""
+    if not ip or ip not in confirmed_ips or ip in delivered_ips:
+        return False
+    card = build_device_online_card({
+        "display": name,
+        "ip": ip,
+        "hardware": model or "",
+    })
+    if not send_device_online_once(card, name, ip):
+        return False
+    delivered_ips.add(ip)
+    return True
+
+
 def unifi_ap_watcher():
     """UniFi AP up/down alerts off UniFi Poller (unpoller) metrics in Prometheus.
 
@@ -4171,6 +4187,7 @@ def unifi_ap_watcher():
     states = {}
     snmp_add_attempted = {}
     snmp_confirmed_exists = set()  # IPs confirmed in LibreNMS — skip future add retries
+    deployment_notification_confirmed = set()
     name_sync_attempted = {}
     name_last_synced = {}  # last display name successfully synced per IP
     last_status_log = 0.0
@@ -4271,17 +4288,16 @@ def unifi_ap_watcher():
                         community=UNIFI_AP_SNMP_COMMUNITY,
                         log_prefix="[AP]",
                     )
-                    if add_result == "exists":
-                        snmp_confirmed_exists.add(ip)
                     if add_result in ("added", "exists"):
-                        action = "added" if add_result == "added" else "first seen (already in LibreNMS)"
-                        card = build_device_online_card({
-                            "display": name,
-                            "ip": ip,
-                            "hardware": info.get("model") or "",
-                        })
-                        if send_device_online_once(card, name, ip):
-                            log(f"[AP] AP deployment notification confirmed: {name} ({ip}), {action}")
+                        snmp_confirmed_exists.add(ip)
+            if _send_pending_ap_deployment(
+                name,
+                ip,
+                info.get("model") or "",
+                snmp_confirmed_exists,
+                deployment_notification_confirmed,
+            ):
+                log(f"[AP] AP deployment notification confirmed: {name} ({ip})")
             if ip and sync_name and not add_attempted:
                 last_sync = name_sync_attempted.get(ip, 0)
                 if now - last_sync >= UNIFI_AP_NAME_SYNC_SECONDS:

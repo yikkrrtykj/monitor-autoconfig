@@ -424,6 +424,37 @@ def test_online_delivery_does_not_hold_state_lock_during_network_io(monkeypatch,
     assert lock_was_free == [True]
 
 
+def test_ap_deployment_retries_until_delivery_is_confirmed(monkeypatch):
+    outcomes = iter([False, True])
+    calls = []
+
+    def fake_send(card, *identities):
+        calls.append((card, identities))
+        return next(outcomes)
+
+    monkeypatch.setattr(bridge, "send_device_online_once", fake_send)
+    confirmed = {"192.0.2.10"}
+    delivered = set()
+
+    assert bridge._send_pending_ap_deployment(
+        "AP-1", "192.0.2.10", "U6-LR", confirmed, delivered,
+    ) is False
+    assert delivered == set()
+    assert bridge._send_pending_ap_deployment(
+        "AP-1", "192.0.2.10", "U6-LR", confirmed, delivered,
+    ) is True
+    assert delivered == {"192.0.2.10"}
+    assert len(calls) == 2
+
+
+def test_ap_down_and_recovery_titles_are_distinct():
+    down = bridge.build_ap_down_card("AP-1", "192.0.2.10", "U6-LR", False, 10)
+    recovered = bridge.build_ap_down_card("AP-1", "192.0.2.10", "U6-LR", True, 15)
+
+    assert down["card"]["header"]["subtitle"]["content"] == "🔴 AP 掉线告警"
+    assert recovered["card"]["header"]["subtitle"]["content"] == "🟢 AP 上线恢复"
+
+
 def test_new_lifecycle_online_card_bypasses_lifetime_dedupe(monkeypatch, tmp_path):
     state_file = tmp_path / "online.json"
     state_file.write_text(json.dumps(["switch-1", "10.0.0.1"]), encoding="utf-8")
