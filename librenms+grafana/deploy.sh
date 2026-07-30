@@ -31,11 +31,13 @@ migrate_env_default() {
 }
 
 migrate_legacy_defaults() {
-  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 10 180
-  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 90 180
+  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 180 10
+  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 90 10
   migrate_env_default UNIFI_AP_POLL_INTERVAL 15 5
-  migrate_env_default UNIFI_CONTROLLER_REFRESH_SECONDS 60 10
-  migrate_env_default UNIFI_SCRAPE_INTERVAL 30s 10s
+  migrate_env_default UNIFI_CONTROLLER_REFRESH_SECONDS 60 5
+  migrate_env_default UNIFI_CONTROLLER_REFRESH_SECONDS 10 5
+  migrate_env_default UNIFI_SCRAPE_INTERVAL 30s 5s
+  migrate_env_default UNIFI_SCRAPE_INTERVAL 10s 5s
 }
 
 # 探测本机主 IP：优先默认路由源 IP（ip route get），退而用 python UDP socket（不发包），再退 hostname -I。
