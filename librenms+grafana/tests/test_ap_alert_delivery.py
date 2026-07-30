@@ -91,3 +91,11 @@ def test_online_dedupe_is_saved_only_after_delivery(monkeypatch, tmp_path):
     assert set(json.loads(state_file.read_text(encoding="utf-8"))) == {"ap-1", "192.0.2.1"}
     assert bridge.send_device_online_once(_card(), "ap-1", "192.0.2.1") is True
     assert len(calls) == 2
+
+
+def test_ap_down_and_recovery_titles_are_distinct():
+    down = bridge.build_ap_down_card("AP-1", "192.0.2.1", "U6-LR", False, 10)
+    recovered = bridge.build_ap_down_card("AP-1", "192.0.2.1", "U6-LR", True, 15)
+
+    assert down["card"]["header"]["subtitle"]["content"] == "🔴 AP 掉线告警"
+    assert recovered["card"]["header"]["subtitle"]["content"] == "🟢 AP 上线恢复"
