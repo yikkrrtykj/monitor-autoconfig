@@ -293,13 +293,17 @@
     }
 
     const box = container.getBoundingClientRect();
-    const width = Math.max(320, Math.round(box.width || container.clientWidth || 1000));
-    const height = Math.max(150, Math.round(box.height || container.clientHeight || 260));
+    const minWidth = Number(options.minWidth) > 0 ? Number(options.minWidth) : 320;
+    const minHeight = Number(options.minHeight) > 0 ? Number(options.minHeight) : 150;
+    const width = Math.max(minWidth, Math.round(box.width || container.clientWidth || 1000));
+    const height = Math.max(minHeight, Math.round(box.height || container.clientHeight || 260));
     const pad = {
       left: options.axisPadLeft || (width < 520 ? 64 : 76),
       right: options.axisPadRight || 38,
-      top: 12,
-      bottom: height < 190 ? 24 : 30
+      top: Number.isFinite(Number(options.axisPadTop)) ? Number(options.axisPadTop) : 12,
+      bottom: Number.isFinite(Number(options.axisPadBottom))
+        ? Number(options.axisPadBottom)
+        : (height < 190 ? 24 : 30)
     };
     const plotWidth = width - pad.left - pad.right;
     const plotHeight = height - pad.top - pad.bottom;
@@ -501,6 +505,7 @@
 
   function renderIspPanels(results) {
     const ispGrid = document.getElementById("ispGrid");
+    const compactTournamentChart = document.querySelector(".screen")?.classList.contains("tournament-mode");
     ispGrid.style.setProperty("--isp-count", String(Math.max(1, results.length)));
     ispGrid.innerHTML = "";
     if (!results.length) {
@@ -519,8 +524,11 @@
       renderLineChart(`ispChart${index}`, [result.download, result.upload], {
         axisFormatter: formatBits,
         valueFormatter: formatBits,
-        axisPadLeft: 92,
-        axisPadRight: 38,
+        minWidth: compactTournamentChart ? 120 : 320,
+        axisPadLeft: compactTournamentChart ? 58 : 92,
+        axisPadRight: compactTournamentChart ? 12 : 38,
+        axisPadTop: compactTournamentChart ? 6 : 12,
+        axisPadBottom: compactTournamentChart ? 20 : undefined,
         fill: true,
         legend: "bottom",
         maxY: ispChartMaxBps(result.name, index),
