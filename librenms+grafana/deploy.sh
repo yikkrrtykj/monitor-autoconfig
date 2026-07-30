@@ -30,11 +30,13 @@ migrate_env_default() {
 }
 
 migrate_legacy_defaults() {
-  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 10 180
-  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 90 180
+  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 180 10
+  migrate_env_default UNIFI_AP_DOWN_FOR_SECONDS 90 10
   migrate_env_default UNIFI_AP_POLL_INTERVAL 15 5
-  migrate_env_default UNIFI_CONTROLLER_REFRESH_SECONDS 60 10
-  migrate_env_default UNIFI_SCRAPE_INTERVAL 30s 10s
+  migrate_env_default UNIFI_CONTROLLER_REFRESH_SECONDS 60 5
+  migrate_env_default UNIFI_CONTROLLER_REFRESH_SECONDS 10 5
+  migrate_env_default UNIFI_SCRAPE_INTERVAL 30s 5s
+  migrate_env_default UNIFI_SCRAPE_INTERVAL 10s 5s
   migrate_env_default SWITCH_IFMIB_SCRAPE_INTERVAL 10s 30s
   migrate_env_default STACKWISE_SCRAPE_INTERVAL 30s 60s
 }
