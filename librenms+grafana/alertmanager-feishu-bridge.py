@@ -242,6 +242,10 @@ DEVICE_RESOURCE_STATE_FILE = os.environ.get(
     "DEVICE_RESOURCE_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "device-resource-alerts.json"),
 )
+UNIFI_AP_STATE_FILE = os.environ.get(
+    "UNIFI_AP_STATE_FILE",
+    os.path.join(BRIDGE_STATE_DIR, "unifi-ap-alerts.json"),
+)
 # UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 controller 数据
 # 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
 UNIFI_AP_ALERT_ENABLED = os.environ.get("UNIFI_AP_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
@@ -307,6 +311,7 @@ DEVICE_ONLINE_INFLIGHT = set()
 DEVICE_DOWN_STATE_LOCK = threading.Lock()
 STACKWISE_STATE_LOCK = threading.Lock()
 DEVICE_RESOURCE_STATE_LOCK = threading.Lock()
+UNIFI_AP_STATE_LOCK = threading.Lock()
 HEALTH_LOCK = threading.Lock()
 WATCHER_THREADS = {}
 WATCHER_HEALTH = {}
@@ -450,6 +455,42 @@ def save_device_down_states(states):
         }
     with DEVICE_DOWN_STATE_LOCK:
         _save_json_dict(DEVICE_DOWN_STATE_FILE, active_or_retired)
+
+
+def load_unifi_ap_states():
+    loaded = {}
+    with UNIFI_AP_STATE_LOCK:
+        raw = _load_json_dict(UNIFI_AP_STATE_FILE)
+    for key, value in raw.items():
+        if not key or not isinstance(value, dict) or not value.get("alerting"):
+            continue
+        down_since = _as_float(value.get("down_since"))
+        loaded[str(key)] = {
+            "alerting": True,
+            "down_since": down_since,
+            "seen_up": True,
+            "last_seen": down_since or time.time(),
+            "name": str(value.get("name") or ""),
+            "ip": str(value.get("ip") or ""),
+            "model": str(value.get("model") or ""),
+        }
+    return loaded
+
+
+def save_unifi_ap_states(states):
+    active = {}
+    for key, state in states.items():
+        if not state.get("alerting"):
+            continue
+        active[str(key)] = {
+            "alerting": True,
+            "down_since": state.get("down_since"),
+            "name": state.get("name") or "",
+            "ip": state.get("ip") or "",
+            "model": state.get("model") or "",
+        }
+    with UNIFI_AP_STATE_LOCK:
+        _save_json_dict(UNIFI_AP_STATE_FILE, active)
 
 
 EVENT_ID = max(
@@ -2931,7 +2972,7 @@ def isp_bandwidth_watcher():
         return
     time.sleep(30)
     bandwidth_cfg = _parse_bandwidth_config(BIGSCREEN_ISP_MAX_BANDWIDTH)
-    states = {}
+    states = load_unifi_ap_states()
     last_status_log = 0.0
     data_seen = False
     data_missing_since = None
@@ -4208,7 +4249,7 @@ def unifi_ap_watcher():
         "[AP] UniFi AP watcher enabled "
         f"(for={UNIFI_AP_DOWN_FOR_SECONDS}s, poll={UNIFI_AP_POLL_INTERVAL}s, "
         f"snmp_auto_add={UNIFI_AP_SNMP_AUTO_ADD}, "
-        f"controller_api={_unifi_controller_enabled()})"
+        f"controller_api={_unifi_controller_enabled()}, active_loaded={len(states)})"
     )
 
     while True:
@@ -4325,6 +4366,7 @@ def unifi_ap_watcher():
                                                   recovered=True, offline_seconds=offline)):
                     state["alerting"] = False
                     state["down_since"] = None
+                    save_unifi_ap_states(states)
             else:
                 state["down_since"] = None
 
@@ -4335,6 +4377,7 @@ def unifi_ap_watcher():
             if controller_aps and key not in known:
                 log(f"[AP] retired {state.get('name') or key}: removed from UniFi controller, no down alert")
                 states.pop(key, None)
+                save_unifi_ap_states(states)
                 continue
             if key in known:
                 state["name"] = known[key].get("name") or state.get("name") or key
@@ -4349,6 +4392,7 @@ def unifi_ap_watcher():
                 if send_feishu(build_ap_down_card(name, state["ip"], state["model"],
                                                   recovered=False, offline_seconds=offline)):
                     state["alerting"] = True
+                    save_unifi_ap_states(states)
 
         if now - last_status_log >= 60:
             down = sum(1 for s in states.values() if s.get("alerting"))

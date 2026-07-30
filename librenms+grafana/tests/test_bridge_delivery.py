@@ -472,6 +472,36 @@ def test_unifi_metrics_are_used_without_controller_state():
     assert bridge._resolve_ap_online("ap-1", metric, {"ap-1": True}, None) is True
 
 
+def test_unifi_alert_state_survives_bridge_restart(monkeypatch, tmp_path):
+    state_file = tmp_path / "unifi-ap-alerts.json"
+    monkeypatch.setattr(bridge, "UNIFI_AP_STATE_FILE", str(state_file))
+    states = {
+        "aa:bb:cc:dd:ee:ff": {
+            "alerting": True,
+            "down_since": 1234.0,
+            "seen_up": True,
+            "last_seen": 1234.0,
+            "name": "AP-1",
+            "ip": "192.0.2.10",
+            "model": "U6-LR",
+        },
+        "online-ap": {
+            "alerting": False,
+            "name": "AP-2",
+            "ip": "192.0.2.11",
+        },
+    }
+
+    bridge.save_unifi_ap_states(states)
+    loaded = bridge.load_unifi_ap_states()
+
+    assert set(loaded) == {"aa:bb:cc:dd:ee:ff"}
+    assert loaded["aa:bb:cc:dd:ee:ff"]["alerting"] is True
+    assert loaded["aa:bb:cc:dd:ee:ff"]["down_since"] == 1234.0
+    assert loaded["aa:bb:cc:dd:ee:ff"]["name"] == "AP-1"
+    assert loaded["aa:bb:cc:dd:ee:ff"]["ip"] == "192.0.2.10"
+
+
 def test_new_lifecycle_online_card_bypasses_lifetime_dedupe(monkeypatch, tmp_path):
     state_file = tmp_path / "online.json"
     state_file.write_text(json.dumps(["switch-1", "10.0.0.1"]), encoding="utf-8")
