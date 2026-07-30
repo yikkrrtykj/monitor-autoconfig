@@ -60,6 +60,9 @@
   let dhcpLastPayload = null;
   let dhcpBindingPayload = null;
   let dhcpBindingsRefreshing = false;
+  let dhcpSelectedPoolKey = "";
+  let dhcpPoolSearchText = "";
+  let dhcpPoolFilterValue = "all";
   let activePageId = "";
   let activeRoute = "";
   let gaugeSeq = 0;
@@ -3302,6 +3305,108 @@
     return ranges.map((range) => range.start === range.end ? range.start : `${range.start}–${range.end}`).join("、");
   }
 
+  function dhcpPoolKey(pool) {
+    return `${encodeURIComponent(String(pool.name || ""))}|${encodeURIComponent(String(pool.range || ""))}`;
+  }
+
+  function dhcpIpv4Number(value) {
+    const parts = String(value || "").trim().split(".").map(Number);
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+    return (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256) + parts[3];
+  }
+
+  function dhcpPoolMatchesSearch(pool, query) {
+    const needle = String(query || "").trim().toLowerCase();
+    if (!needle) return true;
+    const searchable = `${pool.name || ""} ${pool.range || ""}`.toLowerCase();
+    if (searchable.includes(needle)) return true;
+    const address = dhcpIpv4Number(needle);
+    const rangeMatch = String(pool.range || "").match(/^\s*(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})\s*$/);
+    if (address == null || !rangeMatch) return false;
+    const start = dhcpIpv4Number(rangeMatch[1]);
+    const end = dhcpIpv4Number(rangeMatch[2]);
+    return start != null && end != null && address >= start && address <= end;
+  }
+
+  function dhcpPoolMatchesFilter(pool, conflicts) {
+    if (dhcpPoolFilterValue === "active") return Number(pool.leased || 0) > 0;
+    if (dhcpPoolFilterValue === "excluded") return Number(pool.excluded || 0) > 0;
+    if (dhcpPoolFilterValue === "attention") {
+      const poolAddresses = new Set(dhcpRangeAddresses(pool.range));
+      return ["warn", "bad"].includes(String(pool.level || ""))
+        || (conflicts || []).some((ip) => poolAddresses.has(ip));
+    }
+    return true;
+  }
+
+  function dhcpPoolSortValue(pool) {
+    const match = String(pool.range || "").match(/^\s*(\d{1,3}(?:\.\d{1,3}){3})/);
+    return match ? dhcpIpv4Number(match[1]) : null;
+  }
+
+  function dhcpPoolCard(pool, conflicts) {
+    const pct = Math.max(0, Math.min(100, Number(pool.utilization || 0)));
+    const addressBlockCount = groupAddressesByCBlock(dhcpRangeAddresses(pool.range)).length;
+    return `
+      <article class="dhcp-pool-card ${escapeHtml(pool.level || "good")}${addressBlockCount > 1 ? " multi-block" : ""}">
+        <header>
+          <div><strong>${escapeHtml(pool.name || "未命名地址池")}</strong><span>${escapeHtml(pool.range || "交换机未返回地址范围")}</span></div>
+          <b>${pct.toFixed(1)}%</b>
+        </header>
+        <div class="dhcp-pool-bar"><i style="width:${pct}%"></i></div>
+        <dl>
+          <div><dt>总地址</dt><dd>${Number(pool.total || 0)}</dd></div>
+          <div><dt>已租用</dt><dd>${Number(pool.leased || 0)}</dd></div>
+          <div><dt>剩余</dt><dd>${Number(pool.available || 0)}</dd></div>
+          <div><dt>排除</dt><dd>${Number(pool.excluded || 0)}</dd></div>
+        </dl>
+        ${dhcpAddressMap(pool, conflicts, dhcpBindingPayload)}
+      </article>
+    `;
+  }
+
+  function renderDhcpPoolBrowser(pools, conflicts) {
+    const poolsElement = document.getElementById("dhcpPools");
+    if (!poolsElement) return;
+    const sortedPools = [...pools].sort((left, right) => {
+      const leftValue = dhcpPoolSortValue(left);
+      const rightValue = dhcpPoolSortValue(right);
+      if (leftValue != null && rightValue != null && leftValue !== rightValue) return leftValue - rightValue;
+      if (leftValue != null && rightValue == null) return -1;
+      if (leftValue == null && rightValue != null) return 1;
+      return String(left.name || "").localeCompare(String(right.name || ""), "zh-CN", { numeric: true });
+    });
+    const visiblePools = sortedPools.filter((pool) =>
+      dhcpPoolMatchesSearch(pool, dhcpPoolSearchText) && dhcpPoolMatchesFilter(pool, conflicts)
+    );
+    if (!visiblePools.some((pool) => dhcpPoolKey(pool) === dhcpSelectedPoolKey)) {
+      dhcpSelectedPoolKey = visiblePools.length ? dhcpPoolKey(visiblePools[0]) : "";
+    }
+    const selectedPool = visiblePools.find((pool) => dhcpPoolKey(pool) === dhcpSelectedPoolKey);
+    setText("dhcpPoolCount", `显示 ${visiblePools.length} / ${pools.length} 个网段`);
+    if (!visiblePools.length) {
+      poolsElement.innerHTML = `<div class="dhcp-empty">没有符合当前搜索或筛选条件的网段。</div>`;
+      return;
+    }
+    poolsElement.innerHTML = `
+      <aside class="dhcp-pool-directory" aria-label="DHCP 网段目录">
+        ${visiblePools.map((pool) => {
+          const key = dhcpPoolKey(pool);
+          const pct = Math.max(0, Math.min(100, Number(pool.utilization || 0)));
+          return `
+            <button type="button" class="dhcp-pool-option ${escapeHtml(pool.level || "good")}${key === dhcpSelectedPoolKey ? " selected" : ""}" data-dhcp-pool="${escapeHtml(key)}">
+              <span><strong>${escapeHtml(pool.name || "未命名地址池")}</strong><small>${escapeHtml(pool.range || "无地址范围")}</small></span>
+              <span><b>${Number(pool.leased || 0)} 已用</b><small>${pct.toFixed(1)}%</small></span>
+            </button>
+          `;
+        }).join("")}
+      </aside>
+      <div class="dhcp-pool-detail">
+        ${selectedPool ? dhcpPoolCard(selectedPool, conflicts) : ""}
+      </div>
+    `;
+  }
+
   function dhcpAddressMap(pool, conflicts, bindingPayload) {
     const addresses = dhcpRangeAddresses(pool.range);
     if (!addresses.length) return '<div class="dhcp-address-note">交换机未返回可展开的地址范围。</div>';
@@ -3392,28 +3497,11 @@
       ].join("");
     }
 
-    const poolsElement = document.getElementById("dhcpPools");
-    if (poolsElement) {
-      poolsElement.innerHTML = pools.length ? pools.map((pool) => {
-        const pct = Math.max(0, Math.min(100, Number(pool.utilization || 0)));
-        const addressBlockCount = groupAddressesByCBlock(dhcpRangeAddresses(pool.range)).length;
-        return `
-          <article class="dhcp-pool-card ${escapeHtml(pool.level || "good")}${addressBlockCount > 1 ? " multi-block" : ""}">
-            <header>
-              <div><strong>${escapeHtml(pool.name || "未命名地址池")}</strong><span>${escapeHtml(pool.range || "交换机未返回地址范围")}</span></div>
-              <b>${pct.toFixed(1)}%</b>
-            </header>
-            <div class="dhcp-pool-bar"><i style="width:${pct}%"></i></div>
-            <dl>
-              <div><dt>总地址</dt><dd>${Number(pool.total || 0)}</dd></div>
-              <div><dt>已租用</dt><dd>${Number(pool.leased || 0)}</dd></div>
-              <div><dt>剩余</dt><dd>${Number(pool.available || 0)}</dd></div>
-              <div><dt>排除</dt><dd>${Number(pool.excluded || 0)}</dd></div>
-            </dl>
-            ${dhcpAddressMap(pool, conflicts, dhcpBindingPayload)}
-          </article>
-        `;
-      }).join("") : `<div class="dhcp-empty">核心交换机当前没有返回 DHCP 地址池。</div>`;
+    if (pools.length) renderDhcpPoolBrowser(pools, conflicts);
+    else {
+      const poolsElement = document.getElementById("dhcpPools");
+      if (poolsElement) poolsElement.innerHTML = `<div class="dhcp-empty">核心交换机当前没有返回 DHCP 地址池。</div>`;
+      setText("dhcpPoolCount", "0 个网段");
     }
 
     const warningText = (payload.warnings || []).join("；");
@@ -3530,6 +3618,32 @@
     if (bindingsButton && !bindingsButton.dataset.bound) {
       bindingsButton.addEventListener("click", refreshDhcpBindings);
       bindingsButton.dataset.bound = "1";
+    }
+    const poolSearch = document.getElementById("dhcpPoolSearch");
+    if (poolSearch && !poolSearch.dataset.bound) {
+      poolSearch.addEventListener("input", () => {
+        dhcpPoolSearchText = poolSearch.value;
+        if (dhcpLastPayload) renderDhcpPoolBrowser(dhcpLastPayload.pools || [], dhcpLastPayload.conflicts || []);
+      });
+      poolSearch.dataset.bound = "1";
+    }
+    const poolFilter = document.getElementById("dhcpPoolFilter");
+    if (poolFilter && !poolFilter.dataset.bound) {
+      poolFilter.addEventListener("change", () => {
+        dhcpPoolFilterValue = poolFilter.value;
+        if (dhcpLastPayload) renderDhcpPoolBrowser(dhcpLastPayload.pools || [], dhcpLastPayload.conflicts || []);
+      });
+      poolFilter.dataset.bound = "1";
+    }
+    const poolsElement = document.getElementById("dhcpPools");
+    if (poolsElement && !poolsElement.dataset.bound) {
+      poolsElement.addEventListener("click", (event) => {
+        const option = event.target.closest("[data-dhcp-pool]");
+        if (!option) return;
+        dhcpSelectedPoolKey = option.dataset.dhcpPool || "";
+        if (dhcpLastPayload) renderDhcpPoolBrowser(dhcpLastPayload.pools || [], dhcpLastPayload.conflicts || []);
+      });
+      poolsElement.dataset.bound = "1";
     }
     refreshDhcpDashboard(false);
   }

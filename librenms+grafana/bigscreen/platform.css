@@ -132,7 +132,7 @@
 
 .dhcp-panel {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   gap: 12px;
   min-width: 0;
   min-height: 0;
@@ -234,15 +234,144 @@
 .dhcp-summary-card.warn strong { color: #f5c542; }
 .dhcp-summary-card.bad strong { color: #ff6b82; }
 
+.dhcp-pool-tools {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 180px auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.dhcp-pool-tools label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--linear-ink-subtle);
+  font-size: 10px;
+}
+
+.dhcp-pool-tools input,
+.dhcp-pool-tools select {
+  width: 100%;
+  height: 34px;
+  min-width: 0;
+  padding: 0 11px;
+  border: 1px solid var(--linear-hairline-strong);
+  border-radius: 7px;
+  outline: none;
+  background: var(--linear-surface-2);
+  color: var(--linear-ink);
+}
+
+.dhcp-pool-tools input:focus,
+.dhcp-pool-tools select:focus {
+  border-color: rgba(94, 106, 210, 0.9);
+  box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.14);
+}
+
+.dhcp-pool-tools > span {
+  padding-bottom: 9px;
+  color: var(--linear-ink-subtle);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .dhcp-pools {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-content: start;
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 12px;
   min-width: 0;
   min-height: 0;
-  padding-right: 3px;
+  overflow: hidden;
+}
+
+.dhcp-pool-directory,
+.dhcp-pool-detail {
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
+}
+
+.dhcp-pool-directory {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+.dhcp-pool-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 53px;
+  padding: 8px 10px;
+  border: 1px solid var(--linear-hairline);
+  border-radius: 8px;
+  background: var(--linear-surface-1);
+  color: var(--linear-ink-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.dhcp-pool-option:hover {
+  border-color: var(--linear-hairline-strong);
+  background: var(--linear-surface-2);
+}
+
+.dhcp-pool-option.selected {
+  border-color: rgba(94, 106, 210, 0.9);
+  background: rgba(94, 106, 210, 0.16);
+  box-shadow: inset 3px 0 0 #7d86ed;
+}
+
+.dhcp-pool-option.warn { border-color: rgba(245, 197, 66, 0.42); }
+.dhcp-pool-option.bad { border-color: rgba(255, 107, 130, 0.52); }
+
+.dhcp-pool-option > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dhcp-pool-option > span:last-child {
+  justify-items: end;
+}
+
+.dhcp-pool-option strong,
+.dhcp-pool-option b,
+.dhcp-pool-option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dhcp-pool-option strong {
+  color: var(--linear-ink);
+  font-size: 13px;
+}
+
+.dhcp-pool-option b {
+  color: #73d17a;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.dhcp-pool-option.warn b { color: #f5c542; }
+.dhcp-pool-option.bad b { color: #ff6b82; }
+
+.dhcp-pool-option small {
+  max-width: 190px;
+  color: var(--linear-ink-subtle);
+  font-size: 9px;
+}
+
+.dhcp-pool-detail {
+  padding-right: 3px;
+}
+
+.dhcp-pools > .dhcp-empty {
+  grid-column: 1 / -1;
 }
 
 .dhcp-pool-card {
@@ -258,6 +387,8 @@
 .dhcp-pool-card.bad { border-color: rgba(255, 107, 130, 0.55); }
 
 .dhcp-pool-card.multi-block { grid-column: span 3; }
+
+.dhcp-pool-detail .dhcp-pool-card.multi-block { grid-column: auto; }
 
 .dhcp-pool-card header {
   display: flex;
@@ -2977,7 +3108,7 @@ a.seat-slot:hover {
   }
 
   .dhcp-pools {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 260px minmax(0, 1fr);
   }
 
   .dhcp-pool-card.multi-block { grid-column: span 2; }
@@ -3097,9 +3228,21 @@ a.seat-slot:hover {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .dhcp-pool-tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dhcp-pool-tools > span {
+    padding-bottom: 0;
+  }
+
   .dhcp-pools {
     grid-template-columns: minmax(0, 1fr);
     overflow: visible;
+  }
+
+  .dhcp-pool-directory {
+    max-height: 280px;
   }
 
   .dhcp-pool-card.multi-block { grid-column: auto; }

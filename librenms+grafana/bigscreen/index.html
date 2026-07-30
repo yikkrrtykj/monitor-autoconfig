@@ -226,6 +226,22 @@
         </div>
         <div class="dhcp-status" id="dhcpStatus">打开页面后自动读取，离开页面即停止刷新。</div>
         <div class="dhcp-summary" id="dhcpSummary"></div>
+        <div class="dhcp-pool-tools">
+          <label>
+            <span>查找网段</span>
+            <input type="search" id="dhcpPoolSearch" autocomplete="off" placeholder="输入名称、网段或任意 IP">
+          </label>
+          <label>
+            <span>筛选</span>
+            <select id="dhcpPoolFilter">
+              <option value="all">全部网段</option>
+              <option value="active">已有地址使用</option>
+              <option value="excluded">包含排除地址</option>
+              <option value="attention">需要关注</option>
+            </select>
+          </label>
+          <span id="dhcpPoolCount"></span>
+        </div>
         <div class="dhcp-pools" id="dhcpPools"></div>
         <div class="dhcp-footnote" id="dhcpFootnote"></div>
       </section>

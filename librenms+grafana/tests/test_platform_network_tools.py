@@ -543,9 +543,13 @@ def test_network_overview_precedes_dhcp_and_non_24_pools_are_grouped_by_c_block(
     assert "dhcp-address-blocks" in app
     assert "${block.prefix}.0/24" in app
     assert 'addressBlockCount > 1 ? " multi-block"' in app
+    assert 'id="dhcpPoolSearch"' in (root / "bigscreen" / "index.html").read_text(encoding="utf-8")
+    assert "renderDhcpPoolBrowser" in app
     assert ".dhcp-address-block" in css
+    assert ".dhcp-pool-directory" in css
+    assert ".dhcp-pool-detail" in css
     assert ".dhcp-pool-card.multi-block" in css
-    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
+    assert "grid-template-columns: 300px minmax(0, 1fr)" in css
     assert "查询已用 IP" in app
     assert "/network/dhcp/bindings" in (root / "bigscreen" / "api.js").read_text(encoding="utf-8")
     assert "content-visibility: auto" not in css
