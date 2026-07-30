@@ -317,6 +317,14 @@ body {
   font-size: 10px;
 }
 
+.gauge-grid[data-rows="2"] .gauge-number strong {
+  font-size: clamp(13px, 0.9vw, 18px);
+}
+
+.gauge-grid[data-rows="2"] .gauge-number span {
+  font-size: clamp(7px, 0.48vw, 9px);
+}
+
 .gauge-name {
   width: 100%;
   flex-shrink: 0; /* 设备少、表盘变大时也不挤掉名字 */
@@ -330,11 +338,11 @@ body {
 }
 
 .gauge-grid[data-rows="3"] .gauge-number strong {
-  font-size: clamp(16px, 1.08vw, 24px);
+  font-size: clamp(10px, 0.68vw, 14px);
 }
 
 .gauge-grid[data-rows="3"] .gauge-number span {
-  font-size: clamp(9px, 0.62vw, 13px);
+  font-size: clamp(6px, 0.4vw, 8px);
 }
 
 .gauge-grid[data-rows="3"] .gauge-name {
@@ -347,10 +355,10 @@ body {
   gap: clamp(2px, 0.4vh, 5px) clamp(10px, 1.3vw, 20px);
 }
 .gauge-grid[data-rows="4"] .gauge-number strong {
-  font-size: clamp(12px, 0.8vw, 17px);
+  font-size: clamp(9px, 0.58vw, 12px);
 }
 .gauge-grid[data-rows="4"] .gauge-number span {
-  font-size: clamp(8px, 0.48vw, 11px);
+  font-size: clamp(6px, 0.36vw, 7px);
 }
 .gauge-grid[data-rows="4"] .gauge-name {
   max-width: 140px;
