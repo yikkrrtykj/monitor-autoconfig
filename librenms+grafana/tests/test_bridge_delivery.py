@@ -438,13 +438,87 @@ def test_ap_deployment_retries_until_delivery_is_confirmed(monkeypatch):
 
     assert bridge._send_pending_ap_deployment(
         "AP-1", "192.0.2.10", "U6-LR", confirmed, delivered,
+        "aa:bb:cc:dd:ee:ff",
     ) is False
     assert delivered == set()
     assert bridge._send_pending_ap_deployment(
         "AP-1", "192.0.2.10", "U6-LR", confirmed, delivered,
+        "AA-BB-CC-DD-EE-FF",
     ) is True
-    assert delivered == {"192.0.2.10"}
+    assert delivered == {"unifi-ap:aabbccddeeff"}
+    assert calls[0][1] == ("unifi-ap:aabbccddeeff",)
     assert len(calls) == 2
+
+
+def test_ap_ip_change_does_not_send_a_second_deployment(monkeypatch, tmp_path):
+    state_file = tmp_path / "online.json"
+    sent = []
+
+    monkeypatch.setattr(bridge, "DEVICE_ONLINE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(bridge, "send_feishu", lambda card: sent.append(card) or True)
+
+    mac = "aa:bb:cc:dd:ee:ff"
+    assert bridge._send_pending_ap_deployment(
+        "AP-1", "192.0.2.10", "U6-LR", {"192.0.2.10"}, set(), mac,
+    ) is True
+    # A fresh in-memory set simulates a bridge restart after the AP received a
+    # different DHCP address. The persisted MAC must still suppress the card.
+    assert bridge._send_pending_ap_deployment(
+        "AP-1", "192.0.2.99", "U6-LR", {"192.0.2.99"}, set(), mac,
+    ) is True
+
+    assert len(sent) == 1
+    assert json.loads(state_file.read_text(encoding="utf-8")) == [
+        "unifi-ap:aabbccddeeff"
+    ]
+
+
+def test_librenms_ap_identity_uses_controller_mac(monkeypatch):
+    monkeypatch.setattr(
+        bridge,
+        "_find_unifi_ap_by_ip",
+        lambda _ip: {
+            "name": "AP-1",
+            "ip": "192.0.2.99",
+            "model": "U6-LR",
+            "mac": "AA-BB-CC-DD-EE-FF",
+        },
+    )
+
+    enriched = bridge._enrich_device_with_unifi({"hostname": "192.0.2.99"})
+
+    assert enriched["unifi_mac"] == "AA-BB-CC-DD-EE-FF"
+    assert bridge._device_online_identity_values(enriched) == (
+        "unifi-ap:aabbccddeeff",
+    )
+
+
+def test_librenms_ap_identity_survives_stale_controller_ip(monkeypatch):
+    monkeypatch.setattr(bridge, "UNIFI_CONTROLLER_URL", "https://controller")
+    monkeypatch.setattr(bridge, "UNIFI_CONTROLLER_USER", "user")
+    monkeypatch.setattr(bridge, "UNIFI_CONTROLLER_PASS", "password")
+    monkeypatch.setattr(bridge, "_find_unifi_ap_by_ip", lambda _ip: None)
+    monkeypatch.setattr(
+        bridge,
+        "fetch_unifi_controller_aps_cached",
+        lambda: {
+            "unifi-ap:aabbccddeeff": {
+                "name": "OB5",
+                "ip": "192.168.39.201",
+                "mac": "aa:bb:cc:dd:ee:ff",
+            }
+        },
+    )
+
+    enriched = bridge._enrich_device_with_unifi({
+        "hostname": "192.168.39.1",
+        "sysName": "OB5",
+    })
+
+    assert enriched["unifi_mac"] == "aa:bb:cc:dd:ee:ff"
+    assert bridge._device_online_identity_values(enriched) == (
+        "unifi-ap:aabbccddeeff",
+    )
 
 
 def test_ap_down_and_recovery_titles_are_distinct():
@@ -499,11 +573,13 @@ def test_unifi_alert_state_survives_bridge_restart(monkeypatch, tmp_path):
     bridge.save_unifi_ap_states(states)
     loaded = bridge.load_unifi_ap_states()
 
-    assert set(loaded) == {"aa:bb:cc:dd:ee:ff"}
-    assert loaded["aa:bb:cc:dd:ee:ff"]["alerting"] is True
-    assert loaded["aa:bb:cc:dd:ee:ff"]["down_since"] == 1234.0
-    assert loaded["aa:bb:cc:dd:ee:ff"]["name"] == "AP-1"
-    assert loaded["aa:bb:cc:dd:ee:ff"]["ip"] == "192.0.2.10"
+    state_key = "unifi-ap:aabbccddeeff"
+    assert set(loaded) == {state_key}
+    assert loaded[state_key]["alerting"] is True
+    assert loaded[state_key]["down_since"] == 1234.0
+    assert loaded[state_key]["name"] == "AP-1"
+    assert loaded[state_key]["ip"] == "192.0.2.10"
+    assert loaded[state_key]["mac"] == "aabbccddeeff"
 
 
 def test_ap_watcher_restores_active_outages_instead_of_isp_watcher():
