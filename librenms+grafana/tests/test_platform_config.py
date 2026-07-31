@@ -143,6 +143,27 @@ alerts:
     assert env["DEVICE_MEMORY_RECOVER_PERCENT"] == "75"
 
 
+def test_gateway_mac_flap_settings_render_and_legacy_default_is_upgraded():
+    config = platform_config.parse_simple_yaml("""
+devices:
+  core:
+    ip: 192.168.10.254
+alerts:
+  syslog_alert_types: native_vlan_mismatch,errdisable,bpduguard,loopback
+  gateway_macs: 0000.5e00.0101,0011.2233.4455
+  gateway_uplink_ports: Po1,Po10
+  mac_flap_window_seconds: 90
+  mac_flap_threshold: 4
+""")
+    env = platform_config.render_env(config)
+
+    assert env["SYSLOG_ALERT_TYPES"] == "native_vlan_mismatch,mac_flap,errdisable,bpduguard,loopback"
+    assert env["SYSLOG_GATEWAY_MACS"] == "0000.5e00.0101,0011.2233.4455"
+    assert env["SYSLOG_GATEWAY_UPLINK_PORTS"] == "Po1,Po10"
+    assert env["SYSLOG_MAC_FLAP_WINDOW_SECONDS"] == "90"
+    assert env["SYSLOG_MAC_FLAP_THRESHOLD"] == "4"
+
+
 def test_switch_resource_thresholds_must_be_percentages():
     config = platform_config.parse_simple_yaml("""
 devices:

@@ -46,6 +46,13 @@ alerts:
   feishu_app_id:
   feishu_app_secret:
   feishu_chat_id:
+  syslog_alert_types: native_vlan_mismatch,mac_flap,errdisable,bpduguard,loopback
+  # 网关、防火墙或 HSRP/VRRP 虚拟 MAC；多个值用逗号分隔。
+  gateway_macs:
+  # 上述 MAC 正常应出现的 Port-channel；多个值用逗号分隔。
+  gateway_uplink_ports:
+  mac_flap_window_seconds: 60
+  mac_flap_threshold: 3
   cpu_alert_percent: 70
   memory_alert_percent: 80
 

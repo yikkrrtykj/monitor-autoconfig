@@ -39,7 +39,11 @@ Env:
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
   SYSLOG_EVENT_RATE_LIMIT seconds to suppress duplicate syslog event cards (default 60)
   SYSLOG_ALERT_TYPES      comma list of syslog cards to push
-                          (default native_vlan_mismatch,errdisable,bpduguard,loopback)
+  SYSLOG_GATEWAY_MACS     comma-separated gateway/VRRP MAC addresses
+  SYSLOG_GATEWAY_UPLINK_PORTS comma-separated expected gateway uplinks
+  SYSLOG_MAC_FLAP_WINDOW_SECONDS / SYSLOG_MAC_FLAP_THRESHOLD
+                          ordinary MAC-flap frequency window / threshold
+                          (default 60 seconds / 3 events)
   SYSLOG_CORRELATION_SECONDS seconds to collapse native-vlan + errdisable on same port
   SYSLOG_RECOVERY_ENABLED true = send recovery cards when an alerted port comes back up
   DEVICE_DOWN_ENABLED     true = watch infra ping targets for down (default true)
@@ -135,10 +139,26 @@ SYSLOG_ALERT_TYPES = {
     part.strip().lower()
     for part in os.environ.get(
         "SYSLOG_ALERT_TYPES",
-        "native_vlan_mismatch,errdisable,bpduguard,loopback",
+        "native_vlan_mismatch,mac_flap,errdisable,bpduguard,loopback",
     ).split(",")
     if part.strip()
 }
+SYSLOG_GATEWAY_MACS = tuple(
+    part.strip()
+    for part in os.environ.get("SYSLOG_GATEWAY_MACS", "").split(",")
+    if part.strip()
+)
+SYSLOG_GATEWAY_UPLINK_PORTS = tuple(
+    part.strip()
+    for part in os.environ.get("SYSLOG_GATEWAY_UPLINK_PORTS", "").split(",")
+    if part.strip()
+)
+SYSLOG_MAC_FLAP_WINDOW_SECONDS = max(
+    1, int(os.environ.get("SYSLOG_MAC_FLAP_WINDOW_SECONDS", "60"))
+)
+SYSLOG_MAC_FLAP_THRESHOLD = max(
+    1, int(os.environ.get("SYSLOG_MAC_FLAP_THRESHOLD", "3"))
+)
 SYSLOG_CORRELATION_SECONDS = int(os.environ.get("SYSLOG_CORRELATION_SECONDS", "10"))
 SYSLOG_RECOVERY_ENABLED = os.environ.get("SYSLOG_RECOVERY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_DOWN_ENABLED = os.environ.get("DEVICE_DOWN_ENABLED", "true").lower() in ("1", "true", "yes", "on")
@@ -4607,6 +4627,121 @@ def _normalize_iface_key(value):
     return token
 
 
+class MacFlapTracker:
+    """Turn noisy MACFLAP syslog lines into actionable, rate-aware events.
+
+    IOS only says that a MAC is flapping *between* two interfaces. It does not
+    identify a reliable old/new direction, so ordinary events keep the A/B
+    wording. For configured gateway MACs, an expected uplink lets us identify
+    the other side as the abnormal interface without guessing direction.
+    """
+
+    def __init__(
+        self,
+        gateway_macs=None,
+        gateway_uplink_ports=None,
+        window_seconds=SYSLOG_MAC_FLAP_WINDOW_SECONDS,
+        threshold=SYSLOG_MAC_FLAP_THRESHOLD,
+    ):
+        self.gateway_macs = {
+            _normalize_mac_hex(mac)
+            for mac in (gateway_macs if gateway_macs is not None else SYSLOG_GATEWAY_MACS)
+            if _normalize_mac_hex(mac)
+        }
+        self.gateway_uplink_ports = {
+            _normalize_iface_key(port)
+            for port in (
+                gateway_uplink_ports
+                if gateway_uplink_ports is not None
+                else SYSLOG_GATEWAY_UPLINK_PORTS
+            )
+            if _normalize_iface_key(port)
+        }
+        self.window_seconds = max(1, int(window_seconds))
+        self.threshold = max(1, int(threshold))
+        self._moves = {}
+        self._last_prune = 0.0
+
+    def observe(self, host, event, now=None):
+        if not event or event.get("kind") != "mac_flap":
+            return event
+        now = time.time() if now is None else float(now)
+        mac = _normalize_mac_hex(event.get("mac"))
+        vlan = str(event.get("vlan") or "")
+        key = (str(host or "").lower(), mac, vlan)
+        cutoff = now - self.window_seconds
+        if now - self._last_prune >= self.window_seconds:
+            retained = {}
+            for move_key, stamps in self._moves.items():
+                active = [stamp for stamp in stamps if stamp >= cutoff]
+                if active:
+                    retained[move_key] = active
+            self._moves = retained
+            self._last_prune = now
+        moves = [stamp for stamp in self._moves.get(key, []) if stamp >= cutoff]
+        moves.append(now)
+        self._moves[key] = moves
+
+        port_a = event.get("port_a") or ""
+        port_b = event.get("port_b") or ""
+        normalized_ports = {
+            port_a: _normalize_iface_key(port_a),
+            port_b: _normalize_iface_key(port_b),
+        }
+        expected = [
+            port for port, normalized in normalized_ports.items()
+            if normalized and normalized in self.gateway_uplink_ports
+        ]
+        unexpected = [
+            port for port, normalized in normalized_ports.items()
+            if normalized and normalized not in self.gateway_uplink_ports
+        ]
+        is_gateway = bool(mac and mac in self.gateway_macs)
+        uplink_to_unexpected = bool(
+            is_gateway and len(expected) == 1 and len(unexpected) == 1
+        )
+        if not uplink_to_unexpected and len(moves) < self.threshold:
+            return None
+
+        enriched = dict(event)
+        enriched.update({
+            "gateway_mac": is_gateway,
+            "move_count": len(moves),
+            "window_seconds": self.window_seconds,
+        })
+        if is_gateway:
+            enriched.update({
+                "title": "🔴 网关 MAC 异常移动",
+                "color": "red",
+                "dedupe": f"gateway-mac-flap|{mac}|{vlan}",
+            })
+            if uplink_to_unexpected:
+                enriched.update({
+                    "normal_port": expected[0],
+                    "abnormal_port": unexpected[0],
+                    "hint": (
+                        "关键网关 MAC 在正常上联和其他接口之间移动，可能存在二层环路、"
+                        "错误跳线或网关双主。"
+                    ),
+                })
+            else:
+                enriched["hint"] = (
+                    "关键网关 MAC 在统计窗口内频繁移动；若两端都是正常 HA 上联，先核对"
+                    "主备切换，否则检查二层环路、错误跳线或网关双主。"
+                )
+        else:
+            enriched.update({
+                "title": "🟠 普通 MAC 频繁漂移",
+                "color": "orange",
+                "dedupe": f"mac-flap|{mac}|{vlan}",
+                "hint": (
+                    "同一个 MAC 在两个接口之间频繁学习，常见于二层环路、无线桥接、"
+                    "AP Mesh/第二网口或错误跳线。"
+                ),
+            })
+        return enriched
+
+
 def _normalize_link_identity(value):
     """Normalize an IP/sysName/hostname for cross-watcher event matching."""
     token = str(value or "").strip().lower()
@@ -4900,11 +5035,21 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
             f"🔁 对端：{event.get('peer_device')} {event.get('peer_port')} / VLAN {event.get('peer_vlan')}",
         ])
     elif kind == "mac_flap":
-        lines.extend([
-            f"🔗 MAC：{event.get('mac')}",
-            f"🏷 VLAN：{event.get('vlan')}",
-            f"🔌 端口：{event.get('port_a')} ↔ {event.get('port_b')}",
-        ])
+        lines.extend([f"🔗 MAC：{event.get('mac')}", f"🏷 VLAN：{event.get('vlan')}"])
+        if event.get("normal_port") and event.get("abnormal_port"):
+            lines.extend([
+                f"✅ 正常上联：{event.get('normal_port')}",
+                f"⚠️ 异常接口：{event.get('abnormal_port')}",
+            ])
+        else:
+            lines.append(f"🔌 涉及接口：{event.get('port_a')} ↔ {event.get('port_b')}")
+        if event.get("move_count"):
+            lines.append(
+                f"🔁 {event.get('window_seconds', 60)} 秒移动次数："
+                f"{event.get('move_count')} 次"
+            )
+        if event.get("hint"):
+            lines.append(f"🧭 判断：{event.get('hint')}")
     elif kind == "errdisable":
         lines.extend([
             f"🔌 接口：{event.get('port') or '未知'}",
@@ -4947,6 +5092,7 @@ def syslog_watcher():
     network_realert = max(rate_limit, SYSLOG_REALERT_SECONDS)
     recover_stable = max(0, SYSLOG_RECOVER_STABLE_SECONDS)
     correlation_window = max(0, SYSLOG_CORRELATION_SECONDS)
+    mac_flap_tracker = MacFlapTracker()
 
     def _port_key(host, port):
         return "|".join([str(host or ""), _normalize_iface_key(port)])
@@ -5187,6 +5333,10 @@ def syslog_watcher():
             if not _syslog_event_enabled(event.get("kind")):
                 continue
             kind = event.get("kind")
+            if kind == "mac_flap":
+                event = mac_flap_tracker.observe(host, event, now)
+                if not event:
+                    continue
             if kind == "native_vlan_mismatch":
                 _drop_pending_lower_for(host, _network_event_port(event), _network_event_priority(kind))
                 _send_network_event(host, message, event, now)

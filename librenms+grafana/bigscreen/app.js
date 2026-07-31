@@ -1787,11 +1787,18 @@
     }
     value.unifi = { enabled: false, password: "", sites: "all", verify_ssl: false, ...(value.unifi || {}) };
     value.alerts = {
-      syslog_alert_types: "native_vlan_mismatch,errdisable,bpduguard,loopback",
+      syslog_alert_types: "native_vlan_mismatch,mac_flap,errdisable,bpduguard,loopback",
+      gateway_macs: "",
+      gateway_uplink_ports: "",
+      mac_flap_window_seconds: 60,
+      mac_flap_threshold: 3,
       cpu_alert_percent: 70,
       memory_alert_percent: 80,
       ...(value.alerts || {})
     };
+    if (value.alerts.syslog_alert_types === "native_vlan_mismatch,errdisable,bpduguard,loopback") {
+      value.alerts.syslog_alert_types = "native_vlan_mismatch,mac_flap,errdisable,bpduguard,loopback";
+    }
     value.security = { ...(value.security || {}), grafana_anonymous: (value.security || {}).grafana_anonymous !== false };
     return value;
   }
@@ -2097,10 +2104,14 @@
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
           ${configInput("alerts.feishu_chat_id", "本监控的告警及巡检群名称")}
+          ${configInput("alerts.gateway_macs", "关键网关 MAC（逗号分隔）", { placeholder: "例如：0000.5e00.0101,0000.5e00.0201" })}
+          ${configInput("alerts.gateway_uplink_ports", "网关正常上联接口（逗号分隔）", { placeholder: "例如：Po1,Po10" })}
+          ${configInput("alerts.mac_flap_window_seconds", "MAC 漂移统计窗口（秒）", { number: true })}
+          ${configInput("alerts.mac_flap_threshold", "普通 MAC 告警次数", { number: true })}
           ${configInput("alerts.cpu_alert_percent", "交换机 CPU 告警阈值（%）", { number: true })}
           ${configInput("alerts.memory_alert_percent", "交换机内存告警阈值（%）", { number: true })}
         </div>
-        <p class="config-section-note">CPU 达到阈值持续 5 分钟才告警，内存持续 10 分钟才告警；分别低于阈值 10% 并稳定 2 分钟后恢复。默认 70% / 80%，40% 不会告警。</p>
+        <p class="config-section-note">关键网关 MAC 在正常上联与其他接口间移动时立即告警；普通 MAC 默认 60 秒内出现 3 次才告警。Cisco 日志不提供可靠的原/新方向，因此未配置正常上联时只显示两个涉及接口。CPU 达到阈值持续 5 分钟才告警，内存持续 10 分钟才告警；分别低于阈值 10% 并稳定 2 分钟后恢复。默认 70% / 80%，40% 不会告警。</p>
       </section>
       <section class="config-section">
         <h3>安全</h3>

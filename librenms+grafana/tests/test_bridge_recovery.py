@@ -546,3 +546,66 @@ def test_wan_keyword_digit_suffix_requires_boundary():
         assert bridge._is_wan_port("lan-port") is False
     finally:
         bridge.FIREWALL_WAN_IF_FILTER = original
+
+
+def _mac_flap_event(mac="0011.2233.4455", vlan="41", port_a="Gi1/0/20", port_b="Po1"):
+    parsed = bridge.parse_network_syslog_event(
+        f"%SW_MATM-4-MACFLAP_NOTIF: Host {mac} in vlan {vlan} "
+        f"is flapping between port {port_a} and port {port_b}"
+    )
+    assert parsed and parsed["kind"] == "mac_flap"
+    return parsed
+
+
+def test_ordinary_mac_flap_requires_frequency_threshold():
+    tracker = bridge.MacFlapTracker(window_seconds=60, threshold=3)
+
+    assert tracker.observe("core", _mac_flap_event(), now=100) is None
+    assert tracker.observe("core", _mac_flap_event(), now=120) is None
+    event = tracker.observe("core", _mac_flap_event(), now=140)
+
+    assert event["title"] == "🟠 普通 MAC 频繁漂移"
+    assert event["move_count"] == 3
+    assert event["window_seconds"] == 60
+
+
+def test_gateway_mac_between_expected_uplink_and_access_port_alerts_immediately(monkeypatch):
+    tracker = bridge.MacFlapTracker(
+        gateway_macs=["0011.2233.4455"],
+        gateway_uplink_ports=["Port-channel1"],
+        window_seconds=60,
+        threshold=3,
+    )
+
+    event = tracker.observe("core", _mac_flap_event(), now=100)
+
+    assert event["title"] == "🔴 网关 MAC 异常移动"
+    assert event["normal_port"] == "Po1"
+    assert event["abnormal_port"] == "Gi1/0/20"
+    assert event["move_count"] == 1
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    card_text = json.dumps(
+        bridge.build_network_syslog_card("core", "message", event),
+        ensure_ascii=False,
+    )
+    assert "✅ 正常上联：Po1" in card_text
+    assert "⚠️ 异常接口：Gi1/0/20" in card_text
+    assert "🔁 60 秒移动次数：1 次" in card_text
+    assert "🧭 判断：" in card_text
+
+
+def test_gateway_mac_single_move_between_two_expected_ha_uplinks_is_not_alerted():
+    tracker = bridge.MacFlapTracker(
+        gateway_macs=["0011.2233.4455"],
+        gateway_uplink_ports=["Po1", "Po2"],
+        window_seconds=60,
+        threshold=3,
+    )
+    event = _mac_flap_event(port_a="Po1", port_b="Po2")
+
+    assert tracker.observe("core", event, now=100) is None
+    assert tracker.observe("core", event, now=110) is None
+    frequent = tracker.observe("core", event, now=120)
+    assert frequent["gateway_mac"] is True
+    assert frequent["move_count"] == 3
+    assert "normal_port" not in frequent

@@ -343,6 +343,24 @@ def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_t
     assert 'configInput("alerts.memory_alert_percent", "交换机内存告警阈值（%）"' in app
 
 
+def test_gateway_mac_flap_alert_is_configurable_and_enabled_by_default():
+    compose = read("docker-compose.yml")
+    app = read("bigscreen/app.js")
+    env = read(".env.example")
+
+    assert "native_vlan_mismatch,mac_flap,errdisable,bpduguard,loopback" in compose
+    assert "SYSLOG_GATEWAY_MACS" in compose
+    assert "SYSLOG_GATEWAY_UPLINK_PORTS" in compose
+    assert "SYSLOG_MAC_FLAP_WINDOW_SECONDS" in compose
+    assert "SYSLOG_MAC_FLAP_THRESHOLD" in compose
+    assert 'configInput("alerts.gateway_macs", "关键网关 MAC（逗号分隔）"' in app
+    assert 'configInput("alerts.gateway_uplink_ports", "网关正常上联接口（逗号分隔）"' in app
+    assert 'configInput("alerts.mac_flap_window_seconds", "MAC 漂移统计窗口（秒）"' in app
+    assert 'configInput("alerts.mac_flap_threshold", "普通 MAC 告警次数"' in app
+    assert "SYSLOG_MAC_FLAP_WINDOW_SECONDS=60" in env
+    assert "SYSLOG_MAC_FLAP_THRESHOLD=3" in env
+
+
 def test_apply_failure_does_not_mass_delete_services():
     script = read("apply-env.sh")
 
