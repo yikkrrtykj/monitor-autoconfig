@@ -506,6 +506,16 @@ def test_unifi_alert_state_survives_bridge_restart(monkeypatch, tmp_path):
     assert loaded["aa:bb:cc:dd:ee:ff"]["ip"] == "192.0.2.10"
 
 
+def test_ap_watcher_restores_active_outages_instead_of_isp_watcher():
+    import inspect
+
+    ap_source = inspect.getsource(bridge.unifi_ap_watcher)
+    isp_source = inspect.getsource(bridge.isp_bandwidth_watcher)
+
+    assert "states = load_unifi_ap_states()" in ap_source
+    assert "load_unifi_ap_states()" not in isp_source
+
+
 def test_new_lifecycle_online_card_bypasses_lifetime_dedupe(monkeypatch, tmp_path):
     state_file = tmp_path / "online.json"
     state_file.write_text(json.dumps(["switch-1", "10.0.0.1"]), encoding="utf-8")
@@ -588,15 +598,56 @@ def test_pending_delete_notify_downgrades_to_webhook_when_app_send_fails(monkeyp
     changed = bridge.notify_pending_delete_states(states, 1000.0)
     assert changed is True
     assert states[key]["pending_notified"] is True
+    assert states[key]["pending_interactive_notified"] is False
+    assert states[key]["pending_interactive_last_attempt"] == 1000.0
     assert len(webhook_calls) == 1
     assert event_titles == ["#77"]
     assert webhook_calls[0]["card"]["header"]["title"]["content"].startswith("#77 ")
 
-    # 已通知后不重复发（DEVICE_PENDING_DELETE_REALERT_SECONDS=0）
+    # Webhook 已告知后不会重复刷屏，应用卡在重试间隔到达后仍会补发按钮。
     monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_REALERT_SECONDS", 0)
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_APP_RETRY_SECONDS", 60)
     webhook_calls.clear()
-    assert bridge.notify_pending_delete_states(states, 5000.0) is False
+    assert bridge.notify_pending_delete_states(states, 1030.0) is False
     assert not webhook_calls
+    app_calls = []
+    monkeypatch.setattr(bridge, "send_feishu_app_card", lambda card: app_calls.append(card) or True)
+    assert bridge.notify_pending_delete_states(states, 1061.0) is True
+    assert len(app_calls) == 1
+    assert states[key]["pending_interactive_notified"] is True
+    assert not webhook_calls
+
+
+def test_feishu_app_chat_lookup_reads_all_pages(monkeypatch):
+    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "比赛告警群")
+    bridge._FEISHU_APP_CHAT["chat_id"] = ""
+    responses = iter([
+        _FakeResponse({
+            "code": 0,
+            "data": {
+                "items": [{"chat_id": "oc_other", "name": "公司告警群"}],
+                "has_more": True,
+                "page_token": "next-page",
+            },
+        }),
+        _FakeResponse({
+            "code": 0,
+            "data": {
+                "items": [{"chat_id": "oc_event", "name": "比赛告警群"}],
+                "has_more": False,
+            },
+        }),
+    ])
+    urls = []
+
+    def fake_urlopen(req, timeout):
+        urls.append(req.full_url)
+        return next(responses)
+
+    monkeypatch.setattr(bridge.request, "urlopen", fake_urlopen)
+    assert bridge._feishu_app_chat_id("tenant-token") == "oc_event"
+    assert len(urls) == 2
+    assert "page_token=next-page" in urls[1]
 
 
 def test_pending_delete_notify_not_committed_when_all_sends_fail(monkeypatch):

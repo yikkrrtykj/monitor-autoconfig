@@ -434,6 +434,75 @@ class TestServerAttachmentDiscovery:
         assert found[0]["from_ip"] == "192.168.10.11"
         assert found[0]["from_port"] == "Gi6/0/43"
 
+    def test_deeper_transit_port_channel_never_steals_server(self, monkeypatch):
+        devices = {
+            "192.168.10.254": {
+                "ip": "192.168.10.254", "sysname": "core",
+                "ifname": {42: "Vlan42", 10001: "Te1/0/1"},
+                "arp": {"192.168.42.203": {
+                    "mac": "00:11:22:aa:bb:cc", "ifindex": 42, "vlan": 42,
+                }},
+            },
+            "192.168.10.11": {
+                "ip": "192.168.10.11", "sysname": "Global-new-stack",
+                "ifname": {10110: "Gi6/0/43", 10147: "Gi6/0/47"}, "arp": {},
+            },
+            "192.168.10.47": {
+                "ip": "192.168.10.47", "sysname": "Lan-Server",
+                "ifname": {5001: "Po1", 10101: "Gi1/1/1"}, "arp": {},
+            },
+        }
+        # Lan-Server is one level deeper, so the old depth-first ranking chose
+        # its Po1 even though .11 had the real physical access-port hit.
+        edges = [
+            {"from_ip": "192.168.10.254", "from_ifindex": 10001,
+             "to_ip": "192.168.10.11", "to_ifindex": 10147},
+            {"from_ip": "192.168.10.11", "from_ifindex": 10147,
+             "to_ip": "192.168.10.47", "to_ifindex": 10101},
+        ]
+        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setattr(
+            gte, "lookup_fdb_ifindex",
+            lambda ip, *_args, **_kwargs: {
+                "192.168.10.11": 10110,
+                "192.168.10.47": 5001,
+            }.get(ip),
+        )
+
+        found = gte.discover_server_edges(
+            devices, edges, {"192.168.42.203": "sdwan"}, "global",
+        )
+
+        assert len(found) == 1
+        assert found[0]["from_ip"] == "192.168.10.11"
+        assert found[0]["from_port"] == "Gi6/0/43"
+
+    def test_aggregate_only_server_location_is_left_unresolved(self, monkeypatch):
+        devices = {
+            "192.168.10.254": {
+                "ip": "192.168.10.254", "sysname": "core",
+                "ifname": {42: "Vlan42"},
+                "arp": {"192.168.42.203": {
+                    "mac": "00:11:22:aa:bb:cc", "ifindex": 42, "vlan": 42,
+                }},
+            },
+            "192.168.10.47": {
+                "ip": "192.168.10.47", "sysname": "Lan-Server",
+                "ifname": {5001: "Po1"}, "arp": {},
+            },
+        }
+        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setattr(
+            gte, "lookup_fdb_ifindex",
+            lambda ip, *_args, **_kwargs: 5001 if ip == "192.168.10.47" else None,
+        )
+
+        assert gte.discover_server_edges(
+            devices, [], {"192.168.42.203": "sdwan"}, "global",
+        ) == []
+
 
 # ---- build_edges() via CDP (Cisco gear without LLDP) ----
 

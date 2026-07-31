@@ -182,6 +182,11 @@ DEVICE_REENROLL_JOBS = os.environ.get("DEVICE_REENROLL_JOBS", "infra-dist-ping")
 DEVICE_LIBRENMS_SYNC_RETRY_SECONDS = int(os.environ.get("DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", "60"))
 # 待删除确认卡的重发间隔；0 = 只发一次，之后一直安静等确认。
 DEVICE_PENDING_DELETE_REALERT_SECONDS = int(os.environ.get("DEVICE_PENDING_DELETE_REALERT_SECONDS", "0"))
+# 应用卡片发送失败时仍可先用 Webhook 告知，但不能把带按钮的确认卡永久
+# 判定为已送达。低频重试应用卡，权限、群名或临时 API 故障恢复后自动补发。
+DEVICE_PENDING_DELETE_APP_RETRY_SECONDS = int(
+    os.environ.get("DEVICE_PENDING_DELETE_APP_RETRY_SECONDS", "60")
+)
 # 飞书自建应用（推荐）：配置后普通告警优先由应用发送，待删除确认卡还带
 # “确认删除/保留”回传按钮；feishu-ws 长连接让外网用户也能直接确认。
 # 留空则使用群机器人 Webhook，确认动作在赛事控制台完成。
@@ -420,6 +425,8 @@ def load_device_down_states():
             "pending_token": str(value.get("pending_token") or ""),
             "pending_notified": bool(value.get("pending_notified", False)),
             "pending_last_notified": _as_float(value.get("pending_last_notified")),
+            "pending_interactive_notified": bool(value.get("pending_interactive_notified", False)),
+            "pending_interactive_last_attempt": _as_float(value.get("pending_interactive_last_attempt")),
             "pending_snoozed_until": _as_float(value.get("pending_snoozed_until")),
             "pending_event_title": str(value.get("pending_event_title") or ""),
         }
@@ -450,6 +457,8 @@ def save_device_down_states(states):
             "pending_token": state.get("pending_token") or "",
             "pending_notified": bool(state.get("pending_notified", False)),
             "pending_last_notified": state.get("pending_last_notified"),
+            "pending_interactive_notified": bool(state.get("pending_interactive_notified", False)),
+            "pending_interactive_last_attempt": state.get("pending_interactive_last_attempt"),
             "pending_snoozed_until": state.get("pending_snoozed_until"),
             "pending_event_title": state.get("pending_event_title") or "",
         }
@@ -2358,17 +2367,32 @@ def _feishu_app_chat_id(token):
         return FEISHU_CHAT_ID
     if _FEISHU_APP_CHAT["chat_id"]:
         return _FEISHU_APP_CHAT["chat_id"]
+    items = []
+    page_token = ""
     try:
-        req = request.Request(
-            "https://open.feishu.cn/open-apis/im/v1/chats?page_size=20",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        with request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+        while True:
+            query = {"page_size": "100"}
+            if page_token:
+                query["page_token"] = page_token
+            req = request.Request(
+                "https://open.feishu.cn/open-apis/im/v1/chats?" + parse.urlencode(query),
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+            if data.get("code") not in (None, 0):
+                raise RuntimeError(f"code={data.get('code')} msg={data.get('msg')}")
+            page = data.get("data") or {}
+            items.extend(
+                item for item in (page.get("items") or [])
+                if isinstance(item, dict) and item.get("chat_id")
+            )
+            if not page.get("has_more") or not page.get("page_token"):
+                break
+            page_token = str(page["page_token"])
     except Exception as exc:
         log(f"[APP] chat list failed: {exc}")
         return ""
-    items = [item for item in (((data.get("data") or {}).get("items")) or []) if item.get("chat_id")]
 
     def match_name(value):
         wanted = str(value or "").strip().casefold()
@@ -2979,7 +3003,6 @@ def isp_bandwidth_watcher():
         return
     time.sleep(30)
     bandwidth_cfg = _parse_bandwidth_config(BIGSCREEN_ISP_MAX_BANDWIDTH)
-    states = load_unifi_ap_states()
     last_status_log = 0.0
     data_seen = False
     data_missing_since = None
@@ -3554,6 +3577,8 @@ def mark_pending_delete_states(states, now):
             state["pending_token"] = secrets.token_urlsafe(16)
             state["pending_notified"] = False
             state["pending_last_notified"] = None
+            state["pending_interactive_notified"] = False
+            state["pending_interactive_last_attempt"] = None
             state["pending_event_title"] = next_event_title()
             marked.append(key)
     return marked
@@ -3565,24 +3590,42 @@ def notify_pending_delete_states(states, now):
     for key, state in states.items():
         if not state.get("pending_delete"):
             continue
-        due = not state.get("pending_notified")
-        if not due and DEVICE_PENDING_DELETE_REALERT_SECONDS > 0:
+        plain_due = not state.get("pending_notified")
+        if not plain_due and DEVICE_PENDING_DELETE_REALERT_SECONDS > 0:
             last = _as_float(state.get("pending_last_notified")) or 0
-            due = now - last >= DEVICE_PENDING_DELETE_REALERT_SECONDS
-        if not due:
-            continue
+            plain_due = now - last >= DEVICE_PENDING_DELETE_REALERT_SECONDS
         interactive = feishu_app_configured()
-        card = build_retire_confirm_card(state, key, interactive)
-        delivered = send_feishu_app_card(card) if interactive else False
-        if not delivered:
-            # 应用没配/发送失败都退回 webhook 通知卡（无按钮，控制台确认）
-            fallback_card = build_retire_confirm_card(state, key, False)
-            delivered = _send_feishu_webhook(fallback_card) if interactive else send_feishu(fallback_card)
+        app_delivered = False
+        if interactive and not state.get("pending_interactive_notified"):
+            # Existing state files predate the interactive-delivery fields.
+            # Materialize the default so a failed first retry is persisted and
+            # the next loop observes a stable, explicit delivery state.
+            state.setdefault("pending_interactive_notified", False)
+            last_attempt = _as_float(state.get("pending_interactive_last_attempt")) or 0
+            app_due = now - last_attempt >= max(1, DEVICE_PENDING_DELETE_APP_RETRY_SECONDS)
+            if app_due:
+                state["pending_interactive_last_attempt"] = now
+                changed = True
+                app_delivered = send_feishu_app_card(build_retire_confirm_card(state, key, True))
+                if app_delivered:
+                    state["pending_interactive_notified"] = True
+                    state["pending_notified"] = True
+                    state["pending_last_notified"] = now
+                    log(
+                        f"[DOWN] interactive PENDING-DELETE card sent for "
+                        f"{state.get('name')} ({state.get('ip')})"
+                    )
+        if app_delivered or not plain_due:
+            continue
+
+        # 应用卡失败时 Webhook 只负责告知；以后仍会重试真正带回传按钮的应用卡。
+        fallback_card = build_retire_confirm_card(state, key, False)
+        delivered = _send_feishu_webhook(fallback_card) if interactive else send_feishu(fallback_card)
         if delivered:
             state["pending_notified"] = True
             state["pending_last_notified"] = now
             changed = True
-            log(f"[DOWN] PENDING-DELETE confirm card sent for {state.get('name')} ({state.get('ip')})")
+            log(f"[DOWN] PENDING-DELETE notice sent for {state.get('name')} ({state.get('ip')})")
     return changed
 
 
@@ -3592,6 +3635,8 @@ def _clear_pending_fields(state):
     state["pending_token"] = ""
     state["pending_notified"] = False
     state["pending_last_notified"] = None
+    state["pending_interactive_notified"] = False
+    state["pending_interactive_last_attempt"] = None
     state["pending_event_title"] = ""
 
 
@@ -4245,7 +4290,11 @@ def unifi_ap_watcher():
         return
     query = 'unpoller_device_info{type="uap"}'
     time.sleep(20)  # let Prometheus/unpoller settle after a (re)start
-    states = {}
+    # Persist only active outages, then restore them here so an alert bridge
+    # restart while an AP is down can still emit the matching recovery after
+    # the controller sees that AP online again.  This state was previously
+    # loaded by the unrelated ISP watcher, leaving this watcher empty.
+    states = load_unifi_ap_states()
     snmp_add_attempted = {}
     snmp_confirmed_exists = set()  # IPs confirmed in LibreNMS — skip future add retries
     deployment_notification_confirmed = set()

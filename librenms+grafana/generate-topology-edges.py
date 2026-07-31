@@ -779,7 +779,12 @@ def discover_server_edges(devices, edges, servers, community):
                     continue
                 if ifindex is None:
                     continue
-                port_name = device.get("ifname", {}).get(ifindex)
+                # ``device`` above belongs to the task-submission loop and may
+                # point at a completely different switch by the time futures
+                # finish.  Always resolve the interface from the switch that
+                # produced this FDB result.
+                switch_device = switch_devices[switch_ip]
+                port_name = switch_device.get("ifname", {}).get(ifindex)
                 candidates.append({
                     "switch_ip": switch_ip,
                     "ifindex": ifindex,
@@ -804,11 +809,28 @@ def discover_server_edges(devices, edges, servers, community):
                 file=sys.stderr,
             )
             continue
+
+        # A MAC learned on a logical Po/LAG is not proof that the server is
+        # attached there: every downstream switch can learn the same MAC on
+        # its transit port-channel.  This was the source of servers jumping
+        # between unrelated switches whenever graph depth/order changed.  An
+        # exact physical-port FDB hit is authoritative; aggregate-only results
+        # are deliberately left unresolved instead of inventing a parent.
+        physical_candidates = [
+            candidate for candidate in access_candidates
+            if not candidate["is_aggregate"]
+        ]
+        if not physical_candidates:
+            print(
+                f"[WARN] server {server_name} ({server_ip}): MAC was learned "
+                "only on unconfirmed Po/LAG interfaces; keeping core fallback",
+                file=sys.stderr,
+            )
+            continue
         best = max(
-            access_candidates,
+            physical_candidates,
             key=lambda candidate: (
                 candidate["depth"],
-                not candidate["is_aggregate"],
                 candidate["switch_ip"],
                 -candidate["ifindex"],
             ),
