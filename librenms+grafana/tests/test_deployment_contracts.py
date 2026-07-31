@@ -77,6 +77,8 @@ def test_bigscreen_runtime_config_is_encoded_before_javascript_embedding():
 
     assert 'TITLE_B64="$$(b64 "$${BIGSCREEN_TITLE:-}")"' in compose
     assert 'title: decodeConfigValue("$$TITLE_B64")' in compose
+    assert 'TEAM_ORDERS_B64="$$(b64 "$${BIGSCREEN_TEAM_ORDERS:-}")"' in compose
+    assert 'teamOrders: decodeConfigValue("$$TEAM_ORDERS_B64")' in compose
     assert 'title: "$${BIGSCREEN_TITLE:-}"' not in compose
 
 
@@ -86,6 +88,9 @@ def test_control_basic_section_only_contains_event_name_and_layout():
 
     assert 'configInput("event.name", "赛事名称"' in basic
     assert 'configInput("event.default_layout", "默认赛制"' in basic
+    assert "teamOrderConfigMarkup()" in basic
+    assert "data-team-order-slot" in app
+    assert "data-team-order-reset" in app
     assert "event.security_mode" not in basic
     assert "event.public_base_url" not in basic
     assert "delete value.event.security_mode" in app
@@ -192,9 +197,9 @@ def test_bigscreen_ping_trend_uses_stable_two_second_raw_samples():
     assert 'phase="rtt"})' in pages
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
-    assert "pages.js?v=20260730e" in index
+    assert "pages.js?v=20260731a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260730d" in index
+    assert "app.js?v=20260731c" in index
     assert "utils.js?v=20260730f" in index
 
 

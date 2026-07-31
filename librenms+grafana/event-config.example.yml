@@ -1,6 +1,7 @@
 event:
   name:
   default_layout: tournament-64-2layer
+  team_orders: {}
 
 networks:
   player_vlan: 40

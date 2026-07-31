@@ -4,6 +4,7 @@ window.BIGSCREEN_CONFIG = {
   subtitle: "",
   logoText: "",
   defaultLayout: "tournament-64-2layer",
+  teamOrders: "{}",
   grafanaAnonymous: "true",
   prometheusBaseUrl: "",
   ispNames: "ISP1,ISP2",

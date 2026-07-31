@@ -331,11 +331,21 @@ def compose_profiles(existing: Any, unifi_enabled: bool, feishu_enabled: bool = 
     return ",".join(dict.fromkeys(profiles))
 
 
+TEAM_ORDER_LAYOUTS = {
+    "tournament-64-2layer",
+    "tournament-64-233",
+    "tournament-64-332",
+}
+
+
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     config = dict(config) if isinstance(config, dict) else {}
     for section in ("event", "networks", "devices", "isp", "unifi", "alerts", "security", "snmp"):
         value = config.get(section)
         config[section] = dict(value) if isinstance(value, dict) else {}
+    event = config["event"]
+    if not isinstance(event.get("team_orders", {}), dict):
+        event["team_orders"] = {}
     networks = config["networks"]
     if not networks.get("firewall_management_ranges"):
         networks["firewall_management_ranges"] = "192.168.9.0/24"
@@ -367,6 +377,9 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     for section in ("event", "networks", "devices", "isp", "unifi", "alerts", "security", "snmp"):
         if section in config and not isinstance(config.get(section), dict):
             add("bad", section, f"{section} 必须是对象")
+    raw_event = config.get("event") if isinstance(config.get("event"), dict) else {}
+    if "team_orders" in raw_event and not isinstance(raw_event.get("team_orders"), dict):
+        add("bad", "event.team_orders", "队号位置必须是对象")
     raw_devices = config.get("devices") if isinstance(config.get("devices"), dict) else {}
     for key in ("core", "firewall"):
         if key in raw_devices and not isinstance(raw_devices.get(key), dict):
@@ -382,6 +395,20 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     devices = config["devices"]
     networks = config["networks"]
     isp = config["isp"]
+    event = config["event"]
+
+    for layout_id, order in (event.get("team_orders") or {}).items():
+        path = f"event.team_orders.{layout_id}"
+        if layout_id not in TEAM_ORDER_LAYOUTS:
+            add("bad", path, "不支持的比赛布局")
+            continue
+        if (
+            not isinstance(order, list)
+            or len(order) != 16
+            or any(type(team) is not int for team in order)
+            or sorted(order) != list(range(1, 17))
+        ):
+            add("bad", path, "队号位置必须完整包含第 1-16 队，且不能重复")
 
     def valid_ip(value: Any) -> bool:
         try:
@@ -604,6 +631,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     env = {
         "EVENT_NAME": event.get("name", ""),
         "BIGSCREEN_DEFAULT_LAYOUT": event.get("default_layout", "tournament-64-2layer"),
+        "BIGSCREEN_TEAM_ORDERS": json.dumps(event.get("team_orders") or {}, ensure_ascii=False, separators=(",", ":")),
         "SNMP_COMMUNITY": snmp_community,
         "FIREWALL_SNMP_COMMUNITY": snmp.get("firewall_community") or snmp_community,
         "CORE_SWITCH_PING": core_ping,

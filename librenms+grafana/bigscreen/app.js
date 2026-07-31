@@ -10,6 +10,7 @@
   const playerSnapshotWindow = "15s";
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
   const pages = window.BIGSCREEN_PAGES || [];
+  const teamLayouts = window.BIGSCREEN_TEAM_LAYOUTS || {};
 
   // Pure helpers live in utils.js, the Prometheus/data layer in api.js and the
   // topology layout/SVG pipeline in topology.js (all loaded before this file).
@@ -156,6 +157,11 @@
 
   function activePage() {
     return pages.find((page) => page.id === activePageId) || {};
+  }
+
+  function configuredTournamentPage(page) {
+    if (!page || typeof teamLayouts.applyTeamOrder !== "function") return page;
+    return teamLayouts.applyTeamOrder(page, config.teamOrders);
   }
 
   function shouldFilterStageDevices() {
@@ -782,6 +788,7 @@
   }
 
   async function refreshTournament(page) {
+    page = configuredTournamentPage(page);
     const seq = ++tournamentSeq;
     try {
       const selector = tournamentSelector(page);
@@ -1677,7 +1684,10 @@
 
   function controlConfigDefaults(configValue) {
     const value = cloneControlConfig(configValue);
-    value.event = { name: "", default_layout: "tournament-64-2layer", ...(value.event || {}) };
+    value.event = { name: "", default_layout: "tournament-64-2layer", team_orders: {}, ...(value.event || {}) };
+    if (!value.event.team_orders || typeof value.event.team_orders !== "object" || Array.isArray(value.event.team_orders)) {
+      value.event.team_orders = {};
+    }
     // Public access is not a control-panel concern. Older imported configs may
     // still contain these keys; drop them when the form is saved so the basic
     // section stays limited to the event name and default tournament layout.
@@ -1812,6 +1822,54 @@
     `;
   }
 
+  function teamOrderConfigMarkup() {
+    const layoutId = String((lastEditableConfig.event || {}).default_layout || "");
+    const page = pages.find((item) => item.id === layoutId);
+    const configurable = Array.isArray(teamLayouts.configurableLayoutIds)
+      && teamLayouts.configurableLayoutIds.includes(layoutId);
+    if (!page || !configurable || typeof teamLayouts.teamOrderForPage !== "function") return "";
+    const order = teamLayouts.teamOrderForPage(page, lastEditableConfig.event.team_orders);
+    const groups = Array.isArray(page.groups) ? page.groups : [page.teams || []];
+    let slotIndex = 0;
+    return `
+      <div class="team-order-editor" data-team-order-layout="${escapeHtml(layoutId)}">
+        <div class="team-order-heading">
+          <div>
+            <strong>队号位置</strong>
+            <span>按舞台从上到下、每排从左到右排列；选择重复队号时会自动互换。</span>
+          </div>
+          <button type="button" data-team-order-reset="${escapeHtml(layoutId)}">恢复默认顺序</button>
+        </div>
+        <div class="team-order-stage">
+          ${groups.map((group, groupIndex) => {
+            const sideSize = Math.ceil(group.length / 2);
+            const rowLabels = groups.length === 3 ? ["上层", "中层", "下层"] : ["上层", "下层"];
+            const rowLabel = rowLabels[groupIndex] || `第 ${groupIndex + 1} 层`;
+            return `
+            <div class="team-order-row" style="--team-order-side-count:${sideSize}">
+              ${group.map((_team, groupSlotIndex) => {
+                const currentIndex = slotIndex;
+                const selectedTeam = order[slotIndex];
+                const side = groupSlotIndex < sideSize ? "左侧" : "右侧";
+                const sideSlot = groupSlotIndex < sideSize ? groupSlotIndex + 1 : groupSlotIndex - sideSize + 1;
+                slotIndex += 1;
+                return `
+                  <label${groupSlotIndex === sideSize ? ` class="team-order-side-start" style="grid-column-start:${sideSize + 2}"` : ""}>
+                    <span>${rowLabel} · ${side}第 ${sideSlot} 位</span>
+                    <select data-team-order-slot="${currentIndex}" data-team-order-previous="${selectedTeam}">
+                      ${(page.teams || []).map((team) => `<option value="${team}"${team === selectedTeam ? " selected" : ""}>第 ${team} 队</option>`).join("")}
+                    </select>
+                  </label>
+                `;
+              }).join("")}
+            </div>
+          `;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }
+
   function expandIpRangeText(value) {
     const expanded = [];
     splitConfigList(value).forEach((raw) => {
@@ -1924,6 +1982,7 @@
           ${configInput("event.name", "赛事名称", { placeholder: "可留空" })}
           ${configInput("event.default_layout", "默认赛制", { type: "select", choices: matchPages.map((item) => ({ value: item.id, label: item.label })) })}
         </div>
+        ${teamOrderConfigMarkup()}
       </section>
       <section class="config-section">
         <h3>网络 / SNMP</h3>
@@ -2072,6 +2131,17 @@
       }
       value[path[0]][path[1]] = rows;
     });
+    const teamOrderEditor = form.querySelector("[data-team-order-layout]");
+    if (teamOrderEditor) {
+      const layoutId = teamOrderEditor.dataset.teamOrderLayout;
+      const order = [...teamOrderEditor.querySelectorAll("[data-team-order-slot]")]
+        .sort((left, right) => Number(left.dataset.teamOrderSlot) - Number(right.dataset.teamOrderSlot))
+        .map((select) => Number(select.value));
+      if (!value.event.team_orders || typeof value.event.team_orders !== "object" || Array.isArray(value.event.team_orders)) {
+        value.event.team_orders = {};
+      }
+      value.event.team_orders[layoutId] = order;
+    }
     if (value.devices) {
       value.devices.switches = [];
     }
@@ -3078,7 +3148,28 @@
         else configForm.dataset.dirty = "1";
       };
       configForm.addEventListener("input", markDirty);
-      configForm.addEventListener("change", markDirty);
+      configForm.addEventListener("change", (event) => {
+        markDirty(event);
+        const layoutSelect = event.target.closest('[data-config-path="event.default_layout"]');
+        if (layoutSelect) {
+          const next = collectControlConfigForm();
+          renderControlConfigForm(next);
+          configForm.dataset.dirty = "1";
+          return;
+        }
+        const teamSelect = event.target.closest("[data-team-order-slot]");
+        if (!teamSelect) return;
+        const previous = String(teamSelect.dataset.teamOrderPrevious || "");
+        const selected = String(teamSelect.value || "");
+        const duplicate = [...configForm.querySelectorAll("[data-team-order-slot]")]
+          .find((input) => input !== teamSelect && String(input.value) === selected);
+        if (duplicate) {
+          duplicate.value = previous;
+          duplicate.dataset.teamOrderPrevious = previous;
+        }
+        teamSelect.dataset.teamOrderPrevious = selected;
+        collectControlConfigForm();
+      });
       // Browsers increment focused number inputs when the mouse wheel moves.
       // Remove focus before the native wheel action so scrolling the long
       // configuration form cannot silently change VLAN or bandwidth values.
@@ -3090,6 +3181,18 @@
         const dhcpSaveButton = event.target.closest("#controlDhcpSaveTest");
         if (dhcpSaveButton) {
           saveAndTestControlDhcpSettings(event);
+          return;
+        }
+        const teamOrderReset = event.target.closest("[data-team-order-reset]");
+        if (teamOrderReset) {
+          const next = collectControlConfigForm();
+          const layoutId = teamOrderReset.dataset.teamOrderReset;
+          const page = pages.find((item) => item.id === layoutId);
+          if (page && typeof teamLayouts.defaultTeamOrder === "function") {
+            next.event.team_orders[layoutId] = teamLayouts.defaultTeamOrder(page);
+            renderControlConfigForm(next);
+            configForm.dataset.dirty = "1";
+          }
           return;
         }
         const addButton = event.target.closest("[data-config-add]");

@@ -67,6 +67,47 @@ def test_parse_validate_render_env():
     assert env["GRAFANA_ANONYMOUS_ENABLED"] == "false"
 
 
+def test_team_order_renders_for_bigscreen_and_requires_all_teams_once():
+    config = platform_config.parse_simple_yaml("""
+event:
+  default_layout: tournament-64-233
+  team_orders:
+    tournament-64-233:
+      - 14
+      - 15
+      - 16
+      - 6
+      - 7
+      - 8
+      - 11
+      - 12
+      - 13
+      - 3
+      - 4
+      - 5
+      - 9
+      - 10
+      - 1
+      - 2
+devices:
+  core:
+    ip: 192.168.10.254
+""")
+    issues = platform_config.validate_config(config)
+    assert not [item for item in issues if item["level"] == "bad"]
+    env = platform_config.render_env(config)
+    assert env["BIGSCREEN_TEAM_ORDERS"] == (
+        '{"tournament-64-233":[14,15,16,6,7,8,11,12,13,3,4,5,9,10,1,2]}'
+    )
+
+    config["event"]["team_orders"]["tournament-64-233"][-1] = 1
+    issues = platform_config.validate_config(config)
+    assert any(
+        item["level"] == "bad" and item["path"] == "event.team_orders.tournament-64-233"
+        for item in issues
+    )
+
+
 def test_feishu_application_credentials_render_from_console_and_enable_profile():
     config = platform_config.parse_simple_yaml("""
 devices:
