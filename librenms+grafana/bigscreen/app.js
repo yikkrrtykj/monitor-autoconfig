@@ -531,7 +531,7 @@
         axisFormatter: formatBits,
         valueFormatter: formatBits,
         minWidth: compactTournamentChart ? 120 : 320,
-        axisPadLeft: compactTournamentChart ? 58 : 92,
+        axisPadLeft: compactTournamentChart ? 76 : 92,
         axisPadRight: compactTournamentChart ? 12 : 38,
         axisPadTop: compactTournamentChart ? 6 : 12,
         axisPadBottom: compactTournamentChart ? 20 : undefined,
