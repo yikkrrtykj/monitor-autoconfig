@@ -292,7 +292,7 @@ FIREWALL_SNMP_UPTIME_TARGETS="$(apply_reference_names "$FIREWALL_SNMP_TARGETS" "
 write_snmp_job "infra-switch-snmp"   "$SWITCH_SNMP_TARGETS"           "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL" "$SWITCH_TARGETS_FILE"
 write_snmp_job "infra-fw-snmp"       "$FIREWALL_SNMP_UPTIME_TARGETS"  "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
 write_snmp_job "infra-fw-unit-snmp"  "$FIREWALL_UNIT_SNMP_TARGETS"    "system_uptime" "$SNMP_UPTIME_SCRAPE_INTERVAL"
-write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     "if_mib"        "$SWITCH_IFMIB_SCRAPE_INTERVAL"
+write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     "if_mib, if_stack" "$SWITCH_IFMIB_SCRAPE_INTERVAL"
 # Cisco StackWise is kept separate from IF-MIB and receives only the file_sd
 # targets confirmed by the low-frequency cswSwitchNumCurrent discovery walk.
 write_snmp_job "infra-switch-stackwise" ""                           "cisco_stackwise" "$STACKWISE_SCRAPE_INTERVAL" "$STACKWISE_TARGETS_FILE"

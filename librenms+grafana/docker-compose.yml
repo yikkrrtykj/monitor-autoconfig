@@ -208,6 +208,7 @@ services:
       INTERCONNECT_ALERT_FOR_SECONDS: "${INTERCONNECT_ALERT_FOR_SECONDS:-5}"
       INTERCONNECT_ALERT_POLL_INTERVAL: "${INTERCONNECT_ALERT_POLL_INTERVAL:-5}"
       INTERCONNECT_ALERT_JOBS: "${INTERCONNECT_ALERT_JOBS:-infra-switch-ifmib}"
+      INTERCONNECT_SYSLOG_MERGE_SECONDS: "${INTERCONNECT_SYSLOG_MERGE_SECONDS:-20}"
       INTERCONNECT_PORT_FILTER: "${INTERCONNECT_PORT_FILTER:-port-channel,portchannel,po,eth-trunk,bridge-aggregation,bundle-ether,lag,ae,be,trk}"
       UNIFI_AP_ALERT_ENABLED: "${UNIFI_AP_ALERT_ENABLED:-true}"
       UNIFI_AP_DOWN_FOR_SECONDS: "${UNIFI_AP_DOWN_FOR_SECONDS:-10}"
@@ -282,6 +283,32 @@ services:
                 oid: 1.3.6.1.2.1.1.5
                 type: DisplayString
                 help: The administratively-assigned name for this managed node.
+        EOF
+        cat > /tmp/snmp-ifstack.yml <<'EOF'
+        modules:
+          if_stack:
+            walk:
+              - 1.3.6.1.2.1.31.1.2.1.3
+            max_repetitions: 25
+            retries: 3
+            timeout: 10s
+            metrics:
+              - name: ifStackStatus
+                oid: 1.3.6.1.2.1.31.1.2.1.3
+                type: gauge
+                help: The status of the relationship between the higher and lower interface layers.
+                indexes:
+                  - labelname: ifStackHigherLayer
+                    type: gauge
+                  - labelname: ifStackLowerLayer
+                    type: gauge
+                enum_values:
+                  1: active
+                  2: notInService
+                  3: notReady
+                  4: createAndGo
+                  5: createAndWait
+                  6: destroy
         EOF
         cat > /tmp/snmp-stackwise.yml <<'EOF'
         modules:
@@ -386,6 +413,7 @@ services:
         exec /bin/snmp_exporter \
           --config.file=/etc/snmp_exporter/snmp.yml \
           --config.file=/tmp/snmp-system.yml \
+          --config.file=/tmp/snmp-ifstack.yml \
           --config.file=/tmp/snmp-stackwise.yml \
           --config.file=/tmp/snmp-cisco-resources.yml \
           --config.file=/tmp/snmp-auth.yml

@@ -313,6 +313,19 @@ def test_cisco_stackwise_uses_dedicated_low_frequency_snmp_module():
     assert "STACKWISE_DISCOVERY_TIMEOUT=1" in env
 
 
+def test_interconnect_job_collects_port_channel_member_relationships():
+    compose = read("docker-compose.yml")
+    prometheus = read("prometheus-gen-config.sh")
+
+    assert "cat > /tmp/snmp-ifstack.yml" in compose
+    assert "ifStackStatus" in compose
+    assert "--config.file=/tmp/snmp-ifstack.yml" in compose
+    assert (
+        'write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     '
+        '"if_mib, if_stack"'
+    ) in prometheus
+
+
 def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_thresholds():
     compose = read("docker-compose.yml")
     prometheus = read("prometheus-gen-config.sh")

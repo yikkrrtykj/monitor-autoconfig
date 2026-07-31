@@ -68,6 +68,8 @@ Env:
   INTERCONNECT_ALERT_FOR_SECONDS seconds a link must be down before alerting
   INTERCONNECT_ALERT_POLL_INTERVAL seconds between interconnect checks
   INTERCONNECT_ALERT_JOBS comma list of SNMP jobs to watch
+  INTERCONNECT_SYSLOG_MERGE_SECONDS seconds to merge a member err-disable event
+    into the matching Port-channel redundancy alert instead of sending two cards
   INTERCONNECT_PORT_FILTER comma list of interface keywords/prefixes
   DEVICE_RESOURCE_ALERT_ENABLED true = watch Cisco switch CPU/memory
   DEVICE_CPU_ALERT_PERCENT CPU threshold (default 70, sustained 300s)
@@ -212,6 +214,9 @@ INTERCONNECT_ALERT_ENABLED = os.environ.get("INTERCONNECT_ALERT_ENABLED", "true"
 INTERCONNECT_ALERT_FOR_SECONDS = int(os.environ.get("INTERCONNECT_ALERT_FOR_SECONDS", "5"))
 INTERCONNECT_ALERT_POLL_INTERVAL = int(os.environ.get("INTERCONNECT_ALERT_POLL_INTERVAL", "5"))
 INTERCONNECT_ALERT_JOBS = os.environ.get("INTERCONNECT_ALERT_JOBS", "infra-switch-ifmib")
+INTERCONNECT_SYSLOG_MERGE_SECONDS = max(
+    0, int(os.environ.get("INTERCONNECT_SYSLOG_MERGE_SECONDS", "20"))
+)
 INTERCONNECT_PORT_FILTER = os.environ.get(
     "INTERCONNECT_PORT_FILTER",
     "port-channel,portchannel,po,eth-trunk,bridge-aggregation,bundle-ether,lag,ae,be,trk",
@@ -318,6 +323,9 @@ STACKWISE_STATE_LOCK = threading.Lock()
 DEVICE_RESOURCE_STATE_LOCK = threading.Lock()
 UNIFI_AP_STATE_LOCK = threading.Lock()
 HEALTH_LOCK = threading.Lock()
+LINK_EVENT_MERGE_LOCK = threading.Lock()
+LINK_ERRDISABLE_EVENTS = {}
+LINK_AGGREGATE_EVENTS = {}
 WATCHER_THREADS = {}
 WATCHER_HEALTH = {}
 DELIVERY_HEALTH = {"lastSuccessAt": None, "lastFailureAt": None, "lastError": ""}
@@ -2211,10 +2219,20 @@ def build_interconnect_card(event, recovered=False):
             f"🖥 设备：{device_text}",
             f"🔌 异常接口：{port_text}",
             f"🔗 对端交换机：{peer}",
+        ]
+        cause = event.get("syslog_cause") or {}
+        if cause:
+            cause_device = cause.get("device") or cause.get("host") or peer
+            cause_port = cause.get("port") or "?"
+            cause_reason = cause.get("reason") or "err-disabled"
+            lines.append(
+                f"🛑 触发原因：{cause_device} {cause_port} 被保护关闭（{cause_reason}）"
+            )
+        lines.extend([
             f"⚠️ 状态：{state_text}",
             f"⏳ 持续时间：{format_alert_duration(event.get('duration'), False)}",
             f"⏰ 时间：{ts}",
-        ]
+        ])
     return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
 
 
@@ -3256,6 +3274,12 @@ def fetch_interconnect_members(jobs_regex):
         return {}
     members = {}
     for item in results:
+        raw_value = (item.get("value") or [None, None])[-1]
+        try:
+            if float(raw_value) != 1.0:
+                continue
+        except (TypeError, ValueError):
+            continue
         metric = item.get("metric") or {}
         higher = metric.get("ifStackHigherLayer") or metric.get("ifStackHigherLayerIndex")
         lower = metric.get("ifStackLowerLayer") or metric.get("ifStackLowerLayerIndex")
@@ -3443,8 +3467,12 @@ def interconnect_watcher():
                     event["peer_switch"] = peer
                     event["duration"] = duration
                     event["status"] = status
+                    cause = find_errdisable_merge_candidate(event, now)
+                    if cause:
+                        event["syslog_cause"] = cause
                     log(f"[LINK] ALERT {event['device']} {event['port']} status={status}, down member(s)={down_members} peer={peer or '-'}")
                     if send_feishu(build_interconnect_card(event, recovered=False)):
+                        complete_interconnect_merge(event, cause, now)
                         state["alerting"] = True
                         state["handoff_logged"] = False
             else:
@@ -4579,6 +4607,141 @@ def _normalize_iface_key(value):
     return token
 
 
+def _normalize_link_identity(value):
+    """Normalize an IP/sysName/hostname for cross-watcher event matching."""
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    if not re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", token):
+        token = token.split(".", 1)[0]
+    return re.sub(r"[^a-z0-9]", "", token)
+
+
+def _link_identity_set(*values):
+    return {item for item in (_normalize_link_identity(value) for value in values) if item}
+
+
+def _purge_link_merge_events_locked(now):
+    # Keep consumed records beyond the delayed syslog flush. Matching itself is
+    # still limited to the configured merge window below, so retaining state a
+    # little longer cannot join unrelated incidents.
+    ttl = max(5, INTERCONNECT_SYSLOG_MERGE_SECONDS * 2 + 5)
+    cutoff = now - ttl
+    for registry in (LINK_ERRDISABLE_EVENTS, LINK_AGGREGATE_EVENTS):
+        for key, item in list(registry.items()):
+            if item.get("ts", 0) < cutoff:
+                registry.pop(key, None)
+
+
+def _interconnect_merge_record(event, now):
+    return {
+        "ts": now,
+        "device_ids": _link_identity_set(event.get("device"), event.get("ip")),
+        "peer_ids": _link_identity_set(event.get("peer_switch")),
+        "member_ports": {
+            _normalize_iface_key(port)
+            for port in (event.get("down_members") or [])
+            if _normalize_iface_key(port)
+        },
+        "event": dict(event),
+    }
+
+
+def _link_merge_matches(err_event, aggregate_event):
+    if abs(
+        float(err_event.get("ts") or 0) - float(aggregate_event.get("ts") or 0)
+    ) > INTERCONNECT_SYSLOG_MERGE_SECONDS:
+        return False
+    identities = err_event.get("identities") or set()
+    port = _normalize_iface_key(err_event.get("port"))
+    local_match = bool(identities & (aggregate_event.get("device_ids") or set()))
+    peer_match = bool(identities & (aggregate_event.get("peer_ids") or set()))
+    if local_match:
+        return bool(port and port in (aggregate_event.get("member_ports") or set()))
+    # The peer's physical member name is different from the core-side member
+    # name, so matching the LLDP peer in this short window is the strongest
+    # available correlation signal.
+    return peer_match
+
+
+def register_errdisable_merge_candidate(host, event, now=None):
+    """Register an err-disabled member so the LAG watcher can absorb its card."""
+    now = time.time() if now is None else now
+    if INTERCONNECT_SYSLOG_MERGE_SECONDS <= 0:
+        return None
+    merge_id = "|".join([
+        f"{now:.6f}", str(host or ""), _normalize_iface_key(event.get("port")),
+    ])
+    record = {
+        "id": merge_id,
+        "ts": now,
+        "host": host,
+        "device": _host_display_name(host),
+        "port": event.get("port") or "",
+        "reason": event.get("reason") or "err-disabled",
+        "identities": _link_identity_set(host, _host_display_name(host)),
+        "consumed": False,
+    }
+    with LINK_EVENT_MERGE_LOCK:
+        _purge_link_merge_events_locked(now)
+        for aggregate in LINK_AGGREGATE_EVENTS.values():
+            if _link_merge_matches(record, aggregate):
+                record["consumed"] = True
+                break
+        LINK_ERRDISABLE_EVENTS[merge_id] = record
+    event["_link_merge_id"] = merge_id
+    return dict(record)
+
+
+def find_errdisable_merge_candidate(event, now=None):
+    now = time.time() if now is None else now
+    if INTERCONNECT_SYSLOG_MERGE_SECONDS <= 0:
+        return None
+    aggregate = _interconnect_merge_record(event, now)
+    with LINK_EVENT_MERGE_LOCK:
+        _purge_link_merge_events_locked(now)
+        candidates = sorted(
+            LINK_ERRDISABLE_EVENTS.values(), key=lambda item: item.get("ts", 0), reverse=True,
+        )
+        for candidate in candidates:
+            if not candidate.get("consumed") and _link_merge_matches(candidate, aggregate):
+                return dict(candidate)
+    return None
+
+
+def complete_interconnect_merge(event, cause=None, now=None):
+    """Record a delivered LAG alert and consume its matching syslog candidate."""
+    now = time.time() if now is None else now
+    if INTERCONNECT_SYSLOG_MERGE_SECONDS <= 0:
+        return
+    aggregate = _interconnect_merge_record(event, now)
+    aggregate_id = "|".join([
+        f"{now:.6f}", str(event.get("ip") or ""), str(event.get("port") or ""),
+    ])
+    with LINK_EVENT_MERGE_LOCK:
+        _purge_link_merge_events_locked(now)
+        if cause and cause.get("id") in LINK_ERRDISABLE_EVENTS:
+            LINK_ERRDISABLE_EVENTS[cause["id"]]["consumed"] = True
+        LINK_AGGREGATE_EVENTS[aggregate_id] = aggregate
+
+
+def errdisable_was_merged(event, now=None):
+    now = time.time() if now is None else now
+    merge_id = (event or {}).get("_link_merge_id")
+    if not merge_id:
+        return False
+    with LINK_EVENT_MERGE_LOCK:
+        _purge_link_merge_events_locked(now)
+        return bool((LINK_ERRDISABLE_EVENTS.get(merge_id) or {}).get("consumed"))
+
+
+def reset_link_event_correlation():
+    """Test helper: clear cross-thread link-event correlation state."""
+    with LINK_EVENT_MERGE_LOCK:
+        LINK_ERRDISABLE_EVENTS.clear()
+        LINK_AGGREGATE_EVENTS.clear()
+
+
 def _syslog_event_enabled(kind):
     return "all" in SYSLOG_ALERT_TYPES or str(kind or "").lower() in SYSLOG_ALERT_TYPES
 
@@ -4890,7 +5053,7 @@ def syslog_watcher():
         if pending and _network_event_priority(pending["event"].get("kind")) < priority:
             _pending_events.pop(key, None)
 
-    def _queue_pending_event(host, message, event, now):
+    def _queue_pending_event(host, message, event, now, delay=None):
         port = _network_event_port(event)
         key = _port_key(host, port)
         priority = _network_event_priority(event.get("kind"))
@@ -4905,7 +5068,7 @@ def syslog_watcher():
             "host": host,
             "message": message,
             "event": event,
-            "due": now + correlation_window,
+            "due": now + (correlation_window if delay is None else max(0, delay)),
         }
 
     def _flush_pending_events(now):
@@ -4913,6 +5076,12 @@ def syslog_watcher():
             if now < pending["due"]:
                 continue
             _pending_events.pop(key, None)
+            if pending["event"].get("kind") == "errdisable" and errdisable_was_merged(pending["event"], now):
+                log(
+                    f"[SYSLOG] merged errdisable from {pending['host']} "
+                    f"port={_network_event_port(pending['event']) or '-'} into Port-channel alert"
+                )
+                continue
             if _has_recent_higher_priority(
                 pending["host"],
                 _network_event_port(pending["event"]),
@@ -5035,15 +5204,18 @@ def syslog_watcher():
                 else:
                     _send_network_event(host, message, event, now)
                 continue
-            if kind == "errdisable" and correlation_window > 0:
+            if kind == "errdisable":
                 if _has_recent_higher_priority(host, event.get("port"), kind, now):
                     log(
                         f"[SYSLOG] suppressed errdisable from {host} "
                         f"port={event.get('port') or '-'} after higher priority event"
                     )
                     continue
-                _queue_pending_event(host, message, event, now)
-                continue
+                register_errdisable_merge_candidate(host, event, now)
+                delay = max(correlation_window, INTERCONNECT_SYSLOG_MERGE_SECONDS)
+                if delay > 0:
+                    _queue_pending_event(host, message, event, now, delay=delay)
+                    continue
             _send_network_event(host, message, event, now)
 
 

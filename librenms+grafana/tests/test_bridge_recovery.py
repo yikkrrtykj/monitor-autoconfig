@@ -459,6 +459,78 @@ def test_fetch_interconnect_members_maps_aggregate_to_member_ifindexes(monkeypat
     assert members == {("10.0.0.1", "400"): ["4", "5"]}
 
 
+def test_fetch_interconnect_members_ignores_inactive_relationships(monkeypatch):
+    stack_rows = [
+        {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "400", "ifStackLowerLayer": "4"}, "value": [0, "1"]},
+        {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "400", "ifStackLowerLayer": "5"}, "value": [0, "2"]},
+    ]
+    monkeypatch.setattr(bridge, "prometheus_query", lambda q: stack_rows)
+
+    assert bridge.fetch_interconnect_members("infra-switch-ifmib") == {
+        ("10.0.0.1", "400"): ["4"],
+    }
+
+
+def test_member_errdisable_is_merged_into_peer_aggregate_alert(monkeypatch):
+    bridge.reset_link_event_correlation()
+    monkeypatch.setattr(bridge, "INTERCONNECT_SYSLOG_MERGE_SECONDS", 20)
+    monkeypatch.setattr(
+        bridge,
+        "_host_display_name",
+        lambda host: "Lan-Server" if host == "192.168.10.47" else host,
+    )
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    syslog_event = {"kind": "errdisable", "port": "Gi1/1/2", "reason": "link-flap"}
+    bridge.register_errdisable_merge_candidate("192.168.10.47", syslog_event, now=100)
+    aggregate_event = {
+        "device": "Global_SW3850-12XS_STACK",
+        "ip": "192.168.10.254",
+        "port": "Po2",
+        "peer_switch": "Lan-Server",
+        "down_members": ["Te2/0/3"],
+        "up_members": ["Te1/0/3"],
+        "status": "degraded",
+        "duration": 5,
+    }
+
+    cause = bridge.find_errdisable_merge_candidate(aggregate_event, now=105)
+    assert cause["port"] == "Gi1/1/2"
+    aggregate_event["syslog_cause"] = cause
+    card = bridge.build_interconnect_card(aggregate_event, recovered=False)
+    assert "Lan-Server Gi1/1/2 被保护关闭（link-flap）" in json.dumps(
+        card, ensure_ascii=False,
+    )
+
+    bridge.complete_interconnect_merge(aggregate_event, cause, now=105)
+    # The syslog card is flushed after the 20-second wait. Its consumed state
+    # must still exist then, otherwise the same incident would be sent twice.
+    assert bridge.errdisable_was_merged(syslog_event, now=121) is True
+    bridge.reset_link_event_correlation()
+
+
+def test_late_errdisable_is_suppressed_after_aggregate_alert(monkeypatch):
+    bridge.reset_link_event_correlation()
+    monkeypatch.setattr(bridge, "INTERCONNECT_SYSLOG_MERGE_SECONDS", 20)
+    monkeypatch.setattr(bridge, "_host_display_name", lambda host: "Lan-Server")
+    aggregate_event = {
+        "device": "Global_SW3850-12XS_STACK",
+        "ip": "192.168.10.254",
+        "port": "Po2",
+        "peer_switch": "Lan-Server",
+        "down_members": ["Te2/0/3"],
+    }
+    bridge.complete_interconnect_merge(aggregate_event, now=100)
+    syslog_event = {"kind": "errdisable", "port": "Gi1/1/2", "reason": "link-flap"}
+
+    record = bridge.register_errdisable_merge_candidate(
+        "192.168.10.47", syslog_event, now=105,
+    )
+
+    assert record["consumed"] is True
+    assert bridge.errdisable_was_merged(syslog_event, now=121) is True
+    bridge.reset_link_event_correlation()
+
+
 def test_wan_keyword_digit_suffix_requires_boundary():
     # WatchGuard 这类防火墙 SNMP 只报 eth0/eth1 物理名：填 eth1 只能命中 eth1，
     # 不能顺带把 eth10~eth15 当成 WAN 口；非数字结尾的关键词维持包含匹配。
