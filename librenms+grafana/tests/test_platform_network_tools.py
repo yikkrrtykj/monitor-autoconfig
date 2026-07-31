@@ -550,6 +550,9 @@ def test_network_overview_precedes_dhcp_and_non_24_pools_are_grouped_by_c_block(
     assert ".dhcp-pool-detail" in css
     assert ".dhcp-pool-card.multi-block" in css
     assert "grid-template-columns: 300px minmax(0, 1fr)" in css
+    assert 'const directoryScrollTop = previousDirectory ? previousDirectory.scrollTop : 0;' in app
+    assert 'nextDirectory.scrollTop = selectionChanged ? 0 : directoryScrollTop' in app
+    assert 'if (detail) detail.scrollTop = 0;' in app
     assert "查询已用 IP" in app
     assert "/network/dhcp/bindings" in (root / "bigscreen" / "api.js").read_text(encoding="utf-8")
     assert "content-visibility: auto" not in css

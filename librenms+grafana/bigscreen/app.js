@@ -3487,6 +3487,11 @@
   function renderDhcpPoolBrowser(pools, conflicts) {
     const poolsElement = document.getElementById("dhcpPools");
     if (!poolsElement) return;
+    const previousDirectory = poolsElement.querySelector(".dhcp-pool-directory");
+    const previousDetail = poolsElement.querySelector(".dhcp-pool-detail");
+    const directoryScrollTop = previousDirectory ? previousDirectory.scrollTop : 0;
+    const detailScrollTop = previousDetail ? previousDetail.scrollTop : 0;
+    const previousSelectedPoolKey = dhcpSelectedPoolKey;
     const sortedPools = [...pools].sort((left, right) => {
       const leftValue = dhcpPoolSortValue(left);
       const rightValue = dhcpPoolSortValue(right);
@@ -3524,6 +3529,11 @@
         ${selectedPool ? dhcpPoolCard(selectedPool, conflicts) : ""}
       </div>
     `;
+    const selectionChanged = previousSelectedPoolKey !== dhcpSelectedPoolKey;
+    const nextDirectory = poolsElement.querySelector(".dhcp-pool-directory");
+    const nextDetail = poolsElement.querySelector(".dhcp-pool-detail");
+    if (nextDirectory) nextDirectory.scrollTop = selectionChanged ? 0 : directoryScrollTop;
+    if (nextDetail) nextDetail.scrollTop = selectionChanged ? 0 : detailScrollTop;
   }
 
   function dhcpAddressMap(pool, conflicts, bindingPayload) {
@@ -3760,7 +3770,11 @@
         const option = event.target.closest("[data-dhcp-pool]");
         if (!option) return;
         dhcpSelectedPoolKey = option.dataset.dhcpPool || "";
-        if (dhcpLastPayload) renderDhcpPoolBrowser(dhcpLastPayload.pools || [], dhcpLastPayload.conflicts || []);
+        if (dhcpLastPayload) {
+          renderDhcpPoolBrowser(dhcpLastPayload.pools || [], dhcpLastPayload.conflicts || []);
+          const detail = poolsElement.querySelector(".dhcp-pool-detail");
+          if (detail) detail.scrollTop = 0;
+        }
       });
       poolsElement.dataset.bound = "1";
     }
