@@ -130,10 +130,10 @@ assert.ok(serverNode);
 assert.ok(serverNode.y > coreNode.y, "server row should sit below the core row");
 assert.ok(serverNode.y < distNode.y, "server row should sit above the access-switch row");
 assert.ok(serverNode.x > coreNode.x + coreNode.w, "a single server sits to the right of core, leaving the center trunk clear");
-assert.ok(layout.links.some((link) => (
+assert.ok(!layout.links.some((link) => (
   [link.from.kind, link.to.kind].includes("core") &&
   [link.from.kind, link.to.kind].includes("server")
-)));
+)), "an unresolved server must not be shown with a fabricated core attachment");
 
 window.BIGSCREEN_CONFIG.serverTargets = [
   "server5:192.168.141.100",

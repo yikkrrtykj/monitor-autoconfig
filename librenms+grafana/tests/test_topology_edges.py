@@ -503,6 +503,52 @@ class TestServerAttachmentDiscovery:
             devices, [], {"192.168.42.203": "sdwan"}, "global",
         ) == []
 
+    def test_cached_server_attachment_survives_transient_fdb_miss(self):
+        cached = [{
+            "from_ip": "192.168.10.11",
+            "from_sysname": "Global-new-stack",
+            "from_port": "Gi6/0/43",
+            "from_ifindex": 10643,
+            "to_ip": "192.168.42.203",
+            "to_sysname": "sdwan",
+            "to_port": None,
+            "to_ifindex": None,
+            "source": "fdb",
+        }]
+
+        found = gte.preserve_cached_server_edges(
+            [], cached, {"192.168.42.203": "sdwan"},
+            ["192.168.10.254", "192.168.10.11"],
+        )
+
+        assert found == cached
+
+    def test_fresh_server_attachment_replaces_cached_location(self):
+        cached = [{
+            "from_ip": "192.168.10.11", "to_ip": "192.168.42.203",
+            "source": "fdb",
+        }]
+        fresh = [{
+            "from_ip": "192.168.10.49", "to_ip": "192.168.42.203",
+            "source": "fdb",
+        }]
+
+        assert gte.preserve_cached_server_edges(
+            fresh, cached, {"192.168.42.203": "sdwan"},
+            ["192.168.10.11", "192.168.10.49"],
+        ) == []
+
+    def test_cached_attachment_is_dropped_after_parent_is_removed(self):
+        cached = [{
+            "from_ip": "192.168.10.11", "to_ip": "192.168.42.203",
+            "source": "fdb",
+        }]
+
+        assert gte.preserve_cached_server_edges(
+            [], cached, {"192.168.42.203": "sdwan"},
+            ["192.168.10.254"],
+        ) == []
+
 
 # ---- build_edges() via CDP (Cisco gear without LLDP) ----
 

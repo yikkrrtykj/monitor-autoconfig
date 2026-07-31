@@ -121,7 +121,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "max by (instance) (label_replace((max by (instance,target_ip) (last_over_time(sysUpTime{job=~\"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp\"}[25m]) / 100)) * on(target_ip) group_left(snmp_name) label_replace(max by (target_ip,sysName) (last_over_time(sysName{job=~\"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp\",sysName=~\".+\"}[25m])), \"snmp_name\", \"$1\", \"sysName\", \"(.+)\"), \"instance\", \"$1\", \"snmp_name\", \"(.+)\") or ((max by (instance,target_ip) (last_over_time(sysUpTime{job=~\"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp\"}[25m]) / 100)) unless on(target_ip) max by (target_ip) (last_over_time(sysName{job=~\"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp\",sysName=~\".+\"}[25m]))))",
+          "expr": "max by (instance) (last_over_time(sysUpTime{job=~\"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp\"}[25m]) / 100)",
           "instant": true,
           "legendFormat": "{{instance}}",
           "range": false,
@@ -167,9 +167,12 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "max by (instance,target_ip) (label_replace(((max by (instance,target_ip) (max_over_time(probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}[10s])) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) * on(target_ip) group_left(snmp_name) label_replace(max by (target_ip,sysName) (last_over_time(sysName{job=~\"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp\",sysName=~\".+\"}[25m])), \"snmp_name\", \"$1\", \"sysName\", \"(.+)\")), \"instance\", \"$1\", \"snmp_name\", \"(.+)\") or ((max by (instance,target_ip) (max_over_time(probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}[10s])) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) unless on(target_ip) max by (target_ip) (last_over_time(sysName{job=~\"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp\",sysName=~\".+\"}[25m]))))",
+          "expr": "max by (instance,target_ip) (max_over_time(probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\",phase=\"rtt\"}[10s]) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1))",
+          "format": "time_series",
+          "instant": false,
           "interval": "2s",
           "legendFormat": "{{instance}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -224,8 +227,11 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "max by (instance,target_ip) (label_replace(((max by (instance,target_ip) (1 - avg_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[30s])) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) * on(target_ip) group_left(snmp_name) label_replace(max by (target_ip,sysName) (last_over_time(sysName{job=~\"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp\",sysName=~\".+\"}[25m])), \"snmp_name\", \"$1\", \"sysName\", \"(.+)\")), \"instance\", \"$1\", \"snmp_name\", \"(.+)\") or ((max by (instance,target_ip) (1 - avg_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[30s])) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1)) unless on(target_ip) max by (target_ip) (last_over_time(sysName{job=~\"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp\",sysName=~\".+\"}[25m]))))",
+          "expr": "max by (instance,target_ip) ((1 - avg_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[30s])) and on(target_ip) (max by (target_ip) (max_over_time(probe_success{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\"}[6h])) >= 1))",
+          "format": "time_series",
+          "instant": false,
           "legendFormat": "{{instance}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -281,7 +287,10 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
           "expr": "max by (instance) (probe_success{job=\"infra-isp-ping\"} and on(instance) (max_over_time(probe_success{job=\"infra-isp-ping\"}[6h]) >= 1))",
+          "format": "time_series",
+          "instant": false,
           "legendFormat": "{{instance}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -369,5 +378,5 @@
   "timezone": "browser",
   "title": "Event Infrastructure",
   "uid": "event-infra",
-  "version": 110
+  "version": 111
 }

@@ -164,8 +164,37 @@ def test_grafana_device_names_survive_low_frequency_snmp_scrapes():
     # sysName is intentionally scraped every ten minutes. Keep its last value
     # available to Grafana so Ping and loss rows do not alternate between the
     # hostname and target IP during Prometheus' shorter lookback interval.
-    assert dashboard.count("last_over_time(sysName") == 8
+    # The instant Ping gauge still resolves legacy target names through the
+    # slowly-scraped sysName metric. Range panels use the stable instance label
+    # already attached by Prometheus and avoid a fragile range-vector join.
+    assert dashboard.count("last_over_time(sysName") == 2
     assert "max by (target_ip,sysName) (sysName{" not in dashboard
+
+
+def test_grafana_range_panels_request_time_series_data():
+    dashboard = json.loads(read("grafana-provisioning/dashboard-json/event-infra.json"))
+
+    for panel_id in (200, 300, 401):
+        panel = next(item for item in dashboard["panels"] if item["id"] == panel_id)
+        target = panel["targets"][0]
+        assert target["format"] == "time_series"
+        assert target["instant"] is False
+        assert target["range"] is True
+
+    uptime = next(item for item in dashboard["panels"] if item["id"] == 101)
+    assert "last_over_time(sysUpTime" in uptime["targets"][0]["expr"]
+    assert "group_left(snmp_name)" not in uptime["targets"][0]["expr"]
+
+
+def test_librenms_home_removes_unconfigured_server_stats_widget():
+    config = read("librenms-auto-config.sh")
+    compose = read("docker-compose.yml")
+    example = read(".env.example")
+
+    assert "$key === 'server_stats'" in config
+    assert "$addWidget('server-stats'" not in config
+    assert "LIBRENMS_HOME_SERVER_STATS" not in compose
+    assert "LIBRENMS_HOME_SERVER_STATS" not in example
 
 
 def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
@@ -179,7 +208,7 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
     assert target["interval"] == "2s"
     assert target["expr"].count(
         'max_over_time(probe_icmp_duration_seconds{job=~'
-    ) == 2
+    ) == 1
     assert "[10s]" in target["expr"]
 
 

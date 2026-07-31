@@ -52,7 +52,6 @@ LIBRENMS_HOME_WAN_CARD_LIMIT="${LIBRENMS_HOME_WAN_CARD_LIMIT:-8}"
 LIBRENMS_HOME_TOP_INTERFACES="${LIBRENMS_HOME_TOP_INTERFACES:-true}"
 LIBRENMS_HOME_TOP_DEVICES="${LIBRENMS_HOME_TOP_DEVICES:-true}"
 LIBRENMS_HOME_SWITCH_CPU="${LIBRENMS_HOME_SWITCH_CPU:-true}"
-LIBRENMS_HOME_SERVER_STATS="${LIBRENMS_HOME_SERVER_STATS:-auto}"
 
 normalize_base_url() {
   raw=$(printf '%s' "${1:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -1424,6 +1423,7 @@ try {
         }
         if (($settings['autoconfig'] ?? '') === $managed ||
             $isCurrentWanGraph ||
+            $key === 'server_stats' ||
             str_starts_with($title, 'WAN · ') ||
             in_array($title, $managedTitles, true)) {
             $deleteIds[] = (int) $row['user_widget_id'];
@@ -1520,21 +1520,10 @@ try {
         $row += 3;
     }
 
-    $serverMode = strtolower(trim((string) (getenv('LIBRENMS_HOME_SERVER_STATS') ?: 'auto')));
-    $hasServerTargets = trim((string) (getenv('SERVER_PING') ?: '')) !== '';
-    if ($serverMode === 'true' || ($serverMode === 'auto' && $hasServerTargets)) {
-        $key = 'server_stats';
-        $addWidget('server-stats', $titleFor($key, '服务器状态'), 1, $row, 12, 3, [
-            'autoconfig_key' => $key,
-            'refresh' => 60,
-        ]);
-    }
-
     $total = 1 + count($wanCards)
         + ($truthy('LIBRENMS_HOME_TOP_INTERFACES', 'true') ? 1 : 0)
         + ($truthy('LIBRENMS_HOME_TOP_DEVICES', 'true') ? 1 : 0)
-        + ($truthy('LIBRENMS_HOME_SWITCH_CPU', 'true') ? 1 : 0)
-        + (($serverMode === 'true' || ($serverMode === 'auto' && $hasServerTargets)) ? 1 : 0);
+        + ($truthy('LIBRENMS_HOME_SWITCH_CPU', 'true') ? 1 : 0);
     echo "  Home dashboard '{$dashboardName}' ready (id={$dashboardId}, widgets={$total}, WAN cards=" . count($wanCards) . ")\n";
     if (count($wanCards) === 0 && $truthy('LIBRENMS_HOME_WAN_CARDS', 'true')) {
         echo "  Home dashboard: no WAN ports matched yet; rerun librenms-config after firewall port discovery if needed\n";

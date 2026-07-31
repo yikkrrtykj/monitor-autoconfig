@@ -451,7 +451,6 @@
 
     const lldpLinks = [];
     const lldpCoveredPairs = new Set();
-    const discoveredServerIps = new Set();
     if (Array.isArray(lldpEdges) && lldpEdges.length) {
       const groupedEdges = new Map();
       lldpEdges.forEach((edge) => {
@@ -490,8 +489,6 @@
           aggregated: detail.aggregated
         });
         lldpCoveredPairs.add(pairKey);
-        if (group.from.kind === "server" && group.from.ip) discoveredServerIps.add(group.from.ip);
-        if (group.to.kind === "server" && group.to.ip) discoveredServerIps.add(group.to.ip);
       });
     }
 
@@ -509,10 +506,9 @@
       if (distDepthByIp.has(d.ip)) return;
       coreRow.forEach((core) => pushCrossLink(core, d, d.level));
     });
-    serverRow.forEach((s) => {
-      if (discoveredServerIps.has(s.ip)) return;
-      coreRow.forEach((core) => pushCrossLink(core, s, s.level));
-    });
+    // A server without a discovered LLDP/CDP/FDB edge stays unlinked. Drawing a
+    // synthetic core attachment here creates a false topology whenever a single
+    // collector cycle temporarily misses the server's ARP/FDB entry.
     links.push(...lldpLinks);
 
     const isCoreDistLink = (link) => (

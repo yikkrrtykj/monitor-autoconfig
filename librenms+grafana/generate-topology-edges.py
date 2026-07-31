@@ -859,6 +859,54 @@ def atomic_write_json(path, data):
     write_json_atomic(path, data, sort_keys=True)
 
 
+def load_cached_edges(path):
+    """Read the last emitted topology without making collection depend on it."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def preserve_cached_server_edges(edges, cached_edges, servers, configured_device_ips):
+    """Keep a confirmed server attachment through transient ARP/FDB misses.
+
+    A fresh FDB result is authoritative.  The cached edge is considered only
+    when the current cycle could not locate that server and its previous parent
+    is still a configured infrastructure device.
+    """
+    configured = set(configured_device_ips)
+    linked_servers = {
+        ip for edge in edges for ip in (edge.get("from_ip"), edge.get("to_ip"))
+        if ip in servers
+    }
+    preserved = []
+    for server_ip, server_name in servers.items():
+        if server_ip in linked_servers:
+            continue
+        for edge in cached_edges:
+            if edge.get("source") != "fdb":
+                continue
+            if edge.get("to_ip") == server_ip:
+                parent_ip = edge.get("from_ip")
+            elif edge.get("from_ip") == server_ip:
+                parent_ip = edge.get("to_ip")
+            else:
+                continue
+            if parent_ip not in configured:
+                continue
+            preserved.append(dict(edge))
+            linked_servers.add(server_ip)
+            print(
+                f"[INFO] server {server_name} ({server_ip}): current ARP/FDB "
+                f"lookup missed; preserving confirmed attachment to {parent_ip}",
+                file=sys.stderr,
+            )
+            break
+    return preserved
+
+
 def main():
     community = os.environ.get("TOPOLOGY_SNMP_COMMUNITY", "").strip() or os.environ.get("SNMP_COMMUNITY", "global").strip()
     output_dir = os.environ.get("TOPOLOGY_OUTPUT_DIR", "/etc/prometheus/targets/topology")
@@ -891,6 +939,8 @@ def main():
             else:
                 print(f"[WARN] {ip}: no LLDP/CDP neighbors (check 'lldp run' or 'cdp run' and SNMP access)", file=sys.stderr)
 
+    edges_path = os.path.join(output_dir, "edges.json")
+    cached_edges = load_cached_edges(edges_path)
     name_index = build_name_index(devices)
     edges, placeholders = build_edges(devices, name_index)
     servers = parse_named_ipv4_targets(os.environ.get("SERVER_PING", ""))
@@ -907,9 +957,15 @@ def main():
         unresolved_servers,
         community,
     ))
+    edges.extend(preserve_cached_server_edges(
+        edges,
+        cached_edges,
+        servers,
+        device_ips,
+    ))
     uplink_targets = []
 
-    atomic_write_json(os.path.join(output_dir, "edges.json"), edges)
+    atomic_write_json(edges_path, edges)
     atomic_write_json(os.path.join(output_dir, "uplink-targets.json"), uplink_targets)
     atomic_write_json(os.path.join(output_dir, "rates.json"), [])
 
