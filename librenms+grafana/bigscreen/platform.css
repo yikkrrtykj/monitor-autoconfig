@@ -2664,6 +2664,53 @@
   gap: 6px;
 }
 
+.screen.tournament-mode .isp-grid.isp-paged {
+  grid-template-rows: 20px minmax(0, 1fr);
+}
+
+.screen.tournament-mode .isp-grid.isp-paged .isp-panel {
+  grid-row: 2;
+}
+
+.screen.tournament-mode .isp-pager {
+  display: flex;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+  color: var(--linear-ink-muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.screen.tournament-mode .isp-page-button {
+  display: inline-grid;
+  width: 22px;
+  height: 18px;
+  min-height: 0;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(125, 147, 180, 0.42);
+  border-radius: 5px;
+  background: rgba(16, 24, 40, 0.82);
+  color: var(--linear-ink);
+  font: 700 16px/1 sans-serif;
+}
+
+.screen.tournament-mode .isp-page-button:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.screen.tournament-mode .isp-page-status {
+  min-width: 32px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .screen.tournament-mode .custom-panel {
   grid-template-rows: 20px minmax(0, 1fr);
   padding: 1px 4px 4px;

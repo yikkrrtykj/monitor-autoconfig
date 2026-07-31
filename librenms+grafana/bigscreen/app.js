@@ -46,6 +46,7 @@
     buildConfigRisks, buildTopologyFindings, buildReadinessChecks,
     lintSwitchScene
   } = window.BSPlatform;
+  const { createIspCarousel } = window.BSIspCarousel;
   let gaugeTimer = null;
   let chartTimer = null;
   let seenUpTimer = null;
@@ -71,6 +72,7 @@
   let tournamentSeq = 0;
   let topologySeq = 0;
   let stageDeviceRegexCache = null;
+  let ispTrafficResults = [];
   const renderSignatures = new Map();
   let lastDataSuccessAt = 0;
   let lastControlReport = null;
@@ -83,6 +85,13 @@
   let applyInProgress = false;
   const DATA_STALE_AFTER_MS = 20000;
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
+  const ispCarousel = createIspCarousel({
+    pageSize: 2,
+    intervalMs: 10000,
+    setIntervalFn: (callback, delay) => window.setInterval(callback, delay),
+    clearIntervalFn: (handle) => window.clearInterval(handle),
+    onPageChange: () => renderIspPanels(ispTrafficResults)
+  });
 
   // Skip re-rendering a chart when its data hasn't changed since last paint.
   // Historical Prometheus samples are immutable, so a cheap per-series digest
@@ -512,22 +521,45 @@
   function renderIspPanels(results) {
     const ispGrid = document.getElementById("ispGrid");
     const compactTournamentChart = document.querySelector(".screen")?.classList.contains("tournament-mode");
-    ispGrid.style.setProperty("--isp-count", String(Math.max(1, results.length)));
+    ispTrafficResults = Array.isArray(results) ? results : [];
+    const pageState = ispCarousel.updateTotal(ispTrafficResults.length);
+    const visibleResults = compactTournamentChart
+      ? ispCarousel.visibleItems(ispTrafficResults)
+      : ispTrafficResults;
+    const firstResultIndex = compactTournamentChart ? pageState.start : 0;
+
+    ispGrid.classList.toggle("isp-paged", compactTournamentChart && pageState.pageCount > 1);
+    ispGrid.style.setProperty("--isp-count", String(Math.max(1, visibleResults.length)));
     ispGrid.innerHTML = "";
-    if (!results.length) {
+    if (!ispTrafficResults.length) {
       renderNoData(ispGrid);
       return;
     }
     const fragment = document.createDocumentFragment();
-    results.forEach((result, index) => {
+    if (compactTournamentChart && pageState.pageCount > 1) {
+      const pager = document.createElement("nav");
+      pager.className = "isp-pager";
+      pager.setAttribute("aria-label", "ISP 图表翻页");
+      pager.innerHTML = `
+        <button type="button" class="isp-page-button isp-page-previous" aria-label="上一页" ${pageState.canPrevious ? "" : "disabled"}>‹</button>
+        <span class="isp-page-status">${pageState.pageNumber} / ${pageState.pageCount}</span>
+        <button type="button" class="isp-page-button isp-page-next" aria-label="下一页" ${pageState.canNext ? "" : "disabled"}>›</button>
+      `;
+      pager.querySelector(".isp-page-previous").addEventListener("click", () => ispCarousel.move(-1));
+      pager.querySelector(".isp-page-next").addEventListener("click", () => ispCarousel.move(1));
+      fragment.appendChild(pager);
+    }
+    visibleResults.forEach((result, visibleIndex) => {
+      const resultIndex = firstResultIndex + visibleIndex;
       const panel = document.createElement("section");
       panel.className = "chart-panel isp-panel";
-      panel.innerHTML = `<h2>${escapeHtml(result.name)}</h2><div class="chart-body" id="ispChart${index}"></div>`;
+      panel.innerHTML = `<h2>${escapeHtml(result.name)}</h2><div class="chart-body" id="ispChart${resultIndex}"></div>`;
       fragment.appendChild(panel);
     });
     ispGrid.appendChild(fragment);
-    results.forEach((result, index) => {
-      renderLineChart(`ispChart${index}`, [result.download, result.upload], {
+    visibleResults.forEach((result, visibleIndex) => {
+      const resultIndex = firstResultIndex + visibleIndex;
+      renderLineChart(`ispChart${resultIndex}`, [result.download, result.upload], {
         axisFormatter: formatBits,
         valueFormatter: formatBits,
         minWidth: compactTournamentChart ? 120 : 320,
@@ -537,7 +569,7 @@
         axisPadBottom: compactTournamentChart ? 20 : undefined,
         fill: true,
         legend: "bottom",
-        maxY: ispChartMaxBps(result.name, index),
+        maxY: ispChartMaxBps(result.name, resultIndex),
         minMax: 1,
         calcs: ["last", "max"]
       });
@@ -3280,6 +3312,7 @@
   }
 
   function stopInfraRefresh() {
+    ispCarousel.deactivate();
     if (gaugeTimer) {
       window.clearInterval(gaugeTimer);
       gaugeTimer = null;
@@ -3858,6 +3891,8 @@
     stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = "screen infra-mode";
+    ispCarousel.deactivate();
+    renderIspPanels(ispTrafficResults);
     setVisible("homePanel", false);
     setVisible("panelGrid", true);
     setVisible("tournamentPanel", false);
@@ -3877,6 +3912,8 @@
     stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = `screen tournament-mode ${page.kind === "match" ? "match-mode" : "multi-team-mode"} ${page.id}`;
+    ispCarousel.activate({ reset: true });
+    renderIspPanels(ispTrafficResults);
     setVisible("homePanel", false);
     setVisible("panelGrid", true);
     setVisible("tournamentPanel", true);
