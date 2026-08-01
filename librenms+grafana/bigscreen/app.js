@@ -961,7 +961,7 @@
           // Keep ordinary 1-5 ms control-plane variation visually calm on
           // the customer-facing tournament screen. The operations view keeps
           // its tighter automatic scale.
-          minMax: tournamentMode ? 0.05 : 0.005,
+          minMax: tournamentMode ? 0.025 : 0.005,
           legend: "bottom",
           legendNamesOnly: true,
           calcs: []
