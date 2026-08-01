@@ -514,6 +514,58 @@ def test_fetch_interconnect_members_ignores_inactive_relationships(monkeypatch):
     }
 
 
+def test_stale_down_bundle_loses_members_owned_by_current_up_bundle():
+    ports = [
+        {
+            "ip": "192.168.10.254", "port": "Po2", "lag_up": True,
+            "members": [
+                {"ifindex": "10", "name": "Te1/0/3", "up": True},
+                {"ifindex": "29", "name": "Te2/0/3", "up": True},
+                # IOS-XE also left one unrelated stale relationship on Po2.
+                {"ifindex": "11", "name": "Te1/0/4", "up": True},
+            ],
+        },
+        {
+            "ip": "192.168.10.254", "port": "Po10", "lag_up": False,
+            "members": [
+                {"ifindex": "10", "name": "Te1/0/3", "up": True},
+                {"ifindex": "29", "name": "Te2/0/3", "up": True},
+            ],
+        },
+    ]
+
+    resolved = bridge.suppress_shadowed_down_aggregates(ports)
+
+    assert len(resolved[0]["members"]) == 3
+    assert resolved[1]["members"] == []
+    assert resolved[1]["shadowed_by"] == "Po2"
+    assert bridge.classify_interconnect(False, []) == "unknown"
+
+
+def test_real_down_bundle_is_kept_when_only_some_members_overlap():
+    ports = [
+        {
+            "ip": "192.168.10.254", "port": "Po2", "lag_up": True,
+            "members": [
+                {"ifindex": "11", "name": "Te1/0/4", "up": True},
+                {"ifindex": "29", "name": "Te2/0/3", "up": True},
+            ],
+        },
+        {
+            "ip": "192.168.10.254", "port": "Po3", "lag_up": False,
+            "members": [
+                {"ifindex": "11", "name": "Te1/0/4", "up": False},
+                {"ifindex": "30", "name": "Te2/0/4", "up": False},
+            ],
+        },
+    ]
+
+    resolved = bridge.suppress_shadowed_down_aggregates(ports)
+
+    assert len(resolved[1]["members"]) == 2
+    assert bridge.classify_interconnect(False, [False, False]) == "down"
+
+
 def test_member_errdisable_is_merged_into_peer_aggregate_alert(monkeypatch):
     bridge.reset_link_event_correlation()
     monkeypatch.setattr(bridge, "INTERCONNECT_SYSLOG_MERGE_SECONDS", 20)

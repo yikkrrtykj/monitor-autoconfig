@@ -3435,6 +3435,56 @@ def fetch_interconnect_members(jobs_regex):
     return members
 
 
+def suppress_shadowed_down_aggregates(ports):
+    """Discard stale ifStack members on an unused/down aggregate.
+
+    Cisco IOS-XE can retain old higher->lower ifStack relationships for years
+    after physical ports move to another channel-group. A typical artifact is
+    an empty Po10 claiming the exact same two members that currently carry an
+    UP Po2. Physical ports cannot simultaneously belong to both aggregates, so
+    when one DOWN aggregate's entire member set is owned by one UP aggregate,
+    the UP aggregate is authoritative and the DOWN bundle has no visible
+    current members. ``classify_interconnect`` will then return ``unknown`` and
+    avoid reporting an intentional empty Port-channel as failed.
+    """
+    up_owners = []
+    for port in ports:
+        if not port.get("lag_up"):
+            continue
+        member_indexes = {
+            str(member.get("ifindex"))
+            for member in port.get("members") or []
+            if member.get("ifindex") not in (None, "")
+        }
+        if member_indexes:
+            up_owners.append((port, member_indexes))
+
+    for port in ports:
+        if port.get("lag_up"):
+            continue
+        member_indexes = {
+            str(member.get("ifindex"))
+            for member in port.get("members") or []
+            if member.get("ifindex") not in (None, "")
+        }
+        if not member_indexes:
+            continue
+        owner = next(
+            (
+                candidate
+                for candidate, owned_indexes in up_owners
+                if candidate.get("ip") == port.get("ip")
+                and member_indexes.issubset(owned_indexes)
+            ),
+            None,
+        )
+        if owner is None:
+            continue
+        port["members"] = []
+        port["shadowed_by"] = owner.get("port") or ""
+    return ports
+
+
 def fetch_interconnect_ports(jobs_regex):
     results = prometheus_query(f'ifOperStatus{{job=~"{jobs_regex}"}}')
     try:
@@ -3518,7 +3568,7 @@ def fetch_interconnect_ports(jobs_regex):
             "lag_up": bool(up),
             "members": members,
         })
-    return ports
+    return suppress_shadowed_down_aggregates(ports)
 
 
 def interconnect_watcher():
