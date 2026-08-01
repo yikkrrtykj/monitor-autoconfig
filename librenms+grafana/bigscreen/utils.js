@@ -111,6 +111,71 @@
     return usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : 0;
   }
 
+  /**
+   * Keep sustained latency incidents visible while removing isolated ICMP
+   * response spikes from the customer-facing tournament chart. Prometheus
+   * data is left untouched; this function returns copied series/points.
+   */
+  function suppressIsolatedLatencySpikes(seriesList, options) {
+    const settings = options || {};
+    const threshold = Number.isFinite(settings.threshold) ? settings.threshold : 0.05;
+    const minConsecutive = Math.max(2, Math.floor(settings.minConsecutive || 2));
+    const maxGapSeconds = Number.isFinite(settings.maxGapSeconds) ? settings.maxGapSeconds : 3;
+    const baselineRadius = Math.max(1, Math.floor(settings.baselineRadius || 2));
+
+    return (seriesList || []).map((series) => {
+      const values = (series.values || []).map((point) => ({ ...point }));
+
+      function localBaseline(index) {
+        const nearby = [];
+        for (let offset = 1; offset <= baselineRadius; offset += 1) {
+          [index - offset, index + offset].forEach((candidateIndex) => {
+            const candidate = values[candidateIndex];
+            if (candidate && Number.isFinite(candidate.v) && candidate.v < threshold) {
+              nearby.push(candidate.v);
+            }
+          });
+        }
+        if (!nearby.length) return Math.min(values[index].v, threshold * 0.2);
+        nearby.sort((left, right) => left - right);
+        const middle = Math.floor(nearby.length / 2);
+        return nearby.length % 2
+          ? nearby[middle]
+          : (nearby[middle - 1] + nearby[middle]) / 2;
+      }
+
+      let start = 0;
+      while (start < values.length) {
+        const point = values[start];
+        if (!Number.isFinite(point.v) || point.v < threshold) {
+          start += 1;
+          continue;
+        }
+
+        let end = start + 1;
+        while (
+          end < values.length
+          && Number.isFinite(values[end].v)
+          && values[end].v >= threshold
+          && Number.isFinite(values[end].t)
+          && Number.isFinite(values[end - 1].t)
+          && values[end].t - values[end - 1].t <= maxGapSeconds
+        ) {
+          end += 1;
+        }
+
+        if (end - start < minConsecutive) {
+          for (let index = start; index < end; index += 1) {
+            values[index].v = localBaseline(index);
+          }
+        }
+        start = end;
+      }
+
+      return { ...series, values };
+    });
+  }
+
   function uniqueNames(names) {
     return Array.from(new Set(names.map((name) => String(name || "").trim()).filter(Boolean)));
   }
@@ -294,6 +359,7 @@
     formatTime,
     niceMax,
     average,
+    suppressIsolatedLatencySpikes,
     uniqueNames,
     networkLabel,
     seatLabel,

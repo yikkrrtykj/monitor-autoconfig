@@ -212,26 +212,29 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
     assert "[10s]" in target["expr"]
 
 
-def test_bigscreen_ping_trend_uses_stable_two_second_raw_samples():
+def test_bigscreen_ping_trend_filters_only_isolated_tournament_spikes():
     api = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
     pages = read("bigscreen/pages.js")
     index = read("bigscreen/index.html")
 
-    # The custom bigscreen is not a Grafana iframe. Draw the raw 2-second
-    # probes on a fixed epoch-aligned grid: reloads stay stable and a single
-    # high probe remains a narrow spike instead of a 10-second plateau.
+    # Keep the raw 2-second source stable, but suppress isolated 50 ms samples
+    # only on the customer-facing tournament page. Operations retains raw data.
     assert "const end = Math.floor(now / step) * step;" in api
     assert 'max by (instance) (probe_icmp_duration_seconds{job=~' in pages
     assert 'phase="rtt"})' in pages
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
+    assert 'document.querySelector(".screen.tournament-mode")' in app
+    assert "suppressIsolatedLatencySpikes(rawActivePingSeries" in app
+    assert "threshold: 0.05" in app
+    assert "minConsecutive: 2" in app
     assert 'legend: "bottom"' in app
     assert "legendNamesOnly: true" in app
     assert "pages.js?v=20260731a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260801a" in index
-    assert "utils.js?v=20260730f" in index
+    assert "app.js?v=20260801b" in index
+    assert "utils.js?v=20260801a" in index
 
 
 def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():
@@ -245,7 +248,7 @@ def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():
     assert 'screen.className = `screen tournament-mode' in app
     assert '.screen.tournament-mode .isp-grid.isp-paged' in css
     assert "isp-carousel.js?v=20260731a" in index
-    assert "platform.css?v=20260731c" in index
+    assert "platform.css?v=20260801a" in index
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():

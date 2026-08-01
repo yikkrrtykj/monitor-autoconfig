@@ -18,7 +18,8 @@
     escapeHtml, escapeRegex, escapeLabel, metricName, formatPing, formatPingText,
     formatUptime, formatBits, formatTime, niceMax, average,
     networkLabel, seatLabel, gaugeColor, gaugePercent,
-    linePathFromPoints, buildCsv, formatTimestampFull, groupAddressesByCBlock
+    linePathFromPoints, buildCsv, formatTimestampFull, groupAddressesByCBlock,
+    suppressIsolatedLatencySpikes
   } = window.BSUtils;
   const {
     prometheusBaseUrl, fetchWithTimeout,
@@ -931,16 +932,23 @@
     const seq = ++chartSeq;
     try {
       const [pingSeries, lossSeries, ispTraffic] = await Promise.all([
-        // Match Grafana's 2-second Ping trend resolution. Fixed epoch-aligned
-        // timestamps keep reloads stable, while the denser points render a
-        // one-probe latency event as a narrow spike instead of a broad triangle.
+        // Fetch the same raw 2-second probes used by the normal infrastructure
+        // view. Tournament-only display filtering is applied below without
+        // changing Prometheus history or the operations view.
         prometheusRangeCached(pingTrendQuery, metricName, 2),
         prometheusRangeCached(lossQuery),
         fetchIspTraffic()
       ]);
       const nameMap = await fetchInfraDeviceNames();
       if (seq !== chartSeq) return;
-      const activePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
+      const rawActivePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
+      const activePingSeries = document.querySelector(".screen.tournament-mode")
+        ? suppressIsolatedLatencySpikes(rawActivePingSeries, {
+          threshold: 0.05,
+          minConsecutive: 2,
+          maxGapSeconds: 3
+        })
+        : rawActivePingSeries;
       const activeLossSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap), "max"));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
         renderLineChart("pingTrendChart", activePingSeries, {
