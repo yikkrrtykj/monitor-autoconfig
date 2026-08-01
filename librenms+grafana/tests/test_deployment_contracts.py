@@ -34,6 +34,17 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     # Quiet live clients are prompted before the stage MAC table is read.
     assert 'PLAYER_REFRESH_FDB: "${PLAYER_REFRESH_FDB:-true}"' in compose
     assert "PLAYER_REFRESH_FDB=true" in example
+    assert 'PROMETHEUS_URL: "http://prometheus:9090"' in compose
+    assert 'PLAYER_TARGET_HISTORY_LOOKBACK: "${PLAYER_TARGET_HISTORY_LOOKBACK:-24h}"' in compose
+    assert "PLAYER_TARGET_HISTORY_LOOKBACK=24h" in example
+
+
+def test_sysname_changes_are_confirmed_before_notification():
+    compose = read("docker-compose.yml")
+    example = read(".env.example")
+
+    assert 'SYSNAME_CHANGE_CONFIRM_POLLS: "${SYSNAME_CHANGE_CONFIRM_POLLS:-2}"' in compose
+    assert "SYSNAME_CHANGE_CONFIRM_POLLS=2" in example
 
 
 def test_deploy_rebuilds_local_images_only_when_dockerfiles_change():

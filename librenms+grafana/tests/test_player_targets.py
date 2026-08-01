@@ -712,6 +712,108 @@ class TestRefreshPlayerFdb:
         assert calls == []
 
 
+class TestHistoricalPlayerTargets:
+    @staticmethod
+    def _target(team, seat, ip, switch="old-stage", network="wired"):
+        return {
+            "targets": [ip],
+            "labels": {
+                "team": str(team), "seat": str(seat), "switch": switch,
+                "network": network, "role": "player",
+            },
+        }
+
+    def test_load_previous_targets_validates_file_sd_rows(self, tmp_path):
+        path = tmp_path / "players.json"
+        path.write_text(json.dumps([
+            self._target(1, 1, "192.168.42.44"),
+            {"targets": ["not-an-ip"], "labels": {"team": "1", "seat": "2"}},
+        ]))
+
+        targets = gpt.load_previous_player_targets(str(path))
+
+        assert targets == [self._target(1, 1, "192.168.42.44")]
+
+    def test_prometheus_history_restores_file_sd_labels(self):
+        payload = {
+            "status": "success",
+            "data": {"result": [{"metric": {
+                "job": "player-ping", "instance": "192.168.42.44",
+                "team": "1", "seat": "1", "switch": "192.168.10.45",
+                "network": "wired", "role": "player",
+            }}]},
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode()
+
+        calls = []
+
+        def opener(url, timeout):
+            calls.append((url, timeout))
+            return Response()
+
+        targets = gpt.fetch_prometheus_player_history(
+            "http://prometheus:9090", "24h", opener=opener
+        )
+
+        assert targets == [
+            self._target(1, 1, "192.168.42.44", "192.168.10.45")
+        ]
+        assert "/api/v1/query?" in calls[0][0]
+        assert "max_over_time" in calls[0][0]
+
+    def test_last_known_mapping_only_fills_unmapped_link_up_seats(self):
+        stage_index = {
+            "192.168.10.45": {
+                "ifalias": {
+                    1: {"team": 1, "seat": 1},
+                    2: {"team": 1, "seat": 2},
+                    3: {"team": 1, "seat": 3},
+                },
+                "oper_status": {1: 1, 2: 1, 3: 2},
+            },
+        }
+        current = [self._target(1, 1, "192.168.42.50", "192.168.10.45")]
+        historical = [
+            self._target(1, 1, "192.168.42.44"),
+            self._target(1, 2, "192.168.42.45"),
+            self._target(1, 3, "192.168.42.46"),
+        ]
+
+        retained = gpt.retain_last_known_wired_targets(
+            current, historical, stage_index, require_link_up=True
+        )
+
+        assert retained == [
+            current[0],
+            self._target(1, 2, "192.168.42.45", "192.168.10.45"),
+        ]
+
+    def test_wireless_history_never_fills_wired_seat(self):
+        stage_index = {
+            "192.168.10.45": {
+                "ifalias": {1: {"team": 1, "seat": 1}},
+                "oper_status": {1: 1},
+            },
+        }
+
+        retained = gpt.retain_last_known_wired_targets(
+            [],
+            [self._target(1, 1, "192.168.41.44", network="wireless")],
+            stage_index,
+        )
+
+        assert retained == []
+
+
 # ---- build_stage_mac_index() community-indexing -------------------
 
 class TestBuildStageMacIndexCommunityIndexing:

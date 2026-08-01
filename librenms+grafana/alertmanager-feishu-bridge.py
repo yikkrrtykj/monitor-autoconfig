@@ -300,6 +300,7 @@ UNIFI_AP_POLL_INTERVAL = int(os.environ.get("UNIFI_AP_POLL_INTERVAL", "5"))
 # 变化时推送 旧→新 飞书卡片（LibreNMS 没有可靠的 "changed" 告警算子，webhook 也只带当前值）。
 SYSNAME_CHANGE_ALERT_ENABLED = os.environ.get("SYSNAME_CHANGE_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSNAME_CHANGE_POLL_INTERVAL = int(os.environ.get("SYSNAME_CHANGE_POLL_INTERVAL", "60"))
+SYSNAME_CHANGE_CONFIRM_POLLS = max(1, int(os.environ.get("SYSNAME_CHANGE_CONFIRM_POLLS", "2")))
 
 _MAC_RE = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}|[0-9A-Fa-f]{12}"
 _MACFLAP_RE = re.compile(
@@ -740,6 +741,18 @@ def _first_non_ip(*values):
         if value and not _looks_like_ip(value) and not re.fullmatch(r"\d+", value):
             return value
     return ""
+
+
+def _meaningful_sysname(value):
+    """Return a usable sysName or empty for numeric/IP poll artifacts."""
+    return _first_non_ip(value)
+
+
+def _sysname_changed(old_name, new_name):
+    """Compare only meaningful names, case-insensitively."""
+    old_name = _meaningful_sysname(old_name)
+    new_name = _meaningful_sysname(new_name)
+    return bool(old_name and new_name and old_name.casefold() != new_name.casefold())
 
 
 def _best_device_name(device, discovered_name=""):
@@ -5785,6 +5798,7 @@ def sysname_change_watcher():
 
     time.sleep(30)  # let LibreNMS/API token settle after a (re)start
     snapshot = _load_json_dict(SYSNAME_STATE_FILE)
+    pending_changes = {}
     seeded = bool(snapshot)
     log(
         "[SYSNAME] sysName change watcher enabled "
@@ -5811,19 +5825,51 @@ def sysname_change_watcher():
         for dev in devices:
             device_id = str(dev.get("device_id") or "")
             sys_name = str(dev.get("sysName") or "").strip()
-            if not device_id or not sys_name:
+            if not device_id:
                 continue
             ip = str(dev.get("ip") or dev.get("hostname") or "").strip()
             hostname = str(dev.get("hostname") or "").strip()
-            current[device_id] = {"sysName": sys_name, "ip": ip, "hostname": hostname}
+            previous = snapshot.get(device_id) or {}
+            prev_name = str(previous.get("sysName") or "").strip()
 
-            prev_name = str((snapshot.get(device_id) or {}).get("sysName") or "").strip()
-            if seeded and prev_name and prev_name != sys_name:
+            # LibreNMS can briefly expose malformed values such as "2" while
+            # a poll/update is in flight. Do not replace a valid baseline with
+            # that artifact; otherwise the following good poll falsely reports
+            # "2 -> real-name" as a device rename.
+            if not _meaningful_sysname(sys_name):
+                pending_changes.pop(device_id, None)
+                if prev_name:
+                    current[device_id] = previous
+                continue
+
+            current[device_id] = {"sysName": sys_name, "ip": ip, "hostname": hostname}
+            if seeded and _sysname_changed(prev_name, sys_name):
+                pending = pending_changes.get(device_id) or {}
+                if str(pending.get("sysName") or "").casefold() == sys_name.casefold():
+                    confirmations = int(pending.get("confirmations") or 0) + 1
+                else:
+                    confirmations = 1
+                pending_changes[device_id] = {
+                    "sysName": sys_name,
+                    "confirmations": confirmations,
+                }
+                if confirmations < SYSNAME_CHANGE_CONFIRM_POLLS:
+                    current[device_id] = previous
+                    log(
+                        f"[SYSNAME] candidate device_id={device_id} "
+                        f"{prev_name} -> {sys_name} ({confirmations}/"
+                        f"{SYSNAME_CHANGE_CONFIRM_POLLS})"
+                    )
+                    continue
                 log(f"[SYSNAME] CHANGE device_id={device_id} {prev_name} -> {sys_name} ({ip})")
                 if not send_feishu(build_sysname_change_card(prev_name, sys_name, ip=ip, hostname=hostname)):
                     # Retain the previous snapshot so the same change is retried
                     # on the next successful LibreNMS poll.
                     current[device_id] = snapshot[device_id]
+                else:
+                    pending_changes.pop(device_id, None)
+            else:
+                pending_changes.pop(device_id, None)
 
         snapshot = current
         _save_json_dict(SYSNAME_STATE_FILE, snapshot)

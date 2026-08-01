@@ -37,6 +37,11 @@ Environment variables:
   PLAYER_VERIFY_PING     true/false (default true). Prefer a reachable address
                          when one seat has multiple candidates, but retain the
                          seat's sole address so Prometheus can report it down.
+  PLAYER_TARGET_HISTORY_LOOKBACK
+                         Prometheus lookback used to recover last-known seat/IP
+                         mappings after the target file was emptied (default: 24h).
+  PROMETHEUS_URL         internal Prometheus URL used only for that recovery
+                         (default: http://prometheus:9090).
   PLAYER_SUBNETS         comma-separated wired subnets (classification hint only,
                          no longer filters; team labels on ports are authoritative)
   PLAYER_TARGETS_FILE    output path (default: /etc/prometheus/player_targets.json)
@@ -65,6 +70,7 @@ import re
 import subprocess
 import sys
 from ipaddress import IPv4Address, IPv4Network
+from urllib import parse as urlparse, request as urlrequest
 
 IF_ALIAS_OID = "1.3.6.1.2.1.31.1.1.1.18"
 IF_OPER_STATUS_OID = "1.3.6.1.2.1.2.2.1.8"
@@ -998,8 +1004,8 @@ def merge_dedup_targets(path_b_targets, path_a_targets):
     return merged
 
 
-def summarize_team_mapping(stage_index, targets, require_link_up=True):
-    """Log which link-up ``team X-Y`` seats still lack an IP/MAC mapping."""
+def eligible_team_seats(stage_index, require_link_up=True):
+    """Return link-eligible ``(team, seat) -> [(switch, ifIndex)]``."""
     eligible = {}
     for switch, data in stage_index.items():
         oper_status = data.get("oper_status", {})
@@ -1009,6 +1015,150 @@ def summarize_team_mapping(stage_index, targets, require_link_up=True):
                 continue
             seat = (int(team_info["team"]), int(team_info["seat"]))
             eligible.setdefault(seat, []).append((switch, ifindex))
+    return eligible
+
+
+def _canonical_player_target(target):
+    """Validate untrusted file/Prometheus data and return file_sd shape."""
+    if not isinstance(target, dict):
+        return None
+    targets = target.get("targets") or []
+    labels = target.get("labels") or {}
+    if not targets or not isinstance(labels, dict):
+        return None
+    ip = str(targets[0] or "").strip()
+    try:
+        ip = str(IPv4Address(ip))
+        team = int(labels.get("team"))
+        seat = int(labels.get("seat"))
+    except (TypeError, ValueError):
+        return None
+    if team < 1 or seat < 1:
+        return None
+    network = str(labels.get("network") or "wired").strip().lower()
+    if network not in VALID_NETWORKS:
+        return None
+    return {
+        "targets": [ip],
+        "labels": {
+            "team": str(team),
+            "seat": str(seat),
+            "switch": str(labels.get("switch") or "last-known").strip(),
+            "network": network,
+            "role": "player",
+        },
+    }
+
+
+def load_previous_player_targets(path):
+    """Load the previous file_sd output as a last-known mapping source."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    targets = []
+    for item in raw:
+        target = _canonical_player_target(item)
+        if target:
+            targets.append(target)
+    if targets:
+        print(
+            f"[INFO] loaded {len(targets)} last-known target(s) from {path}",
+            file=sys.stderr,
+        )
+    return targets
+
+
+def fetch_prometheus_player_history(base_url, lookback="24h", timeout=5,
+                                    opener=urlrequest.urlopen):
+    """Recover file_sd labels from recently stored player-ping series."""
+    lookback = str(lookback or "24h").strip()
+    if not re.fullmatch(r"[1-9]\d*[smhdwy]", lookback):
+        print(
+            f"[WARN] invalid PLAYER_TARGET_HISTORY_LOOKBACK={lookback!r}; using 24h",
+            file=sys.stderr,
+        )
+        lookback = "24h"
+    query = f'max_over_time(probe_success{{job="player-ping"}}[{lookback}])'
+    url = f"{str(base_url).rstrip('/')}/api/v1/query?{urlparse.urlencode({'query': query})}"
+    try:
+        with opener(url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"[WARN] Prometheus player-history recovery failed: {exc}", file=sys.stderr)
+        return []
+
+    targets = []
+    for row in payload.get("data", {}).get("result", []):
+        metric = row.get("metric") or {}
+        target = _canonical_player_target({
+            "targets": [metric.get("target_ip") or metric.get("instance")],
+            "labels": metric,
+        })
+        if target:
+            targets.append(target)
+    targets = dedupe_player_targets(targets, dedupe_seats=False)
+    if targets:
+        print(
+            f"[INFO] recovered {len(targets)} historical target candidate(s) "
+            f"from Prometheus [{lookback}]",
+            file=sys.stderr,
+        )
+    return targets
+
+
+def retain_last_known_wired_targets(current, historical, stage_index,
+                                     require_link_up=True):
+    """Fill currently-unmapped link-up seats with their last-known IPs.
+
+    The gateway can retain IP/MAC ARP state long after an access switch ages
+    out the same source MAC. Core ARP alone cannot identify a ``team X-Y``
+    access port, so preserve the last proven association until that described
+    port goes link-down or a new live FDB association replaces it.
+    """
+    eligible = eligible_team_seats(stage_index, require_link_up)
+    current_seats = {
+        (int(target["labels"]["team"]), int(target["labels"]["seat"]))
+        for target in current
+        if target.get("labels", {}).get("network") == "wired"
+    }
+    missing = set(eligible) - current_seats
+    retained = []
+    seen = {
+        (target["targets"][0], target["labels"]["team"], target["labels"]["seat"])
+        for target in current
+    }
+    retained_seats = set()
+    for raw in historical or []:
+        target = _canonical_player_target(raw)
+        if not target or target["labels"]["network"] != "wired":
+            continue
+        seat_key = (int(target["labels"]["team"]), int(target["labels"]["seat"]))
+        if seat_key not in missing:
+            continue
+        unique = (target["targets"][0], str(seat_key[0]), str(seat_key[1]))
+        if unique in seen:
+            continue
+        # Refresh the switch label from today's authoritative descriptions.
+        target["labels"]["switch"] = eligible[seat_key][0][0]
+        retained.append(target)
+        retained_seats.add(seat_key)
+        seen.add(unique)
+    if retained:
+        print(
+            f"[INFO] retained {len(retained_seats)} link-up seat(s) from "
+            f"{len(retained)} last-known IP candidate(s)",
+            file=sys.stderr,
+        )
+    return list(current) + retained
+
+
+def summarize_team_mapping(stage_index, targets, require_link_up=True):
+    """Log which link-up ``team X-Y`` seats still lack an IP/MAC mapping."""
+    eligible = eligible_team_seats(stage_index, require_link_up)
 
     mapped = {
         (int(target["labels"]["team"]), int(target["labels"]["seat"]))
@@ -1180,6 +1330,12 @@ def main():
     if env_bool("PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS", default=True):
         wireless_scan_exclude.update(gateway_like_ips(wireless_nets))
     output_file = os.environ.get("PLAYER_TARGETS_FILE", "/etc/prometheus/player_targets.json")
+    previous_targets = load_previous_player_targets(output_file)
+    if not previous_targets:
+        previous_targets = fetch_prometheus_player_history(
+            os.environ.get("PROMETHEUS_URL", "http://prometheus:9090"),
+            os.environ.get("PLAYER_TARGET_HISTORY_LOOKBACK", "24h"),
+        )
 
     scan_targets = []
     discovered_targets = []
@@ -1279,6 +1435,12 @@ def main():
                 )
 
             merged = merge_dedup_targets(path_b_targets, path_a_targets)
+            merged = retain_last_known_wired_targets(
+                merged,
+                previous_targets,
+                stage_index,
+                require_link_up,
+            )
             summarize_team_mapping(stage_index, merged, require_link_up)
 
             per_team = {}

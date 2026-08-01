@@ -454,6 +454,15 @@ def test_sysname_change_is_a_notification_not_an_alert(monkeypatch):
     assert "告警" not in header["title"]["content"]
 
 
+def test_sysname_change_rejects_numeric_ip_and_case_only_artifacts():
+    assert bridge._meaningful_sysname("2") == ""
+    assert bridge._meaningful_sysname("192.168.71.8") == ""
+    assert bridge._meaningful_sysname("AVL") == "AVL"
+    assert bridge._sysname_changed("2", "avl") is False
+    assert bridge._sysname_changed("AVL", "avl") is False
+    assert bridge._sysname_changed("old-avl", "avl") is True
+
+
 def test_device_down_and_recovery_titles_are_distinct(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
     down = bridge.build_device_down_card(
