@@ -549,6 +549,94 @@ def test_ap_down_and_recovery_titles_are_distinct():
 
 def test_fast_ap_down_default():
     assert bridge.UNIFI_AP_DOWN_FOR_SECONDS == 10
+    assert bridge.UNIFI_AP_RECOVER_FOR_SECONDS == 10
+
+
+def test_blackbox_ping_is_ap_reachability_source(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        @staticmethod
+        def read():
+            return b"# TYPE probe_success gauge\nprobe_success 1\n"
+
+    requested = []
+
+    def fake_urlopen(req, timeout):
+        requested.append((req.full_url, timeout))
+        return Response()
+
+    monkeypatch.setattr(bridge.request, "urlopen", fake_urlopen)
+
+    assert bridge._blackbox_icmp_probe("192.0.2.10") is True
+    assert "target=192.0.2.10" in requested[0][0]
+    assert "module=icmp" in requested[0][0]
+
+
+def test_ap_ping_overrides_stale_controller_state():
+    known = {
+        "ap-up": {"ip": "192.0.2.10"},
+        "ap-down": {"ip": "192.0.2.11"},
+        "ap-fallback": {"ip": "192.0.2.12"},
+    }
+    controller_current = {
+        "ap-down": known["ap-down"],
+        "ap-fallback": known["ap-fallback"],
+    }
+
+    current, authoritative = bridge.apply_unifi_ap_ping_reachability(
+        known,
+        controller_current,
+        {
+            "192.0.2.10": True,
+            "192.0.2.11": False,
+            "192.0.2.12": None,
+        },
+    )
+
+    assert set(current) == {"ap-up", "ap-fallback"}
+    assert authoritative == 2
+
+
+def test_ap_ip_change_keeps_mac_identity_and_migrates_librenms(monkeypatch):
+    identity = "unifi-ap:aabbccddeeff"
+    inventory = {
+        identity: {
+            "mac": "aabbccddeeff",
+            "name": "AP-1",
+            "ip": "192.0.2.10",
+            "model": "U6-LR",
+            "librenms_ip": "192.0.2.10",
+        }
+    }
+    known = {
+        identity: {
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "name": "AP-1",
+            "ip": "192.0.2.99",
+            "model": "U6-LR",
+        }
+    }
+    migrations = []
+    monkeypatch.setattr(
+        bridge,
+        "rename_librenms_device",
+        lambda old, new, name, log_prefix: migrations.append((old, new, name)) or True,
+    )
+
+    changed, migrated = bridge.reconcile_unifi_ap_inventory(
+        known, inventory, {}, now=1000,
+    )
+
+    assert changed is True
+    assert migrated == {"192.0.2.99"}
+    assert migrations == [("192.0.2.10", "192.0.2.99", "AP-1")]
+    assert inventory[identity]["ip"] == "192.0.2.99"
+    assert inventory[identity]["librenms_ip"] == "192.0.2.99"
 
 
 def test_unifi_controller_state_overrides_stale_prometheus_uptime():

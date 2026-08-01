@@ -68,6 +68,9 @@ Env:
   UNIFI_CONTROLLER_URL/USER/PASS optional direct UniFi API fallback for AP name/IP
   UNIFI_CONTROLLER_SITES  comma sites or all (default all)
   UNIFI_AP_NAME_SYNC_SECONDS seconds between LibreNMS display-name sync attempts
+  UNIFI_AP_PING_ENABLED   true = use blackbox ICMP as AP reachability source
+  UNIFI_AP_RECOVER_FOR_SECONDS seconds AP Ping must stay up before recovery
+  BLACKBOX_EXPORTER_URL   internal blackbox exporter URL
   INTERCONNECT_ALERT_ENABLED true = watch Port-channel/LAG ifOperStatus
   INTERCONNECT_ALERT_FOR_SECONDS seconds a link must be down before alerting
   INTERCONNECT_ALERT_POLL_INTERVAL seconds between interconnect checks
@@ -230,6 +233,14 @@ UNIFI_CONTROLLER_SITES = os.environ.get("UNIFI_CONTROLLER_SITES", "all")
 UNIFI_CONTROLLER_VERIFY_SSL = os.environ.get("UNIFI_CONTROLLER_VERIFY_SSL", "false").lower() in ("1", "true", "yes", "on")
 UNIFI_CONTROLLER_REFRESH_SECONDS = int(os.environ.get("UNIFI_CONTROLLER_REFRESH_SECONDS", "10"))
 UNIFI_AP_NAME_SYNC_SECONDS = int(os.environ.get("UNIFI_AP_NAME_SYNC_SECONDS", "300"))
+UNIFI_AP_PING_ENABLED = os.environ.get("UNIFI_AP_PING_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+UNIFI_AP_RECOVER_FOR_SECONDS = max(0, int(os.environ.get("UNIFI_AP_RECOVER_FOR_SECONDS", "10")))
+UNIFI_AP_PING_HTTP_TIMEOUT_SECONDS = max(
+    1.0, float(os.environ.get("UNIFI_AP_PING_HTTP_TIMEOUT_SECONDS", "3") or "3")
+)
+BLACKBOX_EXPORTER_URL = os.environ.get(
+    "BLACKBOX_EXPORTER_URL", "http://blackbox-exporter:9115"
+).rstrip("/")
 INTERCONNECT_ALERT_ENABLED = os.environ.get("INTERCONNECT_ALERT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 INTERCONNECT_ALERT_FOR_SECONDS = int(os.environ.get("INTERCONNECT_ALERT_FOR_SECONDS", "5"))
 INTERCONNECT_ALERT_POLL_INTERVAL = int(os.environ.get("INTERCONNECT_ALERT_POLL_INTERVAL", "5"))
@@ -275,6 +286,10 @@ DEVICE_RESOURCE_STATE_FILE = os.environ.get(
 UNIFI_AP_STATE_FILE = os.environ.get(
     "UNIFI_AP_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "unifi-ap-alerts.json"),
+)
+UNIFI_AP_INVENTORY_FILE = os.environ.get(
+    "UNIFI_AP_INVENTORY_FILE",
+    os.path.join(BRIDGE_STATE_DIR, "unifi-ap-inventory.json"),
 )
 # UniFi AP 掉线告警：从 UniFi Poller(unpoller) 在 Prometheus 里的 controller 数据
 # 判断 AP 在线/掉线。没配 UniFi 时该查询为空、watcher 自动静默。
@@ -342,6 +357,7 @@ DEVICE_DOWN_STATE_LOCK = threading.Lock()
 STACKWISE_STATE_LOCK = threading.Lock()
 DEVICE_RESOURCE_STATE_LOCK = threading.Lock()
 UNIFI_AP_STATE_LOCK = threading.Lock()
+UNIFI_AP_INVENTORY_LOCK = threading.Lock()
 HEALTH_LOCK = threading.Lock()
 LINK_EVENT_MERGE_LOCK = threading.Lock()
 LINK_ERRDISABLE_EVENTS = {}
@@ -527,6 +543,7 @@ def load_unifi_ap_states():
         loaded[state_key] = {
             "alerting": True,
             "down_since": down_since,
+            "up_since": None,
             "seen_up": True,
             "last_seen": down_since or time.time(),
             "name": str(value.get("name") or ""),
@@ -552,6 +569,41 @@ def save_unifi_ap_states(states):
         }
     with UNIFI_AP_STATE_LOCK:
         _save_json_dict(UNIFI_AP_STATE_FILE, active)
+
+
+def load_unifi_ap_inventory():
+    inventory = {}
+    with UNIFI_AP_INVENTORY_LOCK:
+        raw = _load_json_dict(UNIFI_AP_INVENTORY_FILE)
+    for key, value in raw.items():
+        if not key or not isinstance(value, dict):
+            continue
+        mac = _normalize_mac_hex(value.get("mac") or key)
+        identity = _unifi_ap_identity(mac) or str(key)
+        inventory[identity] = {
+            "mac": mac,
+            "name": str(value.get("name") or ""),
+            "ip": str(value.get("ip") or ""),
+            "model": str(value.get("model") or ""),
+            "librenms_ip": str(value.get("librenms_ip") or ""),
+        }
+    return inventory
+
+
+def save_unifi_ap_inventory(inventory):
+    payload = {}
+    for key, value in inventory.items():
+        if not key or not isinstance(value, dict):
+            continue
+        payload[str(key)] = {
+            "mac": _normalize_mac_hex(value.get("mac") or key),
+            "name": str(value.get("name") or ""),
+            "ip": str(value.get("ip") or ""),
+            "model": str(value.get("model") or ""),
+            "librenms_ip": str(value.get("librenms_ip") or ""),
+        }
+    with UNIFI_AP_INVENTORY_LOCK:
+        return _save_json_dict(UNIFI_AP_INVENTORY_FILE, payload)
 
 
 EVENT_ID = max(
@@ -1642,6 +1694,56 @@ def update_librenms_device_display(ip, name, log_prefix="[WATCHER]"):
     except Exception as exc:
         log(f"{log_prefix} LibreNMS display sync failed for {ip}: {exc}")
         return False
+
+
+def rename_librenms_device(old_ip, new_ip, name="", log_prefix="[AP]"):
+    """Move an existing LibreNMS device to a new DHCP address without losing history."""
+    token = _librenms_token()
+    old_ip = str(old_ip or "").strip()
+    new_ip = str(new_ip or "").strip()
+    if not token or not LIBRENMS_URL or not old_ip or not new_ip or old_ip == new_ip:
+        return False
+    try:
+        if _find_librenms_device_by_ip(token, new_ip):
+            update_librenms_device_display(new_ip, name, log_prefix=log_prefix)
+            return True
+        device = _find_librenms_device_by_ip(token, old_ip)
+    except Exception as exc:
+        log(f"{log_prefix} LibreNMS AP IP lookup failed {old_ip} -> {new_ip}: {exc}")
+        return False
+    if not device:
+        return False
+    device_ref = device.get("device_id") or device.get("hostname") or old_ip
+    encoded_ref = parse.quote(str(device_ref), safe="")
+    encoded_new = parse.quote(new_ip, safe="")
+    req = request.Request(
+        f"{LIBRENMS_URL}/api/v0/devices/{encoded_ref}/rename/{encoded_new}",
+        headers={"X-Auth-Token": token},
+        method="PATCH",
+    )
+    try:
+        with request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        entries = data if isinstance(data, list) else [data]
+        if any(
+            str(item.get("status") or "").lower() == "ok"
+            for item in entries
+            if isinstance(item, dict)
+        ):
+            log(f"{log_prefix} LibreNMS AP address migrated: {name or old_ip} {old_ip} -> {new_ip}")
+            update_librenms_device_display(new_ip, name, log_prefix=log_prefix)
+            return True
+        log(f"{log_prefix} LibreNMS AP address migration failed {old_ip} -> {new_ip}: {raw[:160]}")
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
+        log(f"{log_prefix} LibreNMS AP address migration HTTP {exc.code} {old_ip} -> {new_ip}: {body[:160]}")
+    except Exception as exc:
+        log(f"{log_prefix} LibreNMS AP address migration failed {old_ip} -> {new_ip}: {exc}")
+    return False
 
 
 def delete_librenms_device(ip, log_prefix="[DOWN]"):
@@ -4186,6 +4288,7 @@ def _optional_prometheus_query(query):
 
 UNIFI_CONTROLLER_AP_CACHE = {"ts": 0.0, "items": {}}
 UNIFI_CONTROLLER_WARN_TS = 0.0
+UNIFI_AP_PING_WARN_TS = 0.0
 
 
 def _unifi_controller_enabled():
@@ -4388,6 +4491,129 @@ def _resolve_ap_online(key, metric, metric_online, controller_info=None):
     return True
 
 
+def _blackbox_icmp_probe(ip):
+    query = parse.urlencode({"target": ip, "module": "icmp"})
+    req = request.Request(f"{BLACKBOX_EXPORTER_URL}/probe?{query}")
+    with request.urlopen(req, timeout=UNIFI_AP_PING_HTTP_TIMEOUT_SECONDS) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+    match = re.search(r"(?m)^probe_success\s+([01](?:\.0+)?)\s*$", body)
+    if not match:
+        raise RuntimeError("blackbox response has no probe_success")
+    return float(match.group(1)) >= 1
+
+
+def probe_unifi_ap_ips(known):
+    """Probe each unique controller AP address; None means probe infrastructure failed."""
+    global UNIFI_AP_PING_WARN_TS
+    ips = sorted({
+        str(info.get("ip") or "").strip()
+        for info in known.values()
+        if _looks_like_ip(info.get("ip"))
+    })
+    if not UNIFI_AP_PING_ENABLED or not BLACKBOX_EXPORTER_URL or not ips:
+        return {}
+    results = {}
+    failures = []
+    with ThreadPoolExecutor(max_workers=min(16, len(ips))) as pool:
+        futures = {pool.submit(_blackbox_icmp_probe, ip): ip for ip in ips}
+        for future in as_completed(futures):
+            ip = futures[future]
+            try:
+                results[ip] = bool(future.result())
+            except Exception as exc:
+                results[ip] = None
+                failures.append(f"{ip}: {exc}")
+    now = time.time()
+    if failures and now - UNIFI_AP_PING_WARN_TS >= 300:
+        log(
+            f"[AP] blackbox Ping unavailable for {len(failures)}/{len(ips)} AP(s); "
+            f"falling back to controller state: {'; '.join(failures[:3])}"
+        )
+        UNIFI_AP_PING_WARN_TS = now
+    return results
+
+
+def apply_unifi_ap_ping_reachability(
+    known, source_current, probe_results, previously_seen=None,
+):
+    """Overlay successful blackbox observations on controller/unpoller state."""
+    current = dict(source_current)
+    authoritative = 0
+    for key, info in known.items():
+        ip = str(info.get("ip") or "").strip()
+        reachable = probe_results.get(ip)
+        if reachable is None:
+            continue
+        authoritative += 1
+        if reachable:
+            # Do not resurrect a controller-retired AP just because its stale
+            # address was reassigned to some other host that answers Ping.
+            if previously_seen is None or key in source_current or key in previously_seen:
+                current[key] = info
+        else:
+            current.pop(key, None)
+    return current, authoritative
+
+
+def reconcile_unifi_ap_inventory(known, inventory, migration_attempted, now):
+    """Track APs by MAC, refresh Ping targets, and migrate LibreNMS on DHCP changes."""
+    changed = False
+    migrated_ips = set()
+    for key, info in known.items():
+        mac = _normalize_mac_hex(info.get("mac") or key)
+        identity = _unifi_ap_identity(mac) or str(key)
+        ip = str(info.get("ip") or "").strip()
+        entry = inventory.get(identity)
+        if entry is None:
+            entry = {
+                "mac": mac,
+                "name": info.get("name") or "",
+                "ip": ip,
+                "model": info.get("model") or "",
+                "librenms_ip": "",
+            }
+            inventory[identity] = entry
+            changed = True
+        previous_ip = str(entry.get("ip") or "").strip()
+        if ip and previous_ip and ip != previous_ip:
+            log(
+                f"[AP] controller IP changed for {info.get('name') or identity}: "
+                f"{previous_ip} -> {ip}; Ping target updated"
+            )
+        for field, value in (
+            ("mac", mac),
+            ("name", info.get("name") or ""),
+            ("ip", ip),
+            ("model", info.get("model") or ""),
+        ):
+            if value and entry.get(field) != value:
+                entry[field] = value
+                changed = True
+
+        librenms_ip = str(entry.get("librenms_ip") or "").strip()
+        if not ip or not librenms_ip or ip == librenms_ip:
+            continue
+        last_attempt = migration_attempted.get(identity, 0)
+        if now - last_attempt < UNIFI_AP_SNMP_ADD_RETRY_SECONDS:
+            continue
+        migration_attempted[identity] = now
+        if rename_librenms_device(librenms_ip, ip, info.get("name") or "", log_prefix="[AP]"):
+            entry["librenms_ip"] = ip
+            migrated_ips.add(ip)
+            changed = True
+    return changed, migrated_ips
+
+
+def mark_unifi_ap_librenms_ip(inventory, key, info):
+    identity = _unifi_ap_identity(info.get("mac")) or str(key)
+    entry = inventory.get(identity)
+    ip = str(info.get("ip") or "").strip()
+    if not entry or not ip or entry.get("librenms_ip") == ip:
+        return False
+    entry["librenms_ip"] = ip
+    return True
+
+
 def _send_pending_ap_deployment(name, ip, model, confirmed_ips, delivered_identities, mac=""):
     """Retry an AP deployment card until Feishu confirms delivery."""
     identity = _unifi_ap_identity(mac)
@@ -4431,7 +4657,9 @@ def unifi_ap_watcher():
     # the controller sees that AP online again.  This state was previously
     # loaded by the unrelated ISP watcher, leaving this watcher empty.
     states = load_unifi_ap_states()
+    ap_inventory = load_unifi_ap_inventory()
     snmp_add_attempted = {}
+    librenms_ip_migration_attempted = {}
     snmp_confirmed_exists = set()  # IPs confirmed in LibreNMS — skip future add retries
     deployment_notification_confirmed = set()
     name_sync_attempted = {}
@@ -4440,8 +4668,11 @@ def unifi_ap_watcher():
     log(
         "[AP] UniFi AP watcher enabled "
         f"(for={UNIFI_AP_DOWN_FOR_SECONDS}s, poll={UNIFI_AP_POLL_INTERVAL}s, "
+        f"recover_for={UNIFI_AP_RECOVER_FOR_SECONDS}s, "
+        f"reachability={'ping' if UNIFI_AP_PING_ENABLED else 'controller'}, "
         f"snmp_auto_add={UNIFI_AP_SNMP_AUTO_ADD}, "
-        f"controller_api={_unifi_controller_enabled()}, active_loaded={len(states)})"
+        f"controller_api={_unifi_controller_enabled()}, active_loaded={len(states)}, "
+        f"inventory_loaded={len(ap_inventory)})"
     )
 
     while True:
@@ -4509,6 +4740,15 @@ def unifi_ap_watcher():
             else:
                 current.pop(key, None)
 
+        probe_results = probe_unifi_ap_ips(known)
+        current, ping_authoritative = apply_unifi_ap_ping_reachability(
+            known, current, probe_results, previously_seen=set(states),
+        )
+        inventory_changed, migrated_ips = reconcile_unifi_ap_inventory(
+            known, ap_inventory, librenms_ip_migration_attempted, now,
+        )
+        snmp_confirmed_exists.update(migrated_ips)
+
         # Seen APs: refresh metadata, arm on first sight, recover if was down.
         for key, info in current.items():
             name = info.get("name") or key
@@ -4528,6 +4768,8 @@ def unifi_ap_watcher():
                     )
                     if add_result in ("added", "exists"):
                         snmp_confirmed_exists.add(ip)
+                        if mark_unifi_ap_librenms_ip(ap_inventory, key, info):
+                            inventory_changed = True
             if _send_pending_ap_deployment(
                 name,
                 ip,
@@ -4547,6 +4789,7 @@ def unifi_ap_watcher():
             state = states.setdefault(key, {
                 "alerting": False, "down_since": None, "seen_up": False,
                 "last_seen": now, "name": name, "ip": "", "model": "",
+                "up_since": None,
                 "mac": info.get("mac") or "",
             })
             state["name"] = name
@@ -4558,15 +4801,21 @@ def unifi_ap_watcher():
                 state["seen_up"] = True
                 log(f"[AP] armed {name} ({state['ip']}) after first seen")
             if state["alerting"]:
-                offline = max(0, now - (state.get("down_since") or now))
-                log(f"[AP] RECOVER {name} ({state['ip']}) offline={int(offline)}s")
-                if send_feishu(build_ap_down_card(name, state["ip"], state["model"],
-                                                  recovered=True, offline_seconds=offline)):
-                    state["alerting"] = False
-                    state["down_since"] = None
-                    save_unifi_ap_states(states)
+                if recovery_ready(
+                    state, now, now, UNIFI_AP_RECOVER_FOR_SECONDS,
+                ):
+                    recovered_at = state.get("up_since") or now
+                    offline = max(0, recovered_at - (state.get("down_since") or recovered_at))
+                    log(f"[AP] RECOVER {name} ({state['ip']}) offline={int(offline)}s")
+                    if send_feishu(build_ap_down_card(name, state["ip"], state["model"],
+                                                      recovered=True, offline_seconds=offline)):
+                        state["alerting"] = False
+                        state["down_since"] = None
+                        state["up_since"] = None
+                        save_unifi_ap_states(states)
             else:
                 state["down_since"] = None
+                state["up_since"] = None
 
         # Previously-seen APs now missing => down after debounce.
         for key, state in list(states.items()):
@@ -4581,6 +4830,7 @@ def unifi_ap_watcher():
                 state["name"] = known[key].get("name") or state.get("name") or key
                 state["ip"] = known[key].get("ip") or state.get("ip") or ""
                 state["model"] = known[key].get("model") or state.get("model") or ""
+            state["up_since"] = None
             if state.get("down_since") is None:
                 state["down_since"] = state.get("last_seen") or now
             if not state["alerting"] and now - state["down_since"] >= UNIFI_AP_DOWN_FOR_SECONDS:
@@ -4597,9 +4847,13 @@ def unifi_ap_watcher():
             missing_ip = sum(1 for info in current.values() if not info.get("ip"))
             log(
                 f"[AP] {len(current)} online / {len(known)} listed / {len(states)} known / "
-                f"{down} down / {missing_ip} online without IP"
+                f"{down} down / {missing_ip} online without IP / "
+                f"{ping_authoritative} Ping-authoritative"
             )
             last_status_log = now
+
+        if inventory_changed:
+            save_unifi_ap_inventory(ap_inventory)
 
         time.sleep(UNIFI_AP_POLL_INTERVAL)
 
