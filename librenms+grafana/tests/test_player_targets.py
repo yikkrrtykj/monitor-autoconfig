@@ -423,12 +423,37 @@ class TestParseDot1qFdb:
         assert len(result) == 1
         assert result["00:1a:2b:3c:4d:5e"] in (5, 7)
 
+    def test_exact_vlan_filter(self):
+        out = "\n".join([
+            ".1.3.6.1.2.1.17.7.1.2.2.1.2.10.0.26.43.60.77.94 = INTEGER: 5",
+            ".1.3.6.1.2.1.17.7.1.2.2.1.2.42.170.187.204.221.238.255 = INTEGER: 7",
+        ])
+        assert gpt.parse_dot1q_fdb(out, fdb_id=42) == {
+            "aa:bb:cc:dd:ee:ff": 7,
+        }
+
     def test_port_zero_dropped(self):
         out = ".1.3.6.1.2.1.17.7.1.2.2.1.2.10.0.26.43.60.77.94 = INTEGER: 0"
         assert gpt.parse_dot1q_fdb(out) == {}
 
     def test_empty_input(self):
         assert gpt.parse_dot1q_fdb("") == {}
+
+
+class TestParseDot1qVlanFdbIds:
+    def test_vlan_to_fdb_mapping(self):
+        out = "\n".join([
+            ".1.3.6.1.2.1.17.7.1.4.2.1.3.1 = INTEGER: 1",
+            ".1.3.6.1.2.1.17.7.1.4.2.1.3.42 = INTEGER: 100",
+        ])
+        assert gpt.parse_dot1q_vlan_fdb_ids(out) == {1: 1, 42: 100}
+
+    def test_ignores_other_oids_and_bad_values(self):
+        out = "\n".join([
+            ".1.3.6.1.2.1.17.7.1.4.2.1.4.42 = INTEGER: 100",
+            ".1.3.6.1.2.1.17.7.1.4.2.1.3.43 = STRING: bad",
+        ])
+        assert gpt.parse_dot1q_vlan_fdb_ids(out) == {}
 
 
 # ---- parse_arp_macaddr() ------------------------------------------
@@ -692,37 +717,44 @@ class TestBuildStageMacIndexCommunityIndexing:
             "aa:bb:cc:dd:ee:ff": 11,
         }
 
-    def test_vlan_context_does_not_fall_back_to_q_bridge(self):
-        # Cisco community-indexing only applies to BRIDGE-MIB. A Q-BRIDGE walk
-        # under an indexed community can return unindexed VLAN 1 data and
-        # pollute the merged map, so the fallback must be suppressed inside
-        # VLAN contexts (this is the C1 guard).
-        q_bridge_pollution = (
-            ".1.3.6.1.2.1.17.7.1.2.2.1.2.1.222.173.190.239.0.1 = INTEGER: 99"
-        )
+    def test_vlan_context_falls_back_to_exact_q_bridge_vlan(self):
+        q_bridge = "\n".join([
+            ".1.3.6.1.2.1.17.7.1.2.2.1.2.1.222.173.190.239.0.1 = INTEGER: 99",
+            ".1.3.6.1.2.1.17.7.1.2.2.1.2.100.0.26.43.60.77.94 = INTEGER: 5",
+            ".1.3.6.1.2.1.17.7.1.2.2.1.2.101.170.187.204.221.238.255 = INTEGER: 6",
+        ])
         self._install_fake_snmpwalk({
             ("10.0.0.1", "global", gpt.IF_ALIAS_OID):
                 ".1.3.6.1.2.1.31.1.1.1.18.10 = STRING: team01-01",
-            # default context exposes nothing — would normally fall back to Q-BRIDGE
+            ("10.0.0.1", "global", gpt.BRIDGE_MIB_BASEPORT_OID):
+                ".1.3.6.1.2.1.17.1.4.1.2.5 = INTEGER: 10",
+            ("10.0.0.1", "global", gpt.Q_BRIDGE_MIB_VLAN_FDB_ID_OID):
+                ".1.3.6.1.2.1.17.7.1.4.2.1.3.42 = INTEGER: 100",
             ("10.0.0.1", "global", gpt.Q_BRIDGE_MIB_FDB_PORT_OID):
-                q_bridge_pollution,
-            # VLAN context: BRIDGE-MIB also empty. Without the guard, the code
-            # would fall back to Q_BRIDGE_MIB_FDB_PORT_OID here as well and
-            # pick up the "de:ad:be:ef:00:01" pollution.
-            ("10.0.0.1", "global@11", gpt.Q_BRIDGE_MIB_FDB_PORT_OID):
-                q_bridge_pollution,
+                q_bridge,
         })
-        idx = gpt.build_stage_mac_index(["10.0.0.1"], "global", vlan_ids=[11])
-        # Default context fell back to Q-BRIDGE (allowed) -> pollution present
-        assert idx["10.0.0.1"]["mac_to_ifindex"].get("de:ad:be:ef:00:01") == 99
-        # We can't easily separate default-vs-vlan contribution from the merged
-        # map alone, so verify via call log that VLAN context did NOT issue a
-        # Q-BRIDGE walk.
-        vlan_q_bridge_calls = [
-            c for c in self.calls
-            if c[1] == "global@11" and c[2] == gpt.Q_BRIDGE_MIB_FDB_PORT_OID
-        ]
-        assert vlan_q_bridge_calls == [], "VLAN context must not query Q-BRIDGE-MIB"
+        idx = gpt.build_stage_mac_index(["10.0.0.1"], "global", vlan_ids=[42])
+        assert idx["10.0.0.1"]["mac_to_ifindex"] == {
+            "00:1a:2b:3c:4d:5e": 10,
+        }
+        assert not any(
+            c[1] == "global@42" and c[2] == gpt.Q_BRIDGE_MIB_FDB_PORT_OID
+            for c in self.calls
+        ), "Q-BRIDGE must be queried through the base community"
+
+    def test_q_bridge_falls_back_to_vlan_id_when_mapping_is_unavailable(self):
+        self._install_fake_snmpwalk({
+            ("10.0.0.1", "global", gpt.IF_ALIAS_OID):
+                ".1.3.6.1.2.1.31.1.1.1.18.10 = STRING: team01-01",
+            ("10.0.0.1", "global", gpt.BRIDGE_MIB_BASEPORT_OID):
+                ".1.3.6.1.2.1.17.1.4.1.2.5 = INTEGER: 10",
+            ("10.0.0.1", "global", gpt.Q_BRIDGE_MIB_FDB_PORT_OID):
+                ".1.3.6.1.2.1.17.7.1.2.2.1.2.42.0.26.43.60.77.94 = INTEGER: 5",
+        })
+        idx = gpt.build_stage_mac_index(["10.0.0.1"], "global", vlan_ids=[42])
+        assert idx["10.0.0.1"]["mac_to_ifindex"] == {
+            "00:1a:2b:3c:4d:5e": 10,
+        }
 
 
 # ---- parse_if_oper_status() ---------------------------------------

@@ -1,6 +1,7 @@
 const assert = require('assert');
 const {
-  suppressIsolatedLatencySpikes
+  suppressIsolatedLatencySpikes,
+  smoothLatencyJitter
 } = require('../bigscreen/utils.js');
 
 function series(values) {
@@ -29,6 +30,28 @@ assert.deepStrictEqual(
   sustainedInput[0].values.map((point) => point.v),
   'two consecutive samples at or above 50 ms must remain visible'
 );
+
+const jitterInput = series([
+  { t: 100, v: 0.001 },
+  { t: 102, v: 0.003 },
+  { t: 104, v: 0.001 },
+  { t: 106, v: 0.003 },
+  { t: 108, v: 0.001 }
+]);
+const jitterOutput = smoothLatencyJitter(jitterInput, { preserveAbove: 0.05, radius: 2 });
+assert.strictEqual(jitterOutput[0].values[1].v, 0.002);
+assert.strictEqual(jitterOutput[0].values[2].v, 0.001);
+assert.strictEqual(jitterInput[0].values[1].v, 0.003, 'jitter smoothing must not mutate input data');
+
+const preservedHighInput = series([
+  { t: 100, v: 0.001 },
+  { t: 102, v: 0.06 },
+  { t: 104, v: 0.07 },
+  { t: 106, v: 0.002 }
+]);
+const preservedHighOutput = smoothLatencyJitter(preservedHighInput, { preserveAbove: 0.05, radius: 2 });
+assert.strictEqual(preservedHighOutput[0].values[1].v, 0.06);
+assert.strictEqual(preservedHighOutput[0].values[2].v, 0.07);
 
 const gapInput = series([
   { t: 100, v: 0.003 },

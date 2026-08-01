@@ -167,6 +167,39 @@
     });
   }
 
+  /**
+   * Reduce low-level ICMP jitter on the customer-facing tournament chart
+   * without hiding real latency incidents. Samples at or above `preserveAbove`
+   * are kept verbatim; only the normal low-latency baseline is median-filtered.
+   */
+  function smoothLatencyJitter(seriesList, options) {
+    const settings = options || {};
+    const preserveAbove = Number.isFinite(settings.preserveAbove) ? settings.preserveAbove : 0.05;
+    const radius = Math.max(1, Math.floor(settings.radius || 2));
+
+    return (seriesList || []).map((series) => {
+      const source = (series.values || []).map((point) => ({ ...point }));
+      const values = source.map((point, index) => {
+        if (!Number.isFinite(point.v) || point.v >= preserveAbove) return { ...point };
+        const nearby = [];
+        const first = Math.max(0, index - radius);
+        const last = Math.min(source.length - 1, index + radius);
+        for (let cursor = first; cursor <= last; cursor += 1) {
+          const value = source[cursor] && source[cursor].v;
+          if (Number.isFinite(value) && value < preserveAbove) nearby.push(value);
+        }
+        if (!nearby.length) return { ...point };
+        nearby.sort((left, right) => left - right);
+        const middle = Math.floor(nearby.length / 2);
+        const median = nearby.length % 2
+          ? nearby[middle]
+          : (nearby[middle - 1] + nearby[middle]) / 2;
+        return { ...point, v: median };
+      });
+      return { ...series, values };
+    });
+  }
+
   function uniqueNames(names) {
     return Array.from(new Set(names.map((name) => String(name || "").trim()).filter(Boolean)));
   }
@@ -351,6 +384,7 @@
     niceMax,
     average,
     suppressIsolatedLatencySpikes,
+    smoothLatencyJitter,
     uniqueNames,
     networkLabel,
     seatLabel,

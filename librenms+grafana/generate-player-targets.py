@@ -59,6 +59,7 @@ ARP_PHYSADDR_OID = "1.3.6.1.2.1.4.22.1.2"
 BRIDGE_MIB_FDB_PORT_OID = "1.3.6.1.2.1.17.4.3.1.2"
 BRIDGE_MIB_BASEPORT_OID = "1.3.6.1.2.1.17.1.4.1.2"
 Q_BRIDGE_MIB_FDB_PORT_OID = "1.3.6.1.2.1.17.7.1.2.2.1.2"
+Q_BRIDGE_MIB_VLAN_FDB_ID_OID = "1.3.6.1.2.1.17.7.1.4.2.1.3"
 IF_OPER_STATUS_UP = 1
 
 TEAM_RE = re.compile(r"team\s*0*(\d+)\s*[-_]\s*0*(\d+)", re.IGNORECASE)
@@ -244,20 +245,58 @@ def parse_dot1d_baseport(output):
     return out
 
 
-def parse_dot1q_fdb(output):
-    """dot1qTpFdbPort -> {mac: bridgePort}; VLAN dimension dropped.
-
-    OID layout: <prefix>.<vlan>.<6 decimal mac octets> = INTEGER: bridgePort
-    """
+def parse_dot1q_vlan_fdb_ids(output):
+    """dot1qVlanFdbId -> {vlan_id: fdb_id}."""
     out = {}
+    prefix = Q_BRIDGE_MIB_VLAN_FDB_ID_OID.strip(".").split(".")
     for line in output.strip().split("\n"):
         if "=" not in line:
             continue
         oid_str, value = line.split("=", 1)
         parts = oid_str.strip().strip(".").split(".")
-        if len(parts) < 7:
+        if parts[: len(prefix)] != prefix:
             continue
-        mac = mac_from_decimal_suffix(parts)
+        suffix = parts[len(prefix):]
+        if len(suffix) != 1:
+            continue
+        try:
+            vlan_id = int(suffix[0])
+        except ValueError:
+            continue
+        fdb_id = _int_from_snmp_value(value)
+        if fdb_id is None or fdb_id < 0:
+            continue
+        out[vlan_id] = fdb_id
+    return out
+
+
+def parse_dot1q_fdb(output, fdb_id=None):
+    """dot1qTpFdbPort -> {mac: bridgePort}.
+
+    OID layout: <prefix>.<fdb-id>.<6 decimal mac octets> = INTEGER: bridgePort
+    When ``fdb_id`` is provided, entries from every other forwarding database
+    are ignored. Q-BRIDGE-MIB exposes the VLAN-to-FDB mapping separately via
+    dot1qVlanFdbId, so callers must not assume this index is always the VLAN ID.
+    """
+    out = {}
+    prefix = Q_BRIDGE_MIB_FDB_PORT_OID.strip(".").split(".")
+    for line in output.strip().split("\n"):
+        if "=" not in line:
+            continue
+        oid_str, value = line.split("=", 1)
+        parts = oid_str.strip().strip(".").split(".")
+        if parts[: len(prefix)] != prefix:
+            continue
+        suffix = parts[len(prefix):]
+        if len(suffix) != 7:
+            continue
+        try:
+            entry_fdb = int(suffix[0])
+        except ValueError:
+            continue
+        if fdb_id is not None and entry_fdb != int(fdb_id):
+            continue
+        mac = mac_from_decimal_suffix(suffix[1:])
         if mac is None:
             continue
         port = _int_from_snmp_value(value)
@@ -573,18 +612,26 @@ def discover_wireless_scan_ips(subnets, limit=0, timeout=1, workers=64, max_host
     return limited_items(online, limit)
 
 
-def _walk_vlan_mac_table(sw, community, vlan_context=False):
+def _walk_vlan_mac_table(
+    sw,
+    community,
+    vlan_context=False,
+    qbridge_vlan_id=None,
+    qbridge_community=None,
+    allow_unfiltered_qbridge=True,
+):
     """Walk one SNMP context for MAC->ifIndex.
 
     Returns (mac_to_ifindex, source_label, bridgeport_count).
 
     Tries BRIDGE-MIB (dot1dTpFdbPort + dot1dBasePortIfIndex) first since on
     Cisco the per-VLAN context exposes it directly. When `vlan_context` is
-    False (the default-context call), falls back to Q-BRIDGE-MIB for vendors
-    that only expose dot1qTpFdbPort. When `vlan_context` is True (community
-    is `name@vlan_id`), the fallback is skipped: Cisco's community-indexing
-    only applies to BRIDGE-MIB, and a Q-BRIDGE walk under an indexed
-    community can return unindexed VLAN 1 data and pollute the merged map.
+    False (the default-context call), it can fall back to Q-BRIDGE-MIB for
+    vendors that only expose dot1qTpFdbPort. When player VLANs are configured,
+    callers disable that unfiltered fallback and instead pass an explicit
+    ``qbridge_vlan_id`` through the base community. This supports devices that
+    do not implement community-indexed BRIDGE-MIB without mixing MAC addresses
+    learned in other VLANs into the player result.
     """
     bp_out = snmpwalk(sw, community, BRIDGE_MIB_BASEPORT_OID)
     bp_map = parse_dot1d_baseport(bp_out)
@@ -592,10 +639,27 @@ def _walk_vlan_mac_table(sw, community, vlan_context=False):
     fdb_out = snmpwalk(sw, community, BRIDGE_MIB_FDB_PORT_OID)
     fdb_map = parse_dot1d_fdb(fdb_out)
     source = "BRIDGE-MIB"
-    if not fdb_map and not vlan_context:
-        fdb_out = snmpwalk(sw, community, Q_BRIDGE_MIB_FDB_PORT_OID)
-        fdb_map = parse_dot1q_fdb(fdb_out)
+    if not fdb_map and (allow_unfiltered_qbridge or qbridge_vlan_id is not None):
+        fallback_community = qbridge_community or community
+        if fallback_community != community:
+            fallback_bp_out = snmpwalk(
+                sw, fallback_community, BRIDGE_MIB_BASEPORT_OID
+            )
+            fallback_bp_map = parse_dot1d_baseport(fallback_bp_out)
+            if fallback_bp_map:
+                bp_map = fallback_bp_map
+        qbridge_fdb_id = qbridge_vlan_id
+        if qbridge_vlan_id is not None:
+            vlan_fdb_out = snmpwalk(
+                sw, fallback_community, Q_BRIDGE_MIB_VLAN_FDB_ID_OID
+            )
+            vlan_fdb_ids = parse_dot1q_vlan_fdb_ids(vlan_fdb_out)
+            qbridge_fdb_id = vlan_fdb_ids.get(qbridge_vlan_id, qbridge_vlan_id)
+        fdb_out = snmpwalk(sw, fallback_community, Q_BRIDGE_MIB_FDB_PORT_OID)
+        fdb_map = parse_dot1q_fdb(fdb_out, fdb_id=qbridge_fdb_id)
         source = "Q-BRIDGE-MIB"
+        if qbridge_vlan_id is not None:
+            source += f" VLAN {qbridge_vlan_id}/FDB {qbridge_fdb_id}"
 
     mac_to_ifindex = {mac: bp_map.get(bp, bp) for mac, bp in fdb_map.items()}
     return mac_to_ifindex, source, len(bp_map)
@@ -633,7 +697,11 @@ def build_stage_mac_index(switches, community, vlan_ids=None):
             file=sys.stderr,
         )
 
-        default_macs, default_source, default_bp = _walk_vlan_mac_table(sw, community)
+        default_macs, default_source, default_bp = _walk_vlan_mac_table(
+            sw,
+            community,
+            allow_unfiltered_qbridge=not vlan_ids,
+        )
         print(
             f"[INFO] {sw}: bridgePort->ifIndex entries = {default_bp}",
             file=sys.stderr,
@@ -647,7 +715,11 @@ def build_stage_mac_index(switches, community, vlan_ids=None):
         for vlan_id in vlan_ids:
             indexed_community = f"{community}@{vlan_id}"
             vlan_macs, vlan_source, vlan_bp = _walk_vlan_mac_table(
-                sw, indexed_community, vlan_context=True
+                sw,
+                indexed_community,
+                vlan_context=True,
+                qbridge_vlan_id=vlan_id,
+                qbridge_community=community,
             )
             print(
                 f"[INFO] {sw}: VLAN {vlan_id} MAC entries ({vlan_source}) = {len(vlan_macs)} "
