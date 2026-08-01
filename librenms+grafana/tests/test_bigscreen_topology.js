@@ -365,5 +365,30 @@ assert.ok(!attachedLayout.links.some((link) =>
   [link.from.ip, link.to.ip].includes("192.168.10.254")
 ));
 
+// A stale/weak server edge can arrive after the exact FDB edge. JSON order
+// must never move the server back beside the core or another switch.
+const conflictingAttachmentLayout = topologyLayout(
+  buildTopologyLayers(serverAttachmentTargets),
+  1365,
+  620,
+  [
+    ...serverAttachmentEdges,
+    {
+      from_ip: "192.168.10.254",
+      from_port: "Te1/0/10",
+      to_ip: "192.168.42.203",
+      to_port: null,
+      source: "lldp"
+    }
+  ]
+);
+const stableServer = conflictingAttachmentLayout.nodes.find((node) => node.ip === "192.168.42.203");
+const stableAccessSwitch = conflictingAttachmentLayout.nodes.find((node) => node.ip === "192.168.10.11");
+assert.strictEqual(
+  Math.round(centerX(stableServer)),
+  Math.round(centerX(stableAccessSwitch)),
+  "a later weak edge cannot override the server's exact FDB parent"
+);
+
 console.log("bigscreen topology tests passed");
 

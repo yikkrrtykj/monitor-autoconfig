@@ -869,17 +869,32 @@ def load_cached_edges(path):
     return data if isinstance(data, list) else []
 
 
+def _server_ip_for_edge(edge, servers):
+    """Return the configured server endpoint carried by one topology edge."""
+    for ip in (edge.get("from_ip"), edge.get("to_ip")):
+        if ip in servers:
+            return ip
+    return None
+
+
 def preserve_cached_server_edges(edges, cached_edges, servers, configured_device_ips):
     """Keep a confirmed server attachment through transient ARP/FDB misses.
 
     A fresh FDB result is authoritative.  The cached edge is considered only
-    when the current cycle could not locate that server and its previous parent
-    is still a configured infrastructure device.
+    when the current cycle could not locate that server.  Do not require its
+    previous parent to appear in this cycle's auto-discovery list: a single
+    failed ICMP/SNMP discovery used to remove the attachment permanently and
+    made servers jump back beside the core until a later FDB lookup succeeded.
+
+    ``configured_device_ips`` remains in the signature for compatibility with
+    callers/tests from older deployments.  Server membership is the lifecycle
+    authority; removing a server from SERVER_PING removes its cached edge.
     """
-    configured = set(configured_device_ips)
     linked_servers = {
-        ip for edge in edges for ip in (edge.get("from_ip"), edge.get("to_ip"))
-        if ip in servers
+        server_ip for edge in edges
+        if edge.get("source") == "fdb"
+        for server_ip in [_server_ip_for_edge(edge, servers)]
+        if server_ip
     }
     preserved = []
     for server_ip, server_name in servers.items():
@@ -894,8 +909,6 @@ def preserve_cached_server_edges(edges, cached_edges, servers, configured_device
                 parent_ip = edge.get("to_ip")
             else:
                 continue
-            if parent_ip not in configured:
-                continue
             preserved.append(dict(edge))
             linked_servers.add(server_ip)
             print(
@@ -907,16 +920,43 @@ def preserve_cached_server_edges(edges, cached_edges, servers, configured_device
     return preserved
 
 
+def replace_server_edges(edges, confirmed_edges, servers):
+    """Make confirmed FDB ownership the sole edge for each located server.
+
+    LLDP/CDP tables and discovery order can occasionally produce a weaker edge
+    involving a configured server address.  Keeping both allowed the browser's
+    last-seen edge to decide the parent, so the same server appeared below
+    different switches after refreshes.  A physical-port FDB hit (fresh or
+    cached) is authoritative and replaces those weaker observations.
+    """
+    confirmed_by_server = {}
+    for edge in confirmed_edges:
+        if edge.get("source") != "fdb":
+            continue
+        server_ip = _server_ip_for_edge(edge, servers)
+        if server_ip and server_ip not in confirmed_by_server:
+            confirmed_by_server[server_ip] = dict(edge)
+    if not confirmed_by_server:
+        return list(edges)
+    kept = [
+        edge for edge in edges
+        if _server_ip_for_edge(edge, servers) not in confirmed_by_server
+    ]
+    kept.extend(confirmed_by_server.values())
+    return kept
+
+
 def main():
     community = os.environ.get("TOPOLOGY_SNMP_COMMUNITY", "").strip() or os.environ.get("SNMP_COMMUNITY", "global").strip()
     output_dir = os.environ.get("TOPOLOGY_OUTPUT_DIR", "/etc/prometheus/targets/topology")
 
     device_ips = load_device_list()
     if not device_ips:
-        print("[INFO] TOPOLOGY_DEVICES empty and no infra ping envs set; nothing to poll", file=sys.stderr)
-        atomic_write_json(os.path.join(output_dir, "edges.json"), [])
-        atomic_write_json(os.path.join(output_dir, "uplink-targets.json"), [])
-        atomic_write_json(os.path.join(output_dir, "rates.json"), [])
+        print(
+            "[INFO] TOPOLOGY_DEVICES empty and no infra ping envs set; "
+            "retaining the last confirmed topology",
+            file=sys.stderr,
+        )
         return 0
 
     print(f"[INFO] polling LLDP+CDP+ARP on {len(device_ips)} device(s)", file=sys.stderr)
@@ -940,32 +980,39 @@ def main():
                 print(f"[WARN] {ip}: no LLDP/CDP neighbors (check 'lldp run' or 'cdp run' and SNMP access)", file=sys.stderr)
 
     edges_path = os.path.join(output_dir, "edges.json")
+    attachments_path = os.path.join(output_dir, "server-attachments.json")
     cached_edges = load_cached_edges(edges_path)
+    # Attachments have their own durable ledger.  edges.json is a live snapshot
+    # and can legitimately be incomplete after a collector restart or a weak
+    # SNMP cycle; it must not be the only memory of physical server ownership.
+    cached_attachments = load_cached_edges(attachments_path)
+    if not cached_attachments:
+        # One-time migration for deployments that already have a confirmed FDB
+        # edge in the old live snapshot.
+        cached_attachments = cached_edges
     name_index = build_name_index(devices)
     edges, placeholders = build_edges(devices, name_index)
     servers = parse_named_ipv4_targets(os.environ.get("SERVER_PING", ""))
-    already_linked = {
-        ip for edge in edges for ip in (edge.get("from_ip"), edge.get("to_ip"))
-        if ip in servers
-    }
-    unresolved_servers = {
-        ip: name for ip, name in servers.items() if ip not in already_linked
-    }
-    edges.extend(discover_server_edges(
+    # Always run the exact ARP+FDB ownership lookup.  A weaker LLDP/CDP edge
+    # involving the same address must not suppress authoritative discovery.
+    fresh_server_edges = discover_server_edges(
         devices,
         edges,
-        unresolved_servers,
+        servers,
         community,
-    ))
-    edges.extend(preserve_cached_server_edges(
-        edges,
-        cached_edges,
+    )
+    confirmed_server_edges = list(fresh_server_edges)
+    confirmed_server_edges.extend(preserve_cached_server_edges(
+        fresh_server_edges,
+        cached_attachments,
         servers,
         device_ips,
     ))
+    edges = replace_server_edges(edges, confirmed_server_edges, servers)
     uplink_targets = []
 
     atomic_write_json(edges_path, edges)
+    atomic_write_json(attachments_path, confirmed_server_edges)
     atomic_write_json(os.path.join(output_dir, "uplink-targets.json"), uplink_targets)
     atomic_write_json(os.path.join(output_dir, "rates.json"), [])
 

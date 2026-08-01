@@ -538,7 +538,7 @@ class TestServerAttachmentDiscovery:
             ["192.168.10.11", "192.168.10.49"],
         ) == []
 
-    def test_cached_attachment_is_dropped_after_parent_is_removed(self):
+    def test_cached_attachment_survives_transient_parent_discovery_miss(self):
         cached = [{
             "from_ip": "192.168.10.11", "to_ip": "192.168.42.203",
             "source": "fdb",
@@ -547,6 +547,30 @@ class TestServerAttachmentDiscovery:
         assert gte.preserve_cached_server_edges(
             [], cached, {"192.168.42.203": "sdwan"},
             ["192.168.10.254"],
+        ) == cached
+
+    def test_confirmed_fdb_edge_replaces_weaker_server_edge(self):
+        weak = [{
+            "from_ip": "192.168.10.254", "to_ip": "192.168.42.203",
+            "from_port": "Te1/0/10",
+        }]
+        confirmed = [{
+            "from_ip": "192.168.10.11", "to_ip": "192.168.42.203",
+            "from_port": "Gi6/0/43", "source": "fdb",
+        }]
+
+        assert gte.replace_server_edges(
+            weak, confirmed, {"192.168.42.203": "sdwan"},
+        ) == confirmed
+
+    def test_removing_server_from_config_drops_its_cached_attachment(self):
+        cached = [{
+            "from_ip": "192.168.10.11", "to_ip": "192.168.42.203",
+            "source": "fdb",
+        }]
+
+        assert gte.preserve_cached_server_edges(
+            [], cached, {}, ["192.168.10.11"],
         ) == []
 
 
@@ -672,3 +696,32 @@ class TestLoadDeviceList:
         monkeypatch.setenv("FIREWALL_PING", "")
         monkeypatch.setenv("TOURNAMENT_SWITCHES", "")
         assert gte.load_device_list() == ["192.168.10.254"]
+
+
+def test_empty_discovery_cycle_does_not_erase_confirmed_topology(tmp_path, monkeypatch):
+    import json as _json
+
+    topology_dir = tmp_path / "topology"
+    topology_dir.mkdir()
+    previous_edges = [{
+        "from_ip": "192.168.10.11",
+        "from_port": "Gi6/0/43",
+        "to_ip": "192.168.42.203",
+        "source": "fdb",
+    }]
+    edges_path = topology_dir / "edges.json"
+    attachments_path = topology_dir / "server-attachments.json"
+    edges_path.write_text(_json.dumps(previous_edges), encoding="utf-8")
+    attachments_path.write_text(_json.dumps(previous_edges), encoding="utf-8")
+
+    monkeypatch.setenv("TOPOLOGY_OUTPUT_DIR", str(topology_dir))
+    monkeypatch.setenv("SWITCH_TARGETS_FILE", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("TOPOLOGY_DEVICES", "")
+    monkeypatch.setenv("CORE_SWITCH_PING", "")
+    monkeypatch.setenv("DIST_SWITCH_PING", "")
+    monkeypatch.setenv("FIREWALL_PING", "")
+    monkeypatch.setenv("TOURNAMENT_SWITCHES", "")
+
+    assert gte.main() == 0
+    assert _json.loads(edges_path.read_text(encoding="utf-8")) == previous_edges
+    assert _json.loads(attachments_path.read_text(encoding="utf-8")) == previous_edges

@@ -188,12 +188,25 @@
       [...(layers.cores || []), ...(layers.dists || [])].map((node) => node.ip).filter(Boolean)
     );
     const serverParentByIp = new Map();
+    const serverParentScoreByIp = new Map();
     (Array.isArray(lldpEdges) ? lldpEdges : []).forEach((edge) => {
+      let serverIp = "";
+      let parentIp = "";
       if (serverIps.has(edge.from_ip) && infrastructureIps.has(edge.to_ip)) {
-        serverParentByIp.set(edge.from_ip, edge.to_ip);
+        serverIp = edge.from_ip;
+        parentIp = edge.to_ip;
       } else if (serverIps.has(edge.to_ip) && infrastructureIps.has(edge.from_ip)) {
-        serverParentByIp.set(edge.to_ip, edge.from_ip);
+        serverIp = edge.to_ip;
+        parentIp = edge.from_ip;
       }
+      if (!serverIp || !parentIp) return;
+      // Exact FDB ownership is authoritative.  Do not let a later weak
+      // LLDP/CDP observation overwrite it merely because JSON array order
+      // changed between topology refreshes.
+      const score = edge.source === "fdb" ? 100 : 10;
+      if (score <= (serverParentScoreByIp.get(serverIp) || 0)) return;
+      serverParentByIp.set(serverIp, parentIp);
+      serverParentScoreByIp.set(serverIp, score);
     });
     const serverChildrenByParent = new Map();
     serverParentByIp.forEach((parentIp, serverIp) => {
