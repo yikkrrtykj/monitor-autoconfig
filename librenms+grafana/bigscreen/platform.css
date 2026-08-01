@@ -2755,6 +2755,47 @@
   display: none;
 }
 
+/* Keep a compact color key for the tournament Ping trend. Names only avoid
+   squeezing the narrow left-side chart with mean/max columns. */
+.screen.tournament-mode .trend-panel .bottom-layout {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.screen.tournament-mode .trend-panel .bottom-legend.names-only-legend {
+  display: flex;
+  align-items: center;
+  gap: 3px 10px;
+  min-height: 20px;
+  max-height: 38px;
+  overflow: auto;
+  padding: 1px 4px 0 76px;
+  scrollbar-width: thin;
+}
+
+.screen.tournament-mode .trend-panel .names-only-legend .legend-row {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.screen.tournament-mode .trend-panel .names-only-legend .legend-name {
+  max-width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen.tournament-mode .trend-panel .names-only-legend .legend-swatch {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+
 .screen.tournament-mode .heatmap-row {
   grid-template-columns: var(--heatmap-name-width) minmax(0, 1fr);
   gap: var(--heatmap-gap);

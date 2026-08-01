@@ -226,9 +226,11 @@ def test_bigscreen_ping_trend_uses_stable_two_second_raw_samples():
     assert 'phase="rtt"})' in pages
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
+    assert 'legend: "bottom"' in app
+    assert "legendNamesOnly: true" in app
     assert "pages.js?v=20260731a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260731e" in index
+    assert "app.js?v=20260801a" in index
     assert "utils.js?v=20260730f" in index
 
 

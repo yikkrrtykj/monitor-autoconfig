@@ -388,8 +388,11 @@
       `;
     }).join("");
     const headerCells = calcs.map((calc) => `<span>${escapeHtml(calcLabels[calc] || calc)}</span>`).join("");
-    const legendHeader = `<div class="legend-row legend-head"><span></span><span>名称</span>${headerCells}</div>`;
+    const legendHeader = options.legendNamesOnly
+      ? ""
+      : `<div class="legend-row legend-head"><span></span><span>名称</span>${headerCells}</div>`;
     const legendClass = options.legend === "bottom" ? "chart-legend bottom-legend" : "chart-legend side-legend";
+    const legendModeClass = options.legendNamesOnly ? "names-only-legend" : "";
     const densityClass = series.length > 12 ? "compact-series" : series.length > 8 ? "dense-series" : "";
 
     container.innerHTML = `
@@ -400,7 +403,7 @@
           ${paths}
           ${timeLabels}
         </svg>
-        <div class="${legendClass}">${legendHeader}${legend}</div>
+        <div class="${legendClass} ${legendModeClass}">${legendHeader}${legend}</div>
       </div>
     `;
   }
@@ -943,7 +946,10 @@
         renderLineChart("pingTrendChart", activePingSeries, {
           axisFormatter: formatPingText,
           valueFormatter: formatPingText,
-          minMax: 0.005
+          minMax: 0.005,
+          legend: "bottom",
+          legendNamesOnly: true,
+          calcs: []
         });
       }
       if (shouldRender("lossHeatmap", seriesSignature(activeLossSeries))) {
