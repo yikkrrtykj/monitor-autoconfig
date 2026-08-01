@@ -2092,7 +2092,6 @@ def build_isp_bandwidth_card(event, recovered=False):
     direction_text = "下载" if event["direction"] == "in" else "上传"
     state_text = "已恢复" if recovered else "带宽超限"
     status_emoji = "✅" if recovered else "🔴"
-    header_emoji = "🟢" if recovered else "🔴"
     duration_label = "恢复耗时" if recovered else "持续时间"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
@@ -2103,13 +2102,13 @@ def build_isp_bandwidth_card(event, recovered=False):
         f"⏳ {duration_label}：{format_alert_duration(event['duration'], recovered)}",
         f"⏰ 时间：{ts}",
     ]
-    return _make_card(next_event_title(), f"{header_emoji} 外网 ISP 告警", color, "\n".join(lines))
+    subtitle = "🟢 外网 ISP 带宽恢复" if recovered else "🔴 外网 ISP 带宽超限"
+    return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
 def build_isp_data_missing_card(missing_seconds, recovered=False):
     color = "green" if recovered else "red"
     status_emoji = "✅" if recovered else "❌"
-    header_emoji = "🟢" if recovered else "🔴"
     state_text = "已恢复" if recovered else "数据中断"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
@@ -2120,7 +2119,8 @@ def build_isp_data_missing_card(missing_seconds, recovered=False):
     ]
     if not recovered:
         lines.append("💡 请检查防火墙 SNMP 是否可达、FIREWALL_WAN_IF_FILTER 是否匹配新接口名")
-    return _make_card(next_event_title(), f"{header_emoji} 外网流量采集告警", color, "\n".join(lines))
+    subtitle = "🟢 外网流量采集恢复" if recovered else "🔴 外网流量采集中断"
+    return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
 def build_retire_confirm_card(state, key, interactive):

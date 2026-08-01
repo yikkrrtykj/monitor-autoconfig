@@ -98,10 +98,25 @@ def test_isp_data_missing_card_states():
     body = alert["card"]["body"]["elements"][0]["content"]
     assert "数据中断" in body
     assert "FIREWALL_WAN_IF_FILTER" in body
+    assert alert["card"]["header"]["subtitle"]["content"] == "🔴 外网流量采集中断"
 
     recover = bridge.build_isp_data_missing_card(130, recovered=True)
     body = recover["card"]["body"]["elements"][0]["content"]
     assert "已恢复" in body
+    assert recover["card"]["header"]["subtitle"]["content"] == "🟢 外网流量采集恢复"
+
+
+def test_isp_bandwidth_card_titles_distinguish_alert_and_recovery():
+    event = {
+        "label": "telecom-100M",
+        "direction": "in",
+        "value_bps": 95_000_000,
+        "duration": 120,
+    }
+    alert = bridge.build_isp_bandwidth_card(event, recovered=False)
+    recover = bridge.build_isp_bandwidth_card(event, recovered=True)
+    assert alert["card"]["header"]["subtitle"]["content"] == "🔴 外网 ISP 带宽超限"
+    assert recover["card"]["header"]["subtitle"]["content"] == "🟢 外网 ISP 带宽恢复"
 
 
 if __name__ == "__main__":
@@ -113,4 +128,5 @@ if __name__ == "__main__":
     test_duplicate_wan_labels_get_ifindex_suffixes()
     test_duplicate_wan_labels_without_ifindex_still_split()
     test_isp_data_missing_card_states()
+    test_isp_bandwidth_card_titles_distinguish_alert_and_recovery()
     print("ISP bandwidth tests passed")
