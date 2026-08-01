@@ -1,5 +1,8 @@
 const assert = require('assert');
-const { suppressIsolatedLatencySpikes } = require('../bigscreen/utils.js');
+const {
+  suppressIsolatedLatencySpikes,
+  smoothNormalLatencyJitter
+} = require('../bigscreen/utils.js');
 
 function series(values) {
   return [{ name: 'switch-a', metric: { instance: 'switch-a' }, values }];
@@ -35,5 +38,28 @@ const gapInput = series([
 const gapOutput = suppressIsolatedLatencySpikes(gapInput)[0].values;
 assert.ok(gapOutput[1].v < 0.05);
 assert.ok(gapOutput[2].v < 0.05);
+
+const jitterInput = series([
+  { t: 100, v: 0.001 },
+  { t: 102, v: 0.008 },
+  { t: 104, v: 0.002 },
+  { t: 106, v: 0.007 },
+  { t: 108, v: 0.001 }
+]);
+const jitterOutput = smoothNormalLatencyJitter(jitterInput);
+assert.strictEqual(jitterOutput[0].values[2].v, 0.002, 'normal jitter should use a centred median');
+assert.strictEqual(jitterInput[0].values[1].v, 0.008, 'normal-jitter smoothing must not mutate input');
+
+const incidentInput = series([
+  { t: 100, v: 0.002 },
+  { t: 102, v: 0.06 },
+  { t: 104, v: 0.2 },
+  { t: 106, v: 0.003 }
+]);
+assert.deepStrictEqual(
+  smoothNormalLatencyJitter(incidentInput)[0].values.map((point) => point.v),
+  incidentInput[0].values.map((point) => point.v),
+  'sustained high-latency incidents and their edges must remain unchanged'
+);
 
 console.log('bigscreen latency display tests passed');

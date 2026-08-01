@@ -227,14 +227,16 @@ def test_bigscreen_ping_trend_filters_only_isolated_tournament_spikes():
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
     assert 'document.querySelector(".screen.tournament-mode")' in app
     assert "suppressIsolatedLatencySpikes(rawActivePingSeries" in app
+    assert "smoothNormalLatencyJitter(suppressIsolatedLatencySpikes(rawActivePingSeries" in app
+    assert "minMax: tournamentMode ? 0.05 : 0.005" in app
     assert "threshold: 0.05" in app
     assert "minConsecutive: 2" in app
     assert 'legend: "bottom"' in app
     assert "legendNamesOnly: true" in app
     assert "pages.js?v=20260731a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260801b" in index
-    assert "utils.js?v=20260801a" in index
+    assert "app.js?v=20260801c" in index
+    assert "utils.js?v=20260801b" in index
 
 
 def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():

@@ -176,6 +176,45 @@
     });
   }
 
+  /**
+   * Reduce harmless sub-threshold ICMP jitter on the customer-facing
+   * tournament chart. A centred median is used so one noisy response cannot
+   * turn the normal baseline into a dense saw-tooth. Points at or around a
+   * sustained incident are deliberately left untouched.
+   */
+  function smoothNormalLatencyJitter(seriesList, options) {
+    const settings = options || {};
+    const threshold = Number.isFinite(settings.threshold) ? settings.threshold : 0.05;
+    const radius = Math.max(1, Math.floor(settings.radius || 2));
+
+    return (seriesList || []).map((series) => {
+      const source = (series.values || []).map((point) => ({ ...point }));
+      const values = source.map((point, index) => {
+        if (!Number.isFinite(point.v) || point.v >= threshold) return { ...point };
+
+        const start = Math.max(0, index - radius);
+        const end = Math.min(source.length, index + radius + 1);
+        const window = source.slice(start, end);
+        // Do not spread or reshape a real sustained high-latency incident.
+        if (window.some((candidate) => Number.isFinite(candidate.v) && candidate.v >= threshold)) {
+          return { ...point };
+        }
+
+        const normalValues = window
+          .map((candidate) => candidate.v)
+          .filter((value) => Number.isFinite(value))
+          .sort((left, right) => left - right);
+        if (normalValues.length < 2) return { ...point };
+        const middle = Math.floor(normalValues.length / 2);
+        const median = normalValues.length % 2
+          ? normalValues[middle]
+          : (normalValues[middle - 1] + normalValues[middle]) / 2;
+        return { ...point, v: median };
+      });
+      return { ...series, values };
+    });
+  }
+
   function uniqueNames(names) {
     return Array.from(new Set(names.map((name) => String(name || "").trim()).filter(Boolean)));
   }
@@ -360,6 +399,7 @@
     niceMax,
     average,
     suppressIsolatedLatencySpikes,
+    smoothNormalLatencyJitter,
     uniqueNames,
     networkLabel,
     seatLabel,
