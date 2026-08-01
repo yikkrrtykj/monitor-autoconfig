@@ -958,10 +958,10 @@
         renderLineChart("pingTrendChart", activePingSeries, {
           axisFormatter: formatPingText,
           valueFormatter: formatPingText,
-          // Keep ordinary 1-5 ms control-plane variation visually calm on
-          // the customer-facing tournament screen. The operations view keeps
-          // its tighter automatic scale.
-          minMax: tournamentMode ? 0.025 : 0.005,
+          // Use the same data-driven scale as the infrastructure overview.
+          // A small 5 ms floor avoids over-amplifying sub-millisecond noise,
+          // while the visible maximum still determines the chart ceiling.
+          minMax: 0.005,
           legend: "bottom",
           legendNamesOnly: true,
           calcs: []
