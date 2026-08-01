@@ -1065,19 +1065,22 @@ def audit_uplink_redundancy(edges, inventory, core_ip, aggregates=None):
                     uplinks.append({"port": port.strip(), "ifindex": ifindex})
         ports = sorted({item["port"] for item in uplinks})
         aggregate = _aggregate_for_uplink(ip, uplinks, aggregates)
-        members = list((aggregate or {}).get("members") or [])
+        # Redundancy is only an expectation when the switch actually has a
+        # Port-Channel/LAG on its upstream path.  A deliberately configured
+        # single physical uplink is valid and must not be reported as a
+        # redundancy failure merely because LLDP/CDP exposes one port.
+        if not aggregate:
+            continue
+        members = list(aggregate.get("members") or [])
         active_members = [item for item in members if item.get("up")]
-        if aggregate and members:
+        if members:
             redundant = bool(aggregate.get("lag_up")) and len(members) >= 2 and len(active_members) >= 2
             audit_state = "healthy" if redundant else "degraded"
-        elif aggregate:
+        else:
             # A visible Port-Channel without ifStack member data cannot safely be
             # called a single uplink.
             redundant = None
             audit_state = "unknown-members"
-        else:
-            redundant = len(ports) >= 2
-            audit_state = "healthy" if redundant else "single"
         rows.append({
             "ip": ip,
             "name": name,
@@ -1085,7 +1088,7 @@ def audit_uplink_redundancy(edges, inventory, core_ip, aggregates=None):
             "reachable": ip in depth,
             "redundant": redundant,
             "audit_state": audit_state,
-            "aggregate": (aggregate or {}).get("port") or "",
+            "aggregate": aggregate.get("port") or "",
             "members": [item.get("name") or "?" for item in members],
             "active_members": [item.get("name") or "?" for item in active_members],
         })
@@ -1107,19 +1110,19 @@ def build_uplink_audit_cards():
     issues = [item for item in rows if item["redundant"] is False]
     unknown = [item for item in rows if item["redundant"] is None]
     if rows and not issues and not unknown:
-        result_text = "结果：全部设备都有冗余上联"
+        result_text = "结果：已配置的 Port-Channel 均正常"
     elif issues:
         result_text = f"结果：{len(issues)} 台需要检查上联冗余"
     else:
         result_text = f"结果：{len(unknown)} 台已识别 Port-Channel，但成员关系不可读"
     summary = [
-        f"✅ **已检查接入/汇聚交换机：** {len(rows)} 台",
-        f"⚠️ **单上联或聚合成员不足：** {len(issues)} 台",
+        f"✅ **已检查上联 Port-Channel：** {len(rows)} 台",
+        f"⚠️ **聚合成员不足：** {len(issues)} 台",
         f"ℹ️ **Port-Channel 成员不可读：** {len(unknown)} 台",
         result_text,
     ]
     if not rows:
-        summary.append("当前拓扑尚无可检查的交换机，请等待 LLDP/CDP 采集完成。")
+        summary.append("当前拓扑未识别到上联 Port-Channel；普通单上联不属于异常。")
     cards = [_make_card(
         "上联冗余巡检",
         "🔗 Uplink Redundancy Check",
@@ -1135,10 +1138,6 @@ def build_uplink_audit_cards():
                 active = "、".join(item["active_members"]) or "无"
                 all_members = "、".join(item["members"]) or "未读取到成员"
                 detail = f"{item['aggregate']} 成员：{all_members}；当前在线：{active}"
-            elif item["ports"]:
-                detail = "仅识别到一个上联：" + "、".join(item["ports"])
-            else:
-                detail = "未识别到朝向核心的上联端口"
             lines.append(f"• **{item['name']} ({item['ip']})**\n  {detail}")
         if len(issues) > 50:
             lines.append(f"另有 {len(issues) - 50} 台未展开")

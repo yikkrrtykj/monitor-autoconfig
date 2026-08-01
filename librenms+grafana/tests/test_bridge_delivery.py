@@ -311,7 +311,7 @@ def test_fiber_audit_ignores_unplugged_dom_floor_and_down_ports():
     ) == "down"
 
 
-def test_uplink_audit_counts_physical_ports_toward_core():
+def test_uplink_audit_skips_plain_physical_uplinks_without_port_channel():
     edges = [
         {"from_ip": "10.0.0.1", "to_ip": "10.0.0.2", "to_port": "Te1/0/1, Te2/0/1"},
         {"from_ip": "10.0.0.2", "to_ip": "10.0.0.3", "to_port": "Gi1/0/1"},
@@ -321,9 +321,27 @@ def test_uplink_audit_counts_physical_ports_toward_core():
         {"10.0.0.2": "access-a", "10.0.0.3": "access-b"},
         "10.0.0.1",
     )
-    by_ip = {item["ip"]: item for item in rows}
-    assert by_ip["10.0.0.2"]["redundant"] is True
-    assert by_ip["10.0.0.3"]["redundant"] is False
+    assert rows == []
+
+
+def test_uplink_audit_reports_configured_port_channel_with_one_active_member():
+    edges = [{
+        "from_ip": "10.0.0.1", "to_ip": "10.0.0.2",
+        "to_port": "Te1/0/1", "to_ifindex": "101",
+    }]
+    aggregates = [{
+        "ip": "10.0.0.2", "port": "Po3", "ifindex": "400", "lag_up": True,
+        "members": [
+            {"name": "Te1/0/1", "ifindex": "101", "up": True},
+            {"name": "Te2/0/1", "ifindex": "201", "up": False},
+        ],
+    }]
+    row = bridge.audit_uplink_redundancy(
+        edges, {"10.0.0.2": "access-a"}, "10.0.0.1", aggregates,
+    )[0]
+    assert row["aggregate"] == "Po3"
+    assert row["redundant"] is False
+    assert row["active_members"] == ["Te1/0/1"]
 
 
 def test_uplink_audit_matches_lldp_physical_port_to_port_channel_members():
