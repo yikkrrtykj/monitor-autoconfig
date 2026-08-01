@@ -22,6 +22,21 @@ Environment variables:
   PLAYER_REQUIRE_LINK_UP true/false (default true). Skip team ports whose
                          ifOperStatus is not "up". Prevents phantom targets
                          from stale MAC/ARP cache entries on disconnected ports.
+  PLAYER_SWITCH_PROBE_TIMEOUT
+                         SNMP timeout used while finding switches that have
+                         team X-Y descriptions (default: 2 seconds).
+  PLAYER_SWITCH_PROBE_WORKERS
+                         concurrent description probes (default: 32).
+  PLAYER_REFRESH_FDB     true/false (default true). Ping player-subnet IPs
+                         already present in gateway ARP before reading stage
+                         FDB tables, so quiet but live clients are relearned.
+  PLAYER_REFRESH_FDB_TIMEOUT
+                         timeout for each FDB-refresh ping (default: 1 second).
+  PLAYER_REFRESH_FDB_WORKERS
+                         concurrent FDB-refresh pings (default: 64).
+  PLAYER_VERIFY_PING     true/false (default true). Prefer a reachable address
+                         when one seat has multiple candidates, but retain the
+                         seat's sole address so Prometheus can report it down.
   PLAYER_SUBNETS         comma-separated wired subnets (classification hint only,
                          no longer filters; team labels on ports are authoritative)
   PLAYER_TARGETS_FILE    output path (default: /etc/prometheus/player_targets.json)
@@ -72,7 +87,13 @@ FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def snmpwalk(host, community, oid, timeout=15):
-    cmd = ["snmpwalk", "-v2c", "-c", community, "-O", "n", "-t", str(timeout), host, oid]
+    # One bounded attempt is enough on the local management network. Net-SNMP's
+    # retry default multiplied every dead address in a discovery range into a
+    # multi-minute pause, and a /24 player scan could consequently take hours.
+    cmd = [
+        "snmpwalk", "-v2c", "-c", community, "-O", "n",
+        "-r", "0", "-t", str(timeout), host, oid,
+    ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
         return result.stdout
@@ -474,6 +495,74 @@ def ping_host(ip, timeout=1):
         return False
 
 
+def collect_gateway_arp(gateways, community):
+    """Collect and merge gateway ARP tables; the first gateway wins."""
+    gateway_arp = {}
+    for gateway in gateways:
+        arp_out = snmpwalk(gateway, community, ARP_PHYSADDR_OID)
+        entries = parse_arp_macaddr(arp_out)
+        print(
+            f"[INFO] gateway {gateway}: ARP entries = {len(entries)}",
+            file=sys.stderr,
+        )
+        for ip, mac in entries.items():
+            # For HA pairs, list the active gateway first so a stale standby
+            # entry cannot mask the current IP-to-MAC mapping.
+            gateway_arp.setdefault(ip, mac)
+    return gateway_arp
+
+
+def refresh_player_fdb(gateway_arp, wired_nets, timeout=1, workers=64,
+                       probe_ping=ping_host):
+    """Make live player clients talk before stage-switch FDB collection.
+
+    A gateway ARP entry can outlive the access-switch CAM entry. Pinging the
+    player from the monitoring host causes a live client to reply, which makes
+    the stage switch relearn that client's source MAC on its ``team X-Y``
+    access port. Only existing ARP entries inside PLAYER_SUBNETS are touched;
+    this is a refresh of known hosts, not a subnet scan.
+    """
+    if not gateway_arp:
+        return set()
+    if not wired_nets:
+        print(
+            "[INFO] FDB refresh skipped: PLAYER_SUBNETS is empty",
+            file=sys.stderr,
+        )
+        return set()
+
+    candidates = sorted(
+        (ip for ip in gateway_arp if ip_in_subnets(ip, wired_nets)),
+        key=IPv4Address,
+    )
+    if not candidates:
+        print(
+            "[INFO] FDB refresh skipped: gateway ARP has no PLAYER_SUBNETS hosts",
+            file=sys.stderr,
+        )
+        return set()
+
+    alive = set()
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {
+            executor.submit(probe_ping, ip, timeout): ip for ip in candidates
+        }
+        for future in as_completed(futures):
+            ip = futures[future]
+            try:
+                if future.result():
+                    alive.add(ip)
+            except Exception:
+                pass
+
+    print(
+        f"[INFO] FDB refresh ping: {len(alive)}/{len(candidates)} "
+        "known PLAYER_SUBNETS host(s) answered",
+        file=sys.stderr,
+    )
+    return alive
+
+
 def limited_items(items, limit=0):
     if limit and limit > 0:
         return items[:limit]
@@ -665,7 +754,49 @@ def _walk_vlan_mac_table(
     return mac_to_ifindex, source, len(bp_map)
 
 
-def build_stage_mac_index(switches, community, vlan_ids=None):
+def discover_team_switches(switches, community, timeout=2, workers=32,
+                           probe_snmp=snmpwalk):
+    """Find switches with at least one authoritative ``team X-Y`` ifAlias.
+
+    The console can fall back from an empty explicit tournament-switch list to
+    the whole management discovery range. Probe that range concurrently and do
+    the expensive FDB/VLAN walks only on devices whose descriptions prove they
+    serve player seats.
+    """
+    candidates = list(dict.fromkeys(switches or []))
+    if not candidates:
+        return [], {}
+
+    aliases = {}
+
+    def probe(sw):
+        output = probe_snmp(sw, community, IF_ALIAS_OID, timeout=timeout)
+        return parse_ifalias(output)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {executor.submit(probe, sw): sw for sw in candidates}
+        for future in as_completed(futures):
+            sw = futures[future]
+            try:
+                mapping = future.result()
+            except Exception as exc:
+                print(f"[WARN] team-description probe {sw}: {exc}", file=sys.stderr)
+                continue
+            if mapping:
+                aliases[sw] = mapping
+
+    matched = [sw for sw in candidates if sw in aliases]
+    described_ports = sum(len(aliases[sw]) for sw in matched)
+    print(
+        f"[INFO] team-description prefilter: {len(matched)}/{len(candidates)} "
+        f"switches, {described_ports} team seat port(s)",
+        file=sys.stderr,
+    )
+    return matched, aliases
+
+
+def build_stage_mac_index(switches, community, vlan_ids=None,
+                          prefetched_ifalias=None):
     """Return {sw_ip: {'ifalias': {ifIndex: {team, seat}},
                        'mac_to_ifindex': {mac: ifIndex},
                        'oper_status': {ifIndex: status_int}}}.
@@ -679,9 +810,13 @@ def build_stage_mac_index(switches, community, vlan_ids=None):
     """
     vlan_ids = vlan_ids or []
     index = {}
+    prefetched_ifalias = prefetched_ifalias or {}
     for sw in switches:
-        alias_out = snmpwalk(sw, community, IF_ALIAS_OID)
-        ifalias_map = parse_ifalias(alias_out)
+        if sw in prefetched_ifalias:
+            ifalias_map = prefetched_ifalias[sw]
+        else:
+            alias_out = snmpwalk(sw, community, IF_ALIAS_OID)
+            ifalias_map = parse_ifalias(alias_out)
         print(
             f"[INFO] {sw}: ifAlias entries with team label = {len(ifalias_map)}",
             file=sys.stderr,
@@ -863,6 +998,49 @@ def merge_dedup_targets(path_b_targets, path_a_targets):
     return merged
 
 
+def summarize_team_mapping(stage_index, targets, require_link_up=True):
+    """Log which link-up ``team X-Y`` seats still lack an IP/MAC mapping."""
+    eligible = {}
+    for switch, data in stage_index.items():
+        oper_status = data.get("oper_status", {})
+        for ifindex, team_info in data.get("ifalias", {}).items():
+            oper = oper_status.get(ifindex)
+            if require_link_up and oper is not None and oper != IF_OPER_STATUS_UP:
+                continue
+            seat = (int(team_info["team"]), int(team_info["seat"]))
+            eligible.setdefault(seat, []).append((switch, ifindex))
+
+    mapped = {
+        (int(target["labels"]["team"]), int(target["labels"]["seat"]))
+        for target in targets
+        if target.get("labels", {}).get("switch") in stage_index
+    }
+    missing = sorted(set(eligible) - mapped)
+    print(
+        f"[INFO] team-seat mapping: {len(set(eligible) & mapped)}/"
+        f"{len(eligible)} link-up described seat(s) mapped",
+        file=sys.stderr,
+    )
+    if missing:
+        details = []
+        for team, seat in missing:
+            locations = ",".join(
+                f"{switch}/ifIndex{ifindex}"
+                for switch, ifindex in eligible[(team, seat)]
+            )
+            details.append(f"team {team}-{seat} ({locations})")
+        print(
+            "[WARN] link-up seats without VLAN MAC/ARP mapping: "
+            + "; ".join(details),
+            file=sys.stderr,
+        )
+    return {
+        "eligible": set(eligible),
+        "mapped": set(eligible) & mapped,
+        "missing": missing,
+    }
+
+
 def dedupe_player_targets(*priority_groups, dedupe_seats=True):
     """Merge source groups from highest to lowest priority.
 
@@ -895,12 +1073,14 @@ def dedupe_player_targets(*priority_groups, dedupe_seats=True):
     return merged
 
 
-def verify_targets_alive(targets, timeout=1, workers=64):
-    """Drop targets whose IP doesn't respond to ICMP within `timeout` seconds.
+def prefer_reachable_targets(targets, timeout=1, workers=64):
+    """Order reachable candidates first without erasing an occupied seat.
 
-    Filters stale entries left by switch-MAC aging (~5 min) and gateway-ARP
-    aging (~4 hours) -- both can keep a long-gone device in the join until
-    the table entry finally ages out.
+    A seat can temporarily have both an old and a new IP because MAC and ARP
+    caches age at different rates. Putting live candidates first lets the final
+    seat de-duplication choose the current address. When the only candidate does
+    not answer ICMP, it is deliberately retained: blackbox-exporter is the
+    monitoring authority and must be allowed to expose that seat as offline.
     """
     candidate_ips = sorted({t["targets"][0] for t in targets if t.get("targets")})
     if not candidate_ips:
@@ -917,14 +1097,14 @@ def verify_targets_alive(targets, timeout=1, workers=64):
             except Exception:
                 pass
 
-    kept = [t for t in targets if t["targets"][0] in alive]
-    dropped = len(targets) - len(kept)
+    reachable = [t for t in targets if t["targets"][0] in alive]
+    unreachable = [t for t in targets if t["targets"][0] not in alive]
     print(
         f"[INFO] active ping verify: {len(alive)}/{len(candidate_ips)} IPs alive, "
-        f"dropped {dropped} stale target(s)",
+        f"retained {len(unreachable)} unreachable candidate(s) for offline visibility",
         file=sys.stderr,
     )
-    return kept
+    return reachable + unreachable
 
 
 def atomic_write_json(path, data):
@@ -975,6 +1155,19 @@ def main():
     wired_nets = load_subnets("PLAYER_SUBNETS")
     wireless_nets = load_subnets("WIRELESS_SUBNETS")
     require_link_up = env_bool("PLAYER_REQUIRE_LINK_UP", default=True)
+    switch_probe_timeout = env_int(
+        "PLAYER_SWITCH_PROBE_TIMEOUT", 2, minimum=1, maximum=15
+    )
+    switch_probe_workers = env_int(
+        "PLAYER_SWITCH_PROBE_WORKERS", 32, minimum=1, maximum=256
+    )
+    refresh_fdb = env_bool("PLAYER_REFRESH_FDB", default=True)
+    refresh_fdb_timeout = env_int(
+        "PLAYER_REFRESH_FDB_TIMEOUT", 1, minimum=1, maximum=5
+    )
+    refresh_fdb_workers = env_int(
+        "PLAYER_REFRESH_FDB_WORKERS", 64, minimum=1, maximum=256
+    )
     static_targets_raw = os.environ.get("PLAYER_STATIC_TARGETS", "")
     static_default_network = os.environ.get("PLAYER_STATIC_NETWORK", "wireless")
     wireless_scan_enabled = env_bool("PLAYER_WIRELESS_SCAN", default=True) or env_bool("PLAYER_WIRELESS_PREVIEW")
@@ -1024,7 +1217,41 @@ def main():
         if not switches:
             print("[WARN] TOURNAMENT_SWITCHES has no valid IPs, skipping SNMP target discovery", file=sys.stderr)
         else:
-            stage_index = build_stage_mac_index(switches, community, player_vlan_ids)
+            gateway_arp = {}
+            if gateways:
+                gateway_arp = collect_gateway_arp(gateways, gateway_community)
+                if refresh_fdb:
+                    refresh_player_fdb(
+                        gateway_arp,
+                        wired_nets,
+                        timeout=refresh_fdb_timeout,
+                        workers=refresh_fdb_workers,
+                    )
+            else:
+                print(
+                    "[INFO] PLAYER_GATEWAYS / LIBRENMS_CORE_IP not set; "
+                    "skipping gateway-ARP path",
+                    file=sys.stderr,
+                )
+
+            switches, prefetched_ifalias = discover_team_switches(
+                switches,
+                community,
+                timeout=switch_probe_timeout,
+                workers=switch_probe_workers,
+            )
+            if not switches:
+                print(
+                    "[WARN] no switches with team X-Y descriptions found; "
+                    "skipping wired player discovery",
+                    file=sys.stderr,
+                )
+            stage_index = build_stage_mac_index(
+                switches,
+                community,
+                player_vlan_ids,
+                prefetched_ifalias=prefetched_ifalias,
+            )
 
             path_a_targets = collect_direct_arp_targets(
                 switches, community, stage_index, wireless_nets, require_link_up
@@ -1035,20 +1262,7 @@ def main():
             )
 
             path_b_targets = []
-            if gateways:
-                gateway_arp = {}
-                for gw in gateways:
-                    arp_out = snmpwalk(gw, gateway_community, ARP_PHYSADDR_OID)
-                    entries = parse_arp_macaddr(arp_out)
-                    print(
-                        f"[INFO] gateway {gw}: ARP entries = {len(entries)}",
-                        file=sys.stderr,
-                    )
-                    for ip, mac in entries.items():
-                        # First gateway wins on conflict; for HA pairs list the
-                        # active one first so stale entries on the standby don't
-                        # mask live MACs.
-                        gateway_arp.setdefault(ip, mac)
+            if gateway_arp:
                 path_b_targets, stats = join_gateway_arp_to_teams(
                     gateway_arp, stage_index, wireless_nets, require_link_up
                 )
@@ -1058,13 +1272,14 @@ def main():
                     f"{stats['skipped_link_down']} skipped (link down)",
                     file=sys.stderr,
                 )
-            else:
+            elif gateways:
                 print(
-                    "[INFO] PLAYER_GATEWAYS / LIBRENMS_CORE_IP not set; skipping gateway-ARP path",
+                    "[WARN] gateway ARP tables were empty; gateway-ARP path produced no targets",
                     file=sys.stderr,
                 )
 
             merged = merge_dedup_targets(path_b_targets, path_a_targets)
+            summarize_team_mapping(stage_index, merged, require_link_up)
 
             per_team = {}
             for target in merged:
@@ -1089,7 +1304,7 @@ def main():
         print(f"[INFO] removed {dropped_duplicates} duplicate player target(s) across sources", file=sys.stderr)
 
     if env_bool("PLAYER_VERIFY_PING", default=True) and all_targets:
-        all_targets = verify_targets_alive(all_targets)
+        all_targets = prefer_reachable_targets(all_targets)
 
     all_targets = dedupe_player_targets(all_targets)
 

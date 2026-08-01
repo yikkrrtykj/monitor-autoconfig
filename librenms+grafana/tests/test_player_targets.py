@@ -614,10 +614,18 @@ class TestCrossSourceTargetDedup:
         candidates = gpt.dedupe_player_targets(static, [], scan, dedupe_seats=False)
         monkeypatch.setattr(gpt, "ping_host", lambda ip, _timeout=1: ip.endswith(".31"))
 
-        live = gpt.verify_targets_alive(candidates, workers=1)
-        merged = gpt.dedupe_player_targets(live)
+        preferred = gpt.prefer_reachable_targets(candidates, workers=1)
+        merged = gpt.dedupe_player_targets(preferred)
 
         assert merged == scan
+
+    def test_only_unreachable_candidate_is_retained_for_offline_visibility(self, monkeypatch):
+        sole = [self._target(8, 2, "192.168.41.40", "snmp")]
+        monkeypatch.setattr(gpt, "ping_host", lambda _ip, _timeout=1: False)
+
+        preferred = gpt.prefer_reachable_targets(sole, workers=1)
+
+        assert gpt.dedupe_player_targets(preferred) == sole
 
     def test_same_seat_on_different_networks_is_preserved(self):
         wired = [self._target(2, 1, "192.168.40.30", "snmp", "wired")]
@@ -631,6 +639,77 @@ class TestCrossSourceTargetDedup:
         path_b = [self._target(1, 1, "172.25.11.11", "sw")]
         merged = gpt.merge_dedup_targets(path_b, path_a)
         assert len(merged) == 2
+
+
+# ---- discovery prefilter / FDB refresh ----------------------------
+
+class TestTeamSwitchPrefilter:
+    def test_only_switches_with_team_descriptions_continue(self):
+        calls = []
+
+        def fake_probe(host, community, oid, timeout=15):
+            calls.append((host, community, oid, timeout))
+            if host == "192.168.10.45":
+                return (
+                    ".1.3.6.1.2.1.31.1.1.1.18.1 = "
+                    "STRING: team01-01"
+                )
+            return ".1.3.6.1.2.1.31.1.1.1.18.1 = STRING: uplink"
+
+        switches, aliases = gpt.discover_team_switches(
+            ["192.168.10.44", "192.168.10.45"],
+            "global",
+            timeout=2,
+            workers=2,
+            probe_snmp=fake_probe,
+        )
+
+        assert switches == ["192.168.10.45"]
+        assert aliases["192.168.10.45"] == {
+            1: {"team": 1, "seat": 1},
+        }
+        assert {call[0] for call in calls} == {
+            "192.168.10.44", "192.168.10.45"
+        }
+        assert all(call[2:] == (gpt.IF_ALIAS_OID, 2) for call in calls)
+
+
+class TestRefreshPlayerFdb:
+    def test_only_known_wired_arp_hosts_are_probed(self):
+        calls = []
+
+        def fake_ping(ip, timeout):
+            calls.append((ip, timeout))
+            return ip == "192.168.42.44"
+
+        alive = gpt.refresh_player_fdb(
+            {
+                "192.168.42.44": "00:00:00:00:00:44",
+                "192.168.42.45": "00:00:00:00:00:45",
+                "192.168.10.45": "00:00:00:00:10:45",
+            },
+            [IPv4Network("192.168.42.0/24")],
+            timeout=1,
+            workers=2,
+            probe_ping=fake_ping,
+        )
+
+        assert alive == {"192.168.42.44"}
+        assert sorted(calls) == [
+            ("192.168.42.44", 1),
+            ("192.168.42.45", 1),
+        ]
+
+    def test_empty_player_subnets_do_not_ping(self):
+        calls = []
+        alive = gpt.refresh_player_fdb(
+            {"192.168.42.44": "00:00:00:00:00:44"},
+            [],
+            probe_ping=lambda ip, timeout: calls.append((ip, timeout)),
+        )
+
+        assert alive == set()
+        assert calls == []
 
 
 # ---- build_stage_mac_index() community-indexing -------------------
@@ -839,6 +918,35 @@ class TestRequireLinkUpFilter:
         targets, stats = gpt.join_gateway_arp_to_teams(arp, idx, [], require_link_up=True)
         assert len(targets) == 1
         assert stats["matched"] == 1
+
+
+class TestTeamMappingSummary:
+    def test_reports_unmapped_link_up_seat_and_excludes_link_down(self):
+        stage_index = {
+            "192.168.10.45": {
+                "ifalias": {
+                    1: {"team": 1, "seat": 1},
+                    2: {"team": 1, "seat": 2},
+                    3: {"team": 1, "seat": 3},
+                },
+                "oper_status": {1: 1, 2: 2, 3: 1},
+            },
+        }
+        targets = [{
+            "targets": ["192.168.42.44"],
+            "labels": {
+                "team": "1", "seat": "1", "switch": "192.168.10.45",
+                "network": "wired", "role": "player",
+            },
+        }]
+
+        result = gpt.summarize_team_mapping(
+            stage_index, targets, require_link_up=True
+        )
+
+        assert result["eligible"] == {(1, 1), (1, 3)}
+        assert result["mapped"] == {(1, 1)}
+        assert result["missing"] == [(1, 3)]
 
 
 # ---- atomic_write_json() ------------------------------------------

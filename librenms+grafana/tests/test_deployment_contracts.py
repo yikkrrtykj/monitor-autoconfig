@@ -23,6 +23,19 @@ def test_release_images_are_pinned_and_defaults_are_consistent():
     assert "monitor-platform-api:local" in compose
 
 
+def test_player_target_generator_streams_and_refreshes_stage_fdb():
+    compose = read("docker-compose.yml")
+    example = read(".env.example")
+
+    # A discovery across the fallback management range must produce visible
+    # progress instead of buffering every line until the full run ends.
+    assert "python3 -u /generate-player-targets.py 2>&1" in compose
+    assert 'output="$$(python3 /generate-player-targets.py' not in compose
+    # Quiet live clients are prompted before the stage MAC table is read.
+    assert 'PLAYER_REFRESH_FDB: "${PLAYER_REFRESH_FDB:-true}"' in compose
+    assert "PLAYER_REFRESH_FDB=true" in example
+
+
 def test_deploy_rebuilds_local_images_only_when_dockerfiles_change():
     deploy = read("deploy.sh")
 
