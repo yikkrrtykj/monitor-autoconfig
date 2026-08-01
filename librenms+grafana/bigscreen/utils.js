@@ -121,27 +121,18 @@
     const threshold = Number.isFinite(settings.threshold) ? settings.threshold : 0.05;
     const minConsecutive = Math.max(2, Math.floor(settings.minConsecutive || 2));
     const maxGapSeconds = Number.isFinite(settings.maxGapSeconds) ? settings.maxGapSeconds : 3;
-    const baselineRadius = Math.max(1, Math.floor(settings.baselineRadius || 2));
 
     return (seriesList || []).map((series) => {
-      const values = (series.values || []).map((point) => ({ ...point }));
+      const source = (series.values || []).map((point) => ({ ...point }));
+      const values = source.map((point) => ({ ...point }));
 
       function localBaseline(index) {
-        const nearby = [];
-        for (let offset = 1; offset <= baselineRadius; offset += 1) {
-          [index - offset, index + offset].forEach((candidateIndex) => {
-            const candidate = values[candidateIndex];
-            if (candidate && Number.isFinite(candidate.v) && candidate.v < threshold) {
-              nearby.push(candidate.v);
-            }
-          });
-        }
-        if (!nearby.length) return Math.min(values[index].v, threshold * 0.2);
-        nearby.sort((left, right) => left - right);
-        const middle = Math.floor(nearby.length / 2);
-        return nearby.length % 2
-          ? nearby[middle]
-          : (nearby[middle - 1] + nearby[middle]) / 2;
+        const adjacent = [source[index - 1], source[index + 1]]
+          .filter((point) => point && Number.isFinite(point.v) && point.v < threshold)
+          .map((point) => point.v);
+        if (adjacent.length === 2) return (adjacent[0] + adjacent[1]) / 2;
+        if (adjacent.length === 1) return adjacent[0];
+        return Math.min(source[index].v, threshold * 0.2);
       }
 
       let start = 0;
@@ -172,45 +163,6 @@
         start = end;
       }
 
-      return { ...series, values };
-    });
-  }
-
-  /**
-   * Reduce harmless sub-threshold ICMP jitter on the customer-facing
-   * tournament chart. A centred median is used so one noisy response cannot
-   * turn the normal baseline into a dense saw-tooth. Points at or around a
-   * sustained incident are deliberately left untouched.
-   */
-  function smoothNormalLatencyJitter(seriesList, options) {
-    const settings = options || {};
-    const threshold = Number.isFinite(settings.threshold) ? settings.threshold : 0.05;
-    const radius = Math.max(1, Math.floor(settings.radius || 2));
-
-    return (seriesList || []).map((series) => {
-      const source = (series.values || []).map((point) => ({ ...point }));
-      const values = source.map((point, index) => {
-        if (!Number.isFinite(point.v) || point.v >= threshold) return { ...point };
-
-        const start = Math.max(0, index - radius);
-        const end = Math.min(source.length, index + radius + 1);
-        const window = source.slice(start, end);
-        // Do not spread or reshape a real sustained high-latency incident.
-        if (window.some((candidate) => Number.isFinite(candidate.v) && candidate.v >= threshold)) {
-          return { ...point };
-        }
-
-        const normalValues = window
-          .map((candidate) => candidate.v)
-          .filter((value) => Number.isFinite(value))
-          .sort((left, right) => left - right);
-        if (normalValues.length < 2) return { ...point };
-        const middle = Math.floor(normalValues.length / 2);
-        const median = normalValues.length % 2
-          ? normalValues[middle]
-          : (normalValues[middle - 1] + normalValues[middle]) / 2;
-        return { ...point, v: median };
-      });
       return { ...series, values };
     });
   }
@@ -399,7 +351,6 @@
     niceMax,
     average,
     suppressIsolatedLatencySpikes,
-    smoothNormalLatencyJitter,
     uniqueNames,
     networkLabel,
     seatLabel,

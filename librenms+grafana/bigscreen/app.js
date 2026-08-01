@@ -19,7 +19,7 @@
     formatUptime, formatBits, formatTime, niceMax, average,
     networkLabel, seatLabel, gaugeColor, gaugePercent,
     linePathFromPoints, buildCsv, formatTimestampFull, groupAddressesByCBlock,
-    suppressIsolatedLatencySpikes, smoothNormalLatencyJitter
+    suppressIsolatedLatencySpikes
   } = window.BSUtils;
   const {
     prometheusBaseUrl, fetchWithTimeout,
@@ -944,13 +944,10 @@
       const rawActivePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
       const tournamentMode = Boolean(document.querySelector(".screen.tournament-mode"));
       const activePingSeries = tournamentMode
-        ? smoothNormalLatencyJitter(suppressIsolatedLatencySpikes(rawActivePingSeries, {
+        ? suppressIsolatedLatencySpikes(rawActivePingSeries, {
           threshold: 0.05,
           minConsecutive: 2,
           maxGapSeconds: 3
-        }), {
-          threshold: 0.05,
-          radius: 2
         })
         : rawActivePingSeries;
       const activeLossSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap), "max"));
