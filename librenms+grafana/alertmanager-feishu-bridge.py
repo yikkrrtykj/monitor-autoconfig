@@ -2312,8 +2312,15 @@ def build_interconnect_card(event, recovered=False):
     device = event.get("device") or event.get("ip") or "?"
     ip = event.get("ip") or ""
     device_text = f"{device} ({ip})" if ip and ip != device else device
-    # Prefer the real peer switch from LLDP; fall back to the port alias/name.
-    peer = event.get("peer_switch") or event.get("alias") or event.get("port") or "?"
+    # Only an unambiguous LLDP/CDP topology match may be called the peer switch.
+    # Interface aliases are operator text and can be stale after recabling.
+    peer = event.get("peer_switch") or ""
+    alias = event.get("alias") or ""
+    peer_line = (
+        f"🔗 对端交换机：{peer}"
+        if peer else
+        f"🔗 对端交换机：未确认" + (f"（接口描述：{alias}）" if alias else "")
+    )
     down_members = event.get("down_members") or []
     up_members = event.get("up_members") or []
     aggregate_down = event.get("status") == "down"
@@ -2323,7 +2330,7 @@ def build_interconnect_card(event, recovered=False):
         lines = [
             f"🖥 设备：{device_text}",
             f"🔌 物理口：{_join_ports(down_members) if down_members else event.get('port', '?')} 已恢复",
-            f"🔗 对端交换机：{peer}",
+            peer_line,
             f"{status_emoji} 状态：链路冗余已恢复",
             f"⏳ 恢复耗时：{format_alert_duration(event.get('duration'), True)}",
             f"⏰ 时间：{ts}",
@@ -2339,7 +2346,7 @@ def build_interconnect_card(event, recovered=False):
         lines = [
             f"🖥 设备：{device_text}",
             f"🔌 异常接口：{port_text}",
-            f"🔗 对端交换机：{peer}",
+            peer_line,
         ]
         cause = event.get("syslog_cause") or {}
         if cause:
@@ -3367,12 +3374,13 @@ def classify_interconnect(lag_up, member_ups):
       degraded - some members down but the bundle is still up (redundancy lost,
                  traffic still flows -> this is the case worth alerting)
       down     - aggregate protocol/oper state is down, or every member is down
-      unknown  - no member visibility (switch lacks ifStackTable); nothing to say
+      unknown  - fewer than two visible members (missing ifStackTable or an
+                 intentional/single-member dormant bundle); nothing to say
     """
     # Without ifStack member visibility an administratively-up but unused LAG is
     # indistinguishable from a failed interconnect. Alerting it produced false
     # cards after every deployment whose online-member field was only "?".
-    if not member_ups:
+    if len(member_ups) < 2:
         return "unknown"
     if not lag_up:
         return "down"
@@ -3676,30 +3684,56 @@ def build_topology_parents(edges, root_ip):
 
 def build_peer_map(edges):
     """(device_ip, local_port) -> peer switch name, from the LLDP topology, so a
-    link alert can name the switch on the far end (not just the port alias)."""
+    link alert can name the switch on the far end (not just the port alias).
+
+    Values retain scores instead of allowing JSON order to overwrite a port.
+    Live observations outrank 24-hour retained edges, while C1000 ifStack member
+    arrays let both physical legs vote for the same peer.
+    """
     peers = {}
+
+    def add(ip, ports, peer, weight):
+        for port in ports:
+            key = (ip, _audit_port_key(port))
+            if not key[0] or not key[1] or not peer:
+                continue
+            scores = peers.setdefault(key, {})
+            scores[peer] = scores.get(peer, 0) + weight
+
     for edge in edges or []:
         ip = str(edge.get("from_ip") or "").strip()
         port = str(edge.get("from_port") or "").strip()
         peer = str(edge.get("to_sysname") or edge.get("to_ip") or "").strip()
-        if ip and port and peer:
-            peers[(ip, port)] = peer
+        weight = 1 if edge.get("stale") else 2
+        from_ports = [port]
+        from_ports.extend(edge.get("from_member_ports") or [])
+        from_ports.append(edge.get("from_aggregate_port") or "")
+        add(ip, from_ports, peer, weight)
         reverse_ip = str(edge.get("to_ip") or "").strip()
         reverse_port = str(edge.get("to_port") or "").strip()
         reverse_peer = str(edge.get("from_sysname") or edge.get("from_ip") or "").strip()
-        if reverse_ip and reverse_port and reverse_peer:
-            peers[(reverse_ip, reverse_port)] = reverse_peer
+        reverse_ports = [reverse_port]
+        reverse_ports.extend(edge.get("to_member_ports") or [])
+        reverse_ports.append(edge.get("to_aggregate_port") or "")
+        add(reverse_ip, reverse_ports, reverse_peer, weight)
     return peers
 
 
 def resolve_peer_switch(peer_map, ip, ports):
-    """First peer switch found among the given local ports (down members, then
-    the aggregate). "" when the LLDP topology doesn't know the far end."""
+    """Resolve a peer only when the matching topology observations agree."""
+    candidates = {}
     for port in ports:
-        peer = peer_map.get((ip, str(port or "").strip()))
-        if peer:
-            return peer
-    return ""
+        scores = peer_map.get((ip, _audit_port_key(port))) or {}
+        if isinstance(scores, str):
+            scores = {scores: 1}
+        for peer, score in scores.items():
+            candidates[peer] = candidates.get(peer, 0) + score
+    if not candidates:
+        return ""
+    ranked = sorted(candidates.items(), key=lambda item: (-item[1], item[0].casefold()))
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return ""
+    return ranked[0][0]
 
 
 def is_down_symptom(ip, parents, unreachable):

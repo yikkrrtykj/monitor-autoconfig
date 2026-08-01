@@ -658,11 +658,13 @@ services:
       FIREWALL_PING: "${FIREWALL_PING:-}"
       TOURNAMENT_SWITCHES: "${TOURNAMENT_SWITCHES:-}"
       SERVER_PING: "${SERVER_PING:-}"
-      # Switch auto-discovery: ICMP-gate this range and SNMP only the live ones,
-      # then write them (named by hostname) to a file_sd the Prometheus dist/snmp
-      # jobs read. Probing a sparse /24 stays cheap; tune the caps if needed.
+      # Switch auto-discovery writes confirmed devices to the Prometheus file_sd.
+      # Offline devices remain targets for 24h so topology can keep them red and
+      # show the last confirmed uplink instead of erasing the incident evidence.
       SWITCH_DISCOVERY_RANGE: "${SWITCH_DISCOVERY_RANGE:-}"
       SWITCH_TARGETS_FILE: "/targets/switch_targets.json"
+      SWITCH_DISCOVERY_STATE_FILE: "/targets/switch-discovery-state.json"
+      SWITCH_DISCOVERY_RETENTION_SECONDS: "${SWITCH_DISCOVERY_RETENTION_SECONDS:-86400}"
       # A low-cost StackWise member-number walk is run during the topology
       # loop. Only confirmed multi-member stacks enter the 60-second SNMP job.
       STACKWISE_TARGETS_FILE: "/targets/stackwise_targets.json"
@@ -680,6 +682,7 @@ services:
       # deprioritize ICMP while their management CPU serves a burst of SNMP.
       TOPOLOGY_POLL_WORKERS: "${TOPOLOGY_POLL_WORKERS:-4}"
       TOPOLOGY_SNMP_DELAY_MS: "${TOPOLOGY_SNMP_DELAY_MS:-100}"
+      TOPOLOGY_EDGE_RETENTION_SECONDS: "${TOPOLOGY_EDGE_RETENTION_SECONDS:-86400}"
       # ISP 网关自动发现：从防火墙 SNMP 读 WAN 口地址和默认路由下一跳，
       # 写 isp_targets.json 给 infra-isp-ping；手工 ISP_PING 条目优先。
       ISP_GATEWAY_AUTO_DISCOVER: "${ISP_GATEWAY_AUTO_DISCOVER:-true}"
@@ -711,7 +714,7 @@ services:
         }
 
         load_runtime_env() {
-          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY TOPOLOGY_POLL_WORKERS TOPOLOGY_SNMP_DELAY_MS CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES SERVER_PING SWITCH_DISCOVERY_RANGE TOPOLOGY_REFRESH_INTERVAL ISP_GATEWAY_AUTO_DISCOVER FIREWALL_SNMP_TARGETS FIREWALL_SNMP_COMMUNITY FIREWALL_WAN_IF_FILTER BIGSCREEN_ISP_NAMES ISP_PING ISP_DISCOVERY_REFRESH_INTERVAL; do
+          for key in SNMP_COMMUNITY TOPOLOGY_DEVICES TOPOLOGY_SNMP_COMMUNITY TOPOLOGY_POLL_WORKERS TOPOLOGY_SNMP_DELAY_MS TOPOLOGY_EDGE_RETENTION_SECONDS CORE_SWITCH_PING DIST_SWITCH_PING FIREWALL_PING TOURNAMENT_SWITCHES SERVER_PING SWITCH_DISCOVERY_RANGE SWITCH_DISCOVERY_RETENTION_SECONDS TOPOLOGY_REFRESH_INTERVAL ISP_GATEWAY_AUTO_DISCOVER FIREWALL_SNMP_TARGETS FIREWALL_SNMP_COMMUNITY FIREWALL_WAN_IF_FILTER BIGSCREEN_ISP_NAMES ISP_PING ISP_DISCOVERY_REFRESH_INTERVAL; do
             load_env_key "$$key"
           done
         }

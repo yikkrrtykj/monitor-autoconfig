@@ -105,3 +105,36 @@ def test_build_file_sd_is_sorted_prometheus_format():
         {"targets": ["192.168.10.3"], "labels": {"display_name": "a"}},
         {"targets": ["192.168.10.20"], "labels": {"display_name": "b"}},
     ]
+
+
+def test_confirmed_offline_switch_is_retained_for_24_hours_with_its_name():
+    previous = {
+        "192.168.10.57": {"name": "pgs-avl", "last_seen": 100.0},
+    }
+
+    targets, state = disc.retain_confirmed_targets(
+        {}, ["192.168.10.57", "192.168.10.99"], previous,
+        now=100 + 24 * 60 * 60, retention_seconds=24 * 60 * 60,
+    )
+
+    assert targets == {"192.168.10.57": "pgs-avl"}
+    assert state["192.168.10.57"]["last_seen"] == 100.0
+    assert "192.168.10.99" not in targets
+
+    expired, _ = disc.retain_confirmed_targets(
+        {}, ["192.168.10.57"], previous,
+        now=101 + 24 * 60 * 60, retention_seconds=24 * 60 * 60,
+    )
+    assert expired == {}
+
+
+def test_ping_only_refresh_does_not_erase_confirmed_hostname():
+    targets, state = disc.retain_confirmed_targets(
+        {"192.168.10.57": "192.168.10.57"},
+        ["192.168.10.57"],
+        {"192.168.10.57": {"name": "pgs-avl", "last_seen": 100.0}},
+        now=200, retention_seconds=86400,
+    )
+
+    assert targets == {"192.168.10.57": "pgs-avl"}
+    assert state["192.168.10.57"] == {"name": "pgs-avl", "last_seen": 200.0}

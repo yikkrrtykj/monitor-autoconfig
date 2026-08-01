@@ -16,7 +16,9 @@ global.window = {
 };
 
 const { parseIspBandwidthConfig } = require(path.resolve(__dirname, "../bigscreen/utils.js"));
-const { ispChartMaxBps, getConfiguredIspNames, getIspNames } = require(path.resolve(__dirname, "../bigscreen/api.js"));
+const {
+  ispChartMaxBps, getConfiguredIspNames, getIspNames, activeInfraPingQuery
+} = require(path.resolve(__dirname, "../bigscreen/api.js"));
 const {
   buildTopologyLayers,
   topologyLayout,
@@ -27,6 +29,7 @@ const {
 assert.deepStrictEqual(parseIspBandwidthConfig("ISP1:500,ISP2:500,ISP3:300").perIsp.ISP3, { down: 300, up: 300 });
 assert.strictEqual(ispChartMaxBps("ISP1"), 500 * 1000 * 1000);
 assert.strictEqual(ispChartMaxBps("ISP3"), 300 * 1000 * 1000);
+assert.ok(activeInfraPingQuery().includes("[24h]"), "offline topology nodes stay eligible for 24 hours");
 window.BIGSCREEN_CONFIG.ispMaxBandwidthMbps = "ISP1:500/300,ISP2:800";
 assert.strictEqual(ispChartMaxBps("ISP1"), 500 * 1000 * 1000);
 assert.strictEqual(ispChartMaxBps("ISP2"), 800 * 1000 * 1000);
@@ -119,6 +122,38 @@ assert.strictEqual(coreStageLinks[0].severity, "warn");
 assert.ok(coreStageLinks[0].busLink);
 assert.ok(coreStageLinks[0].aggregated, "a multi-port bundle is flagged aggregated (drawn thicker)");
 assert.strictEqual(layout.coreBus.severity, "good");
+
+const c1000Layers = buildTopologyLayers([
+  target("infra-core-ping", "Core", "192.168.10.254"),
+  target("infra-dist-ping", "Global-new-stack", "192.168.10.11")
+]);
+const c1000Layout = topologyLayout(c1000Layers, 1365, 620, [{
+  from_ip: "192.168.10.254",
+  from_port: "Te1/0/1",
+  from_member_ports: ["Te1/0/1", "Te2/0/1"],
+  to_ip: "192.168.10.11",
+  to_port: "Te1/0/2",
+  to_member_ports: ["Te1/0/2", "Te2/0/2"],
+  stale: true
+}]);
+const c1000Link = c1000Layout.links.find((link) => link.logical);
+assert.deepStrictEqual(c1000Link.labelLines, [
+  "Te1/0/1, Te2/0/1",
+  "Te1/0/2, Te2/0/2"
+]);
+assert.strictEqual(c1000Link.severity, "warn", "a retained member/link is visibly stale");
+const offlineC1000Layout = topologyLayout(buildTopologyLayers([
+  target("infra-core-ping", "Core", "192.168.10.254"),
+  target("infra-dist-ping", "pgs-avl", "192.168.10.57", false, null)
+]), 1365, 620, [{
+  from_ip: "192.168.10.254", from_port: "Te1/0/9",
+  to_ip: "192.168.10.57", to_port: "Gi1/0/1", stale: true
+}]);
+assert.strictEqual(
+  offlineC1000Layout.links.find((link) => link.logical).severity,
+  "bad",
+  "a retained edge to an offline switch stays red"
+);
 
 const serverNode = layout.nodes.find((node) => node.kind === "server");
 const coreNode = layout.nodes.find((node) => node.kind === "core");

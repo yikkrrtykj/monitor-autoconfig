@@ -17,6 +17,8 @@ Env vars:
   TOPOLOGY_SNMP_RETRIES      retries per request (default: 0).
   TOPOLOGY_POLL_WORKERS      devices polled concurrently (default: 4).
   TOPOLOGY_SNMP_DELAY_MS     pause after each SNMP request (default: 100).
+  TOPOLOGY_EDGE_RETENTION_SECONDS  keep last confirmed missing/down links in
+                             edges.json (default: 86400 / 24 hours).
   TOPOLOGY_OUTPUT_DIR        where to write edges.json / legacy empty files
                              (default: /etc/prometheus/targets/topology).
   SERVER_PING                named server targets; ARP/FDB resolves their real
@@ -36,6 +38,7 @@ from target_utils import expand_ipv4_entry, parse_named_ipv4_targets, write_json
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
 IF_NAME_OID = "1.3.6.1.2.1.31.1.1.1.1"
 IF_OPER_STATUS_OID = "1.3.6.1.2.1.2.2.1.8"
+IF_STACK_STATUS_OID = "1.3.6.1.2.1.31.1.2.1.3"
 LLDP_LOC_PORT_DESC_OID = "1.0.8802.1.1.2.1.3.7.1.3"
 LLDP_REM_PORT_ID_OID = "1.0.8802.1.1.2.1.4.1.1.7"
 LLDP_REM_PORT_DESC_OID = "1.0.8802.1.1.2.1.4.1.1.8"
@@ -167,6 +170,34 @@ def parse_if_oper_status(output):
         match = parenthesized or numeric
         if match:
             mapping[ifindex] = int(match.group(1))
+    return mapping
+
+
+def parse_if_stack_status(output):
+    """Active ifStackTable rows -> {higher_ifindex: [lower_ifindex, ...]}.
+
+    Cisco IOS/C1000 commonly advertises only one LLDP/CDP neighbor row for a
+    Port-channel. The IF-MIB stack is the device-local authority that tells us
+    which other physical ports belong to that same aggregate.
+    """
+    mapping = {}
+    for line in output.strip().split("\n"):
+        parts, value = parse_oid_value(line)
+        if not parts or len(parts) < 2:
+            continue
+        try:
+            higher = int(parts[-2])
+            lower = int(parts[-1])
+        except ValueError:
+            continue
+        parenthesized = re.search(r"\(([0-9]+)\)", value)
+        numeric = re.search(r"(?:INTEGER:\s*)?([0-9]+)\s*$", value, re.IGNORECASE)
+        match = parenthesized or numeric
+        if not match or int(match.group(1)) != 1 or higher == 0 or lower == 0:
+            continue
+        bucket = mapping.setdefault(higher, [])
+        if lower not in bucket:
+            bucket.append(lower)
     return mapping
 
 
@@ -450,6 +481,7 @@ def poll_device(ip, community):
     sysname = snmpget(ip, community, SYS_NAME_OID)
     ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
     ifoper = parse_if_oper_status(snmpwalk(ip, community, IF_OPER_STATUS_OID))
+    ifstack = parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID))
     arp = parse_arp_table(snmpwalk(ip, community, IP_NET_TO_MEDIA_PHYS_ADDRESS_OID), ifname)
     loc_port_desc = parse_lldp_loc_port_desc(snmpwalk(ip, community, LLDP_LOC_PORT_DESC_OID))
     rem_sys = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_SYS_NAME_OID))
@@ -463,6 +495,7 @@ def poll_device(ip, community):
         "sysname": sysname,
         "ifname": ifname,
         "ifoper": ifoper,
+        "ifstack": ifstack,
         "arp": arp,
         "loc_port_desc": loc_port_desc,
         "rem_sys": rem_sys,
@@ -542,6 +575,54 @@ def resolve_endpoint_conflicts(edges):
         edge.pop("_observations", None)
         kept.append(edge)
     return kept
+
+
+def _aggregate_member_details(device, endpoint_ifindex):
+    """Return (aggregate name, configured member names) for one edge endpoint."""
+    if endpoint_ifindex is None:
+        return "", []
+    ifnames = device.get("ifname", {})
+    for higher, lowers in device.get("ifstack", {}).items():
+        aggregate_name = ifnames.get(higher, "")
+        if not normalize_port_name(aggregate_name).startswith("agg"):
+            continue
+        if endpoint_ifindex != higher and endpoint_ifindex not in lowers:
+            continue
+        members = [
+            ifnames[index]
+            for index in lowers
+            if ifnames.get(index)
+        ]
+        members = sorted(
+            dict.fromkeys(members),
+            key=lambda name: [int(part) for part in re.findall(r"\d+", name)] or [0],
+        )
+        return aggregate_name, members
+    return "", []
+
+
+def enrich_aggregate_members(edges, devices):
+    """Attach all local LAG members to an edge without inventing member pairing.
+
+    Some switches (notably Catalyst 1000 variants) report two physical members
+    locally but repeat only one remote port in LLDP/CDP. Keeping per-endpoint
+    member arrays lets the UI show both truthful sides and lets alert correlation
+    map either member to the same peer.
+    """
+    enriched = []
+    for source in edges:
+        edge = dict(source)
+        for side in ("from", "to"):
+            device = devices.get(edge.get(f"{side}_ip")) or {}
+            aggregate, members = _aggregate_member_details(
+                device, edge.get(f"{side}_ifindex")
+            )
+            if aggregate:
+                edge[f"{side}_aggregate_port"] = aggregate
+            if members:
+                edge[f"{side}_member_ports"] = members
+        enriched.append(edge)
+    return enriched
 
 
 def build_edges(devices, name_index):
@@ -648,7 +729,8 @@ def build_edges(devices, name_index):
                 "to_ifindex": remote_ifindex,
             })
 
-    return resolve_endpoint_conflicts(list(edges_by_key.values())), placeholder_neighbors
+    edges = resolve_endpoint_conflicts(list(edges_by_key.values()))
+    return enrich_aggregate_members(edges, devices), placeholder_neighbors
 
 
 def _env_target_ips(name):
@@ -869,6 +951,77 @@ def load_cached_edges(path):
     return data if isinstance(data, list) else []
 
 
+def _edge_cache_key(edge):
+    def endpoint(side):
+        ip = str(edge.get(f"{side}_ip") or "").strip()
+        ifindex = edge.get(f"{side}_ifindex")
+        identity = (
+            f"i:{ifindex}"
+            if ifindex not in (None, "")
+            else f"p:{normalize_port_name(edge.get(f'{side}_port'))}"
+        )
+        return ip, identity
+
+    return tuple(sorted((endpoint("from"), endpoint("to"))))
+
+
+def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
+                                now=None, retention_seconds=24 * 60 * 60):
+    """Keep missing confirmed LLDP/CDP edges long enough to diagnose outages.
+
+    Live observations replace matching cache entries. A cached edge is dropped
+    immediately when one of its resolved physical endpoints is now occupied by
+    a different live peer; otherwise it is retained as stale for the configured
+    window. Server/FDB ownership has a separate durable ledger and is excluded.
+    """
+    now = time.time() if now is None else float(now)
+    retention_seconds = max(0, int(retention_seconds))
+    configured = set(configured_device_ips or [])
+    live_keys = {_edge_cache_key(edge) for edge in live_edges}
+    occupied = set()
+    output = []
+    for source in live_edges:
+        edge = dict(source)
+        edge["last_seen"] = now
+        edge["stale"] = False
+        output.append(edge)
+        for side in ("from", "to"):
+            ip = str(edge.get(f"{side}_ip") or "").strip()
+            ifindex = edge.get(f"{side}_ifindex")
+            if ip and ifindex not in (None, ""):
+                occupied.add((ip, str(ifindex)))
+
+    for source in cached_edges or []:
+        if not isinstance(source, dict) or source.get("source") == "fdb":
+            continue
+        left = str(source.get("from_ip") or "").strip()
+        right = str(source.get("to_ip") or "").strip()
+        if not left or not right or left not in configured or right not in configured:
+            continue
+        if _edge_cache_key(source) in live_keys:
+            continue
+        conflicts = False
+        for side in ("from", "to"):
+            ip = str(source.get(f"{side}_ip") or "").strip()
+            ifindex = source.get(f"{side}_ifindex")
+            if ip and ifindex not in (None, "") and (ip, str(ifindex)) in occupied:
+                conflicts = True
+                break
+        if conflicts:
+            continue
+        try:
+            last_seen = float(source.get("last_seen", now))
+        except (TypeError, ValueError):
+            last_seen = now
+        if now - last_seen > retention_seconds:
+            continue
+        edge = dict(source)
+        edge["last_seen"] = last_seen
+        edge["stale"] = True
+        output.append(edge)
+    return output
+
+
 def _server_ip_for_edge(edge, servers):
     """Return the configured server endpoint carried by one topology edge."""
     for ip in (edge.get("from_ip"), edge.get("to_ip")):
@@ -1009,6 +1162,20 @@ def main():
         device_ips,
     ))
     edges = replace_server_edges(edges, confirmed_server_edges, servers)
+    try:
+        edge_retention = int(os.environ.get(
+            "TOPOLOGY_EDGE_RETENTION_SECONDS", str(24 * 60 * 60)
+        ) or 24 * 60 * 60)
+    except ValueError:
+        edge_retention = 24 * 60 * 60
+    network_edges = [edge for edge in edges if edge.get("source") != "fdb"]
+    server_edges = [edge for edge in edges if edge.get("source") == "fdb"]
+    edges = retain_cached_network_edges(
+        network_edges,
+        cached_edges,
+        device_ips,
+        retention_seconds=edge_retention,
+    ) + server_edges
     uplink_targets = []
 
     atomic_write_json(edges_path, edges)

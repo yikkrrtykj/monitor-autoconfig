@@ -4464,7 +4464,11 @@
   // into the existing DOM by updateTopologyLatencyTexts instead.
   function topologySignature(layout, width, edges) {
     const nodesSig = layout.nodes.map((node) => `${node.kind}|${node.ip || ""}|${node.name}|${node.level}`).join("#");
-    const edgesSig = (edges || []).map((edge) => `${edge.from_ip}|${edge.from_port}|${edge.to_ip}|${edge.to_port}`).join("#");
+    const edgesSig = (edges || []).map((edge) => [
+      edge.from_ip, edge.from_port, (edge.from_member_ports || []).join(","), edge.from_aggregate_port,
+      edge.to_ip, edge.to_port, (edge.to_member_ports || []).join(","), edge.to_aggregate_port,
+      edge.stale === true ? "stale" : "live"
+    ].join("|")).join("#");
     return `${width}@${nodesSig}@@${edgesSig}`;
   }
 

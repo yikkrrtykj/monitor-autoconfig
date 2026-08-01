@@ -474,17 +474,29 @@
         const orientTo = fromNode.y <= toNode.y ? toNode : fromNode;
         const orientFromPort = orientFrom === fromNode ? edge.from_port : edge.to_port;
         const orientToPort = orientFrom === fromNode ? edge.to_port : edge.from_port;
+        const orientFromMembers = orientFrom === fromNode ? edge.from_member_ports : edge.to_member_ports;
+        const orientToMembers = orientFrom === fromNode ? edge.to_member_ports : edge.from_member_ports;
         const pairKey = pairKeyFor(orientFrom, orientTo);
         const group = groupedEdges.get(pairKey) || {
           from: orientFrom,
           to: orientTo,
           fromPorts: [],
           toPorts: [],
-          count: 0
+          count: 0,
+          stale: false
         };
-        group.fromPorts.push(orientFromPort);
-        group.toPorts.push(orientToPort);
+        group.fromPorts.push(...(
+          Array.isArray(orientFromMembers) && orientFromMembers.length
+            ? orientFromMembers
+            : [orientFromPort]
+        ));
+        group.toPorts.push(...(
+          Array.isArray(orientToMembers) && orientToMembers.length
+            ? orientToMembers
+            : [orientToPort]
+        ));
         group.count += 1;
+        group.stale = group.stale || edge.stale === true;
         groupedEdges.set(pairKey, group);
       });
       groupedEdges.forEach((group, pairKey) => {
@@ -493,11 +505,17 @@
           (group.from.kind === "dist" && group.to.kind === "core")
         );
         const detail = portDetail(group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
+        const endpointLevels = [group.from.level || "good", group.to.level || "good"];
+        const severity = endpointLevels.includes("bad")
+          ? "bad"
+          : (group.stale || endpointLevels.includes("warn")
+            ? "warn"
+            : (endpointLevels.includes("none") ? "none" : "good"));
         lldpLinks.push({
           from: group.from,
           to: group.to,
           labelLines: detail.lines,
-          severity: group.to.level || "good",
+          severity,
           logical: true,
           aggregated: detail.aggregated
         });

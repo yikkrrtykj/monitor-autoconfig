@@ -627,9 +627,10 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
 
     # Switches reach the big screen two ways: an explicit per-switch list (named
     # exactly as typed), and/or SNMP discovery of the management range. The range
-    # path keeps only addresses that actually answer and names each by its real
-    # hostname, so operators can leave the per-switch list empty and offline IPs
-    # are never added. The discovery loop consumes SWITCH_DISCOVERY_RANGE.
+    # path initially adds only addresses that answer and names each by its real
+    # hostname, so operators can leave the per-switch list empty. Once confirmed,
+    # an offline switch remains monitored for the 24-hour topology retention
+    # window. The discovery loop consumes SWITCH_DISCOVERY_RANGE.
     discovery_range = switch_discovery_range(networks.get("switch_management_ranges"), core_ip)
     dist_ping = named_targets(all_switches)
     tournament_switches = named_targets(stage_switches)

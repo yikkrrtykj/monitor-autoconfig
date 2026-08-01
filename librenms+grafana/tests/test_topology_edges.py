@@ -82,6 +82,16 @@ class TestParseIfOperStatus:
         assert gte.parse_if_oper_status(out) == {1: 1, 2: 2, 3: 1}
 
 
+def test_parse_if_stack_status_keeps_only_active_real_relationships():
+    out = (
+        ".1.3.6.1.2.1.31.1.2.1.3.400.101 = INTEGER: active(1)\n"
+        ".1.3.6.1.2.1.31.1.2.1.3.400.201 = INTEGER: 1\n"
+        ".1.3.6.1.2.1.31.1.2.1.3.400.301 = INTEGER: notInService(2)\n"
+        ".1.3.6.1.2.1.31.1.2.1.3.0.400 = INTEGER: active(1)"
+    )
+    assert gte.parse_if_stack_status(out) == {400: [101, 201]}
+
+
 # ---- parse_lldp_loc_port_desc() ----
 
 class TestParseLldpLocPortDesc:
@@ -229,6 +239,32 @@ class TestBuildEdges:
 
 
 class TestPortChannelEdges:
+    def test_c1000_single_neighbor_row_is_enriched_with_both_lag_members(self):
+        devices = {
+            "192.168.10.254": {
+                "ip": "192.168.10.254", "sysname": "core",
+                "ifname": {11: "Te1/0/1"}, "ifoper": {11: 1}, "ifstack": {},
+                "loc_port_desc": {11: "Te1/0/1"},
+                "rem_sys": {(0, 11, 1): "new-stack"},
+                "rem_port_desc": {(0, 11, 1): "Te1/0/2"}, "rem_port_id": {},
+                "cdp_device_id": {}, "cdp_device_port": {}, "cdp_address": {},
+            },
+            "192.168.10.11": {
+                "ip": "192.168.10.11", "sysname": "new-stack",
+                "ifname": {102: "Te1/0/2", 202: "Te2/0/2", 400: "Po11"},
+                "ifoper": {102: 1, 202: 1, 400: 1},
+                "ifstack": {400: [102, 202]},
+                "loc_port_desc": {}, "rem_sys": {}, "rem_port_desc": {}, "rem_port_id": {},
+                "cdp_device_id": {}, "cdp_device_port": {}, "cdp_address": {},
+            },
+        }
+
+        edges, _ = gte.build_edges(devices, gte.build_name_index(devices))
+
+        assert len(edges) == 1
+        assert edges[0]["to_aggregate_port"] == "Po11"
+        assert edges[0]["to_member_ports"] == ["Te1/0/2", "Te2/0/2"]
+
     def test_remote_port_display_uses_resolved_ifname(self):
         devices = {
             "10.0.0.1": {
@@ -725,3 +761,45 @@ def test_empty_discovery_cycle_does_not_erase_confirmed_topology(tmp_path, monke
     assert gte.main() == 0
     assert _json.loads(edges_path.read_text(encoding="utf-8")) == previous_edges
     assert _json.loads(attachments_path.read_text(encoding="utf-8")) == previous_edges
+
+
+def test_missing_network_edge_is_marked_stale_then_expires():
+    cached = [{
+        "from_ip": "192.168.10.254", "from_port": "Te1/0/1", "from_ifindex": 101,
+        "to_ip": "192.168.10.57", "to_port": "Gi1/0/1", "to_ifindex": 1,
+        "last_seen": 100.0,
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        [], cached, ["192.168.10.254", "192.168.10.57"],
+        now=100 + 86400, retention_seconds=86400,
+    )
+    assert len(retained) == 1
+    assert retained[0]["stale"] is True
+    assert retained[0]["last_seen"] == 100.0
+
+    assert gte.retain_cached_network_edges(
+        [], cached, ["192.168.10.254", "192.168.10.57"],
+        now=101 + 86400, retention_seconds=86400,
+    ) == []
+
+
+def test_cached_edge_cannot_overwrite_a_live_port_move():
+    live = [{
+        "from_ip": "192.168.10.254", "from_port": "Te1/0/1", "from_ifindex": 101,
+        "to_ip": "192.168.10.58", "to_port": "Gi1/0/1", "to_ifindex": 1,
+    }]
+    cached = [{
+        "from_ip": "192.168.10.254", "from_port": "Te1/0/1", "from_ifindex": 101,
+        "to_ip": "192.168.10.57", "to_port": "Gi1/0/1", "to_ifindex": 1,
+        "last_seen": 100.0,
+    }]
+
+    merged = gte.retain_cached_network_edges(
+        live, cached, ["192.168.10.254", "192.168.10.57", "192.168.10.58"],
+        now=200, retention_seconds=86400,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["to_ip"] == "192.168.10.58"
+    assert merged[0]["stale"] is False

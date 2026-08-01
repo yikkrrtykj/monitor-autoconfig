@@ -183,14 +183,15 @@
       .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }
 
-  // Infra ping instances that have actually been online at least once recently
+  // Infra ping instances that have actually been online at least once in the
+  // same 24-hour window used by switch/edge retention.
   // ("deployed"). Lets the overview hide configured-but-never-online targets
   // (e.g. a DIST_SWITCH_PING=SW:.11-30 range where only a few switches exist)
   // while keeping deployed-but-currently-down ones (they still show red).
   // Mirrors DEVICE_DOWN_REQUIRE_SEEN_UP on the alerting side.
   function activeInfraPingQuery() {
     const jobs = "infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping";
-    return `max by (instance) (max_over_time(probe_success{job=~"${jobs}"}[6h])) >= 1`;
+    return `max by (instance) (max_over_time(probe_success{job=~"${jobs}"}[24h])) >= 1`;
   }
 
   function activeSeriesNames(items) {

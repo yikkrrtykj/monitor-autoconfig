@@ -280,8 +280,9 @@ def test_classify_interconnect_distinguishes_degraded_from_down():
     assert bridge.classify_interconnect(True, [True, False]) == "degraded"
     # Every member down -> bundle down and must be alerted directly.
     assert bridge.classify_interconnect(False, [False, False]) == "down"
-    # A single-member bundle that drops is "down", never "degraded".
-    assert bridge.classify_interconnect(False, [False]) == "down"
+    # A single-member/down bundle is commonly an intentional dormant Cisco
+    # channel-group. It has no redundancy to lose and must not alert on restart.
+    assert bridge.classify_interconnect(False, [False]) == "unknown"
     # No member visibility (no ifStackTable) -> nothing to say.
     assert bridge.classify_interconnect(True, []) == "unknown"
     assert bridge.classify_interconnect(False, []) == "unknown"
@@ -355,6 +356,27 @@ def test_peer_switch_map_is_bidirectional_when_remote_port_is_known():
     assert bridge.resolve_peer_switch(peer_map, "10.0.0.2", ["Gi1/0/48"]) == "core"
 
 
+def test_peer_switch_uses_c1000_member_array_and_rejects_tied_conflicts():
+    edges = [{
+        "from_ip": "192.168.10.11", "from_sysname": "new-stack",
+        "from_port": "Te1/0/2", "from_member_ports": ["Te1/0/2", "Te2/0/2"],
+        "from_aggregate_port": "Po11",
+        "to_ip": "192.168.10.254", "to_sysname": "core", "to_port": "Te1/0/1",
+    }]
+    peer_map = bridge.build_peer_map(edges)
+    assert bridge.resolve_peer_switch(
+        peer_map, "192.168.10.11", ["TenGigabitEthernet2/0/2", "Po11"],
+    ) == "core"
+
+    conflicting = bridge.build_peer_map([
+        {"from_ip": "10.0.0.1", "from_port": "Gi1/0/1", "to_sysname": "peer-a"},
+        {"from_ip": "10.0.0.1", "from_port": "Gi1/0/2", "to_sysname": "peer-b"},
+    ])
+    assert bridge.resolve_peer_switch(
+        conflicting, "10.0.0.1", ["Gi1/0/1", "Gi1/0/2"],
+    ) == ""
+
+
 def test_interconnect_card_describes_protocol_down_without_fake_member(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
     card = bridge.build_interconnect_card({
@@ -364,6 +386,18 @@ def test_interconnect_card_describes_protocol_down_without_fake_member(monkeypat
     text = json.dumps(card, ensure_ascii=False)
     assert "聚合链路 DOWN" in text
     assert "Po1" in text
+
+
+def test_interconnect_card_does_not_claim_alias_is_a_peer_switch(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    card = bridge.build_interconnect_card({
+        "device": "new-stack", "ip": "192.168.10.11", "port": "Po16",
+        "alias": "old-stage-name", "peer_switch": "", "down_members": ["Te1/0/1"],
+        "up_members": [], "status": "down", "duration": 8,
+    })
+    text = json.dumps(card, ensure_ascii=False)
+    assert "对端交换机：未确认（接口描述：old-stage-name）" in text
+    assert "对端交换机：old-stage-name" not in text
 
 
 def _chain_edges():
