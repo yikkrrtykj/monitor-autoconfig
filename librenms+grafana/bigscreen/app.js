@@ -389,11 +389,8 @@
       `;
     }).join("");
     const headerCells = calcs.map((calc) => `<span>${escapeHtml(calcLabels[calc] || calc)}</span>`).join("");
-    const legendHeader = options.legendNamesOnly
-      ? ""
-      : `<div class="legend-row legend-head"><span></span><span>名称</span>${headerCells}</div>`;
+    const legendHeader = `<div class="legend-row legend-head"><span></span><span>名称</span>${headerCells}</div>`;
     const legendClass = options.legend === "bottom" ? "chart-legend bottom-legend" : "chart-legend side-legend";
-    const legendModeClass = options.legendNamesOnly ? "names-only-legend" : "";
     const densityClass = series.length > 12 ? "compact-series" : series.length > 8 ? "dense-series" : "";
 
     container.innerHTML = `
@@ -404,7 +401,7 @@
           ${paths}
           ${timeLabels}
         </svg>
-        <div class="${legendClass} ${legendModeClass}">${legendHeader}${legend}</div>
+        <div class="${legendClass}">${legendHeader}${legend}</div>
       </div>
     `;
   }
@@ -961,10 +958,7 @@
           // Use the same data-driven scale as the infrastructure overview.
           // A small 5 ms floor avoids over-amplifying sub-millisecond noise,
           // while the visible maximum still determines the chart ceiling.
-          minMax: 0.005,
-          legend: "bottom",
-          legendNamesOnly: true,
-          calcs: []
+          minMax: 0.005
         });
       }
       if (shouldRender("lossHeatmap", seriesSignature(activeLossSeries))) {

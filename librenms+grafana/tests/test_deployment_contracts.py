@@ -255,11 +255,9 @@ def test_bigscreen_ping_trend_filters_only_isolated_tournament_spikes():
     assert "minMax: 0.005" in app
     assert "threshold: 0.05" in app
     assert "minConsecutive: 2" in app
-    assert 'legend: "bottom"' in app
-    assert "legendNamesOnly: true" in app
     assert "pages.js?v=20260731a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260801f" in index
+    assert "app.js?v=20260802a" in index
     assert "utils.js?v=20260801c" in index
 
 
@@ -274,7 +272,7 @@ def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():
     assert 'screen.className = `screen tournament-mode' in app
     assert '.screen.tournament-mode .isp-grid.isp-paged' in css
     assert "isp-carousel.js?v=20260731a" in index
-    assert "platform.css?v=20260801a" in index
+    assert "platform.css?v=20260802a" in index
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
