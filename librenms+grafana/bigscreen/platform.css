@@ -3241,8 +3241,17 @@ a.seat-slot:hover {
 }
 
 /* ==================== 手机端适配 ====================
-   与 style.css 的窄屏块配套:首页卡片、比赛盘、核对页在手机上单列/双列滚动。 */
-@media (max-width: 820px) {
+   放在最后加载的 platform.css 末尾，避免各页桌面端规则再覆盖窄屏布局。 */
+@media (max-width: 960px) {
+  html,
+  body {
+    width: 100%;
+    height: auto;
+    min-height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
   .screen,
   .screen.home-mode,
   .screen.infra-mode,
@@ -3253,29 +3262,165 @@ a.seat-slot:hover {
   .screen.topology-mode,
   .screen.ops-mode,
   .screen.tournament-mode {
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto 1fr;
+    width: 100%;
     height: auto;
     min-height: 100vh;
+    padding: 8px;
+    gap: 10px;
+    overflow: visible;
   }
 
+  .topbar,
   .screen.home-mode .topbar,
+  .screen.infra-mode .topbar,
   .screen.evidence-mode .topbar,
   .screen.control-mode .topbar,
-  .screen.ops-mode .topbar {
+  .screen.dhcp-mode .topbar,
+  .screen.incident-mode .topbar,
+  .screen.topology-mode .topbar,
+  .screen.ops-mode .topbar,
+  .screen.tournament-mode .topbar {
+    grid-column: 1;
+    grid-row: 1;
     grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 7px;
+    padding: 10px 8px;
+    text-align: center;
   }
 
-  .screen.dhcp-mode .topbar {
-    grid-template-columns: minmax(0, 1fr);
+  .brand {
+    justify-content: center;
+  }
+
+  .brand[hidden] {
+    display: none;
+  }
+
+  .headline h1,
+  .screen.home-mode .headline h1 {
+    font-size: clamp(22px, 7vw, 30px);
+    white-space: normal;
+  }
+
+  .subtitle {
+    min-height: 0;
+    margin-top: 4px;
+    font-size: 13px;
+    line-height: 1.4;
+    white-space: normal;
+  }
+
+  .clock {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+
+  .clock span {
+    font-size: 14px;
+  }
+
+  .clock strong {
+    font-size: 30px;
+  }
+
+  .home-panel {
+    padding: 14px 6px 24px;
   }
 
   .mode-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* 比赛页:队伍卡两列排,纵向滚动 */
+  .mode-card {
+    min-height: 132px;
+    padding: 16px 18px;
+  }
+
+  /* 比赛页：先看选手盘，继续下滑再看基础设施和 ISP。 */
+  .screen.tournament-mode {
+    grid-template-rows: auto auto auto;
+  }
+
+  .screen.tournament-mode .tournament-panel {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100%;
+    grid-template-rows: auto auto auto;
+  }
+
+  .screen.tournament-mode .panel-grid {
+    grid-column: 1;
+    grid-row: 3;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-rows: auto;
+    gap: 10px;
+    overflow: visible;
+  }
+
+  .screen.tournament-mode .ping-panel,
+  .screen.tournament-mode .uptime-panel,
+  .screen.tournament-mode .trend-panel,
+  .screen.tournament-mode .isp-grid {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+
+  .screen.tournament-mode .ping-panel {
+    min-height: 340px;
+  }
+
+  .screen.tournament-mode .uptime-panel {
+    min-height: 300px;
+  }
+
+  .screen.tournament-mode .trend-panel {
+    height: 260px;
+  }
+
+  .screen.tournament-mode .isp-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .screen.tournament-mode .isp-panel {
+    height: 240px;
+  }
+
+  .tournament-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tournament-kpi {
+    min-height: 64px;
+  }
+
+  .tournament-refresh {
+    top: 7px;
+    right: 7px;
+    width: 36px;
+    height: 36px;
+    font-size: 22px;
+    line-height: 36px;
+  }
+
   .team-row {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .match-board {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 7px;
+  }
+
+  .versus {
+    min-height: 36px;
+    font-size: 22px;
   }
 
   .tournament-board,
@@ -3283,27 +3428,304 @@ a.seat-slot:hover {
     overflow: visible;
   }
 
+  .team-card {
+    grid-template-rows: 30px 34px minmax(0, 1fr);
+  }
+
+  .multi-team-panel .team-card {
+    grid-template-rows: 28px 30px minmax(0, 1fr);
+  }
+
+  .seat-grid,
+  .multi-team-panel .seat-grid {
+    grid-auto-rows: minmax(38px, max-content);
+  }
+
+  .seat-slot,
+  .multi-team-panel .seat-slot {
+    min-height: 38px;
+    padding: 6px 7px;
+  }
+
+  .multi-team-panel .seat-slot span,
+  .multi-team-panel .seat-slot strong,
+  .multi-team-panel .seat-slot em {
+    font-size: 12px;
+  }
+
+  .tournament-trend-panel {
+    height: auto;
+    min-height: 280px;
+    overflow: visible;
+  }
+
   .team-trend-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    grid-auto-rows: minmax(110px, auto);
+    height: auto;
   }
 
   .team-trend-stack-horizontal {
     flex-direction: column;
+    height: auto;
   }
 
-  /* 无线总览表格在窄屏上允许横向滚动。 */
+  .team-trend-stack,
+  .team-trend-stack-horizontal .team-trend-grid-vertical {
+    height: auto;
+  }
+
+  .team-trend-card {
+    min-height: 110px;
+  }
+
+  /* 延迟查询：表单、摘要和两张图改为纵向流式布局。 */
+  .evidence-panel {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto 260px 230px;
+    height: auto;
+    overflow: visible;
+  }
+
+  .evidence-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .evidence-controls label,
+  .evidence-controls button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .evidence-controls label:nth-child(4),
+  .evidence-controls label:nth-child(5) {
+    grid-column: 1 / -1;
+  }
+
+  .evidence-controls input,
+  .evidence-controls select,
+  .evidence-controls button {
+    height: 42px;
+    font-size: 16px;
+  }
+
+  .evidence-summary {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+  }
+
+  .evidence-verdict {
+    min-height: 104px;
+  }
+
+  .evidence-latency-panel,
+  .evidence-success-panel {
+    grid-column: 1;
+    height: 100%;
+  }
+
+  /* 卡顿分析：输入保持双列，结果卡单列排布。 */
+  .incident-panel {
+    grid-template-rows: auto auto auto;
+    height: auto;
+    padding: 10px;
+    overflow: visible;
+  }
+
+  .incident-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: end;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .incident-controls label,
+  .incident-controls button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .incident-controls input,
+  .incident-controls select,
+  .incident-controls button {
+    width: 100%;
+    min-height: 42px;
+    font-size: 16px;
+  }
+
+  .incident-verdict {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .incident-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-rows: minmax(180px, auto);
+  }
+
+  .incident-card {
+    min-height: 180px;
+  }
+
+  /* 拓扑：工具条可换行，画布保留足够的手势操作区域。 */
+  .topology-panel {
+    grid-template-rows: auto minmax(520px, 70vh);
+    height: auto;
+    min-height: 620px;
+    padding: 8px;
+    overflow: visible;
+  }
+
+  .topology-toolbar,
+  .topology-legend {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .topology-toolbar {
+    gap: 7px 12px;
+    min-height: 46px;
+  }
+
+  .topology-updated {
+    flex: 1 0 100%;
+    text-align: center;
+  }
+
+  .topology-canvas {
+    min-height: 520px;
+  }
+
+  /* 无线总览：KPI 双列，桌面端宽表改为手机卡片。 */
+  .ops-panel {
+    align-content: start;
+    grid-template-rows: auto auto minmax(320px, auto);
+    height: auto;
+    overflow: visible;
+  }
+
+  .ops-controls {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 72px;
+  }
+
+  .ops-controls label {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .ops-title,
+  .ops-title.compact {
+    justify-self: stretch;
+    text-align: left;
+  }
+
+  .ops-title span {
+    line-height: 1.45;
+    text-overflow: initial;
+    white-space: normal;
+  }
+
+  .ops-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ops-kpi {
+    min-height: 92px;
+    padding: 10px 12px;
+  }
+
   .ops-board {
-    overflow-x: auto;
+    overflow: visible;
+    border: 0;
+    background: transparent;
   }
 
+  .ops-table {
+    min-width: 0;
+    gap: 8px;
+    background: transparent;
+  }
+
+  .ops-table-head {
+    display: none;
+  }
+
+  .ops-table-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    min-height: 0;
+    padding: 12px;
+    border: 1px solid var(--linear-hairline);
+    border-radius: 10px;
+  }
+
+  .ops-table-row span {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ops-table-row span::before {
+    color: var(--linear-ink-subtle);
+    content: attr(data-label);
+    font-size: 10px;
+  }
+
+  .ops-table-row span:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+
+  .ap-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ap-chip {
+    min-width: 0;
+    justify-content: space-between;
+    white-space: normal;
+  }
+
+  /* 赛事控制台：取消内层独立滚动，让手机使用整页自然滚动。 */
+  .control-panel,
   .control-shell {
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    height: auto;
+    overflow: visible;
   }
 
-  .control-toolbar,
-  .control-actions {
+  .control-toolbar {
     align-items: stretch;
     flex-direction: column;
+    padding: 12px;
+  }
+
+  .control-title span {
+    line-height: 1.45;
+    text-overflow: initial;
+    white-space: normal;
+  }
+
+  .control-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .control-actions > button,
+  .control-button-row button,
+  .control-button-row a,
+  .incident-create button,
+  .config-add-row,
+  .config-list-row button,
+  .config-range-row button {
+    min-height: 42px;
   }
 
   .mode-segment {
@@ -3316,11 +3738,21 @@ a.seat-slot:hover {
     grid-template-areas:
       "left"
       "right";
+    overflow: visible;
+  }
+
+  .control-stack,
+  .control-card,
+  .control-list,
+  .control-config,
+  .control-flow {
+    height: auto;
+    overflow: visible;
   }
 
   .control-config-editor-card {
     height: auto;
-    min-height: 620px;
+    min-height: 0;
   }
 
   .config-fields,
@@ -3344,10 +3776,67 @@ a.seat-slot:hover {
     flex-wrap: wrap;
   }
 
+  .config-field input,
+  .config-field select,
+  .config-field textarea,
+  .config-list-row input,
+  .config-range-row input,
+  .control-select-row select,
+  .control-textarea,
+  .incident-create input {
+    font-size: 16px;
+  }
+
+  .config-field input,
+  .config-field select,
+  .config-list-row input,
+  .config-range-row input,
+  .control-select-row select,
+  .incident-create input {
+    min-height: 42px;
+  }
+
+  .team-order-stage {
+    overflow-x: auto;
+    padding-bottom: 5px;
+    touch-action: pan-x;
+  }
+
+  .team-order-row {
+    min-width: 560px;
+  }
+
+  /* DHCP：顶部状态和操作改为纵向，地址池目录/详情上下排列。 */
   .dhcp-panel {
-    grid-template-rows: auto auto auto auto auto;
-    padding: 14px;
+    grid-template-rows: auto auto auto auto auto auto;
+    height: auto;
+    padding: 10px;
     overflow: visible;
+  }
+
+  .dhcp-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dhcp-toolbar strong {
+    font-size: 18px;
+  }
+
+  .dhcp-toolbar .dhcp-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .dhcp-toolbar .dhcp-actions > span {
+    grid-column: 1 / -1;
+    line-height: 1.45;
+  }
+
+  .dhcp-toolbar button {
+    width: 100%;
+    min-height: 42px;
   }
 
   .dhcp-summary {
@@ -3371,9 +3860,49 @@ a.seat-slot:hover {
     max-height: 280px;
   }
 
+  .dhcp-pool-card dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dhcp-pool-tools input,
+  .dhcp-pool-tools select {
+    min-height: 42px;
+    font-size: 16px;
+  }
+
   .dhcp-pool-card.multi-block { grid-column: auto; }
 
   .flow-links {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .team-row,
+  .team-trend-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .tournament-kpi strong {
+    font-size: 24px;
+  }
+
+  .evidence-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .control-item,
+  .config-row,
+  .control-select-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .control-item em,
+  .config-row em {
+    grid-column: 1;
+  }
+
+  .ap-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

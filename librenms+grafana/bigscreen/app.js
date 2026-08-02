@@ -1035,11 +1035,11 @@
       .sort((a, b) => Number(a.success) - Number(b.success) || (b.latency || 0) - (a.latency || 0) || a.team - b.team || a.seat - b.seat)
       .map((player) => `
         <a class="ops-table-row ${latencyLevel(player)}" href="${escapeHtml(latencyUrlForPlayer(player))}">
-          <span>${escapeHtml(teamName({ id: "" }, player.team))}</span>
-          <span>${escapeHtml(seatLabel(player.seat))}</span>
-          <span>${escapeHtml(player.ip)}</span>
-          <span>${escapeHtml(Number.isFinite(player.latency) ? formatPingText(player.latency) : "-")}</span>
-          <span>${escapeHtml(playerStatusText(player))}</span>
+          <span data-label="队伍">${escapeHtml(teamName({ id: "" }, player.team))}</span>
+          <span data-label="座位">${escapeHtml(seatLabel(player.seat))}</span>
+          <span data-label="IP">${escapeHtml(player.ip)}</span>
+          <span data-label="延迟">${escapeHtml(Number.isFinite(player.latency) ? formatPingText(player.latency) : "-")}</span>
+          <span data-label="状态">${escapeHtml(playerStatusText(player))}</span>
         </a>
       `).join("");
     board.innerHTML = `
@@ -4535,6 +4535,9 @@
     if (routeKey === activeRoute) return;
     activePageId = page.id;
     activeRoute = routeKey;
+    // SPA route changes otherwise preserve the long mobile home page's scroll
+    // offset and can open a dashboard halfway down its content.
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     if (page.id === "home") {
       showHome();
     } else if (page.id === "control") {
