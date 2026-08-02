@@ -782,7 +782,8 @@ add_device_api() {
     return 0
   fi
   echo "  ${name:-$ip} ($ip): ${msg:-add/update failed}"
-  return 1
+  # 与旧行为一致：单个可选 Ping 目标失败不能中止其余自动配置。
+  return 0
 }
 
 add_device_cli() {
@@ -796,17 +797,73 @@ add_device_cli() {
     echo "  ${name:-$ip} ($ip): Already exists or failed"
 }
 
+ping_device_payload() {
+  DEVICE_IP="$1" DEVICE_NAME="$2" python3 -c '
+import json, os
+
+name = os.environ.get("DEVICE_NAME") or os.environ["DEVICE_IP"]
+print(json.dumps({
+    "hostname": os.environ["DEVICE_IP"],
+    "display_template": name,
+    "snmp_disable": True,
+    "os": "ping",
+    "sysName": name,
+    "hardware": "ICMP",
+}, ensure_ascii=False))
+'
+}
+
+sync_ping_device_api() {
+  name=$1
+  ip=$2
+  payload=$(DEVICE_IP="$ip" DEVICE_NAME="$name" python3 -c '
+import json, os
+
+name = os.environ.get("DEVICE_NAME") or os.environ["DEVICE_IP"]
+print(json.dumps({
+    "field": ["snmp_disable", "os", "sysName", "hardware", "display"],
+    "data": [1, "ping", name, "ICMP", name],
+}, ensure_ascii=False))
+')
+  result=$(curl -s -X PATCH "$LIBRENMS_URL/api/v0/devices/$ip" \
+    -H "X-Auth-Token: $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$payload" 2>/dev/null)
+  status=$(printf '%s' "$result" | api_result_field status)
+  [ "$status" = "ok" ]
+}
+
 add_ping_device_api() {
   name=$1; ip=$2
   [ -z "$API_TOKEN" ] && return 0
   # ICMP-only 设备：snmp_disable=true 跳过 SNMP，os=ping 走 ping 模块。
   # 不能用 force_add（那会要求 SNMP 信息），sysName 用显示名方便识别。
+  payload=$(ping_device_payload "$ip" "$name")
   result=$(curl -s -X POST "$LIBRENMS_URL/api/v0/devices" \
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"hostname\":\"$ip\",\"display_name\":\"$name\",\"snmp_disable\":true,\"os\":\"ping\",\"sysName\":\"$name\",\"hardware\":\"ICMP\"}" 2>/dev/null)
+    -d "$payload" 2>/dev/null)
   msg=$(printf '%s' "$result" | api_result_field message)
-  echo "  $name ($ip): $msg"
+  status=$(printf '%s' "$result" | api_result_field status)
+
+  # 早期版本会把这些明确的 Ping 目标用 force_add 建成 SNMP 设备。
+  # POST 遇到同 IP 只会返回重复，因此无论新建还是已存在都再同步一次，
+  # 在保留 device_id/RRD/历史数据的同时，把旧记录迁移回 Ping-only。
+  if sync_ping_device_api "$name" "$ip"; then
+    if [ "$status" = "ok" ]; then
+      echo "  ${name:-$ip} ($ip): ${msg:-added}; ping-only settings synchronized"
+    else
+      echo "  ${name:-$ip} ($ip): existing device converted to ping-only"
+    fi
+    return 0
+  fi
+
+  if [ "$status" = "ok" ]; then
+    echo "  ${name:-$ip} ($ip): ${msg:-added}; ping-only verification failed"
+    return 0
+  fi
+  echo "  ${name:-$ip} ($ip): ${msg:-add/update failed}"
+  return 1
 }
 
 firewall_snmp_targets() {

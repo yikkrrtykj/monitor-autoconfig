@@ -320,6 +320,19 @@ def test_existing_librenms_devices_receive_current_snmp_credentials():
     assert '"field": ["community", "snmpver", "port", "transport", "snmp_disable"]' in auto_config
 
 
+def test_existing_ping_only_targets_are_migrated_away_from_snmp():
+    auto_config = read("librenms-auto-config.sh")
+
+    assert "ping_device_payload" in auto_config
+    assert '"snmp_disable": True' in auto_config
+    assert '"display_template": name' in auto_config
+    assert "sync_ping_device_api" in auto_config
+    assert '"field": ["snmp_disable", "os", "sysName", "hardware", "display"]' in auto_config
+    assert '"data": [1, "ping", name, "ICMP", name]' in auto_config
+    assert 'if sync_ping_device_api "$name" "$ip"; then' in auto_config
+    assert "existing device converted to ping-only" in auto_config
+
+
 def test_librenms_discovery_icmp_gates_snmp_checks():
     auto_config = read("librenms-auto-config.sh")
 
