@@ -255,7 +255,22 @@ def test_bigscreen_ping_trend_filters_only_isolated_tournament_spikes():
     assert "minMax: 0.005" in app
     assert "threshold: 0.05" in app
     assert "minConsecutive: 2" in app
-    assert "pages.js?v=20260731a" in index
+    # The normal overview keeps its value table, while tournament mode hides
+    # that side legend because it has a smaller, dedicated device set.
+    ping_trend_call = app.split('renderLineChart("pingTrendChart"', 1)[1].split("});", 1)[0]
+    assert 'legend: "bottom"' not in ping_trend_call
+    assert ".screen.tournament-mode .side-legend" in read("bigscreen/platform.css")
+    assert "display: none" in read("bigscreen/platform.css").split(
+        ".screen.tournament-mode .side-legend", 1
+    )[1].split("}", 1)[0]
+
+    # The headline switch value is a responsive median, not the single lowest
+    # sample in a minute (which becomes zero after one failed probe).
+    assert "min_over_time(probe_icmp_duration_seconds" not in pages
+    assert pages.count("quantile_over_time(0.5, probe_icmp_duration_seconds") == 2
+    assert pages.count("[30s]") == 3
+    assert "pages.js?v=20260802a" in index
+    assert "players.js?v=20260802a" in index
     assert "api.js?v=20260730d" in index
     assert "app.js?v=20260802a" in index
     assert "utils.js?v=20260801c" in index

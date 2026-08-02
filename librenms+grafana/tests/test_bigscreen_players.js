@@ -40,6 +40,7 @@ const item = (metric, value) => ({ metric, value });
 const players = buildPlayers(
   [
     item({ team: "1", seat: "1", instance: "10.1.1.11", network: "wired" }, 0.005),
+    item({ team: "1", seat: "3", instance: "10.1.1.13", network: "wired" }, 0),
     item({ team: "1", seat: "2", instance: "10.1.1.254", network: "wired" }, 0.001),
     item({ team: "2", seat: "1", instance: "10.1.1.21", network: "wired" }, 0.012)
   ],
@@ -56,6 +57,7 @@ assert.strictEqual(t1s1.success, true);
 assert.strictEqual(t1s1.latency, 0.005, "latency merged onto the success entry");
 const t1s3 = players.find((x) => x.team === 1 && x.seat === 3);
 assert.strictEqual(t1s3.success, false, "probe_success=0 marks the player offline");
+assert.strictEqual(t1s3.latency, null, "failed probes must not render their synthetic zero RTT");
 const t2s1 = players.find((x) => x.team === 2 && x.seat === 1);
 assert.strictEqual(t2s1.success, true, "latency-only entry defaults to online");
 

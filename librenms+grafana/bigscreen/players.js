@@ -64,7 +64,12 @@
         success: true,
         latency: null
       };
-      player.latency = item.value;
+      // blackbox_exporter reports an RTT phase value of 0 when an ICMP probe
+      // fails.  Keep the success vector authoritative so an offline seat is
+      // rendered as unavailable instead of the misleading "0 us".
+      player.latency = player.success && Number.isFinite(item.value) && item.value > 0
+        ? item.value
+        : null;
       byKey.set(key, player);
     });
     const all = Array.from(byKey.values())

@@ -2,7 +2,10 @@
   window.BIGSCREEN_QUERIES = {
     infraPingJobs: 'infra-core-ping|infra-dist-ping|infra-fw-ping',
     pingTrend: 'max by (instance) (probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"})',
-    pingGauge: 'avg by (instance, job) (min_over_time(probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[1m])) or avg by (instance, job) (quantile_over_time(0.5, probe_icmp_duration_seconds{job=~"infra-isp-ping|infra-srv-ping",phase="rtt"}[1m]))',
+    // Infrastructure is scraped every 2 seconds.  A 30-second median uses
+    // roughly 15 samples: stable against switch control-plane ICMP spikes and
+    // failed-probe zeroes, but more representative than the single 1m minimum.
+    pingGauge: 'avg by (instance, job) (quantile_over_time(0.5, probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"}[30s])) or avg by (instance, job) (quantile_over_time(0.5, probe_icmp_duration_seconds{job=~"infra-isp-ping|infra-srv-ping",phase="rtt"}[30s]))',
     uptime: 'max by (instance) (last_over_time(sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"}[25m]) / 100) or max by (instance) ((last_over_time(sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance=~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"}[25m]) / 100) unless on(target_ip) last_over_time(sysUpTime{job=~"infra-switch-snmp|infra-fw-snmp",instance!~"^(?:[0-9]{1,3}\\\\.){3}[0-9]{1,3}$"}[25m]))',
     loss: 'max by (instance, job, target_ip) (1 - avg_over_time(probe_success{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping"}[30s]))'
   };
