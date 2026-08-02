@@ -1,7 +1,9 @@
 const assert = require('assert');
 const {
   suppressIsolatedLatencySpikes,
-  smoothLatencyJitter
+  smoothLatencyJitter,
+  stepPathFromPoints,
+  splitPointsOnGaps
 } = require('../bigscreen/utils.js');
 
 function series(values) {
@@ -29,6 +31,23 @@ assert.deepStrictEqual(
   suppressIsolatedLatencySpikes(sustainedInput)[0].values.map((point) => point.v),
   sustainedInput[0].values.map((point) => point.v),
   'two consecutive samples at or above 50 ms must remain visible'
+);
+
+assert.strictEqual(
+  stepPathFromPoints(['10,20', '30,80', '60,20']),
+  'M 10,20 H 30 V 80 H 60 V 20',
+  'binary online state must change vertically instead of drawing diagonal ramps'
+);
+
+assert.deepStrictEqual(
+  splitPointsOnGaps([
+    { t: 100, v: 1 },
+    { t: 102, v: 1 },
+    { t: 180, v: 0 },
+    { t: 182, v: 1 }
+  ], 6).map((segment) => segment.map((point) => point.t)),
+  [[100, 102], [180, 182]],
+  'missing samples must produce a visible blank gap rather than a connecting line'
 );
 
 const jitterInput = series([

@@ -666,13 +666,16 @@ def bridge_health_payload():
 
 def start_watcher(name, target):
     def guarded():
-        mark_watcher_health(name, True)
-        try:
-            target()
-        except Exception as exc:
-            mark_watcher_health(name, False, exc)
-            log(f"[FATAL] watcher {name} stopped: {exc}")
-            raise
+        while True:
+            mark_watcher_health(name, True)
+            try:
+                target()
+                error = "watcher returned unexpectedly"
+            except Exception as exc:
+                error = str(exc)
+            mark_watcher_health(name, False, error)
+            log(f"[ERROR] watcher {name} failed: {error}; restarting in 5s")
+            time.sleep(5)
     thread = threading.Thread(target=guarded, name=f"watcher-{name}", daemon=True)
     with HEALTH_LOCK:
         WATCHER_THREADS[name] = thread
@@ -3246,6 +3249,10 @@ def isp_bandwidth_watcher():
     data_seen = False
     data_missing_since = None
     data_missing_alerting = False
+    # Per-link alert state must exist before the first non-empty Prometheus
+    # response. Without this initialization the first WAN sample raises a
+    # NameError on every supervisor restart and the watcher never becomes ready.
+    states = {}
     log(
         "[ISP] realtime bandwidth watcher enabled "
         f"(threshold={ISP_SATURATION_PERCENT:g}%, for={ISP_ALERT_FOR_SECONDS}s, "

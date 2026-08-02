@@ -254,6 +254,30 @@
     return commands.join(" ");
   }
 
+  function stepPathFromPoints(points) {
+    if (!points.length) return "";
+    const commands = [`M ${points[0]}`];
+    for (let index = 1; index < points.length; index += 1) {
+      const [x, y] = points[index].split(",");
+      commands.push(`H ${x} V ${y}`);
+    }
+    return commands.join(" ");
+  }
+
+  function splitPointsOnGaps(values, maxGapSeconds) {
+    if (!values.length) return [];
+    const maxGap = Number(maxGapSeconds);
+    if (!Number.isFinite(maxGap) || maxGap <= 0) return [values.slice()];
+    const segments = [[values[0]]];
+    for (let index = 1; index < values.length; index += 1) {
+      const point = values[index];
+      const previous = values[index - 1];
+      if (point.t - previous.t > maxGap) segments.push([]);
+      segments[segments.length - 1].push(point);
+    }
+    return segments;
+  }
+
   function parseIspBandwidthConfig(raw) {
     const result = { default: { down: 1000, up: 1000 }, perIsp: {}, ordered: [] };
     if (raw === undefined || raw === null) return result;
@@ -391,6 +415,8 @@
     gaugeColor,
     gaugePercent,
     linePathFromPoints,
+    stepPathFromPoints,
+    splitPointsOnGaps,
     parseIspBandwidthConfig,
     parseIspIps,
     parseConfiguredTargetIps,

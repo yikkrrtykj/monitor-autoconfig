@@ -18,7 +18,8 @@
     escapeHtml, escapeRegex, escapeLabel, metricName, formatPing, formatPingText,
     formatUptime, formatBits, formatTime, niceMax, average,
     networkLabel, seatLabel, gaugeColor, gaugePercent,
-    linePathFromPoints, buildCsv, formatTimestampFull, groupAddressesByCBlock,
+    linePathFromPoints, stepPathFromPoints, splitPointsOnGaps,
+    buildCsv, formatTimestampFull, groupAddressesByCBlock,
     suppressIsolatedLatencySpikes, smoothLatencyJitter
   } = window.BSUtils;
   const {
@@ -354,12 +355,17 @@
     }).join("");
     const paths = series.map((item, index) => {
       const color = item.color || seriesColors[index % seriesColors.length];
-      const points = item.values.map((point) => `${xOf(point.t).toFixed(1)},${yOf(point.v).toFixed(1)}`);
-      const linePath = linePathFromPoints(points, options.smooth);
-      const areaPath = options.fill
-        ? `${linePath} L ${xOf(item.values[item.values.length - 1].t).toFixed(1)},${height - pad.bottom} L ${xOf(item.values[0].t).toFixed(1)},${height - pad.bottom} Z`
-        : "";
-      return `${areaPath ? `<path class="chart-area" d="${areaPath}" style="fill:${color}" />` : ""}<path class="chart-line" d="${linePath}" style="stroke:${color}" />`;
+      const segments = splitPointsOnGaps(item.values, options.breakGapSeconds);
+      return segments.map((values) => {
+        const points = values.map((point) => `${xOf(point.t).toFixed(1)},${yOf(point.v).toFixed(1)}`);
+        const linePath = options.step
+          ? stepPathFromPoints(points)
+          : linePathFromPoints(points, options.smooth);
+        const areaPath = options.fill
+          ? `${linePath} L ${xOf(values[values.length - 1].t).toFixed(1)},${height - pad.bottom} L ${xOf(values[0].t).toFixed(1)},${height - pad.bottom} Z`
+          : "";
+        return `${areaPath ? `<path class="chart-area" d="${areaPath}" style="fill:${color}" />` : ""}<path class="chart-line" d="${linePath}" style="stroke:${color}" />`;
+      }).join("");
     }).join("");
     const calcs = options.calcs || ["mean", "max"];
     const calcsExplicit = !!options.calcs;
@@ -670,6 +676,7 @@
       seat: String(player.seat),
       network: player.network || "wired"
     });
+    if (player.ip) params.set("ip", player.ip);
     return `/latency?${params.toString()}`;
   }
 
@@ -1317,7 +1324,13 @@
       const gap = times[index] - times[index - 1];
       if (gap > 0 && gap < 300) gaps.push(gap);
     }
-    return gaps.length ? Math.round(average(gaps)) : 5;
+    if (!gaps.length) return 5;
+    gaps.sort((a, b) => a - b);
+    const middle = Math.floor(gaps.length / 2);
+    const median = gaps.length % 2
+      ? gaps[middle]
+      : (gaps[middle - 1] + gaps[middle]) / 2;
+    return Math.max(1, Math.round(median));
   }
 
   function evidenceVerdict(latencyValues, successValues) {
@@ -1432,11 +1445,14 @@
         slug: requestedIp || `T${team}S${seat}`
       };
       renderEvidenceSummary({ label }, latencySeries, successSeries);
+      const latencyGap = Math.max(5, estimateStepSeconds(latencySeries) * 3);
+      const successGap = Math.max(5, estimateStepSeconds(successSeries) * 3);
       renderLineChart("evidenceLatencyChart", latencySeries, {
         axisFormatter: formatPingText,
         valueFormatter: formatPingText,
         minMax: 0.005,
         smooth: true,
+        breakGapSeconds: latencyGap,
         legend: "bottom"
       });
       renderLineChart("evidenceSuccessChart", successSeries.map((series) => ({ ...series, color: "#73d17a" })), {
@@ -1445,6 +1461,8 @@
         calcs: ["last", "min"],
         minMax: 1,
         smooth: false,
+        step: true,
+        breakGapSeconds: successGap,
         fill: true,
         legend: "bottom"
       });

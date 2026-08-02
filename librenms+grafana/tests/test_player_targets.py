@@ -627,6 +627,19 @@ class TestCrossSourceTargetDedup:
 
         assert preferred == []
 
+    def test_recently_successful_unreachable_target_stays_red(self, monkeypatch):
+        target = [self._target(8, 2, "192.168.41.40", "snmp")]
+        monkeypatch.setattr(gpt, "ping_host", lambda _ip, _timeout=1: False)
+
+        preferred = gpt.filter_reachable_targets(
+            target,
+            workers=1,
+            retain_unreachable_ips={"192.168.41.40"},
+            grace_seconds=300,
+        )
+
+        assert preferred == target
+
     def test_player_ip_change_replaces_unreachable_history(self, monkeypatch):
         old = [self._target(6, 1, "192.168.42.43", "last-known", "wired")]
         current = [self._target(6, 1, "192.168.42.143", "192.168.10.45", "wired")]
@@ -785,6 +798,40 @@ class TestHistoricalPlayerTargets:
         ]
         assert "/api/v1/query?" in calls[0][0]
         assert "max_over_time" in calls[0][0]
+
+    def test_recent_success_lookup_only_returns_successful_player_ips(self):
+        payload = {
+            "status": "success",
+            "data": {"result": [
+                {"metric": {"target_ip": "192.168.42.44"}, "value": [1, "1"]},
+                {"metric": {"target_ip": "192.168.42.45"}, "value": [1, "0"]},
+                {"metric": {"instance": "192.168.42.46"}, "value": [1, "1"]},
+            ]},
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode()
+
+        calls = []
+
+        def opener(url, timeout):
+            calls.append((url, timeout))
+            return Response()
+
+        ips = gpt.fetch_recent_successful_player_ips(
+            "http://prometheus:9090", 300, opener=opener
+        )
+
+        assert ips == {"192.168.42.44", "192.168.42.46"}
+        assert "max_over_time" in calls[0][0]
+        assert "300s" in calls[0][0]
 
     def test_last_known_mapping_only_fills_unmapped_link_up_seats(self):
         stage_index = {

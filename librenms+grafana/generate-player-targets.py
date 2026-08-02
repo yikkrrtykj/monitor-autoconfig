@@ -37,6 +37,11 @@ Environment variables:
   PLAYER_VERIFY_PING     true/false (default true). Emit only addresses that
                          answer the generator's current ping check. This drops
                          stale historical IPs and follows player IP changes.
+  PLAYER_OFFLINE_GRACE_SECONDS
+                         Keep a previously successful but currently offline
+                         player target for this many seconds (default: 300),
+                         so rebooting PCs stay red/clickable instead of
+                         disappearing from Prometheus during the outage.
   PLAYER_TARGET_HISTORY_LOOKBACK
                          Prometheus lookback used to recover last-known seat/IP
                          mappings after the target file was emptied (default: 24h).
@@ -1110,6 +1115,47 @@ def fetch_prometheus_player_history(base_url, lookback="24h", timeout=5,
     return targets
 
 
+def fetch_recent_successful_player_ips(base_url, grace_seconds=300, timeout=5,
+                                       opener=urlrequest.urlopen):
+    """Return player IPs with at least one successful probe in the grace window.
+
+    Prometheus has the exact probe timeline, unlike the slower SNMP discovery
+    loop.  ``max_over_time`` therefore lets a rebooting PC remain a red target
+    for the requested window without keeping truly stale historical IPs.
+    """
+    grace_seconds = max(0, int(grace_seconds or 0))
+    if grace_seconds <= 0:
+        return set()
+    query = (
+        'max_over_time(probe_success{job="player-ping"}'
+        f'[{grace_seconds}s])'
+    )
+    url = f"{str(base_url).rstrip('/')}/api/v1/query?{urlparse.urlencode({'query': query})}"
+    try:
+        with opener(url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"[WARN] Prometheus player grace lookup failed: {exc}", file=sys.stderr)
+        return set()
+
+    recent = set()
+    for row in payload.get("data", {}).get("result", []):
+        value = row.get("value") or []
+        try:
+            successful = float(value[1]) >= 0.5
+        except (IndexError, TypeError, ValueError):
+            successful = False
+        if not successful:
+            continue
+        metric = row.get("metric") or {}
+        raw_ip = metric.get("target_ip") or metric.get("instance")
+        try:
+            recent.add(str(IPv4Address(str(raw_ip or "").strip())))
+        except ValueError:
+            continue
+    return recent
+
+
 def retain_last_known_wired_targets(current, historical, stage_index,
                                      require_link_up=True):
     """Fill currently-unmapped link-up seats with their last-known IPs.
@@ -1223,14 +1269,16 @@ def dedupe_player_targets(*priority_groups, dedupe_seats=True):
     return merged
 
 
-def filter_reachable_targets(targets, timeout=1, workers=64):
+def filter_reachable_targets(targets, timeout=1, workers=64,
+                             retain_unreachable_ips=None, grace_seconds=0):
     """Keep only candidates that answer the current ICMP verification.
 
     A seat can temporarily have both an old and a new IP because MAC and ARP
     caches age at different rates. Filtering before final seat de-duplication
     drops the stale address and lets the current live address take the seat.
     Historical mappings remain useful for quiet clients whose switch FDB entry
-    aged out, but they are never emitted unless the remembered IP still answers.
+    aged out. A recently successful address may remain emitted for a short
+    grace window so Prometheus can keep probing it while the PC reboots.
     """
     candidate_ips = sorted({t["targets"][0] for t in targets if t.get("targets")})
     if not candidate_ips:
@@ -1247,10 +1295,19 @@ def filter_reachable_targets(targets, timeout=1, workers=64):
             except Exception:
                 pass
 
-    reachable = [t for t in targets if t["targets"][0] in alive]
+    grace_ips = set(retain_unreachable_ips or [])
+    retained = [
+        t for t in targets
+        if t["targets"][0] not in alive and t["targets"][0] in grace_ips
+    ]
+    reachable = [
+        t for t in targets
+        if t["targets"][0] in alive or t["targets"][0] in grace_ips
+    ]
     unreachable_count = len(targets) - len(reachable)
     print(
         f"[INFO] active ping verify: {len(alive)}/{len(candidate_ips)} IPs alive, "
+        f"retained {len(retained)} offline target(s) in {int(grace_seconds or 0)}s red grace, "
         f"dropped {unreachable_count} unreachable/stale candidate(s)",
         file=sys.stderr,
     )
@@ -1327,6 +1384,9 @@ def main():
     wireless_scan_workers = env_int_alias("PLAYER_WIRELESS_SCAN_WORKERS", "PLAYER_WIRELESS_PREVIEW_WORKERS", 64, minimum=1, maximum=256)
     wireless_scan_max_hosts = env_int_alias("PLAYER_WIRELESS_SCAN_MAX_HOSTS", "PLAYER_WIRELESS_PREVIEW_MAX_HOSTS", 512, minimum=1, maximum=4096)
     wireless_scan_exclude = load_excluded_ips("PLAYER_WIRELESS_SCAN_EXCLUDE")
+    offline_grace_seconds = env_int(
+        "PLAYER_OFFLINE_GRACE_SECONDS", 300, minimum=0, maximum=3600
+    )
     if env_bool("PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS", default=True):
         wireless_scan_exclude.update(gateway_like_ips(wireless_nets))
     output_file = os.environ.get("PLAYER_TARGETS_FILE", "/etc/prometheus/player_targets.json")
@@ -1452,6 +1512,26 @@ def main():
 
             discovered_targets.extend(merged)
 
+    verify_ping = env_bool("PLAYER_VERIFY_PING", default=True)
+    recent_successful_ips = set()
+    grace_targets = []
+    if verify_ping and offline_grace_seconds > 0:
+        recent_successful_ips = fetch_recent_successful_player_ips(
+            os.environ.get("PROMETHEUS_URL", "http://prometheus:9090"),
+            offline_grace_seconds,
+        )
+        grace_targets = [
+            target for target in previous_targets
+            if target.get("targets")
+            and target["targets"][0] in recent_successful_ips
+        ]
+        if grace_targets:
+            print(
+                f"[INFO] carrying {len(grace_targets)} recently successful "
+                f"target(s) through the {offline_grace_seconds}s red grace",
+                file=sys.stderr,
+            )
+
     # Keep alternate IPs for the same seat until the active-ping pass filters
     # stale candidates. Otherwise an old high-priority mapping can suppress the
     # current live address after a player IP change.
@@ -1459,14 +1539,22 @@ def main():
         static_targets,
         discovered_targets,
         scan_targets,
+        grace_targets,
         dedupe_seats=False,
     )
-    dropped_duplicates = len(static_targets) + len(discovered_targets) + len(scan_targets) - len(all_targets)
+    dropped_duplicates = (
+        len(static_targets) + len(discovered_targets) + len(scan_targets)
+        + len(grace_targets) - len(all_targets)
+    )
     if dropped_duplicates:
         print(f"[INFO] removed {dropped_duplicates} duplicate player target(s) across sources", file=sys.stderr)
 
-    if env_bool("PLAYER_VERIFY_PING", default=True) and all_targets:
-        all_targets = filter_reachable_targets(all_targets)
+    if verify_ping and all_targets:
+        all_targets = filter_reachable_targets(
+            all_targets,
+            retain_unreachable_ips=recent_successful_ips,
+            grace_seconds=offline_grace_seconds,
+        )
 
     all_targets = dedupe_player_targets(all_targets)
 

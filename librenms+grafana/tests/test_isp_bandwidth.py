@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "alertmanager-feishu-bridge.py"
@@ -117,6 +119,31 @@ def test_isp_bandwidth_card_titles_distinguish_alert_and_recovery():
     recover = bridge.build_isp_bandwidth_card(event, recovered=True)
     assert alert["card"]["header"]["subtitle"]["content"] == "🔴 外网 ISP 带宽超限"
     assert recover["card"]["header"]["subtitle"]["content"] == "🟢 外网 ISP 带宽恢复"
+
+
+def test_isp_watcher_processes_first_nonempty_sample_without_stopping(monkeypatch):
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 2:
+            raise StopIteration
+
+    monkeypatch.setattr(bridge, "ISP_ALERT_ENABLED", True)
+    monkeypatch.setattr(bridge, "BIGSCREEN_ISP_MAX_BANDWIDTH", "*:100")
+    monkeypatch.setattr(bridge, "fetch_wan_rates", lambda: [{
+        "key": "telecom|in",
+        "label": "telecom",
+        "direction": "in",
+        "value_bps": 1_000_000,
+        "if_index": "1",
+    }])
+    monkeypatch.setattr(bridge.time, "sleep", fake_sleep)
+
+    with pytest.raises(StopIteration):
+        bridge.isp_bandwidth_watcher()
+
+    assert sleeps == [30, bridge.ISP_ALERT_POLL_INTERVAL]
 
 
 if __name__ == "__main__":
