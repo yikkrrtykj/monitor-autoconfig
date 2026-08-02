@@ -389,7 +389,7 @@
         return `<span>${value}</span>`;
       }).join("");
       return `
-        <div class="legend-row">
+        <div class="legend-row" title="${escapeHtml(item.name)}">
           <span class="legend-swatch" style="background:${color}"></span>
           <span class="legend-name">${escapeHtml(item.name)}</span>
           ${cells}
@@ -397,8 +397,11 @@
       `;
     }).join("");
     const headerCells = calcs.map((calc) => `<span>${escapeHtml(calcLabels[calc] || calc)}</span>`).join("");
-    const legendHeader = `<div class="legend-row legend-head"><span></span><span>名称</span>${headerCells}</div>`;
+    const legendHeader = options.legendNamesOnly
+      ? ""
+      : `<div class="legend-row legend-head"><span></span><span>名称</span>${headerCells}</div>`;
     const legendClass = options.legend === "bottom" ? "chart-legend bottom-legend" : "chart-legend side-legend";
+    const legendModeClass = options.legendNamesOnly ? "names-only-legend" : "";
     const densityClass = series.length > 12 ? "compact-series" : series.length > 8 ? "dense-series" : "";
 
     container.innerHTML = `
@@ -409,7 +412,7 @@
           ${paths}
           ${timeLabels}
         </svg>
-        <div class="${legendClass}">${legendHeader}${legend}</div>
+        <div class="${legendClass} ${legendModeClass}">${legendHeader}${legend}</div>
       </div>
     `;
   }
@@ -962,12 +965,16 @@
       });
       const activeLossSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap), "max"));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
+        const tournamentPingLegend = document.querySelector(".screen.tournament-mode")
+          ? { legend: "bottom", legendNamesOnly: true, calcs: [] }
+          : {};
         renderLineChart("pingTrendChart", activePingSeries, {
           axisFormatter: formatPingText,
           valueFormatter: formatPingText,
           // Keep all infrastructure devices in the original combined Ping
           // trend. A 5 ms floor avoids exaggerating sub-millisecond jitter.
-          minMax: 0.005
+          minMax: 0.005,
+          ...tournamentPingLegend
         });
       }
       if (shouldRender("lossHeatmap", seriesSignature(activeLossSeries))) {

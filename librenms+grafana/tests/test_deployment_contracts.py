@@ -159,8 +159,8 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert ".dhcp-toolbar .dhcp-actions" in css
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
-    assert "platform.css?v=20260802d" in html
-    assert "app.js?v=20260802f" in html
+    assert "platform.css?v=20260802e" in html
+    assert "app.js?v=20260802g" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -278,6 +278,10 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "renderInfraTrendCards" not in app
     assert ".infra-trend-grid" not in read("bigscreen/platform.css")
     assert "minMax: 0.005" in app
+    assert 'const tournamentPingLegend = document.querySelector(".screen.tournament-mode")' in app
+    assert '{ legend: "bottom", legendNamesOnly: true, calcs: [] }' in app
+    assert "...tournamentPingLegend" in app
+    assert ".screen.tournament-mode .trend-panel .bottom-legend.names-only-legend" in read("bigscreen/platform.css")
 
     # Seat-based evidence first resolves the current Prometheus target and
     # does not silently reuse a manual IP left over from an earlier route.
@@ -295,7 +299,7 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "pages.js?v=20260802a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260802f" in index
+    assert "app.js?v=20260802g" in index
     assert "utils.js?v=20260802d" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
@@ -319,7 +323,7 @@ def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():
     assert 'screen.className = `screen tournament-mode' in app
     assert '.screen.tournament-mode .isp-grid.isp-paged' in css
     assert "isp-carousel.js?v=20260731a" in index
-    assert "platform.css?v=20260802d" in index
+    assert "platform.css?v=20260802e" in index
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
