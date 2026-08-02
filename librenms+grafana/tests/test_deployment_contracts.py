@@ -163,7 +163,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260802e" in html
-    assert "app.js?v=20260802g" in html
+    assert "app.js?v=20260802h" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -278,6 +278,8 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "threshold: 0.05" in app
     assert "minConsecutive: 2" in app
     assert 'renderLineChart("pingTrendChart", activePingSeries' in app
+    assert "const pingGap = Math.max(5, estimateStepSeconds(activePingSeries) * 3)" in app
+    assert "breakGapSeconds: pingGap" in app
     assert "renderInfraTrendCards" not in app
     assert ".infra-trend-grid" not in read("bigscreen/platform.css")
     assert "minMax: 0.005" in app
@@ -302,7 +304,7 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "pages.js?v=20260802a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260802g" in index
+    assert "app.js?v=20260802h" in index
     assert "utils.js?v=20260802d" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
@@ -311,8 +313,12 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
     compose = read("docker-compose.yml")
+    example = read(".env.example")
     assert 'PLAYER_OFFLINE_GRACE_SECONDS: "${PLAYER_OFFLINE_GRACE_SECONDS:-300}"' in compose
     assert "PLAYER_VERIFY_PING PLAYER_OFFLINE_GRACE_SECONDS" in compose
+    assert 'PLAYER_TARGETS_REFRESH_INTERVAL: "${PLAYER_TARGETS_REFRESH_INTERVAL:-60}"' in compose
+    assert 'interval="$${PLAYER_TARGETS_REFRESH_INTERVAL:-60}"' in compose
+    assert "PLAYER_TARGETS_REFRESH_INTERVAL=60" in example
 
 
 def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():

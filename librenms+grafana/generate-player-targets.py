@@ -1421,6 +1421,22 @@ def filter_reachable_targets(targets, timeout=1, workers=64,
         f"dropped {unreachable_count} unreachable/stale candidate(s)",
         file=sys.stderr,
     )
+    if unreachable_count:
+        dropped = []
+        for target in targets:
+            ip = target["targets"][0]
+            if ip in alive or ip in grace_ips:
+                continue
+            labels = target.get("labels") or {}
+            dropped.append(
+                f"team {labels.get('team', '?')}-{labels.get('seat', '?')} "
+                f"{labels.get('network', '?')}={ip}"
+            )
+        print(
+            "[WARN] unreachable player candidate(s) dropped after red grace: "
+            + "; ".join(dropped),
+            file=sys.stderr,
+        )
     return reachable
 
 

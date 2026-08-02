@@ -619,13 +619,17 @@ class TestCrossSourceTargetDedup:
 
         assert merged == scan
 
-    def test_only_unreachable_candidate_is_dropped(self, monkeypatch):
+    def test_only_unreachable_candidate_is_dropped(self, monkeypatch, capsys):
         sole = [self._target(8, 2, "192.168.41.40", "snmp")]
         monkeypatch.setattr(gpt, "ping_host", lambda _ip, _timeout=1: False)
 
         preferred = gpt.filter_reachable_targets(sole, workers=1)
 
         assert preferred == []
+        assert (
+            "team 8-2 wireless=192.168.41.40"
+            in capsys.readouterr().err
+        )
 
     def test_recently_successful_unreachable_target_stays_red(self, monkeypatch):
         target = [self._target(8, 2, "192.168.41.40", "snmp")]

@@ -963,6 +963,10 @@
         preserveAbove: 0.05,
         radius: 2
       });
+      // Prometheus does not return placeholder samples while a target/series
+      // is temporarily absent. Never join the two real samples surrounding
+      // that hole: doing so draws a convincing but entirely synthetic ramp.
+      const pingGap = Math.max(5, estimateStepSeconds(activePingSeries) * 3);
       const activeLossSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap), "max"));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
         const tournamentPingLegend = document.querySelector(".screen.tournament-mode")
@@ -974,6 +978,7 @@
           // Keep all infrastructure devices in the original combined Ping
           // trend. A 5 ms floor avoids exaggerating sub-millisecond jitter.
           minMax: 0.005,
+          breakGapSeconds: pingGap,
           ...tournamentPingLegend
         });
       }

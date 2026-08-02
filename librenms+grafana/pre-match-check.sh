@@ -262,7 +262,7 @@ if [ "$player_total" = "0" ]; then
   echo "         - 交换机端口 description 未按 teamNN-MM 命名"
   echo "         - WIRELESS_SUBNETS 未配置，或无线扫描未发现在线 IP"
   echo "         - WiFi-only 比赛未配置 PLAYER_STATIC_TARGETS"
-  echo "         - generate-player-targets.py 还没跑完第一轮（默认每 ${PLAYER_TARGETS_REFRESH_INTERVAL:-300}s 一次）"
+  echo "         - generate-player-targets.py 还没跑完第一轮（默认每 ${PLAYER_TARGETS_REFRESH_INTERVAL:-60}s 一次）"
 else
   ok "已注册 $player_total 个选手 targets"
 
