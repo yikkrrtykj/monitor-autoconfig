@@ -27,6 +27,17 @@ Environment variables:
                          team X-Y descriptions (default: 2 seconds).
   PLAYER_SWITCH_PROBE_WORKERS
                          concurrent description probes (default: 32).
+  PLAYER_SWITCH_FULL_SCAN_INTERVAL
+                         seconds between full TOURNAMENT_SWITCHES description
+                         scans (default: 1800). Between full scans, only the
+                         previously confirmed stage switches are queried. A
+                         cached-switch failure triggers an immediate full scan.
+  PLAYER_SWITCH_CACHE_FILE
+                         confirmed stage-switch cache path (default:
+                         /targets/player_team_switches.json).
+  PLAYER_SWITCH_FORCE_FULL_SCAN
+                         true/false; force one full description scan. The
+                         container sets this for manual immediate rescans.
   PLAYER_REFRESH_FDB     true/false (default true). Ping player-subnet IPs
                          already present in gateway ARP before reading stage
                          FDB tables, so quiet but live clients are relearned.
@@ -74,6 +85,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from ipaddress import IPv4Address, IPv4Network
 from urllib import parse as urlparse, request as urlrequest
 
@@ -806,6 +818,104 @@ def discover_team_switches(switches, community, timeout=2, workers=32,
     return matched, aliases
 
 
+def load_team_switch_cache(path):
+    """Return ``(updated_at, switches)`` from a best-effort JSON cache."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        updated_at = float(data.get("updated_at", 0))
+        switches = [
+            str(ip) for ip in data.get("switches", [])
+            if isinstance(ip, str)
+        ]
+        return updated_at, list(dict.fromkeys(switches))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return 0.0, []
+
+
+def save_team_switch_cache(path, switches, updated_at=None):
+    """Atomically persist confirmed team switches for later fast scans."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp = path + ".tmp"
+    payload = {
+        "updated_at": float(time.time() if updated_at is None else updated_at),
+        "switches": list(dict.fromkeys(switches or [])),
+    }
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    os.replace(tmp, path)
+
+
+def discover_team_switches_cached(
+    switches,
+    community,
+    cache_file,
+    full_scan_interval=1800,
+    force_full_scan=False,
+    timeout=2,
+    workers=32,
+    probe_snmp=snmpwalk,
+    now=None,
+):
+    """Use confirmed switches between bounded full description scans.
+
+    A cached switch that stops answering or loses every team description makes
+    the function fall back to the complete candidate list immediately. This
+    keeps switch replacements/IP changes self-healing without walking the whole
+    management range every five minutes.
+    """
+    candidates = list(dict.fromkeys(switches or []))
+    if not candidates:
+        return [], {}
+
+    current_time = time.time() if now is None else float(now)
+    updated_at, cached = load_team_switch_cache(cache_file)
+    candidate_set = set(candidates)
+    cached = [ip for ip in cached if ip in candidate_set]
+    cache_fresh = (
+        cached
+        and current_time >= updated_at
+        and current_time - updated_at < max(0, full_scan_interval)
+    )
+
+    if cache_fresh and not force_full_scan:
+        print(
+            f"[INFO] team-description fast scan: probing {len(cached)} cached "
+            f"switch(es); full candidate scan in "
+            f"{int(full_scan_interval - (current_time - updated_at))}s",
+            file=sys.stderr,
+        )
+        matched, aliases = discover_team_switches(
+            cached,
+            community,
+            timeout=timeout,
+            workers=min(workers, len(cached)),
+            probe_snmp=probe_snmp,
+        )
+        if len(matched) == len(cached):
+            return matched, aliases
+        print(
+            "[WARN] cached team switch missing/unlabeled; falling back to full scan",
+            file=sys.stderr,
+        )
+    elif force_full_scan:
+        print("[INFO] team-description full scan forced", file=sys.stderr)
+    elif cached:
+        print("[INFO] team-description cache expired; running full scan", file=sys.stderr)
+
+    matched, aliases = discover_team_switches(
+        candidates,
+        community,
+        timeout=timeout,
+        workers=workers,
+        probe_snmp=probe_snmp,
+    )
+    if matched:
+        save_team_switch_cache(cache_file, matched, updated_at=current_time)
+    return matched, aliases
+
+
 def build_stage_mac_index(switches, community, vlan_ids=None,
                           prefetched_ifalias=None):
     """Return {sw_ip: {'ifalias': {ifIndex: {team, seat}},
@@ -1368,6 +1478,15 @@ def main():
     switch_probe_workers = env_int(
         "PLAYER_SWITCH_PROBE_WORKERS", 32, minimum=1, maximum=256
     )
+    switch_full_scan_interval = env_int(
+        "PLAYER_SWITCH_FULL_SCAN_INTERVAL", 1800, minimum=60, maximum=86400
+    )
+    switch_cache_file = os.environ.get(
+        "PLAYER_SWITCH_CACHE_FILE", "/targets/player_team_switches.json"
+    )
+    switch_force_full_scan = env_bool(
+        "PLAYER_SWITCH_FORCE_FULL_SCAN", default=False
+    )
     refresh_fdb = env_bool("PLAYER_REFRESH_FDB", default=True)
     refresh_fdb_timeout = env_int(
         "PLAYER_REFRESH_FDB_TIMEOUT", 1, minimum=1, maximum=5
@@ -1450,9 +1569,12 @@ def main():
                     file=sys.stderr,
                 )
 
-            switches, prefetched_ifalias = discover_team_switches(
+            switches, prefetched_ifalias = discover_team_switches_cached(
                 switches,
                 community,
+                switch_cache_file,
+                full_scan_interval=switch_full_scan_interval,
+                force_full_scan=switch_force_full_scan,
                 timeout=switch_probe_timeout,
                 workers=switch_probe_workers,
             )

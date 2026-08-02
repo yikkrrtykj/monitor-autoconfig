@@ -28,6 +28,8 @@ ISP_PING="${ISP_PING:-}"
 BIGSCREEN_ISP_IPS="${BIGSCREEN_ISP_IPS:-}"
 FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
+PLAYER_SUBNETS="${PLAYER_SUBNETS:-}"
+PLAYER_GATEWAYS="${PLAYER_GATEWAYS:-}"
 BIGSCREEN_ISP_MAX_BANDWIDTH="${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
 ISP_SATURATION_PERCENT="${ISP_SATURATION_PERCENT:-90}"
 FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
@@ -742,8 +744,8 @@ sync_device_snmp_api() {
   payload=$(DEVICE_COMMUNITY="$community" DEVICE_SNMPVER="$SNMP_VERSION" python3 -c '
 import json, os
 print(json.dumps({
-    "field": ["community", "snmpver", "port", "transport", "snmp_disable"],
-    "data": [os.environ["DEVICE_COMMUNITY"], os.environ["DEVICE_SNMPVER"], 161, "udp", 0],
+    "field": ["community", "snmpver", "port", "transport", "snmp_disable", "disabled"],
+    "data": [os.environ["DEVICE_COMMUNITY"], os.environ["DEVICE_SNMPVER"], 161, "udp", 0, 0],
 }, ensure_ascii=False))
 ')
   result=$(curl -s -X PATCH "$LIBRENMS_URL/api/v0/devices/$ip" \
@@ -809,6 +811,7 @@ print(json.dumps({
     "os": "ping",
     "sysName": name,
     "hardware": "ICMP",
+    "disabled": False,
 }, ensure_ascii=False))
 '
 }
@@ -821,8 +824,8 @@ import json, os
 
 name = os.environ.get("DEVICE_NAME") or os.environ["DEVICE_IP"]
 print(json.dumps({
-    "field": ["snmp_disable", "os", "sysName", "hardware", "display"],
-    "data": [1, "ping", name, "ICMP", name],
+    "field": ["snmp_disable", "os", "sysName", "hardware", "display", "disabled"],
+    "data": [1, "ping", name, "ICMP", name, 0],
 }, ensure_ascii=False))
 ')
   result=$(curl -s -X PATCH "$LIBRENMS_URL/api/v0/devices/$ip" \
@@ -864,6 +867,103 @@ add_ping_device_api() {
   fi
   echo "  ${name:-$ip} ($ip): ${msg:-add/update failed}"
   return 1
+}
+
+disable_librenms_device_api() {
+  ip=$1
+  payload='{"field":["disabled"],"data":[1]}'
+  result=$(curl -s -X PATCH "$LIBRENMS_URL/api/v0/devices/$ip" \
+    -H "X-Auth-Token: $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$payload" 2>/dev/null)
+  status=$(printf '%s' "$result" | api_result_field status)
+  [ "$status" = "ok" ]
+}
+
+retire_unmanaged_player_devices() {
+  [ -n "$API_TOKEN" ] || return 0
+  [ -n "$PLAYER_SUBNETS" ] || return 0
+
+  devices=$(curl -s -H "X-Auth-Token: $API_TOKEN" \
+    "$LIBRENMS_URL/api/v0/devices" 2>/dev/null || true)
+  [ -n "$devices" ] || return 0
+
+  # Player endpoints are monitored through the description-derived Prometheus
+  # targets, not LibreNMS SNMP. Older configurations could leave a former
+  # SERVER_PING/player address behind as a normal SNMP device; Dispatcher then
+  # retries it forever. Disable only IPs inside PLAYER_SUBNETS that are no
+  # longer any explicitly configured infrastructure target. This preserves
+  # device/RRD history and explicit targets are re-enabled by the sync helpers.
+  keep_targets="${DISCOVERY_TARGETS},${CORE_SWITCH_PING},${DIST_SWITCH_PING:-},${TOURNAMENT_SWITCHES:-},${ISP_PING},${BIGSCREEN_ISP_IPS},${FIREWALL_PING},${FIREWALL_SNMP_TARGETS},${FIREWALL_UNIT_SNMP_TARGETS:-},${SERVER_PING},${PLAYER_GATEWAYS}"
+  retired=$(printf '%s' "$devices" | \
+    PLAYER_SUBNETS="$PLAYER_SUBNETS" KEEP_TARGETS="$keep_targets" python3 -c '
+import ipaddress, json, os, sys
+
+def target_matcher(raw):
+    addresses = set()
+    networks = []
+    ranges = []
+    for token in (raw or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "=" in token:
+            token = token.split("=", 1)[1]
+        if ":" in token:
+            token = token.rsplit(":", 1)[1]
+        try:
+            if "/" in token:
+                networks.append(ipaddress.ip_network(token, strict=False))
+            elif "-" in token:
+                start_raw, end_raw = token.split("-", 1)
+                start = ipaddress.ip_address(start_raw.strip())
+                if "." not in end_raw:
+                    end_raw = f"{str(start).rsplit('.', 1)[0]}.{end_raw.strip()}"
+                end = ipaddress.ip_address(end_raw.strip())
+                ranges.append((int(start), int(end)))
+            else:
+                addresses.add(str(ipaddress.ip_address(token)))
+        except ValueError:
+            continue
+    return lambda ip: (
+        str(ip) in addresses
+        or any(ip in network for network in networks)
+        or any(start <= int(ip) <= end for start, end in ranges)
+    )
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+
+nets = []
+for token in os.environ.get("PLAYER_SUBNETS", "").split(","):
+    try:
+        nets.append(ipaddress.ip_network(token.strip(), strict=False))
+    except ValueError:
+        pass
+is_kept = target_matcher(os.environ.get("KEEP_TARGETS", ""))
+for device in payload.get("devices", []):
+    hostname = str(device.get("hostname") or "").strip()
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        continue
+    if any(ip in net for net in nets) and not is_kept(ip) and not int(device.get("disabled") or 0):
+        print(hostname)
+')
+
+  [ -n "$retired" ] || return 0
+  echo ""
+  echo "  Retiring stale player-subnet devices from LibreNMS polling..."
+  printf '%s\n' "$retired" | while IFS= read -r ip; do
+    [ -n "$ip" ] || continue
+    if disable_librenms_device_api "$ip"; then
+      echo "  $ip: disabled (player endpoint; Prometheus player monitoring remains active)"
+    else
+      echo "  WARNING: failed to disable stale player endpoint $ip" >&2
+    fi
+  done
 }
 
 firewall_snmp_targets() {
@@ -2038,6 +2138,8 @@ for combined in $(echo "${ISP_PING}${ISP_PING:+,}${BIGSCREEN_ISP_IPS}${BIGSCREEN
     [ -n "$ip" ] && add_ping_device_api "$name" "$ip"
   ;; esac
 done
+
+retire_unmanaged_player_devices
 
 # --- 防火墙 SNMP 设备 → LibreNMS ---
 # HA 场景（FIREWALL_UNIT_SNMP_TARGETS 已设）：用物理 IP 做 SNMP（能看到每台硬件详情）。

@@ -37,6 +37,9 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     assert 'PROMETHEUS_URL: "http://prometheus:9090"' in compose
     assert 'PLAYER_TARGET_HISTORY_LOOKBACK: "${PLAYER_TARGET_HISTORY_LOOKBACK:-24h}"' in compose
     assert "PLAYER_TARGET_HISTORY_LOOKBACK=24h" in example
+    assert 'PLAYER_SWITCH_FULL_SCAN_INTERVAL: "${PLAYER_SWITCH_FULL_SCAN_INTERVAL:-1800}"' in compose
+    assert "PLAYER_SWITCH_FULL_SCAN_INTERVAL=1800" in example
+    assert 'export PLAYER_SWITCH_FORCE_FULL_SCAN=true' in compose
 
 
 def test_sysname_changes_are_confirmed_before_notification():
@@ -336,8 +339,8 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert "./target_utils.py:/target_utils.py:ro" in topology
     assert 'TOPOLOGY_SNMP_TIMEOUT: "${TOPOLOGY_SNMP_TIMEOUT:-2}"' in topology
     assert 'TOPOLOGY_SNMP_RETRIES: "${TOPOLOGY_SNMP_RETRIES:-0}"' in topology
-    assert 'TOPOLOGY_POLL_WORKERS: "${TOPOLOGY_POLL_WORKERS:-4}"' in topology
-    assert 'TOPOLOGY_SNMP_DELAY_MS: "${TOPOLOGY_SNMP_DELAY_MS:-100}"' in topology
+    assert 'TOPOLOGY_POLL_WORKERS: "${TOPOLOGY_POLL_WORKERS:-2}"' in topology
+    assert 'TOPOLOGY_SNMP_DELAY_MS: "${TOPOLOGY_SNMP_DELAY_MS:-250}"' in topology
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
@@ -353,7 +356,7 @@ def test_existing_librenms_devices_receive_current_snmp_credentials():
     assert '"snmpver": os.environ["DEVICE_SNMPVER"]' in auto_config
     assert "sync_device_snmp_api" in auto_config
     assert 'curl -s -X PATCH "$LIBRENMS_URL/api/v0/devices/$ip"' in auto_config
-    assert '"field": ["community", "snmpver", "port", "transport", "snmp_disable"]' in auto_config
+    assert '"field": ["community", "snmpver", "port", "transport", "snmp_disable", "disabled"]' in auto_config
 
 
 def test_existing_ping_only_targets_are_migrated_away_from_snmp():
@@ -363,10 +366,22 @@ def test_existing_ping_only_targets_are_migrated_away_from_snmp():
     assert '"snmp_disable": True' in auto_config
     assert '"display_template": name' in auto_config
     assert "sync_ping_device_api" in auto_config
-    assert '"field": ["snmp_disable", "os", "sysName", "hardware", "display"]' in auto_config
-    assert '"data": [1, "ping", name, "ICMP", name]' in auto_config
+    assert '"field": ["snmp_disable", "os", "sysName", "hardware", "display", "disabled"]' in auto_config
+    assert '"data": [1, "ping", name, "ICMP", name, 0]' in auto_config
     assert 'if sync_ping_device_api "$name" "$ip"; then' in auto_config
     assert "existing device converted to ping-only" in auto_config
+
+
+def test_stale_player_subnet_devices_are_retired_from_librenms_polling():
+    compose = read("docker-compose.yml")
+    auto_config = read("librenms-auto-config.sh")
+    config_service = compose.split("  librenms-config:", 1)[1].split("  grafana:", 1)[0]
+
+    assert 'PLAYER_SUBNETS: "${PLAYER_SUBNETS:-}"' in config_service
+    assert 'PLAYER_GATEWAYS: "${PLAYER_GATEWAYS:-}"' in config_service
+    assert "retire_unmanaged_player_devices" in auto_config
+    assert "disable_librenms_device_api" in auto_config
+    assert '{"field":["disabled"],"data":[1]}' in auto_config
 
 
 def test_librenms_discovery_icmp_gates_snmp_checks():

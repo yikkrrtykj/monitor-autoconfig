@@ -702,6 +702,86 @@ class TestTeamSwitchPrefilter:
         }
         assert all(call[2:] == (gpt.IF_ALIAS_OID, 2) for call in calls)
 
+    @staticmethod
+    def _probe(calls, missing=None):
+        def fake_probe(host, community, oid, timeout=15):
+            calls.append(host)
+            if host == missing:
+                return ""
+            if host in {"192.168.10.45", "192.168.10.46"}:
+                seat = 1 if host.endswith("45") else 2
+                return (
+                    f".1.3.6.1.2.1.31.1.1.1.18.{seat} = "
+                    f"STRING: team01-0{seat}"
+                )
+            return ".1.3.6.1.2.1.31.1.1.1.18.1 = STRING: uplink"
+        return fake_probe
+
+    def test_fresh_cache_only_probes_confirmed_switches(self, tmp_path):
+        cache = tmp_path / "team-switches.json"
+        gpt.save_team_switch_cache(
+            str(cache), ["192.168.10.45", "192.168.10.46"], updated_at=100
+        )
+        calls = []
+
+        switches, _aliases = gpt.discover_team_switches_cached(
+            ["192.168.10.44", "192.168.10.45", "192.168.10.46"],
+            "global",
+            str(cache),
+            full_scan_interval=1800,
+            now=200,
+            workers=3,
+            probe_snmp=self._probe(calls),
+        )
+
+        assert switches == ["192.168.10.45", "192.168.10.46"]
+        assert sorted(calls) == ["192.168.10.45", "192.168.10.46"]
+
+    def test_cached_switch_failure_falls_back_to_full_scan(self, tmp_path):
+        cache = tmp_path / "team-switches.json"
+        gpt.save_team_switch_cache(
+            str(cache), ["192.168.10.45"], updated_at=100
+        )
+        calls = []
+
+        switches, _aliases = gpt.discover_team_switches_cached(
+            ["192.168.10.44", "192.168.10.45", "192.168.10.46"],
+            "global",
+            str(cache),
+            full_scan_interval=1800,
+            now=200,
+            workers=3,
+            probe_snmp=self._probe(calls, missing="192.168.10.45"),
+        )
+
+        assert switches == ["192.168.10.46"]
+        assert calls.count("192.168.10.45") == 2
+        assert "192.168.10.44" in calls
+        assert "192.168.10.46" in calls
+
+    def test_forced_rescan_ignores_fresh_cache(self, tmp_path):
+        cache = tmp_path / "team-switches.json"
+        gpt.save_team_switch_cache(
+            str(cache), ["192.168.10.45"], updated_at=100
+        )
+        calls = []
+
+        switches, _aliases = gpt.discover_team_switches_cached(
+            ["192.168.10.44", "192.168.10.45", "192.168.10.46"],
+            "global",
+            str(cache),
+            full_scan_interval=1800,
+            force_full_scan=True,
+            now=200,
+            workers=3,
+            probe_snmp=self._probe(calls),
+        )
+
+        assert switches == ["192.168.10.45", "192.168.10.46"]
+        assert sorted(calls) == [
+            "192.168.10.44", "192.168.10.45", "192.168.10.46"
+        ]
+
 
 class TestRefreshPlayerFdb:
     def test_only_known_wired_arp_hosts_are_probed(self):

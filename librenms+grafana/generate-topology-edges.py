@@ -15,8 +15,8 @@ Env vars:
   TOPOLOGY_SNMP_COMMUNITY    SNMPv2c community (default: SNMP_COMMUNITY).
   TOPOLOGY_SNMP_TIMEOUT      per-request timeout seconds (default: 2).
   TOPOLOGY_SNMP_RETRIES      retries per request (default: 0).
-  TOPOLOGY_POLL_WORKERS      devices polled concurrently (default: 4).
-  TOPOLOGY_SNMP_DELAY_MS     pause after each SNMP request (default: 100).
+  TOPOLOGY_POLL_WORKERS      devices polled concurrently (default: 2).
+  TOPOLOGY_SNMP_DELAY_MS     pause after each SNMP request (default: 250).
   TOPOLOGY_EDGE_RETENTION_SECONDS  keep last confirmed missing/down links in
                              edges.json (default: 86400 / 24 hours).
   TOPOLOGY_OUTPUT_DIR        where to write edges.json / legacy empty files
@@ -67,18 +67,18 @@ def _snmp_limits(timeout=None, retries=None):
 
 def _snmp_request_delay():
     try:
-        delay_ms = float(os.environ.get("TOPOLOGY_SNMP_DELAY_MS", "100") or "100")
+        delay_ms = float(os.environ.get("TOPOLOGY_SNMP_DELAY_MS", "250") or "250")
     except ValueError:
-        delay_ms = 100
+        delay_ms = 250
     if delay_ms > 0:
         time.sleep(min(delay_ms, 2000) / 1000)
 
 
 def _topology_poll_workers():
     try:
-        workers = int(os.environ.get("TOPOLOGY_POLL_WORKERS", "4") or "4")
+        workers = int(os.environ.get("TOPOLOGY_POLL_WORKERS", "2") or "2")
     except ValueError:
-        workers = 4
+        workers = 2
     return max(1, min(workers, 32))
 
 
