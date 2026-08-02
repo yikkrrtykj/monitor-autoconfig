@@ -67,7 +67,7 @@
 ## F. 每次合并前固定检查
 
 - [x] **F-01 差异卫生**：`git diff --check` 无空白错误或冲突标记。
-- [ ] **F-02 全量自动检查**：本机 Python 440 项、前端 11 组、Python/脚本语法和 Grafana JSON 已通过；本机没有 Docker/ShellCheck，待分支 CI 补完 Compose 与 ShellCheck 后关闭。
+- [x] **F-02 全量自动检查**：本机 Python 440 项、前端 11 组、Python/脚本语法和 Grafana JSON 已通过；PR #12 的 CI #452 也已通过 Compose、ShellCheck、Python 3.11/3.13 与 Linux 静态冒烟。
 - [x] **F-03 重复应用**：重复配置合并与生成测试通过，不产生重复注释块、服务、目标或配置漂移。
 - [x] **F-04 私密信息**：不提交 `.env`、密码、Webhook、运行状态卷或现场私密地址清单。
 - [x] **F-05 交付说明**：提交说明包含用户可见变化、部署步骤、回滚办法和仍需现场验证的编号。
