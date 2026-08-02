@@ -34,9 +34,9 @@ Environment variables:
                          timeout for each FDB-refresh ping (default: 1 second).
   PLAYER_REFRESH_FDB_WORKERS
                          concurrent FDB-refresh pings (default: 64).
-  PLAYER_VERIFY_PING     true/false (default true). Prefer a reachable address
-                         when one seat has multiple candidates, but retain the
-                         seat's sole address so Prometheus can report it down.
+  PLAYER_VERIFY_PING     true/false (default true). Emit only addresses that
+                         answer the generator's current ping check. This drops
+                         stale historical IPs and follows player IP changes.
   PLAYER_TARGET_HISTORY_LOOKBACK
                          Prometheus lookback used to recover last-known seat/IP
                          mappings after the target file was emptied (default: 24h).
@@ -1223,14 +1223,14 @@ def dedupe_player_targets(*priority_groups, dedupe_seats=True):
     return merged
 
 
-def prefer_reachable_targets(targets, timeout=1, workers=64):
-    """Order reachable candidates first without erasing an occupied seat.
+def filter_reachable_targets(targets, timeout=1, workers=64):
+    """Keep only candidates that answer the current ICMP verification.
 
     A seat can temporarily have both an old and a new IP because MAC and ARP
-    caches age at different rates. Putting live candidates first lets the final
-    seat de-duplication choose the current address. When the only candidate does
-    not answer ICMP, it is deliberately retained: blackbox-exporter is the
-    monitoring authority and must be allowed to expose that seat as offline.
+    caches age at different rates. Filtering before final seat de-duplication
+    drops the stale address and lets the current live address take the seat.
+    Historical mappings remain useful for quiet clients whose switch FDB entry
+    aged out, but they are never emitted unless the remembered IP still answers.
     """
     candidate_ips = sorted({t["targets"][0] for t in targets if t.get("targets")})
     if not candidate_ips:
@@ -1248,13 +1248,13 @@ def prefer_reachable_targets(targets, timeout=1, workers=64):
                 pass
 
     reachable = [t for t in targets if t["targets"][0] in alive]
-    unreachable = [t for t in targets if t["targets"][0] not in alive]
+    unreachable_count = len(targets) - len(reachable)
     print(
         f"[INFO] active ping verify: {len(alive)}/{len(candidate_ips)} IPs alive, "
-        f"retained {len(unreachable)} unreachable candidate(s) for offline visibility",
+        f"dropped {unreachable_count} unreachable/stale candidate(s)",
         file=sys.stderr,
     )
-    return reachable + unreachable
+    return reachable
 
 
 def atomic_write_json(path, data):
@@ -1452,9 +1452,9 @@ def main():
 
             discovered_targets.extend(merged)
 
-    # Keep alternate IPs for the same seat until the active-ping pass chooses
-    # live candidates. Otherwise a stale high-priority mapping can suppress a
-    # lower-priority live address and leave the seat with no target at all.
+    # Keep alternate IPs for the same seat until the active-ping pass filters
+    # stale candidates. Otherwise an old high-priority mapping can suppress the
+    # current live address after a player IP change.
     all_targets = dedupe_player_targets(
         static_targets,
         discovered_targets,
@@ -1466,7 +1466,7 @@ def main():
         print(f"[INFO] removed {dropped_duplicates} duplicate player target(s) across sources", file=sys.stderr)
 
     if env_bool("PLAYER_VERIFY_PING", default=True) and all_targets:
-        all_targets = prefer_reachable_targets(all_targets)
+        all_targets = filter_reachable_targets(all_targets)
 
     all_targets = dedupe_player_targets(all_targets)
 

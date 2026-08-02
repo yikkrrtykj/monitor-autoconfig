@@ -614,18 +614,34 @@ class TestCrossSourceTargetDedup:
         candidates = gpt.dedupe_player_targets(static, [], scan, dedupe_seats=False)
         monkeypatch.setattr(gpt, "ping_host", lambda ip, _timeout=1: ip.endswith(".31"))
 
-        preferred = gpt.prefer_reachable_targets(candidates, workers=1)
+        preferred = gpt.filter_reachable_targets(candidates, workers=1)
         merged = gpt.dedupe_player_targets(preferred)
 
         assert merged == scan
 
-    def test_only_unreachable_candidate_is_retained_for_offline_visibility(self, monkeypatch):
+    def test_only_unreachable_candidate_is_dropped(self, monkeypatch):
         sole = [self._target(8, 2, "192.168.41.40", "snmp")]
         monkeypatch.setattr(gpt, "ping_host", lambda _ip, _timeout=1: False)
 
-        preferred = gpt.prefer_reachable_targets(sole, workers=1)
+        preferred = gpt.filter_reachable_targets(sole, workers=1)
 
-        assert gpt.dedupe_player_targets(preferred) == sole
+        assert preferred == []
+
+    def test_player_ip_change_replaces_unreachable_history(self, monkeypatch):
+        old = [self._target(6, 1, "192.168.42.43", "last-known", "wired")]
+        current = [self._target(6, 1, "192.168.42.143", "192.168.10.45", "wired")]
+        candidates = gpt.dedupe_player_targets(
+            current, old, dedupe_seats=False
+        )
+        monkeypatch.setattr(
+            gpt,
+            "ping_host",
+            lambda ip, _timeout=1: ip == "192.168.42.143",
+        )
+
+        reachable = gpt.filter_reachable_targets(candidates, workers=1)
+
+        assert gpt.dedupe_player_targets(reachable) == current
 
     def test_same_seat_on_different_networks_is_preserved(self):
         wired = [self._target(2, 1, "192.168.40.30", "snmp", "wired")]
