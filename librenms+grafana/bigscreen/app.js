@@ -71,6 +71,7 @@
   let gaugeSeq = 0;
   let chartSeq = 0;
   let tournamentSeq = 0;
+  let evidenceSeq = 0;
   let topologySeq = 0;
   let stageDeviceRegexCache = null;
   let ispTrafficResults = [];
@@ -444,6 +445,39 @@
       </svg>
       <div class="sparkline-legend">${legend}</div>
     `;
+  }
+
+  function renderInfraTrendCards(seriesList) {
+    const container = document.getElementById("pingTrendChart");
+    const series = seriesList
+      .filter((item) => item.values.length)
+      .slice()
+      .sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "zh-CN", { numeric: true }))
+      .map((item, index) => ({
+        ...item,
+        color: item.color || seriesColors[index % seriesColors.length]
+      }));
+    if (!series.length) {
+      renderNoData(container);
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="infra-trend-grid">
+        ${series.map((item, index) => {
+          const latest = item.values[item.values.length - 1];
+          return `
+            <section class="team-trend-card infra-trend-card" title="${escapeHtml(item.name)}">
+              <header><h3>${escapeHtml(item.name)}</h3><span>${escapeHtml(latest ? formatPingText(latest.v) : "-")}</span></header>
+              <div class="team-trend-chart infra-trend-chart" id="infraTrend${index}"></div>
+            </section>
+          `;
+        }).join("")}
+      </div>
+    `;
+    series.forEach((item, index) => {
+      renderSparkline(`infraTrend${index}`, [{ ...item, name: "" }]);
+    });
   }
 
   function renderHeatmap(containerId, seriesList) {
@@ -939,27 +973,20 @@
       const nameMap = await fetchInfraDeviceNames();
       if (seq !== chartSeq) return;
       const rawActivePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
-      const tournamentMode = Boolean(document.querySelector(".screen.tournament-mode"));
-      const activePingSeries = tournamentMode
-        ? smoothLatencyJitter(suppressIsolatedLatencySpikes(rawActivePingSeries, {
-          threshold: 0.05,
-          minConsecutive: 2,
-          maxGapSeconds: 3
-        }), {
-          preserveAbove: 0.05,
-          radius: 2
-        })
-        : rawActivePingSeries;
+      // Use the same operator-facing noise treatment in both overview and
+      // tournament pages: isolated single-sample spikes are suppressed, while
+      // real high latency lasting for at least two probes remains visible.
+      const activePingSeries = smoothLatencyJitter(suppressIsolatedLatencySpikes(rawActivePingSeries, {
+        threshold: 0.05,
+        minConsecutive: 2,
+        maxGapSeconds: 3
+      }), {
+        preserveAbove: 0.05,
+        radius: 2
+      });
       const activeLossSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap), "max"));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
-        renderLineChart("pingTrendChart", activePingSeries, {
-          axisFormatter: formatPingText,
-          valueFormatter: formatPingText,
-          // Use the same data-driven scale as the infrastructure overview.
-          // A small 5 ms floor avoids over-amplifying sub-millisecond noise,
-          // while the visible maximum still determines the chart ceiling.
-          minMax: 0.005
-        });
+        renderInfraTrendCards(activePingSeries);
       }
       if (shouldRender("lossHeatmap", seriesSignature(activeLossSeries))) {
         renderHeatmap("lossHeatmap", activeLossSeries);
@@ -1222,20 +1249,44 @@
     return `role="player",team="${escapeLabel(team)}",seat="${escapeLabel(seat)}",${networkFilter}`;
   }
 
-  function evidenceLatencyQuery(team, seat, network, ip) {
-    if (ip) {
-      const ipStr = escapeLabel(ip);
-      return `probe_icmp_duration_seconds{instance="${ipStr}",phase="rtt"} or probe_icmp_duration_seconds{target_ip="${ipStr}",phase="rtt"}`;
+  function evidenceIpMatchers(ips) {
+    const values = (Array.isArray(ips) ? ips : [ips])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    if (!values.length) return null;
+    if (values.length === 1) {
+      const ip = escapeLabel(values[0]);
+      return [`instance="${ip}"`, `target_ip="${ip}"`];
+    }
+    const regex = escapeLabel(`^(?:${values.map(escapeRegex).join("|")})$`);
+    return [`instance=~"${regex}"`, `target_ip=~"${regex}"`];
+  }
+
+  function evidenceLatencyQuery(team, seat, network, ips) {
+    const matchers = evidenceIpMatchers(ips);
+    if (matchers) {
+      return matchers.map((matcher) => `probe_icmp_duration_seconds{${matcher},phase="rtt"}`).join(" or ");
     }
     return `probe_icmp_duration_seconds{${evidencePlayerSelector(team, seat, network)},phase="rtt"}`;
   }
 
-  function evidenceSuccessQuery(team, seat, network, ip) {
-    if (ip) {
-      const ipStr = escapeLabel(ip);
-      return `probe_success{instance="${ipStr}"} or probe_success{target_ip="${ipStr}"}`;
+  function evidenceSuccessQuery(team, seat, network, ips) {
+    const matchers = evidenceIpMatchers(ips);
+    if (matchers) {
+      return matchers.map((matcher) => `probe_success{${matcher}}`).join(" or ");
     }
     return `probe_success{${evidencePlayerSelector(team, seat, network)}}`;
+  }
+
+  async function resolveEvidenceCurrentIps(team, seat, network) {
+    // An instant selector excludes Prometheus series made stale when the seat
+    // moved to a new address. A look-back window here would briefly return
+    // both the previous and current IP after target regeneration.
+    const items = await prometheusInstant(`probe_success{${evidencePlayerSelector(team, seat, network)}}`);
+    return [...new Set(items
+      .map((item) => String(item.metric.target_ip || item.metric.instance || "").trim())
+      .filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right, "zh-CN", { numeric: true }));
   }
 
   function evidenceSeriesName(metric) {
@@ -1337,36 +1388,48 @@
   }
 
   async function queryEvidence() {
+    const seq = ++evidenceSeq;
     const team = document.getElementById("evidenceTeam").value || "1";
     const seat = document.getElementById("evidenceSeat").value || "1";
     const network = document.getElementById("evidenceNetwork").value || "wired";
     const range = document.getElementById("evidenceWindow").value || "5";
     const at = document.getElementById("evidenceAt").value || "";
-    const ip = (document.getElementById("evidenceIp").value || "").trim();
+    const requestedIp = (document.getElementById("evidenceIp").value || "").trim();
     const queryWindow = evidenceWindow();
-    const latencyQuery = evidenceLatencyQuery(team, seat, network, ip);
-    const successQuery = evidenceSuccessQuery(team, seat, network, ip);
-    const label = ip
-      ? `${ip} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`
-      : `${playerLabel(team, seat, network)} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`;
     const params = new URLSearchParams({ team, seat, network, range });
     if (at) params.set("at", at);
-    if (ip) params.set("ip", ip);
+    if (requestedIp) params.set("ip", requestedIp);
     window.history.replaceState({}, "", `/latency?${params.toString()}`);
 
     renderNoData(document.getElementById("evidenceLatencyChart"), "加载中");
     renderNoData(document.getElementById("evidenceSuccessChart"), "加载中");
 
     try {
+      const currentIps = requestedIp ? [requestedIp] : await resolveEvidenceCurrentIps(team, seat, network);
+      if (seq !== evidenceSeq || activePageId !== "evidence") return;
+      if (!currentIps.length) {
+        lastEvidenceExport = null;
+        renderNoData(document.getElementById("evidenceSummary"), `${playerLabel(team, seat, network)} 当前没有可查询的 IP`);
+        renderNoData(document.getElementById("evidenceLatencyChart"), "当前座位未生成监控目标");
+        renderNoData(document.getElementById("evidenceSuccessChart"), "当前座位未生成监控目标");
+        return;
+      }
+      const latencyQuery = evidenceLatencyQuery(team, seat, network, currentIps);
+      const successQuery = evidenceSuccessQuery(team, seat, network, currentIps);
+      const ipLabel = currentIps.join("、");
+      const label = requestedIp
+        ? `${ipLabel} · 指定 IP · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`
+        : `${playerLabel(team, seat, network)} · 当前 IP ${ipLabel} · ${formatTime(queryWindow.start)}-${formatTime(queryWindow.end)}`;
       const [latencySeries, successSeries] = await Promise.all([
         prometheusRangeFor(latencyQuery, queryWindow, evidenceSeriesName),
         prometheusRangeFor(successQuery, queryWindow, evidenceSeriesName)
       ]);
+      if (seq !== evidenceSeq || activePageId !== "evidence") return;
       lastEvidenceExport = {
         latencySeries,
         successSeries,
         queryWindow,
-        slug: ip || `T${team}S${seat}`
+        slug: requestedIp || `T${team}S${seat}`
       };
       renderEvidenceSummary({ label }, latencySeries, successSeries);
       renderLineChart("evidenceLatencyChart", latencySeries, {
@@ -1386,6 +1449,7 @@
         legend: "bottom"
       });
     } catch (error) {
+      if (seq !== evidenceSeq || activePageId !== "evidence") return;
       renderNoData(document.getElementById("evidenceSummary"), "查询失败");
       renderNoData(document.getElementById("evidenceLatencyChart"));
       renderNoData(document.getElementById("evidenceSuccessChart"));
@@ -1407,7 +1471,7 @@
     if (seat) document.getElementById("evidenceSeat").value = seat;
     if (["wired", "wireless", "all"].includes(network)) document.getElementById("evidenceNetwork").value = network;
     if (range) document.getElementById("evidenceWindow").value = range;
-    if (ip) document.getElementById("evidenceIp").value = ip;
+    document.getElementById("evidenceIp").value = ip || "";
     if (atInput && at) {
       atInput.value = at;
     } else if (atInput && !atInput.value) {
@@ -1420,7 +1484,12 @@
       });
       // Re-run as soon as a control changes (range/time/network dropdowns, team/seat)
       // so picking a range applies immediately -- no need to focus IP and press Enter.
-      form.addEventListener("change", () => queryEvidence());
+      form.addEventListener("change", (event) => {
+        if (["evidenceTeam", "evidenceSeat", "evidenceNetwork"].includes(event.target && event.target.id)) {
+          document.getElementById("evidenceIp").value = "";
+        }
+        queryEvidence();
+      });
       form.dataset.bound = "1";
     }
     const exportBtn = document.getElementById("evidenceExport");

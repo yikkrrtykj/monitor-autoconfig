@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20260731a" />
-    <link rel="stylesheet" href="./platform.css?v=20260802b" />
+    <link rel="stylesheet" href="./platform.css?v=20260802c" />
   </head>
   <body>
     <main class="screen">
@@ -77,7 +77,7 @@
               <option value="all">全部</option>
             </select>
           </label>
-          <label>IP（填了优先按 IP 查，可查选手或基础设施任意设备） <input id="evidenceIp" type="text" /></label>
+          <label>IP（留空自动查询当前座位 IP；填写后按指定 IP 查询） <input id="evidenceIp" type="text" /></label>
           <label>查询时间 <input id="evidenceAt" type="datetime-local" /></label>
           <label title="以“查询时间”为中心的总时间窗">查询范围
             <select id="evidenceWindow">
@@ -220,8 +220,8 @@
           </div>
           <span class="dhcp-actions">
             <span id="dhcpBindingsStatus">进入页面后自动查询租约与 ARP</span>
-            <button type="button" id="dhcpBindings" title="重新读取 DHCP 租约与 ARP 表，标出固定排除地址是否已被发现">重新查询地址使用</button>
-            <button type="button" id="dhcpRefresh" title="立即从核心交换机刷新">立即刷新</button>
+            <button type="button" id="dhcpBindings" title="读取 DHCP 租约明细和 ARP 表，为每个地址格标记当前使用情况">刷新租约 / ARP</button>
+            <button type="button" id="dhcpRefresh" title="刷新地址池容量、已租数量、剩余、排除和冲突统计">刷新地址池统计</button>
           </span>
         </div>
         <div class="dhcp-status" id="dhcpStatus">打开页面后自动读取，离开页面即停止刷新。</div>
@@ -309,6 +309,6 @@
     <script src="./incident.js?v=20260623a"></script>
     <script src="./topology.js?v=20260729b"></script>
     <script src="./platform.js?v=20260627a"></script>
-    <script src="./app.js?v=20260802b"></script>
+    <script src="./app.js?v=20260802c"></script>
   </body>
 </html>

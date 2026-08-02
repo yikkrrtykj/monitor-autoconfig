@@ -159,8 +159,8 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert ".dhcp-toolbar .dhcp-actions" in css
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
-    assert "platform.css?v=20260802b" in html
-    assert "app.js?v=20260802b" in html
+    assert "platform.css?v=20260802c" in html
+    assert "app.js?v=20260802c" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -257,33 +257,35 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
     assert "[10s]" in target["expr"]
 
 
-def test_bigscreen_ping_trend_filters_only_isolated_tournament_spikes():
+def test_bigscreen_ping_trend_uses_compact_cards_and_filters_isolated_spikes():
     api = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
     pages = read("bigscreen/pages.js")
     index = read("bigscreen/index.html")
 
     # Keep the raw 2-second source stable, but suppress isolated 50 ms samples
-    # only on the customer-facing tournament page. Operations retains raw data.
+    # in both overview and tournament displays. Sustained incidents stay raw.
     assert "const end = Math.floor(now / step) * step;" in api
     assert 'max by (instance) (probe_icmp_duration_seconds{job=~' in pages
     assert 'phase="rtt"})' in pages
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
-    assert 'document.querySelector(".screen.tournament-mode")' in app
     assert "suppressIsolatedLatencySpikes(rawActivePingSeries" in app
     assert "smoothNormalLatencyJitter" not in app
-    assert "minMax: 0.005" in app
     assert "threshold: 0.05" in app
     assert "minConsecutive: 2" in app
-    # The normal overview keeps its value table, while tournament mode hides
-    # that side legend because it has a smaller, dedicated device set.
-    ping_trend_call = app.split('renderLineChart("pingTrendChart"', 1)[1].split("});", 1)[0]
-    assert 'legend: "bottom"' not in ping_trend_call
-    assert ".screen.tournament-mode .side-legend" in read("bigscreen/platform.css")
-    assert "display: none" in read("bigscreen/platform.css").split(
-        ".screen.tournament-mode .side-legend", 1
-    )[1].split("}", 1)[0]
+    assert "renderInfraTrendCards(activePingSeries)" in app
+    assert 'class="infra-trend-grid"' in app
+    assert 'class="team-trend-card infra-trend-card"' in app
+    assert ".infra-trend-grid" in read("bigscreen/platform.css")
+
+    # Seat-based evidence first resolves the current Prometheus target and
+    # does not silently reuse a manual IP left over from an earlier route.
+    assert "resolveEvidenceCurrentIps(team, seat, network)" in app
+    assert 'seq !== evidenceSeq || activePageId !== "evidence"' in app
+    assert 'document.getElementById("evidenceIp").value = ip || ""' in app
+    assert '"evidenceTeam", "evidenceSeat", "evidenceNetwork"' in app
+    assert "当前没有可查询的 IP" in app
 
     # The headline switch value is a responsive median, not the single lowest
     # sample in a minute (which becomes zero after one failed probe).
@@ -293,7 +295,7 @@ def test_bigscreen_ping_trend_filters_only_isolated_tournament_spikes():
     assert "pages.js?v=20260802a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260802b" in index
+    assert "app.js?v=20260802c" in index
     assert "utils.js?v=20260801c" in index
 
 
@@ -308,7 +310,7 @@ def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():
     assert 'screen.className = `screen tournament-mode' in app
     assert '.screen.tournament-mode .isp-grid.isp-paged' in css
     assert "isp-carousel.js?v=20260731a" in index
-    assert "platform.css?v=20260802b" in index
+    assert "platform.css?v=20260802c" in index
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
