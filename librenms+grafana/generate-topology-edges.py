@@ -17,6 +17,9 @@ Env vars:
   TOPOLOGY_SNMP_RETRIES      retries per request (default: 0).
   TOPOLOGY_POLL_WORKERS      devices polled concurrently (default: 1).
   TOPOLOGY_SNMP_DELAY_MS     pause after each SNMP request (default: 500).
+  TOPOLOGY_ARP_DEVICES       comma-separated L3 devices whose ARP tables may
+                             contain configured servers. Empty -> core and
+                             firewall targets; if those are also empty, all.
   TOPOLOGY_EDGE_RETENTION_SECONDS  keep last confirmed missing/down links in
                              edges.json (default: 86400 / 24 hours).
   TOPOLOGY_OUTPUT_DIR        where to write edges.json / legacy empty files
@@ -477,13 +480,15 @@ def expand_device_entry(entry):
     return targets
 
 
-def poll_device(ip, community):
+def poll_device(ip, community, collect_arp=True):
     started = time.monotonic()
     sysname = snmpget(ip, community, SYS_NAME_OID)
     ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
     ifoper = parse_if_oper_status(snmpwalk(ip, community, IF_OPER_STATUS_OID))
     ifstack = parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID))
-    arp = parse_arp_table(snmpwalk(ip, community, IP_NET_TO_MEDIA_PHYS_ADDRESS_OID), ifname)
+    arp = parse_arp_table(
+        snmpwalk(ip, community, IP_NET_TO_MEDIA_PHYS_ADDRESS_OID), ifname
+    ) if collect_arp else {}
     loc_port_desc = parse_lldp_loc_port_desc(snmpwalk(ip, community, LLDP_LOC_PORT_DESC_OID))
     rem_sys = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_SYS_NAME_OID))
     rem_port_desc = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_PORT_DESC_OID))
@@ -797,7 +802,7 @@ def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
     return None
 
 
-def discover_server_edges(devices, edges, servers, community):
+def discover_server_edges(devices, edges, servers, community, cached_edges=None):
     """Locate configured servers at their real access switch via ARP + FDB."""
     if not servers or not devices:
         return []
@@ -823,6 +828,11 @@ def discover_server_edges(devices, edges, servers, community):
     }
     core_ips = _env_target_ips("CORE_SWITCH_PING")
     depths = _graph_depths(edges, core_ips)
+    cached_switch_by_server = {
+        str(edge.get("to_ip") or ""): str(edge.get("from_ip") or "")
+        for edge in (cached_edges or [])
+        if edge.get("source") == "fdb" and edge.get("to_ip") and edge.get("from_ip")
+    }
     found = []
 
     for server_ip, server_name in servers.items():
@@ -839,49 +849,73 @@ def discover_server_edges(devices, edges, servers, community):
             )
             continue
 
-        candidates = []
-        tasks = {}
-        poll_workers = _topology_poll_workers()
-        with ThreadPoolExecutor(max_workers=min(poll_workers, max(1, len(switch_devices) * len(unique_records)))) as executor:
-            for switch_ip, device in switch_devices.items():
-                for mac, vlan in unique_records:
-                    future = executor.submit(
-                        lookup_fdb_ifindex,
-                        switch_ip,
-                        community,
-                        vlan,
-                        mac,
-                        device.get("ifname", {}),
-                    )
-                    tasks[future] = (switch_ip, mac, vlan)
-            for future in as_completed(tasks):
-                switch_ip, mac, vlan = tasks[future]
-                try:
-                    ifindex = future.result()
-                except Exception as exc:
-                    print(f"[WARN] FDB lookup {switch_ip} {server_ip}: {exc}", file=sys.stderr)
-                    continue
-                if ifindex is None:
-                    continue
-                # ``device`` above belongs to the task-submission loop and may
-                # point at a completely different switch by the time futures
-                # finish.  Always resolve the interface from the switch that
-                # produced this FDB result.
-                switch_device = switch_devices[switch_ip]
-                port_name = switch_device.get("ifname", {}).get(ifindex)
-                candidates.append({
-                    "switch_ip": switch_ip,
-                    "ifindex": ifindex,
-                    "port_name": port_name,
-                    "mac": mac,
-                    "vlan": vlan,
-                    "is_uplink": (switch_ip, ifindex) in switch_link_endpoints,
-                    # A server MAC learned on Po/LAG is commonly a transit copy
-                    # from another switch. Prefer a physical access interface
-                    # when both observations exist at the same graph depth.
-                    "is_aggregate": normalize_port_name(port_name).startswith("agg"),
-                    "depth": depths.get(switch_ip, -1),
-                })
+        def collect_candidates(selected_switches):
+            candidates = []
+            tasks = {}
+            poll_workers = _topology_poll_workers()
+            task_count = max(1, len(selected_switches) * len(unique_records))
+            with ThreadPoolExecutor(max_workers=min(poll_workers, task_count)) as executor:
+                for switch_ip, device in selected_switches.items():
+                    for mac, vlan in unique_records:
+                        future = executor.submit(
+                            lookup_fdb_ifindex,
+                            switch_ip,
+                            community,
+                            vlan,
+                            mac,
+                            device.get("ifname", {}),
+                        )
+                        tasks[future] = (switch_ip, mac, vlan)
+                for future in as_completed(tasks):
+                    switch_ip, mac, vlan = tasks[future]
+                    try:
+                        ifindex = future.result()
+                    except Exception as exc:
+                        print(f"[WARN] FDB lookup {switch_ip} {server_ip}: {exc}", file=sys.stderr)
+                        continue
+                    if ifindex is None:
+                        continue
+                    switch_device = switch_devices[switch_ip]
+                    port_name = switch_device.get("ifname", {}).get(ifindex)
+                    candidates.append({
+                        "switch_ip": switch_ip,
+                        "ifindex": ifindex,
+                        "port_name": port_name,
+                        "mac": mac,
+                        "vlan": vlan,
+                        "is_uplink": (switch_ip, ifindex) in switch_link_endpoints,
+                        "is_aggregate": normalize_port_name(port_name).startswith("agg"),
+                        "depth": depths.get(switch_ip, -1),
+                    })
+            return candidates
+
+        # Stable projects normally keep servers on one access port for days.
+        # Verify the last confirmed owner first (one exact FDB lookup) and only
+        # fan out across every switch when that proof disappeared or moved.
+        cached_switch = cached_switch_by_server.get(server_ip)
+        preferred = {
+            cached_switch: switch_devices[cached_switch]
+        } if cached_switch in switch_devices else {}
+        candidates = collect_candidates(preferred) if preferred else []
+        preferred_physical = [
+            candidate for candidate in candidates
+            if not candidate["is_uplink"] and not candidate["is_aggregate"]
+        ]
+        if preferred and preferred_physical:
+            print(
+                f"[INFO] server {server_name} ({server_ip}): cached FDB owner verified; "
+                "skipped full switch fan-out",
+                file=sys.stderr,
+            )
+        else:
+            # The cached owner was already queried above. Keep any transit
+            # evidence it returned and fan out only to the remaining switches,
+            # avoiding an immediate duplicate request to the same old device.
+            remaining_switches = {
+                ip: device for ip, device in switch_devices.items()
+                if ip not in preferred
+            }
+            candidates.extend(collect_candidates(remaining_switches))
 
         access_candidates = [candidate for candidate in candidates if not candidate["is_uplink"]]
         if not access_candidates:
@@ -1140,11 +1174,28 @@ def main():
         )
         return 0
 
-    print(f"[INFO] polling LLDP+CDP+ARP on {len(device_ips)} device(s)", file=sys.stderr)
+    arp_raw = os.environ.get("TOPOLOGY_ARP_DEVICES", "").strip()
+    arp_device_ips = set()
+    if arp_raw:
+        for entry in arp_raw.split(","):
+            arp_device_ips.update(expand_device_entry(entry))
+    else:
+        for env_var in ("CORE_SWITCH_PING", "FIREWALL_PING"):
+            arp_device_ips.update(_env_target_ips(env_var))
+    if not arp_device_ips:
+        arp_device_ips.update(device_ips)
+    print(
+        f"[INFO] polling LLDP+CDP on {len(device_ips)} device(s); "
+        f"ARP only on {len(arp_device_ips)} L3 device(s)",
+        file=sys.stderr,
+    )
     devices = {}
     poll_workers = _topology_poll_workers()
     with ThreadPoolExecutor(max_workers=min(poll_workers, len(device_ips))) as executor:
-        futures = {executor.submit(poll_device, ip, community): ip for ip in device_ips}
+        futures = {
+            executor.submit(poll_device, ip, community, ip in arp_device_ips): ip
+            for ip in device_ips
+        }
         for future in as_completed(futures):
             ip = futures[future]
             try:
@@ -1206,6 +1257,7 @@ def main():
         edges,
         servers,
         community,
+        cached_attachments,
     )
     confirmed_server_edges = list(fresh_server_edges)
     confirmed_server_edges.extend(preserve_cached_server_edges(

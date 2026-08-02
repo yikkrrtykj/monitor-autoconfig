@@ -232,7 +232,7 @@ cd librenms+grafana
 | UniFi | 使用 UniFi AP 时填控制器地址和只读账号 |
 | 飞书机器人 Token | 留空则不推飞书；多台监控可以复用同一个 token，但会推到同一个群且可能重复告警 |
 | 飞书应用 App ID / App Secret | 审批通过的企业自建应用凭据；普通告警优先使用应用机器人，旧 Token 作为失败回退 |
-| 本监控的告警及巡检群名称 | 公司和每个比赛现场分别填写自己的群名称；同一个应用机器人可以加入这些不同群 |
+| 告警及巡检群名称或 Chat ID | 公司和每个比赛现场分别填写自己的唯一群名称；也可填写 `oc_` 开头的 Chat ID，跳过群列表解析 |
 
 飞书企业自建应用审批通过后，在 `/control` 的“告警”区填写 App ID、App Secret，
 把应用机器人加入告警群，再点“应用配置”。旧版只写在 `.env` 的凭据会自动带入
@@ -240,8 +240,11 @@ cd librenms+grafana
 “赛事名称”和群名称。应用机器人加入所有这些群；每套物理监控只读取自己群里的
 `@机器人` 命令、查询自己的本地数据，并在回复标题前显示赛事名称，不会与其它现场串群。
 现有长连接 `@机器人` 权限仍可使用；多套物理监控共用应用并要求严格按各自群处理时，
-再增加 `im:chat`、`im:message:readonly` 和 `im:message.group_msg`。读取权限未开通时，
+增加 `im:chat:read`、`im:message:readonly` 和 `im:message.group_msg`；主动发卡片还需
+`im:message:send_as_bot`。读取权限未开通时，
 程序自动退回原来的长连接事件方式。
+自建应用群解析的错误码、直接 Chat ID 配置和现场验证方法见
+[`librenms+grafana/docs/feishu-app-chat-troubleshooting.md`](librenms+grafana/docs/feishu-app-chat-troubleshooting.md)。
 支持 `网络巡检`、`待删除设备`、`光功率巡检`、`上联冗余巡检` 和 `帮助`。
 光功率读取 LibreNMS 已采集的 dBm 传感器及阈值，不会额外轮询交换机。
 `im.message.receive_v1` 和 `card.action.trigger` 都是在“事件与回调”里添加的事件类型，

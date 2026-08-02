@@ -2,7 +2,7 @@
   'use strict';
 
   // Player snapshot logic: merging latency/success instant vectors into the
-  // per-seat player list shown on the tournament/ops boards. Pure functions,
+  // per-seat player list shown on tournament and wireless boards. Pure functions,
   // no DOM and no fetching -- the dedupe preference rules here decide which
   // entry wins a seat, so they are unit-tested in
   // tests/test_bigscreen_players.js.

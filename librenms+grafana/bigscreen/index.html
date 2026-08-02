@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20260802a" />
-    <link rel="stylesheet" href="./platform.css?v=20260802e" />
+    <link rel="stylesheet" href="./platform.css?v=20260803a" />
   </head>
   <body>
     <main class="screen">
@@ -99,11 +99,11 @@
           <div class="chart-body" id="evidenceSuccessChart"></div>
         </section>
       </section>
-      <section class="ops-panel" id="opsPanel" aria-label="现场核对" hidden>
-        <button type="button" class="tournament-refresh" id="opsRescan" title="立即重扫目标" aria-label="立即重扫目标">↻</button>
-        <div class="ops-controls" id="opsControls"></div>
-        <div class="ops-summary" id="opsSummary"></div>
-        <div class="ops-board" id="opsBoard"></div>
+      <section class="wireless-panel" id="wirelessPanel" aria-label="无线异常总览" hidden>
+        <button type="button" class="tournament-refresh" id="wirelessRescan" title="立即重扫目标" aria-label="立即重扫目标">↻</button>
+        <div class="wireless-controls" id="wirelessControls"></div>
+        <div class="wireless-summary" id="wirelessSummary"></div>
+        <div class="wireless-board" id="wirelessBoard"></div>
       </section>
       <section class="control-panel" id="controlPanel" aria-label="赛事控制台" hidden>
         <div class="control-auth" id="controlAuth" hidden>
@@ -304,11 +304,12 @@
     <script src="./pages.js?v=20260802a"></script>
     <script src="./utils.js?v=20260803b"></script>
     <script src="./isp-carousel.js?v=20260731a"></script>
-    <script src="./api.js?v=20260802a"></script>
+    <script src="./api.js?v=20260803a"></script>
     <script src="./players.js?v=20260802a"></script>
     <script src="./incident.js?v=20260623a"></script>
     <script src="./topology.js?v=20260729b"></script>
     <script src="./platform.js?v=20260627a"></script>
-    <script src="./app.js?v=20260803c"></script>
+    <script src="./iperf.js?v=20260803a"></script>
+    <script src="./app.js?v=20260803d"></script>
   </body>
 </html>

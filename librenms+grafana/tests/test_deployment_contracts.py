@@ -97,6 +97,14 @@ def test_feishu_ws_sidecar_is_profile_gated_and_optional():
     assert "FEISHU_APP_ID=" in env
 
 
+def test_alert_bridge_mounts_its_split_syslog_parser():
+    compose = read("docker-compose.yml")
+    bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split("  librenms:", 1)[0]
+
+    assert "./alertmanager-feishu-bridge.py:/app/bridge.py:ro" in bridge_service
+    assert "./network_syslog.py:/app/network_syslog.py:ro" in bridge_service
+
+
 def test_named_volume_and_bind_mount_contract_is_not_mixed():
     compose = read("docker-compose.yml")
 
@@ -166,13 +174,13 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert ".evidence-panel" in css
     assert ".incident-panel" in css
     assert ".topology-panel" in css
-    assert ".ops-table-row span::before" in css
+    assert ".wireless-table-row span::before" in css
     assert ".control-panel" in css
     assert ".dhcp-toolbar .dhcp-actions" in css
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
-    assert "platform.css?v=20260802e" in html
-    assert "app.js?v=20260803c" in html
+    assert "platform.css?v=20260803a" in html
+    assert "app.js?v=20260803d" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -180,7 +188,7 @@ def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
 
     assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in app
     assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in app
-    assert 'configInput("alerts.feishu_chat_id", "本监控的告警及巡检群名称")' in app
+    assert 'configInput("alerts.feishu_chat_id", "告警及巡检群名称或 Chat ID"' in app
     assert "下载/上传" in app
     assert "1000/100" in app
 
@@ -316,8 +324,8 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert pages.count("[30s]") == 3
     assert "pages.js?v=20260802a" in index
     assert "players.js?v=20260802a" in index
-    assert "api.js?v=20260802a" in index
-    assert "app.js?v=20260803c" in index
+    assert "api.js?v=20260803a" in index
+    assert "app.js?v=20260803d" in index
     assert "utils.js?v=20260803b" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
@@ -345,7 +353,7 @@ def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():
     assert 'screen.className = `screen tournament-mode' in app
     assert '.screen.tournament-mode .isp-grid.isp-paged' in css
     assert "isp-carousel.js?v=20260731a" in index
-    assert "platform.css?v=20260802e" in index
+    assert "platform.css?v=20260803a" in index
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
@@ -375,7 +383,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260802a" in index
-    assert "app.js?v=20260803c" in index
+    assert "app.js?v=20260803d" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

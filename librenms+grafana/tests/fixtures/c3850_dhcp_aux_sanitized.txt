@@ -1,0 +1,14 @@
+C3850-CORE#show ip dhcp conflict
+No conflicts detected
+C3850-CORE#show ip dhcp server statistics
+Memory usage         99999
+Address pools        39
+Database agents      0
+Automatic bindings  171
+Manual bindings     0
+Expired bindings    23
+Malformed messages  0
+C3850-CORE#show running-config | include ^ip dhcp excluded-address
+ip dhcp excluded-address 198.18.0.101 198.18.0.254
+ip dhcp excluded-address 198.18.1.201 198.18.1.236
+C3850-CORE#

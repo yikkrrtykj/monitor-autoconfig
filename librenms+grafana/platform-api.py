@@ -18,6 +18,7 @@ import shlex
 import secrets
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -42,6 +43,15 @@ from platform_config import (
     stamp,
     validate_config,
 )
+from cisco_dhcp import (
+    attach_dhcp_pool_exclusions,
+    parse_cisco_arp_entries,
+    parse_cisco_dhcp_bindings,
+    parse_cisco_dhcp_conflicts,
+    parse_cisco_dhcp_excluded,
+    parse_cisco_dhcp_pools,
+    parse_cisco_dhcp_statistics,
+)
 
 
 WORKDIR = Path(os.environ.get("PLATFORM_WORKDIR", "/workspace"))
@@ -52,6 +62,7 @@ ENV_PATH = Path(os.environ.get("ENV_FILE", str(WORKDIR / ".env")))
 INCIDENT_PATH = STATE_DIR / "incidents.json"
 AUTH_PATH = STATE_DIR / "auth.json"
 DHCP_SETTINGS_PATH = STATE_DIR / "dhcp-settings.json"
+IPERF_HISTORY_PATH = STATE_DIR / "iperf-history.json"
 HISTORY_DIR = STATE_DIR / "history"
 TRANSACTION_DIR = HISTORY_DIR / "transactions"
 APPLY_STATUS_DIR = STATE_DIR / "apply-status"
@@ -145,6 +156,13 @@ WRITE_LOCK = threading.Lock()
 # sessions against an older switch at the same time.
 IPERF_LOCK = threading.Lock()
 IPERF_STATUS_LOCK = threading.Lock()
+IPERF_TASKS_LOCK = threading.Lock()
+IPERF_PROCESS_LOCK = threading.Lock()
+IPERF_TASKS: dict[str, dict] = {}
+IPERF_CANCEL_EVENTS: dict[str, threading.Event] = {}
+IPERF_PROCESSES: dict[str, subprocess.Popen] = {}
+IPERF_ACTIVE_TASK_ID = ""
+IPERF_HISTORY_LIMIT = 5
 IPERF_STATUS: dict = {
     "ok": True,
     "state": "idle",
@@ -1352,176 +1370,6 @@ def save_dhcp_settings(data: dict) -> dict:
     return get_dhcp_settings()
 
 
-def _dhcp_number(block: str, label: str) -> int:
-    match = re.search(rf"(?im)^\s*{re.escape(label)}\s*:\s*(\d+)\s*$", block)
-    return int(match.group(1)) if match else 0
-
-
-def parse_cisco_dhcp_pools(text: str) -> list[dict]:
-    """Parse the stable fields from Cisco IOS/IOS-XE `show ip dhcp pool`."""
-    source = str(text or "").replace("\r", "")
-    starts = list(re.finditer(r"(?im)^\s*Pool\s+(.+?)\s*:\s*$", source))
-    pools: list[dict] = []
-    for index, match in enumerate(starts):
-        block = source[match.end():starts[index + 1].start() if index + 1 < len(starts) else len(source)]
-        total = _dhcp_number(block, "Total addresses")
-        leased = _dhcp_number(block, "Leased addresses")
-        excluded = _dhcp_number(block, "Excluded addresses")
-        usable = max(0, total - excluded)
-        available = max(0, usable - leased)
-        address_range = ""
-        range_match = re.search(
-            r"(?m)(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})",
-            block,
-        )
-        if range_match:
-            address_range = f"{range_match.group(1)} - {range_match.group(2)}"
-        utilization = round((leased / usable * 100) if usable else 0, 1)
-        pools.append({
-            "name": match.group(1).strip(),
-            "range": address_range,
-            "total": total,
-            "leased": leased,
-            "excluded": excluded,
-            "available": available,
-            "utilization": utilization,
-            "level": "bad" if utilization >= 90 else "warn" if utilization >= 80 else "good",
-        })
-    return pools
-
-
-def parse_cisco_dhcp_conflicts(text: str) -> list[str]:
-    source = str(text or "").replace("\r", "")
-    addresses = re.findall(r"(?m)^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+", source)
-    return list(dict.fromkeys(addresses))
-
-
-def parse_cisco_dhcp_excluded(text: str) -> list[str]:
-    """Expand IOS DHCP exclusions without reading the full binding table."""
-    addresses: set[ipaddress.IPv4Address] = set()
-    for match in re.finditer(
-        r"(?im)^\s*ip\s+dhcp\s+excluded-address\s+"
-        r"(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(\d{1,3}(?:\.\d{1,3}){3}))?\s*$",
-        str(text or "").replace("\r", ""),
-    ):
-        try:
-            start = ipaddress.IPv4Address(match.group(1))
-            end = ipaddress.IPv4Address(match.group(2) or match.group(1))
-        except ipaddress.AddressValueError:
-            continue
-        if end < start:
-            start, end = end, start
-        # Refuse pathological output instead of allocating millions of entries.
-        if int(end) - int(start) > 65535:
-            continue
-        addresses.update(ipaddress.IPv4Address(value) for value in range(int(start), int(end) + 1))
-    return [str(value) for value in sorted(addresses)]
-
-
-def attach_dhcp_pool_exclusions(pools: list[dict], excluded_addresses: list[str]) -> None:
-    """Attach exact exclusions that fall inside each returned pool range."""
-    parsed = []
-    for value in excluded_addresses:
-        try:
-            parsed.append(ipaddress.IPv4Address(value))
-        except ipaddress.AddressValueError:
-            continue
-    for pool in pools:
-        bounds = re.match(
-            r"^\s*(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})\s*$",
-            str(pool.get("range") or ""),
-        )
-        if not bounds:
-            pool["excludedAddresses"] = []
-            continue
-        try:
-            start = ipaddress.IPv4Address(bounds.group(1))
-            end = ipaddress.IPv4Address(bounds.group(2))
-        except ipaddress.AddressValueError:
-            pool["excludedAddresses"] = []
-            continue
-        pool["excludedAddresses"] = [str(value) for value in parsed if start <= value <= end]
-
-
-def parse_cisco_dhcp_statistics(text: str) -> dict:
-    source = str(text or "").replace("\r", "")
-
-    def value(label: str) -> int:
-        match = re.search(rf"(?im)^\s*{re.escape(label)}\s+(\d+)\s*$", source)
-        return int(match.group(1)) if match else 0
-
-    return {
-        "automaticBindings": value("Automatic bindings"),
-        "manualBindings": value("Manual bindings"),
-        "expiredBindings": value("Expired bindings"),
-        "malformedMessages": value("Malformed messages"),
-    }
-
-
-def parse_cisco_dhcp_bindings(text: str) -> list[dict]:
-    """Parse active addresses from IOS/IOS-XE ``show ip dhcp binding``.
-
-    Cisco has added columns across releases, so only the stable leading IPv4
-    address is structural.  The remaining one-line detail is retained for the
-    operator's hover text without guessing at a particular column layout.
-    """
-    bindings = []
-    seen = set()
-    for line in str(text or "").replace("\r", "").splitlines():
-        # A few IOS-XE trains wrap the Client-ID/detail columns onto the next
-        # line, leaving the address by itself.  The address is still an active
-        # binding and must not disappear merely because its detail is blank.
-        match = re.match(r"^\s*(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(.+?))?\s*$", line)
-        if not match:
-            continue
-        try:
-            address = str(ipaddress.IPv4Address(match.group(1)))
-        except ipaddress.AddressValueError:
-            continue
-        if address in seen:
-            continue
-        seen.add(address)
-        bindings.append({
-            "ip": address,
-            "detail": re.sub(r"\s+", " ", match.group(2) or "").strip()[:512],
-        })
-        if len(bindings) >= 65536:
-            break
-    return bindings
-
-
-def parse_cisco_arp_entries(text: str) -> list[dict]:
-    """Parse complete IPv4 neighbours from Cisco ``show ip arp`` output."""
-    entries = []
-    seen = set()
-    for line in str(text or "").replace("\r", "").splitlines():
-        if re.search(r"(?i)\bincomplete\b", line):
-            continue
-        match = re.match(
-            r"^\s*(?:Internet|IP)\s+"
-            r"(\d{1,3}(?:\.\d{1,3}){3})\s+"
-            r"(\S+)\s+([0-9A-Fa-f.:-]{11,})\s+\S+(?:\s+(.+?))?\s*$",
-            line,
-        )
-        if not match:
-            continue
-        try:
-            address = str(ipaddress.IPv4Address(match.group(1)))
-        except ipaddress.AddressValueError:
-            continue
-        if address in seen:
-            continue
-        seen.add(address)
-        interface = re.sub(r"\s+", " ", match.group(4) or "").strip()
-        detail = f"ARP {match.group(3)}"
-        if interface:
-            detail += f" · {interface}"
-        entries.append({"ip": address, "detail": detail})
-        if len(entries) >= 65536:
-            break
-    return entries
-
-
 def _telnet_expect(session, patterns: list[bytes], step: str):
     index, match, output = session.expect(patterns, DHCP_SWITCH_TIMEOUT)
     decoded = (output or b"").decode("utf-8", errors="replace")
@@ -1822,9 +1670,11 @@ def get_dhcp_dashboard(force: bool = False) -> dict:
             )
         ):
             return cached
+        collection_started = time.monotonic()
         payload = {
             **collect_cisco_dhcp(host),
             "capturedAt": int(time.time()),
+            "collectionSeconds": round(time.monotonic() - collection_started, 2),
             "refreshSeconds": DHCP_REFRESH_SECONDS,
             "cached": False,
             "cacheAgeSeconds": 0,
@@ -1933,17 +1783,73 @@ def parse_iperf3_json(text: str) -> dict:
 def _set_iperf_status(**updates) -> None:
     with IPERF_STATUS_LOCK:
         IPERF_STATUS.update(updates)
+        task_id = str(IPERF_STATUS.get("taskId") or "")
+        snapshot = dict(IPERF_STATUS)
+    if task_id:
+        with IPERF_TASKS_LOCK:
+            if task_id in IPERF_TASKS:
+                IPERF_TASKS[task_id] = snapshot
 
 
-def iperf_status_payload() -> dict:
-    with IPERF_STATUS_LOCK:
-        payload = dict(IPERF_STATUS)
+def _public_iperf_payload(payload: dict) -> dict:
+    payload = dict(payload or {})
     started = payload.pop("_startedMonotonic", None)
     if started is not None:
         payload["elapsedSeconds"] = round(max(0, time.monotonic() - started), 1)
     else:
         payload.setdefault("elapsedSeconds", 0)
     return payload
+
+
+def iperf_status_payload(task_id: str = "") -> dict:
+    task_id = str(task_id or "").strip()
+    if task_id:
+        with IPERF_TASKS_LOCK:
+            task = dict(IPERF_TASKS.get(task_id) or {})
+        if not task:
+            # Completed task summaries survive a platform-api restart.  This
+            # keeps history buttons useful without retaining an unbounded
+            # in-memory task dictionary.
+            history = read_json_file(IPERF_HISTORY_PATH, [])
+            if isinstance(history, list):
+                task = next((dict(item) for item in history
+                             if isinstance(item, dict) and item.get("taskId") == task_id), {})
+            if not task:
+                raise DiagnosticError(HTTPStatus.NOT_FOUND, "iPerf3 任务不存在或已过期")
+        return _public_iperf_payload(task)
+    with IPERF_STATUS_LOCK:
+        payload = dict(IPERF_STATUS)
+    return _public_iperf_payload(payload)
+
+
+def iperf_history_payload() -> dict:
+    history = read_json_file(IPERF_HISTORY_PATH, [])
+    if not isinstance(history, list):
+        history = []
+    return {"ok": True, "history": history[:IPERF_HISTORY_LIMIT]}
+
+
+def _save_iperf_history(payload: dict) -> None:
+    history = read_json_file(IPERF_HISTORY_PATH, [])
+    if not isinstance(history, list):
+        history = []
+    summary = {
+        "taskId": payload.get("taskId"),
+        "startedAt": payload.get("startedAt"),
+        "finishedAt": payload.get("finishedAt"),
+        "state": payload.get("state"),
+        "server": payload.get("server"),
+        "requestedPorts": payload.get("requestedPorts"),
+        "duration": payload.get("duration"),
+        "parallel": payload.get("parallel"),
+        "results": payload.get("results") or [],
+        "message": payload.get("message") or "",
+    }
+    history = [summary, *[
+        item for item in history
+        if isinstance(item, dict) and item.get("taskId") != summary["taskId"]
+    ]]
+    write_json_file(IPERF_HISTORY_PATH, history[:IPERF_HISTORY_LIMIT], mode=0o600)
 
 
 def _iperf_error_summary(stdout: str, stderr: str, returncode: int) -> str:
@@ -1963,8 +1869,77 @@ def _iperf_error_summary(stdout: str, stderr: str, returncode: int) -> str:
     return re.sub(r"\s+", " ", raw)[-160:]
 
 
+class IperfCancelled(Exception):
+    pass
+
+
+def _execute_iperf_command(command: list[str], timeout: float, task_id: str = "",
+                           cancel_event: threading.Event | None = None):
+    """Run one iperf process and make only managed background tasks stoppable.
+
+    Direct calls retain ``subprocess.run`` for compatibility with the parser's
+    unit tests. Browser-started tasks use Popen so the stop endpoint can
+    terminate exactly that task without touching any other process.
+    """
+    if not task_id:
+        return subprocess.run(
+            command,
+            cwd=str(WORKDIR),
+            env=_host_exec_env(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    # A 30-second, 20-stream JSON result can exceed an OS pipe buffer. Waiting
+    # for process exit before communicate() would then deadlock. Temporary
+    # files keep output bounded by disk/state resources while preserving stop.
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout_handle, \
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_handle:
+        process = subprocess.Popen(
+            command,
+            cwd=str(WORKDIR),
+            env=_host_exec_env(),
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            text=True,
+        )
+        with IPERF_PROCESS_LOCK:
+            IPERF_PROCESSES[task_id] = process
+        end = time.monotonic() + timeout
+        try:
+            while process.poll() is None:
+                if cancel_event and cancel_event.is_set():
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                    raise IperfCancelled("测速已停止")
+                if time.monotonic() >= end:
+                    process.kill()
+                    process.wait(timeout=2)
+                    raise subprocess.TimeoutExpired(command, timeout)
+                time.sleep(0.1)
+            if cancel_event and cancel_event.is_set():
+                raise IperfCancelled("测速已停止")
+            stdout_handle.seek(0)
+            stderr_handle.seek(0)
+            return subprocess.CompletedProcess(
+                command,
+                process.returncode,
+                stdout_handle.read(),
+                stderr_handle.read(),
+            )
+        finally:
+            with IPERF_PROCESS_LOCK:
+                if IPERF_PROCESSES.get(task_id) is process:
+                    IPERF_PROCESSES.pop(task_id, None)
+
+
 def _run_iperf_direction(host: str, ports: list[int], duration: int, parallel: int, reverse: bool,
-                         deadline: float, direction_index: int, direction_total: int) -> dict:
+                         deadline: float, direction_index: int, direction_total: int,
+                         task_id: str = "", cancel_event: threading.Event | None = None) -> dict:
     attempts: list[str] = []
     direction_name = "download" if reverse else "upload"
     direction_label = "下载" if reverse else "上传"
@@ -1995,14 +1970,8 @@ def _run_iperf_direction(host: str, ports: list[int], duration: int, parallel: i
         if reverse:
             command.append("-R")
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(WORKDIR),
-                env=_host_exec_env(),
-                capture_output=True,
-                text=True,
-                timeout=max(1, min(duration + 5, remaining)),
-                check=False,
+            completed = _execute_iperf_command(
+                command, max(1, min(duration + 5, remaining)), task_id, cancel_event,
             )
         except FileNotFoundError:
             raise DiagnosticError(
@@ -2031,7 +2000,7 @@ def _run_iperf_direction(host: str, ports: list[int], duration: int, parallel: i
     raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"iperf3 测速失败：{detail}")
 
 
-def run_iperf_test(data: dict) -> dict:
+def run_iperf_test(data: dict, task_id: str = "", cancel_event: threading.Event | None = None) -> dict:
     host = validate_network_host(
         data.get("server") or "speedtest.hkg12.hk.leaseweb.net",
         "测速服务器",
@@ -2084,6 +2053,7 @@ def run_iperf_test(data: dict) -> dict:
         # the timeout once for upload and then a second time for download.
         maxSeconds=IPERF3_TIMEOUT,
         message="正在准备测速",
+        taskId=task_id or None,
     )
     try:
         results = []
@@ -2092,7 +2062,7 @@ def run_iperf_test(data: dict) -> dict:
             _set_iperf_status(directionIndex=direction_index + 1)
             result = _run_iperf_direction(
                 host, preferred_ports, duration, parallel, reverse, deadline,
-                direction_index, len(directions),
+                direction_index, len(directions), task_id, cancel_event,
             )
             results.append({"direction": direction_name, **result})
             preferred_ports = [result["port"], *[port for port in ports if port != result["port"]]]
@@ -2104,6 +2074,7 @@ def run_iperf_test(data: dict) -> dict:
             "duration": duration,
             "parallel": parallel,
             "results": results,
+            "taskId": task_id or None,
         }
         _set_iperf_status(
             state="complete",
@@ -2115,6 +2086,16 @@ def run_iperf_test(data: dict) -> dict:
             message="测速完成",
         )
         return payload
+    except IperfCancelled as exc:
+        _set_iperf_status(
+            state="cancelled",
+            phase="cancelled",
+            finishedAt=int(time.time()),
+            _startedMonotonic=None,
+            elapsedSeconds=round(time.monotonic() - started_monotonic, 1),
+            message=str(exc),
+        )
+        raise
     except DiagnosticError as exc:
         _set_iperf_status(
             state="failed",
@@ -2137,6 +2118,101 @@ def run_iperf_test(data: dict) -> dict:
         raise
     finally:
         IPERF_LOCK.release()
+
+
+def _iperf_task_worker(task_id: str, data: dict, cancel_event: threading.Event) -> None:
+    global IPERF_ACTIVE_TASK_ID
+    try:
+        result = run_iperf_test(data, task_id, cancel_event)
+        with IPERF_STATUS_LOCK:
+            status = dict(IPERF_STATUS)
+        final = {**status, **result, "state": "complete", "phase": "complete"}
+    except IperfCancelled as exc:
+        with IPERF_STATUS_LOCK:
+            status = dict(IPERF_STATUS)
+        final = {**status, "ok": False, "taskId": task_id, "state": "cancelled",
+                 "phase": "cancelled", "message": str(exc)}
+    except DiagnosticError as exc:
+        with IPERF_STATUS_LOCK:
+            status = dict(IPERF_STATUS)
+        final = {**status, "ok": False, "taskId": task_id, "state": "failed",
+                 "phase": "failed", "message": exc.payload.get("error", str(exc))}
+    except Exception as exc:
+        with IPERF_STATUS_LOCK:
+            status = dict(IPERF_STATUS)
+        final = {**status, "ok": False, "taskId": task_id, "state": "failed",
+                 "phase": "failed", "message": str(exc)}
+    final.pop("_startedMonotonic", None)
+    final.setdefault("finishedAt", int(time.time()))
+    with IPERF_TASKS_LOCK:
+        IPERF_TASKS[task_id] = final
+        IPERF_CANCEL_EVENTS.pop(task_id, None)
+        if IPERF_ACTIVE_TASK_ID == task_id:
+            IPERF_ACTIVE_TASK_ID = ""
+    _save_iperf_history(final)
+
+
+def start_iperf_task(data: dict) -> dict:
+    global IPERF_ACTIVE_TASK_ID
+    with IPERF_TASKS_LOCK:
+        if IPERF_ACTIVE_TASK_ID:
+            active = IPERF_TASKS.get(IPERF_ACTIVE_TASK_ID) or {}
+            if active.get("state") in ("queued", "running"):
+                raise DiagnosticError(
+                    HTTPStatus.CONFLICT,
+                    "已有 iPerf3 测速正在运行，请先等待或停止当前任务",
+                    taskId=IPERF_ACTIVE_TASK_ID,
+                )
+        task_id = f"iperf-{int(time.time())}-{secrets.token_hex(3)}"
+        cancel_event = threading.Event()
+        task = {
+            "ok": True,
+            "taskId": task_id,
+            "state": "queued",
+            "phase": "preparing",
+            "percent": 0,
+            "startedAt": int(time.time()),
+            "maxSeconds": IPERF3_TIMEOUT,
+            "message": "测速任务已创建",
+        }
+        IPERF_TASKS[task_id] = task
+        IPERF_CANCEL_EVENTS[task_id] = cancel_event
+        IPERF_ACTIVE_TASK_ID = task_id
+        # Keep active plus a small recent window in memory. Persistent history
+        # is separately capped at five entries.
+        if len(IPERF_TASKS) > 20:
+            removable = [
+                key for key, value in IPERF_TASKS.items()
+                if key != task_id and value.get("state") not in ("queued", "running")
+            ]
+            for key in removable[:len(IPERF_TASKS) - 20]:
+                IPERF_TASKS.pop(key, None)
+    threading.Thread(
+        target=_iperf_task_worker,
+        args=(task_id, dict(data or {}), cancel_event),
+        name=f"iperf-{task_id[-6:]}",
+        daemon=True,
+    ).start()
+    return task
+
+
+def stop_iperf_task(data: dict) -> dict:
+    task_id = str((data or {}).get("taskId") or "").strip()
+    if not task_id:
+        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "缺少 iPerf3 任务编号")
+    with IPERF_TASKS_LOCK:
+        task = dict(IPERF_TASKS.get(task_id) or {})
+        cancel_event = IPERF_CANCEL_EVENTS.get(task_id)
+    if not task:
+        raise DiagnosticError(HTTPStatus.NOT_FOUND, "iPerf3 任务不存在或已过期")
+    if task.get("state") not in ("queued", "running") or cancel_event is None:
+        return {"ok": True, "taskId": task_id, "state": task.get("state"), "message": "任务已经结束"}
+    cancel_event.set()
+    with IPERF_PROCESS_LOCK:
+        process = IPERF_PROCESSES.get(task_id)
+    if process and process.poll() is None:
+        process.terminate()
+    return {"ok": True, "taskId": task_id, "state": "stopping", "message": "正在停止测速"}
 
 
 def delivery_manifest() -> dict:
@@ -2247,7 +2323,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(delivery_manifest())
             elif path == "/network/iperf3/status":
                 require_auth(self)
-                self._send_json(iperf_status_payload())
+                task_id = (parse_qs(parsed_url.query).get("taskId") or [""])[-1]
+                self._send_json(iperf_status_payload(task_id))
+            elif path == "/network/iperf3/history":
+                require_auth(self)
+                self._send_json(iperf_history_payload())
             elif path == "/network/dhcp/settings":
                 require_auth(self)
                 self._send_json(get_dhcp_settings())
@@ -2341,7 +2421,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(run_precheck())
             elif path == "/network/iperf3":
                 require_auth(self)
-                self._send_json(run_iperf_test(data))
+                self._send_json(start_iperf_task(data))
+            elif path == "/network/iperf3/stop":
+                require_auth(self)
+                self._send_json(stop_iperf_task(data))
             elif path == "/network/retire/resolve":
                 require_auth(self)
                 self._send_json(bridge_retire_resolve(data))
