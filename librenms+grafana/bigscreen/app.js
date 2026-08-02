@@ -454,39 +454,6 @@
     `;
   }
 
-  function renderInfraTrendCards(seriesList) {
-    const container = document.getElementById("pingTrendChart");
-    const series = seriesList
-      .filter((item) => item.values.length)
-      .slice()
-      .sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "zh-CN", { numeric: true }))
-      .map((item, index) => ({
-        ...item,
-        color: item.color || seriesColors[index % seriesColors.length]
-      }));
-    if (!series.length) {
-      renderNoData(container);
-      return;
-    }
-
-    container.innerHTML = `
-      <div class="infra-trend-grid">
-        ${series.map((item, index) => {
-          const latest = item.values[item.values.length - 1];
-          return `
-            <section class="team-trend-card infra-trend-card" title="${escapeHtml(item.name)}">
-              <header><h3>${escapeHtml(item.name)}</h3><span>${escapeHtml(latest ? formatPingText(latest.v) : "-")}</span></header>
-              <div class="team-trend-chart infra-trend-chart" id="infraTrend${index}"></div>
-            </section>
-          `;
-        }).join("")}
-      </div>
-    `;
-    series.forEach((item, index) => {
-      renderSparkline(`infraTrend${index}`, [{ ...item, name: "" }]);
-    });
-  }
-
   function renderHeatmap(containerId, seriesList) {
     const container = document.getElementById(containerId);
     const series = seriesList.filter((item) => item.values.length);
@@ -973,9 +940,8 @@
     const seq = ++chartSeq;
     try {
       const [pingSeries, lossSeries, ispTraffic] = await Promise.all([
-        // Fetch the same raw 2-second probes used by the normal infrastructure
-        // view. Tournament-only display filtering is applied below without
-        // changing Prometheus history or the operations view.
+        // Fetch the raw 2-second infrastructure probes. Display filtering is
+        // applied below without changing the Prometheus history.
         prometheusRangeCached(pingTrendQuery, metricName, 2),
         prometheusRangeCached(lossQuery),
         fetchIspTraffic()
@@ -996,7 +962,13 @@
       });
       const activeLossSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap), "max"));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
-        renderInfraTrendCards(activePingSeries);
+        renderLineChart("pingTrendChart", activePingSeries, {
+          axisFormatter: formatPingText,
+          valueFormatter: formatPingText,
+          // Keep all infrastructure devices in the original combined Ping
+          // trend. A 5 ms floor avoids exaggerating sub-millisecond jitter.
+          minMax: 0.005
+        });
       }
       if (shouldRender("lossHeatmap", seriesSignature(activeLossSeries))) {
         renderHeatmap("lossHeatmap", activeLossSeries);

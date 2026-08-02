@@ -113,7 +113,7 @@
 
   /**
    * Keep sustained latency incidents visible while removing isolated ICMP
-   * response spikes from the customer-facing tournament chart. Prometheus
+   * response spikes from the infrastructure Ping trend. Prometheus
    * data is left untouched; this function returns copied series/points.
    */
   function suppressIsolatedLatencySpikes(seriesList, options) {
@@ -168,7 +168,7 @@
   }
 
   /**
-   * Reduce low-level ICMP jitter on the customer-facing tournament chart
+   * Reduce low-level ICMP jitter on the infrastructure Ping trend
    * without hiding real latency incidents. Samples at or above `preserveAbove`
    * are kept verbatim; only the normal low-latency baseline is median-filtered.
    */

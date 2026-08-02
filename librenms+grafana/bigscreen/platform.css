@@ -3204,29 +3204,6 @@ a.seat-slot:hover {
   font-size: 11px;
 }
 
-/* Infrastructure Ping trends use the same compact card language as the
-   tournament player trends: the device name and current value stay readable
-   above a dedicated sparkline instead of competing in one dense legend. */
-.infra-trend-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  grid-auto-rows: minmax(58px, 1fr);
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  gap: 6px;
-}
-
-.infra-trend-card h3,
-.infra-trend-card header span {
-  font-size: 11px;
-}
-
-.infra-trend-chart .sparkline-legend {
-  display: none;
-}
-
 @media (max-width: 1200px) {
   .screen {
     grid-template-rows: 106px 1fr;
@@ -3500,18 +3477,6 @@ a.seat-slot:hover {
 
   .team-trend-card {
     min-height: 110px;
-  }
-
-  .infra-trend-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-auto-rows: minmax(110px, auto);
-    height: auto;
-  }
-
-  .screen.infra-mode .trend-panel {
-    height: auto;
-    min-height: 360px;
-    overflow: visible;
   }
 
   /* 延迟查询：表单、摘要和两张图改为纵向流式布局。 */
@@ -3914,8 +3879,7 @@ a.seat-slot:hover {
 
 @media (max-width: 520px) {
   .team-row,
-  .team-trend-grid,
-  .infra-trend-grid {
+  .team-trend-grid {
     grid-template-columns: minmax(0, 1fr) !important;
   }
 
