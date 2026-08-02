@@ -786,6 +786,64 @@ class TestTeamSwitchPrefilter:
             "192.168.10.44", "192.168.10.45", "192.168.10.46"
         ]
 
+    def test_new_event_scope_invalidates_reachable_old_project_cache(self, tmp_path):
+        cache = tmp_path / "team-switches.json"
+        old_scope = gpt.build_team_switch_cache_scope(
+            "old-event", ["192.168.10.44", "192.168.10.45"],
+            ["192.168.42.254"], [42], [],
+        )
+        new_scope = gpt.build_team_switch_cache_scope(
+            "new-event", ["192.168.10.44", "192.168.10.45"],
+            ["192.168.42.254"], [42], [],
+        )
+        gpt.save_team_switch_cache(
+            str(cache), ["192.168.10.45"], updated_at=100,
+            scope_key=old_scope,
+        )
+        calls = []
+
+        switches, _aliases = gpt.discover_team_switches_cached(
+            ["192.168.10.44", "192.168.10.45"],
+            "global",
+            str(cache),
+            full_scan_interval=21600,
+            now=200,
+            workers=2,
+            probe_snmp=self._probe(calls),
+            scope_key=new_scope,
+        )
+
+        assert switches == ["192.168.10.45"]
+        assert sorted(calls) == ["192.168.10.44", "192.168.10.45"]
+        _updated_at, _cached, saved_scope = gpt.load_team_switch_cache(str(cache))
+        assert saved_scope == new_scope
+
+    def test_same_event_scope_keeps_fast_scan(self, tmp_path):
+        cache = tmp_path / "team-switches.json"
+        scope = gpt.build_team_switch_cache_scope(
+            "same-event", ["192.168.10.44", "192.168.10.45"],
+            ["192.168.42.254"], [42], [],
+        )
+        gpt.save_team_switch_cache(
+            str(cache), ["192.168.10.45"], updated_at=100,
+            scope_key=scope,
+        )
+        calls = []
+
+        switches, _aliases = gpt.discover_team_switches_cached(
+            ["192.168.10.44", "192.168.10.45"],
+            "global",
+            str(cache),
+            full_scan_interval=21600,
+            now=200,
+            workers=2,
+            probe_snmp=self._probe(calls),
+            scope_key=scope,
+        )
+
+        assert switches == ["192.168.10.45"]
+        assert calls == ["192.168.10.45"]
+
 
 class TestRefreshPlayerFdb:
     def test_only_known_wired_arp_hosts_are_probed(self):

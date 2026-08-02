@@ -39,6 +39,15 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     assert "PLAYER_TARGET_HISTORY_LOOKBACK=24h" in example
     assert 'PLAYER_SWITCH_FULL_SCAN_INTERVAL: "${PLAYER_SWITCH_FULL_SCAN_INTERVAL:-21600}"' in compose
     assert "PLAYER_SWITCH_FULL_SCAN_INTERVAL=21600" in example
+    player_service = compose.split("  player-targets:", 1)[1].split("  topology-collector:", 1)[0]
+    assert 'EVENT_NAME: "${EVENT_NAME:-}"' in player_service
+    assert "for key in EVENT_NAME TOURNAMENT_SWITCHES" in player_service
+    player = read("generate-player-targets.py")
+    assert "build_team_switch_cache_scope" in player
+    assert "discarding the previous project stage-switch cache" in player
+    assert "ignoring previous project" in player
+    assert "player targets and red-grace history" in player
+    assert "if not previous_targets and not project_scope_changed" in player
     assert 'export PLAYER_SWITCH_FORCE_FULL_SCAN=true' in compose
 
 

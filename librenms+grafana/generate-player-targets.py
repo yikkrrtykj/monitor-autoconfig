@@ -35,6 +35,9 @@ Environment variables:
   PLAYER_SWITCH_CACHE_FILE
                          confirmed stage-switch cache path (default:
                          /targets/player_team_switches.json).
+                         The cache is automatically scoped to the event name,
+                         switch candidates, player gateways, VLANs and subnets;
+                         applying a new project configuration invalidates it.
   PLAYER_SWITCH_FORCE_FULL_SCAN
                          true/false; force one full description scan. The
                          container sets this for manual immediate rescans.
@@ -828,7 +831,7 @@ def discover_team_switches(switches, community, timeout=2, workers=8,
 
 
 def load_team_switch_cache(path):
-    """Return ``(updated_at, switches)`` from a best-effort JSON cache."""
+    """Return ``(updated_at, switches, scope_key)`` from a JSON cache."""
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
@@ -837,12 +840,13 @@ def load_team_switch_cache(path):
             str(ip) for ip in data.get("switches", [])
             if isinstance(ip, str)
         ]
-        return updated_at, list(dict.fromkeys(switches))
+        scope_key = str(data.get("scope_key") or "")
+        return updated_at, list(dict.fromkeys(switches)), scope_key
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return 0.0, []
+        return 0.0, [], ""
 
 
-def save_team_switch_cache(path, switches, updated_at=None):
+def save_team_switch_cache(path, switches, updated_at=None, scope_key=""):
     """Atomically persist confirmed team switches for later fast scans."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
@@ -850,6 +854,7 @@ def save_team_switch_cache(path, switches, updated_at=None):
     payload = {
         "updated_at": float(time.time() if updated_at is None else updated_at),
         "switches": list(dict.fromkeys(switches or [])),
+        "scope_key": str(scope_key or ""),
     }
     with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
@@ -866,6 +871,7 @@ def discover_team_switches_cached(
     workers=8,
     probe_snmp=snmpwalk,
     now=None,
+    scope_key="",
 ):
     """Use confirmed switches between bounded full description scans.
 
@@ -879,7 +885,15 @@ def discover_team_switches_cached(
         return [], {}
 
     current_time = time.time() if now is None else float(now)
-    updated_at, cached = load_team_switch_cache(cache_file)
+    updated_at, cached, cached_scope = load_team_switch_cache(cache_file)
+    if scope_key and cached_scope != scope_key:
+        if cached:
+            print(
+                "[INFO] event/player network configuration changed; "
+                "discarding the previous project stage-switch cache",
+                file=sys.stderr,
+            )
+        updated_at, cached = 0.0, []
     candidate_set = set(candidates)
     cached = [ip for ip in cached if ip in candidate_set]
     cache_fresh = (
@@ -921,8 +935,26 @@ def discover_team_switches_cached(
         probe_snmp=probe_snmp,
     )
     if matched:
-        save_team_switch_cache(cache_file, matched, updated_at=current_time)
+        save_team_switch_cache(
+            cache_file,
+            matched,
+            updated_at=current_time,
+            scope_key=scope_key,
+        )
     return matched, aliases
+
+
+def build_team_switch_cache_scope(event_name, switches, gateways, vlan_ids,
+                                  wired_nets):
+    """Build a stable, non-secret identity for one event's player topology."""
+    payload = {
+        "event": str(event_name or "").strip(),
+        "switches": sorted(set(switches or []), key=IPv4Address),
+        "gateways": sorted(set(gateways or []), key=IPv4Address),
+        "vlan_ids": sorted(set(int(item) for item in (vlan_ids or []))),
+        "wired_subnets": sorted(str(net) for net in (wired_nets or [])),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def build_stage_mac_index(switches, community, vlan_ids=None,
@@ -1531,6 +1563,23 @@ def main():
     switch_cache_file = os.environ.get(
         "PLAYER_SWITCH_CACHE_FILE", "/targets/player_team_switches.json"
     )
+    switch_candidates = (
+        expand_ip_list(switches_raw, "TOURNAMENT_SWITCHES")
+        if switches_raw else []
+    )
+    team_cache_scope = build_team_switch_cache_scope(
+        os.environ.get("EVENT_NAME", ""),
+        switch_candidates,
+        gateways,
+        player_vlan_ids,
+        wired_nets,
+    )
+    _cache_time, cached_project_switches, cached_project_scope = (
+        load_team_switch_cache(switch_cache_file)
+    )
+    project_scope_changed = bool(
+        cached_project_switches and cached_project_scope != team_cache_scope
+    )
     switch_force_full_scan = env_bool(
         "PLAYER_SWITCH_FORCE_FULL_SCAN", default=False
     )
@@ -1556,8 +1605,16 @@ def main():
     if env_bool("PLAYER_WIRELESS_SCAN_EXCLUDE_GATEWAYS", default=True):
         wireless_scan_exclude.update(gateway_like_ips(wireless_nets))
     output_file = os.environ.get("PLAYER_TARGETS_FILE", "/etc/prometheus/player_targets.json")
-    previous_targets = load_previous_player_targets(output_file)
-    if not previous_targets:
+    if project_scope_changed:
+        previous_targets = []
+        print(
+            "[INFO] new event/player network scope: ignoring previous project "
+            "player targets and red-grace history",
+            file=sys.stderr,
+        )
+    else:
+        previous_targets = load_previous_player_targets(output_file)
+    if not previous_targets and not project_scope_changed:
         previous_targets = fetch_prometheus_player_history(
             os.environ.get("PROMETHEUS_URL", "http://prometheus:9090"),
             os.environ.get("PLAYER_TARGET_HISTORY_LOOKBACK", "24h"),
@@ -1594,7 +1651,7 @@ def main():
     if not switches_raw:
         print("[INFO] TOURNAMENT_SWITCHES not set, skipping SNMP target discovery", file=sys.stderr)
     else:
-        switches = expand_ip_list(switches_raw, "TOURNAMENT_SWITCHES")
+        switches = list(switch_candidates)
 
         if not switches:
             print("[WARN] TOURNAMENT_SWITCHES has no valid IPs, skipping SNMP target discovery", file=sys.stderr)
@@ -1624,6 +1681,7 @@ def main():
                 force_full_scan=switch_force_full_scan,
                 timeout=switch_probe_timeout,
                 workers=switch_probe_workers,
+                scope_key=team_cache_scope,
             )
             if not switches:
                 print(
