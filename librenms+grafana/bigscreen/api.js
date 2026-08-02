@@ -107,12 +107,12 @@
   }
 
   // Incremental range cache: the first call fetches the whole 15-minute window;
-  // every subsequent call only asks Prometheus for points newer than what we
-  // already hold, then merges + trims to the sliding window. Historical samples
-  // are immutable, so this is exact -- it just avoids re-downloading ~90 points
-  // per series each 5s tick. Safe for rate()/avg gauges since each returned
-  // point is self-contained (Prometheus looks back over its own window
-  // server-side).
+  // subsequent calls re-fetch a short overlap at the live edge, then merge +
+  // trim to the sliding window. Prometheus can fill/correct the most recent
+  // query_range evaluations after scrape lag. Treating that tail as immutable
+  // froze provisional values in the browser and produced artificial ramps.
+  // The overlap keeps the bandwidth saving while allowing those points to be
+  // replaced by their final values.
   const rangeCache = new Map();
 
   function invalidateRangeCache() {
@@ -128,8 +128,8 @@
     let existingMap = new Map();
 
     if (cached && cached.fetchedUpTo > win.start) {
-      const fetchStart = cached.fetchedUpTo + win.step;
-      if (fetchStart > win.end) {
+      const nextSample = cached.fetchedUpTo + win.step;
+      if (nextSample > win.end) {
         // No new sample is due yet -- trim the stale head and return as-is.
         const result = [];
         cached.seriesMap.forEach((item) => {
@@ -138,6 +138,8 @@
         });
         return result.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
       }
+      const overlapSeconds = Math.max(10, win.step * 3);
+      const fetchStart = Math.max(win.start, cached.fetchedUpTo - overlapSeconds);
       fetchWin = { start: fetchStart, end: win.end, step: win.step };
       existingMap = cached.seriesMap;
     }
@@ -159,9 +161,13 @@
     newSeries.forEach((item) => {
       const prev = mergedMap.get(item.name);
       if (prev) {
-        const lastT = prev.values.length ? prev.values[prev.values.length - 1].t : 0;
-        const appended = prev.values.concat(item.values.filter((point) => point.t > lastT));
-        mergedMap.set(item.name, { ...item, values: appended });
+        const byTimestamp = new Map(prev.values.map((point) => [point.t, point]));
+        // New values are authoritative inside the overlap and intentionally
+        // overwrite provisional cached points with the same timestamp.
+        item.values.forEach((point) => byTimestamp.set(point.t, point));
+        const mergedValues = Array.from(byTimestamp.values())
+          .sort((left, right) => left.t - right.t);
+        mergedMap.set(item.name, { ...item, values: mergedValues });
       } else {
         mergedMap.set(item.name, { ...item });
       }

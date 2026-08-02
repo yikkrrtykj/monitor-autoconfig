@@ -1032,6 +1032,31 @@ def _server_ip_for_edge(edge, servers):
     return None
 
 
+def merge_cached_server_ledgers(primary_edges, fallback_edges, servers):
+    """Fill holes in the durable server attachment ledger from edges.json.
+
+    Older deployments used the live topology snapshot as the attachment
+    memory.  After the dedicated ledger was introduced, migration only ran
+    when that file was completely empty.  A partially written/migrated ledger
+    therefore lost any server missing from it (commonly an offline server),
+    even though its last confirmed FDB edge was still present in edges.json.
+    Prefer the dedicated ledger per server and supplement only missing entries
+    from the live snapshot.
+    """
+    merged = []
+    linked_servers = set()
+    for collection in (primary_edges, fallback_edges):
+        for source in collection:
+            if source.get("source") != "fdb":
+                continue
+            server_ip = _server_ip_for_edge(source, servers)
+            if not server_ip or server_ip in linked_servers:
+                continue
+            merged.append(dict(source))
+            linked_servers.add(server_ip)
+    return merged
+
+
 def preserve_cached_server_edges(edges, cached_edges, servers, configured_device_ips):
     """Keep a confirmed server attachment through transient ARP/FDB misses.
 
@@ -1150,14 +1175,30 @@ def main():
     # Attachments have their own durable ledger.  edges.json is a live snapshot
     # and can legitimately be incomplete after a collector restart or a weak
     # SNMP cycle; it must not be the only memory of physical server ownership.
-    cached_attachments = load_cached_edges(attachments_path)
-    if not cached_attachments:
-        # One-time migration for deployments that already have a confirmed FDB
-        # edge in the old live snapshot.
-        cached_attachments = cached_edges
     name_index = build_name_index(devices)
     edges, placeholders = build_edges(devices, name_index)
     servers = parse_named_ipv4_targets(os.environ.get("SERVER_PING", ""))
+    loaded_attachments = load_cached_edges(attachments_path)
+    cached_attachments = merge_cached_server_ledgers(
+        loaded_attachments,
+        cached_edges,
+        servers,
+    )
+    loaded_server_ips = {
+        _server_ip_for_edge(edge, servers)
+        for edge in loaded_attachments
+        if edge.get("source") == "fdb"
+    }
+    recovered_attachments = sum(
+        1 for edge in cached_attachments
+        if _server_ip_for_edge(edge, servers) not in loaded_server_ips
+    )
+    if recovered_attachments > 0:
+        print(
+            f"[INFO] recovered {recovered_attachments} missing server "
+            "attachment(s) from the last topology snapshot",
+            file=sys.stderr,
+        )
     # Always run the exact ARP+FDB ownership lookup.  A weaker LLDP/CDP edge
     # involving the same address must not suppress authoritative discovery.
     fresh_server_edges = discover_server_edges(

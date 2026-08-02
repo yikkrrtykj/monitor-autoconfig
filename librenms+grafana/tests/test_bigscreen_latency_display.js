@@ -21,6 +21,21 @@ assert.strictEqual(isolatedOutput[0].values[0].v, 0.002, 'the sample before an i
 assert.strictEqual(isolatedOutput[0].values[2].v, 0.004, 'the sample after an isolated spike must not change');
 assert.strictEqual(isolatedInput[0].values[1].v, 0.2, 'input data must remain unchanged');
 
+const noisyNeighbourInput = series([
+  { t: 100, v: 0.002 },
+  { t: 102, v: 0.002 },
+  { t: 104, v: 0.003 },
+  { t: 106, v: 0.2 },
+  { t: 108, v: 0.02 },
+  { t: 110, v: 0.003 },
+  { t: 112, v: 0.002 }
+]);
+assert.strictEqual(
+  suppressIsolatedLatencySpikes(noisyNeighbourInput)[0].values[3].v,
+  0.0025,
+  'an isolated high sample uses the nearby normal median, not a two-point ramp'
+);
+
 const sustainedInput = series([
   { t: 100, v: 0.002 },
   { t: 102, v: 0.05 },

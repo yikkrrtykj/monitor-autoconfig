@@ -98,13 +98,22 @@
   });
 
   // Skip re-rendering a chart when its data hasn't changed since last paint.
-  // Historical Prometheus samples are immutable, so a cheap per-series digest
-  // (count + first/last timestamp + last value) captures every real change.
+  // The live edge is deliberately re-read because Prometheus may correct a
+  // recent query_range value after scrape lag. Include every visible point in
+  // the digest so an in-place correction triggers a repaint even when the
+  // series length and final timestamp stay unchanged.
   function seriesSignature(seriesList) {
     return seriesList.map((item) => {
       const values = item.values || [];
-      const last = values.length ? values[values.length - 1] : null;
-      return `${item.name}#${values.length}#${values.length ? values[0].t : ""}#${last ? `${last.t}=${last.v}` : ""}`;
+      let hash = 2166136261;
+      values.forEach((point) => {
+        const token = `${point.t}=${point.v};`;
+        for (let index = 0; index < token.length; index += 1) {
+          hash ^= token.charCodeAt(index);
+          hash = Math.imul(hash, 16777619);
+        }
+      });
+      return `${item.name}#${values.length}#${hash >>> 0}`;
     }).join("|");
   }
 

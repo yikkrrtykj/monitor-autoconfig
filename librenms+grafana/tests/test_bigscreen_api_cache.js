@@ -13,7 +13,7 @@ Date.now = () => nowSec * 1000;
 
 // Fake Prometheus: serves whatever samples exist inside the requested
 // range and records every requested window so the tests can assert that
-// the cache only re-fetches the increment.
+// the cache only re-fetches a small live-edge overlap.
 const samples = new Map();
 const calls = [];
 
@@ -62,16 +62,22 @@ global.fetch = async (url) => {
   assert.strictEqual(series[0].values[series[0].values.length - 1].t, 1000000);
   const fullCount = series[0].values.length;
 
-  // 2. One new sample appears: only the increment is requested, the new
-  //    point is appended and the stale head is trimmed off.
+  // 2. One new sample appears: a short overlap is re-read, a late correction
+  //    replaces the cached point, and the stale head is trimmed off.
   nowSec += 10;
+  samples.set(1000000, 0.009);
   samples.set(1000010, 0.002);
   series = await api.prometheusRangeCached("q");
   assert.strictEqual(calls.length, 2);
-  assert.strictEqual(calls[1].start, 1000010, "incremental fetch starts right after the watermark");
+  assert.strictEqual(calls[1].start, 999970, "incremental fetch re-reads a short live-edge overlap");
   const last = series[0].values[series[0].values.length - 1];
   assert.strictEqual(last.t, 1000010);
   assert.strictEqual(last.v, 0.002);
+  assert.strictEqual(
+    series[0].values.find((point) => point.t === 1000000).v,
+    0.009,
+    "a corrected sample inside the overlap must replace the cached value"
+  );
   assert.ok(series[0].values[0].t >= nowSec - 900, "head trimmed to the sliding window");
   assert.strictEqual(series[0].values.length, fullCount, "window slides: one in, one out");
 

@@ -559,6 +559,30 @@ class TestServerAttachmentDiscovery:
 
         assert found == cached
 
+    def test_partial_attachment_ledger_is_completed_from_live_snapshot(self):
+        primary = [{
+            "from_ip": "192.168.10.11", "to_ip": "192.168.42.203",
+            "source": "fdb",
+        }]
+        fallback = [
+            {
+                "from_ip": "192.168.10.47", "to_ip": "192.168.42.201",
+                "source": "fdb",
+            },
+            {
+                "from_ip": "192.168.10.49", "to_ip": "192.168.42.203",
+                "source": "fdb",
+            },
+        ]
+        servers = {
+            "192.168.42.201": "server1",
+            "192.168.42.203": "sdwan",
+        }
+
+        merged = gte.merge_cached_server_ledgers(primary, fallback, servers)
+
+        assert merged == [primary[0], fallback[0]]
+
     def test_fresh_server_attachment_replaces_cached_location(self):
         cached = [{
             "from_ip": "192.168.10.11", "to_ip": "192.168.42.203",

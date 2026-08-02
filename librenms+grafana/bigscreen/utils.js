@@ -121,17 +121,43 @@
     const threshold = Number.isFinite(settings.threshold) ? settings.threshold : 0.05;
     const minConsecutive = Math.max(2, Math.floor(settings.minConsecutive || 2));
     const maxGapSeconds = Number.isFinite(settings.maxGapSeconds) ? settings.maxGapSeconds : 3;
+    const baselineRadius = Math.max(1, Math.floor(settings.baselineRadius || 5));
+    const baselineWindowSeconds = Number.isFinite(settings.baselineWindowSeconds)
+      ? Math.max(maxGapSeconds, settings.baselineWindowSeconds)
+      : Math.max(12, maxGapSeconds * baselineRadius);
 
     return (seriesList || []).map((series) => {
       const source = (series.values || []).map((point) => ({ ...point }));
       const values = source.map((point) => ({ ...point }));
 
       function localBaseline(index) {
-        const adjacent = [source[index - 1], source[index + 1]]
-          .filter((point) => point && Number.isFinite(point.v) && point.v < threshold)
-          .map((point) => point.v);
-        if (adjacent.length === 2) return (adjacent[0] + adjacent[1]) / 2;
-        if (adjacent.length === 1) return adjacent[0];
+        // A single high response often lands between two already-changing
+        // samples. Averaging only those two points turns that replacement into
+        // a visible diagonal ramp. Use the median of the nearby normal ICMP
+        // baseline instead: this represents the latency at that moment while
+        // remaining insensitive to one noisy neighbour.
+        const nearby = [];
+        const centerTime = source[index] && source[index].t;
+        const first = Math.max(0, index - baselineRadius);
+        const last = Math.min(source.length - 1, index + baselineRadius);
+        for (let cursor = first; cursor <= last; cursor += 1) {
+          if (cursor === index) continue;
+          const point = source[cursor];
+          if (!point || !Number.isFinite(point.v) || point.v >= threshold) continue;
+          if (
+            Number.isFinite(centerTime)
+            && Number.isFinite(point.t)
+            && Math.abs(point.t - centerTime) > baselineWindowSeconds
+          ) continue;
+          nearby.push(point.v);
+        }
+        if (nearby.length) {
+          nearby.sort((left, right) => left - right);
+          const middle = Math.floor(nearby.length / 2);
+          return nearby.length % 2
+            ? nearby[middle]
+            : (nearby[middle - 1] + nearby[middle]) / 2;
+        }
         return Math.min(source[index].v, threshold * 0.2);
       }
 
