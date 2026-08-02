@@ -978,17 +978,21 @@
       const nameMap = await fetchInfraDeviceNames();
       if (seq !== chartSeq) return;
       const rawActivePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
-      // Use the same operator-facing noise treatment in both overview and
-      // tournament pages: isolated single-sample spikes are suppressed, while
-      // real high latency lasting for at least two probes remains visible.
-      const activePingSeries = smoothLatencyJitter(suppressIsolatedLatencySpikes(rawActivePingSeries, {
+      // Correct only an isolated >=50 ms response. The overview must otherwise
+      // keep every raw normal sample unchanged; applying a sliding median to
+      // dozens of switches creates repeated values that look like artificial
+      // stairs. Keep the established tournament presentation unchanged.
+      const correctedPingSeries = suppressIsolatedLatencySpikes(rawActivePingSeries, {
         threshold: 0.05,
         minConsecutive: 2,
         maxGapSeconds: 3
-      }), {
-        preserveAbove: 0.05,
-        radius: 2
       });
+      const activePingSeries = shouldFilterStageDevices()
+        ? smoothLatencyJitter(correctedPingSeries, {
+          preserveAbove: 0.05,
+          radius: 2
+        })
+        : correctedPingSeries;
       // Prometheus does not return placeholder samples while a target/series
       // is temporarily absent. Never join the two real samples surrounding
       // that hole: doing so draws a convincing but entirely synthetic ramp.
