@@ -1433,7 +1433,8 @@ def filter_reachable_targets(targets, timeout=1, workers=64,
                 f"{labels.get('network', '?')}={ip}"
             )
         print(
-            "[WARN] unreachable player candidate(s) dropped after red grace: "
+            "[WARN] unreachable/stale player candidate(s) omitted "
+            "(not currently eligible for red grace): "
             + "; ".join(dropped),
             file=sys.stderr,
         )
