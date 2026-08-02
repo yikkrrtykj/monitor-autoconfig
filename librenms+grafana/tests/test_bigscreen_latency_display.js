@@ -1,7 +1,6 @@
 const assert = require('assert');
 const {
   suppressIsolatedLatencySpikes,
-  smoothLatencyJitter,
   stepPathFromPoints,
   splitPointsOnGaps
 } = require('../bigscreen/utils.js');
@@ -65,27 +64,21 @@ assert.deepStrictEqual(
   'missing samples must produce a visible blank gap rather than a connecting line'
 );
 
-const jitterInput = series([
+const changingBaselineInput = series([
   { t: 100, v: 0.001 },
-  { t: 102, v: 0.003 },
-  { t: 104, v: 0.001 },
-  { t: 106, v: 0.003 },
-  { t: 108, v: 0.001 }
+  { t: 102, v: 0.004 },
+  { t: 104, v: 0.007 },
+  { t: 106, v: 0.2 },
+  { t: 108, v: 0.011 },
+  { t: 110, v: 0.013 }
 ]);
-const jitterOutput = smoothLatencyJitter(jitterInput, { preserveAbove: 0.05, radius: 2 });
-assert.strictEqual(jitterOutput[0].values[1].v, 0.002);
-assert.strictEqual(jitterOutput[0].values[2].v, 0.001);
-assert.strictEqual(jitterInput[0].values[1].v, 0.003, 'jitter smoothing must not mutate input data');
-
-const preservedHighInput = series([
-  { t: 100, v: 0.001 },
-  { t: 102, v: 0.06 },
-  { t: 104, v: 0.07 },
-  { t: 106, v: 0.002 }
-]);
-const preservedHighOutput = smoothLatencyJitter(preservedHighInput, { preserveAbove: 0.05, radius: 2 });
-assert.strictEqual(preservedHighOutput[0].values[1].v, 0.06);
-assert.strictEqual(preservedHighOutput[0].values[2].v, 0.07);
+const changingBaselineOutput = suppressIsolatedLatencySpikes(changingBaselineInput)[0].values;
+assert.deepStrictEqual(
+  changingBaselineOutput.filter((_point, index) => index !== 3),
+  changingBaselineInput[0].values.filter((_point, index) => index !== 3),
+  'isolated-spike correction must not smooth or otherwise change neighbouring normal samples'
+);
+assert.ok(changingBaselineOutput[3].v < 0.05, 'only the isolated high sample is replaced');
 
 const gapInput = series([
   { t: 100, v: 0.003 },

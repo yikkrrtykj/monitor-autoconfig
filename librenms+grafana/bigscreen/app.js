@@ -21,7 +21,7 @@
     networkLabel, seatLabel, gaugeColor, gaugePercent,
     linePathFromPoints, stepPathFromPoints, splitPointsOnGaps,
     buildCsv, formatTimestampFull, groupAddressesByCBlock,
-    suppressIsolatedLatencySpikes, smoothLatencyJitter
+    suppressIsolatedLatencySpikes
   } = window.BSUtils;
   const {
     prometheusBaseUrl, fetchWithTimeout,
@@ -981,13 +981,10 @@
       // Use the same operator-facing noise treatment in both overview and
       // tournament pages: isolated single-sample spikes are suppressed, while
       // real high latency lasting for at least two probes remains visible.
-      const activePingSeries = smoothLatencyJitter(suppressIsolatedLatencySpikes(rawActivePingSeries, {
+      const activePingSeries = suppressIsolatedLatencySpikes(rawActivePingSeries, {
         threshold: 0.05,
         minConsecutive: 2,
         maxGapSeconds: 3
-      }), {
-        preserveAbove: 0.05,
-        radius: 2
       });
       // Prometheus does not return placeholder samples while a target/series
       // is temporarily absent. Never join the two real samples surrounding

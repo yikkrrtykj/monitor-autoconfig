@@ -172,7 +172,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260802e" in html
-    assert "app.js?v=20260802j" in html
+    assert "app.js?v=20260803a" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -283,6 +283,7 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
     assert "suppressIsolatedLatencySpikes(rawActivePingSeries" in app
+    assert "smoothLatencyJitter" not in app
     assert "smoothNormalLatencyJitter" not in app
     assert "threshold: 0.05" in app
     assert "minConsecutive: 2" in app
@@ -313,8 +314,8 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "pages.js?v=20260802a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260802a" in index
-    assert "app.js?v=20260802j" in index
-    assert "utils.js?v=20260802e" in index
+    assert "app.js?v=20260803a" in index
+    assert "utils.js?v=20260803a" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -371,7 +372,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260802a" in index
-    assert "app.js?v=20260802j" in index
+    assert "app.js?v=20260803a" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
