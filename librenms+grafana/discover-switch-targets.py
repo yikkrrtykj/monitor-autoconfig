@@ -21,7 +21,7 @@ Env vars:
                               (e.g. 192.168.10.0/24 or 192.168.10.11-30).
   SNMP_COMMUNITY              SNMPv2c community (default: global).
   SWITCH_TARGETS_FILE         output path (default: /targets/switch_targets.json).
-  SWITCH_DISCOVERY_WORKERS    parallel probes (default: 32).
+  SWITCH_DISCOVERY_WORKERS    parallel probes (default: 8).
   SWITCH_DISCOVERY_PING_TIMEOUT  ICMP timeout seconds (default: 1).
   SWITCH_DISCOVERY_SNMP_TIMEOUT  SNMP timeout seconds (default: 1).
   SWITCH_DISCOVERY_MAX_HOSTS  safety cap on addresses probed (default: 1024).
@@ -93,7 +93,7 @@ def snmp_sysname(ip: str, community: str, timeout: int = 1) -> str:
 
 
 def discover(ips, community, probe_snmp=snmp_sysname, probe_ping=ping_alive,
-             workers=32, ping_timeout=1, snmp_timeout=1) -> dict[str, str]:
+             workers=8, ping_timeout=1, snmp_timeout=1) -> dict[str, str]:
     """Map live switch candidates to their display names.
 
     ICMP is only a diagnostic hint: it cannot prove a host is a switch, and an
@@ -184,7 +184,7 @@ def main() -> None:
     raw = os.environ.get("SWITCH_DISCOVERY_RANGE", "").strip()
     out = os.environ.get("SWITCH_TARGETS_FILE", "/targets/switch_targets.json")
     community = os.environ.get("SNMP_COMMUNITY", "global")
-    workers = int(os.environ.get("SWITCH_DISCOVERY_WORKERS", "32") or "32")
+    workers = int(os.environ.get("SWITCH_DISCOVERY_WORKERS", "8") or "8")
     ping_timeout = int(os.environ.get("SWITCH_DISCOVERY_PING_TIMEOUT", "1") or "1")
     snmp_timeout = int(os.environ.get("SWITCH_DISCOVERY_SNMP_TIMEOUT", "1") or "1")
     max_hosts = int(os.environ.get("SWITCH_DISCOVERY_MAX_HOSTS", str(DEFAULT_MAX_HOSTS)) or DEFAULT_MAX_HOSTS)

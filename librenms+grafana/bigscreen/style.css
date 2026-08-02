@@ -396,8 +396,13 @@ body {
 }
 
 .side-layout.compact-series {
-  grid-template-columns: minmax(0, 1fr) 174px;
-  gap: 5px;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 26vw);
+  gap: 8px;
+}
+
+.side-layout.ultra-series {
+  grid-template-columns: minmax(0, 1fr) minmax(480px, 34vw);
+  gap: 8px;
 }
 
 .bottom-layout {
@@ -454,8 +459,21 @@ body {
   font-size: 11px;
 }
 
-.compact-series .chart-legend {
+.compact-series .chart-legend,
+.ultra-series .chart-legend {
   font-size: 10px;
+}
+
+.compact-series .side-legend,
+.ultra-series .side-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: center;
+  column-gap: 8px;
+}
+
+.ultra-series .side-legend {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .bottom-legend {
@@ -481,7 +499,8 @@ body {
   line-height: 1.36;
 }
 
-.compact-series .legend-row {
+.compact-series .legend-row,
+.ultra-series .legend-row {
   grid-template-columns: 10px minmax(0, 1fr) 44px 44px;
   gap: 3px;
   line-height: 1.22;
@@ -503,7 +522,8 @@ body {
 }
 
 .dense-series .side-legend .legend-head,
-.compact-series .side-legend .legend-head {
+.compact-series .side-legend .legend-head,
+.ultra-series .side-legend .legend-head {
   display: none;
 }
 
@@ -513,7 +533,8 @@ body {
   border-radius: 999px;
 }
 
-.compact-series .legend-swatch {
+.compact-series .legend-swatch,
+.ultra-series .legend-swatch {
   width: 10px;
   height: 3px;
 }
@@ -1291,6 +1312,22 @@ body {
   .trend-panel,
   .loss-panel {
     height: 260px;
+  }
+
+  .trend-panel:has(.side-legend) {
+    height: auto;
+    min-height: 420px;
+  }
+
+  .trend-panel .side-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 260px auto;
+  }
+
+  .trend-panel .side-legend,
+  .trend-panel .ultra-series .side-legend {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-self: stretch;
   }
 
   .isp-grid {

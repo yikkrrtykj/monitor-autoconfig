@@ -26,10 +26,10 @@ Environment variables:
                          SNMP timeout used while finding switches that have
                          team X-Y descriptions (default: 2 seconds).
   PLAYER_SWITCH_PROBE_WORKERS
-                         concurrent description probes (default: 32).
+                         concurrent description probes (default: 8).
   PLAYER_SWITCH_FULL_SCAN_INTERVAL
                          seconds between full TOURNAMENT_SWITCHES description
-                         scans (default: 1800). Between full scans, only the
+                         scans (default: 21600 / 6 hours). Between full scans, only the
                          previously confirmed stage switches are queried. A
                          cached-switch failure triggers an immediate full scan.
   PLAYER_SWITCH_CACHE_FILE
@@ -38,6 +38,8 @@ Environment variables:
   PLAYER_SWITCH_FORCE_FULL_SCAN
                          true/false; force one full description scan. The
                          container sets this for manual immediate rescans.
+  PLAYER_SNMP_DELAY_MS   pause after every switch SNMP request (default: 100
+                         in Docker Compose; 0 when the script is run alone).
   PLAYER_REFRESH_FDB     true/false (default true). Ping player-subnet IPs
                          already present in gateway ARP before reading stage
                          FDB tables, so quiet but live clients are relearned.
@@ -123,6 +125,13 @@ def snmpwalk(host, community, oid, timeout=15):
     except Exception as exc:
         print(f"[WARN] snmpwalk {host} {oid}: {exc}", file=sys.stderr)
         return ""
+    finally:
+        try:
+            delay_ms = float(os.environ.get("PLAYER_SNMP_DELAY_MS", "0") or "0")
+        except ValueError:
+            delay_ms = 0
+        if delay_ms > 0:
+            time.sleep(min(delay_ms, 2000) / 1000)
 
 
 def parse_ifalias(output):
@@ -777,7 +786,7 @@ def _walk_vlan_mac_table(
     return mac_to_ifindex, source, len(bp_map)
 
 
-def discover_team_switches(switches, community, timeout=2, workers=32,
+def discover_team_switches(switches, community, timeout=2, workers=8,
                            probe_snmp=snmpwalk):
     """Find switches with at least one authoritative ``team X-Y`` ifAlias.
 
@@ -851,10 +860,10 @@ def discover_team_switches_cached(
     switches,
     community,
     cache_file,
-    full_scan_interval=1800,
+    full_scan_interval=21600,
     force_full_scan=False,
     timeout=2,
-    workers=32,
+    workers=8,
     probe_snmp=snmpwalk,
     now=None,
 ):
@@ -922,10 +931,13 @@ def build_stage_mac_index(switches, community, vlan_ids=None,
                        'mac_to_ifindex': {mac: ifIndex},
                        'oper_status': {ifIndex: status_int}}}.
 
-    Queries the default SNMP context first. If vlan_ids is set, also queries
-    each VLAN via Cisco's community-indexing (community@vlan_id) so the
+    If vlan_ids is set, queries those VLANs first via Cisco's
+    community-indexing (community@vlan_id) so the
     per-VLAN BRIDGE-MIB tables (e.g. on Cisco IOS, where the default context
-    only exposes VLAN 1) become visible. Results are merged across contexts.
+    only exposes VLAN 1) become visible. The default context is queried only
+    when no VLAN is configured or all configured VLAN lookups return empty.
+    This removes two redundant full-table walks per stage switch on the common
+    Cisco deployment while preserving a safe fallback for other vendors.
     ifOperStatus is queried once on the default context and used downstream
     to filter stale MAC/ARP entries on currently-disconnected ports.
     """
@@ -933,6 +945,7 @@ def build_stage_mac_index(switches, community, vlan_ids=None,
     index = {}
     prefetched_ifalias = prefetched_ifalias or {}
     for sw in switches:
+        switch_started = time.monotonic()
         if sw in prefetched_ifalias:
             ifalias_map = prefetched_ifalias[sw]
         else:
@@ -953,21 +966,7 @@ def build_stage_mac_index(switches, community, vlan_ids=None,
             file=sys.stderr,
         )
 
-        default_macs, default_source, default_bp = _walk_vlan_mac_table(
-            sw,
-            community,
-            allow_unfiltered_qbridge=not vlan_ids,
-        )
-        print(
-            f"[INFO] {sw}: bridgePort->ifIndex entries = {default_bp}",
-            file=sys.stderr,
-        )
-        print(
-            f"[INFO] {sw}: default-context MAC entries ({default_source}) = {len(default_macs)}",
-            file=sys.stderr,
-        )
-
-        mac_to_ifindex = dict(default_macs)
+        mac_to_ifindex = {}
         for vlan_id in vlan_ids:
             indexed_community = f"{community}@{vlan_id}"
             vlan_macs, vlan_source, vlan_bp = _walk_vlan_mac_table(
@@ -985,8 +984,38 @@ def build_stage_mac_index(switches, community, vlan_ids=None,
             for mac, ifx in vlan_macs.items():
                 mac_to_ifindex.setdefault(mac, ifx)
 
+        if not vlan_ids or not mac_to_ifindex:
+            if vlan_ids:
+                print(
+                    f"[WARN] {sw}: configured VLAN FDB lookups were empty; "
+                    "falling back to the default SNMP context",
+                    file=sys.stderr,
+                )
+            default_macs, default_source, default_bp = _walk_vlan_mac_table(
+                sw,
+                community,
+                allow_unfiltered_qbridge=not vlan_ids,
+            )
+            print(
+                f"[INFO] {sw}: bridgePort->ifIndex entries = {default_bp}",
+                file=sys.stderr,
+            )
+            print(
+                f"[INFO] {sw}: default-context MAC entries ({default_source}) = {len(default_macs)}",
+                file=sys.stderr,
+            )
+            for mac, ifx in default_macs.items():
+                mac_to_ifindex.setdefault(mac, ifx)
+        else:
+            print(
+                f"[INFO] {sw}: skipped redundant default-context FDB; "
+                "configured VLAN data is authoritative",
+                file=sys.stderr,
+            )
+
         print(
-            f"[INFO] {sw}: combined MAC table entries = {len(mac_to_ifindex)}",
+            f"[INFO] {sw}: combined MAC table entries = {len(mac_to_ifindex)}, "
+            f"snmp={time.monotonic() - switch_started:.1f}s",
             file=sys.stderr,
         )
         index[sw] = {
@@ -1463,6 +1492,7 @@ def atomic_write_json(path, data):
 
 
 def main():
+    cycle_started = time.monotonic()
     switches_raw = os.environ.get("TOURNAMENT_SWITCHES", "")
     community = os.environ.get("SNMP_COMMUNITY", "global")
     gateways_raw = os.environ.get("PLAYER_GATEWAYS", "").strip()
@@ -1493,10 +1523,10 @@ def main():
         "PLAYER_SWITCH_PROBE_TIMEOUT", 2, minimum=1, maximum=15
     )
     switch_probe_workers = env_int(
-        "PLAYER_SWITCH_PROBE_WORKERS", 32, minimum=1, maximum=256
+        "PLAYER_SWITCH_PROBE_WORKERS", 8, minimum=1, maximum=256
     )
     switch_full_scan_interval = env_int(
-        "PLAYER_SWITCH_FULL_SCAN_INTERVAL", 1800, minimum=60, maximum=86400
+        "PLAYER_SWITCH_FULL_SCAN_INTERVAL", 21600, minimum=60, maximum=86400
     )
     switch_cache_file = os.environ.get(
         "PLAYER_SWITCH_CACHE_FILE", "/targets/player_team_switches.json"
@@ -1705,7 +1735,11 @@ def main():
 
     atomic_write_json(output_file, all_targets)
 
-    print(f"[INFO] generated {len(all_targets)} player targets -> {output_file}", file=sys.stderr)
+    print(
+        f"[INFO] generated {len(all_targets)} player targets -> {output_file} "
+        f"in {time.monotonic() - cycle_started:.1f}s",
+        file=sys.stderr,
+    )
     return 0
 
 

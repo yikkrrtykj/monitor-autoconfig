@@ -39,6 +39,15 @@ migrate_legacy_defaults() {
   migrate_env_default UNIFI_SCRAPE_INTERVAL 10s 5s
   migrate_env_default SWITCH_IFMIB_SCRAPE_INTERVAL 10s 30s
   migrate_env_default STACKWISE_SCRAPE_INTERVAL 30s 60s
+  migrate_env_default SWITCH_RESOURCE_SCRAPE_INTERVAL 60s 120s
+  migrate_env_default SWITCH_DISCOVERY_WORKERS 32 8
+  migrate_env_default PLAYER_SWITCH_PROBE_WORKERS 32 8
+  migrate_env_default PLAYER_SWITCH_FULL_SCAN_INTERVAL 1800 21600
+  migrate_env_default PLAYER_TARGETS_REFRESH_INTERVAL 300 60
+  migrate_env_default TOPOLOGY_POLL_WORKERS 4 1
+  migrate_env_default TOPOLOGY_POLL_WORKERS 2 1
+  migrate_env_default TOPOLOGY_SNMP_DELAY_MS 100 500
+  migrate_env_default TOPOLOGY_SNMP_DELAY_MS 250 500
 }
 
 # 探测本机主 IP：优先默认路由源 IP（ip route get），退而用 python UDP socket（不发包），再退 hostname -I。

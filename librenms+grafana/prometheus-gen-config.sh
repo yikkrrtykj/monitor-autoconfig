@@ -51,9 +51,9 @@ SWITCH_IFMIB_SCRAPE_INTERVAL="${SWITCH_IFMIB_SCRAPE_INTERVAL:-30s}"
 # multi-member stacks. A 60-second walk is sufficient for the interactive
 # inspection/audit while avoiding another frequent management-plane burst.
 STACKWISE_SCRAPE_INTERVAL="${STACKWISE_SCRAPE_INTERVAL:-60s}"
-# Cisco CPU/memory tables contain only a handful of counters. One 60-second
-# scrape is enough for sustained alerts and avoids another high-frequency walk.
-SWITCH_RESOURCE_SCRAPE_INTERVAL="${SWITCH_RESOURCE_SCRAPE_INTERVAL:-60s}"
+# Cisco CPU/memory tables contain only a handful of counters. One 120-second
+# scrape is enough for sustained alerts and halves this all-switch poll load.
+SWITCH_RESOURCE_SCRAPE_INTERVAL="${SWITCH_RESOURCE_SCRAPE_INTERVAL:-120s}"
 # UniFi Poller（unpoller）抓取：仅在配置了控制器地址时启用。AP 掉线告警默认
 # AP 状态按 5s 抓取，配合 10s 连续掉线确认，避免控制器状态更新后还多等一轮。
 UNIFI_CONTROLLER_URL="${UNIFI_CONTROLLER_URL:-}"

@@ -37,8 +37,8 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     assert 'PROMETHEUS_URL: "http://prometheus:9090"' in compose
     assert 'PLAYER_TARGET_HISTORY_LOOKBACK: "${PLAYER_TARGET_HISTORY_LOOKBACK:-24h}"' in compose
     assert "PLAYER_TARGET_HISTORY_LOOKBACK=24h" in example
-    assert 'PLAYER_SWITCH_FULL_SCAN_INTERVAL: "${PLAYER_SWITCH_FULL_SCAN_INTERVAL:-1800}"' in compose
-    assert "PLAYER_SWITCH_FULL_SCAN_INTERVAL=1800" in example
+    assert 'PLAYER_SWITCH_FULL_SCAN_INTERVAL: "${PLAYER_SWITCH_FULL_SCAN_INTERVAL:-21600}"' in compose
+    assert "PLAYER_SWITCH_FULL_SCAN_INTERVAL=21600" in example
     assert 'export PLAYER_SWITCH_FORCE_FULL_SCAN=true' in compose
 
 
@@ -163,7 +163,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260802e" in html
-    assert "app.js?v=20260802h" in html
+    assert "app.js?v=20260802i" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -304,7 +304,7 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "pages.js?v=20260802a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260802h" in index
+    assert "app.js?v=20260802i" in index
     assert "utils.js?v=20260802d" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
@@ -345,8 +345,24 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert "./target_utils.py:/target_utils.py:ro" in topology
     assert 'TOPOLOGY_SNMP_TIMEOUT: "${TOPOLOGY_SNMP_TIMEOUT:-2}"' in topology
     assert 'TOPOLOGY_SNMP_RETRIES: "${TOPOLOGY_SNMP_RETRIES:-0}"' in topology
-    assert 'TOPOLOGY_POLL_WORKERS: "${TOPOLOGY_POLL_WORKERS:-2}"' in topology
-    assert 'TOPOLOGY_SNMP_DELAY_MS: "${TOPOLOGY_SNMP_DELAY_MS:-250}"' in topology
+    assert 'TOPOLOGY_POLL_WORKERS: "${TOPOLOGY_POLL_WORKERS:-1}"' in topology
+    assert 'TOPOLOGY_SNMP_DELAY_MS: "${TOPOLOGY_SNMP_DELAY_MS:-500}"' in topology
+
+
+def test_large_ping_trend_keeps_every_switch_identifiable():
+    app = read("bigscreen/app.js")
+    css = read("bigscreen/style.css")
+    index = read("bigscreen/index.html")
+
+    assert "sortLegendByMax: true" in app
+    assert "const legendSeries = options.sortLegendByMax" in app
+    assert 'series.length > 24' in app
+    assert '"ultra-series"' in app
+    assert ".compact-series .side-legend" in css
+    assert ".ultra-series .side-legend" in css
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
+    assert "style.css?v=20260802a" in index
+    assert "app.js?v=20260802i" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
@@ -430,6 +446,7 @@ def test_cisco_stackwise_uses_dedicated_low_frequency_snmp_module():
 def test_interconnect_job_collects_port_channel_member_relationships():
     compose = read("docker-compose.yml")
     prometheus = read("prometheus-gen-config.sh")
+    snmp = read("snmp.yml")
 
     assert "cat > /tmp/snmp-ifstack.yml" in compose
     assert "ifStackStatus" in compose
@@ -438,6 +455,12 @@ def test_interconnect_job_collects_port_channel_member_relationships():
         'write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     '
         '"if_mib, if_stack"'
     ) in prometheus
+    # if_stack is the sole owner of this table. Keeping it in if_mib used to
+    # walk the same table twice in one scrape (and on every firewall too).
+    assert "      - ifStackTable" not in snmp
+    assert "      - sysUpTime" not in snmp
+    assert "retries: 0" in snmp
+    assert "timeout: 2s" in snmp
 
 
 def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_thresholds():
@@ -452,9 +475,40 @@ def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_t
     assert '--config.file=/tmp/snmp-cisco-resources.yml' in compose
     assert 'write_snmp_job "infra-switch-resources"' in prometheus
     assert '"cisco_resources" "$SWITCH_RESOURCE_SCRAPE_INTERVAL"' in prometheus
-    assert "SWITCH_RESOURCE_SCRAPE_INTERVAL=60s" in env
+    assert "SWITCH_RESOURCE_SCRAPE_INTERVAL=120s" in env
     assert 'configInput("alerts.cpu_alert_percent", "交换机 CPU 告警阈值（%）"' in app
     assert 'configInput("alerts.memory_alert_percent", "交换机内存告警阈值（%）"' in app
+
+
+def test_poll_pressure_defaults_and_existing_env_are_migrated():
+    compose = read("docker-compose.yml")
+    example = read(".env.example")
+
+    assert 'PLAYER_SWITCH_PROBE_WORKERS: "${PLAYER_SWITCH_PROBE_WORKERS:-8}"' in compose
+    assert 'PLAYER_SNMP_DELAY_MS: "${PLAYER_SNMP_DELAY_MS:-100}"' in compose
+    assert 'SWITCH_DISCOVERY_WORKERS: "${SWITCH_DISCOVERY_WORKERS:-8}"' in compose
+    assert "PLAYER_SWITCH_PROBE_WORKERS=8" in example
+    assert "PLAYER_SWITCH_FULL_SCAN_INTERVAL=21600" in example
+    assert "PLAYER_SNMP_DELAY_MS=100" in example
+    assert "SWITCH_DISCOVERY_WORKERS=8" in example
+    assert "TOPOLOGY_POLL_WORKERS=1" in example
+    assert "TOPOLOGY_SNMP_DELAY_MS=500" in example
+    for script_name in ("deploy.sh", "apply-env.sh"):
+        script = read(script_name)
+        assert "migrate_env_default SWITCH_RESOURCE_SCRAPE_INTERVAL 60s 120s" in script
+        assert "migrate_env_default SWITCH_DISCOVERY_WORKERS 32 8" in script
+        assert "migrate_env_default PLAYER_SWITCH_PROBE_WORKERS 32 8" in script
+        assert "migrate_env_default PLAYER_SWITCH_FULL_SCAN_INTERVAL 1800 21600" in script
+        assert "migrate_env_default PLAYER_TARGETS_REFRESH_INTERVAL 300 60" in script
+        assert "migrate_env_default TOPOLOGY_POLL_WORKERS 2 1" in script
+        assert "migrate_env_default TOPOLOGY_SNMP_DELAY_MS 250 500" in script
+
+    player = read("generate-player-targets.py")
+    topology = read("generate-topology-edges.py")
+    assert 'f"snmp={time.monotonic() - switch_started:.1f}s"' in player
+    assert 'f"in {time.monotonic() - cycle_started:.1f}s"' in player
+    assert '"poll_seconds": round(time.monotonic() - started, 3)' in topology
+    assert 'f"cycle={time.monotonic() - cycle_started:.1f}s"' in topology
 
 
 def test_gateway_mac_flap_alert_is_configurable_and_enabled_by_default():

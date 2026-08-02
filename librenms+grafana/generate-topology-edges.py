@@ -15,8 +15,8 @@ Env vars:
   TOPOLOGY_SNMP_COMMUNITY    SNMPv2c community (default: SNMP_COMMUNITY).
   TOPOLOGY_SNMP_TIMEOUT      per-request timeout seconds (default: 2).
   TOPOLOGY_SNMP_RETRIES      retries per request (default: 0).
-  TOPOLOGY_POLL_WORKERS      devices polled concurrently (default: 2).
-  TOPOLOGY_SNMP_DELAY_MS     pause after each SNMP request (default: 250).
+  TOPOLOGY_POLL_WORKERS      devices polled concurrently (default: 1).
+  TOPOLOGY_SNMP_DELAY_MS     pause after each SNMP request (default: 500).
   TOPOLOGY_EDGE_RETENTION_SECONDS  keep last confirmed missing/down links in
                              edges.json (default: 86400 / 24 hours).
   TOPOLOGY_OUTPUT_DIR        where to write edges.json / legacy empty files
@@ -67,18 +67,18 @@ def _snmp_limits(timeout=None, retries=None):
 
 def _snmp_request_delay():
     try:
-        delay_ms = float(os.environ.get("TOPOLOGY_SNMP_DELAY_MS", "250") or "250")
+        delay_ms = float(os.environ.get("TOPOLOGY_SNMP_DELAY_MS", "500") or "500")
     except ValueError:
-        delay_ms = 250
+        delay_ms = 500
     if delay_ms > 0:
         time.sleep(min(delay_ms, 2000) / 1000)
 
 
 def _topology_poll_workers():
     try:
-        workers = int(os.environ.get("TOPOLOGY_POLL_WORKERS", "2") or "2")
+        workers = int(os.environ.get("TOPOLOGY_POLL_WORKERS", "1") or "1")
     except ValueError:
-        workers = 2
+        workers = 1
     return max(1, min(workers, 32))
 
 
@@ -478,6 +478,7 @@ def expand_device_entry(entry):
 
 
 def poll_device(ip, community):
+    started = time.monotonic()
     sysname = snmpget(ip, community, SYS_NAME_OID)
     ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
     ifoper = parse_if_oper_status(snmpwalk(ip, community, IF_OPER_STATUS_OID))
@@ -504,6 +505,7 @@ def poll_device(ip, community):
         "cdp_device_id": cdp_device_id,
         "cdp_device_port": cdp_device_port,
         "cdp_address": cdp_address,
+        "poll_seconds": round(time.monotonic() - started, 3),
     }
 
 
@@ -1100,6 +1102,7 @@ def replace_server_edges(edges, confirmed_edges, servers):
 
 
 def main():
+    cycle_started = time.monotonic()
     community = os.environ.get("TOPOLOGY_SNMP_COMMUNITY", "").strip() or os.environ.get("SNMP_COMMUNITY", "global").strip()
     output_dir = os.environ.get("TOPOLOGY_OUTPUT_DIR", "/etc/prometheus/targets/topology")
 
@@ -1127,10 +1130,19 @@ def main():
             devices[ip] = result
             lldp_n = len(result.get("rem_sys", {}))
             cdp_n = len(result.get("cdp_device_id", {}))
+            poll_seconds = float(result.get("poll_seconds", 0))
             if lldp_n or cdp_n:
-                print(f"[INFO] {ip}: sysname='{result['sysname']}' neighbors lldp={lldp_n} cdp={cdp_n}", file=sys.stderr)
+                print(
+                    f"[INFO] {ip}: sysname='{result['sysname']}' neighbors "
+                    f"lldp={lldp_n} cdp={cdp_n} snmp={poll_seconds:.1f}s",
+                    file=sys.stderr,
+                )
             else:
-                print(f"[WARN] {ip}: no LLDP/CDP neighbors (check 'lldp run' or 'cdp run' and SNMP access)", file=sys.stderr)
+                print(
+                    f"[WARN] {ip}: no LLDP/CDP neighbors, snmp={poll_seconds:.1f}s "
+                    "(check 'lldp run' or 'cdp run' and SNMP access)",
+                    file=sys.stderr,
+                )
 
     edges_path = os.path.join(output_dir, "edges.json")
     attachments_path = os.path.join(output_dir, "server-attachments.json")
@@ -1184,7 +1196,8 @@ def main():
     atomic_write_json(os.path.join(output_dir, "rates.json"), [])
 
     print(
-        f"[INFO] wrote {len(edges)} edge(s), topology rate polling disabled",
+        f"[INFO] wrote {len(edges)} edge(s), topology rate polling disabled, "
+        f"cycle={time.monotonic() - cycle_started:.1f}s",
         file=sys.stderr,
     )
     if placeholders:

@@ -371,8 +371,19 @@
     const calcs = options.calcs || ["mean", "max"];
     const calcsExplicit = !!options.calcs;
     const calcLabels = { last: "最近", max: "最高", mean: "平均", min: "最低" };
-    const legend = series.map((item, index) => {
-      const color = item.color || seriesColors[index % seriesColors.length];
+    const seriesColor = new Map(series.map((item, index) => [
+      item,
+      item.color || seriesColors[index % seriesColors.length]
+    ]));
+    const legendSeries = options.sortLegendByMax
+      ? [...series].sort((left, right) => {
+        const leftMax = Math.max(...left.values.map((point) => point.v));
+        const rightMax = Math.max(...right.values.map((point) => point.v));
+        return rightMax - leftMax || left.name.localeCompare(right.name, "zh-CN");
+      })
+      : series;
+    const legend = legendSeries.map((item) => {
+      const color = seriesColor.get(item);
       const values = item.values.map((point) => point.v);
       const stats = {
         last: values[values.length - 1],
@@ -402,7 +413,13 @@
       : `<div class="legend-row legend-head"><span></span><span>名称</span>${headerCells}</div>`;
     const legendClass = options.legend === "bottom" ? "chart-legend bottom-legend" : "chart-legend side-legend";
     const legendModeClass = options.legendNamesOnly ? "names-only-legend" : "";
-    const densityClass = series.length > 12 ? "compact-series" : series.length > 8 ? "dense-series" : "";
+    const densityClass = series.length > 24
+      ? "ultra-series"
+      : series.length > 12
+        ? "compact-series"
+        : series.length > 8
+          ? "dense-series"
+          : "";
 
     container.innerHTML = `
       <div class="line-layout ${options.legend === "bottom" ? "bottom-layout" : "side-layout"} ${densityClass}" style="--series-count:${series.length}">
@@ -979,6 +996,10 @@
           // trend. A 5 ms floor avoids exaggerating sub-millisecond jitter.
           minMax: 0.005,
           breakGapSeconds: pingGap,
+          // When many switches are present, put the largest observed latency
+          // first so the line responsible for the chart scale is immediately
+          // identifiable instead of falling below the clipped viewport.
+          sortLegendByMax: true,
           ...tournamentPingLegend
         });
       }

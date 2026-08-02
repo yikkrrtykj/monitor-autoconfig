@@ -6,12 +6,13 @@ auths:
 modules:
   if_mib:
     walk:
-      - sysUpTime
       - ifTable
       - ifXTable
-      # ifStackTable maps an aggregate (Po/LAG) interface to its physical member
-      # ports, so interconnect alerts can name the real ports, not just "Po4".
-      - ifStackTable
+      # ifStackTable is intentionally not here. Core interconnect monitoring
+      # requests the dedicated if_stack module, otherwise the same table is
+      # walked twice and every firewall interface scrape also pays for it.
     max_repetitions: 25
-    retries: 3
-    timeout: 10s
+    # Monitoring repeats automatically; retrying inside one scrape creates
+    # overlapping SNMP work on a slow management plane.
+    retries: 0
+    timeout: 2s
