@@ -80,7 +80,9 @@ assert.strictEqual(playerStatusText(p({ latency: 0.005 })), "正常");
 // last 90 seconds", which kept disconnected players falsely online.
 const appSource = fs.readFileSync(path.resolve(__dirname, "../bigscreen/app.js"), "utf8");
 assert.ok(appSource.includes('const playerSnapshotWindow = "15s"'));
+assert.ok(appSource.includes('const playerOfflineGraceWindow = "5m"'));
 assert.ok(appSource.includes("last_over_time(probe_success"));
 assert.ok(!appSource.includes("max_over_time(probe_success{${selector}}[${playerSnapshotWindow}])"));
+assert.ok(appSource.includes('and on(instance,team,seat,network) ${retained}'));
 
 console.log("bigscreen players tests passed");

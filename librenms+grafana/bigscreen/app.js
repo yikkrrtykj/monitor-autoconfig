@@ -8,6 +8,7 @@
   // Keep one scrape interval of tolerance without presenting a player who
   // disconnected a minute ago as still online.
   const playerSnapshotWindow = "15s";
+  const playerOfflineGraceWindow = "5m";
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
   const pages = window.BIGSCREEN_PAGES || [];
   const teamLayouts = window.BIGSCREEN_TEAM_LAYOUTS || {};
@@ -749,11 +750,13 @@
   }
 
   function playerLatencySnapshotQuery(selector) {
-    return `avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[${playerSnapshotWindow}])`;
+    const retained = `(max_over_time(probe_success{${selector}}[${playerOfflineGraceWindow}]) == 1)`;
+    return `avg_over_time(probe_icmp_duration_seconds{${selector},phase="rtt"}[${playerSnapshotWindow}]) and on(instance,team,seat,network) ${retained}`;
   }
 
   function playerSuccessSnapshotQuery(selector) {
-    return `last_over_time(probe_success{${selector}}[${playerSnapshotWindow}])`;
+    const retained = `(max_over_time(probe_success{${selector}}[${playerOfflineGraceWindow}]) == 1)`;
+    return `last_over_time(probe_success{${selector}}[${playerSnapshotWindow}]) and on(instance,team,seat,network) ${retained}`;
   }
 
   function renderTournamentTrend(page, trendSeries) {

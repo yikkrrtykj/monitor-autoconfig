@@ -160,7 +160,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260802c" in html
-    assert "app.js?v=20260802d" in html
+    assert "app.js?v=20260802e" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -295,7 +295,7 @@ def test_bigscreen_ping_trend_uses_compact_cards_and_filters_isolated_spikes():
     assert "pages.js?v=20260802a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260730d" in index
-    assert "app.js?v=20260802d" in index
+    assert "app.js?v=20260802e" in index
     assert "utils.js?v=20260802d" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
