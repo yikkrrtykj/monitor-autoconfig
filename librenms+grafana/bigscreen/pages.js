@@ -1,7 +1,7 @@
 (function () {
   window.BIGSCREEN_QUERIES = {
-    infraPingJobs: 'infra-core-ping|infra-dist-ping|infra-fw-ping',
-    pingTrend: 'max by (instance) (probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"})',
+    infraPingJobs: 'infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping',
+    pingTrend: 'max by (instance) (probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping",phase="rtt"})',
     // Infrastructure is scraped every 2 seconds.  A 30-second median uses
     // roughly 15 samples: stable against switch control-plane ICMP spikes and
     // failed-probe zeroes, but more representative than the single 1m minimum.
