@@ -1010,6 +1010,10 @@
           // trend. A 5 ms floor avoids exaggerating sub-millisecond jitter.
           minMax: 0.005,
           breakGapSeconds: pingGap,
+          // Visual-only curve smoothing: linePathFromPoints reads the raw
+          // samples but never changes them. Legend and scale calculations
+          // continue to use the original values above.
+          smooth: true,
           // When many switches are present, put the largest observed latency
           // first so the line responsible for the chart scale is immediately
           // identifiable instead of falling below the clipped viewport.

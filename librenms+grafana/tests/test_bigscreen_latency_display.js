@@ -1,6 +1,7 @@
 const assert = require('assert');
 const {
   suppressIsolatedLatencySpikes,
+  linePathFromPoints,
   stepPathFromPoints,
   splitPointsOnGaps
 } = require('../bigscreen/utils.js');
@@ -76,6 +77,11 @@ assert.deepStrictEqual(
   rawBaselineInput[0].values,
   'every normal latency sample must stay byte-for-byte unchanged; no smoothing or averaging'
 );
+
+const visualPoints = ['10,20', '30,40', '50,30'];
+const visualPointsBefore = [...visualPoints];
+assert.ok(linePathFromPoints(visualPoints, true).includes(' C '), 'visual smoothing uses a curved SVG path');
+assert.deepStrictEqual(visualPoints, visualPointsBefore, 'visual smoothing must not mutate sample coordinates');
 
 const gapInput = series([
   { t: 100, v: 0.003 },

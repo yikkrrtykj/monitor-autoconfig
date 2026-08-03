@@ -181,7 +181,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803a" in html
-    assert "app.js?v=20260803e" in html
+    assert "app.js?v=20260803f" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -302,6 +302,8 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "threshold: 0.05" in app
     assert "minConsecutive: 2" in app
     assert 'renderLineChart("pingTrendChart", activePingSeries' in app
+    assert "Visual-only curve smoothing" in app
+    assert "smooth: true" in app
     assert "const pingGap = Math.max(5, estimateStepSeconds(activePingSeries) * 3)" in app
     assert "breakGapSeconds: pingGap" in app
     assert "renderInfraTrendCards" not in app
@@ -328,7 +330,7 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "pages.js?v=20260803a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260803a" in index
-    assert "app.js?v=20260803e" in index
+    assert "app.js?v=20260803f" in index
     assert "utils.js?v=20260803c" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
@@ -386,7 +388,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260803a" in index
-    assert "app.js?v=20260803e" in index
+    assert "app.js?v=20260803f" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
