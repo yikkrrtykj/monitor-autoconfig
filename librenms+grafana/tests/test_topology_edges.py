@@ -44,6 +44,34 @@ def test_poll_device_skips_arp_walk_outside_configured_l3_scope(monkeypatch):
     assert gte.IP_NET_TO_MEDIA_PHYS_ADDRESS_OID not in walked
 
 
+def test_poll_device_uses_pagp_mapping_for_static_etherchannel(monkeypatch):
+    responses = {
+        gte.IF_NAME_OID: (
+            ".1.3.6.1.2.1.31.1.1.1.1.102 = STRING: Te1/0/2\n"
+            ".1.3.6.1.2.1.31.1.1.1.1.202 = STRING: Te2/0/2\n"
+            ".1.3.6.1.2.1.31.1.1.1.1.400 = STRING: Po11"
+        ),
+        gte.IF_OPER_STATUS_OID: (
+            ".1.3.6.1.2.1.2.2.1.8.102 = INTEGER: up(1)\n"
+            ".1.3.6.1.2.1.2.2.1.8.202 = INTEGER: up(1)\n"
+            ".1.3.6.1.2.1.2.2.1.8.400 = INTEGER: up(1)"
+        ),
+        gte.PAGP_GROUP_IFINDEX_OID: (
+            ".1.3.6.1.4.1.9.9.98.1.1.1.1.8.102 = INTEGER: 400\n"
+            ".1.3.6.1.4.1.9.9.98.1.1.1.1.8.202 = INTEGER: 400"
+        ),
+    }
+    monkeypatch.setattr(gte, "snmpget", lambda *_args, **_kwargs: "Global-new-stack")
+    monkeypatch.setattr(
+        gte, "snmpwalk",
+        lambda _ip, _community, oid: responses.get(oid, ""),
+    )
+
+    device = gte.poll_device("192.168.10.11", "global", collect_arp=False)
+
+    assert device["ifstack"] == {400: [102, 202]}
+
+
 # ---- strip_string_value() ----
 
 class TestStripStringValue:
@@ -101,6 +129,28 @@ def test_parse_if_stack_status_keeps_only_active_real_relationships():
         ".1.3.6.1.2.1.31.1.2.1.3.0.400 = INTEGER: active(1)"
     )
     assert gte.parse_if_stack_status(out) == {400: [101, 201]}
+
+
+def test_parse_pagp_manual_etherchannel_member_mapping():
+    out = (
+        ".1.3.6.1.4.1.9.9.98.1.1.1.1.8.102 = INTEGER: 400\n"
+        ".1.3.6.1.4.1.9.9.98.1.1.1.1.8.202 = INTEGER: 400\n"
+        ".1.3.6.1.4.1.9.9.98.1.1.1.1.8.301 = INTEGER: 0\n"
+        ".1.3.6.1.4.1.9.9.98.1.1.1.1.8.302 = INTEGER: 302"
+    )
+    assert gte.parse_member_aggregate_ifindex(out) == {400: [102, 202]}
+
+
+def test_parse_ieee_lacp_member_mapping_and_merge_with_ifstack():
+    out = (
+        ".1.2.840.10006.300.43.1.2.1.1.13.103 = INTEGER: 401\n"
+        ".1.2.840.10006.300.43.1.2.1.1.13.203 = INTEGER: 401"
+    )
+    lacp = gte.parse_member_aggregate_ifindex(out)
+    assert lacp == {401: [103, 203]}
+    assert gte.merge_aggregate_member_maps(
+        {400: [102]}, {400: [202]}, lacp
+    ) == {400: [102, 202], 401: [103, 203]}
 
 
 # ---- parse_lldp_loc_port_desc() ----

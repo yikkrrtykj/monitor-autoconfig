@@ -47,6 +47,11 @@ SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
 IF_NAME_OID = "1.3.6.1.2.1.31.1.1.1.1"
 IF_OPER_STATUS_OID = "1.3.6.1.2.1.2.2.1.8"
 IF_STACK_STATUS_OID = "1.3.6.1.2.1.31.1.2.1.3"
+# CISCO-PAGP-MIB pagpGroupIfIndex. Despite the MIB name, Cisco also exposes
+# manually configured/static EtherChannels here (pagpEthcOperationMode=manual).
+PAGP_GROUP_IFINDEX_OID = "1.3.6.1.4.1.9.9.98.1.1.1.1.8"
+# IEEE8023-LAG-MIB dot3adAggPortAttachedAggID for LACP member -> aggregator.
+DOT3AD_ATTACHED_AGG_ID_OID = "1.2.840.10006.300.43.1.2.1.1.13"
 LLDP_LOC_PORT_DESC_OID = "1.0.8802.1.1.2.1.3.7.1.3"
 LLDP_REM_PORT_ID_OID = "1.0.8802.1.1.2.1.4.1.1.7"
 LLDP_REM_PORT_DESC_OID = "1.0.8802.1.1.2.1.4.1.1.8"
@@ -207,6 +212,49 @@ def parse_if_stack_status(output):
         if lower not in bucket:
             bucket.append(lower)
     return mapping
+
+
+def parse_member_aggregate_ifindex(output):
+    """Member-indexed aggregation column -> {aggregate_ifindex: [members]}.
+
+    Both CISCO-PAGP-MIB::pagpGroupIfIndex and
+    IEEE8023-LAG-MIB::dot3adAggPortAttachedAggID use the physical member
+    ifIndex as the row index and return the aggregate interface's ifIndex.
+    Zero/self references are not multi-port attachments and are ignored.
+    """
+    mapping = {}
+    for line in output.strip().split("\n"):
+        parts, value = parse_oid_value(line)
+        if not parts:
+            continue
+        try:
+            member_ifindex = int(parts[-1])
+        except ValueError:
+            continue
+        parenthesized = re.search(r"\(([0-9]+)\)", value)
+        numeric = re.search(r"(?:INTEGER:\s*)?([0-9]+)\s*$", value, re.IGNORECASE)
+        match = parenthesized or numeric
+        if not match:
+            continue
+        aggregate_ifindex = int(match.group(1))
+        if aggregate_ifindex <= 0 or aggregate_ifindex == member_ifindex:
+            continue
+        bucket = mapping.setdefault(aggregate_ifindex, [])
+        if member_ifindex not in bucket:
+            bucket.append(member_ifindex)
+    return mapping
+
+
+def merge_aggregate_member_maps(*mappings):
+    """Union IF-MIB, Cisco static/PAgP, and IEEE LACP member relations."""
+    merged = {}
+    for mapping in mappings:
+        for aggregate_ifindex, member_ifindexes in (mapping or {}).items():
+            bucket = merged.setdefault(aggregate_ifindex, [])
+            for member_ifindex in member_ifindexes:
+                if member_ifindex not in bucket:
+                    bucket.append(member_ifindex)
+    return merged
 
 
 def parse_lldp_loc_port_desc(output):
@@ -490,7 +538,15 @@ def poll_device(ip, community, collect_arp=True):
     sysname = snmpget(ip, community, SYS_NAME_OID)
     ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
     ifoper = parse_if_oper_status(snmpwalk(ip, community, IF_OPER_STATUS_OID))
-    ifstack = parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID))
+    ifstack = merge_aggregate_member_maps(
+        parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID)),
+        parse_member_aggregate_ifindex(
+            snmpwalk(ip, community, PAGP_GROUP_IFINDEX_OID)
+        ),
+        parse_member_aggregate_ifindex(
+            snmpwalk(ip, community, DOT3AD_ATTACHED_AGG_ID_OID)
+        ),
+    )
     arp = parse_arp_table(
         snmpwalk(ip, community, IP_NET_TO_MEDIA_PHYS_ADDRESS_OID), ifname
     ) if collect_arp else {}
