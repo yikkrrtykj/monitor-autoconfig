@@ -36,6 +36,11 @@ import sys
 import time
 from ipaddress import IPv4Address
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - only used by Linux containers
+    fcntl = None
+
 from target_utils import expand_ipv4_entry, parse_named_ipv4_targets, write_json_atomic
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
@@ -1258,7 +1263,7 @@ def replace_server_edges(edges, confirmed_edges, servers):
     return kept
 
 
-def main():
+def _run_collection():
     cycle_started = time.monotonic()
     community = os.environ.get("TOPOLOGY_SNMP_COMMUNITY", "").strip() or os.environ.get("SNMP_COMMUNITY", "global").strip()
     output_dir = os.environ.get("TOPOLOGY_OUTPUT_DIR", "/etc/prometheus/targets/topology")
@@ -1397,6 +1402,27 @@ def main():
         for entry in placeholders[:10]:
             print(f"         {entry['from_ip']} {entry['from_port']} -> {entry['neighbor_name']} {entry['neighbor_port']}", file=sys.stderr)
     return 0
+
+
+def main():
+    """Serialize collectors so a pre-update cycle cannot overwrite new data."""
+    if fcntl is None:
+        return _run_collection()
+    output_dir = os.environ.get(
+        "TOPOLOGY_OUTPUT_DIR", "/etc/prometheus/targets/topology"
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    lock_path = os.path.join(output_dir, ".collector.lock")
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(
+                "[INFO] another topology collection is active; waiting for it",
+                file=sys.stderr,
+            )
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        return _run_collection()
 
 
 if __name__ == "__main__":

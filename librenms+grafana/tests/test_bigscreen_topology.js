@@ -142,6 +142,35 @@ assert.deepStrictEqual(c1000Link.labelLines, [
   "Te1/0/2, Te2/0/2"
 ]);
 assert.strictEqual(c1000Link.severity, "warn", "a retained member/link is visibly stale");
+const incompleteShadowLayout = topologyLayout(c1000Layers, 1365, 620, [
+  {
+    from_ip: "192.168.10.254",
+    from_port: "Te1/0/1",
+    from_member_ports: ["Te1/0/1", "Te2/0/1"],
+    to_ip: "192.168.10.11",
+    to_port: "To-WS-3850-12XS",
+    stale: false
+  },
+  {
+    from_ip: "192.168.10.11",
+    from_port: "Te1/0/2",
+    to_ip: "192.168.10.254",
+    to_port: "To-Global_2960X-4",
+    stale: false
+  },
+  {
+    from_ip: "192.168.10.11",
+    from_port: null,
+    to_ip: "192.168.10.254",
+    to_port: "To-Global_2960X-4",
+    stale: true
+  }
+]);
+assert.strictEqual(
+  incompleteShadowLayout.links.find((link) => link.logical).severity,
+  "good",
+  "an incomplete stale reverse row cannot make a device pair with live edges yellow"
+);
 const offlineC1000Layout = topologyLayout(buildTopologyLayers([
   target("infra-core-ping", "Core", "192.168.10.254"),
   target("infra-dist-ping", "pgs-avl", "192.168.10.57", false, null)

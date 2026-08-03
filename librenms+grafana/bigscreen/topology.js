@@ -483,7 +483,9 @@
           fromPorts: [],
           toPorts: [],
           count: 0,
-          stale: false
+          liveCount: 0,
+          staleCount: 0,
+          strongStale: false
         };
         group.fromPorts.push(...(
           Array.isArray(orientFromMembers) && orientFromMembers.length
@@ -496,7 +498,29 @@
             : [orientToPort]
         ));
         group.count += 1;
-        group.stale = group.stale || edge.stale === true;
+        if (edge.stale === true) {
+          group.staleCount += 1;
+          const staleFromPorts = cleanPortNames(
+            Array.isArray(orientFromMembers) && orientFromMembers.length
+              ? orientFromMembers
+              : [orientFromPort]
+          );
+          const staleToPorts = cleanPortNames(
+            Array.isArray(orientToMembers) && orientToMembers.length
+              ? orientToMembers
+              : [orientToPort]
+          );
+          // A cached row with no usable port on one endpoint is only a weak
+          // reverse LLDP/CDP shadow. If this device pair also has a live edge,
+          // that weak row must not make the healthy link yellow. Fully
+          // identified stale members still warn so a degraded LAG remains
+          // visible for the configured retention window.
+          group.strongStale = group.strongStale || (
+            staleFromPorts.length > 0 && staleToPorts.length > 0
+          );
+        } else {
+          group.liveCount += 1;
+        }
         groupedEdges.set(pairKey, group);
       });
       groupedEdges.forEach((group, pairKey) => {
@@ -506,9 +530,12 @@
         );
         const detail = portDetail(group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
         const endpointLevels = [group.from.level || "good", group.to.level || "good"];
+        const staleWarning = group.strongStale || (
+          group.staleCount > 0 && group.liveCount === 0
+        );
         const severity = endpointLevels.includes("bad")
           ? "bad"
-          : (group.stale || endpointLevels.includes("warn")
+          : (staleWarning || endpointLevels.includes("warn")
             ? "warn"
             : (endpointLevels.includes("none") ? "none" : "good"));
         lldpLinks.push({
