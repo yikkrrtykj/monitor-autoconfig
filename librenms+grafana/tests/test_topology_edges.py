@@ -57,6 +57,11 @@ def test_poll_device_uses_pagp_mapping_for_static_etherchannel(monkeypatch):
             ".1.3.6.1.2.1.2.2.1.8.202 = INTEGER: up(1)\n"
             ".1.3.6.1.2.1.2.2.1.8.400 = INTEGER: up(1)"
         ),
+        # Catalyst 1000/2960 stacks may expose only one member through the
+        # standard IF-MIB even though PAgP knows the complete static bundle.
+        gte.IF_STACK_STATUS_OID: (
+            ".1.3.6.1.2.1.31.1.2.1.3.400.102 = INTEGER: active(1)"
+        ),
         gte.PAGP_GROUP_IFINDEX_OID: (
             ".1.3.6.1.4.1.9.9.98.1.1.1.1.8.102 = INTEGER: 400\n"
             ".1.3.6.1.4.1.9.9.98.1.1.1.1.8.202 = INTEGER: 400"

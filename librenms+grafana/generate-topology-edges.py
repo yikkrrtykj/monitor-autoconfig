@@ -257,14 +257,19 @@ def merge_aggregate_member_maps(*mappings):
     return merged
 
 
-def missing_active_aggregate_ifindexes(ifnames, ifoper, member_map):
-    """Return active Port-channels whose physical members are still unknown."""
+def incomplete_active_aggregate_ifindexes(ifnames, ifoper, member_map):
+    """Return active Port-channels without at least two known physical members.
+
+    Some Catalyst stacks publish just one lower-layer row in IF-MIB even when
+    two links are bundled. A single row is therefore incomplete, not sufficient
+    evidence to skip the Cisco/IEEE aggregation tables.
+    """
     return {
         ifindex
         for ifindex, name in (ifnames or {}).items()
         if normalize_port_name(name).startswith("agg")
         and (ifoper or {}).get(ifindex) == 1
-        and not (member_map or {}).get(ifindex)
+        and len(set((member_map or {}).get(ifindex, []))) < 2
     }
 
 
@@ -605,14 +610,14 @@ def poll_device(ip, community, collect_arp=True):
     ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
     ifoper = parse_if_oper_status(snmpwalk(ip, community, IF_OPER_STATUS_OID))
     ifstack = parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID))
-    if missing_active_aggregate_ifindexes(ifname, ifoper, ifstack):
+    if incomplete_active_aggregate_ifindexes(ifname, ifoper, ifstack):
         ifstack = merge_aggregate_member_maps(
             ifstack,
             parse_member_aggregate_ifindex(
                 snmpwalk(ip, community, PAGP_GROUP_IFINDEX_OID)
             ),
         )
-    if missing_active_aggregate_ifindexes(ifname, ifoper, ifstack):
+    if incomplete_active_aggregate_ifindexes(ifname, ifoper, ifstack):
         ifstack = merge_aggregate_member_maps(
             ifstack,
             parse_member_aggregate_ifindex(
