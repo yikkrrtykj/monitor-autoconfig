@@ -168,6 +168,19 @@ def test_control_number_inputs_do_not_expose_or_react_to_wheel_spinners():
     assert "-moz-appearance: textfield" in css
 
 
+def test_switch_editor_reserves_a_full_column_for_management_ip():
+    css = read("bigscreen/platform.css")
+    block = css.split(
+        '.config-list[data-config-list="stage_switches"] .config-list-row,', 1,
+    )[1].split("}", 1)[0]
+
+    assert 'data-config-list="access_switches"' in block
+    assert (
+        "grid-template-columns: minmax(118px, 0.85fr) "
+        "minmax(138px, 1fr) 58px;"
+    ) in block
+
+
 def test_screen_title_links_back_to_home():
     html = read("bigscreen/index.html")
     css = read("bigscreen/platform.css")
@@ -194,7 +207,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert ".dhcp-toolbar .dhcp-actions" in css
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
-    assert "platform.css?v=20260803a" in html
+    assert "platform.css?v=20260803b" in html
     assert "app.js?v=20260803f" in html
 
 
@@ -372,7 +385,7 @@ def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():
     assert 'screen.className = `screen tournament-mode' in app
     assert '.screen.tournament-mode .isp-grid.isp-paged' in css
     assert "isp-carousel.js?v=20260731a" in index
-    assert "platform.css?v=20260803a" in index
+    assert "platform.css?v=20260803b" in index
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():

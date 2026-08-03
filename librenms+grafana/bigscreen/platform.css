@@ -1937,7 +1937,9 @@
 
 .config-list[data-config-list="stage_switches"] .config-list-row,
 .config-list[data-config-list="access_switches"] .config-list-row {
-  grid-template-columns: minmax(0, 1fr) 58px;
+  /* Two fields plus the remove button.  The old two-track definition put the
+     IP field into the 58px button track and forced Remove onto a second row. */
+  grid-template-columns: minmax(118px, 0.85fr) minmax(138px, 1fr) 58px;
 }
 
 .config-list[data-config-list="servers"] .config-list-row {
