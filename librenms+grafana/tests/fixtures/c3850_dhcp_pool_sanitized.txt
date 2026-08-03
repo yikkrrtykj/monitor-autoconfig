@@ -1,0 +1,36 @@
+C3850-CORE#show ip dhcp pool
+
+Pool PLAYER-A :
+ Utilization mark (high/low)    : 100 / 0
+ Subnet size (first/next)       : 0 / 0
+ Total addresses                : 254
+ Leased addresses               : 66
+ Excluded addresses             : 154
+ Pending event                  : none
+ 1 subnet is currently in the pool :
+ Current index        IP address range                    Leased/Excluded/Total
+ 198.18.0.11          198.18.0.1      - 198.18.0.254       66    / 154   / 254
+
+Pool OFFICE-A :
+ Utilization mark (high/low)    : 100 / 0
+ Subnet size (first/next)       : 0 / 0
+ Total addresses                : 254
+ Leased addresses               : 1
+ Excluded addresses             : 36
+ Pending event                  : none
+ 1 subnet is currently in the pool :
+ Current index        IP address range                    Leased/Excluded/Total
+ 198.18.1.123         198.18.1.1      - 198.18.1.254       1     / 36    / 254
+
+Pool EMPTY-A :
+ Utilization mark (high/low)    : 100 / 0
+ Subnet size (first/next)       : 0 / 0
+ Total addresses                : 254
+ Leased addresses               : 0
+ Excluded addresses             : 0
+ Pending event                  : none
+ 1 subnet is currently in the pool :
+ Current index        IP address range                    Leased/Excluded/Total
+ 198.18.2.1           198.18.2.1      - 198.18.2.254       0     / 0     / 254
+
+C3850-CORE#

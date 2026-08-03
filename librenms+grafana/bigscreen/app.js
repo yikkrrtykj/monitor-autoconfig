@@ -32,7 +32,7 @@
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
-    fetchPlatformConfig, fetchApplyStatus, postPlatform, fetchIperfStatus, fetchRetirePending, patchPlatform, fetchIncidents,
+    fetchPlatformConfig, fetchApplyStatus, postPlatform, fetchIperfStatus, fetchIperfHistory, fetchRetirePending, patchPlatform, fetchIncidents,
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
   const {
@@ -50,13 +50,20 @@
     lintSwitchScene
   } = window.BSPlatform;
   const { createIspCarousel } = window.BSIspCarousel;
+  const {
+    DEFAULT_CUSTOM_PRESET,
+    resultView: iperfResultView,
+    historyHtml: iperfHistoryHtml,
+    loadServerConfig,
+    presetView: iperfPresetView
+  } = window.BSIperf;
   let gaugeTimer = null;
   let chartTimer = null;
   let seenUpTimer = null;
   let infraSeenUp = null;  // Set of "deployed" (ever-online) infra instance names; null/empty = show all
   let infraCurrentTargets = null; // Current Prometheus targets; removes retired ISP/history series immediately
   let tournamentTimer = null;
-  let opsTimer = null;
+  let wirelessTimer = null;
   let controlTimer = null;
   let dhcpTimer = null;
   let dhcpSeq = 0;
@@ -1048,9 +1055,9 @@
     };
   }
 
-  function renderOpsKpis(items) {
-    document.getElementById("opsSummary").innerHTML = items.map((item) => `
-      <div class="ops-kpi ${item.level || "info"}">
+  function renderWirelessKpis(items) {
+    document.getElementById("wirelessSummary").innerHTML = items.map((item) => `
+      <div class="wireless-kpi ${item.level || "info"}">
         <span>${escapeHtml(item.label)}</span>
         <strong>${escapeHtml(item.value)}</strong>
         <em>${escapeHtml(item.note || "")}</em>
@@ -1068,11 +1075,11 @@
   }
 
   function renderWirelessControls() {
-    const controls = document.getElementById("opsControls");
+    const controls = document.getElementById("wirelessControls");
     if (controls.dataset.mode === "wireless") return;
     controls.dataset.mode = "wireless";
     controls.innerHTML = `
-      <div class="ops-title">
+      <div class="wireless-title">
         <strong>无线异常总览</strong>
         <span>只统计无线选手，用来确认是否有人连入 WiFi，以及是否出现高延迟或离线。</span>
       </div>
@@ -1080,7 +1087,7 @@
   }
 
   function renderWirelessBoard(players) {
-    const board = document.getElementById("opsBoard");
+    const board = document.getElementById("wirelessBoard");
     if (!players.length) {
       renderNoData(board, "当前没有无线选手");
       return;
@@ -1089,7 +1096,7 @@
       .slice()
       .sort((a, b) => Number(a.success) - Number(b.success) || (b.latency || 0) - (a.latency || 0) || a.team - b.team || a.seat - b.seat)
       .map((player) => `
-        <a class="ops-table-row ${latencyLevel(player)}" href="${escapeHtml(latencyUrlForPlayer(player))}">
+        <a class="wireless-table-row ${latencyLevel(player)}" href="${escapeHtml(latencyUrlForPlayer(player))}">
           <span data-label="队伍">${escapeHtml(teamName({ id: "" }, player.team))}</span>
           <span data-label="座位">${escapeHtml(seatLabel(player.seat))}</span>
           <span data-label="IP">${escapeHtml(player.ip)}</span>
@@ -1098,8 +1105,8 @@
         </a>
       `).join("");
     board.innerHTML = `
-      <div class="ops-table">
-        <div class="ops-table-head"><span>队伍</span><span>座位</span><span>IP</span><span>延迟</span><span>状态</span></div>
+      <div class="wireless-table">
+        <div class="wireless-table-head"><span>队伍</span><span>座位</span><span>IP</span><span>延迟</span><span>状态</span></div>
         ${rows}
       </div>
     `;
@@ -1177,7 +1184,7 @@
   }
 
   function renderApStrip(aps) {
-    const board = document.getElementById("opsBoard");
+    const board = document.getElementById("wirelessBoard");
     if (!board || !aps.length) return;
     const onlineCount = aps.filter((ap) => ap.online).length;
     const totalClients = aps.reduce((sum, ap) => sum + (ap.online ? ap.clients : 0), 0);
@@ -1212,7 +1219,7 @@
         .filter((player) => Number.isFinite(player.latency))
         .map((player) => player.latency)
         .sort((a, b) => b - a)[0];
-      renderOpsKpis([
+      renderWirelessKpis([
         { label: "无线目标", value: players.length, note: "当前识别到的无线选手" },
         { label: "在线", value: online, level: !players.length || online === players.length ? "good" : "warn", note: "当前可达" },
         { label: "高延迟", value: high, level: high ? "warn" : "good", note: ">= 80 ms" },
@@ -1223,8 +1230,8 @@
       renderApStrip(aps);
       lastDataSuccessAt = Date.now();
     } catch (error) {
-      renderNoData(document.getElementById("opsSummary"), "查询失败");
-      renderNoData(document.getElementById("opsBoard"));
+      renderNoData(document.getElementById("wirelessSummary"), "查询失败");
+      renderNoData(document.getElementById("wirelessBoard"));
       console.error(error);
     }
   }
@@ -2062,8 +2069,8 @@
 
   function configListRows(name, rows, columns) {
     const addLabels = {
-      stage_switches: "舞台交换机",
-      access_switches: "接入交换机",
+      stage_switches: "赛事交换机",
+      access_switches: "普通接入交换机",
       switches: "交换机",
       servers: "服务器",
       isp: "ISP"
@@ -2155,7 +2162,7 @@
           ${configInput("networks.player_subnets", "选手网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.40.0/24" })}
           ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.41.0/24" })}
           ${configInput("networks.player_gateways", "选手网关（可选）", { type: "textarea", compact: true, rows: 1, placeholder: "留空默认用核心交换机 IP" })}
-          ${configInput("networks.switch_management_ranges", "交换机管理网段（交换机就填这里）", { type: "textarea", compact: true, rows: 1, placeholder: "范围如 192.168.10.11-30 会自动 SNMP 发现在线交换机并上大屏；CIDR 如 192.168.10.0/24 仅用于 LibreNMS 发现" })}
+          ${configInput("networks.switch_management_ranges", "普通交换机自动发现范围", { type: "textarea", compact: true, rows: 1, placeholder: "例如 192.168.10.1-100 或 192.168.10.0/24；只进入通用监控和拓扑，不参与赛事座位识别" })}
           ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "默认 192.168.9.0/24；支持范围或单 IP" })}
         </div>
       </section>
@@ -2172,16 +2179,16 @@
       </section>
       <div class="config-section-pair">
         <section class="config-section">
-          <h3>舞台交换机（选填）</h3>
-          <p class="config-section-note">一般留空：填"交换机管理网段"后，系统会 SNMP 扫描该网段，只把真正在线的交换机加入大屏（不在线的不加），名字直接用交换机 hostname；hostname 含"舞台/stage"的自动归到赛事大屏。需要精确指定时再逐台填。</p>
+          <h3>赛事交换机（赛事项目必填）</h3>
+          <p class="config-section-note">这里只填本项目承载选手电脑的交换机，例如 192.168.10.45、192.168.10.46。它们组成赛事白名单，用于座位识别和选手监控；普通管理网段里的其它交换机不会混入赛事控制台。</p>
           ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
             { key: "name", label: "名称", placeholder: "可留空，默认用 SNMP hostname" },
-            { key: "ip", label: "管理地址", placeholder: "可留空，留空走网段自动发现" }
+            { key: "ip", label: "管理地址", placeholder: "赛事交换机 IP" }
           ])}
         </section>
         <section class="config-section">
-          <h3>其它接入交换机（选填）</h3>
-          <p class="config-section-note">一般留空：同样由"交换机管理网段"自动发现；普通大屏包含全部在线交换机。用于基础设施在线、拓扑和 LibreNMS 发现，不参与选手座位识别。</p>
+          <h3>固定普通交换机（选填）</h3>
+          <p class="config-section-note">一般留空，系统会从“普通交换机自动发现范围”识别其它接入交换机。这里只在需要固定显示名称时填写；这些设备只进入通用大屏、拓扑和 LibreNMS，不参与选手座位识别。</p>
           ${configListRows("access_switches", lastEditableConfig.devices.access_switches, [
             { key: "name", label: "名称", placeholder: "可留空，默认用 SNMP hostname" },
             { key: "ip", label: "管理地址", placeholder: "可留空" }
@@ -2226,7 +2233,7 @@
           ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
           ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
           ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
-          ${configInput("alerts.feishu_chat_id", "本监控的告警及巡检群名称")}
+          ${configInput("alerts.feishu_chat_id", "告警及巡检群名称或 Chat ID", { placeholder: "唯一群名，或 oc_ 开头的 Chat ID" })}
           ${configInput("alerts.gateway_macs", "关键网关 MAC（逗号分隔）", { placeholder: "例如：0000.5e00.0101,0000.5e00.0201" })}
           ${configInput("alerts.gateway_uplink_ports", "网关正常上联接口（逗号分隔）", { placeholder: "例如：Po1,Po10" })}
           ${configInput("alerts.mac_flap_window_seconds", "MAC 漂移统计窗口（秒）", { number: true })}
@@ -2586,10 +2593,10 @@
             <select id="iperfPublicServer"></select>
           </label>
           <label>服务器
-            <input id="iperfServer" type="text" value="speedtest.hkg12.hk.leaseweb.net" spellcheck="false" readonly />
+            <input id="iperfServer" type="text" placeholder="正在加载版本化节点配置" spellcheck="false" readonly />
           </label>
           <label>端口或范围
-            <input id="iperfPorts" type="text" inputmode="numeric" value="5201-5210" spellcheck="false" readonly />
+            <input id="iperfPorts" type="text" inputmode="numeric" spellcheck="false" readonly />
           </label>
           <label>单向时长（秒）
             <input id="iperfDuration" type="text" inputmode="numeric" value="10" spellcheck="false" />
@@ -2608,6 +2615,7 @@
         <p class="network-tool-hint" id="iperfPresetHint">香港 Leaseweb 公共节点；共享服务器繁忙时结果可能偏低。</p>
         <div class="network-tool-actions">
           <button type="button" class="delivery-test-alert" id="iperfRunBtn">开始测速</button>
+          <button type="button" class="delivery-test-alert danger" id="iperfStopBtn" hidden>停止当前测速</button>
           <span>正常双向约 20 秒；节点繁忙时会重试，最长约 60 秒。</span>
         </div>
         <div class="iperf-confirm" id="iperfConfirm" hidden>
@@ -2631,81 +2639,55 @@
           <span id="iperfProgressDetail">正在建立任务…</span>
         </div>
         <div class="network-tool-result" id="iperfResult" hidden></div>
+        <div class="network-tool-history" id="iperfHistory" aria-live="polite"></div>
       </section>
     `;
-    const iperfPresets = {
-      hongkong: {
-        note: "香港公共节点；服务器和端口来自公共列表并自动锁定。",
-        servers: [
-          { label: "Leaseweb 香港 · 10G", server: "speedtest.hkg12.hk.leaseweb.net", ports: "5201-5210" },
-          { label: "香港节点 · 23.249.58.14 · 10G", server: "23.249.58.14", ports: "30000" },
-          { label: "香港节点 · 84.17.57.129 · 2×10G", server: "84.17.57.129", ports: "5201" }
-        ]
-      },
-      singapore: {
-        note: "新加坡公共节点；适合东南亚项目赛前参考。",
-        servers: [
-          { label: "Leaseweb 新加坡 · 10G", server: "speedtest.sin1.sg.leaseweb.net", ports: "5201-5210" },
-          { label: "OVH 新加坡 · 1G", server: "sgp.proof.ovh.net", ports: "5201-5210" },
-          { label: "新加坡节点 · 96.45.38.22 · 10G", server: "96.45.38.22", ports: "30000" },
-          { label: "新加坡节点 · 89.187.162.1 · 2×10G", server: "89.187.162.1", ports: "5201" }
-        ]
-      },
-      istanbul: {
-        note: "土耳其公共节点；包含伊斯坦布尔和布尔萨。",
-        servers: [
-          { label: "伊斯坦布尔 · 69.48.237.66 · 10G", server: "69.48.237.66", ports: "30000" },
-          { label: "伊斯坦布尔 · 156.146.52.1 · 2×10G", server: "156.146.52.1", ports: "5201" },
-          { label: "布尔萨 · iperf.pendc.com · 10G", server: "iperf.pendc.com", ports: "5201-5209" }
-        ]
-      },
-      indonesia: {
-        note: "印度尼西亚公共节点；共享服务器只用于赛前参考。",
-        servers: [
-          { label: "Curug · iperf.scbd.net.id · 1G", server: "iperf.scbd.net.id", ports: "5201-5209" },
-          { label: "Kediri · MyRepublic", server: "speedtest.tangerang2.myrepublic.net.id", ports: "9200-9240" }
-        ]
-      },
-      custom: {
-        placeholder: "填写自有或其他公共 iPerf3 服务器",
-        note: "使用手工填写的服务器和端口。"
-      }
-    };
+    let iperfPresets = { custom: DEFAULT_CUSTOM_PRESET };
     const iperfPreset = document.getElementById("iperfPreset");
     const iperfPublicServer = document.getElementById("iperfPublicServer");
     const iperfServer = document.getElementById("iperfServer");
     const iperfPorts = document.getElementById("iperfPorts");
     const iperfHint = document.getElementById("iperfPresetHint");
     const applyIperfPublicServer = () => {
-      const preset = iperfPresets[iperfPreset.value] || iperfPresets.custom;
-      const selected = (preset.servers || [])[Number(iperfPublicServer.value || 0)];
-      if (!selected) return;
-      iperfServer.value = selected.server;
-      iperfPorts.value = selected.ports;
+      const view = iperfPresetView(iperfPresets, iperfPreset.value, iperfPublicServer.value);
+      if (!view.server) return;
+      iperfServer.value = view.server;
+      iperfPorts.value = view.ports;
     };
     const applyIperfPreset = () => {
-      const preset = iperfPresets[iperfPreset.value] || iperfPresets.custom;
-      iperfServer.placeholder = preset.placeholder || "iPerf3 服务器域名或 IP";
-      const isCustom = iperfPreset.value === "custom";
-      iperfServer.readOnly = !isCustom;
-      iperfPorts.readOnly = !isCustom;
-      if (isCustom) {
+      const view = iperfPresetView(iperfPresets, iperfPreset.value);
+      iperfServer.placeholder = view.placeholder;
+      iperfServer.readOnly = !view.isCustom;
+      iperfPorts.readOnly = !view.isCustom;
+      if (view.isCustom) {
         iperfPublicServer.innerHTML = '<option value="0">手工填写</option>';
         iperfPublicServer.disabled = true;
         iperfServer.value = "";
-        iperfPorts.value = "5201";
+        iperfPorts.value = view.ports;
       } else {
         iperfPublicServer.disabled = false;
-        iperfPublicServer.innerHTML = preset.servers.map((item, index) => (
-          `<option value="${index}">${escapeHtml(item.label)}</option>`
+        iperfPublicServer.innerHTML = view.options.map((item) => (
+          `<option value="${item.index}">${escapeHtml(item.label)}</option>`
         )).join("");
-        applyIperfPublicServer();
+        iperfServer.value = view.server;
+        iperfPorts.value = view.ports;
       }
-      if (iperfHint) iperfHint.textContent = preset.note;
+      if (iperfHint) iperfHint.textContent = view.note;
     };
     if (iperfPreset) iperfPreset.addEventListener("change", applyIperfPreset);
     if (iperfPublicServer) iperfPublicServer.addEventListener("change", applyIperfPublicServer);
     applyIperfPreset();
+    loadServerConfig(fetch)
+      .then((payload) => {
+        iperfPresets = payload.presets;
+        applyIperfPreset();
+        if (iperfHint && payload.verifiedAt) {
+          iperfHint.textContent += ` · 节点核验 ${payload.verifiedAt}`;
+        }
+      })
+      .catch((error) => {
+        if (iperfHint) iperfHint.textContent = `公共节点配置加载失败：${error.message}；仍可使用自定义节点。`;
+      });
     const preBtn = document.getElementById("preCheckBtn");
     if (preBtn) {
       preBtn.addEventListener("click", async () => {
@@ -2741,10 +2723,16 @@
           const res = await postPlatform("/test-alert", {});
           const ok = Boolean(res && res.ok);
           if (result) {
+            const channel = { app: "自建应用", webhook: "群机器人 Webhook", "dry-run": "DryRun" }[res && res.channel] || "未知通道";
+            const fellBack = ok && res && res.channel === "webhook" && res.appError;
             result.textContent = ok
-              ? (res.dryRun ? "已触发（DryRun 模式，未真正发送）" : "已发送，请到飞书群确认收到")
-              : `失败：${(res && res.error) || "未知错误"}`;
-            result.className = `test-alert-result ${ok ? "good" : "bad"}`;
+              ? (res.dryRun
+                ? "已触发（DryRun 模式，未真正发送）"
+                : fellBack
+                  ? `已通过 Webhook 回退发送；自建应用失败：${res.appError}`
+                  : `已通过${channel}发送，请到飞书群确认收到`)
+              : `失败：${(res && (res.appError || res.error)) || "未知错误"}`;
+            result.className = `test-alert-result ${fellBack ? "warn" : ok ? "good" : "bad"}`;
           }
         } catch (error) {
           if (result) { result.textContent = `失败：${error.message}`; result.className = "test-alert-result bad"; }
@@ -2838,12 +2826,16 @@
     const iperfConfirmSummary = document.getElementById("iperfConfirmSummary");
     const iperfConfirmBtn = document.getElementById("iperfConfirmBtn");
     const iperfCancelBtn = document.getElementById("iperfCancelBtn");
+    const iperfStopBtn = document.getElementById("iperfStopBtn");
     const iperfProgress = document.getElementById("iperfProgress");
     const iperfProgressPhase = document.getElementById("iperfProgressPhase");
     const iperfProgressElapsed = document.getElementById("iperfProgressElapsed");
     const iperfProgressFill = document.getElementById("iperfProgressFill");
     const iperfProgressDetail = document.getElementById("iperfProgressDetail");
+    const iperfHistory = document.getElementById("iperfHistory");
     let pendingIperfRequest = null;
+    let activeIperfTaskId = "";
+    const iperfTaskStorageKey = "bigscreen.iperfTaskId";
     let iperfProgressTimer = null;
     let iperfProgressRefreshing = false;
 
@@ -2864,7 +2856,8 @@
         upload: "上传测速",
         download: "下载测速",
         complete: "测速完成",
-        failed: "测速失败"
+        failed: "测速失败",
+        cancelled: "测速已停止"
       };
       iperfProgress.hidden = false;
       iperfProgress.className = `iperf-progress ${status.state || "running"}`;
@@ -2880,7 +2873,28 @@
       if (iperfProgressRefreshing) return;
       iperfProgressRefreshing = true;
       try {
-        renderIperfProgress(await fetchIperfStatus());
+        const status = await fetchIperfStatus(activeIperfTaskId);
+        renderIperfProgress(status);
+        if (status.state === "unavailable" && /不存在|过期/.test(status.error || "")) {
+          if (iperfProgressTimer) window.clearInterval(iperfProgressTimer);
+          iperfProgressTimer = null;
+          window.sessionStorage.removeItem(iperfTaskStorageKey);
+          activeIperfTaskId = "";
+          iperfBtn.disabled = false;
+          if (iperfStopBtn) iperfStopBtn.hidden = true;
+          renderIperfTaskResult({ state: "failed", message: status.error });
+          return;
+        }
+        if (["complete", "failed", "cancelled"].includes(status.state)) {
+          if (iperfProgressTimer) window.clearInterval(iperfProgressTimer);
+          iperfProgressTimer = null;
+          window.sessionStorage.removeItem(iperfTaskStorageKey);
+          activeIperfTaskId = "";
+          iperfBtn.disabled = false;
+          if (iperfStopBtn) iperfStopBtn.hidden = true;
+          renderIperfTaskResult(status);
+          refreshIperfHistory();
+        }
       } finally {
         iperfProgressRefreshing = false;
       }
@@ -2896,98 +2910,60 @@
         maxSeconds: 60,
         message: "正在连接测速服务…"
       });
+      if (iperfStopBtn) iperfStopBtn.hidden = false;
       iperfProgressTimer = window.setInterval(refreshIperfProgress, 500);
     };
 
-    const stopIperfProgress = async () => {
-      if (iperfProgressTimer) {
-        window.clearInterval(iperfProgressTimer);
-        iperfProgressTimer = null;
-      }
-      await refreshIperfProgress();
+    const renderIperfTaskResult = (response) => {
+      const result = document.getElementById("iperfResult");
+      if (!result) return;
+      result.hidden = false;
+      const view = iperfResultView(response, escapeHtml);
+      result.className = view.className;
+      if (Object.prototype.hasOwnProperty.call(view, "html")) result.innerHTML = view.html;
+      else result.textContent = view.text;
     };
 
-    const formatIperfBytes = (value) => {
-      const bytes = Math.max(0, Number(value || 0));
-      if (bytes >= 1024 ** 3) return `${(bytes / (1024 ** 3)).toFixed(2)} GB`;
-      if (bytes >= 1024 ** 2) return `${(bytes / (1024 ** 2)).toFixed(2)} MB`;
-      if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
-      return `${Math.round(bytes)} B`;
+    const renderIperfHistory = (payload) => {
+      if (!iperfHistory) return;
+      iperfHistory.innerHTML = iperfHistoryHtml(payload, escapeHtml);
     };
 
-    const iperfDirectionDetails = (item, protocol) => {
-      const labels = { upload: "上传", download: "下载" };
-      const sender = item.sender || {};
-      const receiver = item.receiver || {};
-      const intervals = item.intervals || [];
-      return `
-        <section class="iperf-direction-detail">
-          <header>
-            <strong>${labels[item.direction] || escapeHtml(item.direction)}明细</strong>
-            <span>${escapeHtml(protocol)} · 接收端全程平均 ${Number(item.mbps || 0).toFixed(2)} Mbps</span>
-          </header>
-          <div class="iperf-endpoints">
-            <div><span>发送端总计</span><strong>${Number(sender.mbps || 0).toFixed(2)} Mbps</strong><small>${formatIperfBytes(sender.bytes)} · 重传 ${Number(sender.retransmits || 0)}</small></div>
-            <div><span>接收端总计</span><strong>${Number(receiver.mbps || item.mbps || 0).toFixed(2)} Mbps</strong><small>${formatIperfBytes(receiver.bytes || item.bytes)} · ${Number(receiver.seconds || item.seconds || 0).toFixed(2)} 秒</small></div>
-          </div>
-          ${intervals.length ? `
-            <div class="iperf-interval-table-wrap">
-              <table class="iperf-interval-table">
-                <thead><tr><th>区间</th><th>传输量</th><th>平均速率</th><th>TCP 重传</th></tr></thead>
-                <tbody>
-                  ${intervals.map((interval) => `
-                    <tr>
-                      <td>${Number(interval.start || 0).toFixed(2)}–${Number(interval.end || 0).toFixed(2)} 秒</td>
-                      <td>${formatIperfBytes(interval.bytes)}</td>
-                      <td>${Number(interval.mbps || 0).toFixed(2)} Mbps</td>
-                      <td>${interval.retransmits == null ? "—" : Number(interval.retransmits)}</td>
-                    </tr>
-                  `).join("")}
-                </tbody>
-                <tfoot><tr><th>全程</th><th>${formatIperfBytes(receiver.bytes || item.bytes)}</th><th>${Number(receiver.mbps || item.mbps || 0).toFixed(2)} Mbps</th><th>${Number(sender.retransmits || item.retransmits || 0)}</th></tr></tfoot>
-              </table>
-            </div>
-          ` : '<p class="network-result-note">本次服务器没有返回每秒区间明细。</p>'}
-        </section>
-      `;
-    };
+    const refreshIperfHistory = async () => renderIperfHistory(await fetchIperfHistory());
 
     const executeIperfTest = async (request) => {
       const result = document.getElementById("iperfResult");
       hideIperfConfirmation();
       iperfBtn.disabled = true;
-      startIperfProgress();
       if (result) {
         result.hidden = false;
         result.className = "network-tool-result loading";
-        result.textContent = "正在寻找可用端口并测速，请勿重复点击……";
+        result.textContent = "正在创建独立测速任务……";
       }
       try {
-        const response = await postPlatform("/network/iperf3", request, { timeoutMs: 310000 });
-        const labels = { upload: "上传", download: "下载" };
-        const protocol = response.protocol || "TCP";
-        if (result) {
-          result.className = "network-tool-result good";
-          result.innerHTML = `
-            <div class="network-result-summary">
-              ${(response.results || []).map((item) => `
-                <div><span>${labels[item.direction] || escapeHtml(item.direction)} · 接收端平均</span><strong>${Number(item.mbps || 0).toFixed(2)} Mbps</strong><small>${formatIperfBytes(item.bytes)} · 端口 ${Number(item.port) || "?"} · 重传 ${Number(item.retransmits || 0)}</small></div>
-              `).join("")}
-            </div>
-            <p class="network-result-note">${escapeHtml(protocol)} · 服务器 ${escapeHtml(response.server)} · ${Number(response.parallel) || "?"} 路并发 · 单向 ${Number(response.duration) || "?"} 秒</p>
-            <div class="iperf-direction-details">
-              ${(response.results || []).map((item) => iperfDirectionDetails(item, protocol)).join("")}
-            </div>
-          `;
-        }
+        const response = await postPlatform("/network/iperf3", request, { timeoutMs: 10000 });
+        activeIperfTaskId = response.taskId || "";
+        if (!activeIperfTaskId) throw new Error("后端没有返回任务编号");
+        window.sessionStorage.setItem(iperfTaskStorageKey, activeIperfTaskId);
+        if (result) result.textContent = `任务 ${activeIperfTaskId} 已开始，正在寻找可用端口……`;
+        startIperfProgress();
+        await refreshIperfProgress();
       } catch (error) {
+        const runningTaskId = error && error.payload && error.payload.taskId;
+        if (error.status === 409 && runningTaskId) {
+          activeIperfTaskId = runningTaskId;
+          window.sessionStorage.setItem(iperfTaskStorageKey, activeIperfTaskId);
+          if (result) result.textContent = `任务 ${activeIperfTaskId} 正在运行，已连接到该任务。`;
+          startIperfProgress();
+          await refreshIperfProgress();
+          return;
+        }
         if (result) {
           result.className = "network-tool-result bad";
           result.textContent = `测速失败：${error.message}`;
         }
-      } finally {
-        await stopIperfProgress();
         iperfBtn.disabled = false;
+        if (iperfStopBtn) iperfStopBtn.hidden = true;
       }
     };
 
@@ -3025,6 +3001,39 @@
       iperfConfirmBtn.addEventListener("click", () => {
         if (pendingIperfRequest) executeIperfTest(pendingIperfRequest);
       });
+    }
+    if (iperfStopBtn) {
+      iperfStopBtn.addEventListener("click", async () => {
+        if (!activeIperfTaskId) return;
+        iperfStopBtn.disabled = true;
+        try {
+          await postPlatform("/network/iperf3/stop", { taskId: activeIperfTaskId }, { timeoutMs: 5000 });
+          if (iperfProgressDetail) iperfProgressDetail.textContent = "正在停止测速进程……";
+        } catch (error) {
+          if (iperfProgressDetail) iperfProgressDetail.textContent = `停止失败：${error.message}`;
+        } finally {
+          iperfStopBtn.disabled = false;
+        }
+      });
+    }
+    if (iperfHistory) {
+      iperfHistory.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-task-id]");
+        if (!button) return;
+        try {
+          renderIperfTaskResult(await fetchIperfStatus(button.dataset.taskId));
+        } catch (error) {
+          renderIperfTaskResult({ state: "failed", message: error.message });
+        }
+      });
+      refreshIperfHistory();
+    }
+    const rememberedIperfTaskId = window.sessionStorage.getItem(iperfTaskStorageKey) || "";
+    if (rememberedIperfTaskId) {
+      activeIperfTaskId = rememberedIperfTaskId;
+      iperfBtn.disabled = true;
+      startIperfProgress();
+      refreshIperfProgress();
     }
 
   }
@@ -3468,10 +3477,10 @@
     }
   }
 
-  function stopOpsRefresh() {
-    if (opsTimer) {
-      window.clearInterval(opsTimer);
-      opsTimer = null;
+  function stopWirelessRefresh() {
+    if (wirelessTimer) {
+      window.clearInterval(wirelessTimer);
+      wirelessTimer = null;
     }
   }
 
@@ -3512,12 +3521,12 @@
     }
   }
 
-  function startOpsRefresh(page) {
-    stopOpsRefresh();
+  function startWirelessRefresh(page) {
+    stopWirelessRefresh();
     const refresh = refreshWirelessOverview;
     refresh();
-    opsTimer = window.setInterval(refresh, 5000);
-    const rescanBtn = document.getElementById("opsRescan");
+    wirelessTimer = window.setInterval(refresh, 5000);
+    const rescanBtn = document.getElementById("wirelessRescan");
     if (rescanBtn) {
       rescanBtn.hidden = page.id === "wireless";
       if (!rescanBtn.dataset.bound) {
@@ -3776,7 +3785,7 @@
       status.className = "dhcp-status good";
       status.textContent = payload.refreshing
         ? `正在刷新，当前显示上次结果 · 采集于 ${captured}`
-        : `${payload.cached ? `使用 ${Number(payload.cacheAgeSeconds || 0).toFixed(0)} 秒内缓存` : "已从核心交换机刷新"} · 采集于 ${captured}`;
+        : `${payload.cached ? `使用 ${Number(payload.cacheAgeSeconds || 0).toFixed(0)} 秒内缓存` : `已从核心交换机刷新（${Number(payload.collectionSeconds || 0).toFixed(2)} 秒）`} · 采集于 ${captured}`;
     }
 
     const utilization = Number(summary.utilization || 0);
@@ -3980,7 +3989,7 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
-    stopOpsRefresh();
+    stopWirelessRefresh();
     stopControlRefresh();
     stopDhcpRefresh();
     stopTopologyRefresh();
@@ -3989,7 +3998,7 @@
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
-    setVisible("opsPanel", false);
+    setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
@@ -4001,7 +4010,7 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
-    stopOpsRefresh();
+    stopWirelessRefresh();
     stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = "screen control-mode";
@@ -4009,7 +4018,7 @@
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
-    setVisible("opsPanel", false);
+    setVisible("wirelessPanel", false);
     setVisible("controlPanel", true);
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
@@ -4020,7 +4029,7 @@
   function showInfra() {
     const screen = document.querySelector(".screen");
     stopTournamentRefresh();
-    stopOpsRefresh();
+    stopWirelessRefresh();
     stopControlRefresh();
     stopDhcpRefresh();
     stopTopologyRefresh();
@@ -4031,7 +4040,7 @@
     setVisible("panelGrid", true);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
-    setVisible("opsPanel", false);
+    setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
@@ -4041,7 +4050,7 @@
 
   function showTournament(page) {
     const screen = document.querySelector(".screen");
-    stopOpsRefresh();
+    stopWirelessRefresh();
     stopControlRefresh();
     stopDhcpRefresh();
     stopTopologyRefresh();
@@ -4052,7 +4061,7 @@
     setVisible("panelGrid", true);
     setVisible("tournamentPanel", true);
     setVisible("evidencePanel", false);
-    setVisible("opsPanel", false);
+    setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
@@ -4066,7 +4075,7 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
-    stopOpsRefresh();
+    stopWirelessRefresh();
     stopControlRefresh();
     stopDhcpRefresh();
     stopTopologyRefresh();
@@ -4075,7 +4084,7 @@
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", true);
-    setVisible("opsPanel", false);
+    setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
@@ -4083,24 +4092,24 @@
     setupEvidencePanel();
   }
 
-  function showOps(page) {
+  function showWireless(page) {
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
     stopControlRefresh();
     stopDhcpRefresh();
     stopTopologyRefresh();
-    screen.className = `screen ops-mode ${page.id}-mode`;
+    screen.className = `screen wireless-mode ${page.id}-mode`;
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
-    setVisible("opsPanel", true);
+    setVisible("wirelessPanel", true);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
-    startOpsRefresh(page);
+    startWirelessRefresh(page);
   }
 
   // ---- Incident root-cause analysis ----
@@ -4311,7 +4320,7 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
-    stopOpsRefresh();
+    stopWirelessRefresh();
     stopControlRefresh();
     stopDhcpRefresh();
     stopTopologyRefresh();
@@ -4320,7 +4329,7 @@
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
-    setVisible("opsPanel", false);
+    setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", true);
@@ -4595,7 +4604,7 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
-    stopOpsRefresh();
+    stopWirelessRefresh();
     stopControlRefresh();
     stopDhcpRefresh();
     screen.className = "screen topology-mode";
@@ -4603,7 +4612,7 @@
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
-    setVisible("opsPanel", false);
+    setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
@@ -4619,7 +4628,7 @@
     const screen = document.querySelector(".screen");
     stopInfraRefresh();
     stopTournamentRefresh();
-    stopOpsRefresh();
+    stopWirelessRefresh();
     stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen dhcp-mode";
@@ -4627,7 +4636,7 @@
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
-    setVisible("opsPanel", false);
+    setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", true);
     setVisible("incidentPanel", false);
@@ -4659,7 +4668,7 @@
     } else if (page.id === "topology") {
       showTopology();
     } else if (page.id === "wireless") {
-      showOps(page);
+      showWireless(page);
     } else if (page.kind) {
       showTournament(page);
     } else {
@@ -4668,7 +4677,7 @@
   }
 
   function anyRefreshActive() {
-    return Boolean(gaugeTimer || chartTimer || tournamentTimer || opsTimer || controlTimer || dhcpTimer || topologyTimer);
+    return Boolean(gaugeTimer || chartTimer || tournamentTimer || wirelessTimer || controlTimer || dhcpTimer || topologyTimer);
   }
 
   // Warn when the active page's polling loop hasn't produced fresh data for a

@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -164,6 +165,67 @@ def test_iperf_bidirectional_test_shares_one_total_deadline(monkeypatch, tmp_pat
     assert api.iperf_status_payload()["maxSeconds"] == 60
 
 
+def test_iperf_tasks_are_isolated_stoppable_and_report_conflict(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    started_threads = []
+
+    class DeferredThread:
+        def __init__(self, target, args, **_kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            started_threads.append(self)
+
+    monkeypatch.setattr(api.threading, "Thread", DeferredThread)
+    first = api.start_iperf_task({"server": "speed.example.test"})
+    task_id = first["taskId"]
+
+    assert task_id.startswith("iperf-")
+    assert api.iperf_status_payload(task_id)["state"] == "queued"
+    assert len(started_threads) == 1
+    with pytest.raises(api.DiagnosticError) as conflict:
+        api.start_iperf_task({"server": "other.example.test"})
+    assert conflict.value.status == 409
+    assert conflict.value.payload["taskId"] == task_id
+
+    stopped = api.stop_iperf_task({"taskId": task_id})
+    assert stopped["state"] == "stopping"
+    assert api.IPERF_CANCEL_EVENTS[task_id].is_set()
+
+
+def test_iperf_history_keeps_five_and_survives_memory_expiry(tmp_path):
+    api = load_api(tmp_path)
+    for index in range(7):
+        api._save_iperf_history({
+            "taskId": f"task-{index}",
+            "state": "complete",
+            "server": f"node-{index}.example.test",
+            "finishedAt": index,
+            "results": [],
+        })
+
+    payload = api.iperf_history_payload()
+    assert [item["taskId"] for item in payload["history"]] == [
+        "task-6", "task-5", "task-4", "task-3", "task-2",
+    ]
+    assert api.IPERF_TASKS == {}
+    assert api.iperf_status_payload("task-4")["server"] == "node-4.example.test"
+
+
+def test_managed_iperf_command_does_not_deadlock_on_large_json_output(tmp_path):
+    api = load_api(tmp_path)
+    completed = api._execute_iperf_command(
+        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 200000)"],
+        timeout=5,
+        task_id="large-output",
+    )
+
+    assert completed.returncode == 0
+    assert len(completed.stdout) == 200000
+    assert "large-output" not in api.IPERF_PROCESSES
+
+
 def test_cisco_dhcp_pool_parser_reports_capacity_and_thresholds(tmp_path):
     api = load_api(tmp_path)
 
@@ -181,6 +243,25 @@ def test_cisco_dhcp_pool_parser_reports_capacity_and_thresholds(tmp_path):
     }
     assert pools[1]["utilization"] == 90.4
     assert pools[1]["level"] == "bad"
+
+
+def test_sanitized_c3850_fixture_matches_field_output_shape(tmp_path):
+    api = load_api(tmp_path)
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures")
+    with open(os.path.join(fixtures, "c3850_dhcp_pool_sanitized.txt"), encoding="utf-8") as handle:
+        pools = api.parse_cisco_dhcp_pools(handle.read())
+    with open(os.path.join(fixtures, "c3850_dhcp_aux_sanitized.txt"), encoding="utf-8") as handle:
+        auxiliary = handle.read()
+
+    assert [pool["name"] for pool in pools] == ["PLAYER-A", "OFFICE-A", "EMPTY-A"]
+    assert pools[0]["available"] == 34
+    assert pools[2]["utilization"] == 0
+    assert api.parse_cisco_dhcp_conflicts(auxiliary) == []
+    assert api.parse_cisco_dhcp_statistics(auxiliary)["automaticBindings"] == 171
+    excluded = api.parse_cisco_dhcp_excluded(auxiliary)
+    assert len(excluded) == 190
+    api.attach_dhcp_pool_exclusions(pools, excluded)
+    assert pools[0]["excludedAddresses"][0] == "198.18.0.101"
 
 
 def test_cisco_dhcp_conflict_and_statistics_parsers(tmp_path):
@@ -490,6 +571,8 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
     pages = (root / "bigscreen" / "pages.js").read_text(encoding="utf-8")
     app = (root / "bigscreen" / "app.js").read_text(encoding="utf-8")
+    iperf_ui = (root / "bigscreen" / "iperf.js").read_text(encoding="utf-8")
+    iperf_nodes = json.loads((root / "bigscreen" / "iperf-servers.json").read_text(encoding="utf-8"))
     index = (root / "bigscreen" / "index.html").read_text(encoding="utf-8")
 
     assert "PLATFORM_DHCP_SWITCH_PASSWORD" in compose
@@ -503,13 +586,14 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     assert "testDhcpConnection" in app
     assert "fetchDhcpSettings" in app
     assert app.index('postPlatform("/config/save"') < app.index("saveDhcpSettings(credentials)")
-    assert "speedtest.hkg12.hk.leaseweb.net" in app
-    assert "speedtest.sin1.sg.leaseweb.net" in app
-    assert "iperf.scbd.net.id" in app
-    assert "23.249.58.14" in app
-    assert "84.17.57.129" in app
-    assert "sgp.proof.ovh.net" in app
-    assert "speedtest.tangerang2.myrepublic.net.id" in app
+    configured_nodes = json.dumps(iperf_nodes, ensure_ascii=False)
+    assert "speedtest.hkg12.hk.leaseweb.net" in configured_nodes
+    assert "speedtest.sin1.sg.leaseweb.net" in configured_nodes
+    assert "iperf.scbd.net.id" in configured_nodes
+    assert "23.249.58.14" in configured_nodes
+    assert "84.17.57.129" in configured_nodes
+    assert "sgp.proof.ovh.net" in configured_nodes
+    assert "speedtest.tangerang2.myrepublic.net.id" in configured_nodes
     assert "土耳其·伊斯坦布尔" in app
     assert "中国大陆（自有服务器）" not in app
     assert "马来西亚（自有服务器）" not in app
@@ -522,12 +606,11 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     assert "最长约 60 秒" in app
     assert 'id="iperfPublicServer"' in app
     assert 'id="iperfPorts"' in app and "readonly" in app
-    assert "iperfServer.readOnly = !isCustom" in app
-    assert "iperfPorts.readOnly = !isCustom" in app
-    assert "iperf-interval-table" in app
-    assert "接收端全程平均" in app
-    assert "/seat-check" not in pages
-    assert "/seat-check" not in app
+    assert "iperfServer.readOnly = !view.isCustom" in app
+    assert "iperfPorts.readOnly = !view.isCustom" in app
+    assert "iperf-interval-table" in iperf_ui
+    assert "接收端全程平均" in iperf_ui
+    assert 'src="./iperf.js' in index
     assert 'document.visibilityState === "hidden"' in app
     assert "stopDhcpRefresh()" in app
 
