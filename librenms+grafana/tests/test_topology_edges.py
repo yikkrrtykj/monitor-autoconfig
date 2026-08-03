@@ -873,6 +873,62 @@ class TestBuildEdgesCdp:
         assert len(placeholders) == 1
         assert placeholders[0]["neighbor_port"] == "Fa0"
 
+    def test_alternate_cdp_management_address_uses_reciprocal_hostname(self):
+        devices = self._devices()
+        source = devices["192.168.10.24"]
+        source["cdp_address"] = {(10101, 1): "192.168.7.23"}
+
+        edges, placeholders = gte.build_edges(devices, gte.build_name_index(devices))
+
+        assert placeholders == []
+        assert len(edges) == 1
+        assert {edges[0]["from_ip"], edges[0]["to_ip"]} == {
+            "192.168.10.23", "192.168.10.24",
+        }
+
+    def test_reciprocal_cdp_preserves_both_c1000_member_ports(self):
+        devices = {
+            "192.168.10.11": {
+                "ip": "192.168.10.11", "sysname": "Global-new-stack",
+                "ifname": {10202: "Te1/0/2", 10702: "Te2/0/2", 5011: "Po11"},
+                "ifoper": {10202: 1, 10702: 1, 5011: 1},
+                "ifstack": {5011: [10202, 10702]},
+                "loc_port_desc": {}, "rem_sys": {}, "rem_port_desc": {}, "rem_port_id": {},
+                "cdp_device_id": {
+                    (10202, 5): "Global_SW3850-12XS_STACK",
+                    (10702, 4): "Global_SW3850-12XS_STACK",
+                },
+                "cdp_device_port": {
+                    (10202, 5): "TenGigabitEthernet1/0/1",
+                    (10702, 4): "TenGigabitEthernet2/0/1",
+                },
+                "cdp_address": {
+                    (10202, 5): "192.168.7.254",
+                    (10702, 4): "192.168.7.254",
+                },
+            },
+            "192.168.10.254": {
+                "ip": "192.168.10.254", "sysname": "Global_SW3850-12XS_STACK",
+                "ifname": {8: "Te1/0/1", 27: "Te2/0/1"},
+                "ifoper": {8: 1, 27: 1}, "ifstack": {},
+                "loc_port_desc": {}, "rem_sys": {}, "rem_port_desc": {}, "rem_port_id": {},
+                "cdp_device_id": {(8, 1): "Global-new-stack"},
+                "cdp_device_port": {(8, 1): "TenGigabitEthernet1/0/2"},
+                "cdp_address": {(8, 1): "192.168.10.11"},
+            },
+        }
+
+        edges, placeholders = gte.build_edges(devices, gte.build_name_index(devices))
+        ports = set()
+        for edge in edges:
+            if edge["from_ip"] == "192.168.10.11":
+                ports.add(edge.get("from_port"))
+            if edge["to_ip"] == "192.168.10.11":
+                ports.add(edge.get("to_port"))
+
+        assert placeholders == []
+        assert {"Te1/0/2", "Te2/0/2"}.issubset(ports)
+
 
 # ---- load_device_list() merges auto-discovered switches ----
 

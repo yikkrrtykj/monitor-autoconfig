@@ -667,6 +667,43 @@ def build_name_index(devices):
     return index
 
 
+def _device_name_aliases(name):
+    if not name:
+        return set()
+    full = str(name).strip().lower()
+    base = normalize_hostname(name)
+    return {alias for alias in (full, base) if alias}
+
+
+def reciprocal_neighbor_ip(devices, source_device, neighbor_name):
+    """Resolve a CDP hostname only when the monitored peer sees us back.
+
+    Cisco devices can advertise a CDP management address from another VLAN
+    (for example 192.168.7.254 while monitoring uses 192.168.10.254). Blindly
+    trusting the hostname caused false switch links for same-named APs, so an
+    alternate address may fall back to hostname only when exactly one monitored
+    device has that name and its LLDP/CDP cache reciprocally names the source.
+    """
+    neighbor_aliases = _device_name_aliases(neighbor_name)
+    source_aliases = _device_name_aliases(source_device.get("sysname"))
+    if not neighbor_aliases or not source_aliases:
+        return None
+
+    candidates = []
+    for candidate_ip, candidate in (devices or {}).items():
+        if neighbor_aliases & _device_name_aliases(candidate.get("sysname")):
+            candidates.append((candidate_ip, candidate))
+    if len(candidates) != 1:
+        return None
+
+    candidate_ip, candidate = candidates[0]
+    observed_names = list((candidate.get("rem_sys") or {}).values())
+    observed_names.extend((candidate.get("cdp_device_id") or {}).values())
+    if any(source_aliases & _device_name_aliases(name) for name in observed_names):
+        return candidate_ip
+    return None
+
+
 def canonical_edge_key(edge):
     a = (edge["from_ip"] or "", edge["from_ifindex"] or 0)
     b = (edge["to_ip"] or "", edge["to_ifindex"] or 0)
@@ -836,10 +873,13 @@ def build_edges(devices, name_index):
             addr_ip = device.get("cdp_address", {}).get((if_index, dev_index))
             if addr_ip:
                 # The advertised management address is authoritative. Do not
-                # fall back to hostname matching when that address belongs to
-                # an unmonitored AP/phone: it may share a name with a monitored
-                # switch and create a convincing but false switch-to-switch edge.
-                neighbor_ip = addr_ip if addr_ip in devices else None
+                # blindly fall back to a hostname when that address belongs to
+                # an unmonitored AP/phone. A unique, reciprocally observed
+                # monitored switch is safe, however: Cisco often advertises a
+                # valid management SVI different from the IP we monitor.
+                neighbor_ip = addr_ip if addr_ip in devices else reciprocal_neighbor_ip(
+                    devices, device, neighbor_name
+                )
             else:
                 neighbor_ip = name_index.get((neighbor_name or "").strip().lower()) or \
                               name_index.get(normalize_hostname(neighbor_name))
