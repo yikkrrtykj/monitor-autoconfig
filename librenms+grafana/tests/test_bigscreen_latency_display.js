@@ -1,7 +1,6 @@
 const assert = require('assert');
 const {
   suppressIsolatedLatencySpikes,
-  smoothLatencyJitter,
   stepPathFromPoints,
   splitPointsOnGaps
 } = require('../bigscreen/utils.js');
@@ -16,7 +15,7 @@ const isolatedInput = series([
   { t: 104, v: 0.004 }
 ]);
 const isolatedOutput = suppressIsolatedLatencySpikes(isolatedInput);
-assert.strictEqual(isolatedOutput[0].values[1].v, 0.003);
+assert.strictEqual(isolatedOutput[0].values[1].v, 0.002, 'replacement uses the preceding real sample, not an average');
 assert.strictEqual(isolatedOutput[0].values[0].v, 0.002, 'the sample before an isolated spike must not change');
 assert.strictEqual(isolatedOutput[0].values[2].v, 0.004, 'the sample after an isolated spike must not change');
 assert.strictEqual(isolatedInput[0].values[1].v, 0.2, 'input data must remain unchanged');
@@ -32,8 +31,8 @@ const noisyNeighbourInput = series([
 ]);
 assert.strictEqual(
   suppressIsolatedLatencySpikes(noisyNeighbourInput)[0].values[3].v,
-  0.0025,
-  'an isolated high sample uses the nearby normal median, not a two-point ramp'
+  0.003,
+  'an isolated high sample copies the nearest real normal sample'
 );
 
 const sustainedInput = series([
@@ -65,27 +64,18 @@ assert.deepStrictEqual(
   'missing samples must produce a visible blank gap rather than a connecting line'
 );
 
-const jitterInput = series([
+const rawBaselineInput = series([
   { t: 100, v: 0.001 },
   { t: 102, v: 0.003 },
   { t: 104, v: 0.001 },
-  { t: 106, v: 0.003 },
-  { t: 108, v: 0.001 }
+  { t: 106, v: 0.004 },
+  { t: 108, v: 0.002 }
 ]);
-const jitterOutput = smoothLatencyJitter(jitterInput, { preserveAbove: 0.05, radius: 2 });
-assert.strictEqual(jitterOutput[0].values[1].v, 0.002);
-assert.strictEqual(jitterOutput[0].values[2].v, 0.001);
-assert.strictEqual(jitterInput[0].values[1].v, 0.003, 'jitter smoothing must not mutate input data');
-
-const preservedHighInput = series([
-  { t: 100, v: 0.001 },
-  { t: 102, v: 0.06 },
-  { t: 104, v: 0.07 },
-  { t: 106, v: 0.002 }
-]);
-const preservedHighOutput = smoothLatencyJitter(preservedHighInput, { preserveAbove: 0.05, radius: 2 });
-assert.strictEqual(preservedHighOutput[0].values[1].v, 0.06);
-assert.strictEqual(preservedHighOutput[0].values[2].v, 0.07);
+assert.deepStrictEqual(
+  suppressIsolatedLatencySpikes(rawBaselineInput)[0].values,
+  rawBaselineInput[0].values,
+  'every normal latency sample must stay byte-for-byte unchanged; no smoothing or averaging'
+);
 
 const gapInput = series([
   { t: 100, v: 0.003 },
@@ -94,8 +84,8 @@ const gapInput = series([
   { t: 110, v: 0.005 }
 ]);
 const gapOutput = suppressIsolatedLatencySpikes(gapInput)[0].values;
-assert.ok(gapOutput[1].v < 0.05);
-assert.ok(gapOutput[2].v < 0.05);
+assert.strictEqual(gapOutput[1].v, 0.003);
+assert.strictEqual(gapOutput[2].v, 0.005);
 
 const incidentInput = series([
   { t: 100, v: 0.002 },
