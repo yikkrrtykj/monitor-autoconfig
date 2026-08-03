@@ -1006,8 +1006,9 @@
         renderLineChart("pingTrendChart", activePingSeries, {
           axisFormatter: formatPingText,
           valueFormatter: formatPingText,
-          // Keep all infrastructure devices in the original combined Ping
-          // trend. A 5 ms floor avoids exaggerating sub-millisecond jitter.
+          // Keep network infrastructure devices in the combined Ping trend.
+          // Servers remain in their dedicated gauges. A 5 ms floor avoids
+          // exaggerating sub-millisecond jitter.
           minMax: 0.005,
           breakGapSeconds: pingGap,
           // Visual-only curve smoothing: linePathFromPoints reads the raw

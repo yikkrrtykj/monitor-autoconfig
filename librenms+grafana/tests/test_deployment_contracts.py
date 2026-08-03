@@ -316,6 +316,12 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "const end = Math.floor(now / step) * step;" in api
     assert 'max by (instance) (probe_icmp_duration_seconds{job=~' in pages
     assert 'phase="rtt"})' in pages
+    ping_trend = next(
+        line for line in pages.splitlines()
+        if line.strip().startswith("pingTrend:")
+    )
+    assert "infra-dist-ping" in ping_trend
+    assert "infra-srv-ping" not in ping_trend
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
     assert "suppressIsolatedLatencySpikes(rawActivePingSeries" in app
@@ -354,7 +360,7 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "min_over_time(probe_icmp_duration_seconds" not in pages
     assert pages.count("quantile_over_time(0.5, probe_icmp_duration_seconds") == 2
     assert pages.count("[30s]") == 3
-    assert "pages.js?v=20260803a" in index
+    assert "pages.js?v=20260804a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260803a" in index
     assert "app.js?v=20260803f" in index
