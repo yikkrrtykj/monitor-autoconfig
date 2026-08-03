@@ -208,7 +208,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260803f" in html
+    assert "app.js?v=20260804a" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -423,7 +423,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260803a" in index
-    assert "app.js?v=20260803f" in index
+    assert "app.js?v=20260804a" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
