@@ -857,6 +857,49 @@ def test_missing_network_edge_is_marked_stale_then_expires():
     ) == []
 
 
+def test_incomplete_cached_reverse_row_cannot_make_live_pair_stale():
+    live = [{
+        "from_ip": "192.168.10.11", "from_port": "Te1/0/2", "from_ifindex": None,
+        "to_ip": "192.168.10.254", "to_port": "To-Global_2960X-4", "to_ifindex": None,
+    }]
+    cached = [{
+        "from_ip": "192.168.10.11", "from_port": None, "from_ifindex": None,
+        "to_ip": "192.168.10.254", "to_port": "To-Global_2960X-4", "to_ifindex": None,
+        "last_seen": 100.0,
+    }]
+
+    merged = gte.retain_cached_network_edges(
+        live, cached, ["192.168.10.11", "192.168.10.254"],
+        now=200, retention_seconds=86400,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["from_port"] == "Te1/0/2"
+    assert merged[0]["stale"] is False
+
+
+def test_fully_identified_missing_parallel_member_remains_stale():
+    live = [{
+        "from_ip": "192.168.10.254", "from_port": "Te1/0/1", "from_ifindex": None,
+        "to_ip": "192.168.10.11", "to_port": "Te1/0/2", "to_ifindex": None,
+    }]
+    cached = [{
+        "from_ip": "192.168.10.254", "from_port": "Te2/0/1", "from_ifindex": None,
+        # Catalyst 1000 can repeat the same advertised remote port for both
+        # members; the distinct known local member must still be retained.
+        "to_ip": "192.168.10.11", "to_port": "Te1/0/2", "to_ifindex": None,
+        "last_seen": 100.0,
+    }]
+
+    merged = gte.retain_cached_network_edges(
+        live, cached, ["192.168.10.11", "192.168.10.254"],
+        now=200, retention_seconds=86400,
+    )
+
+    assert len(merged) == 2
+    assert sum(edge["stale"] is True for edge in merged) == 1
+
+
 def test_cached_edge_cannot_overwrite_a_live_port_move():
     live = [{
         "from_ip": "192.168.10.254", "from_port": "Te1/0/1", "from_ifindex": 101,

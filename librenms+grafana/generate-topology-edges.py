@@ -1001,6 +1001,27 @@ def _edge_cache_key(edge):
     return tuple(sorted((endpoint("from"), endpoint("to"))))
 
 
+def _edge_endpoint_identities(edge, side):
+    """Return every usable identity for one physical edge endpoint.
+
+    Prefer ifIndex for cache keys, but also retain the normalized port name as
+    a secondary identity.  Some Catalyst observations resolve the local
+    ifIndex in one direction while the reverse LLDP/CDP row exposes only a
+    port description.
+    """
+    ip = str(edge.get(f"{side}_ip") or "").strip()
+    if not ip:
+        return set()
+    identities = set()
+    ifindex = edge.get(f"{side}_ifindex")
+    if ifindex not in (None, ""):
+        identities.add((ip, f"i:{ifindex}"))
+    port = normalize_port_name(edge.get(f"{side}_port"))
+    if port:
+        identities.add((ip, f"p:{port}"))
+    return identities
+
+
 def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
                                 now=None, retention_seconds=24 * 60 * 60):
     """Keep missing confirmed LLDP/CDP edges long enough to diagnose outages.
@@ -1014,6 +1035,7 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
     retention_seconds = max(0, int(retention_seconds))
     configured = set(configured_device_ips or [])
     live_keys = {_edge_cache_key(edge) for edge in live_edges}
+    live_endpoint_identities = set()
     occupied = set()
     output = []
     for source in live_edges:
@@ -1022,6 +1044,7 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
         edge["stale"] = False
         output.append(edge)
         for side in ("from", "to"):
+            live_endpoint_identities.update(_edge_endpoint_identities(edge, side))
             ip = str(edge.get(f"{side}_ip") or "").strip()
             ifindex = edge.get(f"{side}_ifindex")
             if ip and ifindex not in (None, ""):
@@ -1035,6 +1058,24 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
         if not left or not right or left not in configured or right not in configured:
             continue
         if _edge_cache_key(source) in live_keys:
+            continue
+        cached_endpoint_identities = [
+            _edge_endpoint_identities(source, side)
+            for side in ("from", "to")
+        ]
+        # A one-sided cached row is weak topology evidence.  If its only known
+        # endpoint is already present in a live observation, the row is merely
+        # an incomplete reverse LLDP/CDP shadow of the current link.  Retaining
+        # it made an otherwise healthy pair yellow for 24 hours.  Fully
+        # identified parallel members remain eligible for retention so a real
+        # degraded EtherChannel is still shown as a warning.
+        if (
+            any(not identities for identities in cached_endpoint_identities)
+            and any(
+                identities & live_endpoint_identities
+                for identities in cached_endpoint_identities
+            )
+        ):
             continue
         conflicts = False
         for side in ("from", "to"):
