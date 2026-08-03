@@ -276,6 +276,28 @@ class TestPortChannelEdges:
         assert edges[0]["to_aggregate_port"] == "Po11"
         assert edges[0]["to_member_ports"] == ["Te1/0/2", "Te2/0/2"]
 
+    def test_c1000_port_name_recovers_lag_when_lldp_ifindex_is_missing(self):
+        devices = {
+            "192.168.10.11": {
+                "ip": "192.168.10.11", "sysname": "Global-new-stack",
+                "ifname": {102: "Te1/0/2", 202: "Te2/0/2", 400: "Po11"},
+                "ifstack": {400: [102, 202]},
+            },
+            "192.168.10.254": {
+                "ip": "192.168.10.254", "sysname": "core",
+                "ifname": {}, "ifstack": {},
+            },
+        }
+        edges = [{
+            "from_ip": "192.168.10.11", "from_port": "Te1/0/2", "from_ifindex": None,
+            "to_ip": "192.168.10.254", "to_port": "To-Global_2960X-4", "to_ifindex": None,
+        }]
+
+        enriched = gte.enrich_aggregate_members(edges, devices)
+
+        assert enriched[0]["from_aggregate_port"] == "Po11"
+        assert enriched[0]["from_member_ports"] == ["Te1/0/2", "Te2/0/2"]
+
     def test_remote_port_display_uses_resolved_ifname(self):
         devices = {
             "10.0.0.1": {

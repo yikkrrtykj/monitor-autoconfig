@@ -584,11 +584,13 @@ def resolve_endpoint_conflicts(edges):
     return kept
 
 
-def _aggregate_member_details(device, endpoint_ifindex):
+def _aggregate_member_details(device, endpoint_ifindex, endpoint_port=None):
     """Return (aggregate name, configured member names) for one edge endpoint."""
+    ifnames = device.get("ifname", {})
+    if endpoint_ifindex is None and endpoint_port:
+        endpoint_ifindex = resolve_ifindex_by_name(endpoint_port, ifnames)
     if endpoint_ifindex is None:
         return "", []
-    ifnames = device.get("ifname", {})
     for higher, lowers in device.get("ifstack", {}).items():
         aggregate_name = ifnames.get(higher, "")
         if not normalize_port_name(aggregate_name).startswith("agg"):
@@ -622,7 +624,9 @@ def enrich_aggregate_members(edges, devices):
         for side in ("from", "to"):
             device = devices.get(edge.get(f"{side}_ip")) or {}
             aggregate, members = _aggregate_member_details(
-                device, edge.get(f"{side}_ifindex")
+                device,
+                edge.get(f"{side}_ifindex"),
+                edge.get(f"{side}_port"),
             )
             if aggregate:
                 edge[f"{side}_aggregate_port"] = aggregate
