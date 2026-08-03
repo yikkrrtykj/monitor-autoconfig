@@ -3,9 +3,8 @@
 Walk LLDP-MIB on every configured infrastructure device to build the real
 network adjacency graph, then emit artifacts for downstream:
 
-  edges.json          (consumed by the bigscreen /topology page)
-  uplink-targets.json (legacy cleanup file, intentionally empty)
-  rates.json          (legacy cleanup file, intentionally empty)
+  edges.json              (consumed by the bigscreen /topology page)
+  server-attachments.json (durable last-confirmed server/FDB locations)
 
 Env vars:
   TOPOLOGY_DEVICES           comma-separated device IPs to poll. Empty -> union of
@@ -22,7 +21,7 @@ Env vars:
                              firewall targets; if those are also empty, all.
   TOPOLOGY_EDGE_RETENTION_SECONDS  keep last confirmed missing/down links in
                              edges.json (default: 86400 / 24 hours).
-  TOPOLOGY_OUTPUT_DIR        where to write edges.json / legacy empty files
+  TOPOLOGY_OUTPUT_DIR        where to write topology state files
                              (default: /etc/prometheus/targets/topology).
   SERVER_PING                named server targets; ARP/FDB resolves their real
                              access switch and port when SNMP exposes both.
@@ -41,7 +40,13 @@ try:
 except ImportError:  # pragma: no cover - only used by Linux containers
     fcntl = None
 
-from target_utils import expand_ipv4_entry, parse_named_ipv4_targets, write_json_atomic
+from target_utils import (
+    expand_ipv4_entry,
+    normalize_mac,
+    parse_if_oper_status,
+    parse_named_ipv4_targets,
+    write_json_atomic,
+)
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
 IF_NAME_OID = "1.3.6.1.2.1.31.1.1.1.1"
@@ -164,25 +169,6 @@ def parse_ifname(output):
         text = strip_string_value(value)
         if text:
             mapping[ifindex] = text
-    return mapping
-
-
-def parse_if_oper_status(output):
-    """ifOperStatus walk -> {ifIndex: status}; 1 means operationally up."""
-    mapping = {}
-    for line in output.strip().split("\n"):
-        parts, value = parse_oid_value(line)
-        if not parts:
-            continue
-        try:
-            ifindex = int(parts[-1])
-        except ValueError:
-            continue
-        parenthesized = re.search(r"\(([0-9]+)\)", value)
-        numeric = re.search(r"(?:INTEGER:\s*)?([0-9]+)\s*$", value, re.IGNORECASE)
-        match = parenthesized or numeric
-        if match:
-            mapping[ifindex] = int(match.group(1))
     return mapping
 
 
@@ -366,18 +352,6 @@ def parse_cdp_address(output):
         if ip:
             out[(if_index, dev_index)] = ip
     return out
-
-
-def normalize_mac(value):
-    """Return a lower-case colon-separated MAC, or None for invalid values."""
-    text = strip_string_value(str(value or ""))
-    tokens = re.findall(r"(?i)(?<![0-9a-f])[0-9a-f]{2}(?![0-9a-f])", text)
-    if len(tokens) != 6:
-        compact = re.sub(r"[^0-9a-fA-F]", "", text)
-        if len(compact) != 12:
-            return None
-        tokens = [compact[index:index + 2] for index in range(0, 12, 2)]
-    return ":".join(token.lower() for token in tokens)
 
 
 def parse_arp_table(output, ifname_map):
@@ -667,41 +641,28 @@ def build_name_index(devices):
     return index
 
 
-def _device_name_aliases(name):
-    if not name:
-        return set()
-    full = str(name).strip().lower()
-    base = normalize_hostname(name)
-    return {alias for alias in (full, base) if alias}
-
-
-def reciprocal_neighbor_ip(devices, source_device, neighbor_name):
-    """Resolve a CDP hostname only when the monitored peer sees us back.
-
-    Cisco devices can advertise a CDP management address from another VLAN
-    (for example 192.168.7.254 while monitoring uses 192.168.10.254). Blindly
-    trusting the hostname caused false switch links for same-named APs, so an
-    alternate address may fall back to hostname only when exactly one monitored
-    device has that name and its LLDP/CDP cache reciprocally names the source.
-    """
-    neighbor_aliases = _device_name_aliases(neighbor_name)
-    source_aliases = _device_name_aliases(source_device.get("sysname"))
-    if not neighbor_aliases or not source_aliases:
+def configured_core_neighbor_ip(devices, neighbor_name):
+    """Map a core CDP SVI alias to the console's canonical core IP."""
+    full_name = str(neighbor_name or "").strip().lower()
+    names = {name for name in (full_name, normalize_hostname(full_name)) if name}
+    if not names:
         return None
-
-    candidates = []
-    for candidate_ip, candidate in (devices or {}).items():
-        if neighbor_aliases & _device_name_aliases(candidate.get("sysname")):
-            candidates.append((candidate_ip, candidate))
-    if len(candidates) != 1:
-        return None
-
-    candidate_ip, candidate = candidates[0]
-    observed_names = list((candidate.get("rem_sys") or {}).values())
-    observed_names.extend((candidate.get("cdp_device_id") or {}).values())
-    if any(source_aliases & _device_name_aliases(name) for name in observed_names):
-        return candidate_ip
-    return None
+    core_ips = {
+        ip
+        for entry in os.environ.get("CORE_SWITCH_PING", "").split(",")
+        for ip in expand_device_entry(entry)
+    }
+    matches = []
+    for ip in core_ips:
+        sysname = (devices.get(ip) or {}).get("sysname")
+        aliases = {
+            name for name in (
+                str(sysname or "").strip().lower(), normalize_hostname(sysname)
+            ) if name
+        }
+        if names & aliases:
+            matches.append(ip)
+    return matches[0] if len(matches) == 1 else None
 
 
 def canonical_edge_key(edge):
@@ -872,13 +833,12 @@ def build_edges(devices, name_index):
         for (if_index, dev_index), neighbor_name in device.get("cdp_device_id", {}).items():
             addr_ip = device.get("cdp_address", {}).get((if_index, dev_index))
             if addr_ip:
-                # The advertised management address is authoritative. Do not
-                # blindly fall back to a hostname when that address belongs to
-                # an unmonitored AP/phone. A unique, reciprocally observed
-                # monitored switch is safe, however: Cisco often advertises a
-                # valid management SVI different from the IP we monitor.
-                neighbor_ip = addr_ip if addr_ip in devices else reciprocal_neighbor_ip(
-                    devices, device, neighbor_name
+                # An ordinary neighbor's advertised address is authoritative;
+                # hostname fallback could turn a same-named AP into a switch.
+                # The explicitly configured core is the sole exception because
+                # Cisco may advertise one of its other gateway SVIs over CDP.
+                neighbor_ip = addr_ip if addr_ip in devices else configured_core_neighbor_ip(
+                    devices, neighbor_name
                 )
             else:
                 neighbor_ip = name_index.get((neighbor_name or "").strip().lower()) or \
@@ -1155,10 +1115,6 @@ def discover_server_edges(devices, edges, servers, community, cached_edges=None)
     return found
 
 
-def atomic_write_json(path, data):
-    write_json_atomic(path, data, sort_keys=True)
-
-
 def load_cached_edges(path):
     """Read the last emitted topology without making collection depend on it."""
     try:
@@ -1367,7 +1323,7 @@ def merge_cached_server_ledgers(primary_edges, fallback_edges, servers):
     return merged
 
 
-def preserve_cached_server_edges(edges, cached_edges, servers, configured_device_ips):
+def preserve_cached_server_edges(edges, cached_edges, servers):
     """Keep a confirmed server attachment through transient ARP/FDB misses.
 
     A fresh FDB result is authoritative.  The cached edge is considered only
@@ -1376,9 +1332,8 @@ def preserve_cached_server_edges(edges, cached_edges, servers, configured_device
     failed ICMP/SNMP discovery used to remove the attachment permanently and
     made servers jump back beside the core until a later FDB lookup succeeded.
 
-    ``configured_device_ips`` remains in the signature for compatibility with
-    callers/tests from older deployments.  Server membership is the lifecycle
-    authority; removing a server from SERVER_PING removes its cached edge.
+    Server membership is the lifecycle authority; removing a server from
+    SERVER_PING removes its cached edge.
     """
     linked_servers = {
         server_ip for edge in edges
@@ -1540,7 +1495,6 @@ def _run_collection():
         fresh_server_edges,
         cached_attachments,
         servers,
-        device_ips,
     ))
     edges = replace_server_edges(edges, confirmed_server_edges, servers)
     try:
@@ -1558,15 +1512,11 @@ def _run_collection():
         retention_seconds=edge_retention,
         devices=devices,
     ) + server_edges
-    uplink_targets = []
-
-    atomic_write_json(edges_path, edges)
-    atomic_write_json(attachments_path, confirmed_server_edges)
-    atomic_write_json(os.path.join(output_dir, "uplink-targets.json"), uplink_targets)
-    atomic_write_json(os.path.join(output_dir, "rates.json"), [])
+    write_json_atomic(edges_path, edges, sort_keys=True)
+    write_json_atomic(attachments_path, confirmed_server_edges, sort_keys=True)
 
     print(
-        f"[INFO] wrote {len(edges)} edge(s), topology rate polling disabled, "
+        f"[INFO] wrote {len(edges)} edge(s), "
         f"cycle={time.monotonic() - cycle_started:.1f}s",
         file=sys.stderr,
     )

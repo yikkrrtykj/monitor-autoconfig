@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 from target_utils import (
     build_file_sd,
     expand_ipv4_targets as expand_targets,
-    is_ipv4,
+    is_ipv4 as looks_like_ip,
     load_file_sd_targets,
     write_json_atomic as write_file_sd,
 )
@@ -59,10 +59,6 @@ def excluded_ips(*raws: str) -> set[str]:
     for raw in raws:
         out.update(expand_targets(raw))
     return out
-
-
-def looks_like_ip(value: str) -> bool:
-    return is_ipv4(value)
 
 
 def ping_alive(ip: str, timeout: int = 1) -> bool:

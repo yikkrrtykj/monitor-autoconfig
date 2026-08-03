@@ -43,7 +43,7 @@ import sys
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-from target_utils import write_json_atomic as write_file_sd
+from target_utils import is_ipv4 as looks_like_ip, write_json_atomic as write_file_sd
 
 OID_IF_DESCR = ".1.3.6.1.2.1.2.2.1.2"
 OID_IF_NAME = ".1.3.6.1.2.1.31.1.1.1.1"
@@ -94,10 +94,6 @@ def is_wan_label(label: str, keywords: list[str]) -> bool:
         elif keyword in lower:
             return True
     return False
-
-
-def looks_like_ip(value: str) -> bool:
-    return bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", str(value or "")))
 
 
 def _ip_int(ip: str) -> int:

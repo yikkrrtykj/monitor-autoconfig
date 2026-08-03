@@ -101,7 +101,6 @@ from urllib import error, parse, request
 
 from network_syslog import (
     MacFlapTracker,
-    clean_iface_token as _clean_iface_token,
     is_bpdu_event as _is_bpdu_event,
     network_event_port as _network_event_port,
     network_event_priority as _network_event_priority,
@@ -784,49 +783,11 @@ def _device_display(device, discovered_names=None):
     return str(_best_device_name(device, discovered_name)).strip()
 
 
-def _match_librenms_devices(devices, needle):
-    term = str(needle or "").strip().casefold()
-    if not term:
-        return []
-    exact = []
-    partial = []
-    for device in devices:
-        fields = {
-            str(device.get(key) or "").strip().casefold()
-            for key in ("display", "sysName", "hostname", "ip", "device_id")
-            if str(device.get(key) or "").strip()
-        }
-        if term in fields:
-            exact.append(device)
-        elif any(term in field for field in fields):
-            partial.append(device)
-    return exact or partial
-
-
 def _number(value):
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def optical_sensor_state(sensor):
-    current = _number(sensor.get("sensor_current"))
-    if current is None:
-        return "unknown", "⚪", "无读数"
-    high = _number(sensor.get("sensor_limit"))
-    high_warn = _number(sensor.get("sensor_limit_warn"))
-    low = _number(sensor.get("sensor_limit_low"))
-    low_warn = _number(sensor.get("sensor_limit_low_warn"))
-    if high is not None and current >= high:
-        return "bad", "🔴", f"高于上限 {high:g}"
-    if low is not None and current <= low:
-        return "bad", "🔴", f"低于下限 {low:g}"
-    if high_warn is not None and current >= high_warn:
-        return "warn", "🟡", f"高于预警 {high_warn:g}"
-    if low_warn is not None and current <= low_warn:
-        return "warn", "🟡", f"低于预警 {low_warn:g}"
-    return "good", "🟢", "正常"
 
 
 def fetch_librenms_dbm_sensors(token, device_id):
@@ -1243,22 +1204,6 @@ def build_pending_delete_query_cards():
         save_device_down_states(DEVICE_DOWN_STATES)
     states.sort(key=lambda item: _as_float(item[1].get("pending_since")) or 0)
     return [build_retire_confirm_card(state, key, True) for key, state in states[:20]]
-
-
-def _format_uptime(seconds):
-    try:
-        value = max(0, int(seconds or 0))
-    except (TypeError, ValueError):
-        return "未知"
-    days, remain = divmod(value, 86400)
-    hours, remain = divmod(remain, 3600)
-    minutes = remain // 60
-    return f"{days}天 {hours}小时 {minutes}分" if days else f"{hours}小时 {minutes}分"
-
-
-def _split_device_and_interface(argument):
-    parts = str(argument or "").strip().split(None, 1)
-    return (parts[0], parts[1] if len(parts) > 1 else "") if parts else ("", "")
 
 
 def _device_is_online(device):
@@ -2066,13 +2011,6 @@ def _migrate_unifi_device_online_identity(device):
         device.get("display"),
         device.get("sysName"),
     )
-
-
-def _format_mac(value):
-    mac = _normalize_mac_hex(value)
-    if not mac:
-        return str(value or "").strip()
-    return ":".join(mac[i:i + 2] for i in range(0, 12, 2))
 
 
 def _host_display_name(host, fdb_entry=None):

@@ -725,7 +725,6 @@ class TestServerAttachmentDiscovery:
 
         found = gte.preserve_cached_server_edges(
             [], cached, {"192.168.42.203": "sdwan"},
-            ["192.168.10.254", "192.168.10.11"],
         )
 
         assert found == cached
@@ -766,7 +765,6 @@ class TestServerAttachmentDiscovery:
 
         assert gte.preserve_cached_server_edges(
             fresh, cached, {"192.168.42.203": "sdwan"},
-            ["192.168.10.11", "192.168.10.49"],
         ) == []
 
     def test_cached_attachment_survives_transient_parent_discovery_miss(self):
@@ -777,7 +775,6 @@ class TestServerAttachmentDiscovery:
 
         assert gte.preserve_cached_server_edges(
             [], cached, {"192.168.42.203": "sdwan"},
-            ["192.168.10.254"],
         ) == cached
 
     def test_confirmed_fdb_edge_replaces_weaker_server_edge(self):
@@ -801,7 +798,7 @@ class TestServerAttachmentDiscovery:
         }]
 
         assert gte.preserve_cached_server_edges(
-            [], cached, {}, ["192.168.10.11"],
+            [], cached, {},
         ) == []
 
 
@@ -856,7 +853,8 @@ class TestBuildEdgesCdp:
         edges, _ = gte.build_edges(devices, gte.build_name_index(devices))
         assert edges == []
 
-    def test_cdp_address_prevents_same_name_ap_becoming_switch_edge(self):
+    def test_cdp_address_prevents_same_name_ap_becoming_switch_edge(self, monkeypatch):
+        monkeypatch.setenv("CORE_SWITCH_PING", "")
         devices = self._devices()
         source = devices["192.168.10.24"]
         peer = devices["192.168.10.23"]
@@ -873,7 +871,8 @@ class TestBuildEdgesCdp:
         assert len(placeholders) == 1
         assert placeholders[0]["neighbor_port"] == "Fa0"
 
-    def test_alternate_cdp_management_address_uses_reciprocal_hostname(self):
+    def test_alternate_core_cdp_address_uses_configured_core_ip(self, monkeypatch):
+        monkeypatch.setenv("CORE_SWITCH_PING", "192.168.10.23")
         devices = self._devices()
         source = devices["192.168.10.24"]
         source["cdp_address"] = {(10101, 1): "192.168.7.23"}
@@ -886,7 +885,8 @@ class TestBuildEdgesCdp:
             "192.168.10.23", "192.168.10.24",
         }
 
-    def test_reciprocal_cdp_preserves_both_c1000_member_ports(self):
+    def test_configured_core_alias_preserves_both_c1000_member_ports(self, monkeypatch):
+        monkeypatch.setenv("CORE_SWITCH_PING", "192.168.10.254")
         devices = {
             "192.168.10.11": {
                 "ip": "192.168.10.11", "sysname": "Global-new-stack",

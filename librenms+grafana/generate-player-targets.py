@@ -94,6 +94,12 @@ import time
 from ipaddress import IPv4Address, IPv4Network
 from urllib import parse as urlparse, request as urlrequest
 
+from target_utils import (
+    normalize_mac,
+    parse_if_oper_status,
+    write_json_atomic as atomic_write_json,
+)
+
 IF_ALIAS_OID = "1.3.6.1.2.1.31.1.1.1.18"
 IF_OPER_STATUS_OID = "1.3.6.1.2.1.2.2.1.8"
 ARP_IFINDEX_OID = "1.3.6.1.2.1.4.22.1.1"
@@ -108,8 +114,6 @@ IF_OPER_STATUS_UP = 1
 TEAM_RE = re.compile(r"team\s*0*(\d+)\s*[-_]\s*0*(\d+)", re.IGNORECASE)
 STATIC_TEAM_RE = re.compile(r"(?:team\s*)?0*(\d+)\s*[-_]\s*0*(\d+)$", re.IGNORECASE)
 VALID_NETWORKS = {"wired", "wireless"}
-HEX_BYTE_RE = re.compile(r"[0-9a-fA-F]{1,2}")
-
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
 
@@ -166,36 +170,6 @@ def parse_ifalias(output):
     return mapping
 
 
-def parse_if_oper_status(output):
-    """ifOperStatus -> {ifIndex: status_int} (1 = up, 2 = down, ...).
-
-    Accepts both 'INTEGER: 1' and 'INTEGER: up(1)' forms.
-    """
-    NAMED = {"up": 1, "down": 2, "testing": 3, "unknown": 4,
-             "dormant": 5, "notpresent": 6, "lowerlayerdown": 7}
-    out = {}
-    for line in output.strip().split("\n"):
-        if "=" not in line:
-            continue
-        oid_str, value = line.split("=", 1)
-        parts = oid_str.strip().strip(".").split(".")
-        try:
-            ifindex = int(parts[-1])
-        except (ValueError, IndexError):
-            continue
-        text = value.strip()
-        if ":" in text:
-            text = text.rsplit(":", 1)[1].strip()
-        m = re.search(r"\d+", text)
-        if m:
-            out[ifindex] = int(m.group(0))
-            continue
-        name = text.lower().split("(", 1)[0].strip()
-        if name in NAMED:
-            out[ifindex] = NAMED[name]
-    return out
-
-
 def parse_arp_ifindex(output):
     """Parse snmpwalk ipNetToMediaIfIndex -> {(ifIndex, ip): True}"""
     entries = {}
@@ -214,25 +188,6 @@ def parse_arp_ifindex(output):
             continue
         entries[(ifindex, ip)] = True
     return entries
-
-
-def normalize_mac(raw):
-    """Common SNMP MAC encodings -> '00:1a:2b:3c:4d:5e' or None.
-
-    Accepts 'Hex-STRING: 00 1a 2b 3c 4d 5e', 'STRING: 0:1a:...', or any
-    string with 6 hex byte tokens separated by spaces/colons/dashes/dots.
-    """
-    if raw is None:
-        return None
-    s = str(raw).strip().strip('"')
-    if ":" in s:
-        head, _, tail = s.partition(":")
-        if head.strip().lower() in ("hex-string", "string"):
-            s = tail.strip()
-    tokens = HEX_BYTE_RE.findall(s)
-    if len(tokens) != 6:
-        return None
-    return ":".join(t.lower().zfill(2) for t in tokens)
 
 
 def mac_from_decimal_suffix(parts):
@@ -1500,27 +1455,6 @@ def filter_reachable_targets(targets, timeout=1, workers=64,
             file=sys.stderr,
         )
     return reachable
-
-
-def atomic_write_json(path, data):
-    """Write `data` as JSON to `path` atomically.
-
-    Prometheus file_sd watches this path with inotify and re-reads it on every
-    change. A plain open(path, "w") truncates the file to 0 bytes before
-    json.dump writes anything, so a read landing in that window fails with
-    "unexpected end of JSON input" (and spams Prometheus's logs every poll).
-
-    Writing to a temp file in the same directory and os.replace()-ing it onto
-    the final path makes the swap atomic: a reader sees either the old file or
-    the fully-written new one, never a half-written or empty file. An empty
-    list still serializes to a valid "[]", never a 0-byte file.
-    """
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
 
 
 def main():

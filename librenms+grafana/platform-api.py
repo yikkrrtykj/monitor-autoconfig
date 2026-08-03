@@ -668,15 +668,6 @@ def config_payload(text: str | None = None) -> dict:
     }
 
 
-def backup_file(path: Path, prefix: str) -> str | None:
-    if not path.exists():
-        return None
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    dest = HISTORY_DIR / f"{prefix}-{stamp()}{path.suffix or '.bak'}"
-    shutil.copy2(path, dest)
-    return str(dest)
-
-
 def require_write() -> None:
     if not WRITE_ENABLED:
         raise PermissionError("platform write endpoints are disabled")

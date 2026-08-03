@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared IPv4 target parsing and atomic JSON/file_sd helpers."""
+"""Shared target parsing, SNMP value normalization, and atomic JSON helpers."""
 from __future__ import annotations
 
 import json
@@ -15,6 +15,50 @@ def is_ipv4(value: Any) -> bool:
         return True
     except ValueError:
         return False
+
+
+def normalize_mac(value: Any) -> str | None:
+    """Normalize common SNMP/CLI MAC encodings to six lower-case octets."""
+    if value is None:
+        return None
+    text = str(value).strip().strip('"')
+    if ":" in text:
+        prefix, _, remainder = text.partition(":")
+        if prefix.strip().lower() in ("hex-string", "string"):
+            text = remainder.strip()
+    tokens = re.findall(r"(?i)(?<![0-9a-f])[0-9a-f]{1,2}(?![0-9a-f])", text)
+    if len(tokens) == 6:
+        return ":".join(token.lower().zfill(2) for token in tokens)
+    compact = re.sub(r"[^0-9a-fA-F]", "", text)
+    if len(compact) != 12:
+        return None
+    return ":".join(compact[index:index + 2].lower() for index in range(0, 12, 2))
+
+
+def parse_if_oper_status(output: str) -> dict[int, int]:
+    """Parse IF-MIB ifOperStatus numeric or named values by ifIndex."""
+    named = {
+        "up": 1, "down": 2, "testing": 3, "unknown": 4,
+        "dormant": 5, "notpresent": 6, "lowerlayerdown": 7,
+    }
+    statuses: dict[int, int] = {}
+    for line in str(output or "").splitlines():
+        if "=" not in line:
+            continue
+        oid, value = line.split("=", 1)
+        try:
+            ifindex = int(oid.strip().strip(".").split(".")[-1])
+        except (ValueError, IndexError):
+            continue
+        text = value.rsplit(":", 1)[-1].strip()
+        number = re.search(r"\d+", text)
+        if number:
+            statuses[ifindex] = int(number.group(0))
+            continue
+        name = text.lower().split("(", 1)[0].strip()
+        if name in named:
+            statuses[ifindex] = named[name]
+    return statuses
 
 
 def expand_ipv4_entry(item: str, max_hosts: int = 4096) -> list[str]:
