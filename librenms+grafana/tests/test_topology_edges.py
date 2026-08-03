@@ -45,6 +45,7 @@ def test_poll_device_skips_arp_walk_outside_configured_l3_scope(monkeypatch):
 
 
 def test_poll_device_uses_pagp_mapping_for_static_etherchannel(monkeypatch):
+    walked = []
     responses = {
         gte.IF_NAME_OID: (
             ".1.3.6.1.2.1.31.1.1.1.1.102 = STRING: Te1/0/2\n"
@@ -62,14 +63,50 @@ def test_poll_device_uses_pagp_mapping_for_static_etherchannel(monkeypatch):
         ),
     }
     monkeypatch.setattr(gte, "snmpget", lambda *_args, **_kwargs: "Global-new-stack")
-    monkeypatch.setattr(
-        gte, "snmpwalk",
-        lambda _ip, _community, oid: responses.get(oid, ""),
-    )
+    def walk(_ip, _community, oid):
+        walked.append(oid)
+        return responses.get(oid, "")
+
+    monkeypatch.setattr(gte, "snmpwalk", walk)
 
     device = gte.poll_device("192.168.10.11", "global", collect_arp=False)
 
     assert device["ifstack"] == {400: [102, 202]}
+    assert gte.PAGP_GROUP_IFINDEX_OID in walked
+    assert gte.DOT3AD_ATTACHED_AGG_ID_OID not in walked
+
+
+def test_poll_device_skips_fallback_lag_mibs_when_ifstack_is_complete(monkeypatch):
+    walked = []
+    responses = {
+        gte.IF_NAME_OID: (
+            ".1.3.6.1.2.1.31.1.1.1.1.102 = STRING: Te1/0/2\n"
+            ".1.3.6.1.2.1.31.1.1.1.1.202 = STRING: Te2/0/2\n"
+            ".1.3.6.1.2.1.31.1.1.1.1.400 = STRING: Po11"
+        ),
+        gte.IF_OPER_STATUS_OID: (
+            ".1.3.6.1.2.1.2.2.1.8.102 = INTEGER: up(1)\n"
+            ".1.3.6.1.2.1.2.2.1.8.202 = INTEGER: up(1)\n"
+            ".1.3.6.1.2.1.2.2.1.8.400 = INTEGER: up(1)"
+        ),
+        gte.IF_STACK_STATUS_OID: (
+            ".1.3.6.1.2.1.31.1.2.1.3.400.102 = INTEGER: active(1)\n"
+            ".1.3.6.1.2.1.31.1.2.1.3.400.202 = INTEGER: active(1)"
+        ),
+    }
+    monkeypatch.setattr(gte, "snmpget", lambda *_args, **_kwargs: "access-1")
+
+    def walk(_ip, _community, oid):
+        walked.append(oid)
+        return responses.get(oid, "")
+
+    monkeypatch.setattr(gte, "snmpwalk", walk)
+
+    device = gte.poll_device("192.168.10.12", "global", collect_arp=False)
+
+    assert device["ifstack"] == {400: [102, 202]}
+    assert gte.PAGP_GROUP_IFINDEX_OID not in walked
+    assert gte.DOT3AD_ATTACHED_AGG_ID_OID not in walked
 
 
 # ---- strip_string_value() ----
@@ -229,6 +266,11 @@ class TestResolveIfindex:
         loc_desc = {19: "GigabitEthernet1/0/19"}
         assert gte.resolve_ifindex(19, ifname, loc_desc) == 10119
 
+    def test_speed_prefix_disambiguates_gigabit_and_tengigabit(self):
+        ifname = {10102: "Gi1/0/2", 10202: "Te1/0/2"}
+        assert gte.resolve_ifindex_by_name("TenGigabitEthernet1/0/2", ifname) == 10202
+        assert gte.resolve_ifindex_by_name("GigabitEthernet1/0/2", ifname) == 10102
+
     def test_returns_none_when_no_match(self):
         assert gte.resolve_ifindex(99, {1: "Gi1/0/1"}, {99: "alien"}) is None
 
@@ -330,8 +372,11 @@ class TestPortChannelEdges:
         devices = {
             "192.168.10.11": {
                 "ip": "192.168.10.11", "sysname": "Global-new-stack",
-                "ifname": {102: "Te1/0/2", 202: "Te2/0/2", 400: "Po11"},
-                "ifstack": {400: [102, 202]},
+                "ifname": {
+                    10102: "Gi1/0/2", 10202: "Te1/0/2",
+                    10602: "Gi2/0/2", 10702: "Te2/0/2", 5011: "Po11",
+                },
+                "ifstack": {5011: [10202, 10702]},
             },
             "192.168.10.254": {
                 "ip": "192.168.10.254", "sysname": "core",

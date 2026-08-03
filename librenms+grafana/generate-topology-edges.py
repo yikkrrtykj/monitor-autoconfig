@@ -257,6 +257,17 @@ def merge_aggregate_member_maps(*mappings):
     return merged
 
 
+def missing_active_aggregate_ifindexes(ifnames, ifoper, member_map):
+    """Return active Port-channels whose physical members are still unknown."""
+    return {
+        ifindex
+        for ifindex, name in (ifnames or {}).items()
+        if normalize_port_name(name).startswith("agg")
+        and (ifoper or {}).get(ifindex) == 1
+        and not (member_map or {}).get(ifindex)
+    }
+
+
 def parse_lldp_loc_port_desc(output):
     """lldpLocPortDesc walk -> {locPortNum: port description}."""
     mapping = {}
@@ -446,7 +457,62 @@ def normalize_port_name(name):
     return text
 
 
+_INTERFACE_TYPE_ALIASES = {
+    "fastethernet": "fa",
+    "fa": "fa",
+    "gigabitethernet": "gi",
+    "gi": "gi",
+    "tengigabitethernet": "te",
+    "te": "te",
+    "twentyfivegige": "twe",
+    "twentyfivegigabitethernet": "twe",
+    "twe": "twe",
+    "fortygige": "fo",
+    "fortygigabitethernet": "fo",
+    "fo": "fo",
+    "hundredgige": "hu",
+    "hundredgigabitethernet": "hu",
+    "hu": "hu",
+}
+
+
+def typed_interface_identity(name):
+    """Preserve interface speed while matching Cisco long/short names.
+
+    A Catalyst stack may contain both Gi1/0/2 and Te1/0/2. The generic
+    topology key intentionally reduces both to 1/0/2, but endpoint resolution
+    must retain the Gi/Te distinction so LLDP/CDP observations are unambiguous.
+    """
+    if not name:
+        return ""
+    text = re.sub(r"[\s_-]+", "", str(name).strip().lower())
+    match = re.fullmatch(r"([a-z]+)(\d+(?:/\d+)+)", text)
+    if not match:
+        return ""
+    interface_type = _INTERFACE_TYPE_ALIASES.get(match.group(1))
+    if not interface_type:
+        return ""
+    return f"{interface_type}:{match.group(2)}"
+
+
 def resolve_ifindex_by_name(port_name, ifname_map):
+    typed_target = typed_interface_identity(port_name)
+    if typed_target:
+        typed_matches = [
+            ifindex for ifindex, name in ifname_map.items()
+            if typed_interface_identity(name) == typed_target
+        ]
+        if len(typed_matches) == 1:
+            return typed_matches[0]
+
+    exact_target = str(port_name or "").strip().lower()
+    exact_matches = [
+        ifindex for ifindex, name in ifname_map.items()
+        if str(name or "").strip().lower() == exact_target
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+
     target = normalize_port_name(port_name)
     if not target:
         return None
@@ -538,15 +604,21 @@ def poll_device(ip, community, collect_arp=True):
     sysname = snmpget(ip, community, SYS_NAME_OID)
     ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
     ifoper = parse_if_oper_status(snmpwalk(ip, community, IF_OPER_STATUS_OID))
-    ifstack = merge_aggregate_member_maps(
-        parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID)),
-        parse_member_aggregate_ifindex(
-            snmpwalk(ip, community, PAGP_GROUP_IFINDEX_OID)
-        ),
-        parse_member_aggregate_ifindex(
-            snmpwalk(ip, community, DOT3AD_ATTACHED_AGG_ID_OID)
-        ),
-    )
+    ifstack = parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID))
+    if missing_active_aggregate_ifindexes(ifname, ifoper, ifstack):
+        ifstack = merge_aggregate_member_maps(
+            ifstack,
+            parse_member_aggregate_ifindex(
+                snmpwalk(ip, community, PAGP_GROUP_IFINDEX_OID)
+            ),
+        )
+    if missing_active_aggregate_ifindexes(ifname, ifoper, ifstack):
+        ifstack = merge_aggregate_member_maps(
+            ifstack,
+            parse_member_aggregate_ifindex(
+                snmpwalk(ip, community, DOT3AD_ATTACHED_AGG_ID_OID)
+            ),
+        )
     arp = parse_arp_table(
         snmpwalk(ip, community, IP_NET_TO_MEDIA_PHYS_ADDRESS_OID), ifname
     ) if collect_arp else {}
