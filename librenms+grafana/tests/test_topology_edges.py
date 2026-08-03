@@ -922,6 +922,69 @@ def test_fully_identified_missing_parallel_member_remains_stale():
     assert sum(edge["stale"] is True for edge in merged) == 1
 
 
+def test_active_aggregate_member_cache_shadow_is_not_retained():
+    live = [{
+        "from_ip": "192.168.10.254", "from_port": "Te1/0/1", "from_ifindex": 101,
+        "from_aggregate_port": "Po11",
+        "from_member_ports": ["Te1/0/1", "Te2/0/1"],
+        "to_ip": "192.168.10.11", "to_port": "Te1/0/2", "to_ifindex": 102,
+        "to_aggregate_port": "Po11",
+        "to_member_ports": ["Te1/0/2", "Te2/0/2"],
+    }]
+    cached = [{
+        "from_ip": "192.168.10.254", "from_port": "Te2/0/1", "from_ifindex": 201,
+        # Older C1000 observations can carry a non-interface remote alias.
+        "to_ip": "192.168.10.11", "to_port": "To-WS-3850-12XS", "to_ifindex": None,
+        "last_seen": 100.0,
+    }]
+    devices = {
+        "192.168.10.254": {
+            "ifname": {101: "Te1/0/1", 201: "Te2/0/1", 400: "Po11"},
+            "ifoper": {101: 1, 201: 1, 400: 1},
+        },
+        "192.168.10.11": {
+            "ifname": {102: "Te1/0/2", 202: "Te2/0/2", 401: "Po11"},
+            "ifoper": {102: 1, 202: 1, 401: 1},
+        },
+    }
+
+    merged = gte.retain_cached_network_edges(
+        live, cached, ["192.168.10.254", "192.168.10.11"],
+        now=200, retention_seconds=86400, devices=devices,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["stale"] is False
+
+
+def test_down_aggregate_member_cache_row_remains_stale():
+    live = [{
+        "from_ip": "192.168.10.254", "from_port": "Te1/0/1", "from_ifindex": 101,
+        "from_aggregate_port": "Po11",
+        "from_member_ports": ["Te1/0/1", "Te2/0/1"],
+        "to_ip": "192.168.10.11", "to_port": "Te1/0/2", "to_ifindex": 102,
+    }]
+    cached = [{
+        "from_ip": "192.168.10.254", "from_port": "Te2/0/1", "from_ifindex": 201,
+        "to_ip": "192.168.10.11", "to_port": "Te2/0/2", "to_ifindex": None,
+        "last_seen": 100.0,
+    }]
+    devices = {
+        "192.168.10.254": {
+            "ifname": {101: "Te1/0/1", 201: "Te2/0/1", 400: "Po11"},
+            "ifoper": {101: 1, 201: 2, 400: 1},
+        },
+    }
+
+    merged = gte.retain_cached_network_edges(
+        live, cached, ["192.168.10.254", "192.168.10.11"],
+        now=200, retention_seconds=86400, devices=devices,
+    )
+
+    assert len(merged) == 2
+    assert sum(edge["stale"] is True for edge in merged) == 1
+
+
 def test_cached_edge_cannot_overwrite_a_live_port_move():
     live = [{
         "from_ip": "192.168.10.254", "from_port": "Te1/0/1", "from_ifindex": 101,

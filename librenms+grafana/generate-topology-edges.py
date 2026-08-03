@@ -1026,8 +1026,37 @@ def _edge_endpoint_identities(edge, side):
     return identities
 
 
+def _active_aggregate_member_identities(edge, side, devices):
+    """Return confirmed-up physical members advertised on one live edge.
+
+    A Catalyst can expose one LLDP/CDP row for a multi-member Port-channel.
+    Aggregate enrichment restores the other member names, while ifOperStatus
+    tells us whether each restored member is currently usable.  These
+    identities are strong enough to retire an older per-member cache row for
+    the same device pair, but a down/unknown member deliberately is not.
+    """
+    ip = str(edge.get(f"{side}_ip") or "").strip()
+    members = edge.get(f"{side}_member_ports") or []
+    if not ip or not members or not edge.get(f"{side}_aggregate_port"):
+        return set()
+    device = (devices or {}).get(ip) or {}
+    ifnames = device.get("ifname", {})
+    ifoper = device.get("ifoper", {})
+    identities = set()
+    for member in members:
+        ifindex = resolve_ifindex_by_name(member, ifnames)
+        if ifindex is None or ifoper.get(ifindex) != 1:
+            continue
+        identities.add((ip, f"i:{ifindex}"))
+        normalized = normalize_port_name(ifnames.get(ifindex) or member)
+        if normalized:
+            identities.add((ip, f"p:{normalized}"))
+    return identities
+
+
 def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
-                                now=None, retention_seconds=24 * 60 * 60):
+                                now=None, retention_seconds=24 * 60 * 60,
+                                devices=None):
     """Keep missing confirmed LLDP/CDP edges long enough to diagnose outages.
 
     Live observations replace matching cache entries. A cached edge is dropped
@@ -1040,6 +1069,7 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
     configured = set(configured_device_ips or [])
     live_keys = {_edge_cache_key(edge) for edge in live_edges}
     live_endpoint_identities = set()
+    active_aggregate_identities = {}
     occupied = set()
     output = []
     for source in live_edges:
@@ -1049,6 +1079,17 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
         output.append(edge)
         for side in ("from", "to"):
             live_endpoint_identities.update(_edge_endpoint_identities(edge, side))
+            pair = frozenset((
+                str(edge.get("from_ip") or "").strip(),
+                str(edge.get("to_ip") or "").strip(),
+            ))
+            aggregate_members = _active_aggregate_member_identities(
+                edge, side, devices
+            )
+            if aggregate_members:
+                active_aggregate_identities.setdefault(pair, set()).update(
+                    aggregate_members
+                )
             ip = str(edge.get(f"{side}_ip") or "").strip()
             ifindex = edge.get(f"{side}_ifindex")
             if ip and ifindex not in (None, ""):
@@ -1067,6 +1108,18 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
             _edge_endpoint_identities(source, side)
             for side in ("from", "to")
         ]
+        pair = frozenset((left, right))
+        # A single LLDP/CDP row can represent a complete, healthy
+        # Port-channel.  Once IF-MIB confirms that an old per-member cache row
+        # is one of that live aggregate's operational members, it is a shadow,
+        # not a lost link.  Do not keep it yellow for the retention window.
+        # Members that are actually down are absent from this set and continue
+        # through the normal 24-hour stale retention path below.
+        if any(
+            identities & active_aggregate_identities.get(pair, set())
+            for identities in cached_endpoint_identities
+        ):
+            continue
         # A one-sided cached row is weak topology evidence.  If its only known
         # endpoint is already present in a live observation, the row is merely
         # an incomplete reverse LLDP/CDP shadow of the current link.  Retaining
@@ -1325,6 +1378,7 @@ def main():
         cached_edges,
         device_ips,
         retention_seconds=edge_retention,
+        devices=devices,
     ) + server_edges
     uplink_targets = []
 
