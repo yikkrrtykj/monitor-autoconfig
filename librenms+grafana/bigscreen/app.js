@@ -17,7 +17,7 @@
   // topology layout/SVG pipeline in topology.js (all loaded before this file).
   const {
     escapeHtml, escapeRegex, escapeLabel, metricName, formatPing, formatPingText,
-    formatUptime, formatBits, formatTime, niceMax, average,
+    formatUptime, formatBits, formatTime, niceMax, roundUpToStep, average,
     networkLabel, seatLabel, gaugeColor, gaugePercent,
     linePathFromPoints, stepPathFromPoints, splitPointsOnGaps,
     buildCsv, formatTimestampFull, groupAddressesByCBlock,
@@ -347,7 +347,11 @@
     const maxT = Math.max(...times);
     const rawMax = Math.max(options.minMax || 0, ...series.flatMap((item) => item.values.map((point) => point.v)));
     const fixedMax = Number(options.maxY);
-    const maxV = Number.isFinite(fixedMax) && fixedMax > 0 ? fixedMax : niceMax(rawMax);
+    const maxRoundStep = Number(options.maxRoundStep);
+    const roundedMax = Number.isFinite(maxRoundStep) && maxRoundStep > 0
+      ? roundUpToStep(rawMax, maxRoundStep)
+      : niceMax(rawMax);
+    const maxV = Number.isFinite(fixedMax) && fixedMax > 0 ? fixedMax : roundedMax;
     const axisFormatter = options.axisFormatter || ((value) => String(value));
     const valueFormatter = options.valueFormatter || axisFormatter;
 
@@ -1010,6 +1014,9 @@
           // Servers remain in their dedicated gauges. A 5 ms floor avoids
           // exaggerating sub-millisecond jitter.
           minMax: 0.005,
+          // Ping is easier to read in decimal milliseconds than the generic
+          // 1/2/2.5/5 chart scale: e.g. a 27 ms peak gets a 30 ms ceiling.
+          maxRoundStep: 0.01,
           breakGapSeconds: pingGap,
           // Visual-only curve smoothing: linePathFromPoints reads the raw
           // samples but never changes them. Legend and scale calculations

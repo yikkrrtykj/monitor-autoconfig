@@ -1,10 +1,15 @@
 const assert = require('assert');
 const {
   suppressIsolatedLatencySpikes,
+  roundUpToStep,
   linePathFromPoints,
   stepPathFromPoints,
   splitPointsOnGaps
 } = require('../bigscreen/utils.js');
+
+assert.ok(Math.abs(roundUpToStep(0.027, 0.01) - 0.03) < 1e-12, '27 ms gets a 30 ms ceiling');
+assert.ok(Math.abs(roundUpToStep(0.03, 0.01) - 0.03) < 1e-12, 'an exact 30 ms peak stays at 30 ms');
+assert.ok(Math.abs(roundUpToStep(0.031, 0.01) - 0.04) < 1e-12, '31 ms gets a 40 ms ceiling');
 
 function series(values) {
   return [{ name: 'switch-a', metric: { instance: 'switch-a' }, values }];

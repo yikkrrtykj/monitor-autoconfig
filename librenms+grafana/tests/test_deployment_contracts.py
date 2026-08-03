@@ -342,6 +342,8 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "renderInfraTrendCards" not in app
     assert ".infra-trend-grid" not in read("bigscreen/platform.css")
     assert "minMax: 0.005" in app
+    assert "maxRoundStep: 0.01" in app
+    assert "roundUpToStep(rawMax, maxRoundStep)" in app
     assert 'const tournamentPingLegend = document.querySelector(".screen.tournament-mode")' in app
     assert '{ legend: "bottom", legendNamesOnly: true, calcs: [] }' in app
     assert "...tournamentPingLegend" in app
@@ -363,8 +365,8 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "pages.js?v=20260804a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260803a" in index
-    assert "app.js?v=20260803f" in index
-    assert "utils.js?v=20260803c" in index
+    assert "app.js?v=20260804a" in index
+    assert "utils.js?v=20260804a" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app

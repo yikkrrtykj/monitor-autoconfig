@@ -106,6 +106,17 @@
     return niceBase * 10 ** exponent;
   }
 
+  function roundUpToStep(value, step) {
+    const numericValue = Number(value);
+    const numericStep = Number(step);
+    if (!Number.isFinite(numericValue) || !Number.isFinite(numericStep) || numericStep <= 0) {
+      return numericValue;
+    }
+    // A tiny relative epsilon keeps an exact 30 ms value at 30 ms instead of
+    // occasionally rounding to 40 ms due to binary floating-point noise.
+    return Math.ceil(numericValue / numericStep - 1e-9) * numericStep;
+  }
+
   function average(values) {
     const usable = values.filter((value) => Number.isFinite(value));
     return usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : 0;
@@ -393,6 +404,7 @@
     formatBits,
     formatTime,
     niceMax,
+    roundUpToStep,
     average,
     suppressIsolatedLatencySpikes,
     uniqueNames,
