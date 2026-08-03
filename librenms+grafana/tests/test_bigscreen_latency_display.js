@@ -31,7 +31,7 @@ const noisyNeighbourInput = series([
   { t: 102, v: 0.002 },
   { t: 104, v: 0.003 },
   { t: 106, v: 0.2 },
-  { t: 108, v: 0.02 },
+  { t: 108, v: 0.019 },
   { t: 110, v: 0.003 },
   { t: 112, v: 0.002 }
 ]);
@@ -43,14 +43,25 @@ assert.strictEqual(
 
 const sustainedInput = series([
   { t: 100, v: 0.002 },
-  { t: 102, v: 0.05 },
+  { t: 102, v: 0.02 },
   { t: 104, v: 0.2 },
   { t: 106, v: 0.004 }
 ]);
 assert.deepStrictEqual(
   suppressIsolatedLatencySpikes(sustainedInput)[0].values.map((point) => point.v),
   sustainedInput[0].values.map((point) => point.v),
-  'two consecutive samples at or above 50 ms must remain visible'
+  'two consecutive samples at or above 20 ms must remain visible'
+);
+
+const thresholdBoundaryInput = series([
+  { t: 100, v: 0.002 },
+  { t: 102, v: 0.02 },
+  { t: 104, v: 0.004 }
+]);
+assert.strictEqual(
+  suppressIsolatedLatencySpikes(thresholdBoundaryInput)[0].values[1].v,
+  0.002,
+  'one isolated sample exactly at 20 ms is suppressed'
 );
 
 assert.strictEqual(

@@ -989,11 +989,11 @@
       const nameMap = await fetchInfraDeviceNames();
       if (seq !== chartSeq) return;
       const rawActivePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
-      // Correct only an isolated >=50 ms response. Every other point, including
+      // Correct only an isolated >=20 ms response. Every other point, including
       // the complete low-latency baseline, must remain the original 2-second
       // Prometheus sample. No averaging or median filter is allowed here.
       const correctedPingSeries = suppressIsolatedLatencySpikes(rawActivePingSeries, {
-        threshold: 0.05,
+        threshold: 0.02,
         minConsecutive: 2,
         maxGapSeconds: 3
       });

@@ -129,7 +129,7 @@
    */
   function suppressIsolatedLatencySpikes(seriesList, options) {
     const settings = options || {};
-    const threshold = Number.isFinite(settings.threshold) ? settings.threshold : 0.05;
+    const threshold = Number.isFinite(settings.threshold) ? settings.threshold : 0.02;
     const minConsecutive = Math.max(2, Math.floor(settings.minConsecutive || 2));
     const maxGapSeconds = Number.isFinite(settings.maxGapSeconds) ? settings.maxGapSeconds : 3;
     const replacementRadius = Math.max(1, Math.floor(settings.replacementRadius || 5));

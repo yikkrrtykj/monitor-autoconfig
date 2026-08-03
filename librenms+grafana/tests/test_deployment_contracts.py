@@ -208,7 +208,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260804a" in html
+    assert "app.js?v=20260804b" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -311,7 +311,7 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     pages = read("bigscreen/pages.js")
     index = read("bigscreen/index.html")
 
-    # Keep the raw 2-second source stable, but suppress isolated 50 ms samples
+    # Keep the raw 2-second source stable, but suppress isolated 20 ms samples
     # in both overview and tournament displays. Sustained incidents stay raw.
     assert "const end = Math.floor(now / step) * step;" in api
     assert 'max by (instance) (probe_icmp_duration_seconds{job=~' in pages
@@ -332,7 +332,7 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "return previous.v" in read("bigscreen/utils.js")
     assert "infra-srv-ping" in pages
     assert "smoothNormalLatencyJitter" not in app
-    assert "threshold: 0.05" in app
+    assert "threshold: 0.02" in app
     assert "minConsecutive: 2" in app
     assert 'renderLineChart("pingTrendChart", activePingSeries' in app
     assert "Visual-only curve smoothing" in app
@@ -365,8 +365,8 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "pages.js?v=20260804a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260803a" in index
-    assert "app.js?v=20260804a" in index
-    assert "utils.js?v=20260804a" in index
+    assert "app.js?v=20260804b" in index
+    assert "utils.js?v=20260804b" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -423,7 +423,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260803a" in index
-    assert "app.js?v=20260804a" in index
+    assert "app.js?v=20260804b" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
