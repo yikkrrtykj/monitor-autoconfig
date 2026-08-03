@@ -27,8 +27,8 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     compose = read("docker-compose.yml")
     example = read(".env.example")
 
-    # A discovery across the fallback management range must produce visible
-    # progress instead of buffering every line until the full run ends.
+    # Tournament-switch discovery must produce visible progress instead of
+    # buffering every line until the full run ends.
     assert "python3 -u /generate-player-targets.py 2>&1" in compose
     assert 'output="$$(python3 /generate-player-targets.py' not in compose
     # Quiet live clients are prompted before the stage MAC table is read.
@@ -42,6 +42,7 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     player_service = compose.split("  player-targets:", 1)[1].split("  topology-collector:", 1)[0]
     assert 'EVENT_NAME: "${EVENT_NAME:-}"' in player_service
     assert "for key in EVENT_NAME TOURNAMENT_SWITCHES" in player_service
+    assert "SWITCH_DISCOVERY_RANGE" not in player_service
     player = read("generate-player-targets.py")
     assert "build_team_switch_cache_scope" in player
     assert "discarding the previous project stage-switch cache" in player
@@ -382,7 +383,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".compact-series .side-legend" in css
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
-    assert "style.css?v=20260802a" in index
+    assert "style.css?v=20260803a" in index
     assert "app.js?v=20260803d" in index
 
 

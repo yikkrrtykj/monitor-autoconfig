@@ -33,6 +33,58 @@
     return recoveries;
   }
 
+  function offlineRecoveryTimes(values) {
+    const times = [];
+    for (let i = 1; i < values.length; i += 1) {
+      const prev = values[i - 1].v;
+      const curr = values[i].v;
+      const timestamp = Number(values[i].t);
+      if (prev < 0.5 && curr >= 0.5 && Number.isFinite(timestamp)) times.push(timestamp);
+    }
+    return times;
+  }
+
+  function detectBulkLifecycle(offlinePlayers, windowSeconds = 90) {
+    const players = new Map();
+    offlinePlayers.forEach((player) => {
+      const key = player.instance || `${player.team}-${player.seat}-${player.network}`;
+      if (!players.has(key)) players.set(key, []);
+      players.get(key).push(...(player.recoveryTimes || []));
+    });
+    if (players.size < 4) return null;
+
+    const recoveries = [];
+    players.forEach((times, player) => {
+      times.forEach((time) => recoveries.push({ player, time }));
+    });
+    recoveries.sort((left, right) => left.time - right.time);
+
+    let peakPlayers = 0;
+    let peakStart = null;
+    for (let start = 0; start < recoveries.length; start += 1) {
+      const seen = new Set();
+      const until = recoveries[start].time + windowSeconds;
+      for (let current = start; current < recoveries.length && recoveries[current].time <= until; current += 1) {
+        seen.add(recoveries[current].player);
+      }
+      if (seen.size > peakPlayers) {
+        peakPlayers = seen.size;
+        peakStart = recoveries[start].time;
+      }
+    }
+
+    // At least four PCs and at least half of all recovered PCs must move in the
+    // same short window. This rejects unrelated single-seat flaps while still
+    // recognizing a coordinated 64-PC power-on/off/reboot sequence.
+    if (peakPlayers < 4 || peakPlayers < Math.ceil(players.size / 2)) return null;
+    return {
+      playerCount: players.size,
+      concurrentRecoveries: peakPlayers,
+      windowSeconds,
+      peakStart
+    };
+  }
+
   function analyzeIncident(data, threshold) {
     const affectedPlayers = [];
     const offlinePlayers = [];
@@ -52,14 +104,17 @@
     });
 
     data.playerSuccess.forEach((series) => {
-      const recoveries = countOfflineRecoveries(series.values);
+      const recoveryTimes = offlineRecoveryTimes(series.values);
+      const recoveries = recoveryTimes.length;
       if (recoveries > 0) {
         offlinePlayers.push({
           team: series.metric.team,
           seat: series.metric.seat,
           network: series.metric.network,
+          switch: series.metric.switch,
           instance: series.metric.instance,
-          recoveryCount: recoveries
+          recoveryCount: recoveries,
+          recoveryTimes
         });
       }
     });
@@ -117,11 +172,12 @@
       group.players = Array.from(group.players.values());
     });
 
-    const verdict = computeIncidentVerdict(affectedPlayers, offlinePlayers, infraEvents, ispEvents, stageGroups);
-    return { affectedPlayers, offlinePlayers, infraEvents, ispEvents, stageGroups, verdict };
+    const bulkLifecycle = detectBulkLifecycle(offlinePlayers);
+    const verdict = computeIncidentVerdict(affectedPlayers, offlinePlayers, infraEvents, ispEvents, stageGroups, bulkLifecycle);
+    return { affectedPlayers, offlinePlayers, infraEvents, ispEvents, stageGroups, bulkLifecycle, verdict };
   }
 
-  function computeIncidentVerdict(affected, offline, infra, isp, stageGroups) {
+  function computeIncidentVerdict(affected, offline, infra, isp, stageGroups, bulkLifecycle = null) {
     const totalAffected = affected.length + offline.length;
 
     if (totalAffected === 0 && infra.length === 0) {
@@ -138,6 +194,16 @@
       };
     }
 
+    const highIsp = isp.filter((event) => event.utilization >= 0.7);
+    const infrastructureOffline = infra.some((event) => event.offline);
+    if (bulkLifecycle && !infrastructureOffline && highIsp.length === 0) {
+      return {
+        level: "info",
+        text: "疑似终端批量启停",
+        detail: `${bulkLifecycle.concurrentRecoveries} 台电脑在 ${bulkLifecycle.windowSeconds} 秒内集中恢复，核心、赛事交换机和 ISP 未见离线或饱和。特征更像批量开机、关机或重启；同时上线产生的短时抖动是伴随现象，不应直接判成网络根因。`
+      };
+    }
+
     const stageKeys = Object.keys(stageGroups);
     if (stageKeys.length === 1 && stageGroups[stageKeys[0]].players.length >= 3) {
       const sw = stageKeys[0];
@@ -149,7 +215,6 @@
       };
     }
 
-    const highIsp = isp.filter((event) => event.utilization >= 0.7);
     if (highIsp.length > 0 && totalAffected >= 3) {
       return {
         level: "warn",
@@ -181,6 +246,8 @@
   const ns = {
     seriesMaxValue,
     countOfflineRecoveries,
+    offlineRecoveryTimes,
+    detectBulkLifecycle,
     analyzeIncident,
     computeIncidentVerdict
   };

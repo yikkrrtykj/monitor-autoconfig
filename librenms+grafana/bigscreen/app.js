@@ -2069,8 +2069,8 @@
 
   function configListRows(name, rows, columns) {
     const addLabels = {
-      stage_switches: "舞台交换机",
-      access_switches: "接入交换机",
+      stage_switches: "赛事交换机",
+      access_switches: "普通接入交换机",
       switches: "交换机",
       servers: "服务器",
       isp: "ISP"
@@ -2162,7 +2162,7 @@
           ${configInput("networks.player_subnets", "选手网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.40.0/24" })}
           ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.41.0/24" })}
           ${configInput("networks.player_gateways", "选手网关（可选）", { type: "textarea", compact: true, rows: 1, placeholder: "留空默认用核心交换机 IP" })}
-          ${configInput("networks.switch_management_ranges", "交换机管理网段（交换机就填这里）", { type: "textarea", compact: true, rows: 1, placeholder: "范围如 192.168.10.11-30 会自动 SNMP 发现在线交换机并上大屏；CIDR 如 192.168.10.0/24 仅用于 LibreNMS 发现" })}
+          ${configInput("networks.switch_management_ranges", "普通交换机自动发现范围", { type: "textarea", compact: true, rows: 1, placeholder: "例如 192.168.10.1-100 或 192.168.10.0/24；只进入通用监控和拓扑，不参与赛事座位识别" })}
           ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "默认 192.168.9.0/24；支持范围或单 IP" })}
         </div>
       </section>
@@ -2179,16 +2179,16 @@
       </section>
       <div class="config-section-pair">
         <section class="config-section">
-          <h3>舞台交换机（选填）</h3>
-          <p class="config-section-note">一般留空：填"交换机管理网段"后，系统会 SNMP 扫描该网段，只把真正在线的交换机加入大屏（不在线的不加），名字直接用交换机 hostname；hostname 含"舞台/stage"的自动归到赛事大屏。需要精确指定时再逐台填。</p>
+          <h3>赛事交换机（赛事项目必填）</h3>
+          <p class="config-section-note">这里只填本项目承载选手电脑的交换机，例如 192.168.10.45、192.168.10.46。它们组成赛事白名单，用于座位识别和选手监控；普通管理网段里的其它交换机不会混入赛事控制台。</p>
           ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
             { key: "name", label: "名称", placeholder: "可留空，默认用 SNMP hostname" },
-            { key: "ip", label: "管理地址", placeholder: "可留空，留空走网段自动发现" }
+            { key: "ip", label: "管理地址", placeholder: "赛事交换机 IP" }
           ])}
         </section>
         <section class="config-section">
-          <h3>其它接入交换机（选填）</h3>
-          <p class="config-section-note">一般留空：同样由"交换机管理网段"自动发现；普通大屏包含全部在线交换机。用于基础设施在线、拓扑和 LibreNMS 发现，不参与选手座位识别。</p>
+          <h3>固定普通交换机（选填）</h3>
+          <p class="config-section-note">一般留空，系统会从“普通交换机自动发现范围”识别其它接入交换机。这里只在需要固定显示名称时填写；这些设备只进入通用大屏、拓扑和 LibreNMS，不参与选手座位识别。</p>
           ${configListRows("access_switches", lastEditableConfig.devices.access_switches, [
             { key: "name", label: "名称", placeholder: "可留空，默认用 SNMP hostname" },
             { key: "ip", label: "管理地址", placeholder: "可留空" }

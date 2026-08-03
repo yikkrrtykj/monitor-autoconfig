@@ -908,9 +908,11 @@ body {
 }
 
 .incident-verdict.good strong { background: rgba(76, 175, 80, 0.78); color: #06140a; }
+.incident-verdict.info strong { background: rgba(105, 160, 255, 0.82); color: #071426; }
 .incident-verdict.warn strong { background: rgba(255, 193, 7, 0.82); color: #1a1500; }
 .incident-verdict.bad  strong { background: rgba(239, 35, 60, 0.86); color: #fff; }
 .incident-verdict.good { border-left: 4px solid #4caf50; }
+.incident-verdict.info { border-left: 4px solid #69a0ff; }
 .incident-verdict.warn { border-left: 4px solid #ffc107; }
 .incident-verdict.bad  { border-left: 4px solid #ef233c; }
 
