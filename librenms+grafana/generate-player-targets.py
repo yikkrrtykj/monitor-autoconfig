@@ -793,10 +793,10 @@ def discover_team_switches(switches, community, timeout=2, workers=8,
                            probe_snmp=snmpwalk):
     """Find switches with at least one authoritative ``team X-Y`` ifAlias.
 
-    Probe the explicit tournament-switch allowlist concurrently and do the
-    expensive FDB/VLAN walks only on devices whose descriptions prove they
-    serve player seats. General switch-management discovery is intentionally a
-    separate pipeline and never becomes a player-seat candidate source.
+    The console can fall back from an empty explicit tournament-switch list to
+    the whole management discovery range. Probe that range concurrently and do
+    the expensive FDB/VLAN walks only on devices whose descriptions prove they
+    serve player seats.
     """
     candidates = list(dict.fromkeys(switches or []))
     if not candidates:
@@ -877,8 +877,8 @@ def discover_team_switches_cached(
 
     A cached switch that stops answering or loses every team description makes
     the function fall back to the complete candidate list immediately. This
-    keeps transient failures self-healing without repeatedly walking the full
-    tournament allowlist.
+    keeps switch replacements/IP changes self-healing without walking the whole
+    management range every five minutes.
     """
     candidates = list(dict.fromkeys(switches or []))
     if not candidates:

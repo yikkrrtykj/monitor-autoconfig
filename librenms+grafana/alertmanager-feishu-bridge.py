@@ -97,17 +97,6 @@ import threading
 import time
 from urllib import error, parse, request
 
-from network_syslog import (
-    MacFlapTracker,
-    clean_iface_token as _clean_iface_token,
-    is_bpdu_event as _is_bpdu_event,
-    network_event_port as _network_event_port,
-    network_event_priority as _network_event_priority,
-    normalize_iface_key as _normalize_iface_key,
-    parse_link_state_event,
-    parse_network_syslog_event,
-)
-
 PORT = int(os.environ.get("FEISHU_BRIDGE_PORT", "5005"))
 DRY_RUN = os.environ.get("FEISHU_BRIDGE_DRY_RUN", "").lower() in ("1", "true", "yes", "on")
 FEISHU_SEND_MAX_ATTEMPTS = max(1, int(os.environ.get("FEISHU_SEND_MAX_ATTEMPTS", "3")))
@@ -313,6 +302,37 @@ SYSNAME_CHANGE_ALERT_ENABLED = os.environ.get("SYSNAME_CHANGE_ALERT_ENABLED", "t
 SYSNAME_CHANGE_POLL_INTERVAL = int(os.environ.get("SYSNAME_CHANGE_POLL_INTERVAL", "60"))
 SYSNAME_CHANGE_CONFIRM_POLLS = max(1, int(os.environ.get("SYSNAME_CHANGE_CONFIRM_POLLS", "2")))
 
+_MAC_RE = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2}|[0-9A-Fa-f]{12}"
+_MACFLAP_RE = re.compile(
+    rf"MACFLAP_NOTIF:\s+Host\s+({_MAC_RE})\s+in\s+vlan\s+(\d+)\s+is\s+flapping\s+between\s+port\s+(\S+)\s+and\s+port\s+(\S+)",
+    re.IGNORECASE,
+)
+_NATIVE_VLAN_RE = re.compile(
+    r"NATIVE_VLAN_MISMATCH:\s+Native VLAN mismatch discovered on\s+(\S+)\s+\((\d+)\),\s+with\s+(.+?)\s+(\S+)\s+\((\d+)\)",
+    re.IGNORECASE,
+)
+_ERRDISABLE_RE = re.compile(
+    r"ERR_?DISABLE:\s+(.+?)\s+error detected on\s+(\S+),\s+putting\s+\S+\s+in err-disable state",
+    re.IGNORECASE,
+)
+_BPDUGUARD_RE = re.compile(
+    r"(?:BPDUGUARD|BPDU Guard).*?(?:port|interface)\s+(\S+)",
+    re.IGNORECASE,
+)
+_STORM_RE = re.compile(
+    r"(?:STORM_CONTROL|storm-control|storm control).*?(?:on|interface)\s+(\S+)",
+    re.IGNORECASE,
+)
+_LOOPBACK_RE = re.compile(
+    r"LOOP_BACK_DETECTED.*?(?:on|interface)\s+(\S+)",
+    re.IGNORECASE,
+)
+_LINK_STATE_RE = re.compile(
+    r"(?:LINK-\d+-\w+|LINEPROTO-\d+-UPDOWN):\s+"
+    r"(?:Line protocol on\s+)?Interface\s+(\S+),\s+changed state to\s+"
+    r"(administratively down|up|down)",
+    re.IGNORECASE,
+)
 def _clean_token(raw):
     t = raw.strip()
     if "/hook/" in t:
@@ -345,14 +365,7 @@ LINK_ERRDISABLE_EVENTS = {}
 LINK_AGGREGATE_EVENTS = {}
 WATCHER_THREADS = {}
 WATCHER_HEALTH = {}
-DELIVERY_HEALTH = {
-    "lastSuccessAt": None,
-    "lastFailureAt": None,
-    "lastError": "",
-    "lastChannel": "",
-    "appChatResolved": False,
-    "lastAppError": "",
-}
+DELIVERY_HEALTH = {"lastSuccessAt": None, "lastFailureAt": None, "lastError": ""}
 
 
 def _read_int_file(path, default=0):
@@ -616,28 +629,14 @@ def mark_watcher_health(name, ok=True, error_message=""):
             state["lastError"] = str(error_message or "unknown error")[:300]
 
 
-def mark_delivery_health(ok, error_message="", channel=""):
+def mark_delivery_health(ok, error_message=""):
     with HEALTH_LOCK:
-        if channel:
-            DELIVERY_HEALTH["lastChannel"] = channel
         if ok:
             DELIVERY_HEALTH["lastSuccessAt"] = int(time.time())
             DELIVERY_HEALTH["lastError"] = ""
         else:
             DELIVERY_HEALTH["lastFailureAt"] = int(time.time())
             DELIVERY_HEALTH["lastError"] = str(error_message or "delivery failed")[:300]
-
-
-def mark_app_resolution(ok, error_message=""):
-    with HEALTH_LOCK:
-        DELIVERY_HEALTH["appChatResolved"] = bool(ok)
-        DELIVERY_HEALTH["lastAppError"] = "" if ok else str(error_message or "群解析失败")[:500]
-
-
-def mark_app_error(error_message):
-    """Record an application delivery error without rewriting chat resolution."""
-    with HEALTH_LOCK:
-        DELIVERY_HEALTH["lastAppError"] = str(error_message or "应用投递失败")[:500]
 
 
 def bridge_health_payload():
@@ -2515,11 +2514,11 @@ def _send_feishu_webhook(card):
     card = _with_event_name(card)
     if DRY_RUN:
         log(f"[DRY] would POST card: {card['card']['header']['title']['content']}")
-        mark_delivery_health(True, channel="dry-run")
+        mark_delivery_health(True)
         return True
     if not TOKEN:
         log("[WARN] FEISHU_ROBOT_TOKEN empty, dropping alert (set token or enable DRY_RUN)")
-        mark_delivery_health(False, "FEISHU_ROBOT_TOKEN is empty", "webhook")
+        mark_delivery_health(False, "FEISHU_ROBOT_TOKEN is empty")
         return False
     url = f"https://open.feishu.cn/open-apis/bot/v2/hook/{TOKEN}"
     data = json.dumps(card).encode("utf-8")
@@ -2532,7 +2531,7 @@ def _send_feishu_webhook(card):
             ok, detail = _feishu_response_result(response_text)
             if ok:
                 log(f"feishu response: {response_text[:200]}")
-                mark_delivery_health(True, channel="webhook")
+                mark_delivery_health(True)
                 return True
             last_error = detail
             log(
@@ -2549,7 +2548,7 @@ def _send_feishu_webhook(card):
             delay = FEISHU_SEND_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
             if delay > 0:
                 time.sleep(delay)
-    mark_delivery_health(False, last_error, "webhook")
+    mark_delivery_health(False, last_error)
     return False
 
 
@@ -2586,60 +2585,16 @@ def _feishu_tenant_token():
             "/open-apis/auth/v3/tenant_access_token/internal",
             {"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET},
         )
-    except error.HTTPError as exc:
-        detail = _feishu_http_error_detail(exc)
-        mark_app_error(detail)
-        log(f"[APP] tenant token request failed: {detail}")
-        return ""
     except Exception as exc:
-        mark_app_error(exc)
         log(f"[APP] tenant token request failed: {exc}")
         return ""
     if data.get("code") != 0 or not data.get("tenant_access_token"):
-        detail = f"code={data.get('code')} msg={str(data.get('msg'))[:160]}"
-        mark_app_error(detail)
-        log(f"[APP] tenant token rejected: {detail}")
+        log(f"[APP] tenant token rejected: code={data.get('code')} msg={str(data.get('msg'))[:120]}")
         return ""
     with _FEISHU_APP_TOKEN_LOCK:
         _FEISHU_APP_TOKEN["token"] = data["tenant_access_token"]
         _FEISHU_APP_TOKEN["expires_at"] = now + float(data.get("expire") or 3600)
         return _FEISHU_APP_TOKEN["token"]
-
-
-def _feishu_http_error_detail(exc):
-    """Return Feishu's business code/message instead of only ``HTTP 400``."""
-    try:
-        raw = exc.read().decode("utf-8", errors="replace")
-    except Exception:
-        raw = ""
-    try:
-        payload = json.loads(raw or "{}")
-    except (TypeError, ValueError, json.JSONDecodeError):
-        payload = {}
-    code = payload.get("code") if isinstance(payload, dict) else None
-    message = payload.get("msg") if isinstance(payload, dict) else None
-    detail = f"HTTP {getattr(exc, 'code', '?')}"
-    if code is not None:
-        detail += f" code={code}"
-    if message:
-        detail += f" msg={str(message)[:240]}"
-    elif raw:
-        detail += f" body={raw[:240]}"
-    if code in (99991672, 99991679):
-        detail += "; 请给应用开通“查看群信息 (im:chat:read)”权限并发布新版本"
-    elif code in (230006, 232025):
-        detail += "; 请开启机器人能力并发布应用"
-    elif code == 232034:
-        detail += "; 请在当前租户安装并启用应用"
-    elif code in (230002, 232011):
-        detail += "; 请把应用机器人加入目标群并确认机器人仍在群内"
-    elif code in (230034, 232006):
-        detail += "; 请检查 oc_ 开头的 Chat ID 是否有效且与接收类型一致"
-    elif code == 230035:
-        detail += "; 请检查群禁言、机器人发言权限和租户沟通权限"
-    elif code in (230001, 232001):
-        detail += "; 请求参数无效，请结合 msg 检查 Chat ID、接收类型和消息内容"
-    return detail
 
 
 def _feishu_app_chat_id(token):
@@ -2651,7 +2606,6 @@ def _feishu_app_chat_id(token):
     silently choose the first one, which could send one venue's alert elsewhere.
     """
     if FEISHU_CHAT_ID.startswith("oc_"):
-        mark_app_resolution(True)
         return FEISHU_CHAT_ID
     if _FEISHU_APP_CHAT["chat_id"]:
         return _FEISHU_APP_CHAT["chat_id"]
@@ -2678,15 +2632,8 @@ def _feishu_app_chat_id(token):
             if not page.get("has_more") or not page.get("page_token"):
                 break
             page_token = str(page["page_token"])
-    except error.HTTPError as exc:
-        detail = _feishu_http_error_detail(exc)
-        mark_app_resolution(False, detail)
-        log(f"[APP] chat list failed: {detail}")
-        return ""
     except Exception as exc:
-        detail = str(exc)
-        mark_app_resolution(False, detail)
-        log(f"[APP] chat list failed: {detail}")
+        log(f"[APP] chat list failed: {exc}")
         return ""
 
     def match_name(value):
@@ -2704,23 +2651,16 @@ def _feishu_app_chat_id(token):
         reason = "only bot group"
     else:
         if not items:
-            detail = "机器人不在任何群；请把自建应用机器人加入告警群"
-            mark_app_resolution(False, detail)
-            log(f"[APP] {detail}")
+            log("[APP] bot is not in any chat; add the app bot to the alert group")
         elif FEISHU_CHAT_ID:
-            detail = f"告警群名称 '{FEISHU_CHAT_ID}' 不存在或不唯一；建议直接填写 oc_ 开头的 chat_id"
-            mark_app_resolution(False, detail)
-            log(f"[APP] {detail}")
+            log(f"[APP] alert group name '{FEISHU_CHAT_ID}' is missing or ambiguous")
         else:
             names = ", ".join(str(entry.get("name") or entry.get("chat_id")) for entry in items[:10])
-            detail = f"机器人属于多个群 ({names})；请把 FEISHU_CHAT_ID 设置为群名或 oc_ 开头的 chat_id"
-            mark_app_resolution(False, detail)
-            log(f"[APP] {detail}")
+            log(f"[APP] bot belongs to multiple groups ({names}); set FEISHU_CHAT_ID to a group name or oc_ id")
         return ""
     chat_id = str(item.get("chat_id") or "")
     if chat_id:
         _FEISHU_APP_CHAT["chat_id"] = chat_id
-        mark_app_resolution(True)
         log(f"[APP] selected chat {chat_id} ({str(item.get('name'))[:40]}) by {reason}")
         return chat_id
     return ""
@@ -2750,21 +2690,12 @@ def send_feishu_app_card(card):
             },
             token=token,
         )
-    except error.HTTPError as exc:
-        detail = _feishu_http_error_detail(exc)
-        mark_app_error(detail)
-        log(f"[APP] interactive card send failed: {detail}")
-        return False
     except Exception as exc:
-        mark_app_error(exc)
         log(f"[APP] interactive card send failed: {exc}")
         return False
     if data.get("code") != 0:
-        detail = f"code={data.get('code')} msg={str(data.get('msg'))[:160]}"
-        mark_app_error(detail)
-        log(f"[APP] interactive card rejected: {detail}")
+        log(f"[APP] interactive card rejected: code={data.get('code')} msg={str(data.get('msg'))[:160]}")
         return False
-    mark_app_resolution(True)
     return True
 
 
@@ -2772,11 +2703,8 @@ def send_feishu(card):
     """Prefer the approved app bot; retain the webhook as a safe fallback."""
     if feishu_app_configured():
         if send_feishu_app_card(card):
-            mark_delivery_health(True, channel="app")
+            mark_delivery_health(True)
             return True
-        with HEALTH_LOCK:
-            app_error = DELIVERY_HEALTH.get("lastAppError") or "应用卡片发送失败"
-            DELIVERY_HEALTH["lastAppError"] = app_error
         log("[APP] app delivery failed; falling back to FEISHU_ROBOT_TOKEN")
     return _send_feishu_webhook(card)
 
@@ -5034,6 +4962,143 @@ def unifi_ap_watcher():
         time.sleep(UNIFI_AP_POLL_INTERVAL)
 
 
+def _clean_iface_token(value):
+    return str(value or "").strip().rstrip(".,;:")
+
+
+def _normalize_iface_key(value):
+    token = _clean_iface_token(value).lower().replace(" ", "")
+    replacements = [
+        ("hundredgigabitethernet", "hu"),
+        ("twentyfivegigabitethernet", "twe"),
+        ("fortygigabitethernet", "fo"),
+        ("tengigabitethernet", "te"),
+        ("gigabitethernet", "gi"),
+        ("fastethernet", "fa"),
+        ("port-channel", "po"),
+        ("portchannel", "po"),
+    ]
+    for full, short in replacements:
+        if token.startswith(full):
+            return short + token[len(full):]
+    return token
+
+
+class MacFlapTracker:
+    """Turn noisy MACFLAP syslog lines into actionable, rate-aware events.
+
+    IOS only says that a MAC is flapping *between* two interfaces. It does not
+    identify a reliable old/new direction, so ordinary events keep the A/B
+    wording. For configured gateway MACs, an expected uplink lets us identify
+    the other side as the abnormal interface without guessing direction.
+    """
+
+    def __init__(
+        self,
+        gateway_macs=None,
+        gateway_uplink_ports=None,
+        window_seconds=SYSLOG_MAC_FLAP_WINDOW_SECONDS,
+        threshold=SYSLOG_MAC_FLAP_THRESHOLD,
+    ):
+        self.gateway_macs = {
+            _normalize_mac_hex(mac)
+            for mac in (gateway_macs if gateway_macs is not None else SYSLOG_GATEWAY_MACS)
+            if _normalize_mac_hex(mac)
+        }
+        self.gateway_uplink_ports = {
+            _normalize_iface_key(port)
+            for port in (
+                gateway_uplink_ports
+                if gateway_uplink_ports is not None
+                else SYSLOG_GATEWAY_UPLINK_PORTS
+            )
+            if _normalize_iface_key(port)
+        }
+        self.window_seconds = max(1, int(window_seconds))
+        self.threshold = max(1, int(threshold))
+        self._moves = {}
+        self._last_prune = 0.0
+
+    def observe(self, host, event, now=None):
+        if not event or event.get("kind") != "mac_flap":
+            return event
+        now = time.time() if now is None else float(now)
+        mac = _normalize_mac_hex(event.get("mac"))
+        vlan = str(event.get("vlan") or "")
+        key = (str(host or "").lower(), mac, vlan)
+        cutoff = now - self.window_seconds
+        if now - self._last_prune >= self.window_seconds:
+            retained = {}
+            for move_key, stamps in self._moves.items():
+                active = [stamp for stamp in stamps if stamp >= cutoff]
+                if active:
+                    retained[move_key] = active
+            self._moves = retained
+            self._last_prune = now
+        moves = [stamp for stamp in self._moves.get(key, []) if stamp >= cutoff]
+        moves.append(now)
+        self._moves[key] = moves
+
+        port_a = event.get("port_a") or ""
+        port_b = event.get("port_b") or ""
+        normalized_ports = {
+            port_a: _normalize_iface_key(port_a),
+            port_b: _normalize_iface_key(port_b),
+        }
+        expected = [
+            port for port, normalized in normalized_ports.items()
+            if normalized and normalized in self.gateway_uplink_ports
+        ]
+        unexpected = [
+            port for port, normalized in normalized_ports.items()
+            if normalized and normalized not in self.gateway_uplink_ports
+        ]
+        is_gateway = bool(mac and mac in self.gateway_macs)
+        uplink_to_unexpected = bool(
+            is_gateway and len(expected) == 1 and len(unexpected) == 1
+        )
+        if not uplink_to_unexpected and len(moves) < self.threshold:
+            return None
+
+        enriched = dict(event)
+        enriched.update({
+            "gateway_mac": is_gateway,
+            "move_count": len(moves),
+            "window_seconds": self.window_seconds,
+        })
+        if is_gateway:
+            enriched.update({
+                "title": "🔴 网关 MAC 异常移动",
+                "color": "red",
+                "dedupe": f"gateway-mac-flap|{mac}|{vlan}",
+            })
+            if uplink_to_unexpected:
+                enriched.update({
+                    "normal_port": expected[0],
+                    "abnormal_port": unexpected[0],
+                    "hint": (
+                        "关键网关 MAC 在正常上联和其他接口之间移动，可能存在二层环路、"
+                        "错误跳线或网关双主。"
+                    ),
+                })
+            else:
+                enriched["hint"] = (
+                    "关键网关 MAC 在统计窗口内频繁移动；若两端都是正常 HA 上联，先核对"
+                    "主备切换，否则检查二层环路、错误跳线或网关双主。"
+                )
+        else:
+            enriched.update({
+                "title": "🟠 普通 MAC 频繁漂移",
+                "color": "orange",
+                "dedupe": f"mac-flap|{mac}|{vlan}",
+                "hint": (
+                    "同一个 MAC 在两个接口之间频繁学习，常见于二层环路、无线桥接、"
+                    "AP Mesh/第二网口或错误跳线。"
+                ),
+            })
+        return enriched
+
+
 def _normalize_link_identity(value):
     """Normalize an IP/sysName/hostname for cross-watcher event matching."""
     token = str(value or "").strip().lower()
@@ -5173,6 +5238,132 @@ def _syslog_event_enabled(kind):
     return "all" in SYSLOG_ALERT_TYPES or str(kind or "").lower() in SYSLOG_ALERT_TYPES
 
 
+def _network_event_port(event):
+    if not event:
+        return ""
+    if event.get("kind") == "native_vlan_mismatch":
+        return event.get("local_port") or ""
+    return event.get("port") or ""
+
+
+def _network_event_priority(kind):
+    return {
+        "native_vlan_mismatch": 3,
+        "loopback": 2,
+        "errdisable": 1,
+        "bpduguard": 1,
+    }.get(str(kind or ""), 0)
+
+
+def parse_link_state_event(message):
+    match = _LINK_STATE_RE.search(str(message or ""))
+    if not match:
+        return None
+    port, state = match.groups()
+    return {
+        "port": _clean_iface_token(port),
+        "state": state.lower(),
+    }
+
+
+def _is_bpdu_event(event):
+    kind = str((event or {}).get("kind") or "").lower()
+    reason = str((event or {}).get("reason") or "").lower()
+    return kind == "bpduguard" or (kind == "errdisable" and "bpdu" in reason)
+
+
+def parse_network_syslog_event(message):
+    text = str(message or "").strip()
+
+    match = _NATIVE_VLAN_RE.search(text)
+    if match:
+        local_port, local_vlan, peer_device, peer_port, peer_vlan = match.groups()
+        local_port = _clean_iface_token(local_port)
+        peer_port = _clean_iface_token(peer_port)
+        return {
+            "kind": "native_vlan_mismatch",
+            "title": "🚨 接入口疑似串线",
+            "color": "red",
+            "local_port": local_port,
+            "local_vlan": local_vlan,
+            "peer_device": peer_device.strip(),
+            "peer_port": peer_port,
+            "peer_vlan": peer_vlan,
+            "dedupe": f"native|{local_port}|{local_vlan}|{peer_device.strip()}|{peer_port}|{peer_vlan}",
+            "hint": "两个 access/native VLAN 不一致的端口互相收到了 CDP，常见于跳线、小交换机、AP 第二网口把两个口桥在一起。",
+        }
+
+    match = _MACFLAP_RE.search(text)
+    if match:
+        mac, vlan, port_a, port_b = match.groups()
+        port_a = _clean_iface_token(port_a)
+        port_b = _clean_iface_token(port_b)
+        return {
+            "kind": "mac_flap",
+            "title": "🚨 MAC 地址漂移",
+            "color": "red",
+            "mac": _format_mac(mac),
+            "vlan": vlan,
+            "port_a": port_a,
+            "port_b": port_b,
+            "dedupe": f"macflap|{_normalize_mac_hex(mac)}|{vlan}|{port_a}|{port_b}",
+            "hint": "同一个 MAC 在两个端口之间反复学习，通常是二层环路、无线桥接、AP Mesh/第二网口或错误跳线。",
+        }
+
+    match = _ERRDISABLE_RE.search(text)
+    if match:
+        reason, port = match.groups()
+        reason = reason.strip()
+        port = _clean_iface_token(port)
+        return {
+            "kind": "errdisable",
+            "title": "🛑 接口被保护关闭",
+            "color": "orange",
+            "port": port,
+            "reason": reason,
+            "dedupe": f"errdisable|{port}|{reason.lower()}",
+            "hint": "交换机已把接口放入 err-disabled；按原因检查 BPDU、风暴、环路或链路抖动。",
+        }
+
+    if "BPDUGUARD" in text.upper() or "BPDU Guard" in text:
+        match = _BPDUGUARD_RE.search(text)
+        port = _clean_iface_token(match.group(1)) if match else ""
+        return {
+            "kind": "bpduguard",
+            "title": "⛔ BPDU blocked: Has worsened",
+            "color": "red",
+            "port": port,
+            "dedupe": f"bpduguard|{port}|{text[:100]}",
+            "hint": "普通终端/AP 接入口不应该收到 BPDU；后面可能接了交换机、桥接设备或形成环路。",
+        }
+
+    if "STORM_CONTROL" in text.upper() or "storm-control" in text.lower() or "storm control" in text.lower():
+        match = _STORM_RE.search(text)
+        port = _clean_iface_token(match.group(1)) if match else ""
+        return {
+            "kind": "storm_control",
+            "title": "🛑 广播/组播风暴",
+            "color": "orange",
+            "port": port,
+            "dedupe": f"storm|{port}|{text[:100]}",
+            "hint": "广播或组播流量超过阈值，端口可能已被 storm-control 关闭。",
+        }
+
+    if "LOOP_BACK_DETECTED" in text.upper():
+        match = _LOOPBACK_RE.search(text)
+        port = _clean_iface_token(match.group(1)) if match else ""
+        return {
+            "kind": "loopback",
+            "title": "🛑 端口检测到回环",
+            "color": "red",
+            "port": port,
+            "dedupe": f"loopback|{port}|{text[:100]}",
+            "hint": "接口检测到二层回环，优先查该口后面的跳线、AP 第二网口或小交换机。",
+        }
+
+    return None
+
+
 def build_network_syslog_card(host, message, event, recovered=False, duration=0):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     device = _host_display_name(host)
@@ -5258,12 +5449,7 @@ def syslog_watcher():
     network_realert = max(rate_limit, SYSLOG_REALERT_SECONDS)
     recover_stable = max(0, SYSLOG_RECOVER_STABLE_SECONDS)
     correlation_window = max(0, SYSLOG_CORRELATION_SECONDS)
-    mac_flap_tracker = MacFlapTracker(
-        gateway_macs=SYSLOG_GATEWAY_MACS,
-        gateway_uplink_ports=SYSLOG_GATEWAY_UPLINK_PORTS,
-        window_seconds=SYSLOG_MAC_FLAP_WINDOW_SECONDS,
-        threshold=SYSLOG_MAC_FLAP_THRESHOLD,
-    )
+    mac_flap_tracker = MacFlapTracker()
 
     def _port_key(host, port):
         return "|".join([str(host or ""), _normalize_iface_key(port)])
@@ -5836,15 +6022,7 @@ class Handler(BaseHTTPRequestHandler):
             result = {"ok": False, "error": "未配置飞书应用机器人或群机器人 Token"}
         else:
             sent = send_feishu(build_test_card())
-            with HEALTH_LOCK:
-                delivery = dict(DELIVERY_HEALTH)
-            result = {
-                "ok": bool(sent),
-                "dryRun": DRY_RUN,
-                "channel": delivery.get("lastChannel") or "",
-                "appChatResolved": bool(delivery.get("appChatResolved")),
-                "appError": delivery.get("lastAppError") or "",
-            }
+            result = {"ok": bool(sent), "dryRun": DRY_RUN}
             if not sent and not DRY_RUN:
                 result["error"] = "飞书返回失败，请检查应用凭证、目标群或群机器人 Token"
         log(f"[TEST] test alert requested -> {result}")

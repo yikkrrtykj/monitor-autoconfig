@@ -369,9 +369,8 @@ devices:
 def test_empty_switch_list_drives_discovery_from_range():
     # Operator fills only the core IP + switch management range: no static switch
     # ping targets are emitted (offline IPs must not be pinged); instead the
-    # discovery loop gets the range and the core doubles as the gateway. The
-    # event console still warns that player discovery needs an explicit
-    # tournament-switch allowlist.
+    # discovery loop gets the range, the core doubles as the gateway, and the
+    # missing-stage-switch warning is suppressed.
     config = platform_config.parse_simple_yaml("""
 networks:
   switch_management_ranges: 192.168.10.11-30,192.168.10.254
@@ -390,9 +389,7 @@ devices:
     assert env["LIBRENMS_CORE_IP"] == "192.168.10.254"
     issues = platform_config.validate_config(config)
     assert not [i for i in issues if i["level"] == "bad"]
-    stage_warnings = [i for i in issues if i["path"] == "devices.stage_switches"]
-    assert len(stage_warnings) == 1
-    assert "普通交换机仍会按管理网段自动发现" in stage_warnings[0]["message"]
+    assert not [i for i in issues if i["path"] == "devices.stage_switches"]
 
 
 def test_explicit_switches_and_discovery_range_coexist():

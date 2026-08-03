@@ -33,17 +33,6 @@ def test_topology_snmp_calls_are_bounded_and_do_not_retry(monkeypatch):
     assert kwargs["timeout"] == 4.0
 
 
-def test_poll_device_skips_arp_walk_outside_configured_l3_scope(monkeypatch):
-    walked = []
-    monkeypatch.setattr(gte, "snmpget", lambda *_args, **_kwargs: "access-1")
-    monkeypatch.setattr(gte, "snmpwalk", lambda _ip, _community, oid: walked.append(oid) or "")
-
-    device = gte.poll_device("192.168.10.11", "global", collect_arp=False)
-
-    assert device["arp"] == {}
-    assert gte.IP_NET_TO_MEDIA_PHYS_ADDRESS_OID not in walked
-
-
 # ---- strip_string_value() ----
 
 class TestStripStringValue:
@@ -414,44 +403,6 @@ class TestServerAttachmentDiscovery:
         assert found[0]["from_port"] == "Gi1/0/10"
         assert found[0]["to_ip"] == "192.168.42.203"
         assert found[0]["source"] == "fdb"
-
-    def test_cached_physical_owner_avoids_full_switch_fanout(self, monkeypatch):
-        devices = {
-            "192.168.10.254": {
-                "ip": "192.168.10.254", "sysname": "core",
-                "ifname": {42: "Vlan42", 5001: "Po1"},
-                "arp": {"192.168.42.203": {
-                    "mac": "00:11:22:aa:bb:cc", "ifindex": 42, "vlan": 42,
-                }},
-            },
-            "192.168.10.11": {
-                "ip": "192.168.10.11", "sysname": "access-1",
-                "ifname": {10110: "Gi1/0/10"}, "arp": {},
-            },
-            "192.168.10.12": {
-                "ip": "192.168.10.12", "sysname": "access-2",
-                "ifname": {10110: "Gi1/0/10"}, "arp": {},
-            },
-        }
-        calls = []
-        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
-        monkeypatch.setenv("FIREWALL_PING", "")
-        monkeypatch.setattr(
-            gte,
-            "lookup_fdb_ifindex",
-            lambda ip, *_args, **_kwargs: calls.append(ip) or (10110 if ip == "192.168.10.11" else None),
-        )
-        cached = [{
-            "from_ip": "192.168.10.11", "from_ifindex": 10110,
-            "from_port": "Gi1/0/10", "to_ip": "192.168.42.203", "source": "fdb",
-        }]
-
-        found = gte.discover_server_edges(
-            devices, [], {"192.168.42.203": "sdwan"}, "global", cached,
-        )
-
-        assert found[0]["from_ip"] == "192.168.10.11"
-        assert calls == ["192.168.10.11"]
 
     def test_physical_access_port_beats_unconfirmed_transit_port_channel(self, monkeypatch):
         devices = {

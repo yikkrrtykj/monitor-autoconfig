@@ -23,14 +23,6 @@ devices:
     name:
     snmp:
     unit_snmp:
-  # Only switches carrying tournament PCs belong here. Other access switches
-  # are discovered from networks.switch_management_ranges and stay out of the
-  # tournament/player console.
-  # stage_switches:
-  #   - name: PGS-stage-1
-  #     ip: 192.168.10.45
-  #   - name: PGS-stage-2
-  #     ip: 192.168.10.46
   stage_switches: []
   access_switches: []
   servers: []

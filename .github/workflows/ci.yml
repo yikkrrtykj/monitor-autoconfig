@@ -17,34 +17,28 @@ jobs:
         # Tighten to "warning" once the legacy scripts are cleaned up.
         run: |
           shellcheck --severity=error \
-            librenms+grafana/*.sh \
-            librenms+grafana/scripts/*.sh
+            librenms+grafana/*.sh
 
   python-syntax:
-    name: python-syntax (${{ matrix.python-version }})
+    name: python-syntax
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
       - run: |
-          python -m py_compile librenms+grafana/*.py
+          python -m py_compile librenms+grafana/generate-player-targets.py
+          python -m py_compile librenms+grafana/alertmanager-feishu-bridge.py
 
   pytest:
-    name: pytest (${{ matrix.python-version }})
+    name: pytest
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
       - run: pip install -r librenms+grafana/requirements-dev.txt
       - run: pytest librenms+grafana/tests/ -v
 
@@ -74,17 +68,6 @@ jobs:
           # Provide a dummy .env so interpolation doesn't fail.
           cp .env.example .env
           docker compose config --quiet
-
-  linux-smoke:
-    name: linux-smoke-static
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Run non-invasive Linux smoke test
-        run: bash librenms+grafana/scripts/smoke-test.sh --static
 
   dashboards-json:
     name: dashboards-json

@@ -1,6 +1,5 @@
 import json
 import importlib.util
-import io
 from pathlib import Path
 from urllib import error
 
@@ -831,50 +830,6 @@ def test_feishu_app_chat_lookup_reads_all_pages(monkeypatch):
     assert bridge._feishu_app_chat_id("tenant-token") == "oc_event"
     assert len(urls) == 2
     assert "page_token=next-page" in urls[1]
-
-
-def test_feishu_chat_http_400_exposes_business_code_and_permission_hint(monkeypatch):
-    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "比赛告警群")
-    bridge._FEISHU_APP_CHAT["chat_id"] = ""
-    body = io.BytesIO(json.dumps({
-        "code": 99991672,
-        "msg": "no permission to read chat",
-    }).encode("utf-8"))
-
-    def fail_with_business_error(_req, timeout):
-        del timeout
-        raise error.HTTPError(
-            "https://open.feishu.cn/open-apis/im/v1/chats",
-            400,
-            "Bad Request",
-            {},
-            body,
-        )
-
-    monkeypatch.setattr(bridge.request, "urlopen", fail_with_business_error)
-    assert bridge._feishu_app_chat_id("tenant-token") == ""
-    health = bridge.bridge_health_payload()["delivery"]
-    assert health["appChatResolved"] is False
-    assert "code=99991672" in health["lastAppError"]
-    assert "im:chat:read" in health["lastAppError"]
-
-
-def test_card_send_error_does_not_erase_successful_direct_chat_resolution(monkeypatch):
-    monkeypatch.setattr(bridge, "DRY_RUN", False)
-    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "cli_test")
-    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "secret")
-    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "oc_direct")
-    monkeypatch.setattr(bridge, "_feishu_tenant_token", lambda: "tenant-token")
-    monkeypatch.setattr(
-        bridge,
-        "_feishu_api_post",
-        lambda *_args, **_kwargs: {"code": 230002, "msg": "message rejected"},
-    )
-
-    assert bridge.send_feishu_app_card(_card()) is False
-    health = bridge.bridge_health_payload()["delivery"]
-    assert health["appChatResolved"] is True
-    assert "code=230002" in health["lastAppError"]
 
 
 def test_pending_delete_notify_not_committed_when_all_sends_fail(monkeypatch):

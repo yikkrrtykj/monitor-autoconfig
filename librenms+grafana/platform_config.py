@@ -485,18 +485,15 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     stage_switches = devices.get("stage_switches") if "stage_switches" in devices else devices.get("switches")
     stage_switches = stage_switches or []
     access_switches = devices.get("access_switches") or []
-    if not stage_switches:
-        add(
-            "warn",
-            "devices.stage_switches",
-            "没有配置赛事交换机：普通交换机仍会按管理网段自动发现，但选手座位识别会跳过",
-        )
+    has_switch_range = bool(split_values(networks.get("switch_management_ranges")))
+    if not stage_switches and not access_switches and not has_switch_range:
+        add("warn", "devices.stage_switches", "没有配置舞台交换机，也没填交换机管理网段，选手自动识别会跳过")
 
     explicit_ips: dict[str, str] = {}
     core_ip = str((devices.get("core") or {}).get("ip") or "").strip()
     if core_ip and valid_ip(core_ip):
         explicit_ips[core_ip] = "devices.core.ip"
-    for group, label in ((stage_switches, "赛事交换机"), (access_switches, "普通接入交换机"), (devices.get("servers") or [], "服务器")):
+    for group, label in ((stage_switches, "舞台交换机"), (access_switches, "接入交换机"), (devices.get("servers") or [], "服务器")):
         group_path = "stage_switches" if group is stage_switches else "access_switches" if group is access_switches else "servers"
         for idx, item in enumerate(group):
             path = f"devices.{group_path}[{idx}]"
@@ -628,13 +625,12 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     firewall_ping = named_targets([firewall], "ip")
     firewall_snmp = named_targets([firewall], "snmp")
 
-    # General infrastructure switches reach monitoring through an explicit list
-    # and/or SNMP discovery of the management range. Tournament player discovery
-    # is deliberately narrower: only stage_switches are rendered into
-    # TOURNAMENT_SWITCHES. This keeps unrelated access switches out of the event
-    # console while the range continues to feed topology and LibreNMS. Once a
-    # range-discovered switch is confirmed, an offline device remains monitored
-    # for the 24-hour topology retention window.
+    # Switches reach the big screen two ways: an explicit per-switch list (named
+    # exactly as typed), and/or SNMP discovery of the management range. The range
+    # path initially adds only addresses that answer and names each by its real
+    # hostname, so operators can leave the per-switch list empty. Once confirmed,
+    # an offline switch remains monitored for the 24-hour topology retention
+    # window. The discovery loop consumes SWITCH_DISCOVERY_RANGE.
     discovery_range = switch_discovery_range(networks.get("switch_management_ranges"), core_ip)
     dist_ping = named_targets(all_switches)
     tournament_switches = named_targets(stage_switches)

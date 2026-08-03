@@ -1,2 +1,1 @@
 pytest>=7.0
-telnetlib3==4.0.5

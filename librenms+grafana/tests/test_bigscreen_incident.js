@@ -9,8 +9,6 @@ global.window = {
 const {
   seriesMaxValue,
   countOfflineRecoveries,
-  offlineRecoveryTimes,
-  detectBulkLifecycle,
   analyzeIncident
 } = require(path.resolve(__dirname, "../bigscreen/incident.js"));
 
@@ -22,9 +20,6 @@ assert.strictEqual(seriesMaxValue(series({}, [0.01, 0.05, 0.02])), 0.05);
 assert.strictEqual(seriesMaxValue(series({}, [])), null);
 assert.strictEqual(countOfflineRecoveries([1, 0, 0, 1, 0, 1].map((v) => ({ v }))), 2);
 assert.strictEqual(countOfflineRecoveries([0, 0, 0].map((v) => ({ v }))), 0, "stale all-offline entry has no recoveries");
-assert.deepStrictEqual(offlineRecoveryTimes([
-  { t: 10, v: 1 }, { t: 15, v: 0 }, { t: 20, v: 1 }
-]), [20]);
 
 // ---- all clear ----
 let result = analyzeIncident(emptyData, 0.02);
@@ -85,35 +80,6 @@ result = analyzeIncident({
 assert.strictEqual(result.offlinePlayers.length, 2);
 assert.strictEqual(result.offlinePlayers[0].recoveryCount, 1);
 assert.strictEqual(result.verdict.text, "多选手卡顿");
-
-// ---- coordinated recovery of multiple PCs -> bulk power lifecycle ----
-result = analyzeIncident({
-  ...emptyData,
-  playerSuccess: [
-    series({ team: "1", seat: "1", switch: "192.168.10.45", instance: "192.168.42.11" }, [1, 0, 1]),
-    series({ team: "1", seat: "2", switch: "192.168.10.45", instance: "192.168.42.12" }, [1, 0, 1]),
-    series({ team: "2", seat: "1", switch: "192.168.10.46", instance: "192.168.42.13" }, [1, 0, 1]),
-    series({ team: "2", seat: "2", switch: "192.168.10.46", instance: "192.168.42.14" }, [1, 0, 1]),
-    series({ team: "3", seat: "1", switch: "192.168.10.46", instance: "192.168.42.15" }, [1, 0, 1])
-  ]
-}, 0.02);
-assert.strictEqual(result.verdict.text, "疑似终端批量启停");
-assert.strictEqual(result.verdict.level, "info");
-assert.strictEqual(result.bulkLifecycle.concurrentRecoveries, 5);
-assert.strictEqual(detectBulkLifecycle(result.offlinePlayers).playerCount, 5);
-
-// A real infrastructure outage must not be hidden by the lifecycle heuristic.
-result = analyzeIncident({
-  ...emptyData,
-  playerSuccess: [
-    series({ team: "1", seat: "1", switch: "192.168.10.45", instance: "192.168.42.11" }, [1, 0, 1]),
-    series({ team: "1", seat: "2", switch: "192.168.10.45", instance: "192.168.42.12" }, [1, 0, 1]),
-    series({ team: "2", seat: "1", switch: "192.168.10.46", instance: "192.168.42.13" }, [1, 0, 1]),
-    series({ team: "2", seat: "2", switch: "192.168.10.46", instance: "192.168.42.14" }, [1, 0, 1])
-  ],
-  infraSuccess: [series({ job: "infra-core-ping", instance: "core", target_ip: "192.168.10.254" }, [1, 0, 1])]
-}, 0.02);
-assert.strictEqual(result.verdict.text, "核心层异常");
 
 // ---- static/wireless-scan pseudo switches are excluded from stage grouping ----
 result = analyzeIncident({

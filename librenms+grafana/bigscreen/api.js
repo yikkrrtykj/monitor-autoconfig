@@ -625,20 +625,11 @@
     return platformApi(path, { method: "POST", body: JSON.stringify(payload || {}), ...(options || {}) });
   }
 
-  async function fetchIperfStatus(taskId = "") {
+  async function fetchIperfStatus() {
     try {
-      const query = taskId ? `?${new URLSearchParams({ taskId }).toString()}` : "";
-      return await platformApi(`/network/iperf3/status${query}`, { timeoutMs: 3000 });
+      return await platformApi("/network/iperf3/status", { timeoutMs: 3000 });
     } catch (error) {
       return { ok: false, state: "unavailable", error: error.message || "测速状态不可用" };
-    }
-  }
-
-  async function fetchIperfHistory() {
-    try {
-      return await platformApi("/network/iperf3/history", { timeoutMs: 3000 });
-    } catch (error) {
-      return { ok: false, history: [], error: error.message || "测速历史不可用" };
     }
   }
 
@@ -740,7 +731,6 @@
     fetchApplyStatus,
     postPlatform,
     fetchIperfStatus,
-    fetchIperfHistory,
     fetchRetirePending,
     patchPlatform,
     fetchIncidents,

@@ -103,7 +103,7 @@
 .home-panel,
 .tournament-panel,
 .evidence-panel,
-.wireless-panel,
+.ops-panel,
 .control-panel,
 .dhcp-panel,
 .incident-panel,
@@ -115,7 +115,7 @@
 .home-panel[hidden],
 .tournament-panel[hidden],
 .evidence-panel[hidden],
-.wireless-panel[hidden],
+.ops-panel[hidden],
 .control-panel[hidden],
 .dhcp-panel[hidden],
 .incident-panel[hidden],
@@ -762,12 +762,12 @@
   grid-column: 1 / -1;
 }
 
-.screen.wireless-mode {
+.screen.ops-mode {
   grid-template-rows: 104px 1fr;
   background: var(--linear-canvas);
 }
 
-.screen.wireless-mode .topbar {
+.screen.ops-mode .topbar {
   grid-column: 1 / -1;
 }
 
@@ -928,7 +928,7 @@
   min-height: 0;
 }
 
-.wireless-panel {
+.ops-panel {
   display: grid;
   grid-column: 1 / -1;
   grid-row: 2;
@@ -939,14 +939,14 @@
   position: relative;
 }
 
-.wireless-controls,
-.wireless-summary,
-.wireless-board {
+.ops-controls,
+.ops-summary,
+.ops-board {
   min-width: 0;
   min-height: 0;
 }
 
-.wireless-controls {
+.ops-controls {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr);
   align-items: center;
@@ -957,7 +957,7 @@
   background: var(--linear-surface-1);
 }
 
-.wireless-controls label {
+.ops-controls label {
   display: grid;
   gap: 4px;
   min-width: 180px;
@@ -966,7 +966,7 @@
   font-weight: 500;
 }
 
-.wireless-controls select {
+.ops-controls select {
   height: 28px;
   min-width: 0;
   padding: 0 9px;
@@ -978,7 +978,7 @@
   font-size: 13px;
 }
 
-.wireless-controls select:focus {
+.ops-controls select:focus {
   outline: 2px solid rgba(94, 106, 210, 0.48);
   outline-offset: 1px;
 }
@@ -993,29 +993,29 @@
   opacity: 0.5;
 }
 
-.wireless-title {
+.ops-title {
   display: grid;
   align-content: center;
   gap: 4px;
   min-width: 0;
 }
 
-.wireless-title.compact {
+.ops-title.compact {
   justify-self: end;
   text-align: right;
 }
 
-.screen.wireless-mode .wireless-title {
+.screen.wireless-mode .ops-title {
   grid-column: 1 / -1;
 }
 
-.wireless-title strong {
+.ops-title strong {
   color: var(--linear-ink);
   font-size: 18px;
   font-weight: 600;
 }
 
-.wireless-title span {
+.ops-title span {
   overflow: hidden;
   color: var(--linear-ink-subtle);
   font-size: 12px;
@@ -1023,13 +1023,13 @@
   white-space: nowrap;
 }
 
-.wireless-summary {
+.ops-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
 }
 
-.wireless-kpi {
+.ops-kpi {
   display: grid;
   align-content: center;
   gap: 6px;
@@ -1040,8 +1040,8 @@
   background: var(--linear-surface-1);
 }
 
-.wireless-kpi span,
-.wireless-kpi em {
+.ops-kpi span,
+.ops-kpi em {
   overflow: hidden;
   color: var(--linear-ink-subtle);
   font-size: 12px;
@@ -1050,7 +1050,7 @@
   white-space: nowrap;
 }
 
-.wireless-kpi strong {
+.ops-kpi strong {
   overflow: hidden;
   color: var(--linear-ink);
   font-size: clamp(24px, 2vw, 36px);
@@ -1060,38 +1060,38 @@
   white-space: nowrap;
 }
 
-.wireless-kpi.good {
+.ops-kpi.good {
   border-color: rgba(39, 166, 68, 0.48);
 }
 
-.wireless-kpi.warn {
+.ops-kpi.warn {
   border-color: rgba(255, 227, 45, 0.56);
 }
 
-.wireless-kpi.bad {
+.ops-kpi.bad {
   border-color: rgba(255, 77, 102, 0.64);
 }
 
-.wireless-kpi.info {
+.ops-kpi.info {
   border-color: rgba(94, 106, 210, 0.56);
 }
 
-.wireless-board {
+.ops-board {
   overflow: auto;
   border: 1px solid var(--linear-hairline);
   border-radius: 12px;
   background: var(--linear-surface-1);
 }
 
-.wireless-table {
+.ops-table {
   display: grid;
   gap: 1px;
   min-width: 760px;
   background: var(--linear-hairline);
 }
 
-.wireless-table-head,
-.wireless-table-row {
+.ops-table-head,
+.ops-table-row {
   display: grid;
   grid-template-columns: 1.2fr 0.7fr 1.2fr 1fr 1fr;
   align-items: center;
@@ -1100,7 +1100,7 @@
   padding: 0 14px;
 }
 
-.wireless-table-head {
+.ops-table-head {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -1110,7 +1110,7 @@
   font-weight: 600;
 }
 
-.wireless-table-row {
+.ops-table-row {
   background: var(--linear-surface-1);
   color: var(--linear-ink);
   font-size: 14px;
@@ -1118,20 +1118,20 @@
   text-decoration: none;
 }
 
-.wireless-table-row:hover {
+.ops-table-row:hover {
   background: var(--linear-surface-2);
 }
 
-.wireless-table-row.good {
+.ops-table-row.good {
   box-shadow: inset 3px 0 0 rgba(39, 166, 68, 0.9);
 }
 
-.wireless-table-row.warn {
+.ops-table-row.warn {
   box-shadow: inset 3px 0 0 rgba(255, 227, 45, 0.9);
 }
 
-.wireless-table-row.bad,
-.wireless-table-row.offline {
+.ops-table-row.bad,
+.ops-table-row.offline {
   box-shadow: inset 3px 0 0 rgba(255, 77, 102, 0.95);
 }
 
@@ -2258,45 +2258,6 @@
   margin-top: 10px;
 }
 
-.network-tool-actions .danger {
-  border-color: rgba(255, 107, 107, 0.55);
-  color: #ff9292;
-}
-
-.network-tool-history {
-  margin-top: 12px;
-}
-
-.network-tool-history h4 {
-  margin: 0 0 7px;
-  color: var(--linear-ink);
-  font-size: 12px;
-}
-
-.iperf-history-list {
-  display: grid;
-  gap: 5px;
-}
-
-.iperf-history-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  width: 100%;
-  padding: 7px 9px;
-  border: 1px solid var(--linear-hairline);
-  border-radius: 7px;
-  background: rgba(148, 163, 184, 0.04);
-  color: var(--linear-ink-subtle);
-  text-align: left;
-  cursor: pointer;
-}
-
-.iperf-history-row strong {
-  color: var(--linear-ink);
-  font-weight: 600;
-}
-
 .iperf-confirm {
   display: flex;
   align-items: center;
@@ -3341,7 +3302,7 @@ a.seat-slot:hover {
   .screen.dhcp-mode,
   .screen.incident-mode,
   .screen.topology-mode,
-  .screen.wireless-mode,
+  .screen.ops-mode,
   .screen.tournament-mode {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto 1fr;
@@ -3361,7 +3322,7 @@ a.seat-slot:hover {
   .screen.dhcp-mode .topbar,
   .screen.incident-mode .topbar,
   .screen.topology-mode .topbar,
-  .screen.wireless-mode .topbar,
+  .screen.ops-mode .topbar,
   .screen.tournament-mode .topbar {
     grid-column: 1;
     grid-row: 1;
@@ -3683,61 +3644,61 @@ a.seat-slot:hover {
   }
 
   /* 无线总览：KPI 双列，桌面端宽表改为手机卡片。 */
-  .wireless-panel {
+  .ops-panel {
     align-content: start;
     grid-template-rows: auto auto minmax(320px, auto);
     height: auto;
     overflow: visible;
   }
 
-  .wireless-controls {
+  .ops-controls {
     grid-template-columns: minmax(0, 1fr);
     min-height: 72px;
   }
 
-  .wireless-controls label {
+  .ops-controls label {
     width: 100%;
     min-width: 0;
   }
 
-  .wireless-title,
-  .wireless-title.compact {
+  .ops-title,
+  .ops-title.compact {
     justify-self: stretch;
     text-align: left;
   }
 
-  .wireless-title span {
+  .ops-title span {
     line-height: 1.45;
     text-overflow: initial;
     white-space: normal;
   }
 
-  .wireless-summary {
+  .ops-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .wireless-kpi {
+  .ops-kpi {
     min-height: 92px;
     padding: 10px 12px;
   }
 
-  .wireless-board {
+  .ops-board {
     overflow: visible;
     border: 0;
     background: transparent;
   }
 
-  .wireless-table {
+  .ops-table {
     min-width: 0;
     gap: 8px;
     background: transparent;
   }
 
-  .wireless-table-head {
+  .ops-table-head {
     display: none;
   }
 
-  .wireless-table-row {
+  .ops-table-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px 12px;
     min-height: 0;
@@ -3746,20 +3707,20 @@ a.seat-slot:hover {
     border-radius: 10px;
   }
 
-  .wireless-table-row span {
+  .ops-table-row span {
     display: grid;
     gap: 3px;
     min-width: 0;
     overflow-wrap: anywhere;
   }
 
-  .wireless-table-row span::before {
+  .ops-table-row span::before {
     color: var(--linear-ink-subtle);
     content: attr(data-label);
     font-size: 10px;
   }
 
-  .wireless-table-row span:nth-child(3) {
+  .ops-table-row span:nth-child(3) {
     grid-column: 1 / -1;
   }
 
