@@ -541,6 +541,7 @@ services:
     volumes:
       - player-targets-data:/targets
       - ./generate-player-targets.py:/generate-player-targets.py:ro
+      - ./target_utils.py:/target_utils.py:ro
       - ./rescan-server.py:/rescan-server.py:ro
       - ./platform_config.py:/platform_config.py:ro
       - ./.env:/config/.env:ro

@@ -40,6 +40,7 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     assert 'PLAYER_SWITCH_FULL_SCAN_INTERVAL: "${PLAYER_SWITCH_FULL_SCAN_INTERVAL:-21600}"' in compose
     assert "PLAYER_SWITCH_FULL_SCAN_INTERVAL=21600" in example
     player_service = compose.split("  player-targets:", 1)[1].split("  topology-collector:", 1)[0]
+    assert "./target_utils.py:/target_utils.py:ro" in player_service
     assert 'EVENT_NAME: "${EVENT_NAME:-}"' in player_service
     assert "for key in EVENT_NAME TOURNAMENT_SWITCHES" in player_service
     assert "SWITCH_DISCOVERY_RANGE" not in player_service
