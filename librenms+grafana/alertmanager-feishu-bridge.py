@@ -69,6 +69,8 @@ Env:
   UNIFI_CONTROLLER_SITES  comma sites or all (default all)
   UNIFI_AP_NAME_SYNC_SECONDS seconds between LibreNMS display-name sync attempts
   UNIFI_AP_PING_ENABLED   true = use blackbox ICMP as AP reachability source
+  UNIFI_AP_CONTROLLER_LAST_SEEN_MAX_AGE_SECONDS fresh controller heartbeat
+                            protects an online AP from stale-IP Ping failures
   UNIFI_AP_RECOVER_FOR_SECONDS seconds AP Ping must stay up before recovery
   BLACKBOX_EXPORTER_URL   internal blackbox exporter URL
   INTERCONNECT_ALERT_ENABLED true = watch Port-channel/LAG ifOperStatus
@@ -245,6 +247,10 @@ UNIFI_CONTROLLER_VERIFY_SSL = os.environ.get("UNIFI_CONTROLLER_VERIFY_SSL", "fal
 UNIFI_CONTROLLER_REFRESH_SECONDS = int(os.environ.get("UNIFI_CONTROLLER_REFRESH_SECONDS", "10"))
 UNIFI_AP_NAME_SYNC_SECONDS = int(os.environ.get("UNIFI_AP_NAME_SYNC_SECONDS", "300"))
 UNIFI_AP_PING_ENABLED = os.environ.get("UNIFI_AP_PING_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+UNIFI_AP_CONTROLLER_LAST_SEEN_MAX_AGE_SECONDS = max(
+    5,
+    int(os.environ.get("UNIFI_AP_CONTROLLER_LAST_SEEN_MAX_AGE_SECONDS", "30")),
+)
 UNIFI_AP_RECOVER_FOR_SECONDS = max(0, int(os.environ.get("UNIFI_AP_RECOVER_FOR_SECONDS", "10")))
 UNIFI_AP_PING_HTTP_TIMEOUT_SECONDS = max(
     1.0, float(os.environ.get("UNIFI_AP_PING_HTTP_TIMEOUT_SECONDS", "3") or "3")
@@ -4536,6 +4542,36 @@ def _unifi_ap_online(device):
     return True
 
 
+def _unifi_epoch_seconds(value):
+    """Normalize UniFi epoch seconds/milliseconds; return 0 when unavailable."""
+    try:
+        timestamp = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if timestamp > 10_000_000_000:
+        timestamp /= 1000.0
+    return timestamp if timestamp > 0 else 0.0
+
+
+def _unifi_controller_heartbeat_fresh(info, now=None, max_age=None):
+    """True only for a fresh direct-controller heartbeat from this AP."""
+    if str((info or {}).get("source") or "") != "controller":
+        return False
+    timestamp = _unifi_epoch_seconds((info or {}).get("last_seen"))
+    if not timestamp:
+        return False
+    current = time.time() if now is None else float(now)
+    allowed = (
+        UNIFI_AP_CONTROLLER_LAST_SEEN_MAX_AGE_SECONDS
+        if max_age is None
+        else max(0, float(max_age))
+    )
+    # Allow a small controller/bridge clock skew without treating an obviously
+    # future timestamp as fresh forever.
+    age = current - timestamp
+    return -5 <= age <= allowed
+
+
 def _best_unifi_ap_name(device):
     for field in ("name", "display_name", "hostname", "ap_name", "mac"):
         value = str(device.get(field) or "").strip()
@@ -4584,6 +4620,7 @@ def _fetch_unifi_controller_aps():
                 ).strip(),
                 "mac": mac,
                 "online": _unifi_ap_online(device),
+                "last_seen": _unifi_epoch_seconds(device.get("last_seen")),
                 "source": "controller",
             }
     return aps
@@ -4710,11 +4747,19 @@ def probe_unifi_ap_ips(known):
 
 
 def apply_unifi_ap_ping_reachability(
-    known, source_current, probe_results, previously_seen=None,
+    known, source_current, probe_results, previously_seen=None, now=None,
 ):
-    """Overlay successful blackbox observations on controller/unpoller state."""
+    """Overlay Ping while preserving a fresh direct-controller heartbeat.
+
+    A UniFi AP can retain a live controller session while DHCP changes its
+    management address. During the controller's IP-field lag the old address
+    stops answering Ping, but ``last_seen`` keeps advancing. Treat that fresh
+    heartbeat as proof of life; once it ages out, Ping becomes authoritative
+    again and still detects a real outage faster than UniFi's alert card.
+    """
     current = dict(source_current)
     authoritative = 0
+    current_time = time.time() if now is None else float(now)
     for key, info in known.items():
         ip = str(info.get("ip") or "").strip()
         reachable = probe_results.get(ip)
@@ -4727,6 +4772,10 @@ def apply_unifi_ap_ping_reachability(
             if previously_seen is None or key in source_current or key in previously_seen:
                 current[key] = info
         else:
+            if key in source_current and _unifi_controller_heartbeat_fresh(
+                info, current_time,
+            ):
+                continue
             current.pop(key, None)
     return current, authoritative
 
@@ -4845,7 +4894,7 @@ def unifi_ap_watcher():
         "[AP] UniFi AP watcher enabled "
         f"(for={UNIFI_AP_DOWN_FOR_SECONDS}s, poll={UNIFI_AP_POLL_INTERVAL}s, "
         f"recover_for={UNIFI_AP_RECOVER_FOR_SECONDS}s, "
-        f"reachability={'ping' if UNIFI_AP_PING_ENABLED else 'controller'}, "
+        f"reachability={'ping+controller-heartbeat' if UNIFI_AP_PING_ENABLED else 'controller'}, "
         f"snmp_auto_add={UNIFI_AP_SNMP_AUTO_ADD}, "
         f"controller_api={_unifi_controller_enabled()}, active_loaded={len(states)}, "
         f"inventory_loaded={len(ap_inventory)})"
@@ -4895,6 +4944,7 @@ def unifi_ap_watcher():
                 "model": controller_info.get("model") or metric.get("model") or "",
                 "source": controller_info.get("source") or "prometheus",
                 "mac": controller_info.get("mac") or metric_mac,
+                "last_seen": controller_info.get("last_seen") or 0,
             }
             known[key] = info
             is_online = _resolve_ap_online(key, metric, metric_online, controller_info)
@@ -4909,6 +4959,7 @@ def unifi_ap_watcher():
                 "model": controller_info.get("model") or info.get("model") or "",
                 "source": controller_info.get("source") or info.get("source") or "controller",
                 "mac": controller_info.get("mac") or info.get("mac") or "",
+                "last_seen": controller_info.get("last_seen") or info.get("last_seen") or 0,
             }
             known[key] = merged
             if controller_info.get("online"):
@@ -4917,8 +4968,8 @@ def unifi_ap_watcher():
                 current.pop(key, None)
 
         probe_results = probe_unifi_ap_ips(known)
-        current, ping_authoritative = apply_unifi_ap_ping_reachability(
-            known, current, probe_results, previously_seen=set(states),
+        current, ping_observed = apply_unifi_ap_ping_reachability(
+            known, current, probe_results, previously_seen=set(states), now=now,
         )
         inventory_changed, migrated_ips = reconcile_unifi_ap_inventory(
             known, ap_inventory, librenms_ip_migration_attempted, now,
@@ -5024,7 +5075,7 @@ def unifi_ap_watcher():
             log(
                 f"[AP] {len(current)} online / {len(known)} listed / {len(states)} known / "
                 f"{down} down / {missing_ip} online without IP / "
-                f"{ping_authoritative} Ping-authoritative"
+                f"{ping_observed} Ping-observed"
             )
             last_status_log = now
 

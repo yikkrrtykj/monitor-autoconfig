@@ -603,6 +603,82 @@ def test_ap_ping_overrides_stale_controller_state():
     assert authoritative == 2
 
 
+def test_fresh_controller_heartbeat_protects_ap_from_stale_ip_ping():
+    identity = "unifi-ap:aabbccddeeff"
+    known = {
+        identity: {
+            "ip": "192.0.2.10",
+            "source": "controller",
+            "last_seen": 1_000,
+        },
+    }
+
+    current, observed = bridge.apply_unifi_ap_ping_reachability(
+        known,
+        dict(known),
+        {"192.0.2.10": False},
+        now=1_025,
+    )
+
+    assert set(current) == {identity}
+    assert observed == 1
+
+
+def test_stale_controller_heartbeat_returns_authority_to_ping():
+    identity = "unifi-ap:aabbccddeeff"
+    known = {
+        identity: {
+            "ip": "192.0.2.10",
+            "source": "controller",
+            "last_seen": 1_000,
+        },
+    }
+
+    current, observed = bridge.apply_unifi_ap_ping_reachability(
+        known,
+        dict(known),
+        {"192.0.2.10": False},
+        now=1_031,
+    )
+
+    assert current == {}
+    assert observed == 1
+
+
+def test_controller_declared_offline_is_not_protected_by_old_heartbeat():
+    identity = "unifi-ap:aabbccddeeff"
+    known = {
+        identity: {
+            "ip": "192.0.2.10",
+            "source": "controller",
+            "last_seen": 1_000,
+        },
+    }
+
+    current, observed = bridge.apply_unifi_ap_ping_reachability(
+        known,
+        {},
+        {"192.0.2.10": False},
+        previously_seen={identity},
+        now=1_005,
+    )
+
+    assert current == {}
+    assert observed == 1
+
+
+def test_unifi_controller_heartbeat_accepts_millisecond_epoch():
+    assert bridge._unifi_epoch_seconds(1_700_000_000_000) == 1_700_000_000
+    assert bridge._unifi_controller_heartbeat_fresh(
+        {
+            "source": "controller",
+            "last_seen": 1_700_000_000_000,
+        },
+        now=1_700_000_030,
+        max_age=30,
+    ) is True
+
+
 def test_ap_ip_change_keeps_mac_identity_and_migrates_librenms(monkeypatch):
     identity = "unifi-ap:aabbccddeeff"
     inventory = {

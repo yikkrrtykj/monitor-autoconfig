@@ -60,6 +60,20 @@ def test_sysname_changes_are_confirmed_before_notification():
     assert "SYSNAME_CHANGE_CONFIRM_POLLS=2" in example
 
 
+def test_ap_ping_uses_controller_heartbeat_without_switch_polling():
+    compose = read("docker-compose.yml")
+    example = read(".env.example")
+    bridge = read("alertmanager-feishu-bridge.py")
+
+    assert (
+        'UNIFI_AP_CONTROLLER_LAST_SEEN_MAX_AGE_SECONDS: '
+        '"${UNIFI_AP_CONTROLLER_LAST_SEEN_MAX_AGE_SECONDS:-30}"'
+    ) in compose
+    assert "UNIFI_AP_CONTROLLER_LAST_SEEN_MAX_AGE_SECONDS=30" in example
+    assert 'device.get("last_seen")' in bridge
+    assert "_unifi_controller_heartbeat_fresh" in bridge
+
+
 def test_deploy_rebuilds_local_images_only_when_dockerfiles_change():
     deploy = read("deploy.sh")
 
