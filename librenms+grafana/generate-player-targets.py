@@ -28,16 +28,14 @@ Environment variables:
   PLAYER_SWITCH_PROBE_WORKERS
                          concurrent description probes (default: 8).
   PLAYER_SWITCH_FULL_SCAN_INTERVAL
-                         seconds between full TOURNAMENT_SWITCHES description
-                         scans (default: 21600 / 6 hours). Between full scans, only the
-                         previously confirmed stage switches are queried. A
-                         cached-switch failure triggers an immediate full scan.
+                         retained for backward-compatible configuration. Every
+                         refresh now probes the complete TOURNAMENT_SWITCHES list.
   PLAYER_SWITCH_CACHE_FILE
-                         confirmed stage-switch cache path (default:
+                         per-switch probe-health cache path (default:
                          /targets/player_team_switches.json).
-                         The cache is automatically scoped to the event name,
-                         switch candidates, player gateways, VLANs and subnets;
-                         applying a new project configuration invalidates it.
+                         It records only last-success times and consecutive
+                         failure counts; it never selects which switches to probe.
+                         Event, gateway, VLAN and subnet changes invalidate it.
   PLAYER_SWITCH_FORCE_FULL_SCAN
                          true/false; force one full description scan. The
                          container sets this for manual immediate rescans.
@@ -745,7 +743,7 @@ def _walk_vlan_mac_table(
 
 
 def discover_team_switches(switches, community, timeout=2, workers=8,
-                           probe_snmp=snmpwalk):
+                           probe_snmp=None, return_failures=False):
     """Find switches with at least one authoritative ``team X-Y`` ifAlias.
 
     Probe the explicit tournament-switch allowlist concurrently and do the
@@ -755,9 +753,11 @@ def discover_team_switches(switches, community, timeout=2, workers=8,
     """
     candidates = list(dict.fromkeys(switches or []))
     if not candidates:
-        return [], {}
+        return ([], {}, set()) if return_failures else ([], {})
 
+    probe_snmp = probe_snmp or snmpwalk
     aliases = {}
+    failed = set()
 
     def probe(sw):
         output = probe_snmp(sw, community, IF_ALIAS_OID, timeout=timeout)
@@ -771,9 +771,12 @@ def discover_team_switches(switches, community, timeout=2, workers=8,
                 mapping = future.result()
             except Exception as exc:
                 print(f"[WARN] team-description probe {sw}: {exc}", file=sys.stderr)
+                failed.add(sw)
                 continue
             if mapping:
                 aliases[sw] = mapping
+            else:
+                failed.add(sw)
 
     matched = [sw for sw in candidates if sw in aliases]
     described_ports = sum(len(aliases[sw]) for sw in matched)
@@ -782,34 +785,79 @@ def discover_team_switches(switches, community, timeout=2, workers=8,
         f"switches, {described_ports} team seat port(s)",
         file=sys.stderr,
     )
+    if return_failures:
+        return matched, aliases, failed
     return matched, aliases
 
 
+def normalize_team_switch_cache_scope(scope_key):
+    """Normalize legacy scope keys that included the switch allowlist."""
+    scope_key = str(scope_key or "")
+    try:
+        payload = json.loads(scope_key)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return scope_key
+    if not isinstance(payload, dict):
+        return scope_key
+    payload.pop("switches", None)
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
 def load_team_switch_cache(path):
-    """Return ``(updated_at, switches, scope_key)`` from a JSON cache."""
+    """Return ``(device_health, scope_key)`` from the probe-health cache.
+
+    Older confirmed-switch caches are accepted for a seamless upgrade, but
+    callers never use those entries as an authoritative device list.
+    """
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
-        updated_at = float(data.get("updated_at", 0))
-        switches = [
-            str(ip) for ip in data.get("switches", [])
-            if isinstance(ip, str)
-        ]
-        scope_key = str(data.get("scope_key") or "")
-        return updated_at, list(dict.fromkeys(switches)), scope_key
+        scope_key = normalize_team_switch_cache_scope(data.get("scope_key"))
+        device_health = {}
+        for ip, raw in (data.get("devices") or {}).items():
+            if not isinstance(ip, str) or not isinstance(raw, dict):
+                continue
+            device_health[ip] = {
+                "last_success": float(raw.get("last_success", 0) or 0),
+                "failure_count": max(0, int(raw.get("failure_count", 0) or 0)),
+            }
+        if not device_health:
+            legacy_success = float(data.get("updated_at", 0) or 0)
+            for ip in data.get("switches", []):
+                if isinstance(ip, str):
+                    device_health[ip] = {
+                        "last_success": legacy_success,
+                        "failure_count": 0,
+                    }
+        return device_health, scope_key
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return 0.0, [], ""
+        return {}, ""
 
 
-def save_team_switch_cache(path, switches, updated_at=None, scope_key=""):
-    """Atomically persist confirmed team switches for later fast scans."""
+def save_team_switch_cache(path, device_health, updated_at=None, scope_key=""):
+    """Atomically persist per-device health, never a discovery allowlist."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     tmp = path + ".tmp"
+    if not isinstance(device_health, dict):
+        # Compatibility for callers upgrading from the old cache API.
+        success_time = float(time.time() if updated_at is None else updated_at)
+        device_health = {
+            str(ip): {"last_success": success_time, "failure_count": 0}
+            for ip in (device_health or [])
+        }
     payload = {
-        "updated_at": float(time.time() if updated_at is None else updated_at),
-        "switches": list(dict.fromkeys(switches or [])),
         "scope_key": str(scope_key or ""),
+        "devices": {
+            str(ip): {
+                "last_success": float(raw.get("last_success", 0) or 0),
+                "failure_count": max(0, int(raw.get("failure_count", 0) or 0)),
+            }
+            for ip, raw in device_health.items()
+            if isinstance(raw, dict)
+        },
     }
     with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
@@ -824,87 +872,77 @@ def discover_team_switches_cached(
     force_full_scan=False,
     timeout=2,
     workers=8,
-    probe_snmp=snmpwalk,
+    probe_snmp=None,
     now=None,
     scope_key="",
+    return_failures=False,
 ):
-    """Use confirmed switches between bounded full description scans.
+    """Probe every configured switch and persist only per-device health.
 
-    A cached switch that stops answering or loses every team description makes
-    the function fall back to the complete candidate list immediately. This
-    keeps transient failures self-healing without repeatedly walking the full
-    tournament allowlist.
+    ``TOURNAMENT_SWITCHES`` is the authoritative allowlist. The cache is
+    deliberately observational: it cannot add, remove, or suppress a probe.
     """
     candidates = list(dict.fromkeys(switches or []))
     if not candidates:
-        return [], {}
+        save_team_switch_cache(cache_file, {}, scope_key=scope_key)
+        return ([], {}, set()) if return_failures else ([], {})
 
     current_time = time.time() if now is None else float(now)
-    updated_at, cached, cached_scope = load_team_switch_cache(cache_file)
+    device_health, cached_scope = load_team_switch_cache(cache_file)
     if scope_key and cached_scope != scope_key:
-        if cached:
+        if device_health:
             print(
                 "[INFO] event/player network configuration changed; "
-                "discarding the previous project stage-switch cache",
+                "discarding the previous project stage-switch health cache",
                 file=sys.stderr,
             )
-        updated_at, cached = 0.0, []
-    candidate_set = set(candidates)
-    cached = [ip for ip in cached if ip in candidate_set]
-    cache_fresh = (
-        cached
-        and current_time >= updated_at
-        and current_time - updated_at < max(0, full_scan_interval)
-    )
-
-    if cache_fresh and not force_full_scan:
-        print(
-            f"[INFO] team-description fast scan: probing {len(cached)} cached "
-            f"switch(es); full candidate scan in "
-            f"{int(full_scan_interval - (current_time - updated_at))}s",
-            file=sys.stderr,
-        )
-        matched, aliases = discover_team_switches(
-            cached,
-            community,
-            timeout=timeout,
-            workers=min(workers, len(cached)),
-            probe_snmp=probe_snmp,
-        )
-        if len(matched) == len(cached):
-            return matched, aliases
-        print(
-            "[WARN] cached team switch missing/unlabeled; falling back to full scan",
-            file=sys.stderr,
-        )
-    elif force_full_scan:
+        device_health = {}
+    if force_full_scan:
         print("[INFO] team-description full scan forced", file=sys.stderr)
-    elif cached:
-        print("[INFO] team-description cache expired; running full scan", file=sys.stderr)
+    else:
+        print(
+            f"[INFO] team-description authoritative scan: probing all "
+            f"{len(candidates)} configured switch(es)",
+            file=sys.stderr,
+        )
 
-    matched, aliases = discover_team_switches(
+    matched, aliases, failed = discover_team_switches(
         candidates,
         community,
         timeout=timeout,
         workers=workers,
         probe_snmp=probe_snmp,
+        return_failures=True,
     )
-    if matched:
-        save_team_switch_cache(
-            cache_file,
-            matched,
-            updated_at=current_time,
-            scope_key=scope_key,
-        )
+    matched_set = set(matched)
+    updated_health = {}
+    for ip in candidates:
+        previous = device_health.get(ip) or {}
+        if ip in matched_set:
+            updated_health[ip] = {
+                "last_success": current_time,
+                "failure_count": 0,
+            }
+        else:
+            updated_health[ip] = {
+                "last_success": float(previous.get("last_success", 0) or 0),
+                "failure_count": int(previous.get("failure_count", 0) or 0) + 1,
+            }
+    save_team_switch_cache(cache_file, updated_health, scope_key=scope_key)
+    if return_failures:
+        return matched, aliases, failed
     return matched, aliases
 
 
 def build_team_switch_cache_scope(event_name, switches, gateways, vlan_ids,
                                   wired_nets):
-    """Build a stable, non-secret identity for one event's player topology."""
+    """Build a stable identity for topology scope, excluding the allowlist.
+
+    Switch additions/removals are handled per device so removing one switch
+    does not invalidate healthy mappings belonging to the other switches.
+    """
     payload = {
         "event": str(event_name or "").strip(),
-        "switches": sorted(set(switches or []), key=IPv4Address),
         "gateways": sorted(set(gateways or []), key=IPv4Address),
         "vlan_ids": sorted(set(int(item) for item in (vlan_ids or []))),
         "wired_subnets": sorted(str(net) for net in (wired_nets or [])),
@@ -1203,6 +1241,30 @@ def load_previous_player_targets(path):
     return targets
 
 
+def filter_previous_targets_for_configured_switches(targets, switches):
+    """Drop history belonging to stage switches removed by the user.
+
+    Non-switch sources such as ``static`` and ``wireless-scan`` are preserved.
+    Stage discovery always writes an IPv4 address into the ``switch`` label,
+    which lets the current TOURNAMENT_SWITCHES allowlist prune only that source.
+    """
+    configured = set(switches or [])
+    kept = []
+    for raw in targets or []:
+        target = _canonical_player_target(raw)
+        if not target:
+            continue
+        switch = target["labels"]["switch"]
+        try:
+            switch = str(IPv4Address(switch))
+        except ValueError:
+            kept.append(target)
+            continue
+        if switch in configured:
+            kept.append(target)
+    return kept
+
+
 def fetch_prometheus_player_history(base_url, lookback="24h", timeout=5,
                                     opener=urlrequest.urlopen):
     """Recover file_sd labels from recently stored player-ping series."""
@@ -1323,6 +1385,38 @@ def retain_last_known_wired_targets(current, historical, stage_index,
         print(
             f"[INFO] retained {len(retained_seats)} link-up seat(s) from "
             f"{len(retained)} last-known IP candidate(s)",
+            file=sys.stderr,
+        )
+    return list(current) + retained
+
+
+def retain_failed_switch_targets(current, historical, failed_switches):
+    """Carry forward mappings for configured switches that failed this cycle."""
+    failed = set(failed_switches or [])
+    if not failed:
+        return list(current)
+    retained = []
+    seen = {
+        (target["targets"][0], target["labels"]["team"],
+         target["labels"]["seat"], target["labels"]["network"])
+        for target in current
+    }
+    for raw in historical or []:
+        target = _canonical_player_target(raw)
+        if not target or target["labels"]["switch"] not in failed:
+            continue
+        key = (
+            target["targets"][0], target["labels"]["team"],
+            target["labels"]["seat"], target["labels"]["network"],
+        )
+        if key in seen:
+            continue
+        retained.append(target)
+        seen.add(key)
+    if retained:
+        print(
+            f"[WARN] retained {len(retained)} last-known target(s) for "
+            f"{len(failed)} configured switch probe failure(s)",
             file=sys.stderr,
         )
     return list(current) + retained
@@ -1508,11 +1602,11 @@ def main():
         player_vlan_ids,
         wired_nets,
     )
-    _cache_time, cached_project_switches, cached_project_scope = (
-        load_team_switch_cache(switch_cache_file)
+    cached_switch_health, cached_project_scope = load_team_switch_cache(
+        switch_cache_file
     )
     project_scope_changed = bool(
-        cached_project_switches and cached_project_scope != team_cache_scope
+        cached_project_scope and cached_project_scope != team_cache_scope
     )
     switch_force_full_scan = env_bool(
         "PLAYER_SWITCH_FORCE_FULL_SCAN", default=False
@@ -1553,9 +1647,13 @@ def main():
             os.environ.get("PROMETHEUS_URL", "http://prometheus:9090"),
             os.environ.get("PLAYER_TARGET_HISTORY_LOOKBACK", "24h"),
         )
+    previous_targets = filter_previous_targets_for_configured_switches(
+        previous_targets, switch_candidates
+    )
 
     scan_targets = []
     discovered_targets = []
+    failed_switches = set()
 
     if wireless_scan_enabled:
         scan_ips = discover_wireless_scan_ips(
@@ -1584,6 +1682,10 @@ def main():
 
     if not switches_raw:
         print("[INFO] TOURNAMENT_SWITCHES not set, skipping SNMP target discovery", file=sys.stderr)
+        if cached_switch_health or cached_project_scope != team_cache_scope:
+            save_team_switch_cache(
+                switch_cache_file, {}, scope_key=team_cache_scope
+            )
     else:
         switches = list(switch_candidates)
 
@@ -1607,7 +1709,7 @@ def main():
                     file=sys.stderr,
                 )
 
-            switches, prefetched_ifalias = discover_team_switches_cached(
+            switches, prefetched_ifalias, failed_switches = discover_team_switches_cached(
                 switches,
                 community,
                 switch_cache_file,
@@ -1616,6 +1718,7 @@ def main():
                 timeout=switch_probe_timeout,
                 workers=switch_probe_workers,
                 scope_key=team_cache_scope,
+                return_failures=True,
             )
             if not switches:
                 print(
@@ -1662,6 +1765,9 @@ def main():
                 stage_index,
                 require_link_up,
             )
+            merged = retain_failed_switch_targets(
+                merged, previous_targets, failed_switches
+            )
             summarize_team_mapping(stage_index, merged, require_link_up)
 
             per_team = {}
@@ -1675,6 +1781,12 @@ def main():
 
     verify_ping = env_bool("PLAYER_VERIFY_PING", default=True)
     recent_successful_ips = set()
+    failed_switch_history_ips = {
+        target["targets"][0]
+        for target in previous_targets
+        if target.get("targets")
+        and target.get("labels", {}).get("switch") in failed_switches
+    }
     grace_targets = []
     if verify_ping and offline_grace_seconds > 0:
         recent_successful_ips = fetch_recent_successful_player_ips(
@@ -1713,7 +1825,9 @@ def main():
     if verify_ping and all_targets:
         all_targets = filter_reachable_targets(
             all_targets,
-            retain_unreachable_ips=recent_successful_ips,
+            retain_unreachable_ips=(
+                recent_successful_ips | failed_switch_history_ips
+            ),
             grace_seconds=offline_grace_seconds,
         )
 

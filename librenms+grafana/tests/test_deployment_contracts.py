@@ -46,7 +46,9 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     assert "SWITCH_DISCOVERY_RANGE" not in player_service
     player = read("generate-player-targets.py")
     assert "build_team_switch_cache_scope" in player
-    assert "discarding the previous project stage-switch cache" in player
+    assert "discarding the previous project stage-switch health cache" in player
+    assert "team-description authoritative scan: probing all" in player
+    assert '"devices": {' in player
     assert "ignoring previous project" in player
     assert "player targets and red-grace history" in player
     assert "if not previous_targets and not project_scope_changed" in player

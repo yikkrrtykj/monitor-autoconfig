@@ -721,7 +721,7 @@ class TestTeamSwitchPrefilter:
             return ".1.3.6.1.2.1.31.1.1.1.18.1 = STRING: uplink"
         return fake_probe
 
-    def test_fresh_cache_only_probes_confirmed_switches(self, tmp_path):
+    def test_every_refresh_probes_all_configured_switches(self, tmp_path):
         cache = tmp_path / "team-switches.json"
         gpt.save_team_switch_cache(
             str(cache), ["192.168.10.45", "192.168.10.46"], updated_at=100
@@ -739,29 +739,61 @@ class TestTeamSwitchPrefilter:
         )
 
         assert switches == ["192.168.10.45", "192.168.10.46"]
-        assert sorted(calls) == ["192.168.10.45", "192.168.10.46"]
+        assert sorted(calls) == [
+            "192.168.10.44", "192.168.10.45", "192.168.10.46"
+        ]
 
-    def test_cached_switch_failure_falls_back_to_full_scan(self, tmp_path):
+    def test_single_failure_keeps_both_device_health_records(self, tmp_path):
         cache = tmp_path / "team-switches.json"
         gpt.save_team_switch_cache(
-            str(cache), ["192.168.10.45"], updated_at=100
+            str(cache), ["192.168.10.45", "192.168.10.46"], updated_at=100
         )
         calls = []
 
-        switches, _aliases = gpt.discover_team_switches_cached(
-            ["192.168.10.44", "192.168.10.45", "192.168.10.46"],
+        switches, _aliases, failed = gpt.discover_team_switches_cached(
+            ["192.168.10.45", "192.168.10.46"],
             "global",
             str(cache),
             full_scan_interval=1800,
             now=200,
             workers=3,
             probe_snmp=self._probe(calls, missing="192.168.10.45"),
+            return_failures=True,
         )
 
         assert switches == ["192.168.10.46"]
-        assert calls.count("192.168.10.45") == 2
-        assert "192.168.10.44" in calls
-        assert "192.168.10.46" in calls
+        assert failed == {"192.168.10.45"}
+        assert sorted(calls) == ["192.168.10.45", "192.168.10.46"]
+        health, _scope = gpt.load_team_switch_cache(str(cache))
+        assert set(health) == {"192.168.10.45", "192.168.10.46"}
+        assert health["192.168.10.45"] == {
+            "last_success": 100.0, "failure_count": 1,
+        }
+        assert health["192.168.10.46"] == {
+            "last_success": 200.0, "failure_count": 0,
+        }
+
+    def test_next_refresh_recovers_and_resets_failure_count(self, tmp_path):
+        cache = tmp_path / "team-switches.json"
+        gpt.save_team_switch_cache(str(cache), {
+            "192.168.10.45": {"last_success": 100, "failure_count": 1},
+            "192.168.10.46": {"last_success": 200, "failure_count": 0},
+        })
+        calls = []
+
+        switches, _aliases = gpt.discover_team_switches_cached(
+            ["192.168.10.45", "192.168.10.46"], "global", str(cache),
+            now=300, workers=2, probe_snmp=self._probe(calls),
+        )
+
+        assert switches == ["192.168.10.45", "192.168.10.46"]
+        health, _scope = gpt.load_team_switch_cache(str(cache))
+        assert health["192.168.10.45"] == {
+            "last_success": 300.0, "failure_count": 0,
+        }
+        assert health["192.168.10.46"] == {
+            "last_success": 300.0, "failure_count": 0,
+        }
 
     def test_forced_rescan_ignores_fresh_cache(self, tmp_path):
         cache = tmp_path / "team-switches.json"
@@ -815,10 +847,10 @@ class TestTeamSwitchPrefilter:
 
         assert switches == ["192.168.10.45"]
         assert sorted(calls) == ["192.168.10.44", "192.168.10.45"]
-        _updated_at, _cached, saved_scope = gpt.load_team_switch_cache(str(cache))
+        _health, saved_scope = gpt.load_team_switch_cache(str(cache))
         assert saved_scope == new_scope
 
-    def test_same_event_scope_keeps_fast_scan(self, tmp_path):
+    def test_same_event_scope_still_scans_complete_allowlist(self, tmp_path):
         cache = tmp_path / "team-switches.json"
         scope = gpt.build_team_switch_cache_scope(
             "same-event", ["192.168.10.44", "192.168.10.45"],
@@ -842,7 +874,180 @@ class TestTeamSwitchPrefilter:
         )
 
         assert switches == ["192.168.10.45"]
-        assert calls == ["192.168.10.45"]
+        assert sorted(calls) == ["192.168.10.44", "192.168.10.45"]
+
+    def test_switch_removal_prunes_only_removed_health_record(self, tmp_path):
+        cache = tmp_path / "team-switches.json"
+        gpt.save_team_switch_cache(str(cache), {
+            "192.168.10.45": {"last_success": 100, "failure_count": 0},
+            "192.168.10.46": {"last_success": 100, "failure_count": 0},
+        })
+
+        gpt.discover_team_switches_cached(
+            ["192.168.10.45"], "global", str(cache), now=200,
+            probe_snmp=self._probe([]),
+        )
+
+        health, _scope = gpt.load_team_switch_cache(str(cache))
+        assert set(health) == {"192.168.10.45"}
+
+    def test_switch_allowlist_is_not_part_of_event_scope(self):
+        first = gpt.build_team_switch_cache_scope(
+            "same-event", ["192.168.10.45", "192.168.10.46"],
+            ["192.168.42.254"], [42], [],
+        )
+        removed = gpt.build_team_switch_cache_scope(
+            "same-event", ["192.168.10.45"],
+            ["192.168.42.254"], [42], [],
+        )
+        assert first == removed
+
+    def test_legacy_scope_with_switches_migrates_without_losing_health(
+        self, tmp_path
+    ):
+        cache = tmp_path / "team-switches.json"
+        legacy_scope = json.dumps({
+            "event": "same-event",
+            "switches": ["192.168.10.45", "192.168.10.46"],
+            "gateways": ["192.168.42.254"],
+            "vlan_ids": [42],
+            "wired_subnets": [],
+        }, sort_keys=True, separators=(",", ":"))
+        current_scope = gpt.build_team_switch_cache_scope(
+            "same-event", ["192.168.10.45", "192.168.10.46"],
+            ["192.168.42.254"], [42], [],
+        )
+        gpt.save_team_switch_cache(
+            str(cache), ["192.168.10.45", "192.168.10.46"],
+            updated_at=100, scope_key=legacy_scope,
+        )
+
+        gpt.discover_team_switches_cached(
+            ["192.168.10.45", "192.168.10.46"], "global", str(cache),
+            now=200, scope_key=current_scope,
+            probe_snmp=self._probe([], missing="192.168.10.45"),
+        )
+
+        health, saved_scope = gpt.load_team_switch_cache(str(cache))
+        assert health["192.168.10.45"]["last_success"] == 100
+        assert health["192.168.10.45"]["failure_count"] == 1
+        assert saved_scope == current_scope
+
+
+class TestAuthoritativeSwitchRefresh:
+    @staticmethod
+    def _target(switch, seat, ip):
+        return {
+            "targets": [ip],
+            "labels": {
+                "team": "1", "seat": str(seat), "switch": switch,
+                "network": "wired", "role": "player",
+            },
+        }
+
+    def test_timeout_recovery_and_user_removal_across_refreshes(
+        self, tmp_path, monkeypatch
+    ):
+        sw1 = "192.168.10.45"
+        sw2 = "192.168.10.46"
+        output = tmp_path / "player_targets.json"
+        cache = tmp_path / "player_team_switches.json"
+        state = {
+            "failed": set(),
+            "ips": {sw1: "192.168.42.101", sw2: "192.168.42.102"},
+            "alive": set(),
+        }
+
+        for key in ("PLAYER_GATEWAYS", "LIBRENMS_CORE_IP", "CORE_SWITCH_PING"):
+            monkeypatch.delenv(key, raising=False)
+        env = {
+            "EVENT_NAME": "authority-regression",
+            "TOURNAMENT_SWITCHES": f"{sw1},{sw2}",
+            "PLAYER_TARGETS_FILE": str(output),
+            "PLAYER_SWITCH_CACHE_FILE": str(cache),
+            "PLAYER_WIRELESS_SCAN": "false",
+            "PLAYER_WIRELESS_PREVIEW": "false",
+            "PLAYER_REFRESH_FDB": "false",
+            "PLAYER_VERIFY_PING": "false",
+            "PLAYER_OFFLINE_GRACE_SECONDS": "0",
+            "PLAYER_REQUIRE_LINK_UP": "false",
+            "PLAYER_STATIC_TARGETS": "",
+            "PLAYER_SUBNETS": "",
+            "WIRELESS_SUBNETS": "",
+        }
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+
+        def probe(host, _community, _oid, timeout=15):
+            if host in state["failed"]:
+                return ""
+            seat = 1 if host == sw1 else 2
+            return (
+                f".1.3.6.1.2.1.31.1.1.1.18.{seat} = "
+                f"STRING: team01-0{seat}"
+            )
+
+        def stage_index(switches, _community, _vlans, prefetched_ifalias=None):
+            return {
+                switch: {
+                    "ifalias": prefetched_ifalias[switch],
+                    "mac_to_ifindex": {}, "oper_status": {},
+                }
+                for switch in switches
+            }
+
+        def direct_targets(switches, _community, _index, _wireless, _link_up):
+            return [
+                self._target(switch, 1 if switch == sw1 else 2,
+                             state["ips"][switch])
+                for switch in switches
+            ]
+
+        monkeypatch.setattr(gpt, "snmpwalk", probe)
+        monkeypatch.setattr(gpt, "build_stage_mac_index", stage_index)
+        monkeypatch.setattr(gpt, "collect_direct_arp_targets", direct_targets)
+        monkeypatch.setattr(gpt, "fetch_prometheus_player_history", lambda *_a, **_k: [])
+        monkeypatch.setattr(
+            gpt, "ping_host", lambda ip, _timeout=1: ip in state["alive"]
+        )
+
+        # Establish one target per configured switch.
+        assert gpt.main() == 0
+        assert {row["labels"]["switch"] for row in json.loads(output.read_text())} == {
+            sw1, sw2,
+        }
+
+        # A one-cycle timeout retains the failed switch's previous seat/IP and
+        # records failure health without shrinking the cache to one device.
+        # Its old player IP stays emitted even when the generator's ping fails,
+        # allowing Prometheus to continue probing it.
+        monkeypatch.setenv("PLAYER_VERIFY_PING", "true")
+        state["failed"] = {sw2}
+        state["alive"] = {state["ips"][sw1]}
+        assert gpt.main() == 0
+        timed_out = json.loads(output.read_text())
+        assert {row["labels"]["switch"] for row in timed_out} == {sw1, sw2}
+        cache_payload = json.loads(cache.read_text())
+        assert set(cache_payload["devices"]) == {sw1, sw2}
+        assert cache_payload["devices"][sw2]["failure_count"] == 1
+        assert "switches" not in cache_payload
+
+        # The next healthy cycle updates the recovered switch normally.
+        state["failed"] = set()
+        state["ips"][sw2] = "192.168.42.202"
+        state["alive"] = set(state["ips"].values())
+        assert gpt.main() == 0
+        recovered = json.loads(output.read_text())
+        sw2_rows = [row for row in recovered if row["labels"]["switch"] == sw2]
+        assert [row["targets"][0] for row in sw2_rows] == ["192.168.42.202"]
+        assert json.loads(cache.read_text())["devices"][sw2]["failure_count"] == 0
+
+        # Only an explicit allowlist removal clears that switch's history.
+        monkeypatch.setenv("TOURNAMENT_SWITCHES", sw1)
+        assert gpt.main() == 0
+        after_removal = json.loads(output.read_text())
+        assert {row["labels"]["switch"] for row in after_removal} == {sw1}
+        assert set(json.loads(cache.read_text())["devices"]) == {sw1}
 
 
 class TestRefreshPlayerFdb:
