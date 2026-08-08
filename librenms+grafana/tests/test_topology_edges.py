@@ -505,6 +505,42 @@ class TestServerAttachmentDiscovery:
             {10110: "Gi1/0/10"},
         ) == 10110
 
+    def test_bridge_port_collision_prefers_base_port_ifindex_mapping(self, monkeypatch):
+        responses = {
+            f"{gte.DOT1Q_TP_FDB_PORT_OID}.1002.0.17.34.170.187.204": "5",
+            f"{gte.DOT1D_BASE_PORT_IFINDEX_OID}.5": "10101",
+        }
+        monkeypatch.setattr(
+            gte,
+            "snmpget",
+            lambda _ip, _community, oid, **_kwargs: responses.get(oid, ""),
+        )
+
+        assert gte.lookup_fdb_ifindex(
+            "192.168.10.47",
+            "global",
+            1002,
+            "00:11:22:aa:bb:cc",
+            {5: "VLAN-1002", 10101: "Gi1/0/1"},
+        ) == 10101
+
+    def test_bridge_port_collision_never_returns_vlan_interface(self, monkeypatch):
+        monkeypatch.setattr(
+            gte,
+            "snmpget",
+            lambda _ip, _community, oid, **_kwargs: (
+                "5" if oid.startswith(gte.DOT1Q_TP_FDB_PORT_OID) else ""
+            ),
+        )
+
+        assert gte.lookup_fdb_ifindex(
+            "192.168.10.47",
+            "global",
+            1002,
+            "00:11:22:aa:bb:cc",
+            {5: "VLAN-1002"},
+        ) is None
+
     def test_deepest_non_uplink_switch_wins(self, monkeypatch):
         devices = {
             "192.168.10.254": {
@@ -727,6 +763,73 @@ class TestServerAttachmentDiscovery:
             devices, [], {"192.168.42.203": "sdwan"}, "global",
         ) == []
 
+    def test_logical_vlan_server_location_is_left_unresolved(self, monkeypatch):
+        devices = {
+            "192.168.10.254": {
+                "ip": "192.168.10.254", "sysname": "core",
+                "ifname": {42: "Vlan42"},
+                "arp": {"192.168.42.201": {
+                    "mac": "00:11:22:aa:bb:cc", "ifindex": 42, "vlan": 1002,
+                }},
+            },
+            "192.168.10.47": {
+                "ip": "192.168.10.47", "sysname": "Lan-Server",
+                "ifname": {5: "VLAN-1002"}, "arp": {},
+            },
+        }
+        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setattr(
+            gte, "lookup_fdb_ifindex",
+            lambda ip, *_args, **_kwargs: 5 if ip == "192.168.10.47" else None,
+        )
+
+        assert gte.discover_server_edges(
+            devices, [], {"192.168.42.201": "server1"}, "global",
+        ) == []
+
+    def test_cached_logical_owner_does_not_block_physical_fanout(self, monkeypatch):
+        devices = {
+            "192.168.10.254": {
+                "ip": "192.168.10.254", "sysname": "core",
+                "ifname": {42: "Vlan42"},
+                "arp": {"192.168.42.201": {
+                    "mac": "00:11:22:aa:bb:cc", "ifindex": 42, "vlan": 1002,
+                }},
+            },
+            "192.168.10.47": {
+                "ip": "192.168.10.47", "sysname": "Lan-Server",
+                "ifname": {5: "VLAN-1002"}, "arp": {},
+            },
+            "192.168.10.11": {
+                "ip": "192.168.10.11", "sysname": "access-1",
+                "ifname": {10643: "Gi6/0/43"}, "arp": {},
+            },
+        }
+        cached = [{
+            "from_ip": "192.168.10.47", "from_port": "VLAN-1002",
+            "from_ifindex": 5, "to_ip": "192.168.42.201", "source": "fdb",
+        }]
+        calls = []
+        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setattr(
+            gte, "lookup_fdb_ifindex",
+            lambda ip, *_args, **_kwargs: calls.append(ip) or {
+                "192.168.10.47": 5,
+                "192.168.10.11": 10643,
+            }.get(ip),
+        )
+
+        found = gte.discover_server_edges(
+            devices, [], {"192.168.42.201": "server1"}, "global", cached,
+        )
+
+        assert found[0]["from_ip"] == "192.168.10.11"
+        assert found[0]["from_port"] == "Gi6/0/43"
+        assert calls[0] == "192.168.10.47"
+        assert "192.168.10.11" in calls
+
     def test_cached_server_attachment_survives_transient_fdb_miss(self):
         cached = [{
             "from_ip": "192.168.10.11",
@@ -745,6 +848,23 @@ class TestServerAttachmentDiscovery:
         )
 
         assert found == cached
+
+    def test_cached_vlan_attachment_is_discarded(self):
+        cached = [{
+            "from_ip": "192.168.10.47",
+            "from_sysname": "Lan-Server",
+            "from_port": "VLAN-1002",
+            "from_ifindex": 5,
+            "to_ip": "192.168.42.201",
+            "to_sysname": "server1",
+            "to_port": None,
+            "to_ifindex": None,
+            "source": "fdb",
+        }]
+
+        assert gte.preserve_cached_server_edges(
+            [], cached, {"192.168.42.201": "server1"},
+        ) == []
 
     def test_partial_attachment_ledger_is_completed_from_live_snapshot(self):
         primary = [{

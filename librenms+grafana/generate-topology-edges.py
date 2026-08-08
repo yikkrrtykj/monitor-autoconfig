@@ -436,6 +436,28 @@ def normalize_port_name(name):
     return text
 
 
+def is_physical_interface_name(name):
+    """Return True only for a recognisable physical Ethernet interface.
+
+    FDB bridge-port numbers and IF-MIB ifIndexes live in different namespaces.
+    On Cisco they can accidentally share a small integer (for example bridge
+    port 5 and ifIndex 5 == VLAN-1002).  Requiring an Ethernet-shaped ifName
+    prevents an SVI, loopback or aggregate from becoming a server attachment.
+    """
+    text = re.sub(r"[\s_-]+", "", str(name or "").strip().lower())
+    return re.fullmatch(
+        r"(?:"
+        r"fastethernet|fa|gigabitethernet|gi|"
+        r"tengigabitethernet|tengige|te|"
+        r"twentyfivegigabitethernet|twentyfivegige|twe|"
+        r"fortygigabitethernet|fortygige|fo|"
+        r"hundredgigabitethernet|hundredgige|hu|"
+        r"ethernet|eth"
+        r")\d+(?:/\d+)*",
+        text,
+    ) is not None
+
+
 def _has_physical_endpoint_evidence(edge, side):
     """Whether an endpoint contains a real interface identity.
 
@@ -960,16 +982,25 @@ def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
         bridge_port = _positive_int(snmpget(ip, query_community, oid))
         if bridge_port is None:
             continue
-        if bridge_port in ifname_map:
-            return bridge_port
-        for mapping_community in (query_community, community):
+        # dot1dTpFdbPort/dot1qTpFdbPort returns a BRIDGE-MIB base-port number,
+        # not an IF-MIB ifIndex.  Always try the explicit mapping first.  The
+        # old direct-number shortcut mapped bridge port 5 to ifIndex 5 on the
+        # C9200L, which happens to be VLAN-1002 rather than a physical port.
+        for mapping_community in dict.fromkeys((query_community, community)):
             ifindex = _positive_int(snmpget(
                 ip,
                 mapping_community,
                 f"{DOT1D_BASE_PORT_IFINDEX_OID}.{bridge_port}",
             ))
-            if ifindex is not None:
+            if ifindex is not None and is_physical_interface_name(
+                ifname_map.get(ifindex)
+            ):
                 return ifindex
+        # Some agents use ifIndex directly and do not implement
+        # dot1dBasePortIfIndex.  Retain that compatibility only when the
+        # colliding IF-MIB row is unmistakably a physical Ethernet port.
+        if is_physical_interface_name(ifname_map.get(bridge_port)):
+            return bridge_port
     return None
 
 
@@ -1056,6 +1087,7 @@ def discover_server_edges(devices, edges, servers, community, cached_edges=None)
                         "vlan": vlan,
                         "is_uplink": (switch_ip, ifindex) in switch_link_endpoints,
                         "is_aggregate": normalize_port_name(port_name).startswith("agg"),
+                        "is_physical": is_physical_interface_name(port_name),
                         "depth": depths.get(switch_ip, -1),
                     })
             return candidates
@@ -1070,7 +1102,11 @@ def discover_server_edges(devices, edges, servers, community, cached_edges=None)
         candidates = collect_candidates(preferred) if preferred else []
         preferred_physical = [
             candidate for candidate in candidates
-            if not candidate["is_uplink"] and not candidate["is_aggregate"]
+            if (
+                not candidate["is_uplink"] and
+                not candidate["is_aggregate"] and
+                candidate["is_physical"]
+            )
         ]
         if preferred and preferred_physical:
             print(
@@ -1107,12 +1143,12 @@ def discover_server_edges(devices, edges, servers, community, cached_edges=None)
         # are deliberately left unresolved instead of inventing a parent.
         physical_candidates = [
             candidate for candidate in access_candidates
-            if not candidate["is_aggregate"]
+            if not candidate["is_aggregate"] and candidate["is_physical"]
         ]
         if not physical_candidates:
             print(
                 f"[WARN] server {server_name} ({server_ip}): MAC was learned "
-                "only on unconfirmed Po/LAG interfaces; keeping core fallback",
+                "only on logical/unconfirmed interfaces; keeping core fallback",
                 file=sys.stderr,
             )
             continue
@@ -1387,9 +1423,22 @@ def preserve_cached_server_edges(edges, cached_edges, servers):
                 continue
             if edge.get("to_ip") == server_ip:
                 parent_ip = edge.get("from_ip")
+                parent_port = edge.get("from_port")
             elif edge.get("from_ip") == server_ip:
                 parent_ip = edge.get("to_ip")
+                parent_port = edge.get("to_port")
             else:
+                continue
+            # Older collectors could confuse a BRIDGE-MIB base-port number
+            # with an IF-MIB ifIndex and cache an SVI such as VLAN-1002 as the
+            # server's physical attachment.  Missing legacy labels remain
+            # preservable, but an explicitly non-physical label is invalid.
+            if parent_port and not is_physical_interface_name(parent_port):
+                print(
+                    f"[WARN] server {server_name} ({server_ip}): discarding "
+                    f"non-physical cached attachment {parent_ip} {parent_port}",
+                    file=sys.stderr,
+                )
                 continue
             preserved.append(dict(edge))
             linked_servers.add(server_ip)
