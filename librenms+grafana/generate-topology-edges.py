@@ -436,6 +436,30 @@ def normalize_port_name(name):
     return text
 
 
+def _has_physical_endpoint_evidence(edge, side):
+    """Whether an endpoint contains a real interface identity.
+
+    Some malformed LLDP rows advertise a chassis/MAC octet string as the
+    remote port while neither side resolves to an IF-MIB ifIndex.  Such a row
+    is too weak to emit or preserve: it otherwise becomes a false
+    switch-to-switch link for the entire retention window.
+
+    Keep explicitly resolved ifIndexes and recognisable interface names.  A
+    vendor description such as ``To-Core`` is deliberately not sufficient on
+    its own, while a normalised name (Gi1/0/1, Te2/0/2, Po11, Gi24, ...) is.
+    """
+    if edge.get(f"{side}_ifindex") not in (None, ""):
+        return True
+    raw = str(edge.get(f"{side}_port") or "").strip().lower()
+    if not raw:
+        return False
+    normalized = normalize_port_name(raw)
+    return bool(normalized) and (
+        normalized != raw or
+        re.fullmatch(r"\d+(?:/\d+)+", raw) is not None
+    )
+
+
 _INTERFACE_TYPE_ALIASES = {
     "fastethernet": "fa",
     "fa": "fa",
@@ -674,6 +698,11 @@ def canonical_edge_key(edge):
 def merge_edge(edges_by_key, edge):
     """Insert an edge, or backfill missing fields on an existing one (so an LLDP
     and a CDP view of the same link, or both directions, collapse into one)."""
+    if not any(
+        _has_physical_endpoint_evidence(edge, side)
+        for side in ("from", "to")
+    ):
+        return
     key = canonical_edge_key(edge)
     existing = edges_by_key.get(key)
     if existing is None:
@@ -1237,6 +1266,14 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
         if not left or not right or left not in configured or right not in configured:
             continue
         if _edge_cache_key(source) in live_keys:
+            continue
+        # Retention is for previously confirmed physical links.  Do not turn
+        # an unresolved LLDP chassis/MAC row into a 24-hour yellow cable when
+        # neither endpoint has any usable interface evidence.
+        if not any(
+            _has_physical_endpoint_evidence(source, side)
+            for side in ("from", "to")
+        ):
             continue
         cached_endpoint_identities = [
             _edge_endpoint_identities(source, side)

@@ -345,6 +345,23 @@ class TestBuildEdges:
         assert len(placeholders) == 1
         assert placeholders[0]["neighbor_name"] == "outsider"
 
+    def test_unresolved_mac_port_row_is_not_emitted_as_a_live_link(self):
+        devices = self._devices()
+        source = devices["10.0.0.1"]
+        peer = devices["10.0.0.3"]
+        source["ifname"] = {}
+        source["loc_port_desc"] = {}
+        source["rem_sys"] = {(0, 99, 1): peer["sysname"]}
+        source["rem_port_desc"] = {(0, 99, 1): "78 45 58 4B 6B A8"}
+        peer["rem_sys"] = {}
+
+        edges, placeholders = gte.build_edges(
+            devices, gte.build_name_index(devices)
+        )
+
+        assert edges == []
+        assert placeholders == []
+
 
 class TestPortChannelEdges:
     def test_c1000_single_neighbor_row_is_enriched_with_both_lag_members(self):
@@ -1054,6 +1071,21 @@ def test_incomplete_cached_reverse_row_cannot_make_live_pair_stale():
     assert len(merged) == 1
     assert merged[0]["from_port"] == "Te1/0/2"
     assert merged[0]["stale"] is False
+
+
+def test_unresolved_cached_mac_port_row_is_not_retained_as_a_false_link():
+    cached = [{
+        "from_ip": "192.168.10.11", "from_port": None, "from_ifindex": None,
+        "to_ip": "192.168.10.49", "to_port": "78 45 58 4B 6B A8",
+        "to_ifindex": None, "last_seen": 100.0,
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        [], cached, ["192.168.10.11", "192.168.10.49"],
+        now=200, retention_seconds=86400,
+    )
+
+    assert retained == []
 
 
 def test_fully_identified_missing_parallel_member_remains_stale():
