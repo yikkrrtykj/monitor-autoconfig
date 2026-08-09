@@ -244,9 +244,19 @@
       const previous = coords[index - 1] || current;
       const afterNext = coords[index + 2] || next;
       const cp1x = current.x + (next.x - previous.x) / 6;
-      const cp1y = current.y + (next.y - previous.y) / 6;
+      const rawCp1y = current.y + (next.y - previous.y) / 6;
       const cp2x = next.x - (afterNext.x - current.x) / 6;
-      const cp2y = next.y - (afterNext.y - current.y) / 6;
+      const rawCp2y = next.y - (afterNext.y - current.y) / 6;
+      // Catmull-Rom control points can overshoot after a sharp latency peak.
+      // SVG's Y axis grows downward, so that overshoot appeared below the
+      // zero-latency baseline even though every real sample was non-negative.
+      // A cubic Bezier stays inside the convex hull of its control points;
+      // clamping both controls to this segment's endpoint range therefore
+      // preserves visual smoothing without inventing local minima or maxima.
+      const minY = Math.min(current.y, next.y);
+      const maxY = Math.max(current.y, next.y);
+      const cp1y = Math.min(maxY, Math.max(minY, rawCp1y));
+      const cp2y = Math.min(maxY, Math.max(minY, rawCp2y));
       commands.push(`C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${next.x.toFixed(1)},${next.y.toFixed(1)}`);
     }
     return commands.join(" ");

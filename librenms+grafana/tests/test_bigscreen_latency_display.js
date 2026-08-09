@@ -99,6 +99,24 @@ const visualPointsBefore = [...visualPoints];
 assert.ok(linePathFromPoints(visualPoints, true).includes(' C '), 'visual smoothing uses a curved SVG path');
 assert.deepStrictEqual(visualPoints, visualPointsBefore, 'visual smoothing must not mutate sample coordinates');
 
+const peakPoints = ['0,100', '10,98', '20,0', '30,98', '40,100'];
+const peakPath = linePathFromPoints(peakPoints, true);
+const cubicPattern = /C (-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g;
+const cubicSegments = [...peakPath.matchAll(cubicPattern)];
+assert.strictEqual(cubicSegments.length, peakPoints.length - 1);
+cubicSegments.forEach((segment, index) => {
+  const startY = Number(peakPoints[index].split(',')[1]);
+  const endY = Number(peakPoints[index + 1].split(',')[1]);
+  const minY = Math.min(startY, endY);
+  const maxY = Math.max(startY, endY);
+  [Number(segment[2]), Number(segment[4])].forEach((controlY) => {
+    assert.ok(
+      controlY >= minY && controlY <= maxY,
+      'smoothed latency controls must stay inside the real endpoint range'
+    );
+  });
+});
+
 const gapInput = series([
   { t: 100, v: 0.003 },
   { t: 102, v: 0.08 },
