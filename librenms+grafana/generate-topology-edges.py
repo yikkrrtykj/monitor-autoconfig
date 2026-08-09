@@ -1035,6 +1035,27 @@ def discover_server_edges(devices, edges, servers, community, cached_edges=None)
         for edge in (cached_edges or [])
         if edge.get("source") == "fdb" and edge.get("to_ip") and edge.get("from_ip")
     }
+    cached_record_by_server = {}
+    for edge in cached_edges or []:
+        if edge.get("source") != "fdb":
+            continue
+        if edge.get("to_ip") in servers:
+            cached_server_ip = str(edge.get("to_ip") or "")
+        elif edge.get("from_ip") in servers:
+            cached_server_ip = str(edge.get("from_ip") or "")
+        else:
+            continue
+        cached_mac = normalize_mac(edge.get("server_mac"))
+        if not cached_mac or cached_server_ip in cached_record_by_server:
+            continue
+        try:
+            cached_vlan = int(edge.get("server_vlan"))
+        except (TypeError, ValueError):
+            cached_vlan = None
+        cached_record_by_server[cached_server_ip] = {
+            "mac": cached_mac,
+            "vlan": cached_vlan,
+        }
     found = []
 
     for server_ip, server_name in servers.items():
@@ -1044,12 +1065,23 @@ def discover_server_edges(devices, edges, servers, community, cached_edges=None)
             for record in records if record.get("mac")
         }
         if not unique_records:
-            print(
-                f"[WARN] server {server_name} ({server_ip}): no ARP entry; "
-                "keeping core fallback",
-                file=sys.stderr,
-            )
-            continue
+            cached_record = cached_record_by_server.get(server_ip)
+            if cached_record:
+                unique_records.add((
+                    cached_record["mac"], cached_record.get("vlan")
+                ))
+                print(
+                    f"[INFO] server {server_name} ({server_ip}): no current "
+                    "ARP entry; verifying cached MAC through FDB",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"[WARN] server {server_name} ({server_ip}): no ARP entry "
+                    "and no cached MAC; keeping core fallback",
+                    file=sys.stderr,
+                )
+                continue
 
         def collect_candidates(selected_switches):
             candidates = []
@@ -1171,6 +1203,12 @@ def discover_server_edges(devices, edges, servers, community, cached_edges=None)
             "to_port": None,
             "to_ifindex": None,
             "source": "fdb",
+            # The monitoring host can reach a directly attached server VLAN
+            # without traversing the monitored core.  Persist the last
+            # confirmed IP->MAC/VLAN observation so later topology cycles can
+            # verify the physical FDB port even after the core's ARP ages out.
+            "server_mac": best["mac"],
+            "server_vlan": best["vlan"],
         })
         print(
             f"[INFO] server {server_name} ({server_ip}) attached to "

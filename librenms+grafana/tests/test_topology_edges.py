@@ -589,6 +589,67 @@ class TestServerAttachmentDiscovery:
         assert found[0]["from_port"] == "Gi1/0/10"
         assert found[0]["to_ip"] == "192.168.42.203"
         assert found[0]["source"] == "fdb"
+        assert found[0]["server_mac"] == "00:11:22:aa:bb:cc"
+        assert found[0]["server_vlan"] == 42
+
+    def test_cached_server_mac_verifies_fdb_without_current_gateway_arp(self, monkeypatch):
+        devices = {
+            "192.168.10.254": {
+                "ip": "192.168.10.254", "sysname": "core",
+                "ifname": {42: "Vlan42"}, "arp": {},
+            },
+            "192.168.10.47": {
+                "ip": "192.168.10.47", "sysname": "Lan-Server",
+                "ifname": {10110: "Gi1/0/10"}, "arp": {},
+            },
+        }
+        cached = [{
+            "from_ip": "192.168.10.47", "from_ifindex": 10110,
+            "from_port": "Gi1/0/10", "to_ip": "192.168.42.201",
+            "server_mac": "fc:9d:05:1a:b5:41", "server_vlan": 42,
+            "source": "fdb",
+        }]
+        calls = []
+        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setattr(
+            gte,
+            "lookup_fdb_ifindex",
+            lambda ip, _community, vlan, mac, _ifnames: (
+                calls.append((ip, vlan, mac)) or
+                (10110 if ip == "192.168.10.47" else None)
+            ),
+        )
+
+        found = gte.discover_server_edges(
+            devices, [], {"192.168.42.201": "server1"}, "global", cached,
+        )
+
+        assert found[0]["from_ip"] == "192.168.10.47"
+        assert found[0]["from_port"] == "Gi1/0/10"
+        assert found[0]["server_mac"] == "fc:9d:05:1a:b5:41"
+        assert found[0]["server_vlan"] == 42
+        assert calls == [("192.168.10.47", 42, "fc:9d:05:1a:b5:41")]
+
+    def test_no_arp_and_no_cached_mac_stays_unresolved(self, monkeypatch):
+        devices = {
+            "192.168.10.254": {
+                "ip": "192.168.10.254", "sysname": "core",
+                "ifname": {42: "Vlan42"}, "arp": {},
+            },
+        }
+        calls = []
+        monkeypatch.setenv("CORE_SWITCH_PING", "core:192.168.10.254")
+        monkeypatch.setenv("FIREWALL_PING", "")
+        monkeypatch.setattr(
+            gte, "lookup_fdb_ifindex",
+            lambda *_args, **_kwargs: calls.append(True),
+        )
+
+        assert gte.discover_server_edges(
+            devices, [], {"192.168.42.201": "server1"}, "global", [],
+        ) == []
+        assert calls == []
 
     def test_cached_physical_owner_avoids_full_switch_fanout(self, monkeypatch):
         devices = {
