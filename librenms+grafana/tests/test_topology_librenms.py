@@ -464,7 +464,7 @@ def test_full_librenms_cycle_reports_zero_adjacency_snmp_and_compatible_schema(
     assert gte._run_collection() == 0
 
     log = capsys.readouterr().err
-    assert "collection stats: api_requests=7 snmp_walks=0 snmp_gets=0" in log
+    assert "adjacency stats: api_requests=7 snmp_walks=0 snmp_gets=0" in log
     assert "source summary: librenms=2 hybrid=0 direct-snmp=0" in log
     # No server is configured, so the unchanged server-ARP stage also has no
     # work. The complete fixture cycle performs no direct SNMP operation.

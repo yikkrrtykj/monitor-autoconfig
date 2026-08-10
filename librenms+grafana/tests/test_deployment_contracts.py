@@ -413,7 +413,10 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert 'TOPOLOGY_DATA_SOURCE: "${TOPOLOGY_DATA_SOURCE:-hybrid}"' in topology
     assert 'TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS: "${TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS:-600}"' in topology
     assert 'TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS: "${TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS:-28800}"' in topology
-    assert "TOPOLOGY_DATA_SOURCE TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS" in topology
+    assert 'TOPOLOGY_SERVER_ATTACHMENT_SOURCE: "${TOPOLOGY_SERVER_ATTACHMENT_SOURCE:-hybrid}"' in topology
+    assert 'TOPOLOGY_LIBRENMS_ARP_MAX_AGE_SECONDS: "${TOPOLOGY_LIBRENMS_ARP_MAX_AGE_SECONDS:-900}"' in topology
+    assert 'TOPOLOGY_LIBRENMS_FDB_MAX_AGE_SECONDS: "${TOPOLOGY_LIBRENMS_FDB_MAX_AGE_SECONDS:-900}"' in topology
+    assert "TOPOLOGY_SERVER_ATTACHMENT_SOURCE TOPOLOGY_LIBRENMS_ARP_MAX_AGE_SECONDS TOPOLOGY_LIBRENMS_FDB_MAX_AGE_SECONDS" in topology
     assert "./target_utils.py:/target_utils.py:ro" in topology
     assert 'TOPOLOGY_SNMP_TIMEOUT: "${TOPOLOGY_SNMP_TIMEOUT:-2}"' in topology
     assert 'TOPOLOGY_SNMP_RETRIES: "${TOPOLOGY_SNMP_RETRIES:-0}"' in topology
@@ -568,6 +571,9 @@ def test_poll_pressure_defaults_and_existing_env_are_migrated():
     assert "TOPOLOGY_DATA_SOURCE=hybrid" in example
     assert "TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS=600" in example
     assert "TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS=28800" in example
+    assert "TOPOLOGY_SERVER_ATTACHMENT_SOURCE=hybrid" in example
+    assert "TOPOLOGY_LIBRENMS_ARP_MAX_AGE_SECONDS=900" in example
+    assert "TOPOLOGY_LIBRENMS_FDB_MAX_AGE_SECONDS=900" in example
     for script_name in ("deploy.sh", "apply-env.sh"):
         script = read(script_name)
         assert "migrate_env_default SWITCH_RESOURCE_SCRAPE_INTERVAL 60s 120s" in script

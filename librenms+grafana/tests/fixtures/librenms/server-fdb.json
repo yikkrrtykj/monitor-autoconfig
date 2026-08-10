@@ -1,0 +1,21 @@
+{
+  "status": "ok",
+  "ports_fdb": [
+    {
+      "port_id": "101",
+      "mac_address": "fc9d051ab541",
+      "vlan_id": "42"
+    },
+    {
+      "port_id": "102",
+      "mac_address": "001122aabbcc",
+      "vlan_id": "42"
+    },
+    {
+      "port_id": "103",
+      "mac_address": "00aabbccddee",
+      "vlan_id": "42",
+      "updated_at": "2000-01-01 00:00:00"
+    }
+  ]
+}

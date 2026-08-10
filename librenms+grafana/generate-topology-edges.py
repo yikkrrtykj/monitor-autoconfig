@@ -13,6 +13,12 @@ Env vars:
                              max explicit device last_polled age (default: 600).
   TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS
                              max explicit last_discovered age (default: 28800).
+  TOPOLOGY_SERVER_ATTACHMENT_SOURCE
+                             hybrid (default), librenms, or direct-snmp.
+  TOPOLOGY_LIBRENMS_ARP_MAX_AGE_SECONDS
+                             max explicit ARP evidence age (default: 900).
+  TOPOLOGY_LIBRENMS_FDB_MAX_AGE_SECONDS
+                             max explicit FDB evidence age (default: 900).
   TOPOLOGY_DEVICES           comma-separated device IPs to poll. Empty -> union of
                              CORE_SWITCH_PING + DIST_SWITCH_PING + FIREWALL_PING +
                              TOURNAMENT_SWITCHES + auto-discovered switches from
@@ -86,8 +92,11 @@ DOT1D_TP_FDB_PORT_OID = "1.3.6.1.2.1.17.4.3.1.2"
 DOT1D_BASE_PORT_IFINDEX_OID = "1.3.6.1.2.1.17.1.4.1.2"
 
 TOPOLOGY_DATA_SOURCES = frozenset({"hybrid", "librenms", "direct-snmp"})
+SERVER_ATTACHMENT_SOURCES = frozenset({"hybrid", "librenms", "direct-snmp"})
 DEFAULT_LIBRENMS_POLL_MAX_AGE_SECONDS = 600
 DEFAULT_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS = 8 * 60 * 60
+DEFAULT_LIBRENMS_ARP_MAX_AGE_SECONDS = 15 * 60
+DEFAULT_LIBRENMS_FDB_MAX_AGE_SECONDS = 15 * 60
 
 _collection_stats_lock = threading.Lock()
 _collection_stats = {
@@ -166,6 +175,20 @@ def topology_data_source():
     return "hybrid"
 
 
+def topology_server_attachment_source():
+    value = os.environ.get(
+        "TOPOLOGY_SERVER_ATTACHMENT_SOURCE", "hybrid"
+    ).strip().lower()
+    if value in SERVER_ATTACHMENT_SOURCES:
+        return value
+    print(
+        f"[WARN] unsupported TOPOLOGY_SERVER_ATTACHMENT_SOURCE={value!r}; "
+        "using hybrid",
+        file=sys.stderr,
+    )
+    return "hybrid"
+
+
 def _env_nonnegative_seconds(name, default):
     try:
         value = int(os.environ.get(name, str(default)) or default)
@@ -185,6 +208,20 @@ def topology_librenms_discovery_max_age():
     return _env_nonnegative_seconds(
         "TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS",
         DEFAULT_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS,
+    )
+
+
+def topology_librenms_arp_max_age():
+    return _env_nonnegative_seconds(
+        "TOPOLOGY_LIBRENMS_ARP_MAX_AGE_SECONDS",
+        DEFAULT_LIBRENMS_ARP_MAX_AGE_SECONDS,
+    )
+
+
+def topology_librenms_fdb_max_age():
+    return _env_nonnegative_seconds(
+        "TOPOLOGY_LIBRENMS_FDB_MAX_AGE_SECONDS",
+        DEFAULT_LIBRENMS_FDB_MAX_AGE_SECONDS,
     )
 
 
@@ -774,6 +811,7 @@ def _empty_device(ip):
         "ifoper": {},
         "ifstack": {},
         "port_by_id": {},
+        "librenms_metadata": {},
         "arp": {},
         "neighbors": [],
         "loc_port_desc": {},
@@ -1012,6 +1050,7 @@ def poll_device_librenms(ip, community, client, collect_arp=True, mode="hybrid")
     result = _empty_device(ip)
     result.update({
         "device_id": metadata.get("device_id"),
+        "librenms_metadata": metadata,
         "sysname": metadata.get("sysName") or metadata.get("hostname") or ip,
         "ifname": ifname,
         "ifoper": ifoper,
@@ -1503,7 +1542,199 @@ def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
     return None
 
 
-def discover_server_edges(devices, edges, servers, community, cached_edges=None):
+def _first_row_timestamp(record, metadata, metadata_field):
+    """Prefer row evidence time, falling back to the owning device cycle."""
+    for key in ("updated_at", "last_seen", "last_updated", "timestamp"):
+        value = record.get(key)
+        if value not in (None, ""):
+            return value
+    return (metadata or {}).get(metadata_field)
+
+
+def _record_vlan(record, port_record=None):
+    for key in ("vlan_id", "vlan", "vlanId"):
+        try:
+            value = int(record.get(key))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= value <= 4094:
+            return value
+    port_name = str(
+        (port_record or {}).get("ifName")
+        or (port_record or {}).get("ifDescr")
+        or ""
+    ).strip()
+    match = re.fullmatch(r"(?i)vlan\s*(\d+)", port_name)
+    if match:
+        value = int(match.group(1))
+        if 1 <= value <= 4094:
+            return value
+    return None
+
+
+def _cached_server_records(cached_edges, servers):
+    records = {}
+    for edge in cached_edges or []:
+        if edge.get("source") != "fdb":
+            continue
+        server_ip = _server_ip_for_edge(edge, servers)
+        mac = normalize_mac(edge.get("server_mac"))
+        if not server_ip or not mac or server_ip in records:
+            continue
+        try:
+            vlan = int(edge.get("server_vlan"))
+        except (TypeError, ValueError):
+            vlan = None
+        records[server_ip] = {"mac": mac, "vlan": vlan}
+    return records
+
+
+def collect_server_arp(devices, arp_device_ips, servers, community, mode,
+                       client=None, librenms_ready=False, cached_edges=None):
+    """Collect only the ARP evidence needed for configured servers.
+
+    LibreNMS is consulted independently of the adjacency source.  Hybrid mode
+    uses a direct walk only for an L3 device whose API evidence is unusable or
+    while an uncached configured server remains unresolved.
+    """
+    for device in devices.values():
+        device["arp"] = {}
+    if not servers:
+        return
+
+    l3_ips = [ip for ip in arp_device_ips if ip in devices]
+    if mode == "direct-snmp":
+        for ip in l3_ips:
+            devices[ip]["arp"] = poll_snmp_arp(
+                ip, community, devices[ip].get("ifname", {})
+            )
+        return
+
+    failed_or_stale = []
+    if not librenms_ready or client is None:
+        failed_or_stale = list(l3_ips)
+    else:
+        for ip in l3_ips:
+            device = devices[ip]
+            try:
+                metadata = device.get("librenms_metadata") or client.resolve_device(ip)
+                rows = client.get_device_arp(metadata)
+            except LibreNMSError as exc:
+                _log_librenms_fallback(ip, "ARP", exc)
+                failed_or_stale.append(ip)
+                continue
+            port_by_id = device.get("port_by_id", {})
+            stale_seen = False
+            for row in rows:
+                server_ip = str(row.get("ipv4_address") or row.get("ip") or "").strip()
+                if server_ip not in servers:
+                    continue
+                freshness = librenms_freshness(
+                    _first_row_timestamp(row, metadata, "last_polled"),
+                    topology_librenms_arp_max_age(),
+                )
+                if freshness == "stale":
+                    stale_seen = True
+                    continue
+                mac = normalize_mac(
+                    row.get("mac_address") or row.get("mac") or row.get("mac_addr")
+                )
+                if not mac:
+                    continue
+                port_record = port_by_id.get(str(row.get("port_id")))
+                device["arp"][server_ip] = {
+                    "mac": mac,
+                    "vlan": _record_vlan(row, port_record),
+                }
+            if stale_seen:
+                failed_or_stale.append(ip)
+
+    if mode == "librenms":
+        return
+
+    cached = _cached_server_records(cached_edges, servers)
+    resolved = {
+        server_ip
+        for device in devices.values()
+        for server_ip in device.get("arp", {})
+    } | set(cached)
+    fallback_order = list(dict.fromkeys(failed_or_stale + l3_ips))
+    for ip in fallback_order:
+        if resolved.issuperset(servers):
+            break
+        direct = poll_snmp_arp(ip, community, devices[ip].get("ifname", {}))
+        devices[ip]["arp"].update(direct)
+        resolved.update(server_ip for server_ip in direct if server_ip in servers)
+
+
+def build_librenms_fdb_candidates(devices, edges, client, librenms_ready):
+    """Build a read-only MAC candidate index, one FDB API call per switch."""
+    index = {}
+    status = {"usable_switches": 0, "failed_switches": 0}
+    if not librenms_ready or client is None:
+        return index, status
+
+    endpoints = set()
+    for edge in edges:
+        for side in ("from", "to"):
+            ip = edge.get(f"{side}_ip")
+            ifindex = edge.get(f"{side}_ifindex")
+            if ip in devices and ifindex is not None:
+                endpoints.add((ip, ifindex))
+    depths = _graph_depths(edges, _env_target_ips("CORE_SWITCH_PING"))
+    firewall_ips = set(_env_target_ips("FIREWALL_PING"))
+
+    for ip, device in devices.items():
+        if ip in firewall_ips:
+            continue
+        try:
+            metadata = device.get("librenms_metadata") or client.resolve_device(ip)
+            port_by_id = device.get("port_by_id") or {}
+            if not port_by_id:
+                _records, port_by_id, ifname, ifoper = _librenms_ports(client, metadata)
+                device["port_by_id"] = port_by_id
+                device["ifname"] = ifname
+                device["ifoper"] = ifoper
+            rows = client.get_device_fdb(metadata)
+        except (LibreNMSError, TopologyDataIncomplete) as exc:
+            _log_librenms_fallback(ip, "FDB", exc)
+            status["failed_switches"] += 1
+            continue
+        status["usable_switches"] += 1
+        for row in rows:
+            if librenms_freshness(
+                _first_row_timestamp(row, metadata, "last_discovered"),
+                topology_librenms_fdb_max_age(),
+            ) == "stale":
+                continue
+            mac = normalize_mac(
+                row.get("mac_address") or row.get("mac") or row.get("mac_addr")
+            )
+            port = port_by_id.get(str(row.get("port_id")))
+            if not mac or not port:
+                continue
+            ifindex = _as_positive_int(port.get("ifIndex"))
+            port_name = str(port.get("ifName") or port.get("ifDescr") or "").strip()
+            if (
+                ifindex is None
+                or not is_physical_interface_name(port_name)
+                or normalize_port_name(port_name).startswith("agg")
+                or device.get("ifoper", {}).get(ifindex) not in (None, 1)
+                or (ip, ifindex) in endpoints
+            ):
+                continue
+            index.setdefault(mac, []).append({
+                "switch_ip": ip,
+                "ifindex": ifindex,
+                "port_name": port_name,
+                "mac": mac,
+                "vlan": _record_vlan(row, port),
+                "depth": depths.get(ip, -1),
+            })
+    return index, status
+
+
+def discover_server_edges_direct(devices, edges, servers, community, cached_edges=None):
     """Locate configured servers at their real access switch via ARP + FDB."""
     if not servers or not devices:
         return []
@@ -1718,6 +1949,228 @@ def discover_server_edges(devices, edges, servers, community, cached_edges=None)
             f"{best['switch_ip']} {parent.get('ifname', {}).get(best['ifindex']) or best['ifindex']}",
             file=sys.stderr,
         )
+    return found
+
+
+def _server_edge_from_candidate(devices, server_ip, server_name, candidate):
+    parent = devices[candidate["switch_ip"]]
+    return {
+        "from_ip": candidate["switch_ip"],
+        "from_sysname": parent.get("sysname"),
+        "from_port": parent.get("ifname", {}).get(
+            candidate["ifindex"], candidate.get("port_name")
+        ),
+        "from_ifindex": candidate["ifindex"],
+        "to_ip": server_ip,
+        "to_sysname": server_name,
+        "to_port": None,
+        "to_ifindex": None,
+        "source": "fdb",
+        "server_mac": candidate["mac"],
+        "server_vlan": candidate.get("vlan"),
+    }
+
+
+def discover_server_edges(devices, edges, servers, community, cached_edges=None,
+                          source=None, fdb_candidates=None, server_stats=None):
+    """Locate servers using the configured API index/exact-SNMP policy."""
+    mode = source or topology_server_attachment_source()
+    stats = server_stats if server_stats is not None else {}
+    stats.setdefault("full_fallbacks", 0)
+    if mode == "direct-snmp" or (mode == "hybrid" and fdb_candidates is None):
+        if mode == "hybrid":
+            stats["full_fallbacks"] += len(servers)
+        return discover_server_edges_direct(
+            devices, edges, servers, community, cached_edges
+        )
+    if not servers or not devices:
+        return []
+
+    arp_by_server = {}
+    for device in devices.values():
+        for server_ip in servers:
+            record = device.get("arp", {}).get(server_ip)
+            if record:
+                arp_by_server.setdefault(server_ip, []).append(record)
+    cached_records = _cached_server_records(cached_edges, servers)
+    cached_switches = {}
+    for edge in cached_edges or []:
+        if edge.get("source") != "fdb":
+            continue
+        server_ip = _server_ip_for_edge(edge, servers)
+        if not server_ip:
+            continue
+        switch_ip = edge.get("from_ip") if edge.get("to_ip") == server_ip else edge.get("to_ip")
+        if switch_ip in devices:
+            cached_switches.setdefault(server_ip, switch_ip)
+
+    endpoints = set()
+    for edge in edges:
+        for side in ("from", "to"):
+            ip = edge.get(f"{side}_ip")
+            ifindex = edge.get(f"{side}_ifindex")
+            if ip in devices and ifindex is not None:
+                endpoints.add((ip, ifindex))
+    firewall_ips = set(_env_target_ips("FIREWALL_PING"))
+    switch_devices = {
+        ip: device for ip, device in devices.items()
+        if ip not in firewall_ips and device.get("ifname")
+    }
+    depths = _graph_depths(edges, _env_target_ips("CORE_SWITCH_PING"))
+
+    def exact_candidate(switch_ip, mac, vlan, indexed=None):
+        device = switch_devices.get(switch_ip)
+        if not device:
+            return None
+        try:
+            ifindex = lookup_fdb_ifindex(
+                switch_ip, community, vlan, mac, device.get("ifname", {})
+            )
+        except Exception as exc:
+            print(
+                f"[WARN] FDB lookup {switch_ip} failed ({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            return None
+        port_name = device.get("ifname", {}).get(ifindex)
+        if (
+            ifindex is None
+            or not is_physical_interface_name(port_name)
+            or normalize_port_name(port_name).startswith("agg")
+            or device.get("ifoper", {}).get(ifindex) not in (None, 1)
+            or (switch_ip, ifindex) in endpoints
+        ):
+            return None
+        if indexed and indexed.get("ifindex") != ifindex:
+            print(
+                f"[WARN] LibreNMS FDB candidate changed on {switch_ip}; "
+                "using exact SNMP result",
+                file=sys.stderr,
+            )
+        return {
+            "switch_ip": switch_ip,
+            "ifindex": ifindex,
+            "port_name": port_name,
+            "mac": mac,
+            "vlan": vlan,
+            "depth": depths.get(switch_ip, -1),
+        }
+
+    found = []
+    fallback_servers = {}
+    for server_ip, server_name in servers.items():
+        records = {
+            (record.get("mac"), record.get("vlan"))
+            for record in arp_by_server.get(server_ip, [])
+            if record.get("mac")
+        }
+        if not records and server_ip in cached_records:
+            cached = cached_records[server_ip]
+            records.add((cached["mac"], cached.get("vlan")))
+            print(
+                f"[INFO] server {server_name} ({server_ip}): no current ARP "
+                "entry; verifying cached MAC through FDB",
+                file=sys.stderr,
+            )
+        if not records:
+            print(
+                f"[WARN] server {server_name} ({server_ip}): no ARP entry "
+                "and no cached MAC; keeping core fallback",
+                file=sys.stderr,
+            )
+            continue
+
+        api_matches = []
+        for mac, vlan in records:
+            for candidate in (fdb_candidates or {}).get(mac, []):
+                candidate_vlan = candidate.get("vlan")
+                if vlan is not None and candidate_vlan is not None and vlan != candidate_vlan:
+                    continue
+                api_matches.append((candidate, mac, vlan))
+        # Deduplicate repeated LibreNMS rows without hiding true multi-switch
+        # ambiguity from old FDB evidence.
+        unique_api = {}
+        for candidate, mac, vlan in api_matches:
+            unique_api.setdefault(
+                (candidate["switch_ip"], candidate["ifindex"], mac, vlan),
+                (candidate, mac, vlan),
+            )
+        api_matches = list(unique_api.values())
+
+        if mode == "librenms":
+            if len(api_matches) == 1:
+                candidate, mac, vlan = api_matches[0]
+                selected = dict(candidate, mac=mac, vlan=vlan)
+                found.append(_server_edge_from_candidate(
+                    devices, server_ip, server_name, selected
+                ))
+            elif len(api_matches) > 1:
+                print(
+                    f"[WARN] server {server_name} ({server_ip}): LibreNMS FDB "
+                    "evidence is ambiguous; keeping prior topology",
+                    file=sys.stderr,
+                )
+            continue
+
+        validated = []
+        cached_switch = cached_switches.get(server_ip)
+        if cached_switch:
+            for mac, vlan in records:
+                candidate = exact_candidate(cached_switch, mac, vlan)
+                if candidate:
+                    validated.append(candidate)
+                    break
+        if validated:
+            print(
+                f"[INFO] server {server_name} ({server_ip}): cached FDB owner "
+                "verified; skipped candidate fan-out",
+                file=sys.stderr,
+            )
+        else:
+            for indexed, mac, vlan in api_matches:
+                if indexed["switch_ip"] == cached_switch:
+                    continue
+                candidate = exact_candidate(
+                    indexed["switch_ip"], mac, vlan, indexed=indexed
+                )
+                if candidate:
+                    validated.append(candidate)
+
+        if validated:
+            max_depth = max(candidate["depth"] for candidate in validated)
+            best = [item for item in validated if item["depth"] == max_depth]
+            owners = {(item["switch_ip"], item["ifindex"]) for item in best}
+            if len(owners) > 1:
+                print(
+                    f"[WARN] server {server_name} ({server_ip}): multiple exact "
+                    "FDB owners remain; keeping prior topology",
+                    file=sys.stderr,
+                )
+                continue
+            selected = best[0]
+            found.append(_server_edge_from_candidate(
+                devices, server_ip, server_name, selected
+            ))
+            print(
+                f"[INFO] server {server_name} ({server_ip}) attached to "
+                f"{selected['switch_ip']} {selected['port_name'] or selected['ifindex']}",
+                file=sys.stderr,
+            )
+            continue
+
+        fallback_servers[server_ip] = server_name
+
+    if fallback_servers:
+        stats["full_fallbacks"] += len(fallback_servers)
+        for server_ip, server_name in fallback_servers.items():
+            print(
+                f"[WARN] server {server_name} ({server_ip}): LibreNMS FDB "
+                "candidate unavailable; using full direct-SNMP fallback",
+                file=sys.stderr,
+            )
+        found.extend(discover_server_edges_direct(
+            devices, edges, fallback_servers, community, cached_edges
+        ))
     return found
 
 
@@ -2022,6 +2475,7 @@ def _run_collection():
     cycle_started = time.monotonic()
     reset_collection_stats()
     data_source = topology_data_source()
+    server_source = topology_server_attachment_source()
     community = os.environ.get("TOPOLOGY_SNMP_COMMUNITY", "").strip() or os.environ.get("SNMP_COMMUNITY", "global").strip()
     output_dir = os.environ.get("TOPOLOGY_OUTPUT_DIR", "/etc/prometheus/targets/topology")
 
@@ -2048,12 +2502,17 @@ def _run_collection():
         arp_device_ips.update(device_ips)
     print(
         f"[INFO] collecting topology on {len(device_ips)} device(s), "
-        f"source={data_source}; ARP only on {len(arp_device_ips)} L3 device(s)",
+        f"source={data_source}; server-attachment-source={server_source}; "
+        f"ARP only on {len(arp_device_ips)} L3 device(s)",
         file=sys.stderr,
     )
     librenms = None
     librenms_ready = False
-    if data_source != "direct-snmp":
+    needs_librenms = (
+        data_source != "direct-snmp"
+        or (bool(servers) and server_source != "direct-snmp")
+    )
+    if needs_librenms:
         librenms = LibreNMSClient()
         try:
             # One cached device inventory is shared by all per-device adapters.
@@ -2070,14 +2529,11 @@ def _run_collection():
     with ThreadPoolExecutor(max_workers=min(poll_workers, len(device_ips))) as executor:
         futures = {}
         for ip in device_ips:
-            # ARP is solely for server attachment.  With no configured server
-            # it has no consumer and must not spoil a zero-SNMP adjacency run.
-            collect_arp = bool(servers) and ip in arp_device_ips
             future = executor.submit(
                 collect_device_by_source,
                 ip,
                 community,
-                collect_arp,
+                False,
                 data_source,
                 librenms,
                 librenms_ready,
@@ -2124,6 +2580,17 @@ def _run_collection():
                     "(check LibreNMS discovery, 'lldp run'/'cdp run', and access)",
                     file=sys.stderr,
                 )
+
+    if librenms is None:
+        adjacency_api_requests = 0
+        server_api_start = 0
+    elif data_source == "direct-snmp":
+        adjacency_api_requests = 0
+        # Inventory belongs to the only API consumer in this configuration.
+        server_api_start = 0
+    else:
+        adjacency_api_requests = librenms.request_count
+        server_api_start = librenms.request_count
 
     source_summary = {"librenms": 0, "hybrid": 0, "direct-snmp": 0}
     for device in devices.values():
@@ -2172,6 +2639,23 @@ def _run_collection():
             "attachment(s) from the last topology snapshot",
             file=sys.stderr,
         )
+    collect_server_arp(
+        devices,
+        arp_device_ips,
+        servers,
+        community,
+        server_source,
+        client=librenms,
+        librenms_ready=librenms_ready,
+        cached_edges=cached_attachments,
+    )
+    fdb_candidates = None
+    fdb_status = {"usable_switches": 0, "failed_switches": 0}
+    if servers and server_source != "direct-snmp":
+        fdb_candidates, fdb_status = build_librenms_fdb_candidates(
+            devices, edges, librenms, librenms_ready
+        )
+    server_stats = {"full_fallbacks": 0}
     # Always run the exact ARP+FDB ownership lookup.  A weaker LLDP/CDP edge
     # involving the same address must not suppress authoritative discovery.
     fresh_server_edges = discover_server_edges(
@@ -2180,6 +2664,9 @@ def _run_collection():
         servers,
         community,
         cached_attachments,
+        source=server_source,
+        fdb_candidates=fdb_candidates,
+        server_stats=server_stats,
     )
     confirmed_server_edges = list(fresh_server_edges)
     confirmed_server_edges.extend(preserve_cached_server_edges(
@@ -2207,16 +2694,22 @@ def _run_collection():
     write_json_atomic(attachments_path, confirmed_server_edges, sort_keys=True)
 
     stats = collection_stats_snapshot()
-    api_requests = librenms.request_count if librenms is not None else 0
+    server_api_requests = (
+        librenms.request_count - server_api_start if librenms is not None else 0
+    )
     print(
-        f"[INFO] collection stats: api_requests={api_requests} "
+        f"[INFO] adjacency stats: api_requests={adjacency_api_requests} "
         f"snmp_walks={stats['direct_snmp_walks']} "
         f"snmp_gets={stats['direct_snmp_gets']}",
         file=sys.stderr,
     )
     print(
-        f"[INFO] server attachment SNMP: walks={stats['server_snmp_walks']} "
-        f"gets={stats['server_snmp_gets']}",
+        f"[INFO] server attachment stats: api_requests={server_api_requests} "
+        f"arp_snmp_walks={stats['server_snmp_walks']} "
+        f"fdb_snmp_gets={stats['server_snmp_gets']} "
+        f"full_fallbacks={server_stats['full_fallbacks']} "
+        f"fdb_switches={fdb_status['usable_switches']} "
+        f"fdb_failures={fdb_status['failed_switches']}",
         file=sys.stderr,
     )
 

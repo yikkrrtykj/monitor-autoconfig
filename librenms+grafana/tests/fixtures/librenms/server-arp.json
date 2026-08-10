@@ -1,0 +1,17 @@
+{
+  "status": "ok",
+  "arp": [
+    {
+      "port_id": "900",
+      "ipv4_address": "192.168.42.201",
+      "mac_address": "fc9d051ab541",
+      "vlan_id": "42"
+    },
+    {
+      "port_id": "900",
+      "ipv4_address": "192.168.42.202",
+      "mac_address": "001122aabbcc",
+      "vlan_id": "42"
+    }
+  ]
+}
