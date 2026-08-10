@@ -1,0 +1,19 @@
+{
+  "status": "ok",
+  "message": "",
+  "count": 2,
+  "mappings": [
+    {
+      "device_id": 2,
+      "port_id_high": 2001,
+      "port_id_low": 2002,
+      "ifStackStatus": "active"
+    },
+    {
+      "device_id": 2,
+      "port_id_high": 2001,
+      "port_id_low": 2003,
+      "ifStackStatus": "active"
+    }
+  ]
+}

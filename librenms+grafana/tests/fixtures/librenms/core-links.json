@@ -1,0 +1,19 @@
+{
+  "status": "ok",
+  "count": 1,
+  "links": [
+    {
+      "id": 10,
+      "local_port_id": "1001",
+      "local_device_id": "1",
+      "remote_port_id": 2001,
+      "active": 1,
+      "protocol": "lldp",
+      "remote_hostname": "Access-Stack",
+      "remote_device_id": 2,
+      "remote_port": "Port-channel11",
+      "remote_platform": "Cisco IOS",
+      "remote_version": "sanitized"
+    }
+  ]
+}

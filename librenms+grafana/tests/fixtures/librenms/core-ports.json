@@ -1,0 +1,33 @@
+{
+  "status": "ok",
+  "count": 3,
+  "ports": [
+    {
+      "port_id": "1001",
+      "device_id": "1",
+      "ifIndex": "400",
+      "ifName": "Po11",
+      "ifDescr": "Port-channel11",
+      "ifAlias": "Access stack uplink",
+      "ifOperStatus": "up"
+    },
+    {
+      "port_id": 1002,
+      "device_id": "1",
+      "ifIndex": 102,
+      "ifName": "Te1/0/2",
+      "ifDescr": "TenGigabitEthernet1/0/2",
+      "ifAlias": "Po11 member A",
+      "ifOperStatus": "up"
+    },
+    {
+      "port_id": 1003,
+      "device_id": "1",
+      "ifIndex": "202",
+      "ifName": "Te2/0/2",
+      "ifDescr": "TenGigabitEthernet2/0/2",
+      "ifAlias": "Po11 member B",
+      "ifOperStatus": 1
+    }
+  ]
+}

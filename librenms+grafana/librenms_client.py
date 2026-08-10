@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import threading
 import time
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -186,6 +187,10 @@ class LibreNMSClient:
         self._opener = urlrequest.urlopen
         self._sleep = time.sleep
         self._devices_cache: list[dict[str, Any]] | None = None
+        # Logical callers can compare this before/after a collection cycle to
+        # report the actual HTTP attempt count, including bounded retries.
+        self.request_count = 0
+        self._request_count_lock = threading.Lock()
 
     def _resolve_token(self, explicit_token: str | None) -> str:
         token = str(explicit_token or "").strip()
@@ -241,6 +246,8 @@ class LibreNMSClient:
         raw = b""
         for attempt in range(self.max_attempts):
             try:
+                with self._request_count_lock:
+                    self.request_count += 1
                 with self._opener(request, timeout=self.timeout) as response:
                     status_value = getattr(response, "status", None)
                     if status_value is None:

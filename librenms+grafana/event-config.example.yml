@@ -17,6 +17,13 @@ networks:
 snmp:
   community: global
 
+topology:
+  # hybrid: LibreNMS 优先并按设备/数据部分回退 SNMP。
+  # librenms: 只读 LibreNMS，用于诊断；direct-snmp: 完全使用旧采集路径。
+  data_source: hybrid
+  poll_max_age_seconds: 600
+  discovery_max_age_seconds: 28800
+
 devices:
   core:
     ip:

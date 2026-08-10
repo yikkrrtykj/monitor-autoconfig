@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
-Walk LLDP-MIB on every configured infrastructure device to build the real
-network adjacency graph, then emit artifacts for downstream:
+Collect LLDP/CDP adjacency for every configured infrastructure device to build
+the real network graph.  LibreNMS discovery data is preferred by default and
+direct SNMP remains the bounded per-device/per-component fallback.  Emit:
 
   edges.json              (consumed by the bigscreen /topology page)
   server-attachments.json (durable last-confirmed server/FDB locations)
 
 Env vars:
+  TOPOLOGY_DATA_SOURCE       hybrid (default), librenms, or direct-snmp.
+  TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS
+                             max explicit device last_polled age (default: 600).
+  TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS
+                             max explicit last_discovered age (default: 28800).
   TOPOLOGY_DEVICES           comma-separated device IPs to poll. Empty -> union of
                              CORE_SWITCH_PING + DIST_SWITCH_PING + FIREWALL_PING +
                              TOURNAMENT_SWITCHES + auto-discovered switches from
@@ -27,11 +33,13 @@ Env vars:
                              access switch and port when SNMP exposes both.
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from ipaddress import IPv4Address
 
@@ -47,6 +55,7 @@ from target_utils import (
     parse_named_ipv4_targets,
     write_json_atomic,
 )
+from librenms_client import LibreNMSClient, LibreNMSError, age_seconds
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
 IF_NAME_OID = "1.3.6.1.2.1.31.1.1.1.1"
@@ -76,6 +85,48 @@ DOT1Q_TP_FDB_PORT_OID = "1.3.6.1.2.1.17.7.1.2.2.1.2"
 DOT1D_TP_FDB_PORT_OID = "1.3.6.1.2.1.17.4.3.1.2"
 DOT1D_BASE_PORT_IFINDEX_OID = "1.3.6.1.2.1.17.1.4.1.2"
 
+TOPOLOGY_DATA_SOURCES = frozenset({"hybrid", "librenms", "direct-snmp"})
+DEFAULT_LIBRENMS_POLL_MAX_AGE_SECONDS = 600
+DEFAULT_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS = 8 * 60 * 60
+
+_collection_stats_lock = threading.Lock()
+_collection_stats = {
+    "direct_snmp_gets": 0,
+    "direct_snmp_walks": 0,
+    "server_snmp_gets": 0,
+    "server_snmp_walks": 0,
+}
+_snmp_context = threading.local()
+
+
+def reset_collection_stats():
+    with _collection_stats_lock:
+        for key in _collection_stats:
+            _collection_stats[key] = 0
+
+
+def collection_stats_snapshot():
+    with _collection_stats_lock:
+        return dict(_collection_stats)
+
+
+def _record_snmp_call(kind):
+    phase = getattr(_snmp_context, "phase", "topology")
+    prefix = "server" if phase == "server" else "direct"
+    key = f"{prefix}_snmp_{kind}"
+    with _collection_stats_lock:
+        _collection_stats[key] += 1
+
+
+@contextmanager
+def snmp_phase(phase):
+    previous = getattr(_snmp_context, "phase", "topology")
+    _snmp_context.phase = phase
+    try:
+        yield
+    finally:
+        _snmp_context.phase = previous
+
 
 def _snmp_limits(timeout=None, retries=None):
     timeout = float(timeout if timeout is not None else os.environ.get("TOPOLOGY_SNMP_TIMEOUT", "2"))
@@ -100,7 +151,90 @@ def _topology_poll_workers():
     return max(1, min(workers, 32))
 
 
+class TopologyDataIncomplete(RuntimeError):
+    """LibreNMS returned a valid response that cannot safely build topology."""
+
+
+def topology_data_source():
+    value = os.environ.get("TOPOLOGY_DATA_SOURCE", "hybrid").strip().lower()
+    if value in TOPOLOGY_DATA_SOURCES:
+        return value
+    print(
+        f"[WARN] unsupported TOPOLOGY_DATA_SOURCE={value!r}; using hybrid",
+        file=sys.stderr,
+    )
+    return "hybrid"
+
+
+def _env_nonnegative_seconds(name, default):
+    try:
+        value = int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(0, value)
+
+
+def topology_librenms_poll_max_age():
+    return _env_nonnegative_seconds(
+        "TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS",
+        DEFAULT_LIBRENMS_POLL_MAX_AGE_SECONDS,
+    )
+
+
+def topology_librenms_discovery_max_age():
+    return _env_nonnegative_seconds(
+        "TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS",
+        DEFAULT_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS,
+    )
+
+
+def librenms_freshness(timestamp, max_age, now=None):
+    """Return fresh/stale/unknown without treating absent metadata as stale."""
+    age = age_seconds(timestamp, now=now)
+    if age is None or age < 0:
+        return "unknown"
+    return "fresh" if age <= max_age else "stale"
+
+
+def _as_positive_int(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _if_oper_status_value(value):
+    if value is None or value == "":
+        return None
+    text = str(value).strip().lower()
+    named = {
+        "up": 1,
+        "down": 2,
+        "testing": 3,
+        "unknown": 4,
+        "dormant": 5,
+        "notpresent": 6,
+        "lowerlayerdown": 7,
+    }
+    name = text.split("(", 1)[0].strip().replace("-", "")
+    if name in named:
+        return named[name]
+    match = re.search(r"\b([1-7])\b", text)
+    return int(match.group(1)) if match else None
+
+
+def _link_is_inactive(link):
+    if "active" not in link or link.get("active") is None:
+        return False
+    value = link.get("active")
+    if isinstance(value, bool):
+        return not value
+    return str(value).strip().lower() in {"0", "false", "no", "inactive", "down"}
+
+
 def snmpwalk(host, community, oid, timeout=None, retries=None):
+    _record_snmp_call("walks")
     timeout, retries = _snmp_limits(timeout, retries)
     cmd = [
         "snmpwalk", "-v2c", "-c", community, "-O", "n",
@@ -113,13 +247,17 @@ def snmpwalk(host, community, oid, timeout=None, retries=None):
         )
         return result.stdout
     except Exception as exc:
-        print(f"[WARN] snmpwalk {host} {oid}: {exc}", file=sys.stderr)
+        print(
+            f"[WARN] snmpwalk {host} {oid} failed ({type(exc).__name__})",
+            file=sys.stderr,
+        )
         return ""
     finally:
         _snmp_request_delay()
 
 
 def snmpget(host, community, oid, timeout=None, retries=None):
+    _record_snmp_call("gets")
     timeout, retries = _snmp_limits(timeout, retries)
     cmd = [
         "snmpget", "-v2c", "-c", community, "-O", "qv",
@@ -132,7 +270,10 @@ def snmpget(host, community, oid, timeout=None, retries=None):
         )
         return result.stdout.strip().strip('"')
     except Exception as exc:
-        print(f"[WARN] snmpget {host} {oid}: {exc}", file=sys.stderr)
+        print(
+            f"[WARN] snmpget {host} {oid} failed ({type(exc).__name__})",
+            file=sys.stderr,
+        )
         return ""
     finally:
         _snmp_request_delay()
@@ -624,12 +765,36 @@ def expand_device_entry(entry):
     return targets
 
 
-def poll_device(ip, community, collect_arp=True):
-    started = time.monotonic()
-    sysname = snmpget(ip, community, SYS_NAME_OID)
-    ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
-    ifoper = parse_if_oper_status(snmpwalk(ip, community, IF_OPER_STATUS_OID))
-    ifstack = parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID))
+def _empty_device(ip):
+    return {
+        "ip": ip,
+        "device_id": None,
+        "sysname": "",
+        "ifname": {},
+        "ifoper": {},
+        "ifstack": {},
+        "port_by_id": {},
+        "arp": {},
+        "neighbors": [],
+        "loc_port_desc": {},
+        "rem_sys": {},
+        "rem_port_desc": {},
+        "rem_port_id": {},
+        "cdp_device_id": {},
+        "cdp_device_port": {},
+        "cdp_address": {},
+        "source": {"ports": "unavailable", "links": "unavailable", "lag": "unavailable"},
+        "freshness": {"poll": "unknown", "discovery": "unknown"},
+        "poll_seconds": 0,
+    }
+
+
+def poll_snmp_lag(ip, community, ifname, ifoper, initial=None):
+    """Collect only aggregate membership, preserving all existing fallbacks."""
+    ifstack = merge_aggregate_member_maps(
+        initial or {},
+        parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID)),
+    )
     if incomplete_active_aggregate_ifindexes(ifname, ifoper, ifstack):
         ifstack = merge_aggregate_member_maps(
             ifstack,
@@ -644,32 +809,276 @@ def poll_device(ip, community, collect_arp=True):
                 snmpwalk(ip, community, DOT3AD_ATTACHED_AGG_ID_OID)
             ),
         )
-    arp = parse_arp_table(
-        snmpwalk(ip, community, IP_NET_TO_MEDIA_PHYS_ADDRESS_OID), ifname
-    ) if collect_arp else {}
-    loc_port_desc = parse_lldp_loc_port_desc(snmpwalk(ip, community, LLDP_LOC_PORT_DESC_OID))
-    rem_sys = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_SYS_NAME_OID))
-    rem_port_desc = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_PORT_DESC_OID))
-    rem_port_id = parse_lldp_rem_field(snmpwalk(ip, community, LLDP_REM_PORT_ID_OID))
-    cdp_device_id = parse_cdp_field(snmpwalk(ip, community, CDP_CACHE_DEVICE_ID_OID))
-    cdp_device_port = parse_cdp_field(snmpwalk(ip, community, CDP_CACHE_DEVICE_PORT_OID))
-    cdp_address = parse_cdp_address(snmpwalk(ip, community, CDP_CACHE_ADDRESS_OID))
+    return ifstack
+
+
+def poll_snmp_neighbors(ip, community):
+    """Collect LLDP and CDP tables without repeating IF-MIB port walks."""
     return {
-        "ip": ip,
+        "loc_port_desc": parse_lldp_loc_port_desc(
+            snmpwalk(ip, community, LLDP_LOC_PORT_DESC_OID)
+        ),
+        "rem_sys": parse_lldp_rem_field(
+            snmpwalk(ip, community, LLDP_REM_SYS_NAME_OID)
+        ),
+        "rem_port_desc": parse_lldp_rem_field(
+            snmpwalk(ip, community, LLDP_REM_PORT_DESC_OID)
+        ),
+        "rem_port_id": parse_lldp_rem_field(
+            snmpwalk(ip, community, LLDP_REM_PORT_ID_OID)
+        ),
+        "cdp_device_id": parse_cdp_field(
+            snmpwalk(ip, community, CDP_CACHE_DEVICE_ID_OID)
+        ),
+        "cdp_device_port": parse_cdp_field(
+            snmpwalk(ip, community, CDP_CACHE_DEVICE_PORT_OID)
+        ),
+        "cdp_address": parse_cdp_address(
+            snmpwalk(ip, community, CDP_CACHE_ADDRESS_OID)
+        ),
+    }
+
+
+def poll_snmp_arp(ip, community, ifname):
+    """Keep server attachment ARP collection separate from adjacency stats."""
+    with snmp_phase("server"):
+        output = snmpwalk(ip, community, IP_NET_TO_MEDIA_PHYS_ADDRESS_OID)
+    return parse_arp_table(output, ifname)
+
+
+def poll_device_snmp(ip, community, collect_arp=True):
+    """Original direct-SNMP collector, split only into composable stages."""
+    started = time.monotonic()
+    sysname = snmpget(ip, community, SYS_NAME_OID)
+    ifname = parse_ifname(snmpwalk(ip, community, IF_NAME_OID))
+    ifoper = parse_if_oper_status(snmpwalk(ip, community, IF_OPER_STATUS_OID))
+    ifstack = poll_snmp_lag(ip, community, ifname, ifoper)
+    arp = poll_snmp_arp(ip, community, ifname) if collect_arp else {}
+    device = _empty_device(ip)
+    device.update({
         "sysname": sysname,
         "ifname": ifname,
         "ifoper": ifoper,
         "ifstack": ifstack,
         "arp": arp,
-        "loc_port_desc": loc_port_desc,
-        "rem_sys": rem_sys,
-        "rem_port_desc": rem_port_desc,
-        "rem_port_id": rem_port_id,
-        "cdp_device_id": cdp_device_id,
-        "cdp_device_port": cdp_device_port,
-        "cdp_address": cdp_address,
+        "source": {
+            "ports": "direct-snmp",
+            "links": "direct-snmp",
+            "lag": "direct-snmp",
+        },
         "poll_seconds": round(time.monotonic() - started, 3),
-    }
+    })
+    device.update(poll_snmp_neighbors(ip, community))
+    return device
+
+
+def poll_device(ip, community, collect_arp=True):
+    """Backward-compatible name for the direct collector used by old callers."""
+    return poll_device_snmp(ip, community, collect_arp=collect_arp)
+
+
+def _librenms_ports(client, device):
+    columns = "port_id,device_id,ifIndex,ifName,ifDescr,ifAlias,ifOperStatus"
+    records = client.get_device_ports(device, columns=columns)
+    ifname = {}
+    ifoper = {}
+    port_by_id = {}
+    for record in records:
+        port_id = record.get("port_id")
+        ifindex = _as_positive_int(record.get("ifIndex"))
+        if port_id not in (None, ""):
+            port_by_id[str(port_id)] = dict(record)
+        if ifindex is None:
+            continue
+        name = str(
+            record.get("ifName") or record.get("ifDescr") or ""
+        ).strip()
+        if name:
+            ifname[ifindex] = name
+        status = _if_oper_status_value(record.get("ifOperStatus"))
+        if status is not None:
+            ifoper[ifindex] = status
+    if not ifname:
+        raise TopologyDataIncomplete("LibreNMS ports have no usable ifIndex mapping")
+    return records, port_by_id, ifname, ifoper
+
+
+def _librenms_neighbors(client, device, port_by_id):
+    links = client.get_device_links(device)
+    if not links:
+        raise TopologyDataIncomplete("LibreNMS links are empty")
+    neighbors = []
+    for link in links:
+        if _link_is_inactive(link):
+            continue
+        local = port_by_id.get(str(link.get("local_port_id")))
+        local_ifindex = _as_positive_int((local or {}).get("ifIndex"))
+        if local_ifindex is None:
+            raise TopologyDataIncomplete(
+                "LibreNMS link local_port_id cannot be mapped to ifIndex"
+            )
+        neighbors.append({
+            "protocol": str(link.get("protocol") or "xdp").strip().lower(),
+            "active": link.get("active"),
+            "local_ifindex": local_ifindex,
+            "local_port": str(
+                (local or {}).get("ifName") or (local or {}).get("ifDescr") or ""
+            ).strip(),
+            "neighbor_name": str(link.get("remote_hostname") or "").strip(),
+            "neighbor_device_id": link.get("remote_device_id"),
+            "neighbor_port_id": link.get("remote_port_id"),
+            "neighbor_port": str(link.get("remote_port") or "").strip(),
+        })
+    return neighbors
+
+
+def _librenms_ifstack(client, device, port_by_id):
+    mappings = client.get_device_port_stack(device, valid_mappings=True)
+    ifstack = {}
+    for mapping in mappings:
+        status = mapping.get("ifStackStatus")
+        if status not in (None, "") and str(status).strip().lower() not in {
+            "1", "active", "up"
+        }:
+            continue
+        high = port_by_id.get(str(mapping.get("port_id_high")))
+        low = port_by_id.get(str(mapping.get("port_id_low")))
+        high_ifindex = _as_positive_int((high or {}).get("ifIndex"))
+        low_ifindex = _as_positive_int((low or {}).get("ifIndex"))
+        if high_ifindex is None or low_ifindex is None or high_ifindex == low_ifindex:
+            continue
+        bucket = ifstack.setdefault(high_ifindex, [])
+        if low_ifindex not in bucket:
+            bucket.append(low_ifindex)
+    return ifstack
+
+
+def _log_librenms_fallback(ip, component, exc):
+    print(
+        f"[WARN] {ip}: LibreNMS {component} unavailable "
+        f"({type(exc).__name__}); applying configured fallback",
+        file=sys.stderr,
+    )
+
+
+def poll_device_librenms(ip, community, client, collect_arp=True, mode="hybrid"):
+    """Collect one device with per-component LibreNMS/SNMP fallback."""
+    started = time.monotonic()
+    try:
+        metadata = client.resolve_device(ip)
+    except LibreNMSError as exc:
+        _log_librenms_fallback(ip, "device", exc)
+        if mode == "hybrid":
+            return poll_device_snmp(ip, community, collect_arp=collect_arp)
+        failed = _empty_device(ip)
+        failed["poll_seconds"] = round(time.monotonic() - started, 3)
+        return failed
+
+    poll_freshness = librenms_freshness(
+        metadata.get("last_polled"), topology_librenms_poll_max_age()
+    )
+    discovery_freshness = librenms_freshness(
+        metadata.get("last_discovered"), topology_librenms_discovery_max_age()
+    )
+    if poll_freshness == "stale":
+        exc = TopologyDataIncomplete("LibreNMS poll data is stale")
+        _log_librenms_fallback(ip, "ports", exc)
+        if mode == "hybrid":
+            return poll_device_snmp(ip, community, collect_arp=collect_arp)
+        failed = _empty_device(ip)
+        failed.update({
+            "device_id": metadata.get("device_id"),
+            "sysname": metadata.get("sysName") or metadata.get("hostname") or "",
+            "freshness": {"poll": poll_freshness, "discovery": discovery_freshness},
+            "poll_seconds": round(time.monotonic() - started, 3),
+        })
+        return failed
+
+    try:
+        _records, port_by_id, ifname, ifoper = _librenms_ports(client, metadata)
+    except (LibreNMSError, TopologyDataIncomplete) as exc:
+        _log_librenms_fallback(ip, "ports", exc)
+        if mode == "hybrid":
+            return poll_device_snmp(ip, community, collect_arp=collect_arp)
+        failed = _empty_device(ip)
+        failed.update({
+            "device_id": metadata.get("device_id"),
+            "sysname": metadata.get("sysName") or metadata.get("hostname") or "",
+            "freshness": {"poll": poll_freshness, "discovery": discovery_freshness},
+            "poll_seconds": round(time.monotonic() - started, 3),
+        })
+        return failed
+
+    result = _empty_device(ip)
+    result.update({
+        "device_id": metadata.get("device_id"),
+        "sysname": metadata.get("sysName") or metadata.get("hostname") or ip,
+        "ifname": ifname,
+        "ifoper": ifoper,
+        "port_by_id": port_by_id,
+        "freshness": {"poll": poll_freshness, "discovery": discovery_freshness},
+        "source": {"ports": "librenms", "links": "librenms", "lag": "librenms"},
+    })
+    if collect_arp:
+        result["arp"] = poll_snmp_arp(ip, community, ifname)
+
+    if discovery_freshness == "stale":
+        if mode == "hybrid":
+            result.update(poll_snmp_neighbors(ip, community))
+            result["ifstack"] = poll_snmp_lag(ip, community, ifname, ifoper)
+            result["source"].update({"links": "direct-snmp", "lag": "direct-snmp"})
+        else:
+            result["source"].update({"links": "unavailable", "lag": "unavailable"})
+        result["poll_seconds"] = round(time.monotonic() - started, 3)
+        return result
+
+    try:
+        result["neighbors"] = _librenms_neighbors(client, metadata, port_by_id)
+    except (LibreNMSError, TopologyDataIncomplete) as exc:
+        _log_librenms_fallback(ip, "links", exc)
+        if mode == "hybrid":
+            result.update(poll_snmp_neighbors(ip, community))
+            result["source"]["links"] = "direct-snmp"
+        else:
+            result["source"]["links"] = "unavailable"
+
+    try:
+        result["ifstack"] = _librenms_ifstack(client, metadata, port_by_id)
+    except LibreNMSError as exc:
+        _log_librenms_fallback(ip, "port_stack", exc)
+        if mode == "hybrid":
+            result["ifstack"] = poll_snmp_lag(ip, community, ifname, ifoper)
+            result["source"]["lag"] = "direct-snmp"
+        else:
+            result["source"]["lag"] = "unavailable"
+    else:
+        if incomplete_active_aggregate_ifindexes(ifname, ifoper, result["ifstack"]):
+            if mode == "hybrid":
+                result["ifstack"] = poll_snmp_lag(
+                    ip, community, ifname, ifoper, initial=result["ifstack"]
+                )
+                result["source"]["lag"] = "hybrid"
+            else:
+                result["source"]["lag"] = "incomplete"
+
+    result["poll_seconds"] = round(time.monotonic() - started, 3)
+    return result
+
+
+def collect_device_by_source(ip, community, collect_arp, mode, client=None,
+                             librenms_ready=False):
+    """Select one device's collector without introducing a global fallback."""
+    if mode == "direct-snmp" or (mode == "hybrid" and not librenms_ready):
+        return poll_device_snmp(ip, community, collect_arp=collect_arp)
+    if mode == "librenms" and not librenms_ready:
+        return _empty_device(ip)
+    return poll_device_librenms(
+        ip,
+        community,
+        client,
+        collect_arp=collect_arp,
+        mode=mode,
+    )
 
 
 def build_name_index(devices):
@@ -684,6 +1093,16 @@ def build_name_index(devices):
             index.setdefault(full, device["ip"])
         if base:
             index.setdefault(base, device["ip"])
+    return index
+
+
+def build_device_id_index(devices):
+    """Map LibreNMS device_id values without ever treating them as IP/ifIndex."""
+    index = {}
+    for ip, device in devices.items():
+        device_id = device.get("device_id")
+        if device_id not in (None, ""):
+            index.setdefault(str(device_id), ip)
     return index
 
 
@@ -826,6 +1245,7 @@ def enrich_aggregate_members(edges, devices):
 def build_edges(devices, name_index):
     edges_by_key = {}
     placeholder_neighbors = []
+    device_id_index = build_device_id_index(devices)
 
     def interface_is_usable(device, ifindex):
         if ifindex is None:
@@ -929,6 +1349,80 @@ def build_edges(devices, name_index):
                 "to_ifindex": remote_ifindex,
             })
 
+        # --- Unified LibreNMS xDP neighbors.  local_port_id/remote_port_id
+        # were resolved through each device's port table by the adapter; they
+        # are never interpreted as IF-MIB ifIndex values directly. ---
+        for neighbor in device.get("neighbors", []):
+            if _link_is_inactive(neighbor):
+                continue
+            neighbor_name = str(neighbor.get("neighbor_name") or "").strip()
+            neighbor_device_id = neighbor.get("neighbor_device_id")
+            neighbor_ip = None
+            if neighbor_device_id not in (None, ""):
+                neighbor_ip = device_id_index.get(str(neighbor_device_id))
+            if neighbor_ip is None:
+                neighbor_ip = name_index.get(neighbor_name.lower()) or \
+                              name_index.get(normalize_hostname(neighbor_name))
+            if neighbor_ip is None:
+                neighbor_ip = configured_core_neighbor_ip(devices, neighbor_name)
+
+            local_ifindex = _as_positive_int(neighbor.get("local_ifindex"))
+            local_port_name = str(neighbor.get("local_port") or "").strip()
+            if local_ifindex is None and local_port_name:
+                local_ifindex = resolve_ifindex_by_name(
+                    local_port_name, device.get("ifname", {})
+                )
+            if local_ifindex is not None:
+                local_port_name = device.get("ifname", {}).get(
+                    local_ifindex, local_port_name
+                )
+
+            remote_port_name = str(neighbor.get("neighbor_port") or "").strip()
+            remote_ifindex = None
+            remote = devices.get(neighbor_ip) if neighbor_ip else None
+            remote_port_id = neighbor.get("neighbor_port_id")
+            if remote and remote_port_id not in (None, ""):
+                remote_record = remote.get("port_by_id", {}).get(str(remote_port_id))
+                remote_ifindex = _as_positive_int(
+                    (remote_record or {}).get("ifIndex")
+                )
+                if remote_ifindex is not None:
+                    remote_port_name = remote.get("ifname", {}).get(
+                        remote_ifindex,
+                        (remote_record or {}).get("ifName") or remote_port_name,
+                    )
+            if remote and remote_ifindex is None and remote_port_name:
+                remote_ifindex = resolve_ifindex_by_name(
+                    remote_port_name, remote.get("ifname", {})
+                )
+                if remote_ifindex is not None:
+                    remote_port_name = remote.get("ifname", {}).get(
+                        remote_ifindex, remote_port_name
+                    )
+
+            if neighbor_ip is None:
+                placeholder_neighbors.append({
+                    "from_ip": ip,
+                    "from_port": local_port_name,
+                    "neighbor_name": neighbor_name,
+                    "neighbor_port": remote_port_name,
+                })
+                continue
+            if not interface_is_usable(device, local_ifindex):
+                continue
+            if remote and not interface_is_usable(remote, remote_ifindex):
+                continue
+            merge_edge(edges_by_key, {
+                "from_ip": ip,
+                "from_sysname": device.get("sysname"),
+                "from_port": local_port_name,
+                "from_ifindex": local_ifindex,
+                "to_ip": neighbor_ip,
+                "to_sysname": neighbor_name,
+                "to_port": remote_port_name,
+                "to_ifindex": remote_ifindex,
+            })
+
     edges = resolve_endpoint_conflicts(list(edges_by_key.values()))
     return enrich_aggregate_members(edges, devices), placeholder_neighbors
 
@@ -964,6 +1458,11 @@ def _graph_depths(edges, root_ips):
     return depths
 
 
+def _server_snmpget(ip, community, oid):
+    with snmp_phase("server"):
+        return snmpget(ip, community, oid)
+
+
 def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
     """Resolve one MAC to a switch ifIndex using exact Q-BRIDGE/BRIDGE GETs."""
     suffix = mac_oid_suffix(mac)
@@ -979,7 +1478,7 @@ def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
         lookups.append((community, f"{DOT1D_TP_FDB_PORT_OID}.{suffix}"))
 
     for query_community, oid in lookups:
-        bridge_port = _positive_int(snmpget(ip, query_community, oid))
+        bridge_port = _positive_int(_server_snmpget(ip, query_community, oid))
         if bridge_port is None:
             continue
         # dot1dTpFdbPort/dot1qTpFdbPort returns a BRIDGE-MIB base-port number,
@@ -987,7 +1486,7 @@ def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
         # old direct-number shortcut mapped bridge port 5 to ifIndex 5 on the
         # C9200L, which happens to be VLAN-1002 rather than a physical port.
         for mapping_community in dict.fromkeys((query_community, community)):
-            ifindex = _positive_int(snmpget(
+            ifindex = _positive_int(_server_snmpget(
                 ip,
                 mapping_community,
                 f"{DOT1D_BASE_PORT_IFINDEX_OID}.{bridge_port}",
@@ -1105,7 +1604,11 @@ def discover_server_edges(devices, edges, servers, community, cached_edges=None)
                     try:
                         ifindex = future.result()
                     except Exception as exc:
-                        print(f"[WARN] FDB lookup {switch_ip} {server_ip}: {exc}", file=sys.stderr)
+                        print(
+                            f"[WARN] FDB lookup {switch_ip} {server_ip} failed "
+                            f"({type(exc).__name__})",
+                            file=sys.stderr,
+                        )
                         continue
                     if ifindex is None:
                         continue
@@ -1517,6 +2020,8 @@ def replace_server_edges(edges, confirmed_edges, servers):
 
 def _run_collection():
     cycle_started = time.monotonic()
+    reset_collection_stats()
+    data_source = topology_data_source()
     community = os.environ.get("TOPOLOGY_SNMP_COMMUNITY", "").strip() or os.environ.get("SNMP_COMMUNITY", "global").strip()
     output_dir = os.environ.get("TOPOLOGY_OUTPUT_DIR", "/etc/prometheus/targets/topology")
 
@@ -1529,6 +2034,8 @@ def _run_collection():
         )
         return 0
 
+    servers = parse_named_ipv4_targets(os.environ.get("SERVER_PING", ""))
+
     arp_raw = os.environ.get("TOPOLOGY_ARP_DEVICES", "").strip()
     arp_device_ips = set()
     if arp_raw:
@@ -1540,40 +2047,101 @@ def _run_collection():
     if not arp_device_ips:
         arp_device_ips.update(device_ips)
     print(
-        f"[INFO] polling LLDP+CDP on {len(device_ips)} device(s); "
-        f"ARP only on {len(arp_device_ips)} L3 device(s)",
+        f"[INFO] collecting topology on {len(device_ips)} device(s), "
+        f"source={data_source}; ARP only on {len(arp_device_ips)} L3 device(s)",
         file=sys.stderr,
     )
+    librenms = None
+    librenms_ready = False
+    if data_source != "direct-snmp":
+        librenms = LibreNMSClient()
+        try:
+            # One cached device inventory is shared by all per-device adapters.
+            librenms.list_devices()
+            librenms_ready = True
+        except LibreNMSError as exc:
+            print(
+                f"[WARN] LibreNMS device inventory unavailable "
+                f"({type(exc).__name__}); applying {data_source} policy",
+                file=sys.stderr,
+            )
     devices = {}
     poll_workers = _topology_poll_workers()
     with ThreadPoolExecutor(max_workers=min(poll_workers, len(device_ips))) as executor:
-        futures = {
-            executor.submit(poll_device, ip, community, ip in arp_device_ips): ip
-            for ip in device_ips
-        }
+        futures = {}
+        for ip in device_ips:
+            # ARP is solely for server attachment.  With no configured server
+            # it has no consumer and must not spoil a zero-SNMP adjacency run.
+            collect_arp = bool(servers) and ip in arp_device_ips
+            future = executor.submit(
+                collect_device_by_source,
+                ip,
+                community,
+                collect_arp,
+                data_source,
+                librenms,
+                librenms_ready,
+            )
+            futures[future] = ip
         for future in as_completed(futures):
             ip = futures[future]
             try:
                 result = future.result()
             except Exception as exc:
-                print(f"[WARN] poll {ip} failed: {exc}", file=sys.stderr)
+                print(
+                    f"[WARN] poll {ip} failed ({type(exc).__name__})",
+                    file=sys.stderr,
+                )
                 continue
             devices[ip] = result
-            lldp_n = len(result.get("rem_sys", {}))
-            cdp_n = len(result.get("cdp_device_id", {}))
+            unified = result.get("neighbors", [])
+            lldp_n = len(result.get("rem_sys", {})) + sum(
+                1 for item in unified if item.get("protocol") == "lldp"
+            )
+            cdp_n = len(result.get("cdp_device_id", {})) + sum(
+                1 for item in unified if item.get("protocol") == "cdp"
+            )
             poll_seconds = float(result.get("poll_seconds", 0))
+            source = result.get("source", {})
+            freshness = result.get("freshness", {})
+            print(
+                f"[INFO] {ip} ports={source.get('ports', 'unknown')} "
+                f"links={source.get('links', 'unknown')} "
+                f"lag={source.get('lag', 'unknown')} "
+                f"freshness=poll:{freshness.get('poll', 'unknown')},"
+                f"discovery:{freshness.get('discovery', 'unknown')}",
+                file=sys.stderr,
+            )
             if lldp_n or cdp_n:
                 print(
                     f"[INFO] {ip}: sysname='{result['sysname']}' neighbors "
-                    f"lldp={lldp_n} cdp={cdp_n} snmp={poll_seconds:.1f}s",
+                    f"lldp={lldp_n} cdp={cdp_n} collection={poll_seconds:.1f}s",
                     file=sys.stderr,
                 )
             else:
                 print(
-                    f"[WARN] {ip}: no LLDP/CDP neighbors, snmp={poll_seconds:.1f}s "
-                    "(check 'lldp run' or 'cdp run' and SNMP access)",
+                    f"[WARN] {ip}: no LLDP/CDP neighbors, collection={poll_seconds:.1f}s "
+                    "(check LibreNMS discovery, 'lldp run'/'cdp run', and access)",
                     file=sys.stderr,
                 )
+
+    source_summary = {"librenms": 0, "hybrid": 0, "direct-snmp": 0}
+    for device in devices.values():
+        sources = set((device.get("source") or {}).values())
+        if sources == {"librenms"}:
+            bucket = "librenms"
+        elif sources == {"direct-snmp"}:
+            bucket = "direct-snmp"
+        else:
+            bucket = "librenms" if data_source == "librenms" else "hybrid"
+        source_summary[bucket] += 1
+    print(
+        "[INFO] source summary: "
+        f"librenms={source_summary['librenms']} "
+        f"hybrid={source_summary['hybrid']} "
+        f"direct-snmp={source_summary['direct-snmp']}",
+        file=sys.stderr,
+    )
 
     edges_path = os.path.join(output_dir, "edges.json")
     attachments_path = os.path.join(output_dir, "server-attachments.json")
@@ -1583,7 +2151,6 @@ def _run_collection():
     # SNMP cycle; it must not be the only memory of physical server ownership.
     name_index = build_name_index(devices)
     edges, placeholders = build_edges(devices, name_index)
-    servers = parse_named_ipv4_targets(os.environ.get("SERVER_PING", ""))
     loaded_attachments = load_cached_edges(attachments_path)
     cached_attachments = merge_cached_server_ledgers(
         loaded_attachments,
@@ -1638,6 +2205,20 @@ def _run_collection():
     ) + server_edges
     write_json_atomic(edges_path, edges, sort_keys=True)
     write_json_atomic(attachments_path, confirmed_server_edges, sort_keys=True)
+
+    stats = collection_stats_snapshot()
+    api_requests = librenms.request_count if librenms is not None else 0
+    print(
+        f"[INFO] collection stats: api_requests={api_requests} "
+        f"snmp_walks={stats['direct_snmp_walks']} "
+        f"snmp_gets={stats['direct_snmp_gets']}",
+        file=sys.stderr,
+    )
+    print(
+        f"[INFO] server attachment SNMP: walks={stats['server_snmp_walks']} "
+        f"gets={stats['server_snmp_gets']}",
+        file=sys.stderr,
+    )
 
     print(
         f"[INFO] wrote {len(edges)} edge(s), "

@@ -255,6 +255,7 @@ def test_retry_budget_is_finite():
         client.get_json("/api/v0/devices")
 
     assert len(calls) == 3
+    assert client.request_count == 3
 
 
 def test_list_devices_normalizes_required_identity_fields():

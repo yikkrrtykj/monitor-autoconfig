@@ -419,7 +419,7 @@ TEAM_ORDER_LAYOUTS = {
 
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     config = dict(config) if isinstance(config, dict) else {}
-    for section in ("event", "networks", "devices", "isp", "unifi", "alerts", "security", "snmp"):
+    for section in ("event", "networks", "devices", "isp", "unifi", "alerts", "security", "snmp", "topology"):
         value = config.get(section)
         config[section] = dict(value) if isinstance(value, dict) else {}
     event = config["event"]
@@ -453,7 +453,7 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     def add(level: str, path: str, message: str) -> None:
         issues.append({"level": level, "path": path, "message": message})
 
-    for section in ("event", "networks", "devices", "isp", "unifi", "alerts", "security", "snmp"):
+    for section in ("event", "networks", "devices", "isp", "unifi", "alerts", "security", "snmp", "topology"):
         if section in config and not isinstance(config.get(section), dict):
             add("bad", section, f"{section} 必须是对象")
     raw_event = config.get("event") if isinstance(config.get("event"), dict) else {}
@@ -469,6 +469,19 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     raw_isp = config.get("isp") if isinstance(config.get("isp"), dict) else {}
     if "links" in raw_isp and not isinstance(raw_isp.get("links"), list):
         add("bad", "isp.links", "isp.links 必须是列表")
+    raw_topology = config.get("topology") if isinstance(config.get("topology"), dict) else {}
+    topology_source = str(raw_topology.get("data_source") or "hybrid").strip().lower()
+    if topology_source not in ("hybrid", "librenms", "direct-snmp"):
+        add("bad", "topology.data_source", "拓扑数据源必须是 hybrid、librenms 或 direct-snmp")
+    for key, label in (
+        ("poll_max_age_seconds", "拓扑 poll 数据最大年龄"),
+        ("discovery_max_age_seconds", "拓扑 discovery 数据最大年龄"),
+    ):
+        if key not in raw_topology or raw_topology.get(key) in (None, ""):
+            continue
+        value = raw_topology.get(key)
+        if type(value) is not int or value < 0:
+            add("bad", f"topology.{key}", f"{label}必须是非负整数秒")
 
     config = normalize_config(config)
     devices = config["devices"]
@@ -685,6 +698,7 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     alerts = config["alerts"]
     security = config["security"]
     snmp = config["snmp"]
+    topology = config["topology"]
 
     core = devices.get("core") or {}
     core_ip = str(core.get("ip") or "").strip()
@@ -727,12 +741,30 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     # On a Cisco core the player L3 gateway is the core switch itself, so default
     # the gateway and LibreNMS core hint to the core IP when not set explicitly.
     player_gateways = csv(networks.get("player_gateways")) or core_ip
+    topology_source = topology.get("data_source") or existing.get(
+        "TOPOLOGY_DATA_SOURCE", "hybrid"
+    )
+    topology_poll_max_age = (
+        topology.get("poll_max_age_seconds")
+        if topology.get("poll_max_age_seconds") not in (None, "")
+        else existing.get("TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS", "600")
+    )
+    topology_discovery_max_age = (
+        topology.get("discovery_max_age_seconds")
+        if topology.get("discovery_max_age_seconds") not in (None, "")
+        else existing.get(
+            "TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS", "28800"
+        )
+    )
 
     env = {
         "EVENT_NAME": event.get("name", ""),
         "BIGSCREEN_DEFAULT_LAYOUT": event.get("default_layout", "tournament-64-2layer"),
         "BIGSCREEN_TEAM_ORDERS": json.dumps(event.get("team_orders") or {}, ensure_ascii=False, separators=(",", ":")),
         "SNMP_COMMUNITY": snmp_community,
+        "TOPOLOGY_DATA_SOURCE": topology_source,
+        "TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS": topology_poll_max_age,
+        "TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS": topology_discovery_max_age,
         "FIREWALL_SNMP_COMMUNITY": snmp.get("firewall_community") or snmp_community,
         "CORE_SWITCH_PING": core_ping,
         "DIST_SWITCH_PING": dist_ping,

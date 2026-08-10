@@ -1,0 +1,22 @@
+{
+  "status": "ok",
+  "count": 2,
+  "devices": [
+    {
+      "device_id": "1",
+      "hostname": "192.168.10.254",
+      "ip": "192.168.10.254",
+      "sysName": "Core",
+      "last_polled": null,
+      "last_discovered": null
+    },
+    {
+      "device_id": 2,
+      "hostname": "192.168.10.45",
+      "ip": "192.168.10.45",
+      "sysName": "Access-Stack",
+      "last_polled": null,
+      "last_discovered": null
+    }
+  ]
+}

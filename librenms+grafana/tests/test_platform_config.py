@@ -70,6 +70,63 @@ def test_parse_validate_render_env():
     assert env["GRAFANA_ANONYMOUS_ENABLED"] == "false"
 
 
+def test_topology_source_and_independent_freshness_limits_render():
+    config = platform_config.parse_simple_yaml("""
+topology:
+  data_source: librenms
+  poll_max_age_seconds: 300
+  discovery_max_age_seconds: 14400
+devices:
+  core:
+    ip: 192.168.10.254
+""")
+    assert not [
+        issue for issue in platform_config.validate_config(config)
+        if issue["level"] == "bad"
+    ]
+    env = platform_config.render_env(config)
+    assert env["TOPOLOGY_DATA_SOURCE"] == "librenms"
+    assert env["TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS"] == "300"
+    assert env["TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS"] == "14400"
+
+
+def test_legacy_event_config_preserves_existing_topology_env():
+    env = platform_config.render_env({}, {
+        "TOPOLOGY_DATA_SOURCE": "direct-snmp",
+        "TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS": "900",
+        "TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS": "43200",
+    })
+    assert env["TOPOLOGY_DATA_SOURCE"] == "direct-snmp"
+    assert env["TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS"] == "900"
+    assert env["TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS"] == "43200"
+
+
+def test_invalid_topology_source_and_age_are_rejected():
+    issues = platform_config.validate_config({
+        "topology": {
+            "data_source": "automatic",
+            "poll_max_age_seconds": -1,
+            "discovery_max_age_seconds": "eight-hours",
+        },
+    })
+    paths = {issue["path"] for issue in issues if issue["level"] == "bad"}
+    assert paths >= {
+        "topology.data_source",
+        "topology.poll_max_age_seconds",
+        "topology.discovery_max_age_seconds",
+    }
+
+
+def test_event_config_example_renders_topology_defaults():
+    config = platform_config.parse_simple_yaml(
+        (ROOT / "event-config.example.yml").read_text(encoding="utf-8")
+    )
+    env = platform_config.render_env(config)
+    assert env["TOPOLOGY_DATA_SOURCE"] == "hybrid"
+    assert env["TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS"] == "600"
+    assert env["TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS"] == "28800"
+
+
 def test_team_order_renders_for_bigscreen_and_requires_all_teams_once():
     config = platform_config.parse_simple_yaml("""
 event:

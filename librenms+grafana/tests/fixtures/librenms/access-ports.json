@@ -1,0 +1,33 @@
+{
+  "status": "ok",
+  "count": 3,
+  "ports": [
+    {
+      "port_id": 2001,
+      "device_id": 2,
+      "ifIndex": 500,
+      "ifName": "Po11",
+      "ifDescr": "Port-channel11",
+      "ifAlias": "Core uplink",
+      "ifOperStatus": "up"
+    },
+    {
+      "port_id": "2002",
+      "device_id": 2,
+      "ifIndex": "24",
+      "ifName": "Gi1/0/24",
+      "ifDescr": "GigabitEthernet1/0/24",
+      "ifAlias": "Stack member 1 uplink",
+      "ifOperStatus": 1
+    },
+    {
+      "port_id": "2003",
+      "device_id": 2,
+      "ifIndex": 48,
+      "ifName": "Gi2/0/24",
+      "ifDescr": "GigabitEthernet2/0/24",
+      "ifAlias": "Stack member 2 uplink",
+      "ifOperStatus": "up"
+    }
+  ]
+}
