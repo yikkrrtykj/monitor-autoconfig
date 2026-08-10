@@ -139,6 +139,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./alertmanager-feishu-bridge.py:/app/bridge.py:ro
+      - ./librenms_client.py:/app/librenms_client.py:ro
       - ./network_syslog.py:/app/network_syslog.py:ro
       - /etc/localtime:/etc/localtime:ro
       - ./librenms-data:/librenms-data:ro
@@ -164,6 +165,7 @@ services:
       FEISHU_BRIDGE_STATE_DIR: "${FEISHU_BRIDGE_STATE_DIR:-/bridge-state}"
       LIBRENMS_URL: "http://librenms:8000"
       LIBRENMS_API_TOKEN: "${LIBRENMS_API_TOKEN:-}"
+      LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"
       SWITCH_WATCH_INTERVAL: "${SWITCH_WATCH_INTERVAL:-30}"
       PROMETHEUS_URL: "http://prometheus:9090"
       ISP_ALERT_ENABLED: "${ISP_ALERT_ENABLED:-true}"
@@ -663,6 +665,7 @@ services:
       - ./discover-switch-targets.py:/discover-switch-targets.py:ro
       - ./discover-stackwise-targets.py:/discover-stackwise-targets.py:ro
       - ./discover-isp-targets.py:/discover-isp-targets.py:ro
+      - ./librenms_client.py:/librenms_client.py:ro
       - ./target_utils.py:/target_utils.py:ro
       - ./platform_config.py:/platform_config.py:ro
       - ./.env:/config/.env:ro
@@ -719,6 +722,7 @@ services:
       LIBRENMS_URL: "http://librenms:8000"
       LIBRENMS_API_TOKEN: "${LIBRENMS_API_TOKEN:-}"
       LIBRENMS_TOKEN_FILE: "/librenms-data/librenms-api-token"
+      LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"
       # WAN addresses can change independently of LLDP. Re-read them every
       # minute without increasing the heavier switch/topology walk frequency.
       ISP_DISCOVERY_REFRESH_INTERVAL: "${ISP_DISCOVERY_REFRESH_INTERVAL:-60}"

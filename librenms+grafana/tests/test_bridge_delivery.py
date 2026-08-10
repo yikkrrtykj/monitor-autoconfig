@@ -384,6 +384,45 @@ def test_dbm_query_falls_back_to_device_health_when_global_sensor_page_is_incomp
     assert sensors[0]["sensor_current"] == -3.2
 
 
+def test_port_state_read_uses_shared_librenms_client(monkeypatch):
+    calls = []
+
+    class Client:
+        @staticmethod
+        def get_device_ports(device, columns=None, with_vlans=False):
+            calls.append((device, columns, with_vlans))
+            return [{"ifName": "Gi1/0/1", "ifOperStatus": "up"}]
+
+    monkeypatch.setattr(bridge, "_librenms_client", lambda _token, timeout=10: Client())
+
+    assert bridge.fetch_librenms_port_states("token", 7) == [
+        {"ifName": "Gi1/0/1", "ifOperStatus": "up"},
+    ]
+    assert calls == [(
+        {"device_id": 7},
+        "ifName,ifDescr,ifOperStatus,ifAdminStatus",
+        False,
+    )]
+
+
+def test_device_list_read_uses_shared_librenms_client(monkeypatch):
+    class Client:
+        @staticmethod
+        def list_devices():
+            return [{"device_id": 7, "hostname": "edge"}]
+
+    calls = []
+
+    def client(token, timeout=10):
+        calls.append((token, timeout))
+        return Client()
+
+    monkeypatch.setattr(bridge, "_librenms_client", client)
+
+    assert bridge.fetch_librenms_devices("token") == [{"device_id": 7, "hostname": "edge"}]
+    assert calls == [("token", 10)]
+
+
 def test_proactive_alert_chat_uses_name_and_never_guesses_between_groups(monkeypatch):
     chats = _FakeResponse({
         "code": 0,

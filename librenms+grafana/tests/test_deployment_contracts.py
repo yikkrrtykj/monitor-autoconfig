@@ -120,7 +120,9 @@ def test_alert_bridge_mounts_its_split_syslog_parser():
     bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split("  librenms:", 1)[0]
 
     assert "./alertmanager-feishu-bridge.py:/app/bridge.py:ro" in bridge_service
+    assert "./librenms_client.py:/app/librenms_client.py:ro" in bridge_service
     assert "./network_syslog.py:/app/network_syslog.py:ro" in bridge_service
+    assert 'LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"' in bridge_service
 
 
 def test_named_volume_and_bind_mount_contract_is_not_mixed():
@@ -406,6 +408,8 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert "./librenms-data:/librenms-data:ro" in topology
     assert 'LIBRENMS_URL: "http://librenms:8000"' in topology
     assert 'LIBRENMS_TOKEN_FILE: "/librenms-data/librenms-api-token"' in topology
+    assert "./librenms_client.py:/librenms_client.py:ro" in topology
+    assert 'LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"' in topology
     assert "./target_utils.py:/target_utils.py:ro" in topology
     assert 'TOPOLOGY_SNMP_TIMEOUT: "${TOPOLOGY_SNMP_TIMEOUT:-2}"' in topology
     assert 'TOPOLOGY_SNMP_RETRIES: "${TOPOLOGY_SNMP_RETRIES:-0}"' in topology

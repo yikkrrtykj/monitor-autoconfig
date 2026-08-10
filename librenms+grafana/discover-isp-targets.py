@@ -35,14 +35,12 @@ Env vars:
 from __future__ import annotations
 
 import ipaddress
-import json
 import os
 import re
 import subprocess
 import sys
-from urllib import parse as urlparse
-from urllib import request as urlrequest
 
+from librenms_client import LibreNMSClient, LibreNMSError
 from target_utils import is_ipv4 as looks_like_ip, write_json_atomic as write_file_sd
 
 OID_IF_DESCR = ".1.3.6.1.2.1.2.2.1.2"
@@ -376,58 +374,46 @@ def discover_from_librenms(addresses: list[dict], ports: list[dict],
     return rows
 
 
-def _api_json(base_url: str, token: str, path: str, timeout: int = 10) -> dict:
-    req = urlrequest.Request(
-        f"{base_url.rstrip('/')}{path}",
-        headers={"X-Auth-Token": token},
-    )
-    with urlrequest.urlopen(req, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace") or "{}")
-
-
-def _librenms_token() -> str:
-    path = os.environ.get("LIBRENMS_TOKEN_FILE", "/librenms-data/librenms-api-token")
-    try:
-        with open(path, encoding="utf-8") as handle:
-            token = handle.read().strip()
-            if token:
-                return token
-    except OSError:
-        pass
-    return os.environ.get("LIBRENMS_API_TOKEN", "").strip()
-
-
 def collect_from_librenms(firewall_targets: list[str], configured_names: list[str] | None = None,
-                           api_get=_api_json) -> list[dict[str, str]]:
+                           client: LibreNMSClient | None = None) -> list[dict[str, str]]:
     """Read the current WAN address inventory from LibreNMS' official API."""
-    base_url = os.environ.get("LIBRENMS_URL", "http://librenms:8000").rstrip("/")
-    token = _librenms_token()
-    if not base_url or not token:
+    client = client or LibreNMSClient()
+    if not client.base_url or not client.token:
         return []
     try:
-        devices = api_get(base_url, token, "/api/v0/devices").get("devices") or []
-    except Exception as exc:
-        print(f"[isp-discovery] LibreNMS device lookup failed: {exc}", file=sys.stderr)
+        # Load once per discovery cycle. resolve_device() reuses this cache for
+        # every configured firewall instead of repeating /api/v0/devices.
+        client.list_devices()
+    except LibreNMSError as exc:
+        print(
+            f"[isp-discovery] LibreNMS device lookup failed: {type(exc).__name__}",
+            file=sys.stderr,
+        )
         return []
 
     for target in firewall_targets:
-        device = next((item for item in devices if target in {
-            str(item.get("ip") or "").strip(),
-            str(item.get("hostname") or "").strip(),
-        }), None)
-        if not device:
-            continue
-        ref = device.get("device_id") or device.get("hostname") or target
-        encoded = urlparse.quote(str(ref), safe="")
         try:
-            addresses = api_get(base_url, token, f"/api/v0/devices/{encoded}/ip").get("addresses") or []
-            query = urlparse.urlencode({
-                "columns": "port_id,ifIndex,ifName,ifDescr,ifAlias",
-            })
-            ports = api_get(base_url, token, f"/api/v0/devices/{encoded}/ports?{query}").get("ports") or []
+            device = client.resolve_device(target)
+        except LibreNMSError as exc:
+            print(
+                f"[isp-discovery] LibreNMS device lookup failed for {target}: "
+                f"{type(exc).__name__}",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            addresses = client.get_device_ip_addresses(device)
+            ports = client.get_device_ports(
+                device,
+                columns="port_id,ifIndex,ifName,ifDescr,ifAlias",
+            )
             results = discover_from_librenms(addresses, ports, configured_names)
-        except Exception as exc:
-            print(f"[isp-discovery] LibreNMS WAN inventory failed for {target}: {exc}", file=sys.stderr)
+        except LibreNMSError as exc:
+            print(
+                f"[isp-discovery] LibreNMS WAN inventory failed for {target}: "
+                f"{type(exc).__name__}",
+                file=sys.stderr,
+            )
             continue
         if results:
             return results

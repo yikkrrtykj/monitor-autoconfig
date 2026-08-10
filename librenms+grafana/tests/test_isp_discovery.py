@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+from librenms_client import LibreNMSUnavailable
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "discover-isp-targets.py"
@@ -288,15 +290,123 @@ def test_librenms_inventory_binds_by_wan_alias_before_interface_order():
     ]
 
 
-def test_pppoe_slash32_is_inventory_only_not_a_fake_self_ping():
-    results = disco.discover_from_librenms(
-        [{"ipv4_address": "8.8.8.8", "ipv4_prefixlen": "32", "port_id": "8"}],
-        [{"port_id": "8", "ifIndex": "8", "ifAlias": "pppoe-telecom"}],
-        ["pppoe-telecom"],
+def test_pppoe_slash31_and_slash32_are_inventory_only_not_fake_self_pings():
+    for prefix in (31, 32):
+        results = disco.discover_from_librenms(
+            [{"ipv4_address": "8.8.8.8", "ipv4_prefixlen": str(prefix), "port_id": "8"}],
+            [{"port_id": "8", "ifIndex": "8", "ifAlias": "pppoe-telecom"}],
+            ["pppoe-telecom"],
+        )
+        assert results[0]["gateway"] == ""
+        assert results[0]["source"] == "librenms_interface_only"
+        assert disco.build_file_sd(results, set()) == []
+
+
+class FakeLibreNMSClient:
+    base_url = "http://librenms:8000"
+    token = "configured"
+
+    def __init__(self, *, failure=None):
+        self.failure = failure
+        self.list_calls = 0
+        self.resolved = []
+        self.port_columns = None
+
+    def list_devices(self):
+        self.list_calls += 1
+        if self.failure:
+            raise self.failure
+        return [{"device_id": 7, "hostname": "192.0.2.1"}]
+
+    def resolve_device(self, identifier):
+        self.resolved.append(identifier)
+        if self.failure:
+            raise self.failure
+        return {"device_id": 7, "hostname": identifier, "ip": identifier, "sysName": "fw"}
+
+    @staticmethod
+    def get_device_ip_addresses(_device):
+        return [{"ipv4_address": "8.8.8.10", "ipv4_prefixlen": "29", "port_id": "9"}]
+
+    def get_device_ports(self, _device, columns=None, with_vlans=False):
+        self.port_columns = columns
+        assert with_vlans is False
+        return [{"port_id": 9, "ifIndex": "3", "ifAlias": "telecom"}]
+
+
+def test_librenms_fallback_uses_shared_client_without_changing_wan_mapping():
+    client = FakeLibreNMSClient()
+
+    results = disco.collect_from_librenms(["192.0.2.1"], ["telecom"], client=client)
+
+    assert client.resolved == ["192.0.2.1"]
+    assert client.list_calls == 1
+    assert client.port_columns == "port_id,ifIndex,ifName,ifDescr,ifAlias"
+    assert results == [{
+        "gateway": "8.8.8.9",
+        "name": "telecom",
+        "wan_ip": "8.8.8.10",
+        "source": "librenms_subnet_gateway",
+    }]
+
+
+def test_librenms_api_failure_returns_safely_without_logging_secret(capsys):
+    client = FakeLibreNMSClient(
+        failure=LibreNMSUnavailable("token=do-not-log password=do-not-log"),
     )
-    assert results[0]["gateway"] == ""
-    assert results[0]["source"] == "librenms_interface_only"
-    assert disco.build_file_sd(results, set()) == []
+
+    assert disco.collect_from_librenms(["192.0.2.1"], client=client) == []
+    error = capsys.readouterr().err
+    assert "LibreNMSUnavailable" in error
+    assert "do-not-log" not in error
+
+
+def test_main_keeps_direct_snmp_before_librenms_fallback(monkeypatch, tmp_path):
+    written = []
+    monkeypatch.setenv("ISP_TARGETS_FILE", str(tmp_path / "isp.json"))
+    monkeypatch.setenv("ISP_GATEWAY_AUTO_DISCOVER", "true")
+    monkeypatch.setenv("FIREWALL_SNMP_TARGETS", "192.0.2.1")
+    monkeypatch.setenv("BIGSCREEN_ISP_NAMES", "")
+    monkeypatch.setenv("ISP_PING", "")
+    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: [{
+        "gateway": "8.8.8.9", "name": "direct", "wan_ip": "8.8.8.10", "source": "gateway",
+    }])
+    monkeypatch.setattr(
+        disco,
+        "collect_from_librenms",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fallback must not run")),
+    )
+
+    disco.main()
+
+    assert written[0][0]["labels"]["display_name"] == "direct"
+
+
+def test_main_uses_librenms_only_after_direct_snmp_failure(monkeypatch, tmp_path):
+    written = []
+    calls = []
+    monkeypatch.setenv("ISP_TARGETS_FILE", str(tmp_path / "isp.json"))
+    monkeypatch.setenv("ISP_GATEWAY_AUTO_DISCOVER", "true")
+    monkeypatch.setenv("FIREWALL_SNMP_TARGETS", "192.0.2.1")
+    monkeypatch.setenv("BIGSCREEN_ISP_NAMES", "")
+    monkeypatch.setenv("ISP_PING", "manual:8.8.8.8")
+    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: [])
+
+    def fallback(targets, configured_names):
+        calls.append((targets, configured_names))
+        return [
+            {"gateway": "8.8.8.8", "name": "manual", "wan_ip": "8.8.8.10"},
+            {"gateway": "1.1.1.1", "name": "fallback", "wan_ip": "1.1.1.2"},
+        ]
+
+    monkeypatch.setattr(disco, "collect_from_librenms", fallback)
+
+    disco.main()
+
+    assert calls == [(["192.0.2.1"], [])]
+    assert [item["targets"][0] for item in written[0]] == ["1.1.1.1"]
 
 
 def test_target_ips_parses_named_lists():

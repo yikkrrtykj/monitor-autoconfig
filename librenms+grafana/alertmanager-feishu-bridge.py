@@ -99,6 +99,7 @@ import threading
 import time
 from urllib import error, parse, request
 
+from librenms_client import LibreNMSClient
 from network_syslog import (
     MacFlapTracker,
     is_bpdu_event as _is_bpdu_event,
@@ -118,7 +119,6 @@ FEISHU_FAILED_EVENT_MAX_ATTEMPTS = max(1, int(os.environ.get("FEISHU_FAILED_EVEN
 FEISHU_FAILED_EVENT_TTL_SECONDS = max(60, int(os.environ.get("FEISHU_FAILED_EVENT_TTL_SECONDS", "600")))
 
 LIBRENMS_URL = os.environ.get("LIBRENMS_URL", "").rstrip("/")
-LIBRENMS_API_TOKEN = os.environ.get("LIBRENMS_API_TOKEN", "")
 LIBRENMS_TOKEN_FILE = os.environ.get("LIBRENMS_TOKEN_FILE", "/librenms-data/librenms-api-token")
 SWITCH_WATCH_INTERVAL = int(os.environ.get("SWITCH_WATCH_INTERVAL", "30"))
 DEVICE_MODEL_WAIT_SECONDS = int(os.environ.get("DEVICE_MODEL_WAIT_SECONDS", "300"))
@@ -698,32 +698,27 @@ def next_event_title():
 
 
 def _librenms_token():
-    try:
-        with open(LIBRENMS_TOKEN_FILE) as f:
-            token = f.read().strip()
-            if token:
-                return token
-    except OSError:
-        pass
-    return LIBRENMS_API_TOKEN
+    return LibreNMSClient(
+        base_url=LIBRENMS_URL,
+        token_file=LIBRENMS_TOKEN_FILE,
+    ).token
+
+
+def _librenms_client(token, timeout=10):
+    return LibreNMSClient(
+        base_url=LIBRENMS_URL,
+        token=token,
+        token_file=LIBRENMS_TOKEN_FILE,
+        timeout=timeout,
+    )
 
 
 def fetch_librenms_devices(token):
-    req = request.Request(
-        f"{LIBRENMS_URL}/api/v0/devices",
-        headers={"X-Auth-Token": token},
-    )
-    with request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8")).get("devices", [])
+    return _librenms_client(token, timeout=10).list_devices()
 
 
 def _librenms_get_json(token, path, timeout=15):
-    req = request.Request(
-        f"{LIBRENMS_URL}{path}",
-        headers={"X-Auth-Token": token},
-    )
-    with request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+    return _librenms_client(token, timeout=timeout).get_json(path)
 
 
 BOT_HELP_TEXT = (
@@ -845,10 +840,10 @@ def fetch_librenms_dbm_sensors(token, device_id):
 
 def fetch_librenms_port_states(token, device_id):
     columns = "ifName,ifDescr,ifOperStatus,ifAdminStatus"
-    query = parse.urlencode({"columns": columns})
-    encoded_ref = parse.quote(str(device_id), safe="")
-    data = _librenms_get_json(token, f"/api/v0/devices/{encoded_ref}/ports?{query}")
-    return data.get("ports") or []
+    return _librenms_client(token, timeout=15).get_device_ports(
+        {"device_id": device_id},
+        columns=columns,
+    )
 
 
 def _interface_key(value):
@@ -1938,12 +1933,7 @@ def fetch_librenms_inventory(token, device):
     if not token or not LIBRENMS_URL or not device_ref:
         return []
     encoded_ref = parse.quote(str(device_ref), safe="")
-    req = request.Request(
-        f"{LIBRENMS_URL}/api/v0/inventory/{encoded_ref}/all",
-        headers={"X-Auth-Token": token},
-    )
-    with request.urlopen(req, timeout=10) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    payload = _librenms_get_json(token, f"/api/v0/inventory/{encoded_ref}/all", timeout=10)
     return payload.get("inventory", []) if isinstance(payload, dict) else []
 
 
