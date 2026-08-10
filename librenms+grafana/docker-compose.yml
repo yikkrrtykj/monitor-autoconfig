@@ -787,6 +787,7 @@ services:
     working_dir: /workspace
     volumes:
       - ./:/workspace
+      - ../VERSION:/workspace/VERSION:ro
       - platform-state:/workspace/platform-state
       - /var/run/docker.sock:/var/run/docker.sock
       - /usr/bin:/host/usr/bin:ro
@@ -799,6 +800,8 @@ services:
       PLATFORM_API_PORT: "9200"
       PLATFORM_WORKDIR: "/workspace"
       PLATFORM_STATE_DIR: "/workspace/platform-state"
+      PLATFORM_VERSION_FILE: "/workspace/VERSION"
+      PLATFORM_GIT_COMMIT: "${PLATFORM_GIT_COMMIT:-unknown}"
       # Feishu bridge, used by the console's "发送测试告警" button.
       PLATFORM_BRIDGE_URL: "${PLATFORM_BRIDGE_URL:-http://alertmanager-feishu-bridge:5005}"
       # "赛前体检" button runs pre-match-check.sh against the stack (by service name).

@@ -8,15 +8,94 @@ does not need PyYAML.
 """
 from __future__ import annotations
 
+import copy
 import json
 import ipaddress
+import os
 import re
+import stat
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from version_info import CURRENT_SCHEMA_VERSION
+
+
+class ConfigSchemaError(ValueError):
+    """Raised when a configuration schema cannot be safely processed."""
+
+
+class ConfigTooNewError(ConfigSchemaError):
+    """Raised when a configuration was created by newer platform software."""
+
+
+def get_schema_version(config: dict[str, Any]) -> int:
+    if not isinstance(config, dict):
+        raise ConfigSchemaError("event config must be a mapping")
+    if "schema_version" not in config:
+        return 0
+    version = config["schema_version"]
+    if type(version) is not int:
+        raise ConfigSchemaError("schema_version must be a non-negative integer")
+    if version < 0:
+        raise ConfigSchemaError("schema_version must be a non-negative integer")
+    return version
+
+
+def inspect_config_schema(config: dict[str, Any]) -> dict[str, int | bool]:
+    original = get_schema_version(config)
+    too_new = original > CURRENT_SCHEMA_VERSION
+    migration_required = original < CURRENT_SCHEMA_VERSION
+    return {
+        "original_version": original,
+        "current_supported": CURRENT_SCHEMA_VERSION,
+        "current_version": original if too_new else CURRENT_SCHEMA_VERSION,
+        "migration_required": migration_required,
+        "config_too_new": too_new,
+    }
+
+
+def migrate_v0_to_v1(config: dict[str, Any]) -> dict[str, Any]:
+    if get_schema_version(config) != 0:
+        raise ConfigSchemaError("migrate_v0_to_v1 requires schema 0")
+    migrated = copy.deepcopy(config)
+    return {"schema_version": 1, **migrated}
+
+
+SCHEMA_MIGRATIONS = {
+    0: migrate_v0_to_v1,
+}
+
+
+def migrate_config(
+    config: dict[str, Any],
+    target_version: int = CURRENT_SCHEMA_VERSION,
+) -> dict[str, Any]:
+    if type(target_version) is not int or target_version < 0:
+        raise ConfigSchemaError("target schema version must be a non-negative integer")
+    original = get_schema_version(config)
+    if original > target_version:
+        raise ConfigTooNewError(
+            f"Refusing to downgrade schema {original}; software supports schema {target_version}."
+        )
+
+    migrated = copy.deepcopy(config)
+    version = original
+    while version < target_version:
+        migration = SCHEMA_MIGRATIONS.get(version)
+        if migration is None:
+            raise ConfigSchemaError(f"no migration available from schema {version} to {version + 1}")
+        migrated = migration(migrated)
+        next_version = get_schema_version(migrated)
+        if next_version != version + 1:
+            raise ConfigSchemaError(
+                f"migration from schema {version} must produce schema {version + 1}"
+            )
+        version = next_version
+    return migrated
 
 
 
@@ -589,6 +668,13 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -> dict[str, str]:
+    schema = inspect_config_schema(config)
+    if schema["config_too_new"]:
+        raise ConfigTooNewError(
+            f"Refusing to render schema {schema['original_version']}; "
+            f"software supports schema {schema['current_supported']}."
+        )
+    config = migrate_config(config)
     config = normalize_config(config)
     existing = dict(existing or {})
     event = config["event"]
@@ -764,11 +850,71 @@ def merge_env_file(path: Path, updates: dict[str, str]) -> str:
 def default_config_text(example_path: Path) -> str:
     if example_path.exists():
         return example_path.read_text(encoding="utf-8")
-    return dump_simple_yaml({"event": {"name": ""}}) + "\n"
+    return dump_simple_yaml({"schema_version": CURRENT_SCHEMA_VERSION, "event": {"name": ""}}) + "\n"
 
 
 def stamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S")
+
+
+def atomic_write_config(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        if mode is not None:
+            try:
+                os.fchmod(fd, mode)
+            except (AttributeError, OSError):
+                os.chmod(temporary, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def migrate_file(path: Path, write: bool = False) -> int:
+    try:
+        config = parse_simple_yaml(path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ConfigSchemaError("event config must be a mapping")
+        status = inspect_config_schema(config)
+        if status["config_too_new"]:
+            raise ConfigTooNewError(
+                f"Refusing to downgrade schema {status['original_version']}; "
+                f"software supports schema {status['current_supported']}."
+            )
+        migrated = migrate_config(config)
+        issues = validate_config(migrated)
+        bad = [item for item in issues if item.get("level") == "bad"]
+        if bad:
+            for item in bad:
+                print(f"{item.get('path')}: {item.get('message')}", file=sys.stderr)
+            raise ConfigSchemaError("configuration has blocking validation errors")
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    original = int(status["original_version"])
+    if not write:
+        print(f"Current schema: {original}")
+        print(f"Supported schema: {CURRENT_SCHEMA_VERSION}")
+        print(f"Migration required: {'yes' if status['migration_required'] else 'no'}")
+        print("Validation: ok")
+        print("No files changed.")
+        return 0
+    if not status["migration_required"]:
+        print(f"Already at schema {CURRENT_SCHEMA_VERSION}")
+        return 0
+
+    atomic_write_config(path, dump_simple_yaml(migrated) + "\n")
+    print(f"Migrated schema {original} -> {CURRENT_SCHEMA_VERSION}")
+    return 0
 
 
 if __name__ == "__main__":
@@ -778,5 +924,12 @@ if __name__ == "__main__":
         if key not in values or values[key] == "":
             raise SystemExit(1)
         sys.stdout.write(values[key])
+    elif len(sys.argv) in (3, 4) and sys.argv[1] == "migrate":
+        if len(sys.argv) == 4 and sys.argv[3] != "--write":
+            raise SystemExit("usage: platform_config.py migrate EVENT_CONFIG [--write]")
+        raise SystemExit(migrate_file(Path(sys.argv[2]), write=len(sys.argv) == 4))
     else:
-        raise SystemExit("usage: platform_config.py env-get ENV_FILE KEY")
+        raise SystemExit(
+            "usage: platform_config.py env-get ENV_FILE KEY\n"
+            "       platform_config.py migrate EVENT_CONFIG [--write]"
+        )

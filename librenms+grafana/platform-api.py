@@ -34,15 +34,19 @@ except ImportError:  # Python 3.12 developer/test fallback; production pins teln
     from telnetlib import Telnet
 
 from platform_config import (
+    ConfigSchemaError,
     default_config_text,
     dump_simple_yaml,
+    inspect_config_schema,
     merge_env_file,
+    migrate_config,
     parse_simple_yaml,
     read_env,
     render_env,
     stamp,
     validate_config,
 )
+from version_info import get_version_info
 from cisco_dhcp import (
     attach_dhcp_pool_exclusions,
     parse_cisco_arp_entries,
@@ -631,10 +635,84 @@ def parse_config_text(text: str):
     return config
 
 
+def _schema_response(status: dict) -> dict:
+    return {
+        "configSchemaOriginal": status["original_version"],
+        "configSchemaCurrent": status["current_version"],
+        "configSchemaSupported": status["current_supported"],
+        "migrationRequired": status["migration_required"],
+        "configTooNew": status["config_too_new"],
+    }
+
+
+def _schema_error_payload(message: str, config: dict | None = None) -> dict:
+    return {
+        "ok": False,
+        "error": message,
+        "config": config or {},
+        "issues": [{"level": "bad", "path": "schema_version", "message": message}],
+        "env": {},
+        "normalizedText": "",
+        "writeEnabled": False,
+    }
+
+
+def current_config_write_guard() -> dict | None:
+    """Refuse every config mutation when the on-disk file is not writable by
+    this schema version. The check happens before snapshots or target parsing so
+    an older platform cannot replace a newer config with submitted schema 1."""
+    if not CONFIG_PATH.exists():
+        return None
+    try:
+        config = parse_config_text(CONFIG_PATH.read_text(encoding="utf-8"))
+        status = inspect_config_schema(config)
+    except (OSError, ValueError) as exc:
+        return _schema_error_payload(f"Cannot modify event config: {exc}")
+    if status["config_too_new"]:
+        message = (
+            f"Refusing to modify schema {status['original_version']}; "
+            f"software supports schema {status['current_supported']}. "
+            "Upgrade the monitoring platform first."
+        )
+        return {**_schema_error_payload(message, config), **_schema_response(status)}
+    return None
+
+
 def config_payload(text: str | None = None) -> dict:
     editing_existing = text is None
     text = read_config_text() if editing_existing else text
     config = parse_config_text(text)
+    try:
+        schema = inspect_config_schema(config)
+    except ConfigSchemaError as exc:
+        return {
+            **_schema_error_payload(str(exc), config),
+            "text": text,
+            "paths": {
+                "config": str(CONFIG_PATH),
+                "env": str(ENV_PATH),
+                "state": str(STATE_DIR),
+            },
+        }
+    if schema["config_too_new"]:
+        message = (
+            f"event-config schema {schema['original_version']} is newer than supported "
+            f"schema {schema['current_supported']}; upgrade the monitoring platform first"
+        )
+        return {
+            **_schema_error_payload(message, config),
+            **_schema_response(schema),
+            "ok": editing_existing,
+            "readOnly": True,
+            "text": text,
+            "paths": {
+                "config": str(CONFIG_PATH),
+                "env": str(ENV_PATH),
+                "state": str(STATE_DIR),
+            },
+        }
+
+    config = migrate_config(config)
     existing_env = read_env(ENV_PATH)
     # Migrate legacy .env-only application credentials into the authenticated
     # editor model.  They are then visible beside the old webhook token and are
@@ -660,11 +738,35 @@ def config_payload(text: str | None = None) -> dict:
         "issues": issues,
         "env": env,
         "writeEnabled": WRITE_ENABLED,
+        **_schema_response(schema),
         "paths": {
             "config": str(CONFIG_PATH),
             "env": str(ENV_PATH),
             "state": str(STATE_DIR),
         },
+    }
+
+
+def version_payload() -> dict:
+    payload = {"ok": True, **get_version_info()}
+    try:
+        config = parse_config_text(read_config_text())
+        status = inspect_config_schema(config)
+    except (OSError, ValueError) as exc:
+        return {
+            **payload,
+            "config_schema_original": None,
+            "config_schema_current": None,
+            "migration_required": False,
+            "config_too_new": False,
+            "config_schema_error": str(exc),
+        }
+    return {
+        **payload,
+        "config_schema_original": status["original_version"],
+        "config_schema_current": status["current_version"],
+        "migration_required": status["migration_required"],
+        "config_too_new": status["config_too_new"],
     }
 
 
@@ -941,7 +1043,12 @@ def run_apply_command() -> dict:
 
 def save_config(text: str, actor: str = "", note: str = "") -> dict:
     require_write()
+    blocked = current_config_write_guard()
+    if blocked:
+        return blocked
     payload = config_payload(text)
+    if not payload.get("ok") or payload.get("configTooNew"):
+        return payload
     bad = [item for item in payload["issues"] if item.get("level") == "bad"]
     if bad:
         return {**payload, "ok": False, "error": "config has blocking validation errors"}
@@ -954,10 +1061,18 @@ def save_config(text: str, actor: str = "", note: str = "") -> dict:
 def apply_config(text: str | None, actor: str = "", note: str = "", operation_id: str | None = None) -> dict:
     require_write()
     operation_id = normalize_operation_id(operation_id, "apply")
+    blocked = current_config_write_guard()
+    if blocked:
+        return {**blocked, "operationId": operation_id}
+    try:
+        payload = config_payload(text) if text is not None else config_payload()
+    except Exception as exc:
+        return {"ok": False, "operationId": operation_id, "error": f"应用配置失败：{exc}"}
+    if not payload.get("ok") or payload.get("configTooNew"):
+        return {**payload, "operationId": operation_id}
     write_apply_status(operation_id, "running", action="apply", startedAt=int(time.time()))
     snapshot = None
     try:
-        payload = config_payload(text) if text is not None else config_payload()
         bad = [item for item in payload["issues"] if item.get("level") == "bad"]
         if bad:
             result = {**payload, "ok": False, "error": "config has blocking validation errors", "operationId": operation_id}
@@ -965,7 +1080,7 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
             return result
 
         snapshot = create_config_snapshot("config.apply", actor, note)
-        if text is not None:
+        if text is not None or payload.get("migrationRequired"):
             atomic_write_text(CONFIG_PATH, payload["normalizedText"])
         rendered = merge_env_file(ENV_PATH, payload["env"])
         atomic_write_text(ENV_PATH, rendered)
@@ -1071,6 +1186,9 @@ def append_history(action: str, actor: str, note: str, detail: dict) -> None:
 def rollback_config(actor: str = "", note: str = "", operation_id: str | None = None) -> dict:
     require_write()
     operation_id = normalize_operation_id(operation_id, "rollback")
+    blocked = current_config_write_guard()
+    if blocked:
+        return {**blocked, "operationId": operation_id}
     write_apply_status(operation_id, "running", action="rollback", startedAt=int(time.time()))
     snapshots = list_config_snapshots()
     if not snapshots:
@@ -2295,6 +2413,8 @@ class Handler(BaseHTTPRequestHandler):
             path = parsed_url.path.rstrip("/") or "/"
             if path == "/health":
                 self._send_json({"ok": True, "time": int(time.time())})
+            elif path == "/version":
+                self._send_json(version_payload())
             elif path == "/auth/status":
                 self._send_json(auth_status(self))
             elif path == "/config":

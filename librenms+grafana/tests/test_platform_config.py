@@ -1,9 +1,12 @@
 import importlib.util
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "platform_config.py"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location("platform_config", MODULE_PATH)
 platform_config = importlib.util.module_from_spec(spec)
 assert spec.loader

@@ -32,7 +32,7 @@
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
-    fetchPlatformConfig, fetchApplyStatus, postPlatform, fetchIperfStatus, fetchIperfHistory, fetchRetirePending, patchPlatform, fetchIncidents,
+    fetchPlatformConfig, fetchPlatformVersion, fetchApplyStatus, postPlatform, fetchIperfStatus, fetchIperfHistory, fetchRetirePending, patchPlatform, fetchIncidents,
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
   const {
@@ -1621,11 +1621,27 @@
   }
 
   function renderControlConfig(context) {
-    const { runtimeStatus, configRisks, services, platformConfig } = context;
+    const { runtimeStatus, configRisks, services, platformConfig, versionInfo } = context;
     const targetStatus = runtimeStatus && runtimeStatus.targets ? runtimeStatus.targets : null;
     const updated = runtimeStatus && runtimeStatus.updated_at ? formatTimestampFull(runtimeStatus.updated_at) : "-";
-    const apiState = platformConfig && platformConfig.ok ? "可写" : "不可用";
+    const apiState = platformConfig && platformConfig.ok
+      ? (platformConfig.writeEnabled === false ? "只读" : "可写")
+      : "不可用";
+    let schemaValue = "-";
+    let schemaNote = "";
+    if (versionInfo && versionInfo.config_schema_original != null) {
+      schemaValue = String(versionInfo.config_schema_original);
+      if (versionInfo.migration_required) {
+        schemaValue = `${versionInfo.config_schema_original} → ${versionInfo.config_schema_current}`;
+        schemaNote = "保存或应用时升级";
+      } else if (versionInfo.config_too_new) {
+        schemaNote = `当前软件最高支持 ${versionInfo.config_schema_supported}，请先升级平台`;
+      }
+    }
     const rows = [
+      { label: "平台版本", value: versionInfo && versionInfo.platform_version ? versionInfo.platform_version : "unknown" },
+      { label: "Git Commit", value: versionInfo && versionInfo.git_commit ? versionInfo.git_commit : "unknown" },
+      { label: "配置版本", value: schemaValue, note: schemaNote },
       { label: "ISP", value: config.ispAutoDiscovery === "true" ? "自动发现" : (config.ispNames || "默认") },
       { label: "选手探测目标", value: targetStatus ? `${targetStatus.total} 个` : "-", note: targetStatus ? `player-targets 生成：有线 ${targetStatus.wired} / 无线 ${targetStatus.wireless} / ${updated}` : "" },
       { label: "采集任务", value: `${services.filter((item) => item.up === item.total).length}/${services.length}` },
@@ -2334,6 +2350,14 @@
     if (platformConfig && platformConfig.ok && !form.dataset.dirty && !form.dataset.telnetDirty) {
       renderControlConfigForm(platformConfig.config || {});
     }
+    const schemaBlocked = Boolean(platformConfig && platformConfig.configTooNew);
+    ["controlConfigSave", "controlConfigApply", "controlConfigRollback", "controlConfigImport"].forEach((id) => {
+      const button = document.getElementById(id);
+      if (button) {
+        button.disabled = schemaBlocked;
+        button.title = schemaBlocked ? "配置版本高于当前软件，请先升级平台" : "";
+      }
+    });
     // Once the operator has run 验证/保存/应用配置, keep that result on screen --
     // don't let the periodic refresh overwrite it (that made the apply error
     // vanish into "验证通过" after a few seconds).
@@ -2348,9 +2372,10 @@
   const CONFIG_ACTION_LABELS = { validate: "验证", save: "保存", apply: "应用配置", rollback: "回滚" };
 
   function setConfigButtonsBusy(busy) {
-    ["controlConfigValidate", "controlConfigSave", "controlConfigApply", "controlConfigRollback"].forEach((id) => {
+    const schemaBlocked = Boolean(lastPlatformConfig && lastPlatformConfig.configTooNew);
+    ["controlConfigValidate", "controlConfigSave", "controlConfigApply", "controlConfigRollback", "controlConfigImport"].forEach((id) => {
       const btn = document.getElementById(id);
-      if (btn) btn.disabled = busy;
+      if (btn) btn.disabled = busy || (schemaBlocked && id !== "controlConfigValidate");
     });
   }
 
@@ -2483,7 +2508,7 @@
       try {
         const result = await postPlatform("/config/validate", { text, actor: "web", note: "import" });
         lastPlatformConfig = result;
-        if (result && result.config) {
+        if (result && result.ok && !result.configTooNew && result.config) {
           renderControlConfigForm(result.config);
           form.dataset.dirty = "1";
         }
@@ -3097,13 +3122,14 @@
     const { page, network } = controlPageAndNetwork();
     const expectedSeats = page ? (page.teams || []).length * page.teamSize : 0;
     const selector = page ? tournamentSelector(page, network) : 'role="player"';
-    const [snapshot, targets, edges, servicesRaw, runtimeStatus, platformConfig, incidents, dhcpSettings] = await Promise.all([
+    const [snapshot, targets, edges, servicesRaw, runtimeStatus, platformConfig, versionInfo, incidents, dhcpSettings] = await Promise.all([
       fetchPlayerSnapshot(selector),
       fetchTopologyTargets(),
       fetchTopologyEdges(),
       prometheusInstant("up"),
       fetchRuntimeStatus(),
       fetchPlatformConfig(),
+      fetchPlatformVersion(),
       fetchIncidents(),
       fetchDhcpSettings()
     ]);
@@ -3129,6 +3155,7 @@
       services: serviceSummary,
       runtimeStatus,
       platformConfig,
+      versionInfo,
       dhcpSettings,
       incidents,
       configRisks,

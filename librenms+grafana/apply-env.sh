@@ -6,6 +6,12 @@ set -eu
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
+if command -v python3 >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/version_info.py" ]; then
+  version_output=$(python3 "$SCRIPT_DIR/version_info.py")
+  PLATFORM_GIT_COMMIT=$(printf '%s\n' "$version_output" | sed -n '2p')
+  export PLATFORM_GIT_COMMIT
+fi
+
 detect_host_project_dir() {
   [ -n "${PLATFORM_HOST_WORKDIR:-}" ] && {
     printf '%s' "$PLATFORM_HOST_WORKDIR"
@@ -119,10 +125,24 @@ sync_env_from_config() {
 import os
 import tempfile
 from pathlib import Path
-from platform_config import parse_simple_yaml, render_env, read_env, merge_env_file, validate_config
+from platform_config import (
+    inspect_config_schema,
+    merge_env_file,
+    migrate_config,
+    parse_simple_yaml,
+    read_env,
+    render_env,
+    validate_config,
+)
 cfg = parse_simple_yaml(Path("event-config.yml").read_text(encoding="utf-8"))
 if not isinstance(cfg, dict):
     raise SystemExit("event-config.yml is not a mapping")
+schema = inspect_config_schema(cfg)
+if schema["config_too_new"]:
+    raise SystemExit(
+        f"event-config schema {schema['original_version']} is newer than supported schema {schema['current_supported']}"
+    )
+cfg = migrate_config(cfg)
 devices = cfg.get("devices") if isinstance(cfg.get("devices"), dict) else {}
 core = devices.get("core") if isinstance(devices.get("core"), dict) else {}
 core_ip = str(core.get("ip") or "").strip()

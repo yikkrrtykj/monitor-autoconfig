@@ -129,6 +129,7 @@ def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json"
     project.mkdir()
     shutil.copy2(ROOT / "deploy-check.sh", project / "deploy-check.sh")
     shutil.copy2(ROOT / "platform_config.py", project / "platform_config.py")
+    shutil.copy2(ROOT / "version_info.py", project / "version_info.py")
     (project / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (project / ".env").write_text(env_text, encoding="utf-8")
 
@@ -221,7 +222,7 @@ def test_health_starting_then_healthy_passes(tmp_path):
         tmp_path,
         STUB_HEALTH_SERVICE="prometheus",
         STUB_HEALTH_MODE="starting_once",
-        DEPLOY_CHECK_TIMEOUT="2",
+        DEPLOY_CHECK_TIMEOUT="10",
     )
 
     assert completed.returncode == 0

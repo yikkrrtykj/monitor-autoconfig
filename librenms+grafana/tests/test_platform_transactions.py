@@ -73,6 +73,7 @@ def test_failed_apply_restores_both_files_and_records_failure(monkeypatch, tmp_p
     assert result["ok"] is False
     assert result["rolledBack"] is True
     assert json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "old"
+    assert "schema_version" not in json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))
     assert api.ENV_PATH.read_text(encoding="utf-8") == "CUSTOM=old\n"
     status = api.read_apply_status("apply-test-0001")
     assert status["state"] == "failed"
@@ -149,3 +150,126 @@ def test_generated_state_retention_is_bounded(tmp_path):
 
     assert len(list(api.TRANSACTION_DIR.iterdir())) == 2
     assert len(list(api.APPLY_STATUS_DIR.glob("*.json"))) == 3
+
+
+def test_get_old_config_migrates_in_memory_without_rewriting_file(tmp_path):
+    api = load_api(tmp_path)
+    seed(api)
+    original = api.CONFIG_PATH.read_bytes()
+
+    payload = api.config_payload()
+
+    assert payload["ok"] is True
+    assert payload["configSchemaOriginal"] == 0
+    assert payload["configSchemaCurrent"] == 1
+    assert payload["migrationRequired"] is True
+    assert payload["config"]["schema_version"] == 1
+    assert api.CONFIG_PATH.read_bytes() == original
+
+
+def test_save_and_import_upgrade_schema_zero_to_one(tmp_path):
+    api = load_api(tmp_path)
+    seed(api)
+
+    saved = api.save_config(config_text("saved"), "admin", "save")
+    assert saved["ok"] is True
+    assert api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))["schema_version"] == 1
+
+    imported = json.loads(config_text("imported"))
+    imported.pop("schema_version", None)
+    result = api.save_config(json.dumps(imported), "admin", "import")
+    assert result["ok"] is True
+    persisted = api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == 1
+    assert persisted["event"]["name"] == "imported"
+
+
+def test_apply_existing_schema_zero_writes_migrated_config(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    seed(api)
+    monkeypatch.setattr(api, "run_apply_command", lambda: {
+        "applied": True,
+        "needsRedeploy": False,
+        "applyOutput": "ok",
+    })
+
+    result = api.apply_config(None, "admin", "apply", "apply-schema-zero")
+
+    assert result["ok"] is True
+    persisted = api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == 1
+    assert "EVENT_NAME=old" in api.ENV_PATH.read_text(encoding="utf-8")
+
+
+def test_newer_current_config_blocks_save_apply_import_and_rollback(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    newer = json.dumps({
+        "schema_version": 2,
+        "event": {"name": "future"},
+        "custom_future": {"keep": "untouched"},
+    }, ensure_ascii=False)
+    api.CONFIG_PATH.write_text(newer, encoding="utf-8")
+    api.ENV_PATH.write_text("CUSTOM=future\n", encoding="utf-8")
+    original_config = api.CONFIG_PATH.read_bytes()
+    original_env = api.ENV_PATH.read_bytes()
+    monkeypatch.setattr(api, "run_apply_command", lambda: (_ for _ in ()).throw(AssertionError("must not apply")))
+
+    readable = api.config_payload()
+    assert readable["ok"] is True
+    assert readable["readOnly"] is True
+    assert readable["configTooNew"] is True
+    assert readable["config"]["custom_future"] == {"keep": "untouched"}
+    assert readable["env"] == {}
+
+    save_result = api.save_config(config_text("older"), "admin", "save")
+    import_result = api.save_config(config_text("imported"), "admin", "import")
+    apply_result = api.apply_config(config_text("older"), "admin", "apply", "apply-too-new")
+    rollback_result = api.rollback_config("admin", "rollback", "rollback-too-new")
+
+    for result in (save_result, import_result, apply_result, rollback_result):
+        assert result["ok"] is False
+        assert result["configTooNew"] is True
+        assert "software supports schema 1" in result["error"]
+    assert api.CONFIG_PATH.read_bytes() == original_config
+    assert api.ENV_PATH.read_bytes() == original_env
+    assert not list(api.TRANSACTION_DIR.iterdir())
+
+
+def test_import_of_newer_schema_is_rejected_before_overwrite(tmp_path):
+    api = load_api(tmp_path)
+    current = {"schema_version": 1, **json.loads(config_text("current"))}
+    api.CONFIG_PATH.write_text(json.dumps(current), encoding="utf-8")
+    api.ENV_PATH.write_text("CUSTOM=current\n", encoding="utf-8")
+    before_config = api.CONFIG_PATH.read_bytes()
+    before_env = api.ENV_PATH.read_bytes()
+    incoming = json.dumps({"schema_version": 2, "custom_future": {"secret": "keep"}})
+
+    result = api.save_config(incoming, "admin", "import")
+
+    assert result["ok"] is False
+    assert result["configTooNew"] is True
+    assert api.CONFIG_PATH.read_bytes() == before_config
+    assert api.ENV_PATH.read_bytes() == before_env
+
+
+def test_apply_of_newer_submitted_schema_writes_no_files(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    current = {"schema_version": 1, **json.loads(config_text("current"))}
+    api.CONFIG_PATH.write_text(json.dumps(current), encoding="utf-8")
+    api.ENV_PATH.write_text("CUSTOM=current\n", encoding="utf-8")
+    before_config = api.CONFIG_PATH.read_bytes()
+    before_env = api.ENV_PATH.read_bytes()
+    monkeypatch.setattr(api, "run_apply_command", lambda: (_ for _ in ()).throw(AssertionError("must not apply")))
+
+    result = api.apply_config(
+        json.dumps({"schema_version": 2, "custom_future": {"keep": True}}),
+        "admin",
+        "apply",
+        "apply-submitted-newer",
+    )
+
+    assert result["ok"] is False
+    assert result["configTooNew"] is True
+    assert api.CONFIG_PATH.read_bytes() == before_config
+    assert api.ENV_PATH.read_bytes() == before_env
+    assert not (api.APPLY_STATUS_DIR / "apply-submitted-newer.json").exists()

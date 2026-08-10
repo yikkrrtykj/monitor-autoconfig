@@ -211,7 +211,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260804b" in html
+    assert "app.js?v=20260810a" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -367,8 +367,8 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert pages.count("[30s]") == 3
     assert "pages.js?v=20260804a" in index
     assert "players.js?v=20260802a" in index
-    assert "api.js?v=20260803a" in index
-    assert "app.js?v=20260804b" in index
+    assert "api.js?v=20260810a" in index
+    assert "app.js?v=20260810a" in index
     assert "utils.js?v=20260804b" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
@@ -426,7 +426,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260809a" in index
-    assert "app.js?v=20260804b" in index
+    assert "app.js?v=20260810a" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
@@ -599,6 +599,26 @@ def test_apply_failure_does_not_mass_delete_services():
     assert "cleanup_conflicting_containers" not in script
     assert 'docker rm -f "$name"' not in script
     assert "PLATFORM_API_SELF_APPLY" in script
+
+
+def test_platform_version_and_config_schema_are_wired_into_runtime_and_console():
+    compose = read("docker-compose.yml")
+    deploy = read("deploy.sh")
+    example = read("event-config.example.yml")
+    api = read("bigscreen/api.js")
+    app = read("bigscreen/app.js")
+
+    assert (ROOT.parent / "VERSION").read_text(encoding="utf-8").strip()
+    assert example.startswith("schema_version: 1\n")
+    assert "../VERSION:/workspace/VERSION:ro" in compose
+    assert 'PLATFORM_VERSION_FILE: "/workspace/VERSION"' in compose
+    assert 'PLATFORM_GIT_COMMIT: "${PLATFORM_GIT_COMMIT:-unknown}"' in compose
+    assert 'export PLATFORM_GIT_COMMIT="$platform_git_commit"' in deploy
+    assert 'platformApi("/version"' in api
+    assert '{ label: "平台版本"' in app
+    assert '{ label: "Git Commit"' in app
+    assert '{ label: "配置版本"' in app
+    assert "保存或应用时升级" in app
 
 
 def test_offline_bundle_excludes_live_secrets_and_requires_integrity_check():

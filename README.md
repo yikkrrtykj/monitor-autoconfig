@@ -146,6 +146,17 @@ cd librenms+grafana
 
 `deploy.sh` 会负责已有安装的配置兼容和部署验证。`git pull` 不会自动删除 `event-config.yml`、`.env` 或 Docker 数据卷。项目暂未建立正式的 release/tag 流程；完成后会另行更新推荐的固定版本部署方式。
 
+### 版本与配置兼容
+
+仓库根目录的 `VERSION` 是平台软件版本，可用 `cat VERSION` 查看。`event-config.yml` 使用顶层 `schema_version` 标记配置版本；没有该字段的旧配置会以内存兼容方式读取，不会在普通部署或打开控制台时自动改写，并会在下一次“保存”或“应用配置”时安全升级。
+
+需要单独检查迁移时，可先 dry-run；确认后再写入：
+
+```bash
+python3 librenms+grafana/platform_config.py migrate librenms+grafana/event-config.yml
+python3 librenms+grafana/platform_config.py migrate librenms+grafana/event-config.yml --write
+```
+
 ## 控制台
 
 打开：

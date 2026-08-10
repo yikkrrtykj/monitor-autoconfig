@@ -612,6 +612,14 @@
     }
   }
 
+  async function fetchPlatformVersion() {
+    try {
+      return await platformApi("/version", { timeoutMs: 5000 });
+    } catch (error) {
+      return { ok: false, error: error.message || "platform version unavailable" };
+    }
+  }
+
   async function fetchApplyStatus(operationId) {
     try {
       const query = new URLSearchParams({ operationId: String(operationId || "") });
@@ -737,6 +745,7 @@
     changePlatformPassword,
     logoutPlatformAuth,
     fetchPlatformConfig,
+    fetchPlatformVersion,
     fetchApplyStatus,
     postPlatform,
     fetchIperfStatus,

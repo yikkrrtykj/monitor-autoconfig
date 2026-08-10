@@ -1,3 +1,5 @@
+schema_version: 1
+
 event:
   name:
   default_layout: tournament-64-2layer

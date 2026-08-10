@@ -14,6 +14,59 @@ deploy_warn() {
   echo "[deploy] WARN: $*" >&2
 }
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "[deploy] ERROR: python3 is required to read platform and config versions." >&2
+  exit 1
+fi
+
+version_output=$(python3 "$SCRIPT_DIR/version_info.py")
+platform_version=$(printf '%s\n' "$version_output" | sed -n '1p')
+platform_git_commit=$(printf '%s\n' "$version_output" | sed -n '2p')
+supported_schema=$(printf '%s\n' "$version_output" | sed -n '3p')
+export PLATFORM_GIT_COMMIT="$platform_git_commit"
+echo "[deploy] Platform version: $platform_version"
+echo "[deploy] Git commit: $platform_git_commit"
+echo "[deploy] Supported config schema: $supported_schema"
+
+inspect_event_config_schema() {
+  [ -f "$SCRIPT_DIR/event-config.yml" ] || return 0
+  (cd "$SCRIPT_DIR" && python3 - <<'PY'
+import sys
+from pathlib import Path
+
+from platform_config import ConfigSchemaError, inspect_config_schema, parse_simple_yaml
+
+try:
+    config = parse_simple_yaml(Path("event-config.yml").read_text(encoding="utf-8"))
+    status = inspect_config_schema(config)
+except (OSError, ValueError, ConfigSchemaError) as exc:
+    print(f"[deploy] ERROR: invalid event-config schema: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+original = status["original_version"]
+supported = status["current_supported"]
+print(f"[deploy] Event config schema: {original}")
+if status["config_too_new"]:
+    print(
+        f"[deploy] ERROR: event-config schema {original} is newer than supported schema {supported}.",
+        file=sys.stderr,
+    )
+    print(
+        "[deploy] Upgrade the monitoring platform before using this configuration.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+if status["migration_required"]:
+    print(f"[deploy] Config will be migrated in memory to schema {supported}.")
+    print("[deploy] event-config.yml will not be rewritten until Save/Apply.")
+PY
+  )
+}
+
+if ! inspect_event_config_schema; then
+  exit 1
+fi
+
 env_value() {
   key=$1
   file=${2:-.env}
@@ -92,10 +145,24 @@ sync_env_from_config() {
 import os
 import tempfile
 from pathlib import Path
-from platform_config import parse_simple_yaml, render_env, read_env, merge_env_file, validate_config
+from platform_config import (
+    inspect_config_schema,
+    merge_env_file,
+    migrate_config,
+    parse_simple_yaml,
+    read_env,
+    render_env,
+    validate_config,
+)
 cfg = parse_simple_yaml(Path("event-config.yml").read_text(encoding="utf-8"))
 if not isinstance(cfg, dict):
     raise SystemExit("event-config.yml is not a mapping")
+schema = inspect_config_schema(cfg)
+if schema["config_too_new"]:
+    raise SystemExit(
+        f"event-config schema {schema['original_version']} is newer than supported schema {schema['current_supported']}"
+    )
+cfg = migrate_config(cfg)
 devices = cfg.get("devices") if isinstance(cfg.get("devices"), dict) else {}
 core = devices.get("core") if isinstance(devices.get("core"), dict) else {}
 core_ip = str(core.get("ip") or "").strip()

@@ -6,6 +6,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY = ROOT.parent
 SH = shutil.which("sh") or r"C:\Program Files\Git\usr\bin\sh.exe"
 
 
@@ -104,12 +105,15 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
-def run_deploy(tmp_path: Path, unchanged=True, event_config=None, **overrides):
+def run_deploy(tmp_path: Path, unchanged=True, event_config=None, env_text=ENV_TEXT, **overrides):
     project = tmp_path / "project"
     project.mkdir()
     shutil.copy2(ROOT / "deploy.sh", project / "deploy.sh")
     shutil.copy2(ROOT / "platform_config.py", project / "platform_config.py")
-    (project / ".env").write_text(ENV_TEXT, encoding="utf-8")
+    shutil.copy2(ROOT / "version_info.py", project / "version_info.py")
+    shutil.copy2(REPOSITORY / "VERSION", project / "VERSION")
+    if env_text is not None:
+        (project / ".env").write_text(env_text, encoding="utf-8")
     if event_config is not None:
         (project / "event-config.yml").write_text(event_config, encoding="utf-8")
     (project / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
@@ -167,13 +171,44 @@ def test_pull_failure_continues_when_all_remote_images_exist_locally(tmp_path):
 
 
 def test_fresh_event_config_without_core_switch_can_bootstrap(tmp_path):
+    event_config = "devices:\n  core:\n    ip:\n  stage_switches: []\n"
     completed, _ = run_deploy(
         tmp_path,
-        event_config="devices:\n  core:\n    ip:\n  stage_switches: []\n",
+        event_config=event_config,
     )
 
     assert completed.returncode == 0
     assert "event-config.yml has blocking validation errors" not in completed.stderr
+    assert "[deploy] Event config schema: 0" in completed.stdout
+    assert "Config will be migrated in memory to schema 1" in completed.stdout
+    assert "event-config.yml will not be rewritten until Save/Apply" in completed.stdout
+    assert (tmp_path / "project" / "event-config.yml").read_text(encoding="utf-8") == event_config
+
+
+def test_deploy_reports_platform_git_and_supported_schema(tmp_path):
+    completed, _ = run_deploy(tmp_path, PLATFORM_GIT_COMMIT="testcommit")
+    version = (REPOSITORY / "VERSION").read_text(encoding="utf-8").strip()
+
+    assert completed.returncode == 0
+    assert f"[deploy] Platform version: {version}" in completed.stdout
+    assert "[deploy] Git commit: testcommit" in completed.stdout
+    assert "[deploy] Supported config schema: 1" in completed.stdout
+
+
+def test_newer_event_schema_fails_before_config_or_env_can_change(tmp_path):
+    event_config = "schema_version: 2\ncustom_future:\n  keep: safe\n"
+    completed, log = run_deploy(
+        tmp_path,
+        event_config=event_config,
+        env_text=None,
+    )
+
+    assert completed.returncode == 1
+    assert "event-config schema 2 is newer than supported schema 1" in completed.stderr
+    assert "Upgrade the monitoring platform" in completed.stderr
+    assert (tmp_path / "project" / "event-config.yml").read_text(encoding="utf-8") == event_config
+    assert not (tmp_path / "project" / ".env").exists()
+    assert log == ""
 
 
 def test_pull_failure_stops_and_lists_remote_images_missing_locally(tmp_path):

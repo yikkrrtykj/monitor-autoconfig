@@ -109,6 +109,30 @@ def test_http_auth_flow():
             assert status == 200
             assert payload["authenticated"] is False
 
+            api.CONFIG_PATH = Path(tmp) / "event-config.yml"
+            api.CONFIG_PATH.write_text(
+                "devices:\n  core:\n    ip: 192.168.10.254\nalerts:\n  feishu_app_secret: never-return-this\n",
+                encoding="utf-8",
+            )
+            api.get_version_info = lambda: {
+                "platform_version": (ROOT.parent / "VERSION").read_text(encoding="utf-8").strip(),
+                "git_commit": "abcdef1",
+                "config_schema_supported": 1,
+            }
+            status, _, payload = request_json(f"{base_url}/version")
+            assert status == 200
+            assert payload == {
+                "ok": True,
+                "platform_version": (ROOT.parent / "VERSION").read_text(encoding="utf-8").strip(),
+                "git_commit": "abcdef1",
+                "config_schema_supported": 1,
+                "config_schema_original": 0,
+                "config_schema_current": 1,
+                "migration_required": True,
+                "config_too_new": False,
+            }
+            assert "never-return-this" not in json.dumps(payload)
+
             status, _, payload = request_json(f"{base_url}/config")
             assert status == 401
             assert payload["error"] == "需要登录"
@@ -147,7 +171,6 @@ def test_http_auth_flow():
             assert "HttpOnly" in headers["Set-Cookie"]
             cookie = headers["Set-Cookie"].split(";", 1)[0]
 
-            api.CONFIG_PATH = Path(tmp) / "event-config.yml"
             api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
             status, _, payload = request_json(f"{base_url}/network/dhcp/settings", {
                 "username": "cisco-admin",
