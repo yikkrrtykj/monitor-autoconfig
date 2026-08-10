@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "devices": [
+    {
+      "device_id": 7001,
+      "hostname": "192.0.2.10",
+      "ip": "192.0.2.10",
+      "sysName": "fixture-firewall"
+    }
+  ]
+}

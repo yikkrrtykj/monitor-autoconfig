@@ -1,15 +1,24 @@
 import importlib.util
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from librenms_client import LibreNMSUnavailable
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "librenms"
 MODULE_PATH = ROOT / "discover-isp-targets.py"
 spec = importlib.util.spec_from_file_location("discover_isp_targets", MODULE_PATH)
 disco = importlib.util.module_from_spec(spec)
 assert spec.loader
 spec.loader.exec_module(disco)
+
+
+def fixture(name):
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
 def _hillstone_walks():
@@ -334,6 +343,80 @@ class FakeLibreNMSClient:
         return [{"port_id": 9, "ifIndex": "3", "ifAlias": "telecom"}]
 
 
+class PolicyClient:
+    base_url = "http://librenms:8000"
+    token = "configured"
+
+    def __init__(self, inventory, failures=None):
+        self.inventory = inventory
+        self.failures = failures or {}
+        self.calls = []
+        self.request_count = 0
+
+    def _failure(self, target, component):
+        failure = self.failures.get((target, component))
+        if failure:
+            raise failure
+
+    def list_devices(self):
+        self.calls.append(("*", "devices"))
+        self.request_count += 1
+        self._failure("*", "devices")
+        return [dict(value[0]) for value in self.inventory.values()]
+
+    def resolve_device(self, identifier):
+        target = str(identifier)
+        self._failure(target, "device")
+        if target not in self.inventory:
+            raise LibreNMSUnavailable("device not found token=hidden")
+        return dict(self.inventory[target][0])
+
+    def get_device_ports(self, metadata, columns=None, with_vlans=False):
+        target = str(metadata["ip"])
+        self.calls.append((target, "ports"))
+        self.request_count += 1
+        self._failure(target, "ports")
+        assert columns == "port_id,ifIndex,ifName,ifDescr,ifAlias,ifOperStatus"
+        assert with_vlans is False
+        return [dict(row) for row in self.inventory[target][1]]
+
+    def get_device_ip_addresses(self, metadata):
+        target = str(metadata["ip"])
+        self.calls.append((target, "addresses"))
+        self.request_count += 1
+        self._failure(target, "addresses")
+        return [dict(row) for row in self.inventory[target][2]]
+
+
+def fixture_inventory(target="192.0.2.10", last_polled=None):
+    metadata = dict(fixture("firewall-device.json")["devices"][0])
+    metadata.update({"hostname": target, "ip": target})
+    if last_polled is not None:
+        metadata["last_polled"] = last_polled
+    return (
+        metadata,
+        fixture("firewall-ports.json")["ports"],
+        fixture("firewall-ip.json")["addresses"],
+    )
+
+
+def route_walk(gateway="8.8.8.14", ifindex="11", legacy=False, calls=None):
+    def walk(_ip, _community, oid, _timeout):
+        if calls is not None:
+            calls.append(oid)
+        suffix = ".0.fixture"
+        if oid == disco.OID_CIDR_DEFAULT_NEXTHOP:
+            return {} if legacy else {f"{oid}{suffix}": gateway}
+        if oid == disco.OID_CIDR_DEFAULT_IFINDEX:
+            return {} if legacy else {f"{oid}{suffix}": ifindex}
+        if oid == disco.OID_ROUTE_DEFAULT_NEXTHOP:
+            return {oid: gateway}
+        if oid == disco.OID_ROUTE_DEFAULT_IFINDEX:
+            return {oid: ifindex}
+        raise AssertionError(f"inventory SNMP walk was not expected: {oid}")
+    return walk
+
+
 def test_librenms_fallback_uses_shared_client_without_changing_wan_mapping():
     client = FakeLibreNMSClient()
 
@@ -341,7 +424,7 @@ def test_librenms_fallback_uses_shared_client_without_changing_wan_mapping():
 
     assert client.resolved == ["192.0.2.1"]
     assert client.list_calls == 1
-    assert client.port_columns == "port_id,ifIndex,ifName,ifDescr,ifAlias"
+    assert client.port_columns == "port_id,ifIndex,ifName,ifDescr,ifAlias,ifOperStatus"
     assert results == [{
         "gateway": "8.8.8.9",
         "name": "telecom",
@@ -361,6 +444,121 @@ def test_librenms_api_failure_returns_safely_without_logging_secret(capsys):
     assert "do-not-log" not in error
 
 
+def test_hybrid_is_default_and_invalid_source_is_safe(monkeypatch, capsys):
+    monkeypatch.delenv("ISP_DISCOVERY_SOURCE", raising=False)
+    assert disco.isp_discovery_source() == "hybrid"
+    monkeypatch.setenv("ISP_DISCOVERY_SOURCE", "future")
+    assert disco.isp_discovery_source() == "hybrid"
+    assert "future" in capsys.readouterr().err
+
+
+def test_fixture_inventory_joins_port_id_to_real_ifindex_and_filters_down():
+    _metadata, ports, addresses = fixture_inventory()
+    walks = disco.librenms_inventory_walks(addresses, ports)
+
+    assert walks[disco.OID_IP_AD_ENT_IFINDEX][
+        f"{disco.OID_IP_AD_ENT_IFINDEX}.8.8.8.10"
+    ] == "11"
+    assert f"{disco.OID_IF_ALIAS}.11" in walks[disco.OID_IF_ALIAS]
+    assert f"{disco.OID_IF_ALIAS}.1001" not in walks[disco.OID_IF_ALIAS]
+    assert f"{disco.OID_IP_AD_ENT_IFINDEX}.9.9.9.10" not in walks[
+        disco.OID_IP_AD_ENT_IFINDEX
+    ]
+
+
+def test_fixture_librenms_mapping_keeps_alias_name_descr_and_safe_prefixes():
+    _metadata, ports, addresses = fixture_inventory()
+    results = disco.discover_from_librenms(addresses, ports)
+    by_ip = {item["wan_ip"]: item for item in results}
+
+    assert by_ip["8.8.8.10"]["name"] == "WAN1"
+    assert by_ip["1.1.1.2"]["name"] == "WAN2"
+    assert "9.9.9.10" not in by_ip
+    assert "10.20.30.1" not in by_ip
+    assert by_ip["4.4.4.4"]["gateway"] == ""
+    assert by_ip["208.67.222.222"]["gateway"] == ""
+
+    descr_only = disco.discover_from_librenms(
+        [{"port_id": 9, "ipv4_address": "8.8.4.4", "ipv4_prefixlen": 30}],
+        [{"port_id": 9, "ifIndex": 90, "ifDescr": "WAN descr", "ifOperStatus": 1}],
+    )
+    assert descr_only[0]["name"] == "WAN descr"
+
+
+def test_hybrid_uses_only_route_snmp_and_real_next_hop_wins():
+    _metadata, ports, addresses = fixture_inventory()
+    calls = []
+    results = disco.collect_hybrid(
+        "192.0.2.10", "community", disco.wan_keywords("wan"), 2,
+        addresses, ports, walk=route_walk(calls=calls),
+    )
+    by_ip = {item["wan_ip"]: item for item in results}
+
+    assert calls == [disco.OID_CIDR_DEFAULT_NEXTHOP, disco.OID_CIDR_DEFAULT_IFINDEX]
+    assert by_ip["8.8.8.10"]["gateway"] == "8.8.8.14"
+    assert by_ip["8.8.8.10"]["source"] == "gateway"
+    assert by_ip["1.1.1.2"]["gateway"] == "1.1.1.1"
+    assert by_ip["1.1.1.2"]["source"] == "librenms_subnet_gateway"
+
+
+def test_hybrid_retains_rfc1213_route_fallback_without_inventory_walks():
+    _metadata, ports, addresses = fixture_inventory()
+    calls = []
+    results = disco.collect_hybrid(
+        "192.0.2.10", "community", disco.wan_keywords("wan"), 2,
+        addresses, ports, walk=route_walk(legacy=True, calls=calls),
+    )
+    assert calls == [
+        disco.OID_CIDR_DEFAULT_NEXTHOP,
+        disco.OID_CIDR_DEFAULT_IFINDEX,
+        disco.OID_ROUTE_DEFAULT_NEXTHOP,
+        disco.OID_ROUTE_DEFAULT_IFINDEX,
+    ]
+    assert next(item for item in results if item["wan_ip"] == "8.8.8.10")[
+        "gateway"
+    ] == "8.8.8.14"
+
+
+def test_direct_walk_mapping_never_invents_slash31_or_slash32_gateway():
+    for mask in ("255.255.255.254", "255.255.255.255"):
+        walks = {
+            disco.OID_IF_ALIAS: {f"{disco.OID_IF_ALIAS}.7": "WAN"},
+            disco.OID_IP_AD_ENT_IFINDEX: {
+                f"{disco.OID_IP_AD_ENT_IFINDEX}.8.8.8.8": "7"
+            },
+            disco.OID_IP_AD_ENT_NETMASK: {
+                f"{disco.OID_IP_AD_ENT_NETMASK}.8.8.8.8": mask
+            },
+            disco.OID_CIDR_DEFAULT_NEXTHOP: {},
+            disco.OID_CIDR_DEFAULT_IFINDEX: {},
+        }
+        results = disco.discover_from_walks(walks, disco.wan_keywords("wan"))
+        assert results[0]["gateway"] == ""
+        assert disco.build_file_sd(results, set()) == []
+
+
+def test_missing_public_port_mapping_is_incomplete_not_port_id_guessing():
+    with pytest.raises(disco.ISPDataIncomplete):
+        disco.librenms_inventory_walks(
+            [{"port_id": 9999, "ipv4_address": "8.8.8.10", "ipv4_prefixlen": 29}],
+            [{"port_id": 1, "ifIndex": 11, "ifName": "WAN"}],
+        )
+
+
+def test_stale_inventory_is_rejected_but_unknown_timestamp_is_accepted(monkeypatch):
+    monkeypatch.setenv("ISP_LIBRENMS_POLL_MAX_AGE_SECONDS", "600")
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()
+    stale_client = PolicyClient({"192.0.2.10": fixture_inventory(last_polled=stale)})
+    with pytest.raises(disco.ISPDataIncomplete):
+        disco.fetch_librenms_inventory(stale_client, "192.0.2.10")
+
+    unknown_client = PolicyClient({"192.0.2.10": fixture_inventory()})
+    _metadata, addresses, ports = disco.fetch_librenms_inventory(
+        unknown_client, "192.0.2.10"
+    )
+    assert addresses and ports
+
+
 def test_main_keeps_direct_snmp_before_librenms_fallback(monkeypatch, tmp_path):
     written = []
     monkeypatch.setenv("ISP_TARGETS_FILE", str(tmp_path / "isp.json"))
@@ -368,14 +566,14 @@ def test_main_keeps_direct_snmp_before_librenms_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWALL_SNMP_TARGETS", "192.0.2.1")
     monkeypatch.setenv("BIGSCREEN_ISP_NAMES", "")
     monkeypatch.setenv("ISP_PING", "")
+    monkeypatch.setenv("ISP_DISCOVERY_SOURCE", "direct-snmp")
     monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
     monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: [{
         "gateway": "8.8.8.9", "name": "direct", "wan_ip": "8.8.8.10", "source": "gateway",
     }])
     monkeypatch.setattr(
-        disco,
-        "collect_from_librenms",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fallback must not run")),
+        disco, "LibreNMSClient",
+        lambda: (_ for _ in ()).throw(AssertionError("direct mode must not use API")),
     )
 
     disco.main()
@@ -383,7 +581,7 @@ def test_main_keeps_direct_snmp_before_librenms_fallback(monkeypatch, tmp_path):
     assert written[0][0]["labels"]["display_name"] == "direct"
 
 
-def test_main_uses_librenms_only_after_direct_snmp_failure(monkeypatch, tmp_path):
+def test_main_manual_isp_ping_skips_all_automatic_collection(monkeypatch, tmp_path):
     written = []
     calls = []
     monkeypatch.setenv("ISP_TARGETS_FILE", str(tmp_path / "isp.json"))
@@ -392,21 +590,235 @@ def test_main_uses_librenms_only_after_direct_snmp_failure(monkeypatch, tmp_path
     monkeypatch.setenv("BIGSCREEN_ISP_NAMES", "")
     monkeypatch.setenv("ISP_PING", "manual:8.8.8.8")
     monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
-    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: [])
-
-    def fallback(targets, configured_names):
-        calls.append((targets, configured_names))
-        return [
-            {"gateway": "8.8.8.8", "name": "manual", "wan_ip": "8.8.8.10"},
-            {"gateway": "1.1.1.1", "name": "fallback", "wan_ip": "1.1.1.2"},
-        ]
-
-    monkeypatch.setattr(disco, "collect_from_librenms", fallback)
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: calls.append("snmp"))
+    monkeypatch.setattr(disco, "LibreNMSClient", lambda: calls.append("api"))
 
     disco.main()
 
-    assert calls == [(["192.0.2.1"], [])]
-    assert [item["targets"][0] for item in written[0]] == ["1.1.1.1"]
+    assert calls == []
+    assert written == [[]]
+
+
+def _main_env(monkeypatch, tmp_path, source, targets="192.0.2.10"):
+    monkeypatch.setenv("ISP_TARGETS_FILE", str(tmp_path / "isp.json"))
+    monkeypatch.setenv("ISP_GATEWAY_AUTO_DISCOVER", "true")
+    monkeypatch.setenv("ISP_DISCOVERY_SOURCE", source)
+    monkeypatch.setenv("FIREWALL_SNMP_TARGETS", targets)
+    monkeypatch.setenv("FIREWALL_SNMP_COMMUNITY", "private-do-not-log")
+    monkeypatch.setenv("FIREWALL_WAN_IF_FILTER", "wan")
+    monkeypatch.setenv("BIGSCREEN_ISP_NAMES", "")
+    monkeypatch.setenv("ISP_PING", "")
+
+
+def test_main_librenms_only_never_calls_snmp_and_keeps_output_schema(
+    monkeypatch, tmp_path, capsys
+):
+    _main_env(monkeypatch, tmp_path, "librenms")
+    client = PolicyClient({"192.0.2.10": fixture_inventory()})
+    written = []
+    monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
+    monkeypatch.setattr(
+        disco, "collect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no SNMP")),
+    )
+    monkeypatch.setattr(
+        disco, "collect_hybrid",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no route SNMP")),
+    )
+    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
+
+    disco.main()
+
+    assert {entry["targets"][0] for entry in written[0]} == {"8.8.8.9", "1.1.1.1"}
+    assert all(set(entry) == {"targets", "labels"} for entry in written[0])
+    assert all("display_name" in entry["labels"] for entry in written[0])
+    log = capsys.readouterr().err
+    assert "source=librenms" in log
+    assert "collection stats: api_requests=3 snmp_walks=0 snmp_gets=0" in log
+
+
+def test_main_hybrid_unknown_timestamp_uses_api_inventory_and_route_only(
+    monkeypatch, tmp_path, capsys
+):
+    _main_env(monkeypatch, tmp_path, "hybrid")
+    client = PolicyClient({"192.0.2.10": fixture_inventory()})
+    written = []
+    original = disco.collect_hybrid
+    monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
+    monkeypatch.setattr(
+        disco, "collect_hybrid",
+        lambda ip, community, keywords, timeout, addresses, ports,
+               configured_names=None: original(
+                   ip, community, keywords, timeout, addresses, ports,
+                   configured_names, walk=route_walk(),
+               ),
+    )
+    monkeypatch.setattr(
+        disco, "collect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("usable unknown-time API data must not fully fall back")
+        ),
+    )
+    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
+
+    disco.main()
+
+    assert "8.8.8.14" in {entry["targets"][0] for entry in written[0]}
+    log = capsys.readouterr().err
+    assert "inventory=librenms gateway=direct-snmp" in log
+    assert "private-do-not-log" not in log
+
+
+def test_main_stale_librenms_inventory_falls_back_only_that_device(
+    monkeypatch, tmp_path
+):
+    _main_env(monkeypatch, tmp_path, "hybrid")
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()
+    client = PolicyClient({"192.0.2.10": fixture_inventory(last_polled=stale)})
+    direct_calls = []
+    written = []
+    monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
+    monkeypatch.setattr(
+        disco, "collect",
+        lambda ip, *_args, **_kwargs: direct_calls.append(ip) or [{
+            "gateway": "8.8.8.9", "name": "direct", "wan_ip": "8.8.8.10",
+            "source": "gateway",
+        }],
+    )
+    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
+
+    disco.main()
+
+    assert direct_calls == ["192.0.2.10"]
+    assert written[0][0]["targets"] == ["8.8.8.9"]
+
+
+def test_main_multiple_firewalls_fall_back_per_device_without_secret_leak(
+    monkeypatch, tmp_path, capsys
+):
+    targets = "192.0.2.10,192.0.2.20"
+    _main_env(monkeypatch, tmp_path, "hybrid", targets=targets)
+    client = PolicyClient(
+        {
+            "192.0.2.10": fixture_inventory("192.0.2.10"),
+            "192.0.2.20": fixture_inventory("192.0.2.20"),
+        },
+        failures={
+            ("192.0.2.20", "device"): LibreNMSUnavailable(
+                "token=hidden community=hidden"
+            )
+        },
+    )
+    direct_calls = []
+    written = []
+    original = disco.collect_hybrid
+    monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
+    monkeypatch.setattr(
+        disco, "collect_hybrid",
+        lambda ip, community, keywords, timeout, addresses, ports,
+               configured_names=None: original(
+                   ip, community, keywords, timeout, addresses, ports,
+                   configured_names, walk=route_walk(),
+               ),
+    )
+    monkeypatch.setattr(
+        disco, "collect",
+        lambda ip, *_args, **_kwargs: direct_calls.append(ip) or [{
+            "gateway": "9.9.9.9", "name": "fallback", "wan_ip": "9.9.9.10",
+            "source": "gateway",
+        }],
+    )
+    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
+
+    disco.main()
+
+    assert direct_calls == ["192.0.2.20"]
+    targets_written = {entry["targets"][0] for entry in written[0]}
+    assert {"8.8.8.14", "9.9.9.9"}.issubset(targets_written)
+    log = capsys.readouterr().err
+    assert "LibreNMSUnavailable" in log
+    assert "hidden" not in log and "private-do-not-log" not in log
+
+
+def test_main_hybrid_global_api_failure_falls_back_each_firewall(
+    monkeypatch, tmp_path, capsys
+):
+    _main_env(
+        monkeypatch, tmp_path, "hybrid", targets="192.0.2.10,192.0.2.20"
+    )
+    client = PolicyClient(
+        {
+            "192.0.2.10": fixture_inventory("192.0.2.10"),
+            "192.0.2.20": fixture_inventory("192.0.2.20"),
+        },
+        failures={
+            ("*", "devices"): LibreNMSUnavailable("token=hidden password=hidden")
+        },
+    )
+    direct_calls = []
+    monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
+    monkeypatch.setattr(
+        disco, "collect",
+        lambda ip, *_args, **_kwargs: direct_calls.append(ip) or [{
+            "gateway": "8.8.8.9" if ip.endswith(".10") else "1.1.1.1",
+            "name": ip, "wan_ip": "8.8.8.10", "source": "gateway",
+        }],
+    )
+    monkeypatch.setattr(disco, "write_file_sd", lambda *_args: None)
+
+    disco.main()
+
+    assert direct_calls == ["192.0.2.10", "192.0.2.20"]
+    log = capsys.readouterr().err
+    assert "LibreNMSUnavailable" in log
+    assert "hidden" not in log and "private-do-not-log" not in log
+
+
+def test_main_librenms_only_insufficient_inventory_skips_safely(
+    monkeypatch, tmp_path, capsys
+):
+    _main_env(monkeypatch, tmp_path, "librenms")
+    metadata, _ports, addresses = fixture_inventory()
+    client = PolicyClient({"192.0.2.10": (metadata, [], addresses)})
+    written = []
+    monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
+    monkeypatch.setattr(
+        disco, "collect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no SNMP")),
+    )
+    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
+
+    disco.main()
+
+    assert written == [[]]
+    assert "insufficient; skipping" in capsys.readouterr().err
+
+
+def test_hybrid_route_walk_count_is_significantly_below_old_inventory_path():
+    _metadata, ports, addresses = fixture_inventory()
+    hybrid_calls = []
+    disco.collect_hybrid(
+        "192.0.2.10", "community", disco.wan_keywords("wan"), 2,
+        addresses, ports, walk=route_walk(calls=hybrid_calls),
+    )
+    inventory = disco.librenms_inventory_walks(addresses, ports)
+    old_calls = []
+    route = route_walk()
+
+    def full_walk(ip, community, oid, timeout):
+        old_calls.append(oid)
+        if oid in inventory:
+            return inventory[oid]
+        return route(ip, community, oid, timeout)
+
+    disco.collect(
+        "192.0.2.10", "community", disco.wan_keywords("wan"), 2,
+        walk=full_walk,
+    )
+    assert len(old_calls) == 7
+    assert hybrid_calls == [
+        disco.OID_CIDR_DEFAULT_NEXTHOP, disco.OID_CIDR_DEFAULT_IFINDEX
+    ]
 
 
 def test_target_ips_parses_named_lists():

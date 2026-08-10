@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "ports": [
+    {"port_id": 1001, "ifIndex": 11, "ifName": "ethernet0/0", "ifDescr": "WAN primary", "ifAlias": "WAN1", "ifOperStatus": "up"},
+    {"port_id": 1002, "ifIndex": 22, "ifName": "WAN2", "ifDescr": "Secondary carrier", "ifAlias": "", "ifOperStatus": 1},
+    {"port_id": 1003, "ifIndex": 33, "ifName": "ethernet0/2", "ifDescr": "LAN inside", "ifAlias": "LAN", "ifOperStatus": "up"},
+    {"port_id": 1004, "ifIndex": 44, "ifName": "ethernet0/3", "ifDescr": "Backup WAN", "ifAlias": "WAN-down", "ifOperStatus": "down"},
+    {"port_id": 1005, "ifIndex": 55, "ifName": "pppoe0", "ifDescr": "Point-to-point /31", "ifAlias": "WAN31", "ifOperStatus": "up"},
+    {"port_id": 1006, "ifIndex": 66, "ifName": "pppoe1", "ifDescr": "Point-to-point /32", "ifAlias": "WAN32", "ifOperStatus": "up"}
+  ]
+}
