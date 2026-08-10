@@ -1130,6 +1130,7 @@ body {
 .topology-node.node-warn rect { stroke: rgba(251, 191, 36, 0.9); }
 .topology-node.node-bad  rect { stroke: rgba(248, 113, 113, 0.95); filter: drop-shadow(0 0 6px rgba(248, 113, 113, 0.55)); }
 .topology-node.node-none rect { stroke: rgba(71, 85, 105, 0.6); stroke-dasharray: 3 3; }
+.topology-node.node-unlocated rect { stroke-dasharray: 5 4; }
 
 .topology-node:hover rect,
 .topology-node:focus rect {

@@ -159,12 +159,18 @@
     const DIST_LINK_GAP = 66;
     const DIST_NODE_GAP = 44;
     const hasServers = !!(layers.servers && layers.servers.length);
-    const usableHeight = Math.max(420, canvasHeight || 680) + (hasServers ? 96 : 0);
+    // A short/wide viewport used to squeeze unresolved servers onto the same
+    // y-coordinate as the core distribution bus.  The bus then ran behind an
+    // otherwise unlinked server card and looked like a real cable.  Reserve a
+    // minimum vertical lane whenever server cards are present.
+    const usableHeight = Math.max(hasServers ? 620 : 420, canvasHeight || 680) +
+      (hasServers ? 96 : 0);
     const layerGap = Math.max(36, (usableHeight - topPad - bottomPad - NODE_H * rowCount) / (rowCount - 1));
     const rowY = (idx) => topPad + idx * (NODE_H + layerGap);
-    // Servers sit on their own evenly-spaced row in the gap between the core and the
-    // access-switch (dist) row, so they never clamp/stack like the old flanking layout.
-    const serverRowY = rowY(2) + NODE_H + Math.max(20, (layerGap - NODE_H) / 2);
+    // Unresolved servers sit immediately below (and horizontally beside) the
+    // core, safely above the core-to-access bus. Located servers are remapped
+    // later to a branch below their confirmed access switch.
+    const serverRowY = rowY(2) + NODE_H + 12;
 
     const placeRow = (items, y) => {
       const total = items.length;
@@ -411,10 +417,10 @@
     const serverRow = baseServerRow.map((server) => {
       const parentIp = serverParentByIp.get(server.ip);
       const parent = infrastructureByIp.get(parentIp);
-      if (!parent) return server;
+      if (!parent) return { ...server, unlocated: true };
       const reservedSlot = distTree.serverSlotsByIp.get(server.ip);
       if (reservedSlot) {
-        return { ...server, x: reservedSlot.x, y: reservedSlot.y };
+        return { ...server, x: reservedSlot.x, y: reservedSlot.y, unlocated: false };
       }
       const siblings = siblingsByParent.get(parentIp) || [server.ip];
       const siblingIndex = siblings.indexOf(server.ip);
@@ -428,6 +434,7 @@
         // A located server is a downstream leaf. When its access switch has
         // switch children, the reserved slots above keep every leaf on one row.
         y: parent.y + NODE_H + DIST_LINK_GAP,
+        unlocated: false,
       };
     });
 
@@ -865,12 +872,15 @@
       const nameFitAttr = estTextWidth(nodeName) > nameMaxW
         ? ` textLength="${nameMaxW}" lengthAdjust="spacingAndGlyphs"`
         : "";
+      const nodeKindLabel = node.kind === "server" && node.unlocated
+        ? "服务器 · 未定位"
+        : topologyNodeKindLabel(node.kind);
       return `
-        <g class="topology-node node-${node.level}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
+        <g class="topology-node node-${node.level}${node.unlocated ? " node-unlocated" : ""}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
           <rect width="${node.w}" height="${node.h}" rx="10" />
           <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
           <text class="topology-node-name" x="34" y="22"${nameFitAttr}>${escapeHtml(nodeName)}</text>
-          <text class="topology-node-kind" x="34" y="38">${escapeHtml(topologyNodeKindLabel(node.kind))}</text>
+          <text class="topology-node-kind" x="34" y="38">${escapeHtml(nodeKindLabel)}</text>
           <text class="topology-node-latency" x="${node.w - 10}" y="38" text-anchor="end">${escapeHtml(latencyText)}</text>
           ${subline}
         </g>

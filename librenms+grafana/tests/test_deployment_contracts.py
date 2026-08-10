@@ -425,7 +425,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".compact-series .side-legend" in css
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
-    assert "style.css?v=20260803a" in index
+    assert "style.css?v=20260809a" in index
     assert "app.js?v=20260804b" in index
 
 

@@ -194,6 +194,11 @@ assert.ok(serverNode);
 assert.ok(serverNode.y > coreNode.y, "server row should sit below the core row");
 assert.ok(serverNode.y < distNode.y, "server row should sit above the access-switch row");
 assert.ok(serverNode.x > coreNode.x + coreNode.w, "a single server sits to the right of core, leaving the center trunk clear");
+assert.strictEqual(serverNode.unlocated, true, "a server without a physical edge is explicitly unlocated");
+assert.ok(
+  serverNode.y + serverNode.h < layout.coreBus.y,
+  "an unresolved server card stays entirely above the core distribution bus"
+);
 assert.ok(!layout.links.some((link) => (
   [link.from.kind, link.to.kind].includes("core") &&
   [link.from.kind, link.to.kind].includes("server")
@@ -227,6 +232,8 @@ assert.ok(multiServers.every((node) => (
 )), "no server is centered under the core trunk");
 
 const svg = renderTopologySvg(layout, 1365);
+assert.ok(svg.includes("node-unlocated"));
+assert.ok(svg.includes("服务器 · 未定位"));
 assert.ok(!svg.includes("topology-link-rate"));
 assert.ok(!svg.includes("uplinks"));
 assert.ok(!svg.includes("Core: Gi1/0/23"));
@@ -406,6 +413,7 @@ const attachedLayout = topologyLayout(
 const attachedServer = attachedLayout.nodes.find((node) => node.ip === "192.168.42.203");
 const attachedSwitch = attachedLayout.nodes.find((node) => node.ip === "192.168.10.11");
 assert.ok(attachedServer && attachedSwitch);
+assert.strictEqual(attachedServer.unlocated, false, "an FDB-located server is not marked unlocated");
 assert.strictEqual(
   Math.round(centerX(attachedServer)),
   Math.round(centerX(attachedSwitch)),
