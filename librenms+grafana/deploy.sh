@@ -8,6 +8,12 @@ set -eu
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
+DEPLOY_WARNING_COUNT=0
+deploy_warn() {
+  DEPLOY_WARNING_COUNT=$((DEPLOY_WARNING_COUNT + 1))
+  echo "[deploy] WARN: $*" >&2
+}
+
 env_value() {
   key=$1
   file=${2:-.env}
@@ -83,18 +89,38 @@ sync_env_from_config() {
     return 1
   }
   if (cd "$SCRIPT_DIR" && python3 - <<'PY'
+import os
+import tempfile
 from pathlib import Path
 from platform_config import parse_simple_yaml, render_env, read_env, merge_env_file, validate_config
 cfg = parse_simple_yaml(Path("event-config.yml").read_text(encoding="utf-8"))
 if not isinstance(cfg, dict):
     raise SystemExit("event-config.yml is not a mapping")
-bad = [item for item in validate_config(cfg) if item.get("level") == "bad"]
+devices = cfg.get("devices") if isinstance(cfg.get("devices"), dict) else {}
+core = devices.get("core") if isinstance(devices.get("core"), dict) else {}
+core_ip = str(core.get("ip") or "").strip()
+bad = [
+    item for item in validate_config(cfg)
+    if item.get("level") == "bad"
+    and not (item.get("path") == "devices.core.ip" and not core_ip)
+]
 if bad:
     for item in bad:
         print(f"{item.get('path')}: {item.get('message')}")
     raise SystemExit("event-config.yml has blocking validation errors")
 env = render_env(cfg, read_env(Path(".env")))
-Path(".env").write_text(merge_env_file(Path(".env"), env), encoding="utf-8")
+target = Path(".env")
+fd, temporary = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=target.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(merge_env_file(target, env))
+    os.replace(temporary, target)
+except Exception:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
 PY
   ); then
     echo "[deploy] .env synced from event-config.yml"
@@ -123,7 +149,7 @@ if ! env_value SERVER_IP >/dev/null 2>&1; then
     export SERVER_IP="$detected_ip"
     echo "[deploy] SERVER_IP 为空，已自动探测本机 IP -> ${detected_ip}（写入 .env）"
   else
-    echo "[deploy] WARN: 未能自动探测本机 IP，请手动在 .env 设置 SERVER_IP。" >&2
+    deploy_warn "未能自动探测本机 IP，请手动在 .env 设置 SERVER_IP。"
   fi
 fi
 
@@ -158,8 +184,18 @@ render_grafana_provisioning() {
   /bin/sh "$SCRIPT_DIR/render-grafana-provisioning.sh"
 }
 
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[deploy] ERROR: docker is not available. Install Docker first." >&2
+  exit 1
+fi
+
 if ! docker compose version >/dev/null 2>&1; then
   echo "[deploy] ERROR: docker compose is not available. Install Docker Compose plugin first." >&2
+  exit 1
+fi
+
+if ! docker compose config --quiet; then
+  echo "[deploy] ERROR: docker compose config failed; fix the configuration before deploying." >&2
   exit 1
 fi
 
@@ -188,8 +224,27 @@ pull_images() {
     attempt=$((attempt + 1))
   done
 
-  echo "[deploy] WARN: image pull still failing after $IMAGE_PULL_RETRIES attempts; continuing anyway." >&2
-  echo "[deploy] WARN: 本地构建镜像(monitor-*:local)拉不到是正常的；若真缺镜像，下面 up 阶段会报出来。" >&2
+  images=$(docker compose config --images 2>/dev/null) || {
+    echo "[deploy] ERROR: could not determine required Compose images after pull failure." >&2
+    return 1
+  }
+  missing_images=""
+  for image in $images; do
+    case "$image" in
+      monitor-*:local) continue ;;
+    esac
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+      missing_images="${missing_images}${missing_images:+
+}${image}"
+    fi
+  done
+  if [ -n "$missing_images" ]; then
+    echo "[deploy] ERROR: image pull failed and these required images are not available locally:" >&2
+    printf '%s\n' "$missing_images" | sed 's/^/[deploy]   - /' >&2
+    return 1
+  fi
+
+  deploy_warn "image pull failed after $IMAGE_PULL_RETRIES attempts, but every required remote image exists locally; continuing with the local cache."
   return 0
 }
 
@@ -200,6 +255,7 @@ pull_base_images() {
   # 这里提前用 docker pull（带回退、带重试）把基础镜像备到本地，build 即离线。
   base_images=$(sed -nE 's/^[[:space:]]*FROM[[:space:]]+([^[:space:]]+).*/\1/p' docker/*/Dockerfile 2>/dev/null | sort -u)
   [ -n "$base_images" ] || return 0
+  missing_images=""
   for image in $base_images; do
     [ "$image" = "scratch" ] && continue
     if docker image inspect "$image" >/dev/null 2>&1; then
@@ -213,20 +269,29 @@ pull_base_images() {
         break
       fi
       if [ "$attempt" -eq "$IMAGE_PULL_RETRIES" ]; then
-        echo "[deploy] WARN: base image $image 拉取失败，build 阶段可能因此报错；可稍后手动 docker pull $image 再重跑。" >&2
         break
       fi
       echo "[deploy] Pull failed; retrying in ${IMAGE_PULL_RETRY_DELAY}s..."
       sleep "$IMAGE_PULL_RETRY_DELAY"
       attempt=$((attempt + 1))
     done
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+      missing_images="${missing_images}${missing_images:+
+}${image}"
+    fi
   done
+  if [ -n "$missing_images" ]; then
+    echo "[deploy] ERROR: local service images need rebuilding, but these Dockerfile base images could not be pulled and are not available locally:" >&2
+    printf '%s\n' "$missing_images" | sed 's/^/[deploy]   - /' >&2
+    return 1
+  fi
   return 0
 }
 
 render_grafana_provisioning
-pull_images
-pull_base_images
+if ! pull_images; then
+  exit 1
+fi
 
 echo "[deploy] Checking local service images and starting monitoring stack..."
 docker compose rm -sf grafana-provisioning-render >/dev/null 2>&1 || true
@@ -250,28 +315,122 @@ for image in monitor-grafana-setup:local monitor-platform-api:local monitor-rsys
 done
 previous_hash=$([ -f "$image_stamp" ] && cat "$image_stamp" || true)
 if [ -n "$image_hash" ] && [ "$image_hash" = "$previous_hash" ] && [ "$images_ready" = true ]; then
+  needs_build=false
   echo "[deploy] Local image Dockerfiles unchanged; skipping rebuild."
-  docker compose up -d --remove-orphans
 else
+  needs_build=true
   echo "[deploy] Local image missing or Dockerfile changed; building once (layers are cached)."
-  docker compose up -d --remove-orphans --build
+fi
+
+if [ "$needs_build" = true ]; then
+  if ! pull_base_images; then
+    exit 1
+  fi
+  if ! docker compose up -d --remove-orphans --build; then
+    echo "[deploy] ERROR: docker compose up --build failed." >&2
+    exit 1
+  fi
   if [ -n "$image_hash" ]; then
-    printf '%s\n' "$image_hash" > "$image_stamp"
+    stamp_tmp=$(mktemp "$SCRIPT_DIR/.deploy-local-image.sha256.XXXXXX")
+    printf '%s\n' "$image_hash" > "$stamp_tmp"
+    mv "$stamp_tmp" "$image_stamp"
+  fi
+else
+  if ! docker compose up -d --remove-orphans; then
+    echo "[deploy] ERROR: docker compose up failed." >&2
+    exit 1
   fi
 fi
 
 # These services load bind-mounted source only when their process starts. A
 # normal `compose up` may keep an existing container when only source files
 # changed, leaving nginx's copied web files or Python's imported modules stale.
-# Restart individually with || true: under `set -e`, one absent/not-yet-created
-# service must not abort the deploy after the stack already came up fine.
+configured_services=$(docker compose config --services) || {
+  echo "[deploy] ERROR: could not determine the enabled Compose services." >&2
+  exit 1
+}
+service_is_enabled() {
+  printf '%s\n' "$configured_services" | grep -Fxq "$1"
+}
+
+restart_failed=false
 for service in bigscreen platform-api alertmanager-feishu-bridge feishu-ws; do
-  docker compose restart "$service" || echo "[deploy] WARN: restart $service failed (service missing or not running)"
+  if ! service_is_enabled "$service"; then
+    echo "[deploy] SKIP: restart $service (profile not enabled)."
+    continue
+  fi
+  docker compose restart "$service" || {
+    echo "[deploy] ERROR: restart $service failed." >&2
+    restart_failed=true
+    continue
+  }
+  echo "[deploy] Restarted $service."
 done
 # librenms-config is a one-shot container. Recreate it as well so source-only
 # auto-config fixes (including existing-device SNMP credential synchronization)
 # are applied by a normal deploy, not only after a console Apply operation.
-docker compose up -d --force-recreate --no-deps librenms-config || echo "[deploy] WARN: recreate librenms-config failed"
+if ! docker compose up -d --force-recreate --no-deps librenms-config; then
+  echo "[deploy] ERROR: could not recreate librenms-config." >&2
+  exit 1
+fi
+
+LIBRENMS_CONFIG_TIMEOUT=${LIBRENMS_CONFIG_TIMEOUT:-180}
+LIBRENMS_CONFIG_INTERVAL=${LIBRENMS_CONFIG_INTERVAL:-2}
+config_started=$(date +%s)
+config_deadline=$((config_started + LIBRENMS_CONFIG_TIMEOUT))
+while :; do
+  config_id=$(docker compose ps -a -q librenms-config 2>/dev/null | sed -n '1p')
+  if [ -z "$config_id" ]; then
+    echo "[deploy] ERROR: librenms-config container does not exist after recreation." >&2
+    echo "[deploy] Diagnose with: docker compose logs --tail=100 librenms-config" >&2
+    exit 1
+  fi
+  config_state=$(docker inspect --format '{{.State.Status}}' "$config_id" 2>/dev/null || true)
+  case "$config_state" in
+    exited|dead)
+      config_exit=$(docker inspect --format '{{.State.ExitCode}}' "$config_id" 2>/dev/null || true)
+      if [ "$config_exit" = 0 ]; then
+        echo "[deploy] librenms-config completed successfully (exit 0)."
+        break
+      fi
+      echo "[deploy] ERROR: librenms-config failed (exit ${config_exit:-unknown})." >&2
+      echo "[deploy] Diagnose with: docker compose logs --tail=100 librenms-config" >&2
+      exit 1
+      ;;
+    running|created|restarting) : ;;
+    *)
+      echo "[deploy] ERROR: could not determine librenms-config state (${config_state:-unknown})." >&2
+      echo "[deploy] Diagnose with: docker compose logs --tail=100 librenms-config" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$(date +%s)" -ge "$config_deadline" ]; then
+    echo "[deploy] ERROR: librenms-config did not finish within ${LIBRENMS_CONFIG_TIMEOUT}s (last state: $config_state)." >&2
+    echo "[deploy] Diagnose with: docker compose logs --tail=100 librenms-config" >&2
+    exit 1
+  fi
+  sleep "$LIBRENMS_CONFIG_INTERVAL"
+done
+
+if [ "$restart_failed" = true ]; then
+  echo "[deploy] ERROR: one or more required bind-mounted services failed to restart." >&2
+  exit 1
+fi
 
 echo "[deploy] Current service status:"
 docker compose ps
+
+if ! "$SCRIPT_DIR/deploy-check.sh" bootstrap; then
+  echo "[deploy] ERROR: platform bootstrap verification failed." >&2
+  exit 1
+fi
+
+server_ip=$(env_value SERVER_IP 2>/dev/null || true)
+server_ip=${server_ip:-SERVER_IP}
+if [ "$DEPLOY_WARNING_COUNT" -gt 0 ]; then
+  echo "[deploy] Result: PASS_WITH_WARNINGS (${DEPLOY_WARNING_COUNT} warning(s))."
+else
+  echo "[deploy] Result: PASS."
+fi
+echo "[deploy] Platform bootstrap completed successfully."
+echo "[deploy] Open http://${server_ip}:8088/control and configure the event."

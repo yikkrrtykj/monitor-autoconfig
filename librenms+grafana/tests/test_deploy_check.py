@@ -1,0 +1,320 @@
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SH = shutil.which("sh") or r"C:\Program Files\Git\usr\bin\sh.exe"
+
+
+DOCKER_STUB = r"""#!/bin/sh
+if [ "$1" = "compose" ]; then
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -f|--env-file|--project-directory) shift 2 ;;
+      *) break ;;
+    esac
+  done
+  command=${1:-}
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    version) exit 0 ;;
+    config) exit 0 ;;
+    ps)
+      service=""
+      for argument in "$@"; do service=$argument; done
+      [ "$service" = "${STUB_MISSING_SERVICE:-}" ] && exit 0
+      printf 'cid-%s\n' "$service"
+      exit 0
+      ;;
+  esac
+  exit 0
+fi
+
+if [ "$1" = "inspect" ]; then
+  format=$3
+  container=$4
+  service=${container#cid-}
+  case "$format" in
+    *State.Status*)
+      if [ "$service" = "${STUB_EXITED_SERVICE:-}" ]; then
+        echo exited
+      else
+        echo running
+      fi
+      ;;
+    *State.Health*)
+      if [ "$service" = "${STUB_HEALTH_SERVICE:-}" ]; then
+        case "${STUB_HEALTH_MODE:-}" in
+          starting_once)
+            counter="$STUB_STATE_DIR/health-counter"
+            if [ ! -f "$counter" ]; then
+              echo 1 > "$counter"
+              echo starting
+            else
+              echo healthy
+            fi
+            ;;
+          starting) echo starting ;;
+          unhealthy) echo unhealthy ;;
+          *) echo none ;;
+        esac
+      else
+        echo none
+      fi
+      ;;
+    *State.ExitCode*) echo "${STUB_EXIT_CODE:-1}" ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+
+exit 0
+"""
+
+
+CURL_STUB = r"""#!/bin/sh
+url=""
+for argument in "$@"; do url=$argument; done
+[ -z "${STUB_HTTP_LOG:-}" ] || printf '%s\n' "$url" >> "$STUB_HTTP_LOG"
+case "$url" in
+  */metrics)
+    echo "prometheus_config_last_reload_successful ${STUB_RELOAD_SUCCESS:-1}"
+    ;;
+  */api/v1/targets*)
+    if [ -n "${STUB_TARGETS_JSON:-}" ]; then
+      printf '%s\n' "$STUB_TARGETS_JSON"
+    else
+      printf '{"status":"success","data":{"activeTargets":[]}}\n'
+    fi
+    ;;
+  */player-targets/status)
+    if [ -n "${STUB_PLAYER_STATUS:-}" ]; then
+      printf '%s\n' "$STUB_PLAYER_STATUS"
+    else
+      printf '{"ok":true,"targets":{"total":0}}\n'
+    fi
+    ;;
+  *) printf '{}\n' ;;
+esac
+"""
+
+
+BASE_ENV = """SERVER_IP=127.0.0.1
+COMPOSE_PROFILES=
+CORE_SWITCH_PING=
+TOURNAMENT_SWITCHES=
+FIREWALL_PING=
+FIREWALL_SNMP_TARGETS=
+ISP_PING=
+BIGSCREEN_ISP_NAMES=
+BIGSCREEN_ISP_IPS=
+PLAYER_SUBNETS=
+"""
+
+
+def _write_executable(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="\n")
+    path.chmod(0o755)
+
+
+def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json", **overrides):
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copy2(ROOT / "deploy-check.sh", project / "deploy-check.sh")
+    shutil.copy2(ROOT / "platform_config.py", project / "platform_config.py")
+    (project / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (project / ".env").write_text(env_text, encoding="utf-8")
+
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    _write_executable(stub_bin / "docker", DOCKER_STUB)
+    _write_executable(stub_bin / "curl", CURL_STUB)
+    _write_executable(stub_bin / "sleep", "#!/bin/sh\nexit 0\n")
+    python_path = Path(sys.executable).as_posix()
+    _write_executable(stub_bin / "python3", f'#!/bin/sh\nexec "{python_path}" "$@"\n')
+
+    env = os.environ.copy()
+    env.update({
+        "PATH": os.pathsep.join((str(stub_bin), str(Path(SH).parent), env.get("PATH", ""))),
+        "DEPLOY_CHECK_TIMEOUT": "0",
+        "DEPLOY_CHECK_INTERVAL": "0",
+        "STUB_STATE_DIR": str(tmp_path),
+        "STUB_HTTP_LOG": str(tmp_path / "http.log"),
+    })
+    env.update({key: str(value) for key, value in overrides.items()})
+    arguments = [SH, str(project / "deploy-check.sh")]
+    if mode is not None:
+        arguments.append(mode)
+    if output == "json":
+        arguments.append("--json")
+    elif output == "quiet":
+        arguments.append("--quiet")
+    completed = subprocess.run(
+        arguments,
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    assert completed.stdout, completed.stderr
+    payload = json.loads(completed.stdout) if output == "json" else completed.stdout
+    return completed, payload
+
+
+def checks_by_id(payload):
+    return {item["id"]: item for item in payload["checks"]}
+
+
+def test_bootstrap_does_not_require_player_targets_or_core_switch(tmp_path):
+    completed, payload = run_check(tmp_path)
+
+    assert completed.returncode == 0
+    assert payload["result"] == "PASS"
+    ids = checks_by_id(payload)
+    assert "configured_core" not in ids
+    assert "player_generator" not in ids
+
+
+def test_disabled_optional_profiles_are_skipped(tmp_path):
+    _, payload = run_check(tmp_path)
+    checks = checks_by_id(payload)
+
+    assert checks["unifi_profile"]["status"] == "SKIP"
+    assert checks["feishu_profile"]["status"] == "SKIP"
+
+
+def test_enabled_optional_profiles_are_checked(tmp_path):
+    env_text = BASE_ENV.replace("COMPOSE_PROFILES=", "COMPOSE_PROFILES=unifi,feishu")
+    completed, payload = run_check(tmp_path, env_text=env_text)
+    checks = checks_by_id(payload)
+
+    assert completed.returncode == 0
+    assert checks["unifi_profile"]["status"] == "PASS"
+    assert checks["feishu_profile"]["status"] == "PASS"
+
+
+@pytest.mark.parametrize("failure_kind", ["missing", "exited"])
+def test_required_container_missing_or_exited_fails(tmp_path, failure_kind):
+    override = (
+        {"STUB_MISSING_SERVICE": "prometheus"}
+        if failure_kind == "missing"
+        else {"STUB_EXITED_SERVICE": "prometheus", "STUB_EXIT_CODE": "2"}
+    )
+    completed, payload = run_check(tmp_path, **override)
+
+    assert completed.returncode == 1
+    assert payload["result"] == "FAIL"
+    assert checks_by_id(payload)["prometheus"]["status"] == "FAIL"
+
+
+def test_health_starting_then_healthy_passes(tmp_path):
+    completed, payload = run_check(
+        tmp_path,
+        STUB_HEALTH_SERVICE="prometheus",
+        STUB_HEALTH_MODE="starting_once",
+        DEPLOY_CHECK_TIMEOUT="2",
+    )
+
+    assert completed.returncode == 0
+    assert checks_by_id(payload)["prometheus"]["status"] == "PASS"
+
+
+def test_health_starting_until_timeout_fails_with_last_state(tmp_path):
+    completed, payload = run_check(
+        tmp_path,
+        STUB_HEALTH_SERVICE="prometheus",
+        STUB_HEALTH_MODE="starting",
+    )
+
+    check = checks_by_id(payload)["prometheus"]
+    assert completed.returncode == 1
+    assert check["status"] == "FAIL"
+    assert "running/starting" in check["message"]
+
+
+def test_configured_checks_only_components_that_are_actually_configured(tmp_path):
+    env_text = BASE_ENV.replace("CORE_SWITCH_PING=", "CORE_SWITCH_PING=core:192.0.2.10")
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=env_text,
+        STUB_TARGETS_JSON='{"job":"infra-core-ping","target":"192.0.2.10"}',
+    )
+    checks = checks_by_id(payload)
+
+    assert completed.returncode == 0
+    assert checks["configured_core"]["status"] == "PASS"
+    assert checks["configured_stage"]["status"] == "SKIP"
+    assert checks["configured_firewall"]["status"] == "SKIP"
+    assert checks["configured_isp"]["status"] == "SKIP"
+    assert checks["player_generator"]["status"] == "SKIP"
+
+
+def test_configured_player_generator_does_not_require_players_online(tmp_path):
+    env_text = BASE_ENV.replace(
+        "TOURNAMENT_SWITCHES=",
+        "TOURNAMENT_SWITCHES=stage-1:192.0.2.20",
+    ).replace("PLAYER_SUBNETS=", "PLAYER_SUBNETS=198.51.100.0/24")
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=env_text,
+        STUB_TARGETS_JSON='{"job":"infra-dist-ping","target":"192.0.2.20"}',
+        STUB_PLAYER_STATUS='{"ok":true,"targets":{"total":0}}',
+    )
+
+    assert completed.returncode == 0
+    assert checks_by_id(payload)["player_generator"]["status"] == "PASS"
+
+
+def test_json_output_has_the_documented_shape(tmp_path):
+    completed, payload = run_check(tmp_path)
+
+    assert completed.stderr == ""
+    assert set(payload) == {
+        "mode",
+        "result",
+        "passed",
+        "failed",
+        "skipped",
+        "checks",
+        "duration_seconds",
+    }
+    assert payload["mode"] == "bootstrap"
+    assert isinstance(payload["checks"], list)
+    assert isinstance(payload["duration_seconds"], int)
+
+
+def test_default_mode_is_bootstrap_and_quiet_only_prints_result(tmp_path):
+    completed, output = run_check(tmp_path, mode=None, output="quiet")
+
+    assert completed.returncode == 0
+    assert output.startswith("Result: PASS")
+    assert "Deployment check:" not in output
+
+
+def test_console_apply_checks_services_on_the_internal_compose_network(tmp_path):
+    completed, _ = run_check(tmp_path, PLATFORM_API_SELF_APPLY="true")
+    urls = (tmp_path / "http.log").read_text(encoding="utf-8")
+
+    assert completed.returncode == 0
+    assert "http://prometheus:9090/-/healthy" in urls
+    assert "http://grafana:3000/api/health" in urls
+    assert "http://bigscreen/" in urls
+
+
+def test_deploy_check_never_sources_the_environment_file():
+    script = (ROOT / "deploy-check.sh").read_text(encoding="utf-8")
+
+    assert "source .env" not in script
+    assert ". .env" not in script
+    assert "from platform_config import read_env" in script

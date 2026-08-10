@@ -116,18 +116,38 @@ sync_env_from_config() {
   [ -f "$SCRIPT_DIR/platform_config.py" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 1
   if (cd "$SCRIPT_DIR" && python3 - <<'PY'
+import os
+import tempfile
 from pathlib import Path
 from platform_config import parse_simple_yaml, render_env, read_env, merge_env_file, validate_config
 cfg = parse_simple_yaml(Path("event-config.yml").read_text(encoding="utf-8"))
 if not isinstance(cfg, dict):
     raise SystemExit("event-config.yml is not a mapping")
-bad = [item for item in validate_config(cfg) if item.get("level") == "bad"]
+devices = cfg.get("devices") if isinstance(cfg.get("devices"), dict) else {}
+core = devices.get("core") if isinstance(devices.get("core"), dict) else {}
+core_ip = str(core.get("ip") or "").strip()
+bad = [
+    item for item in validate_config(cfg)
+    if item.get("level") == "bad"
+    and not (item.get("path") == "devices.core.ip" and not core_ip)
+]
 if bad:
     for item in bad:
         print(f"{item.get('path')}: {item.get('message')}")
     raise SystemExit("event-config.yml has blocking validation errors")
 env = render_env(cfg, read_env(Path(".env")))
-Path(".env").write_text(merge_env_file(Path(".env"), env), encoding="utf-8")
+target = Path(".env")
+fd, temporary = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=target.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(merge_env_file(target, env))
+    os.replace(temporary, target)
+except Exception:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
 PY
   ); then
     echo "[apply-env] .env synced from event-config.yml"
@@ -247,5 +267,15 @@ if [ "$REMOVE_UNPOLLER" = "true" ]; then
   docker rm -f unpoller >/dev/null
 fi
 
-echo "[apply-env] Done. Watch LibreNMS config progress with:"
+if [ -n "$HOST_PROJECT_DIR" ]; then
+  export DEPLOY_CHECK_HOST_PROJECT_DIR="$HOST_PROJECT_DIR"
+fi
+if ! "$SCRIPT_DIR/deploy-check.sh" configured; then
+  echo "[apply-env] ERROR: 配置已经写入，但运行状态验证失败。" >&2
+  echo "[apply-env] Existing transaction and rollback records were preserved." >&2
+  exit 1
+fi
+
+echo "[apply-env] Configuration applied and runtime verification passed."
+echo "[apply-env] Watch LibreNMS config progress with:"
 echo "  docker logs -f librenms-config"
