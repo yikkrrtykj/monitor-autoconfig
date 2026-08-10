@@ -171,6 +171,10 @@ def test_http_auth_flow():
             assert "HttpOnly" in headers["Set-Cookie"]
             cookie = headers["Set-Cookie"].split(";", 1)[0]
 
+            status, _, payload = request_json(f"{base_url}/delivery/manifest", cookie=cookie)
+            assert status == 404
+            assert payload == {"ok": False, "error": "not found"}
+
             api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
             status, _, payload = request_json(f"{base_url}/network/dhcp/settings", {
                 "username": "cisco-admin",

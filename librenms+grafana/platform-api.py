@@ -1,4 +1,4 @@
-"""Platform API for event config, incidents, and the offline-deploy manifest.
+"""Platform API for event config, incidents, and network diagnostics.
 
 This service is intentionally small. It owns the writable platform state while
 the bigscreen remains a static UI served by nginx. Cisco Telnet uses the pinned
@@ -2324,39 +2324,6 @@ def stop_iperf_task(data: dict) -> dict:
     return {"ok": True, "taskId": task_id, "state": "stopping", "message": "正在停止测速"}
 
 
-def delivery_manifest() -> dict:
-    compose = WORKDIR / "docker-compose.yml"
-    files = [
-        "docker-compose.yml",
-        "event-config.yml",
-        "event-config.example.yml",
-        ".env",
-        "apply-env.sh",
-        "deploy.sh",
-        "pre-match-check.sh",
-        "offline-package.sh",
-        "install-offline.sh",
-    ]
-    images = []
-    if compose.exists():
-        for line in compose.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("image:"):
-                image = stripped.split(":", 1)[1].strip().strip('"')
-                match = re.fullmatch(r"\$\{[^:}]+:-([^}]+)\}", image)
-                images.append(match.group(1) if match else image)
-    return {
-        "ok": True,
-        "images": sorted(set(images)),
-        "files": [name for name in files if (WORKDIR / name).exists()],
-        "commands": [
-            "./offline-package.sh",
-            "tar -xf monitor-offline-*.tar.gz",
-            "cd monitor-offline-* && ./install-offline.sh",
-        ],
-    }
-
-
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status: int = 200, headers: dict[str, str] | None = None):
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -2429,9 +2396,6 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/incidents":
                 require_auth(self)
                 self._send_json({"ok": True, "incidents": incident_list()})
-            elif path == "/delivery/manifest":
-                require_auth(self)
-                self._send_json(delivery_manifest())
             elif path == "/network/iperf3/status":
                 require_auth(self)
                 task_id = (parse_qs(parsed_url.query).get("taskId") or [""])[-1]

@@ -621,18 +621,25 @@ def test_platform_version_and_config_schema_are_wired_into_runtime_and_console()
     assert "保存或应用时升级" in app
 
 
-def test_offline_bundle_excludes_live_secrets_and_requires_integrity_check():
-    package = read("offline-package.sh")
-    installer = read("install-offline.sh")
+def test_abandoned_offline_bundle_workflow_is_not_shipped():
+    api = read("platform-api.py")
+    client = read("bigscreen/api.js")
+    app = read("bigscreen/app.js")
+    readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
 
-    for excluded in ("./.git", "./.env", "./event-config.yml", "./platform-state"):
-        assert f"--exclude='{excluded}'" in package
-    assert "--profile '*' config --images" in package
-    assert "--exclude='./images.tar.sha256'" in package
-    assert '(cd "$OUT_DIR" && sha256_file images.tar)' in package
-    assert "verify_image_archive" in installer
-    assert "images.tar not found" in installer
-    assert 'docker image inspect "$image"' in installer
+    assert not (ROOT / "offline-package.sh").exists()
+    assert not (ROOT / "install-offline.sh").exists()
+    assert "/delivery/manifest" not in api
+    assert "fetchDeliveryManifest" not in client
+    assert "offline-package.sh" not in readme
+    assert "install-offline.sh" not in readme
+    assert "VM/OVA" in readme
+    assert "事故和部署清单" not in readme
+    assert '/\\.zip$/i.test(file.name)' in app
+    assert 'text.slice(0, 2) === "PK"' in app
+    assert "不支持导入压缩包" in app
+    assert "请选择 event-config.yml 配置文件" in app
+    assert 'postPlatform("/config/validate"' in app
 
 
 def test_librenms_source_patch_checks_content_instead_of_fixed_line_numbers():

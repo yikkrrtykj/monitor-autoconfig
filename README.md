@@ -174,7 +174,7 @@ http://服务器IP:8088/control
 | 配置中心 | 当前赛制、网络、平台 API、选手探测目标等只读状态 |
 | 拓扑诊断 | 检查核心、防火墙、接入交换机、LLDP 边 |
 | 事故流转 / 事故库 | 记录事故、恢复时间和复盘线索 |
-| 离线部署包 | 查看离线镜像、文件和安装脚本清单 |
+| 赛前工具 | 执行赛前体检和发送测试告警 |
 | 交换机配置巡检 | 粘贴 Cisco `show run` 片段，检查现场风险 |
 | 核心交换机 Telnet | 填写登录信息并执行只读连接测试；密码不随赛事配置导出 |
 
@@ -212,8 +212,8 @@ iPerf3 客户端已经包含在 `monitor-platform-api:local` Docker 镜像中，
 | 保存 | 写入 `event-config.yml` |
 | 应用配置 | 写入 `event-config.yml`，生成 `.env`，并自动执行 `apply-env.sh` 重建需要读取环境变量的容器 |
 | 回滚 | 恢复上一次配置 |
-| 导入 | 导入赛事配置包里的 YAML/JSON |
-| 导出包 | 下载当前配置、事故和部署清单 |
+| 导入配置 | 导入 `event-config.yml` |
+| 导出配置 | 下载当前 `event-config.yml` |
 
 点 `应用配置` 后，控制台会自动让 Prometheus、LibreNMS、飞书桥接、大屏等相关容器重新读取新的 `.env`。如果页面提示自动应用失败，再在服务器执行：
 
@@ -286,23 +286,9 @@ storm-control action shutdown
 
 核心/上联口不要乱开 BPDU Guard。DHCP Snooping 的 trust 只放 DHCP 服务器方向或上联方向，普通终端/AP 口不要 trust。
 
-## 离线交付
+## 交付方式
 
-有网络时在一台服务器打包：
-
-```bash
-cd librenms+grafana
-./offline-package.sh
-```
-
-现场离线服务器（注意：`install-offline.sh` 只导入镜像，不安装 Docker 本体，离线服务器需要提前装好 Docker + compose 插件和 python3，可在有网时用上面第 1、2 步装好或做进系统镜像）：
-
-```bash
-tar -xf monitor-offline-*.tar.gz
-cd monitor-offline-*
-./install-offline.sh
-docker compose up -d
-```
+赛事现场的最终离线交付方式计划使用经过验证的标准 VM/OVA 模板；仓库继续保留普通在线部署方式。
 
 ## 常用排障
 

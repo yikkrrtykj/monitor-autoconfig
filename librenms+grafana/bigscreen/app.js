@@ -2494,13 +2494,12 @@
       if (!file) return;
       const text = await file.text();
       fileInput.value = "";
-      // The offline bundle is a .zip (starts with the "PK" magic bytes). Importing it
-      // as text yields an empty config, so guide the operator to the right file.
+      // Reject compressed archives before treating their binary content as YAML.
       if (/\.zip$/i.test(file.name) || text.slice(0, 2) === "PK") {
         renderConfigResult({
           ok: false,
-          errorTitle: "这是离线部署 zip 包，不能直接导入",
-          error: "请导入『导出配置』得到的 event-config.yml，或先把 zip 解压后导入里面的 event-config.yml。"
+          errorTitle: "不支持导入压缩包",
+          error: "请选择 event-config.yml 配置文件。"
         });
         configResultSticky = true;
         return;

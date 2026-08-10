@@ -670,14 +670,6 @@
     }
   }
 
-  async function fetchDeliveryManifest() {
-    try {
-      return await platformApi("/delivery/manifest", { timeoutMs: 5000 });
-    } catch (error) {
-      return { ok: false, images: [], files: [], commands: [], error: error.message || "delivery manifest unavailable" };
-    }
-  }
-
   function fetchDhcpDashboard(force = false) {
     const query = force ? "?force=1" : "";
     return platformApi(`/network/dhcp${query}`, { timeoutMs: 30000 });
@@ -753,7 +745,6 @@
     fetchRetirePending,
     patchPlatform,
     fetchIncidents,
-    fetchDeliveryManifest,
     fetchDhcpDashboard,
     fetchDhcpBindings,
     testDhcpConnection,

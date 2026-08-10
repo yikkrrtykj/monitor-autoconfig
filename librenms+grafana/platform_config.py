@@ -3,8 +3,8 @@
 The deployment still consumes .env, but operators edit event-config.yml.  This
 module parses a small YAML subset (dict/list/scalar), validates the platform
 objects, renders .env keys, and keeps comments/secrets outside the browser UI.
-It intentionally uses only the Python standard library so the offline package
-does not need PyYAML.
+It intentionally uses only the Python standard library so deployment and
+recovery do not require additional host Python packages.
 """
 from __future__ import annotations
 
