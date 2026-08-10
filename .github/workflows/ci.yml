@@ -6,77 +6,97 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  shellcheck:
-    name: shellcheck
+  pytest:
+    name: Pytest (Python 3.13)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run shellcheck (errors only)
-        # Severity=error so existing warnings don't fail CI yet.
-        # Tighten to "warning" once the legacy scripts are cleaned up.
-        run: |
-          shellcheck --severity=error \
-            librenms+grafana/*.sh \
-            librenms+grafana/scripts/*.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: librenms+grafana/requirements-dev.txt
+      - name: Install test dependencies
+        run: pip install --disable-pip-version-check -r librenms+grafana/requirements-dev.txt
+      - name: Run pytest
+        run: pytest -q
 
   python-syntax:
-    name: python-syntax (${{ matrix.python-version }})
+    name: Python syntax (Python 3.13)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-      - run: |
-          python -m py_compile librenms+grafana/*.py
+          python-version: "3.13"
+      - name: Compile Python files
+        run: python -m compileall -q -f librenms+grafana
 
-  pytest:
-    name: pytest (${{ matrix.python-version }})
+  shellcheck:
+    name: ShellCheck
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: pip install -r librenms+grafana/requirements-dev.txt
-      - run: pytest librenms+grafana/tests/ -v
+      - name: Check Shell scripts
+        # Keep existing warnings non-blocking; parsing and other definite
+        # errors still fail the job.
+        run: >-
+          find librenms+grafana -type f -name '*.sh' -print0
+          | xargs -0 shellcheck --severity=error
 
-  bigscreen-tests:
-    name: bigscreen-tests
+  shell-syntax:
+    name: Shell syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse scripts with their declared shell
+        shell: bash
+        run: |
+          while IFS= read -r -d '' script; do
+            case "$(head -n 1 "$script")" in
+              *bash*) bash -n "$script" ;;
+              *) sh -n "$script" ;;
+            esac
+          done < <(find librenms+grafana -type f -name '*.sh' -print0)
+
+  javascript:
+    name: JavaScript
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Run big screen JS tests
+      - name: Check JavaScript syntax
+        run: >-
+          find librenms+grafana -type f -name '*.js' -print0
+          | xargs -0 -n1 node --check
+      - name: Run big screen JavaScript tests
         run: |
-          for f in librenms+grafana/tests/test_bigscreen_*.js; do
-            echo "--- $f ---"
-            node "$f"
+          for file in librenms+grafana/tests/test_bigscreen_*.js; do
+            echo "--- $file ---"
+            node "$file"
           done
 
   compose-config:
-    name: compose-config
+    name: Compose configuration
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Validate docker-compose.yml
         working-directory: librenms+grafana
         run: |
-          # Provide a dummy .env so interpolation doesn't fail.
           cp .env.example .env
+          cp event-config.example.yml event-config.yml
+          trap 'rm -f .env event-config.yml' EXIT
           docker compose config --quiet
 
   linux-smoke:
-    name: linux-smoke-static
+    name: Linux static smoke test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,22 +107,28 @@ jobs:
         run: bash librenms+grafana/scripts/smoke-test.sh --static
 
   dashboards-json:
-    name: dashboards-json
+    name: Dashboard JSON
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - name: Validate every dashboard JSON
         run: |
-          python3 -c "
-          import json, glob, sys
-          fails = []
-          for f in glob.glob('librenms+grafana/grafana-provisioning/dashboard-json/*.json'):
+          python - <<'PY'
+          import glob
+          import json
+
+          failures = []
+          for path in glob.glob("librenms+grafana/grafana-provisioning/dashboard-json/*.json"):
               try:
-                  with open(f, encoding='utf-8-sig') as fh:
-                      json.load(fh)
-                  print(f'OK  {f}')
-              except Exception as e:
-                  fails.append(f'{f}: {e}')
-                  print(f'FAIL {f}: {e}')
-          sys.exit(1 if fails else 0)
-          "
+                  with open(path, encoding="utf-8-sig") as handle:
+                      json.load(handle)
+                  print(f"OK  {path}")
+              except Exception as exc:
+                  failures.append(f"{path}: {exc}")
+                  print(f"FAIL {path}: {exc}")
+
+          raise SystemExit(1 if failures else 0)
+          PY
