@@ -1,0 +1,23 @@
+schema_version: 1
+
+event:
+  name: Fixture Extra Fields Event
+  default_layout: tournament-64-2layer
+  fixture_banner: preserve-event-extra
+
+devices:
+  core:
+    name: fixture-core
+    ip: 192.0.2.1
+    fixture_asset_tag: preserve-core-extra
+  stage_switches: []
+  access_switches: []
+  servers: []
+
+alerts:
+  feishu_app_secret: fixture-preserved-secret
+  fixture_delivery_channel: preserve-alert-extra
+
+fixture_plugin:
+  nested:
+    keep: untouched

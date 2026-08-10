@@ -1,0 +1,8 @@
+schema_version: 2
+
+event:
+  name: Fixture Future Event
+
+future_runtime:
+  scheduling_policy: fixture-only
+  preserve_me: true

@@ -1,0 +1,12 @@
+{
+  "c1000": {
+    "ifName": ".1.3.6.1.2.1.31.1.1.1.1.24 = STRING: Gi1/0/24\n.1.3.6.1.2.1.31.1.1.1.1.48 = STRING: Gi2/0/24\n.1.3.6.1.2.1.31.1.1.1.1.500 = STRING: Po11",
+    "ifAlias": ".1.3.6.1.2.1.31.1.1.1.18.24 = STRING: Team 12-4",
+    "lldpPortAlias": "GigabitEthernet1/0/24"
+  },
+  "small_business": {
+    "ifName": ".1.3.6.1.2.1.31.1.1.1.1.49 = STRING: gi1\n.1.3.6.1.2.1.31.1.1.1.1.50 = STRING: gi2\n.1.3.6.1.2.1.31.1.1.1.1.100 = STRING: Port-channel1",
+    "ifAlias": ".1.3.6.1.2.1.31.1.1.1.18.49 = STRING: team03-02",
+    "lldpPortAlias": "Ethernet 1"
+  }
+}

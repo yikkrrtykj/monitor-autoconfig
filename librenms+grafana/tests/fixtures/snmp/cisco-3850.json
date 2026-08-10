@@ -1,0 +1,15 @@
+{
+  "model": "Cisco 3850",
+  "ifName": ".1.3.6.1.2.1.31.1.1.1.1.40 = STRING: Vlan40\n.1.3.6.1.2.1.31.1.1.1.1.10101 = STRING: Gi1/0/1\n.1.3.6.1.2.1.31.1.1.1.1.10201 = STRING: Te1/1/1\n.1.3.6.1.2.1.31.1.1.1.1.5001 = STRING: Po11",
+  "ifOperStatus": ".1.3.6.1.2.1.2.2.1.8.40 = INTEGER: up(1)\n.1.3.6.1.2.1.2.2.1.8.10101 = INTEGER: up(1)\n.1.3.6.1.2.1.2.2.1.8.10201 = INTEGER: down(2)\n.1.3.6.1.2.1.2.2.1.8.5001 = INTEGER: up(1)",
+  "ifAlias": ".1.3.6.1.2.1.31.1.1.1.18.10101 = STRING: Team 7-3",
+  "arp": ".1.3.6.1.2.1.4.22.1.2.40.198.51.100.10 = Hex-STRING: 00 11 22 33 44 55",
+  "fdb": ".1.3.6.1.2.1.17.4.3.1.2.0.17.34.51.68.85 = INTEGER: 7",
+  "basePortIfIndex": ".1.3.6.1.2.1.17.1.4.1.2.7 = INTEGER: 10101",
+  "lldpLocPortDesc": ".1.0.8802.1.1.2.1.3.7.1.3.10101 = STRING: GigabitEthernet1/0/1",
+  "lldpRemSysName": ".1.0.8802.1.1.2.1.4.1.1.9.0.10101.1 = STRING: stage-switch-a",
+  "lldpRemPortDesc": ".1.0.8802.1.1.2.1.4.1.1.8.0.10101.1 = STRING: GigabitEthernet1/0/24",
+  "cdpDeviceId": ".1.3.6.1.4.1.9.9.23.1.2.1.1.6.10102.1 = STRING: stage-switch-b.example.test",
+  "cdpDevicePort": ".1.3.6.1.4.1.9.9.23.1.2.1.1.7.10102.1 = STRING: TenGigabitEthernet1/0/2",
+  "cdpAddress": ".1.3.6.1.4.1.9.9.23.1.2.1.1.4.10102.1 = Hex-STRING: C0 00 02 2E"
+}

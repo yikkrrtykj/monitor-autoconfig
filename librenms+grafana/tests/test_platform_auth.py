@@ -12,15 +12,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "platform-api.py"
+CONFIG_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "config"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
 def load_platform_api(state_dir: Path):
-    os.environ["PLATFORM_STATE_DIR"] = str(state_dir)
-    os.environ["PLATFORM_ADMIN_USER"] = "admin"
-    os.environ["PLATFORM_ADMIN_PASSWORD"] = "global"
-    os.environ["PLATFORM_AUTH_ENABLED"] = "true"
+    workdir = state_dir / "workspace"
+    workdir.mkdir(exist_ok=True)
+    os.environ.update({
+        "PLATFORM_STATE_DIR": str(state_dir / "state"),
+        "PLATFORM_WORKDIR": str(workdir),
+        "EVENT_CONFIG_FILE": str(workdir / "event-config.yml"),
+        "EVENT_CONFIG_EXAMPLE": str(workdir / "event-config.example.yml"),
+        "ENV_FILE": str(workdir / ".env"),
+        "PLATFORM_ADMIN_USER": "admin",
+        "PLATFORM_ADMIN_PASSWORD": "global",
+        "PLATFORM_AUTH_ENABLED": "true",
+    })
     spec = importlib.util.spec_from_file_location("platform_api_auth_test", MODULE_PATH)
     platform_api = importlib.util.module_from_spec(spec)
     assert spec.loader
@@ -174,6 +183,44 @@ def test_http_auth_flow():
             status, _, payload = request_json(f"{base_url}/delivery/manifest", cookie=cookie)
             assert status == 404
             assert payload == {"ok": False, "error": "not found"}
+
+            # Exercise the actual HTTP handler, transaction and rollback chain
+            # with the same config fixtures used by schema tests.
+            original_config = (CONFIG_FIXTURES / "event-config-v0.yml").read_text(
+                encoding="utf-8"
+            )
+            original_env = "CUSTOM=http-old\nFEISHU_APP_SECRET=http-fixture-secret\n"
+            api.CONFIG_PATH.write_text(original_config, encoding="utf-8")
+            api.ENV_PATH.write_text(original_env, encoding="utf-8")
+            outcomes = iter([
+                {"ok": False, "error": "compose failed", "applyOutput": "bad"},
+                {"applied": True, "needsRedeploy": False, "applyOutput": "restored"},
+            ])
+            api.run_apply_command = lambda: next(outcomes)
+            status, _, payload = request_json(f"{base_url}/config/apply", {
+                "text": (CONFIG_FIXTURES / "event-config-v1.yml").read_text(
+                    encoding="utf-8"
+                ),
+                "operationId": "http-apply-failure",
+            }, cookie=cookie)
+            assert status == 200
+            assert payload["ok"] is False
+            assert payload["rolledBack"] is True
+            assert api.CONFIG_PATH.read_text(encoding="utf-8") == original_config
+            assert api.ENV_PATH.read_text(encoding="utf-8") == original_env
+
+            before_config = api.CONFIG_PATH.read_bytes()
+            before_env = api.ENV_PATH.read_bytes()
+            status, _, payload = request_json(f"{base_url}/config/save", {
+                "text": (CONFIG_FIXTURES / "event-config-future-v2.yml").read_text(
+                    encoding="utf-8"
+                ),
+            }, cookie=cookie)
+            assert status == 200
+            assert payload["ok"] is False
+            assert payload["configTooNew"] is True
+            assert api.CONFIG_PATH.read_bytes() == before_config
+            assert api.ENV_PATH.read_bytes() == before_env
 
             api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
             status, _, payload = request_json(f"{base_url}/network/dhcp/settings", {

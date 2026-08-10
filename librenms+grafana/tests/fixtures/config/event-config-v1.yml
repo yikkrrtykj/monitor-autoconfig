@@ -1,0 +1,33 @@
+schema_version: 1
+
+event:
+  name: Fixture Current Event
+  default_layout: tournament-64-2layer
+
+networks:
+  player_vlan: 40
+  player_subnets: 198.51.100.0/24
+  player_gateways: 198.51.100.1
+
+devices:
+  core:
+    name: fixture-core
+    ip: 192.0.2.1
+  stage_switches:
+    - name: stage-switch-a
+      ip: 192.0.2.45
+    - name: stage-switch-b
+      ip: 192.0.2.46
+  access_switches: []
+  servers: []
+
+isp:
+  auto_discovery: true
+  links: []
+
+alerts:
+  feishu_app_id: fixture-app
+  feishu_app_secret: fixture-preserved-secret
+
+security:
+  grafana_anonymous: true

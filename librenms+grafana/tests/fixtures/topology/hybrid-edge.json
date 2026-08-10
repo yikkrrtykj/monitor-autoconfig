@@ -1,0 +1,43 @@
+{
+  "devices": [
+    {
+      "ip": "192.0.2.1",
+      "device_id": 1,
+      "sysname": "fixture-core",
+      "ifname": {"102": "Te1/0/2", "202": "Te2/0/2", "400": "Po11"},
+      "ifoper": {"102": 1, "202": 1, "400": 1},
+      "ifstack": {"400": [102, 202]},
+      "port_by_id": {"1001": {"port_id": 1001, "ifIndex": 400, "ifName": "Po11"}},
+      "neighbors": [
+        {
+          "protocol": "lldp",
+          "active": 1,
+          "local_ifindex": 400,
+          "local_port": "Po11",
+          "neighbor_name": "fixture-stage-a",
+          "neighbor_device_id": 2,
+          "neighbor_port_id": 2001,
+          "neighbor_port": "Port-channel11"
+        }
+      ]
+    },
+    {
+      "ip": "192.0.2.45",
+      "device_id": 2,
+      "sysname": "fixture-stage-a",
+      "ifname": {"24": "Gi1/0/24", "124": "Gi2/0/24", "500": "Po11"},
+      "ifoper": {"24": 1, "124": 1, "500": 1},
+      "ifstack": {"500": [24, 124]},
+      "port_by_id": {"2001": {"port_id": 2001, "ifIndex": 500, "ifName": "Po11"}},
+      "neighbors": []
+    }
+  ],
+  "expected": {
+    "from_ip": "192.0.2.1",
+    "from_port": "Po11",
+    "to_ip": "192.0.2.45",
+    "to_port": "Po11",
+    "from_member_ports": ["Te1/0/2", "Te2/0/2"],
+    "to_member_ports": ["Gi1/0/24", "Gi2/0/24"]
+  }
+}

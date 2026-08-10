@@ -948,21 +948,22 @@ class TestAuthoritativeSwitchRefresh:
     def test_timeout_recovery_and_user_removal_across_refreshes(
         self, tmp_path, monkeypatch
     ):
-        sw1 = "192.168.10.45"
-        sw2 = "192.168.10.46"
+        sw1 = "192.0.2.45"
+        sw2 = "192.0.2.46"
         output = tmp_path / "player_targets.json"
         cache = tmp_path / "player_team_switches.json"
         state = {
             "failed": set(),
-            "ips": {sw1: "192.168.42.101", sw2: "192.168.42.102"},
+            "ips": {sw1: "198.51.100.101", sw2: "198.51.100.102"},
             "alive": set(),
         }
+        probe_calls = []
 
         for key in ("PLAYER_GATEWAYS", "LIBRENMS_CORE_IP", "CORE_SWITCH_PING"):
             monkeypatch.delenv(key, raising=False)
         env = {
             "EVENT_NAME": "authority-regression",
-            "TOURNAMENT_SWITCHES": f"{sw1},{sw2}",
+            "TOURNAMENT_SWITCHES": sw1,
             "PLAYER_TARGETS_FILE": str(output),
             "PLAYER_SWITCH_CACHE_FILE": str(cache),
             "PLAYER_WIRELESS_SCAN": "false",
@@ -971,6 +972,7 @@ class TestAuthoritativeSwitchRefresh:
             "PLAYER_VERIFY_PING": "false",
             "PLAYER_OFFLINE_GRACE_SECONDS": "0",
             "PLAYER_REQUIRE_LINK_UP": "false",
+            "PLAYER_SWITCH_PROBE_WORKERS": "1",
             "PLAYER_STATIC_TARGETS": "",
             "PLAYER_SUBNETS": "",
             "WIRELESS_SUBNETS": "",
@@ -979,6 +981,7 @@ class TestAuthoritativeSwitchRefresh:
             monkeypatch.setenv(key, value)
 
         def probe(host, _community, _oid, timeout=15):
+            probe_calls.append(host)
             if host in state["failed"]:
                 return ""
             seat = 1 if host == sw1 else 2
@@ -1011,11 +1014,20 @@ class TestAuthoritativeSwitchRefresh:
             gpt, "ping_host", lambda ip, _timeout=1: ip in state["alive"]
         )
 
-        # Establish one target per configured switch.
+        # The current allowlist is the authority, not any baked-in address pair.
+        assert gpt.main() == 0
+        assert {row["labels"]["switch"] for row in json.loads(output.read_text())} == {sw1}
+        assert probe_calls == [sw1]
+
+        # Adding a switch changes the very next refresh; no multi-hour cache
+        # decides which devices are eligible to be scanned.
+        probe_calls.clear()
+        monkeypatch.setenv("TOURNAMENT_SWITCHES", f"{sw1},{sw2}")
         assert gpt.main() == 0
         assert {row["labels"]["switch"] for row in json.loads(output.read_text())} == {
             sw1, sw2,
         }
+        assert probe_calls == [sw1, sw2]
 
         # A one-cycle timeout retains the failed switch's previous seat/IP and
         # records failure health without shrinking the cache to one device.
@@ -1034,12 +1046,12 @@ class TestAuthoritativeSwitchRefresh:
 
         # The next healthy cycle updates the recovered switch normally.
         state["failed"] = set()
-        state["ips"][sw2] = "192.168.42.202"
+        state["ips"][sw2] = "198.51.100.202"
         state["alive"] = set(state["ips"].values())
         assert gpt.main() == 0
         recovered = json.loads(output.read_text())
         sw2_rows = [row for row in recovered if row["labels"]["switch"] == sw2]
-        assert [row["targets"][0] for row in sw2_rows] == ["192.168.42.202"]
+        assert [row["targets"][0] for row in sw2_rows] == ["198.51.100.202"]
         assert json.loads(cache.read_text())["devices"][sw2]["failure_count"] == 0
 
         # Only an explicit allowlist removal clears that switch's history.

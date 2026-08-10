@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "platform-api.py"
+CONFIG_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "config"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -61,20 +62,32 @@ def test_save_snapshots_config_and_env_as_one_generation(tmp_path):
 
 def test_failed_apply_restores_both_files_and_records_failure(monkeypatch, tmp_path):
     api = load_api(tmp_path)
-    seed(api)
+    original_config = (CONFIG_FIXTURES / "event-config-v0.yml").read_text(
+        encoding="utf-8"
+    )
+    original_env = "CUSTOM=paired-old\nFEISHU_APP_SECRET=fixture-env-secret\n"
+    api.CONFIG_PATH.write_text(original_config, encoding="utf-8")
+    api.ENV_PATH.write_text(original_env, encoding="utf-8")
     outcomes = iter([
         {"ok": False, "error": "compose failed", "applyOutput": "bad"},
         {"applied": True, "needsRedeploy": False, "applyOutput": "restored"},
     ])
     monkeypatch.setattr(api, "run_apply_command", lambda: next(outcomes))
 
-    result = api.apply_config(config_text("new"), "admin", "apply", "apply-test-0001")
+    result = api.apply_config(
+        (CONFIG_FIXTURES / "event-config-v1.yml").read_text(encoding="utf-8"),
+        "admin", "apply", "apply-test-0001",
+    )
 
     assert result["ok"] is False
     assert result["rolledBack"] is True
-    assert json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "old"
-    assert "schema_version" not in json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))
-    assert api.ENV_PATH.read_text(encoding="utf-8") == "CUSTOM=old\n"
+    restored = api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))
+    assert restored["event"]["name"] == "Fixture Legacy Event"
+    assert "schema_version" not in restored
+    assert restored["alerts"]["feishu_app_secret"] == "fixture-preserved-secret"
+    assert api.CONFIG_PATH.read_text(encoding="utf-8") == original_config
+    assert api.ENV_PATH.read_text(encoding="utf-8") == original_env
+    assert not list(api.CONFIG_PATH.parent.glob(".*.tmp"))
     status = api.read_apply_status("apply-test-0001")
     assert status["state"] == "failed"
     assert status["runtimeRestored"] is True

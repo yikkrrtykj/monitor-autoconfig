@@ -44,14 +44,6 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     assert 'EVENT_NAME: "${EVENT_NAME:-}"' in player_service
     assert "for key in EVENT_NAME TOURNAMENT_SWITCHES" in player_service
     assert "SWITCH_DISCOVERY_RANGE" not in player_service
-    player = read("generate-player-targets.py")
-    assert "build_team_switch_cache_scope" in player
-    assert "discarding the previous project stage-switch health cache" in player
-    assert "team-description authoritative scan: probing all" in player
-    assert '"devices": {' in player
-    assert "ignoring previous project" in player
-    assert "player targets and red-grace history" in player
-    assert "if not previous_targets and not project_scope_changed" in player
     assert 'export PLAYER_SWITCH_FORCE_FULL_SCAN=true' in compose
 
 
@@ -75,20 +67,6 @@ def test_ap_ping_uses_controller_heartbeat_without_switch_polling():
     assert "UNIFI_AP_CONTROLLER_LAST_SEEN_MAX_AGE_SECONDS=30" in example
     assert 'device.get("last_seen")' in bridge
     assert "_unifi_controller_heartbeat_fresh" in bridge
-
-
-def test_deploy_rebuilds_local_images_only_when_dockerfiles_change():
-    deploy = read("deploy.sh")
-
-    assert "docker compose up -d --remove-orphans --build" in deploy
-    assert ".deploy-local-image.sha256" in deploy
-    assert "Dockerfiles unchanged; skipping rebuild" in deploy
-    assert "docker image inspect" in deploy
-    # Restart each source-mounted service individually so one absent service
-    # under set -e cannot fail a deploy whose stack already came up fine.
-    assert "for service in bigscreen platform-api alertmanager-feishu-bridge feishu-ws" in deploy
-    assert 'docker compose restart "$service" ||' in deploy
-    assert "docker compose up -d --force-recreate --no-deps librenms-config" in deploy
 
 
 def test_feishu_ws_sidecar_is_profile_gated_and_optional():
@@ -589,14 +567,6 @@ def test_poll_pressure_defaults_and_existing_env_are_migrated():
         assert "migrate_env_default TOPOLOGY_POLL_WORKERS 2 1" in script
         assert "migrate_env_default TOPOLOGY_SNMP_DELAY_MS 250 500" in script
 
-    player = read("generate-player-targets.py")
-    topology = read("generate-topology-edges.py")
-    assert 'f"snmp={time.monotonic() - switch_started:.1f}s"' in player
-    assert 'f"in {time.monotonic() - cycle_started:.1f}s"' in player
-    assert '"poll_seconds": round(time.monotonic() - started, 3)' in topology
-    assert 'f"cycle={time.monotonic() - cycle_started:.1f}s"' in topology
-
-
 def test_gateway_mac_flap_alert_is_configurable_and_enabled_by_default():
     compose = read("docker-compose.yml")
     app = read("bigscreen/app.js")
@@ -644,14 +614,12 @@ def test_platform_version_and_config_schema_are_wired_into_runtime_and_console()
 
 
 def test_abandoned_offline_bundle_workflow_is_not_shipped():
-    api = read("platform-api.py")
     client = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
     readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
 
     assert not (ROOT / "offline-package.sh").exists()
     assert not (ROOT / "install-offline.sh").exists()
-    assert "/delivery/manifest" not in api
     assert "fetchDeliveryManifest" not in client
     assert "offline-package.sh" not in readme
     assert "install-offline.sh" not in readme

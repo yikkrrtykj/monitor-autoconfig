@@ -234,6 +234,20 @@ def test_unchanged_dockerfiles_and_complete_local_images_skip_base_pull(tmp_path
     assert "--build" not in log
 
 
+def test_required_rebuild_uses_cached_base_without_registry_pull(tmp_path):
+    completed, log = run_deploy(
+        tmp_path,
+        unchanged=False,
+        STUB_BASE_IMAGE_PRESENT="true",
+        STUB_BASE_PULL_FAIL="true",
+    )
+
+    assert completed.returncode == 0
+    assert "Base image base.example/runtime:1 already present" in completed.stdout
+    assert "pull base.example/runtime:1" not in log
+    assert "up -d --remove-orphans --build" in log
+
+
 def test_required_rebuild_fails_when_base_image_is_unavailable(tmp_path):
     completed, log = run_deploy(
         tmp_path,
@@ -254,6 +268,12 @@ def test_librenms_config_exit_zero_allows_deploy_to_finish(tmp_path):
     assert "librenms-config completed successfully" in completed.stdout
     assert "Result: PASS." in completed.stdout
     assert "deploy-check bootstrap" in log
+    assert completed.stdout.rfind("Platform bootstrap completed successfully.") > (
+        completed.stdout.rfind("Result: PASS.")
+    )
+    assert completed.stdout.rstrip().endswith(
+        "Open http://127.0.0.1:8088/control and configure the event."
+    )
 
 
 def test_librenms_config_nonzero_exit_fails_with_diagnostic_command(tmp_path):
@@ -282,13 +302,16 @@ def test_required_restart_failure_is_fatal_but_disabled_profile_is_skipped(tmp_p
     assert "profile not enabled" in completed.stdout
 
 
-def test_deploy_and_apply_call_the_expected_runtime_checks():
-    deploy = (ROOT / "deploy.sh").read_text(encoding="utf-8")
-    apply_env = (ROOT / "apply-env.sh").read_text(encoding="utf-8")
-    platform_api = (ROOT / "platform-api.py").read_text(encoding="utf-8")
+def test_bootstrap_check_failure_makes_deploy_fail_before_success(tmp_path):
+    completed, log = run_deploy(tmp_path, STUB_DEPLOY_CHECK_EXIT="1")
 
-    assert '"$SCRIPT_DIR/deploy-check.sh" bootstrap' in deploy
+    assert completed.returncode == 1
+    assert "deploy-check bootstrap" in log
+    assert "Platform bootstrap completed successfully" not in completed.stdout
+
+
+def test_apply_entrypoint_runs_the_configured_runtime_check():
+    apply_env = (ROOT / "apply-env.sh").read_text(encoding="utf-8")
+
     assert '"$SCRIPT_DIR/deploy-check.sh" configured' in apply_env
     assert "配置已经写入，但运行状态验证失败" in apply_env
-    assert "restore_config_snapshot(Path(snapshot[\"path\"]))" in platform_api
-    assert "rollback_result = run_apply_command()" in platform_api
