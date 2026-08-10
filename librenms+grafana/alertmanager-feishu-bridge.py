@@ -330,10 +330,10 @@ TOKEN = _clean_token(os.environ.get("FEISHU_ROBOT_TOKEN", ""))
 SEVERITY_COLOR = {
     "critical": "red",
     "high": "orange",
-    "warning": "yellow",
+    "warning": "orange",
     "info": "blue",
     "average": "orange",
-    "disaster": "purple",
+    "disaster": "red",
 }
 
 EVENT_ID_LOCK = threading.Lock()
@@ -2052,11 +2052,9 @@ def build_librenms_card(payload):
             "外网 ISP 告警": "外网 ISP 恢复",
         }.get(rule_name, rule_name)
         color = "green"
-        emoji = "✅"
         state_text = "UP"
     else:
         color = SEVERITY_COLOR.get(severity, "yellow")
-        emoji = "❌" if severity in ("critical", "disaster") else "🔴"
         state_text = "DOWN"
 
     title = next_event_title()
@@ -2066,14 +2064,14 @@ def build_librenms_card(payload):
     ip_str = f" ({ip})" if ip and ip != dev_name else ""
     lines = [
         f"🖥 设备：{dev_name}{ip_str}",
-        f"{emoji} 状态：{state_text}",
+        f"状态：{state_text}",
     ]
     if elapsed and elapsed not in ("0s",):
         label = "恢复耗时" if recovered else "断线时间"
         lines.append(f"⏳ {label}：{elapsed}")
     lines.append(f"⏰ 时间：{ts}")
 
-    return _make_card(title, f"{emoji} {rule_name}", color, "\n".join(lines))
+    return _make_card(title, rule_name, color, "\n".join(lines))
 
 
 def build_sysname_change_card(old_name, new_name, ip="", hostname=""):
@@ -2149,39 +2147,63 @@ def format_alert_duration(seconds, recovered=False):
     return format_duration(seconds)
 
 
+def format_errdisable_reason(reason):
+    """Keep the switch's raw reason searchable and append an operator-friendly hint."""
+    raw = str(reason or "").strip() or "未知"
+    normalized = re.sub(r"[\s_]+", "-", raw.lower())
+    explanations = {
+        "link-flap": "链路频繁抖动",
+        "bpduguard": "BPDU保护触发",
+        "bpdu-guard": "BPDU保护触发",
+        "loopback": "检测到二层环路",
+        "loop-back": "检测到二层环路",
+    }
+    explanation = explanations.get(normalized)
+    return f"{raw}（{explanation}）" if explanation else raw
+
+
+def format_mac_flap_reason():
+    """Keep the raw event name visible and append its operator-friendly meaning."""
+    return "MAC flap（MAC地址漂移）"
+
+
+def format_card_alert_name(value, fallback="网络安全事件"):
+    """Remove display-only severity symbols without changing the source event title."""
+    text = str(value or fallback).strip()
+    return re.sub(r"^(?:🔴|🟠|🟢|❌|✅|🚨|🛑|⛔|⚠️)\s*", "", text)
+
+
 def build_isp_bandwidth_card(event, recovered=False):
-    color = "green" if recovered else "red"
+    color = "green" if recovered else "orange"
     direction_text = "下载" if event["direction"] == "in" else "上传"
     state_text = "已恢复" if recovered else "带宽超限"
-    status_emoji = "✅" if recovered else "🔴"
     duration_label = "恢复耗时" if recovered else "持续时间"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
         f"🌐 ISP：{event['label']}",
         f"📶 方向：{direction_text}",
-        f"{status_emoji} 状态：{state_text}",
+        f"状态：{state_text}",
         f"📈 当前：{format_bps(event['value_bps'])}",
         f"⏳ {duration_label}：{format_alert_duration(event['duration'], recovered)}",
         f"⏰ 时间：{ts}",
     ]
-    subtitle = "🟢 外网 ISP 带宽恢复" if recovered else "🔴 外网 ISP 带宽超限"
+    subtitle = "外网 ISP 带宽恢复" if recovered else "外网 ISP 带宽超限"
     return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
 def build_isp_data_missing_card(missing_seconds, recovered=False):
     color = "green" if recovered else "red"
-    status_emoji = "✅" if recovered else "❌"
     state_text = "已恢复" if recovered else "数据中断"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
         "🌐 对象：防火墙 WAN 流量采集",
-        f"{status_emoji} 状态：{state_text}",
+        f"状态：{state_text}",
         f"⏳ 中断时长：{format_duration(missing_seconds)}",
         f"⏰ 时间：{ts}",
     ]
     if not recovered:
         lines.append("💡 请检查防火墙 SNMP 是否可达、FIREWALL_WAN_IF_FILTER 是否匹配新接口名")
-    subtitle = "🟢 外网流量采集恢复" if recovered else "🔴 外网流量采集中断"
+    subtitle = "外网流量采集恢复" if recovered else "外网流量采集中断"
     return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
@@ -2227,7 +2249,7 @@ def build_retire_confirm_card(state, key, interactive):
         lines.append("👉 请到赛事控制台『待删除设备』面板确认删除或保留。")
     title = state.get("pending_event_title") or next_event_title()
     state["pending_event_title"] = title
-    return _make_card(title, "🟠 设备待删除确认", "orange", "\n".join(lines), extra_elements=extra)
+    return _make_card(title, "设备待删除确认", "orange", "\n".join(lines), extra_elements=extra)
 
 
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
@@ -2236,12 +2258,8 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downs
     is_isp = job == "infra-isp-ping"
     if recovered:
         color, state_text = "green", "UP"
-        status_emoji = "✅"
-        header_emoji = "🟢"
     else:
         color, state_text = "red", "DOWN"
-        status_emoji = "❌"
-        header_emoji = "🔴"
     label = "ISP" if is_isp else "设备"
     label_emoji = "🌐" if is_isp else "🖥"
     if is_isp:
@@ -2251,7 +2269,7 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downs
     duration_label = "恢复耗时" if recovered else "断线时间"
     lines = [
         f"{label_emoji} {label}：{dev}",
-        f"{status_emoji} 状态：{state_text}",
+        f"状态：{state_text}",
         f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
     ]
     if not recovered and downstream:
@@ -2259,7 +2277,7 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downs
         # instead of each firing its own card.
         lines.append(f"📉 下游 {downstream} 台设备同时不可达（疑似受其影响，已折叠）")
     lines.append(f"⏰ 时间：{ts}")
-    return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
+    return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
 def _join_ports(names):
@@ -2268,8 +2286,6 @@ def _join_ports(names):
 
 def build_interconnect_card(event, recovered=False):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    color = "green" if recovered else "red"
-    header_emoji = "🟢" if recovered else "🔴"
     device = event.get("device") or event.get("ip") or "?"
     ip = event.get("ip") or ""
     device_text = f"{device} ({ip})" if ip and ip != device else device
@@ -2285,14 +2301,14 @@ def build_interconnect_card(event, recovered=False):
     down_members = event.get("down_members") or []
     up_members = event.get("up_members") or []
     aggregate_down = event.get("status") == "down"
+    color = "green" if recovered else ("red" if aggregate_down else "orange")
     if recovered:
         subtitle = "链路聚合恢复"
-        status_emoji = "✅"
         lines = [
             f"🖥 设备：{device_text}",
             f"🔌 物理口：{_join_ports(down_members) if down_members else event.get('port', '?')} 已恢复",
             peer_line,
-            f"{status_emoji} 状态：链路冗余已恢复",
+            "状态：链路冗余已恢复",
             f"⏳ 恢复耗时：{format_alert_duration(event.get('duration'), True)}",
             f"⏰ 时间：{ts}",
         ]
@@ -2313,16 +2329,16 @@ def build_interconnect_card(event, recovered=False):
         if cause:
             cause_device = cause.get("device") or cause.get("host") or peer
             cause_port = cause.get("port") or "?"
-            cause_reason = cause.get("reason") or "err-disabled"
+            cause_reason = format_errdisable_reason(cause.get("reason") or "err-disabled")
             lines.append(
-                f"🛑 触发原因：{cause_device} {cause_port} 被保护关闭（{cause_reason}）"
+                f"📋 触发原因：{cause_device} {cause_port} 被保护关闭（{cause_reason}）"
             )
         lines.extend([
-            f"⚠️ 状态：{state_text}",
+            f"状态：{state_text}",
             f"⏳ 持续时间：{format_alert_duration(event.get('duration'), False)}",
             f"⏰ 时间：{ts}",
         ])
-    return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
+    return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
 def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
@@ -2330,18 +2346,18 @@ def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
     tail = f" · {model}" if model else ""
     dev = f"{name} ({ip}{tail})" if ip else (name or "?")
     if recovered:
-        color, state_text, status_emoji, header_emoji = "green", "UP", "✅", "🟢"
+        color, state_text = "green", "UP"
     else:
-        color, state_text, status_emoji, header_emoji = "red", "DOWN", "❌", "🔴"
+        color, state_text = "red", "DOWN"
     duration_label = "恢复耗时" if recovered else "断线时长"
     lines = [
         f"📶 AP：{dev}",
-        f"{status_emoji} 状态：{state_text}",
+        f"状态：{state_text}",
         f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
         f"⏰ 时间：{ts}",
     ]
     subtitle = "AP 上线恢复" if recovered else "AP 掉线告警"
-    return _make_card(next_event_title(), f"{header_emoji} {subtitle}", color, "\n".join(lines))
+    return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
 def build_device_resource_card(sample, recovered, duration=0):
@@ -2349,7 +2365,6 @@ def build_device_resource_card(sample, recovered, duration=0):
     label = "CPU" if kind == "cpu" else "内存"
     threshold = DEVICE_CPU_ALERT_PERCENT if kind == "cpu" else DEVICE_MEMORY_ALERT_PERCENT
     color = "green" if recovered else "orange"
-    marker = "🟢" if recovered else "🟠"
     status = "已恢复" if recovered else "持续高占用"
     device = sample.get("name") or sample.get("ip") or "?"
     ip = sample.get("ip") or ""
@@ -2365,7 +2380,7 @@ def build_device_resource_card(sample, recovered, duration=0):
     elif sample.get("pool"):
         lines.append(f"🧠 内存池：{sample['pool']}")
     lines.append(f"⏰ 时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    return _make_card(next_event_title(), f"{marker} 交换机 {label} {status}", color, "\n".join(lines))
+    return _make_card(next_event_title(), f"交换机 {label} {status}", color, "\n".join(lines))
 
 
 def _card_preview_title(title, subtitle):
@@ -5175,14 +5190,14 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
             f"🔌 接口：{event.get('port') or '未解析到'}",
         ])
         if event.get("reason"):
-            lines.append(f"📋 原因：{event.get('reason')}")
+            lines.append(f"📋 原因：{format_errdisable_reason(event.get('reason'))}")
         if recovered:
-            lines.append("✅ 状态：已恢复")
+            lines.append("状态：已恢复")
             lines.append(f"⏳ 恢复耗时：{format_alert_duration(duration, recovered=True)}")
             lines.append(f"⏰ 时间：{ts}")
-            return _make_card(next_event_title(), "🟢 BPDU 保护恢复", "green", "\n".join(lines))
+            return _make_card(next_event_title(), "BPDU 保护恢复", "green", "\n".join(lines))
         lines.append(f"⏰ 时间：{ts}")
-        return _make_card(next_event_title(), "⛔ BPDU 保护触发", "red", "\n".join(lines))
+        return _make_card(next_event_title(), "BPDU 保护触发", "orange", "\n".join(lines))
 
     if kind == "native_vlan_mismatch":
         lines.extend([
@@ -5190,7 +5205,11 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
             f"🔁 对端：{event.get('peer_device')} {event.get('peer_port')} / VLAN {event.get('peer_vlan')}",
         ])
     elif kind == "mac_flap":
-        lines.extend([f"🔗 MAC：{event.get('mac')}", f"🏷 VLAN：{event.get('vlan')}"])
+        lines.extend([
+            f"📋 原因：{format_mac_flap_reason()}",
+            f"🔗 MAC：{event.get('mac')}",
+            f"🏷 VLAN：{event.get('vlan')}",
+        ])
         if event.get("normal_port") and event.get("abnormal_port"):
             lines.extend([
                 f"✅ 正常上联：{event.get('normal_port')}",
@@ -5208,7 +5227,8 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
     elif kind == "errdisable":
         lines.extend([
             f"🔌 接口：{event.get('port') or '未知'}",
-            f"📋 原因：{event.get('reason') or '未知'}",
+            *([] if recovered else ["状态：Err-disable"]),
+            f"📋 原因：{format_errdisable_reason(event.get('reason'))}",
         ])
     else:
         lines.extend([
@@ -5216,24 +5236,34 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
         ])
 
     if recovered:
-        lines.append("✅ 状态：已恢复")
+        lines.append("状态：已恢复")
         lines.append(f"⏳ 恢复耗时：{format_alert_duration(duration, recovered=True)}")
     lines.append(f"⏰ 时间：{ts}")
 
     if recovered:
         recovery_titles = {
-            "native_vlan_mismatch": "🟢 接入口疑似串线恢复",
-            "loopback": "🟢 端口回环恢复",
-            "errdisable": "🟢 接口保护恢复",
+            "native_vlan_mismatch": "接入口疑似串线恢复",
+            "loopback": "端口回环恢复",
+            "errdisable": "接口保护恢复",
         }
         return _make_card(
             next_event_title(),
-            recovery_titles.get(kind, "🟢 网络安全事件恢复"),
+            recovery_titles.get(kind, "网络安全事件恢复"),
             "green",
             "\n".join(lines),
         )
 
-    return _make_card(next_event_title(), event.get("title") or "⚠️ 网络安全事件", event.get("color") or "orange", "\n".join(lines))
+    risk_kinds = {
+        "native_vlan_mismatch", "mac_flap", "errdisable",
+        "bpduguard", "storm_control", "loopback",
+    }
+    color = "orange" if kind in risk_kinds else (event.get("color") or "orange")
+    return _make_card(
+        next_event_title(),
+        format_card_alert_name(event.get("title")),
+        color,
+        "\n".join(lines),
+    )
 
 
 def syslog_watcher():

@@ -332,6 +332,9 @@ def test_interconnect_card_names_the_down_physical_port_and_peer(monkeypatch):
     assert "对端交换机" in text
     assert "链路聚合告警" in text              # framed as a LAG event, not a full outage
     assert "剩 Gi1/0/5 在线" in text           # status shows the surviving leg
+    assert card["card"]["header"]["template"] == "orange"
+    assert card["card"]["header"]["subtitle"]["content"] == "链路聚合告警"
+    assert "状态：冗余降低" in card["card"]["body"]["elements"][0]["content"]
 
 
 def test_peer_switch_resolves_from_lldp_by_down_member_port():
@@ -386,6 +389,21 @@ def test_interconnect_card_describes_protocol_down_without_fake_member(monkeypat
     text = json.dumps(card, ensure_ascii=False)
     assert "聚合链路 DOWN" in text
     assert "Po1" in text
+    assert card["card"]["header"]["template"] == "red"
+    assert card["card"]["header"]["subtitle"]["content"] == "链路聚合告警"
+
+
+def test_interconnect_recovery_uses_green_header_without_severity_emoji(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    card = bridge.build_interconnect_card({
+        "device": "core", "ip": "10.0.0.1", "port": "Po1",
+        "peer_switch": "stage", "down_members": ["Gi1/0/1"],
+        "up_members": ["Gi1/0/1", "Gi1/0/2"], "duration": 18,
+    }, recovered=True)
+
+    assert card["card"]["header"]["template"] == "green"
+    assert card["card"]["header"]["subtitle"]["content"] == "链路聚合恢复"
+    assert "状态：链路冗余已恢复" in card["card"]["body"]["elements"][0]["content"]
 
 
 def test_interconnect_card_does_not_claim_alias_is_a_peer_switch(monkeypatch):
@@ -472,8 +490,10 @@ def test_device_down_and_recovery_titles_are_distinct(monkeypatch):
         "ac", "192.168.10.56", recovered=True, offline_seconds=425,
     )
 
-    assert down["card"]["header"]["subtitle"]["content"] == "🔴 设备离线告警"
-    assert recovered["card"]["header"]["subtitle"]["content"] == "🟢 设备上线恢复"
+    assert down["card"]["header"]["subtitle"]["content"] == "设备离线告警"
+    assert recovered["card"]["header"]["subtitle"]["content"] == "设备上线恢复"
+    assert "状态：DOWN" in down["card"]["body"]["elements"][0]["content"]
+    assert "状态：UP" in recovered["card"]["body"]["elements"][0]["content"]
 
 
 def test_librenms_recovery_callback_does_not_reuse_offline_title(monkeypatch):
@@ -485,7 +505,21 @@ def test_librenms_recovery_callback_does_not_reuse_offline_title(monkeypatch):
         "ip": "192.168.10.56",
     })
 
-    assert card["card"]["header"]["subtitle"]["content"] == "✅ 设备上线恢复"
+    assert card["card"]["header"]["subtitle"]["content"] == "设备上线恢复"
+    assert "状态：UP" in card["card"]["body"]["elements"][0]["content"]
+
+
+def test_resource_cards_use_header_color_without_severity_emoji(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    sample = {"kind": "cpu", "name": "core", "ip": "10.0.0.1", "value": 95}
+
+    alert = bridge.build_device_resource_card(sample, recovered=False, duration=60)
+    recovered = bridge.build_device_resource_card(sample, recovered=True, duration=120)
+
+    assert alert["card"]["header"]["template"] == "orange"
+    assert alert["card"]["header"]["subtitle"]["content"] == "交换机 CPU 持续高占用"
+    assert recovered["card"]["header"]["template"] == "green"
+    assert recovered["card"]["header"]["subtitle"]["content"] == "交换机 CPU 已恢复"
 
 
 def test_fetch_interconnect_members_maps_aggregate_to_member_ifindexes(monkeypatch):
@@ -592,7 +626,7 @@ def test_member_errdisable_is_merged_into_peer_aggregate_alert(monkeypatch):
     assert cause["port"] == "Gi1/1/2"
     aggregate_event["syslog_cause"] = cause
     card = bridge.build_interconnect_card(aggregate_event, recovered=False)
-    assert "Lan-Server Gi1/1/2 被保护关闭（link-flap）" in json.dumps(
+    assert "Lan-Server Gi1/1/2 被保护关闭（link-flap（链路频繁抖动））" in json.dumps(
         card, ensure_ascii=False,
     )
 
@@ -601,6 +635,72 @@ def test_member_errdisable_is_merged_into_peer_aggregate_alert(monkeypatch):
     # must still exist then, otherwise the same incident would be sent twice.
     assert bridge.errdisable_was_merged(syslog_event, now=121) is True
     bridge.reset_link_event_correlation()
+
+
+def test_errdisable_card_keeps_title_and_explains_raw_reason(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#35659")
+    monkeypatch.setattr(bridge, "_host_display_name", lambda _host: "lan-server")
+    event = {
+        "kind": "errdisable",
+        "title": "🛑 接口被保护关闭",
+        "color": "orange",
+        "port": "Gi1/1/2",
+        "reason": "link-flap",
+    }
+
+    card = bridge.build_network_syslog_card("192.168.10.47", "message", event)
+    header = card["card"]["header"]
+    body = card["card"]["body"]["elements"][0]["content"]
+
+    assert header["title"]["content"] == "#35659 接口被保护关闭"
+    assert header["subtitle"]["content"] == "接口被保护关闭"
+    assert header["template"] == "orange"
+    assert "设备：lan-server (192.168.10.47)" in body
+    assert "接口：Gi1/1/2" in body
+    assert "状态：Err-disable" in body
+    assert "原因：link-flap（链路频繁抖动）" in body
+
+
+def test_errdisable_reason_explanations_preserve_raw_tokens():
+    assert bridge.format_errdisable_reason("link-flap") == "link-flap（链路频繁抖动）"
+    assert bridge.format_errdisable_reason("bpduguard") == "bpduguard（BPDU保护触发）"
+    assert bridge.format_errdisable_reason("loopback") == "loopback（检测到二层环路）"
+    assert bridge.format_errdisable_reason("storm-control") == "storm-control"
+    assert bridge.format_mac_flap_reason() == "MAC flap（MAC地址漂移）"
+
+
+def test_network_risk_cards_are_orange_and_recovery_is_green(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    monkeypatch.setattr(bridge, "_host_display_name", lambda host: host)
+
+    mac_flap = bridge.build_network_syslog_card(
+        "core", "message", {
+            "kind": "mac_flap", "title": "🔴 网关 MAC 异常移动", "color": "red",
+            "mac": "00:11:22:33:44:55", "vlan": "10", "port_a": "Gi1/0/1",
+            "port_b": "Gi1/0/2",
+        },
+    )
+    bpdu = bridge.build_network_syslog_card(
+        "core", "message", {
+            "kind": "bpduguard", "title": "⛔ BPDU blocked: Has worsened",
+            "color": "red", "port": "Gi1/0/3",
+        },
+    )
+    recovered = bridge.build_network_syslog_card(
+        "core", "message", {
+            "kind": "errdisable", "title": "🛑 接口被保护关闭",
+            "color": "orange", "port": "Gi1/0/4", "reason": "loopback",
+        }, recovered=True, duration=20,
+    )
+
+    assert mac_flap["card"]["header"]["template"] == "orange"
+    assert mac_flap["card"]["header"]["subtitle"]["content"] == "网关 MAC 异常移动"
+    assert "原因：MAC flap（MAC地址漂移）" in mac_flap["card"]["body"]["elements"][0]["content"]
+    assert bpdu["card"]["header"]["template"] == "orange"
+    assert bpdu["card"]["header"]["subtitle"]["content"] == "BPDU 保护触发"
+    assert recovered["card"]["header"]["template"] == "green"
+    assert recovered["card"]["header"]["subtitle"]["content"] == "接口保护恢复"
+    assert "状态：已恢复" in recovered["card"]["body"]["elements"][0]["content"]
 
 
 def test_late_errdisable_is_suppressed_after_aggregate_alert(monkeypatch):

@@ -544,8 +544,10 @@ def test_ap_down_and_recovery_titles_are_distinct():
     down = bridge.build_ap_down_card("AP-1", "192.0.2.10", "U6-LR", False, 10)
     recovered = bridge.build_ap_down_card("AP-1", "192.0.2.10", "U6-LR", True, 15)
 
-    assert down["card"]["header"]["subtitle"]["content"] == "🔴 AP 掉线告警"
-    assert recovered["card"]["header"]["subtitle"]["content"] == "🟢 AP 上线恢复"
+    assert down["card"]["header"]["subtitle"]["content"] == "AP 掉线告警"
+    assert recovered["card"]["header"]["subtitle"]["content"] == "AP 上线恢复"
+    assert "状态：DOWN" in down["card"]["body"]["elements"][0]["content"]
+    assert "状态：UP" in recovered["card"]["body"]["elements"][0]["content"]
 
 
 def test_fast_ap_down_default():
