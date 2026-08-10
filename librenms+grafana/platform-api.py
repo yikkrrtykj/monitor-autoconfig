@@ -6,14 +6,10 @@ telnetlib3 compatibility module so the service also works on Python 3.13+.
 """
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import ipaddress
 import json
 import os
 import re
-import shutil
 import shlex
 import secrets
 import socket
@@ -47,6 +43,10 @@ from platform_config import (
     validate_config,
 )
 from version_info import get_version_info
+from platform_api import auth as platform_auth
+from platform_api import storage as platform_storage
+from platform_api import transactions as platform_transactions
+from platform_api.settings import load_settings
 from cisco_dhcp import (
     attach_dhcp_pool_exclusions,
     parse_cisco_arp_entries,
@@ -58,24 +58,25 @@ from cisco_dhcp import (
 )
 
 
-WORKDIR = Path(os.environ.get("PLATFORM_WORKDIR", "/workspace"))
-STATE_DIR = Path(os.environ.get("PLATFORM_STATE_DIR", str(WORKDIR / "platform-state")))
-CONFIG_PATH = Path(os.environ.get("EVENT_CONFIG_FILE", str(WORKDIR / "event-config.yml")))
-EXAMPLE_PATH = Path(os.environ.get("EVENT_CONFIG_EXAMPLE", str(WORKDIR / "event-config.example.yml")))
-ENV_PATH = Path(os.environ.get("ENV_FILE", str(WORKDIR / ".env")))
-INCIDENT_PATH = STATE_DIR / "incidents.json"
-AUTH_PATH = STATE_DIR / "auth.json"
-DHCP_SETTINGS_PATH = STATE_DIR / "dhcp-settings.json"
-IPERF_HISTORY_PATH = STATE_DIR / "iperf-history.json"
-HISTORY_DIR = STATE_DIR / "history"
-TRANSACTION_DIR = HISTORY_DIR / "transactions"
-APPLY_STATUS_DIR = STATE_DIR / "apply-status"
-WRITE_ENABLED = os.environ.get("PLATFORM_WRITE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-APPLY_ENABLED = os.environ.get("PLATFORM_APPLY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-APPLY_COMMAND = os.environ.get("PLATFORM_APPLY_COMMAND", "/bin/sh /workspace/apply-env.sh")
-APPLY_TIMEOUT = max(30, int(os.environ.get("PLATFORM_APPLY_TIMEOUT", "300")))
-APPLY_VERIFY_TIMEOUT = max(10, int(os.environ.get("PLATFORM_APPLY_VERIFY_TIMEOUT", "90")))
-MAX_REQUEST_BODY_BYTES = max(1024, int(os.environ.get("PLATFORM_MAX_REQUEST_BODY_BYTES", str(1024 * 1024))))
+CORE_SETTINGS = load_settings()
+WORKDIR = CORE_SETTINGS.workdir
+STATE_DIR = CORE_SETTINGS.state_dir
+CONFIG_PATH = CORE_SETTINGS.config_path
+EXAMPLE_PATH = CORE_SETTINGS.example_path
+ENV_PATH = CORE_SETTINGS.env_path
+INCIDENT_PATH = CORE_SETTINGS.incident_path
+AUTH_PATH = CORE_SETTINGS.auth_path
+DHCP_SETTINGS_PATH = CORE_SETTINGS.dhcp_settings_path
+IPERF_HISTORY_PATH = CORE_SETTINGS.iperf_history_path
+HISTORY_DIR = CORE_SETTINGS.history_dir
+TRANSACTION_DIR = CORE_SETTINGS.transaction_dir
+APPLY_STATUS_DIR = CORE_SETTINGS.apply_status_dir
+WRITE_ENABLED = CORE_SETTINGS.write_enabled
+APPLY_ENABLED = CORE_SETTINGS.apply_enabled
+APPLY_COMMAND = CORE_SETTINGS.apply_command
+APPLY_TIMEOUT = CORE_SETTINGS.apply_timeout
+APPLY_VERIFY_TIMEOUT = CORE_SETTINGS.apply_verify_timeout
+MAX_REQUEST_BODY_BYTES = CORE_SETTINGS.max_request_body_bytes
 IPERF3_COMMAND = os.environ.get(
     "PLATFORM_IPERF3_COMMAND",
     "iperf3",
@@ -98,22 +99,38 @@ PRECHECK_GRAFANA_URL = os.environ.get("PLATFORM_PRECHECK_GRAFANA_URL", "http://g
 PRECHECK_BIGSCREEN_URL = os.environ.get("PLATFORM_PRECHECK_BIGSCREEN_URL", "http://bigscreen").rstrip("/")
 PRECHECK_LIBRENMS_URL = os.environ.get("PLATFORM_PRECHECK_LIBRENMS_URL", "http://librenms:8000").rstrip("/")
 PRECHECK_PLAYER_TARGETS_URL = os.environ.get("PLATFORM_PRECHECK_PLAYER_TARGETS_URL", "http://player-targets:9199").rstrip("/")
-AUTH_ENABLED = os.environ.get("PLATFORM_AUTH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-AUTH_ADMIN_USER = os.environ.get("PLATFORM_ADMIN_USER", "admin")
-AUTH_DEFAULT_PASSWORD = os.environ.get("PLATFORM_ADMIN_PASSWORD", "global")
-AUTH_COOKIE_NAME = os.environ.get("PLATFORM_SESSION_COOKIE", "platform_session")
-AUTH_COOKIE_SECURE = os.environ.get("PLATFORM_COOKIE_SECURE", "false").lower() in ("1", "true", "yes", "on")
-AUTH_SESSION_SECONDS = max(600, int(float(os.environ.get("PLATFORM_SESSION_HOURS", "8")) * 3600))
-PASSWORD_MIN_LENGTH = max(10, int(os.environ.get("PLATFORM_PASSWORD_MIN_LENGTH", "10")))
-PASSWORD_HASH_ITERATIONS = 260_000
-AUTH_FAILURE_WINDOW_SECONDS = max(30, int(os.environ.get("PLATFORM_AUTH_FAILURE_WINDOW_SECONDS", "300")))
-AUTH_FAILURE_LIMIT = max(3, int(os.environ.get("PLATFORM_AUTH_FAILURE_LIMIT", "5")))
-AUTH_LOCK_SECONDS = max(30, int(os.environ.get("PLATFORM_AUTH_LOCK_SECONDS", "900")))
-TRANSACTION_RETENTION = max(5, int(os.environ.get("PLATFORM_TRANSACTION_RETENTION", "50")))
-APPLY_STATUS_RETENTION = max(10, int(os.environ.get("PLATFORM_APPLY_STATUS_RETENTION", "200")))
-SESSIONS: dict[str, dict] = {}
-AUTH_FAILURES: dict[str, dict] = {}
-AUTH_FAILURES_LOCK = threading.Lock()
+AUTH_ENABLED = CORE_SETTINGS.auth_enabled
+AUTH_ADMIN_USER = CORE_SETTINGS.auth_admin_user
+AUTH_DEFAULT_PASSWORD = CORE_SETTINGS.auth_default_password
+AUTH_COOKIE_NAME = CORE_SETTINGS.auth_cookie_name
+AUTH_COOKIE_SECURE = CORE_SETTINGS.auth_cookie_secure
+AUTH_SESSION_SECONDS = CORE_SETTINGS.auth_session_seconds
+PASSWORD_MIN_LENGTH = CORE_SETTINGS.password_min_length
+PASSWORD_HASH_ITERATIONS = platform_auth.PASSWORD_HASH_ITERATIONS
+AUTH_FAILURE_WINDOW_SECONDS = CORE_SETTINGS.auth_failure_window_seconds
+AUTH_FAILURE_LIMIT = CORE_SETTINGS.auth_failure_limit
+AUTH_LOCK_SECONDS = CORE_SETTINGS.auth_lock_seconds
+TRANSACTION_RETENTION = CORE_SETTINGS.transaction_retention
+APPLY_STATUS_RETENTION = CORE_SETTINGS.apply_status_retention
+AUTH_CONTEXT = platform_auth.AuthContext(
+    auth_path=AUTH_PATH,
+    enabled=AUTH_ENABLED,
+    admin_user=AUTH_ADMIN_USER,
+    default_password=AUTH_DEFAULT_PASSWORD,
+    cookie_name=AUTH_COOKIE_NAME,
+    cookie_secure=AUTH_COOKIE_SECURE,
+    session_seconds=AUTH_SESSION_SECONDS,
+    password_min_length=PASSWORD_MIN_LENGTH,
+    failure_window_seconds=AUTH_FAILURE_WINDOW_SECONDS,
+    failure_limit=AUTH_FAILURE_LIMIT,
+    lock_seconds=AUTH_LOCK_SECONDS,
+    history_writer=lambda action, actor, note, detail: append_history(
+        action, actor, note, detail,
+    ),
+)
+SESSIONS = AUTH_CONTEXT.sessions
+AUTH_FAILURES = AUTH_CONTEXT.failures
+AUTH_FAILURES_LOCK = AUTH_CONTEXT.failures_lock
 
 CISCO_PROMPT_RE = br"(?m)^[A-Za-z0-9_.:/()\[\]-]+[>#][ \t]*\r?$"
 CISCO_PRIV_PROMPT_RE = br"(?m)^[A-Za-z0-9_.:/()\[\]-]+#[ \t]*\r?$"
@@ -121,11 +138,10 @@ CISCO_USER_PROMPT_RE = br"(?m)^[A-Za-z0-9_.:/()\[\]-]+>[ \t]*\r?$"
 CISCO_MORE_RE = br"(?i)--More--|<---\s*More\s*--->"
 
 
-class AuthError(Exception):
-    def __init__(self, status: int, message: str, **extra):
-        super().__init__(message)
-        self.status = status
-        self.payload = {"ok": False, "error": message, **extra}
+AuthError = platform_auth.AuthError
+read_json_file = platform_storage.read_json_file
+atomic_write_text = platform_storage.atomic_write_text
+write_json_file = platform_storage.write_json_file
 
 
 class DiagnosticError(Exception):
@@ -136,20 +152,10 @@ class DiagnosticError(Exception):
 
 
 def ensure_dirs() -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    TRANSACTION_DIR.mkdir(parents=True, exist_ok=True)
-    APPLY_STATUS_DIR.mkdir(parents=True, exist_ok=True)
+    platform_storage.ensure_directories((
+        STATE_DIR, HISTORY_DIR, TRANSACTION_DIR, APPLY_STATUS_DIR,
+    ))
     ensure_auth_store()
-
-
-def read_json_file(path: Path, fallback):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return fallback
-    except json.JSONDecodeError:
-        return fallback
 
 
 # Serializes config-mutating requests so the now-threaded server can't interleave
@@ -180,30 +186,6 @@ DHCP_LOCK = threading.Lock()
 DHCP_CACHE: dict = {}
 
 
-def atomic_write_text(path: Path, text: str) -> None:
-    """Write via a temp file + rename so a concurrent reader never sees a partial
-    file while another request is (re)writing config/.env."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-
-
-def write_json_file(path: Path, payload, mode: int | None = None) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
-    if mode is None:
-        tmp.write_text(text, encoding="utf-8")
-    else:
-        # 含密钥的文件（如 DHCP Telnet 密码）从创建那一刻就必须是私有权限，
-        # 不能先按默认 umask 落盘再补 chmod——那样存在世界可读的窗口。
-        fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, mode)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-    tmp.replace(path)
-
-
 def dhcp_connection_settings() -> dict:
     """Return runtime Telnet settings, preferring the private console store."""
     stored = read_json_file(DHCP_SETTINGS_PATH, {})
@@ -222,404 +204,191 @@ def dhcp_connection_settings() -> dict:
     }
 
 
-def new_operation_id(prefix: str = "op") -> str:
-    return f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}-{secrets.token_hex(3)}"
+def _transaction_context() -> platform_transactions.TransactionContext:
+    """Reflect compatibility globals that existing callers may override."""
+    return platform_transactions.TransactionContext(
+        config_path=CONFIG_PATH,
+        env_path=ENV_PATH,
+        transaction_dir=TRANSACTION_DIR,
+        apply_status_dir=APPLY_STATUS_DIR,
+        transaction_retention=TRANSACTION_RETENTION,
+        apply_status_retention=APPLY_STATUS_RETENTION,
+    )
 
 
-def normalize_operation_id(value: str | None, prefix: str = "op") -> str:
-    value = str(value or "").strip()
-    if value and re.fullmatch(r"[A-Za-z0-9_-]{8,96}", value):
-        return value
-    return new_operation_id(prefix)
+new_operation_id = platform_transactions.new_operation_id
+normalize_operation_id = platform_transactions.normalize_operation_id
+prune_retained_paths = platform_transactions.prune_retained_paths
+mark_config_snapshot_consumed = platform_transactions.mark_config_snapshot_consumed
 
 
 def apply_status_path(operation_id: str) -> Path:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{8,96}", str(operation_id or "")):
-        raise ValueError("invalid operation id")
-    return APPLY_STATUS_DIR / f"{operation_id}.json"
-
-
-def prune_retained_paths(paths, keep: int) -> None:
-    """Remove only the oldest generated state entries beyond ``keep``."""
-    ordered = sorted(
-        (path for path in paths if path.exists()),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
-        reverse=True,
+    return platform_transactions.apply_status_path(
+        _transaction_context(), operation_id,
     )
-    for path in ordered[max(1, keep):]:
-        try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-        except OSError as exc:
-            print(f"[platform-api] state retention cleanup failed for {path}: {exc}", flush=True)
 
 
 def prune_generated_state() -> None:
-    if TRANSACTION_DIR.exists():
-        prune_retained_paths(TRANSACTION_DIR.iterdir(), TRANSACTION_RETENTION)
-    if APPLY_STATUS_DIR.exists():
-        prune_retained_paths(APPLY_STATUS_DIR.glob("*.json"), APPLY_STATUS_RETENTION)
+    platform_transactions.prune_generated_state(_transaction_context())
 
 
 def write_apply_status(operation_id: str, state: str, **detail) -> dict:
-    payload = {
-        "ok": state in ("succeeded", "pending"),
-        "operationId": operation_id,
-        "state": state,
-        "updatedAt": int(time.time()),
-        **detail,
-    }
-    write_json_file(apply_status_path(operation_id), payload)
-    prune_generated_state()
-    return payload
+    return platform_transactions.write_apply_status(
+        _transaction_context(), operation_id, state, **detail,
+    )
 
 
 def read_apply_status(operation_id: str) -> dict:
-    clean = str(operation_id or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9_-]{8,96}", clean):
-        return {"ok": False, "operationId": clean, "state": "unknown", "error": "无效的应用任务编号"}
-    path = APPLY_STATUS_DIR / f"{clean}.json"
-    if not path.exists():
-        return {"ok": False, "operationId": clean, "state": "unknown", "error": "找不到该应用任务"}
-    return read_json_file(path, {"ok": False, "operationId": clean, "state": "unknown"})
+    return platform_transactions.read_apply_status(
+        _transaction_context(), operation_id,
+    )
 
 
-def create_config_snapshot(action: str, actor: str = "", note: str = "") -> dict:
-    """Snapshot config and .env as one indivisible rollback generation."""
-    transaction_id = new_operation_id("txn")
-    directory = TRANSACTION_DIR / transaction_id
-    directory.mkdir(parents=True, exist_ok=False)
-    meta = {
-        "id": transaction_id,
-        "action": action,
-        "actor": actor,
-        "note": note,
-        "createdAt": int(time.time()),
-        "configExisted": CONFIG_PATH.exists(),
-        "envExisted": ENV_PATH.exists(),
-    }
-    if CONFIG_PATH.exists():
-        shutil.copy2(CONFIG_PATH, directory / "event-config.yml")
-    if ENV_PATH.exists():
-        shutil.copy2(ENV_PATH, directory / ".env")
-    write_json_file(directory / "metadata.json", meta)
-    prune_generated_state()
-    return {**meta, "path": str(directory)}
+def create_config_snapshot(
+    action: str,
+    actor: str = "",
+    note: str = "",
+) -> dict:
+    return platform_transactions.create_config_snapshot(
+        _transaction_context(), action, actor, note,
+    )
 
 
 def list_config_snapshots() -> list[Path]:
-    if not TRANSACTION_DIR.exists():
-        return []
-    eligible = []
-    for path in TRANSACTION_DIR.iterdir():
-        if not path.is_dir():
-            continue
-        meta = read_json_file(path / "metadata.json", {})
-        if meta.get("action") == "config.rollback.guard" or meta.get("consumedAt"):
-            continue
-        eligible.append(path)
-    return sorted(eligible, reverse=True)
-
-
-def mark_config_snapshot_consumed(directory: Path) -> None:
-    meta_path = directory / "metadata.json"
-    meta = read_json_file(meta_path, {})
-    if not meta:
-        return
-    meta["consumedAt"] = int(time.time())
-    write_json_file(meta_path, meta)
+    return platform_transactions.list_config_snapshots(_transaction_context())
 
 
 def restore_config_snapshot(directory: Path) -> dict:
-    meta = read_json_file(directory / "metadata.json", {})
-    if not meta:
-        raise ValueError(f"invalid config snapshot: {directory}")
-    restored = {"transactionId": meta.get("id") or directory.name}
-    config_backup = directory / "event-config.yml"
-    env_backup = directory / ".env"
-    if meta.get("configExisted"):
-        atomic_write_text(CONFIG_PATH, config_backup.read_text(encoding="utf-8"))
-        restored["config"] = str(config_backup)
-    elif CONFIG_PATH.exists():
-        CONFIG_PATH.unlink()
-        restored["config"] = "removed"
-    if meta.get("envExisted"):
-        atomic_write_text(ENV_PATH, env_backup.read_text(encoding="utf-8"))
-        restored["env"] = str(env_backup)
-    elif ENV_PATH.exists():
-        ENV_PATH.unlink()
-        restored["env"] = "removed"
-    return restored
+    return platform_transactions.restore_config_snapshot(
+        _transaction_context(), directory,
+    )
 
 
-def b64encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+def _sync_auth_context() -> platform_auth.AuthContext:
+    """Reflect compatibility globals that existing callers may override."""
+    AUTH_CONTEXT.auth_path = AUTH_PATH
+    AUTH_CONTEXT.enabled = AUTH_ENABLED
+    AUTH_CONTEXT.admin_user = AUTH_ADMIN_USER
+    AUTH_CONTEXT.default_password = AUTH_DEFAULT_PASSWORD
+    AUTH_CONTEXT.cookie_name = AUTH_COOKIE_NAME
+    AUTH_CONTEXT.cookie_secure = AUTH_COOKIE_SECURE
+    AUTH_CONTEXT.session_seconds = AUTH_SESSION_SECONDS
+    AUTH_CONTEXT.password_min_length = PASSWORD_MIN_LENGTH
+    AUTH_CONTEXT.failure_window_seconds = AUTH_FAILURE_WINDOW_SECONDS
+    AUTH_CONTEXT.failure_limit = AUTH_FAILURE_LIMIT
+    AUTH_CONTEXT.lock_seconds = AUTH_LOCK_SECONDS
+    AUTH_CONTEXT.sessions = SESSIONS
+    AUTH_CONTEXT.failures = AUTH_FAILURES
+    AUTH_CONTEXT.failures_lock = AUTH_FAILURES_LOCK
+    return AUTH_CONTEXT
 
 
-def b64decode(text: str) -> bytes:
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
-
-
-def hash_password(password: str, salt: bytes | None = None, iterations: int = PASSWORD_HASH_ITERATIONS) -> str:
-    salt = salt or secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
-    return f"pbkdf2_sha256${iterations}${b64encode(salt)}${b64encode(digest)}"
-
-
-def verify_password(password: str, encoded: str) -> bool:
-    try:
-        algorithm, iterations, salt, digest = encoded.split("$", 3)
-        if algorithm != "pbkdf2_sha256":
-            return False
-        expected = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), b64decode(salt), int(iterations))
-        return hmac.compare_digest(b64encode(expected), digest)
-    except Exception:
-        return False
+b64encode = platform_auth.b64encode
+b64decode = platform_auth.b64decode
+hash_password = platform_auth.hash_password
+verify_password = platform_auth.verify_password
+parse_cookies = platform_auth.parse_cookies
+_auth_failure_keys = platform_auth.auth_failure_keys
 
 
 def ensure_auth_store() -> None:
-    if not AUTH_ENABLED or AUTH_PATH.exists():
-        return
-    write_json_file(AUTH_PATH, {
-        "username": AUTH_ADMIN_USER,
-        "passwordHash": hash_password(AUTH_DEFAULT_PASSWORD),
-        "mustChangePassword": True,
-        "createdAt": int(time.time()),
-        "passwordChangedAt": None,
-    })
+    platform_auth.ensure_auth_store(_sync_auth_context())
 
 
 def read_auth_store() -> dict:
-    ensure_auth_store()
-    store = read_json_file(AUTH_PATH, {})
-    if not store.get("username") or not store.get("passwordHash"):
-        store = {
-            "username": AUTH_ADMIN_USER,
-            "passwordHash": hash_password(AUTH_DEFAULT_PASSWORD),
-            "mustChangePassword": True,
-            "createdAt": int(time.time()),
-            "passwordChangedAt": None,
-        }
-        write_json_file(AUTH_PATH, store)
-    return store
+    return platform_auth.read_auth_store(_sync_auth_context())
 
 
 def write_auth_store(store: dict) -> None:
-    store["updatedAt"] = int(time.time())
-    write_json_file(AUTH_PATH, store)
+    platform_auth.write_auth_store(_sync_auth_context(), store)
 
 
 def password_strength_error(password: str) -> str | None:
-    if len(password or "") < PASSWORD_MIN_LENGTH:
-        return f"新密码至少 {PASSWORD_MIN_LENGTH} 位"
-    if password == AUTH_DEFAULT_PASSWORD:
-        return "新密码不能继续使用默认密码"
-    if password.lower() in ("password", "admin123456", "event@2026!", "global"):
-        return "新密码过于常见"
-    if not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password):
-        return "新密码需要同时包含字母和数字"
-    return None
-
-
-def parse_cookies(header: str) -> dict[str, str]:
-    cookies = {}
-    for part in str(header or "").split(";"):
-        if "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        cookies[key.strip()] = value.strip()
-    return cookies
+    return platform_auth.password_strength_error(_sync_auth_context(), password)
 
 
 def prune_sessions() -> None:
-    now = time.time()
-    expired = [token for token, session in SESSIONS.items() if session.get("expires", 0) <= now]
-    for token in expired:
-        SESSIONS.pop(token, None)
+    platform_auth.prune_sessions(_sync_auth_context())
 
 
 def create_session(username: str) -> str:
-    prune_sessions()
-    token = secrets.token_urlsafe(32)
-    SESSIONS[token] = {"username": username, "expires": time.time() + AUTH_SESSION_SECONDS}
-    return token
+    return platform_auth.create_session(_sync_auth_context(), username)
 
 
 def current_session(handler: BaseHTTPRequestHandler) -> dict | None:
-    if not AUTH_ENABLED:
-        return {"username": "local", "expires": time.time() + AUTH_SESSION_SECONDS}
-    prune_sessions()
-    token = parse_cookies(handler.headers.get("Cookie", "")).get(AUTH_COOKIE_NAME)
-    session = SESSIONS.get(token or "")
-    if not session:
-        return None
-    return session
+    return platform_auth.current_session(_sync_auth_context(), handler)
 
 
-def session_cookie(token: str, max_age: int = AUTH_SESSION_SECONDS) -> str:
-    parts = [
-        f"{AUTH_COOKIE_NAME}={token}",
-        "Path=/",
-        "HttpOnly",
-        "SameSite=Lax",
-        f"Max-Age={max_age}",
-    ]
-    if AUTH_COOKIE_SECURE:
-        parts.append("Secure")
-    return "; ".join(parts)
+def session_cookie(token: str, max_age: int | None = None) -> str:
+    return platform_auth.session_cookie(
+        _sync_auth_context(), token, max_age=max_age,
+    )
 
 
 def clear_session_cookie() -> str:
-    parts = [
-        f"{AUTH_COOKIE_NAME}=",
-        "Path=/",
-        "HttpOnly",
-        "SameSite=Lax",
-        "Max-Age=0",
-    ]
-    if AUTH_COOKIE_SECURE:
-        parts.append("Secure")
-    return "; ".join(parts)
+    return platform_auth.clear_session_cookie(_sync_auth_context())
 
 
 def auth_status(handler: BaseHTTPRequestHandler) -> dict:
-    if not AUTH_ENABLED:
-        return {"ok": True, "enabled": False, "authenticated": True, "username": "local", "mustChangePassword": False}
-    store = read_auth_store()
-    session = current_session(handler)
-    authenticated = bool(session)
-    return {
-        "ok": True,
-        "enabled": True,
-        "authenticated": authenticated,
-        "username": store.get("username", AUTH_ADMIN_USER) if authenticated else "",
-        "defaultUser": store.get("username", AUTH_ADMIN_USER),
-        "mustChangePassword": bool(store.get("mustChangePassword")) if authenticated else False,
-        "sessionExpiresAt": int(session.get("expires", 0)) if session else 0,
-    }
+    return platform_auth.auth_status(_sync_auth_context(), handler)
 
 
-def require_auth(handler: BaseHTTPRequestHandler, allow_must_change: bool = False) -> dict:
-    if not AUTH_ENABLED:
-        return {"username": "local"}
-    store = read_auth_store()
-    session = current_session(handler)
-    if not session:
-        raise AuthError(HTTPStatus.UNAUTHORIZED, "需要登录", authenticated=False)
-    if store.get("mustChangePassword") and not allow_must_change:
-        raise AuthError(HTTPStatus.FORBIDDEN, "需要先修改默认密码", authenticated=True, mustChangePassword=True)
-    return {"username": session.get("username") or store.get("username") or AUTH_ADMIN_USER}
+def require_auth(
+    handler: BaseHTTPRequestHandler,
+    allow_must_change: bool = False,
+) -> dict:
+    return platform_auth.require_auth(
+        _sync_auth_context(), handler, allow_must_change=allow_must_change,
+    )
 
 
-def _auth_failure_keys(username: str, client_ip: str) -> tuple[str, str]:
-    return f"ip:{client_ip or 'unknown'}", f"user:{str(username or '').strip().lower()}"
+def _auth_lock_remaining(
+    username: str,
+    client_ip: str,
+    now: float | None = None,
+) -> int:
+    return platform_auth.auth_lock_remaining(
+        _sync_auth_context(), username, client_ip, now=now,
+    )
 
 
-def _auth_lock_remaining(username: str, client_ip: str, now: float | None = None) -> int:
-    now = time.time() if now is None else now
-    with AUTH_FAILURES_LOCK:
-        remaining = 0
-        for key in _auth_failure_keys(username, client_ip):
-            state = AUTH_FAILURES.get(key) or {}
-            locked_until = float(state.get("lockedUntil") or 0)
-            if locked_until > now:
-                remaining = max(remaining, int(locked_until - now + 0.999))
-            elif state:
-                recent = [stamp for stamp in state.get("failures", []) if now - stamp <= AUTH_FAILURE_WINDOW_SECONDS]
-                if recent:
-                    state["failures"] = recent
-                else:
-                    AUTH_FAILURES.pop(key, None)
-        return remaining
-
-
-def _record_auth_failure(username: str, client_ip: str, now: float | None = None) -> int:
-    now = time.time() if now is None else now
-    locked_until = 0.0
-    with AUTH_FAILURES_LOCK:
-        for key in _auth_failure_keys(username, client_ip):
-            state = AUTH_FAILURES.setdefault(key, {"failures": [], "lockedUntil": 0.0})
-            recent = [stamp for stamp in state.get("failures", []) if now - stamp <= AUTH_FAILURE_WINDOW_SECONDS]
-            recent.append(now)
-            state["failures"] = recent
-            if len(recent) >= AUTH_FAILURE_LIMIT:
-                state["lockedUntil"] = max(float(state.get("lockedUntil") or 0), now + AUTH_LOCK_SECONDS)
-            locked_until = max(locked_until, float(state.get("lockedUntil") or 0))
-    return max(0, int(locked_until - now + 0.999))
+def _record_auth_failure(
+    username: str,
+    client_ip: str,
+    now: float | None = None,
+) -> int:
+    return platform_auth.record_auth_failure(
+        _sync_auth_context(), username, client_ip, now=now,
+    )
 
 
 def _clear_auth_failures(username: str, client_ip: str) -> None:
-    with AUTH_FAILURES_LOCK:
-        for key in _auth_failure_keys(username, client_ip):
-            AUTH_FAILURES.pop(key, None)
+    platform_auth.clear_auth_failures(
+        _sync_auth_context(), username, client_ip,
+    )
 
 
-def login_auth(username: str, password: str, client_ip: str = "") -> tuple[dict, str]:
-    remaining = _auth_lock_remaining(username, client_ip)
-    if remaining:
-        raise AuthError(
-            HTTPStatus.TOO_MANY_REQUESTS,
-            f"登录失败次数过多，请在 {remaining} 秒后重试",
-            authenticated=False,
-            retryAfter=remaining,
-        )
-    store = read_auth_store()
-    if username != store.get("username") or not verify_password(password, store.get("passwordHash", "")):
-        remaining = _record_auth_failure(username, client_ip)
-        if remaining:
-            raise AuthError(
-                HTTPStatus.TOO_MANY_REQUESTS,
-                f"登录失败次数过多，请在 {remaining} 秒后重试",
-                authenticated=False,
-                retryAfter=remaining,
-            )
-        raise AuthError(HTTPStatus.UNAUTHORIZED, "账号或密码错误", authenticated=False)
-    _clear_auth_failures(username, client_ip)
-    token = create_session(store["username"])
-    return {
-        "ok": True,
-        "authenticated": True,
-        "username": store["username"],
-        "mustChangePassword": bool(store.get("mustChangePassword")),
-        "sessionExpiresAt": int(SESSIONS[token]["expires"]),
-    }, session_cookie(token)
+def login_auth(
+    username: str,
+    password: str,
+    client_ip: str = "",
+) -> tuple[dict, str]:
+    return platform_auth.login_auth(
+        _sync_auth_context(), username, password, client_ip,
+    )
 
 
-def change_password_auth(handler: BaseHTTPRequestHandler, data: dict) -> tuple[dict, str]:
-    auth = require_auth(handler, allow_must_change=True)
-    current_password = str(data.get("currentPassword") or "")
-    new_password = str(data.get("newPassword") or "")
-    confirm_password = str(data.get("confirmPassword") or new_password)
-    store = read_auth_store()
-    if not verify_password(current_password, store.get("passwordHash", "")):
-        raise AuthError(HTTPStatus.FORBIDDEN, "当前密码不正确", authenticated=True, mustChangePassword=bool(store.get("mustChangePassword")))
-    if new_password != confirm_password:
-        raise AuthError(HTTPStatus.BAD_REQUEST, "两次输入的新密码不一致", authenticated=True)
-    strength_error = password_strength_error(new_password)
-    if strength_error:
-        raise AuthError(HTTPStatus.BAD_REQUEST, strength_error, authenticated=True)
-    store["passwordHash"] = hash_password(new_password)
-    store["mustChangePassword"] = False
-    store["passwordChangedAt"] = int(time.time())
-    write_auth_store(store)
-    SESSIONS.clear()
-    token = create_session(auth["username"])
-    append_history("auth.password_change", auth["username"], "password changed", {})
-    return {
-        "ok": True,
-        "authenticated": True,
-        "username": auth["username"],
-        "mustChangePassword": False,
-        "sessionExpiresAt": int(SESSIONS[token]["expires"]),
-    }, session_cookie(token)
+def change_password_auth(
+    handler: BaseHTTPRequestHandler,
+    data: dict,
+) -> tuple[dict, str]:
+    return platform_auth.change_password_auth(
+        _sync_auth_context(), handler, data,
+    )
 
 
 def logout_auth(handler: BaseHTTPRequestHandler) -> None:
-    token = parse_cookies(handler.headers.get("Cookie", "")).get(AUTH_COOKIE_NAME)
-    if token:
-        SESSIONS.pop(token, None)
+    platform_auth.logout_auth(_sync_auth_context(), handler)
 
 
 def read_config_text() -> str:

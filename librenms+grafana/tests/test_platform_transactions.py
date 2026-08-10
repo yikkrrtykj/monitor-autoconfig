@@ -131,6 +131,41 @@ def test_rollback_restores_a_paired_snapshot_and_applies_it(monkeypatch, tmp_pat
     assert api.read_apply_status("rollback-test-01")["state"] == "succeeded"
 
 
+def test_failed_rollback_restore_does_not_leave_a_half_restored_pair(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    seed(api, env="CUSTOM=old\n")
+    api.save_config(config_text("new"), "admin", "save")
+    api.ENV_PATH.write_text("CUSTOM=new\n", encoding="utf-8")
+    before_config = api.CONFIG_PATH.read_bytes()
+    before_env = api.ENV_PATH.read_bytes()
+    real_atomic_write = api.platform_transactions.atomic_write_text
+    write_count = 0
+
+    def fail_second_restore_write(path, text):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise OSError("injected paired restore failure")
+        real_atomic_write(path, text)
+
+    monkeypatch.setattr(
+        api.platform_transactions, "atomic_write_text", fail_second_restore_write,
+    )
+    monkeypatch.setattr(
+        api,
+        "run_apply_command",
+        lambda: (_ for _ in ()).throw(AssertionError("must not apply")),
+    )
+
+    result = api.rollback_config("admin", "rollback", "rollback-half-state")
+
+    assert result["ok"] is False
+    assert "injected paired restore failure" in result["error"]
+    assert api.CONFIG_PATH.read_bytes() == before_config
+    assert api.ENV_PATH.read_bytes() == before_env
+    assert api.read_apply_status("rollback-half-state")["state"] == "failed"
+
+
 def test_repeated_rollback_walks_back_without_restoring_guard(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     seed(api, "old")
