@@ -133,14 +133,18 @@ docker compose ps
 | 514/udp+tcp | 入 | 交换机 syslog 上报 |
 | 161/udp | 出 | SNMP 采集（出向，无需开入向） |
 
-### 更新到测试分支
+### 更新
+
+普通更新使用 `main`：
 
 ```bash
-git fetch origin
-git checkout -B codex/remove-quality-heatmap origin/codex/remove-quality-heatmap
+git checkout main
+git pull --ff-only
 cd librenms+grafana
 ./deploy.sh
 ```
+
+`deploy.sh` 会负责已有安装的配置兼容和部署验证。`git pull` 不会自动删除 `event-config.yml`、`.env` 或 Docker 数据卷。项目暂未建立正式的 release/tag 流程；完成后会另行更新推荐的固定版本部署方式。
 
 ## 控制台
 
