@@ -1178,6 +1178,8 @@ def canonical_edge_key(edge):
 def merge_edge(edges_by_key, edge):
     """Insert an edge, or backfill missing fields on an existing one (so an LLDP
     and a CDP view of the same link, or both directions, collapse into one)."""
+    if edge.get("from_ip") and edge.get("from_ip") == edge.get("to_ip"):
+        return
     if not any(
         _has_physical_endpoint_evidence(edge, side)
         for side in ("from", "to")
@@ -1309,6 +1311,15 @@ def build_edges(devices, name_index):
                     "neighbor_port": remote_port_name,
                 })
                 continue
+            if neighbor_ip == ip:
+                placeholder_neighbors.append({
+                    "from_ip": ip,
+                    "from_port": local_port_name,
+                    "neighbor_name": neighbor_name,
+                    "neighbor_port": remote_port_name,
+                    "reason": "self-edge",
+                })
+                continue
 
             remote_ifindex = None
             remote = devices.get(neighbor_ip)
@@ -1364,6 +1375,15 @@ def build_edges(devices, name_index):
                     "neighbor_port": remote_port_name,
                 })
                 continue
+            if neighbor_ip == ip:
+                placeholder_neighbors.append({
+                    "from_ip": ip,
+                    "from_port": local_port_name,
+                    "neighbor_name": neighbor_name,
+                    "neighbor_port": remote_port_name,
+                    "reason": "self-edge",
+                })
+                continue
 
             remote_ifindex = None
             remote = devices.get(neighbor_ip)
@@ -1396,14 +1416,25 @@ def build_edges(devices, name_index):
                 continue
             neighbor_name = str(neighbor.get("neighbor_name") or "").strip()
             neighbor_device_id = neighbor.get("neighbor_device_id")
+            neighbor_device_id_text = (
+                str(neighbor_device_id).strip()
+                if neighbor_device_id is not None else ""
+            )
             neighbor_ip = None
-            if neighbor_device_id not in (None, ""):
-                neighbor_ip = device_id_index.get(str(neighbor_device_id))
-            if neighbor_ip is None:
+            external_device_id = False
+            if neighbor_device_id_text:
+                # A non-empty LibreNMS device ID is authoritative identity.
+                # If it is outside the configured topology inventory, keep it
+                # external instead of reinterpreting a colliding sysName.
+                neighbor_ip = device_id_index.get(neighbor_device_id_text)
+                external_device_id = neighbor_ip is None
+            else:
                 neighbor_ip = name_index.get(neighbor_name.lower()) or \
                               name_index.get(normalize_hostname(neighbor_name))
-            if neighbor_ip is None:
-                neighbor_ip = configured_core_neighbor_ip(devices, neighbor_name)
+                if neighbor_ip is None:
+                    neighbor_ip = configured_core_neighbor_ip(
+                        devices, neighbor_name
+                    )
 
             local_ifindex = _as_positive_int(neighbor.get("local_ifindex"))
             local_port_name = str(neighbor.get("local_port") or "").strip()
@@ -1440,11 +1471,27 @@ def build_edges(devices, name_index):
                     )
 
             if neighbor_ip is None:
+                placeholder = {
+                    "from_ip": ip,
+                    "from_port": local_port_name,
+                    "neighbor_name": neighbor_name,
+                    "neighbor_port": remote_port_name,
+                }
+                if external_device_id:
+                    placeholder.update({
+                        "neighbor_device_id": neighbor_device_id_text,
+                        "reason": "external-device-id",
+                    })
+                placeholder_neighbors.append(placeholder)
+                continue
+            if neighbor_ip == ip:
                 placeholder_neighbors.append({
                     "from_ip": ip,
                     "from_port": local_port_name,
                     "neighbor_name": neighbor_name,
                     "neighbor_port": remote_port_name,
+                    "neighbor_device_id": neighbor_device_id_text,
+                    "reason": "self-edge",
                 })
                 continue
             if not interface_is_usable(device, local_ifindex):

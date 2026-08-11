@@ -99,6 +99,31 @@ def collect_fixture_devices(client, monkeypatch, mode="hybrid"):
     }
 
 
+def topology_device(ip, sysname, device_id, ifname):
+    device = gte._empty_device(ip)
+    device.update({
+        "device_id": device_id,
+        "sysname": sysname,
+        "ifname": dict(ifname),
+        "ifoper": {ifindex: 1 for ifindex in ifname},
+    })
+    return device
+
+
+def unified_neighbor(local_ifindex, local_port, remote_name, remote_device_id,
+                     remote_port, remote_port_id=None):
+    return {
+        "protocol": "lldp",
+        "active": 1,
+        "local_ifindex": local_ifindex,
+        "local_port": local_port,
+        "neighbor_name": remote_name,
+        "neighbor_device_id": remote_device_id,
+        "neighbor_port": remote_port,
+        "neighbor_port_id": remote_port_id,
+    }
+
+
 def test_hybrid_is_default_and_invalid_value_falls_back(monkeypatch, capsys):
     monkeypatch.delenv("TOPOLOGY_DATA_SOURCE", raising=False)
     assert gte.topology_data_source() == "hybrid"
@@ -169,6 +194,146 @@ def test_librenms_fixture_reaches_final_edge_without_adjacency_snmp(monkeypatch)
     assert client.calls.count(("192.168.10.254", "ports")) == 1
     assert client.calls.count(("192.168.10.254", "links")) == 1
     assert client.calls.count(("192.168.10.254", "stack")) == 1
+
+
+def test_external_device_id_does_not_fallback_to_same_named_local_switch():
+    studio = topology_device(
+        "192.168.10.53", "Studio-3", 23, {37: "Gi1/0/37"},
+    )
+    studio["neighbors"] = [unified_neighbor(
+        37, "Gi1/0/37", "Studio-3", 32, "24:5A:4C:59:CF:8D",
+    )]
+    devices = {studio["ip"]: studio}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert edges == []
+    assert placeholders == [{
+        "from_ip": "192.168.10.53",
+        "from_port": "Gi1/0/37",
+        "neighbor_name": "Studio-3",
+        "neighbor_port": "24:5A:4C:59:CF:8D",
+        "neighbor_device_id": "32",
+        "reason": "external-device-id",
+    }]
+
+
+def test_external_ap_device_id_does_not_collide_with_ob_switch_name():
+    source = topology_device(
+        "192.168.10.11", "Aggregation", 7, {601: "Gi6/0/1"},
+    )
+    ob_switch = topology_device(
+        "192.168.10.49", "OB-1", 9, {49: "Gi1/0/49"},
+    )
+    source["neighbors"] = [unified_neighbor(
+        601, "Gi6/0/1", "ob-1", 14, "78:45:58:4B:6B:A8",
+    )]
+    devices = {source["ip"]: source, ob_switch["ip"]: ob_switch}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert edges == []
+    assert placeholders[0]["neighbor_device_id"] == "14"
+    assert placeholders[0]["reason"] == "external-device-id"
+    assert placeholders[0]["neighbor_port"] == "78:45:58:4B:6B:A8"
+
+
+def test_configured_remote_device_id_still_builds_infrastructure_edge():
+    core = topology_device(
+        "192.168.10.254", "Core", 1, {6: "Te1/0/6"},
+    )
+    ob_switch = topology_device(
+        "192.168.10.49", "OB-1", 9, {49: "Gi1/0/49"},
+    )
+    core["neighbors"] = [unified_neighbor(
+        6, "Te1/0/6", "OB-1", "9", "Gi1/0/49",
+    )]
+    devices = {core["ip"]: core, ob_switch["ip"]: ob_switch}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert placeholders == []
+    assert len(edges) == 1
+    assert (edges[0]["from_ip"], edges[0]["to_ip"]) == (
+        "192.168.10.254", "192.168.10.49",
+    )
+
+
+def test_missing_remote_device_id_keeps_legacy_hostname_fallback():
+    core = topology_device(
+        "192.168.10.254", "Core", 1, {6: "Te1/0/6"},
+    )
+    ob_switch = topology_device(
+        "192.168.10.49", "OB-1", 9, {49: "Gi1/0/49"},
+    )
+    core["neighbors"] = [unified_neighbor(
+        6, "Te1/0/6", "ob-1", "", "Gi1/0/49",
+    )]
+    devices = {core["ip"]: core, ob_switch["ip"]: ob_switch}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert placeholders == []
+    assert len(edges) == 1
+    assert edges[0]["to_ip"] == "192.168.10.49"
+
+
+def test_self_edge_is_recorded_but_never_emitted():
+    studio = topology_device(
+        "192.168.10.53", "Studio-3", 23, {37: "Gi1/0/37"},
+    )
+    studio["neighbors"] = [unified_neighbor(
+        37, "Gi1/0/37", "Studio-3", 23, "24:5A:4C:59:CF:8D",
+    )]
+    devices = {studio["ip"]: studio}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+    merged = {}
+    gte.merge_edge(merged, {
+        "from_ip": studio["ip"], "from_ifindex": 37,
+        "to_ip": studio["ip"], "to_ifindex": None,
+    })
+
+    assert edges == []
+    assert merged == {}
+    assert placeholders[0]["reason"] == "self-edge"
+
+
+def test_normal_core_ob_cdp_and_librenms_observations_still_dedupe():
+    core = topology_device(
+        "192.168.10.254", "Core", 1, {6: "Te1/0/6"},
+    )
+    ob_switch = topology_device(
+        "192.168.10.49", "OB-1", 9, {49: "Gi1/0/49"},
+    )
+    core["cdp_device_id"] = {(6, 1): "OB-1"}
+    core["cdp_device_port"] = {(6, 1): "Gi1/0/49"}
+    core["cdp_address"] = {(6, 1): "192.168.10.49"}
+    ob_switch["neighbors"] = [unified_neighbor(
+        49, "Gi1/0/49", "Core", 1, "Te1/0/6",
+    )]
+    devices = {core["ip"]: core, ob_switch["ip"]: ob_switch}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert placeholders == []
+    assert len(edges) == 1
+    assert edges[0]["from_ip"] == "192.168.10.254"
+    assert edges[0]["from_port"] == "Te1/0/6"
+    assert edges[0]["to_ip"] == "192.168.10.49"
+    assert edges[0]["to_port"] == "Gi1/0/49"
 
 
 def test_lldp_and_cdp_fixture_observations_dedupe_to_one_edge(monkeypatch):
