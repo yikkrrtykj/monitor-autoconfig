@@ -1513,6 +1513,121 @@ def build_edges(devices, name_index):
     return enrich_aggregate_members(edges, devices), placeholder_neighbors
 
 
+UNMATCHED_NEIGHBOR_CATEGORIES = (
+    "external-device-id",
+    "unmanaged-endpoint",
+    "unresolved",
+    "invalid-response",
+)
+UNMATCHED_NEIGHBOR_LOG_LIMIT = 10
+INVALID_NEIGHBOR_RESPONSE_MARKERS = (
+    "no such object",
+    "no such instance",
+    "no such name",
+    "no more variables",
+    "end of mib",
+    "endofmibview",
+)
+
+
+def _is_mac_endpoint_identity(value):
+    """Whether a value is entirely a MAC/chassis identity, not just a port ID."""
+    text = str(value or "").strip().strip('"')
+    text = re.sub(
+        r"^(?:hex-string|string)\s*:\s*", "", text, flags=re.IGNORECASE
+    ).strip()
+    return bool(text) and re.fullmatch(r"[0-9a-fA-F\s:.-]+", text) is not None \
+        and normalize_mac(text) is not None
+
+
+def classify_unmatched_neighbor(observation):
+    """Classify existing debug data without attempting endpoint resolution."""
+    if not isinstance(observation, dict):
+        return "invalid-response"
+    response_text = " ".join(
+        str(observation.get(field) or "").strip().lower()
+        for field in ("neighbor_name", "neighbor_port")
+    )
+    if any(marker in response_text for marker in INVALID_NEIGHBOR_RESPONSE_MARKERS):
+        return "invalid-response"
+
+    reason = str(observation.get("reason") or "").strip().lower()
+    if reason == "external-device-id":
+        return "external-device-id"
+    if reason == "unmanaged-endpoint":
+        return "unmanaged-endpoint"
+
+    # A MAC-valued LLDP Port ID is valid for infrastructure and is not enough
+    # to classify an endpoint. Only a MAC/chassis identity in the remote name,
+    # paired with no port or another MAC identity, is safe to de-emphasize.
+    neighbor_name = observation.get("neighbor_name")
+    neighbor_port = observation.get("neighbor_port")
+    if _is_mac_endpoint_identity(neighbor_name) and (
+        not str(neighbor_port or "").strip() or
+        _is_mac_endpoint_identity(neighbor_port)
+    ):
+        return "unmanaged-endpoint"
+    return "unresolved"
+
+
+def classify_unmatched_neighbors(observations):
+    """Group unmatched observations without mutating them or topology edges."""
+    grouped = {category: [] for category in UNMATCHED_NEIGHBOR_CATEGORIES}
+    for observation in observations or []:
+        grouped[classify_unmatched_neighbor(observation)].append(observation)
+    return grouped
+
+
+def log_unmatched_neighbors(observations, stream=None,
+                            detail_limit=UNMATCHED_NEIGHBOR_LOG_LIMIT):
+    """Log one summary and bounded details only for unresolved infrastructure."""
+    grouped = classify_unmatched_neighbors(observations)
+    counts = {
+        category: len(grouped[category])
+        for category in UNMATCHED_NEIGHBOR_CATEGORIES
+    }
+    total = sum(counts.values())
+    if total == 0:
+        return counts
+
+    stream = sys.stderr if stream is None else stream
+    print(
+        "[INFO] unmatched neighbor summary: "
+        f"total={total} "
+        + " ".join(
+            f"{category}={counts[category]}"
+            for category in UNMATCHED_NEIGHBOR_CATEGORIES
+        ),
+        file=stream,
+    )
+    unresolved = grouped["unresolved"]
+    if not unresolved:
+        return counts
+
+    print(
+        f"[WARN] {len(unresolved)} unresolved infrastructure neighbor(s):",
+        file=stream,
+    )
+    limit = max(0, int(detail_limit))
+    for entry in unresolved[:limit]:
+        if not isinstance(entry, dict):
+            continue
+        print(
+            "         "
+            f"{entry.get('from_ip') or '-'} {entry.get('from_port') or '-'} "
+            f"-> {entry.get('neighbor_name') or '-'} "
+            f"{entry.get('neighbor_port') or '-'}",
+            file=stream,
+        )
+    omitted = len(unresolved) - limit
+    if omitted > 0:
+        print(
+            f"         ... {omitted} more unresolved neighbor(s) omitted",
+            file=stream,
+        )
+    return counts
+
+
 def _env_target_ips(name):
     ips = []
     for entry in os.environ.get(name, "").split(","):
@@ -2809,10 +2924,7 @@ def _run_collection():
         f"cycle={time.monotonic() - cycle_started:.1f}s",
         file=sys.stderr,
     )
-    if placeholders:
-        print(f"[WARN] {len(placeholders)} neighbor(s) could not be matched to a configured device IP:", file=sys.stderr)
-        for entry in placeholders[:10]:
-            print(f"         {entry['from_ip']} {entry['from_port']} -> {entry['neighbor_name']} {entry['neighbor_port']}", file=sys.stderr)
+    log_unmatched_neighbors(placeholders)
     return 0
 
 

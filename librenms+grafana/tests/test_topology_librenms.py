@@ -336,6 +336,151 @@ def test_normal_core_ob_cdp_and_librenms_observations_still_dedupe():
     assert edges[0]["to_port"] == "Gi1/0/49"
 
 
+def test_external_identity_collision_is_summarized_without_unresolved_warning(
+    capsys,
+):
+    source = topology_device(
+        "192.168.10.11", "Aggregation", 7, {601: "Gi6/0/1"},
+    )
+    ob_switch = topology_device(
+        "192.168.10.49", "OB-1", 9, {49: "Gi1/0/49"},
+    )
+    source["neighbors"] = [unified_neighbor(
+        601, "Gi6/0/1", "ob-1", 14, "78:45:58:4B:6B:A8",
+    )]
+    devices = {source["ip"]: source, ob_switch["ip"]: ob_switch}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+    counts = gte.log_unmatched_neighbors(placeholders)
+    log = capsys.readouterr().err
+
+    assert edges == []
+    assert counts == {
+        "external-device-id": 1,
+        "unmanaged-endpoint": 0,
+        "unresolved": 0,
+        "invalid-response": 0,
+    }
+    assert "total=1 external-device-id=1" in log
+    assert "unresolved infrastructure neighbor" not in log
+    assert "78:45:58:4B:6B:A8" not in log
+
+
+def test_unmatched_summary_separates_endpoint_invalid_and_unresolved(capsys):
+    observations = [
+        {
+            "from_ip": "192.168.10.11",
+            "from_port": "Gi6/0/22",
+            "neighbor_name": "U6-Lite",
+            "neighbor_port": "78:45:58:4B:6B:A8",
+            "neighbor_device_id": "14",
+            "reason": "external-device-id",
+        },
+        {
+            "from_ip": "192.168.10.20",
+            "from_port": "Gi1/0/20",
+            "neighbor_name": "24:5A:4C:59:CF:8D",
+            "neighbor_port": "24 5A 4C 59 CF 8D",
+        },
+        {
+            "from_ip": "192.168.10.31",
+            "from_port": "GigabitEthernet6",
+            "neighbor_name": "VCR",
+            "neighbor_port": "p02",
+        },
+        {
+            "from_ip": "192.168.9.1",
+            "from_port": None,
+            "neighbor_name": "No Such Object available on this agent at this OID",
+            "neighbor_port": None,
+        },
+    ]
+
+    grouped = gte.classify_unmatched_neighbors(observations)
+    counts = gte.log_unmatched_neighbors(observations)
+    log = capsys.readouterr().err
+
+    assert {category: len(items) for category, items in grouped.items()} == {
+        "external-device-id": 1,
+        "unmanaged-endpoint": 1,
+        "unresolved": 1,
+        "invalid-response": 1,
+    }
+    assert counts == {category: 1 for category in grouped}
+    assert (
+        "unmatched neighbor summary: total=4 external-device-id=1 "
+        "unmanaged-endpoint=1 unresolved=1 invalid-response=1"
+    ) in log
+    assert "[WARN] 1 unresolved infrastructure neighbor(s):" in log
+    assert "192.168.10.31 GigabitEthernet6 -> VCR p02" in log
+    assert "U6-Lite" not in log
+    assert "24:5A:4C:59:CF:8D" not in log
+    assert "No Such Object" not in log
+
+
+def test_unmatched_logging_limits_unresolved_details(capsys):
+    observations = [
+        {
+            "from_ip": f"192.0.2.{index + 1}",
+            "from_port": f"Gi1/0/{index + 1}",
+            "neighbor_name": f"UNKNOWN-{index:02d}",
+            "neighbor_port": f"p{index:02d}",
+        }
+        for index in range(12)
+    ]
+
+    gte.log_unmatched_neighbors(observations)
+    log = capsys.readouterr().err
+
+    assert "unresolved=12" in log
+    assert log.count(" -> UNKNOWN-") == gte.UNMATCHED_NEIGHBOR_LOG_LIMIT
+    assert "... 2 more unresolved neighbor(s) omitted" in log
+    assert "-> UNKNOWN-10 p10" not in log
+    assert "-> UNKNOWN-11 p11" not in log
+
+
+def test_unmatched_classification_does_not_change_edge_output(capsys):
+    core = topology_device(
+        "192.168.10.254", "Core", 1, {6: "Te1/0/6"},
+    )
+    ob_switch = topology_device(
+        "192.168.10.49", "OB-1", 9, {49: "Gi1/0/49"},
+    )
+    source = topology_device(
+        "192.168.10.11", "Aggregation", 7, {601: "Gi6/0/1"},
+    )
+    core["neighbors"] = [unified_neighbor(
+        6, "Te1/0/6", "OB-1", 9, "Gi1/0/49",
+    )]
+    source["neighbors"] = [unified_neighbor(
+        601, "Gi6/0/1", "ob-1", 14, "78:45:58:4B:6B:A8",
+    )]
+    devices = {
+        core["ip"]: core,
+        ob_switch["ip"]: ob_switch,
+        source["ip"]: source,
+    }
+
+    edges_before, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+    placeholders_before = json.loads(json.dumps(placeholders))
+    gte.log_unmatched_neighbors(placeholders)
+    edges_after, placeholders_after = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+    capsys.readouterr()
+
+    assert edges_before == edges_after
+    assert placeholders == placeholders_before == placeholders_after
+    assert len(edges_after) == 1
+    assert (edges_after[0]["from_ip"], edges_after[0]["to_ip"]) == (
+        "192.168.10.254", "192.168.10.49",
+    )
+
+
 def test_lldp_and_cdp_fixture_observations_dedupe_to_one_edge(monkeypatch):
     client = FixtureClient()
     devices = collect_fixture_devices(client, monkeypatch)
