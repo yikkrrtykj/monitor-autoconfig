@@ -21,13 +21,13 @@
     networkLabel, seatLabel, gaugeColor, gaugePercent,
     linePathFromPoints, stepPathFromPoints, splitPointsOnGaps,
     buildCsv, formatTimestampFull, groupAddressesByCBlock,
-    suppressIsolatedLatencySpikes
+    buildInfrastructurePingTrend
   } = window.BSUtils;
   const {
     prometheusBaseUrl, fetchWithTimeout,
     prometheusQuery, prometheusInstant, prometheusRangeFor,
     prometheusRangeCached, invalidateRangeCache,
-    activeInfraPingQuery, activeSeriesNames, filterSeriesByNames,
+    activeInfraPingQuery, deployedInfrastructurePingTargetKeys, activeSeriesNames, filterSeriesByNames,
     fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
@@ -65,6 +65,7 @@
   let seenUpTimer = null;
   let infraSeenUp = null;  // Set of "deployed" (ever-online) infra instance names; null/empty = show all
   let infraCurrentTargets = null; // Current Prometheus targets; removes retired ISP/history series immediately
+  let infraExpectedPingTargets = null; // Stable 24h deployed infrastructure set; never inferred per chart timestamp
   let tournamentTimer = null;
   let wirelessTimer = null;
   let controlTimer = null;
@@ -913,6 +914,10 @@
         fetchTopologyTargets()
       ]);
       infraSeenUp = activeSeriesNames(seenItems);
+      // Count only targets that both belong to the current configuration and
+      // have been online during the deployment retention window. A down target
+      // remains in currentTargets; a retired target disappears immediately.
+      infraExpectedPingTargets = deployedInfrastructurePingTargetKeys(seenItems, currentTargets);
       infraCurrentTargets = new Set();
       currentTargets.forEach((target) => {
         [target.instance, target.targetIp, target.displayName]
@@ -991,20 +996,36 @@
       ]);
       const nameMap = await fetchInfraDeviceNames();
       if (seq !== chartSeq) return;
-      const rawActivePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
-      // Correct only an isolated >=20 ms response. Every other point, including
-      // the complete low-latency baseline, must remain the original 2-second
-      // Prometheus sample. No averaging or median filter is allowed here.
-      const correctedPingSeries = suppressIsolatedLatencySpikes(rawActivePingSeries, {
-        threshold: 0.02,
-        minConsecutive: 2,
-        maxGapSeconds: 3
+      const tournamentPing = shouldFilterStageDevices();
+      // Display names are labels only. Keep distinct job|target_ip series
+      // separate so contributor identity matches the expected-target identity.
+      const perTargetPingSeries = visibleInfraSeries(
+        renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap)
+      );
+      // Overview: the median of the raw samples at each 2-second timestamp,
+      // provided a strict majority of the stable deployed targets contributed.
+      // Tournament: preserve every stage path for direct A/B diagnosis.
+      const pingTrend = buildInfrastructurePingTrend(perTargetPingSeries, {
+        tournament: tournamentPing,
+        expectedTargetKeys: infraExpectedPingTargets || new Set(),
+        stepSeconds: 2,
+        alignmentToleranceSeconds: 3,
+        name: "典型设备中位数"
       });
-      const activePingSeries = correctedPingSeries;
+      const activePingSeries = pingTrend.series;
+      // Keep the failed-quorum timestamps inspectable during field diagnosis
+      // without turning them into RTT points or changing the visible chart.
+      window.BIGSCREEN_PING_TREND_COVERAGE = Object.freeze(
+        pingTrend.coverage.map((item) => Object.freeze({ ...item }))
+      );
       // Prometheus does not return placeholder samples while a target/series
       // is temporarily absent. Never join the two real samples surrounding
       // that hole: doing so draws a convincing but entirely synthetic ramp.
-      const pingGap = Math.max(5, estimateStepSeconds(activePingSeries) * 3);
+      // The aggregate uses a strict one-missing-sample break; tournament paths
+      // keep their existing tolerance for an occasional late scrape.
+      const pingGap = tournamentPing
+        ? Math.max(5, estimateStepSeconds(activePingSeries) * 3)
+        : 3;
       const activeLossSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap), "max"));
       if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
         const tournamentPingLegend = document.querySelector(".screen.tournament-mode")
@@ -1013,7 +1034,7 @@
         renderLineChart("pingTrendChart", activePingSeries, {
           axisFormatter: formatPingText,
           valueFormatter: formatPingText,
-          // Keep network infrastructure devices in the combined Ping trend.
+          // This series is the representative infrastructure aggregate.
           // Servers remain in their dedicated gauges. A 5 ms floor avoids
           // exaggerating sub-millisecond jitter.
           minMax: 0.005,
@@ -1025,10 +1046,6 @@
           // samples but never changes them. Legend and scale calculations
           // continue to use the original values above.
           smooth: true,
-          // When many switches are present, put the largest observed latency
-          // first so the line responsible for the chart scale is immediately
-          // identifiable instead of falling below the clipped viewport.
-          sortLegendByMax: true,
           ...tournamentPingLegend
         });
       }
@@ -4048,6 +4065,7 @@
     stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = "screen infra-mode";
+    document.getElementById("trendTitle").textContent = "典型设备 Ping 趋势";
     ispCarousel.deactivate();
     renderIspPanels(ispTrafficResults);
     setVisible("homePanel", false);
@@ -4069,6 +4087,7 @@
     stopDhcpRefresh();
     stopTopologyRefresh();
     screen.className = `screen tournament-mode ${page.kind === "match" ? "match-mode" : "multi-team-mode"} ${page.id}`;
+    document.getElementById("trendTitle").textContent = "舞台路径 Ping 趋势";
     ispCarousel.activate({ reset: true });
     renderIspPanels(ispTrafficResults);
     setVisible("homePanel", false);
