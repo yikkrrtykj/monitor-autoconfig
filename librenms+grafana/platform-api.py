@@ -23,7 +23,6 @@ from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote
 
 try:
     from telnetlib3.telnetlib import Telnet
@@ -46,6 +45,7 @@ from platform_config import (
 from version_info import get_version_info
 from platform_api import auth as platform_auth
 from platform_api import incidents as platform_incidents
+from platform_api import precheck as platform_precheck
 from platform_api import read_api as platform_read_api
 from platform_api import storage as platform_storage
 from platform_api import transactions as platform_transactions
@@ -582,15 +582,6 @@ def _host_exec_env() -> dict:
     return env
 
 
-def _http_json(url: str, timeout: int = 5):
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8") or "{}")
-
-
-def _prom_query(expr: str):
-    return _http_json(f"{PRECHECK_PROM_URL}/api/v1/query?query={quote(expr)}").get("data", {}).get("result", [])
-
-
 def verify_runtime_after_apply() -> dict:
     """Wait until the user-facing core services answer after recreation."""
     checks = {
@@ -615,149 +606,6 @@ def verify_runtime_after_apply() -> dict:
             return {"ok": True, "services": sorted(checks)}
         time.sleep(2)
     return {"ok": False, "errors": last_errors}
-
-
-def run_precheck() -> dict:
-    """Native readiness check for the console. Uses only urllib against the stack
-    services (reachable by name on the docker network) -- no curl/ping/compose,
-    so it works from the slim container and offline. pre-match-check.sh stays for
-    deeper host-side checks on the CLI."""
-    checks: list[dict] = []
-
-    def add(level, text):
-        checks.append({"level": level, "text": text})
-
-    # 1. Prometheus 可达 + 抓取目标
-    try:
-        ups = _prom_query("up")
-        online = sum(1 for x in ups if (x.get("value") or [None, "0"])[1] == "1")
-        failed = [x for x in ups if (x.get("value") or [None, "0"])[1] != "1"]
-        if not ups:
-            add("bad", "Prometheus 可达，但没有任何抓取目标")
-        elif failed:
-            names = "、".join(
-                (x.get("metric") or {}).get("job", "?") + ":" + (x.get("metric") or {}).get("instance", "?")
-                for x in failed[:8]
-            )
-            add("bad", f"Prometheus 有 {len(failed)} 个抓取目标失败（{online}/{len(ups)} 在线）：{names}")
-        else:
-            add("good", f"Prometheus 正常，抓取目标 {online}/{len(ups)} 全部在线")
-    except Exception as exc:
-        add("bad", f"Prometheus 不可达（{PRECHECK_PROM_URL}）：{exc}")
-        # Without Prometheus the rest can't be judged.
-        return _precheck_result(checks)
-
-    # 2. 基础设施设备在线率（ping）
-    try:
-        infra = _prom_query('probe_success{job=~"infra-.*"}')
-        down = [x for x in infra if (x.get("value") or [None, "1"])[1] != "1"]
-        if not infra:
-            add("warn", "还没有基础设施 ping 目标（配置未填或未应用？）")
-        elif down:
-            names = "、".join((x.get("metric") or {}).get("display_name") or (x.get("metric") or {}).get("instance", "?") for x in down[:8])
-            add("bad", f"{len(down)} 台基础设施设备离线：{names}")
-        else:
-            add("good", f"基础设施 {len(infra)} 台全部在线")
-    except Exception as exc:
-        add("warn", f"无法查询设备在线状态：{exc}")
-
-    # 3. 选手机位 ping 目标
-    try:
-        players = _prom_query('probe_success{job="player-ping"}')
-        online = sum(1 for x in players if (x.get("value") or [None, "0"])[1] == "1")
-        if not players:
-            add("bad", "选手机位监控目标为 0，不能确认比赛网络状态")
-        elif online != len(players):
-            add("bad", f"选手机位仅 {online}/{len(players)} 在线")
-        else:
-            add("good", f"选手机位 {online}/{len(players)} 全部在线")
-    except Exception as exc:
-        add("warn", f"无法查询选手目标：{exc}")
-
-    # 4. Grafana
-    try:
-        _http_json(f"{PRECHECK_GRAFANA_URL}/api/health")
-        add("good", "Grafana 正常")
-    except Exception as exc:
-        add("bad", f"Grafana 不可达（{PRECHECK_GRAFANA_URL}）：{exc}")
-
-    # 5. 飞书告警链路
-    try:
-        try:
-            bridge_health = _http_json(f"{BRIDGE_URL}/health")
-        except urllib.error.HTTPError as exc:
-            # 看门狗线程死亡时桥接按 503 返回同样的 JSON——读出来照常展示细节
-            bridge_health = json.loads(exc.read().decode("utf-8", errors="replace") or "{}")
-        if not bridge_health.get("ready"):
-            details = []
-            if not bridge_health.get("tokenConfigured") and not bridge_health.get("dryRun"):
-                details.append("未配置飞书 Token")
-            if bridge_health.get("deadWatchers"):
-                details.append("后台线程已停止：" + ",".join(bridge_health["deadWatchers"]))
-            add("bad", "告警服务未就绪：" + ("；".join(details) or "健康检查未通过"))
-        else:
-            watcher_errors = [
-                f"{name}: {state.get('lastError')}"
-                for name, state in (bridge_health.get("watchers") or {}).items()
-                if state.get("lastError")
-            ]
-            if watcher_errors:
-                add("warn", "告警服务线程存活，但最近轮询失败：" + "；".join(watcher_errors[:4]))
-            else:
-                add("good", "告警服务及后台线程正常")
-    except Exception as exc:
-        add("bad", f"告警服务不可达：{exc}")
-
-    # 6. 用户入口与目标生成器
-    try:
-        with urllib.request.urlopen(f"{PRECHECK_BIGSCREEN_URL}/", timeout=5) as resp:
-            resp.read(1024)
-        add("good", "赛事大屏入口正常")
-    except Exception as exc:
-        add("bad", f"赛事大屏不可达：{exc}")
-
-    try:
-        target_status = _http_json(f"{PRECHECK_PLAYER_TARGETS_URL}/status")
-        target_count = int((target_status.get("targets") or {}).get("total") or 0)
-        if target_status.get("error"):
-            add("bad", f"选手目标生成器异常：{target_status.get('error')}")
-        elif target_count <= 0:
-            add("bad", "选手目标生成器尚未生成任何目标")
-        else:
-            add("good", f"选手目标生成器正常，共 {target_count} 个目标")
-    except Exception as exc:
-        add("bad", f"选手目标生成器不可达：{exc}")
-
-    try:
-        with urllib.request.urlopen(f"{PRECHECK_LIBRENMS_URL}/", timeout=5) as resp:
-            resp.read(1024)
-        add("good", "LibreNMS Web 正常")
-    except Exception as exc:
-        add("bad", f"LibreNMS 不可达：{exc}")
-
-    # 7. 配置阻塞项
-    try:
-        issues = validate_config(parse_config_text(read_config_text()))
-        blocking = [i for i in issues if i.get("level") == "bad"]
-        if blocking:
-            for i in blocking[:6]:
-                add("bad", f"配置缺项：{i.get('message')}（{i.get('path')}）")
-        else:
-            add("good", "配置无阻塞项")
-    except Exception as exc:
-        add("warn", f"配置检查失败：{exc}")
-
-    return _precheck_result(checks)
-
-
-def _precheck_result(checks: list[dict]) -> dict:
-    icon = {"good": "✓", "warn": "⚠", "bad": "✗"}
-    passed = sum(1 for c in checks if c["level"] == "good")
-    warned = sum(1 for c in checks if c["level"] == "warn")
-    failed = sum(1 for c in checks if c["level"] == "bad")
-    verdict = "bad" if failed else ("warn" if warned else "good")
-    output = "\n".join(f"  {icon[c['level']]} {c['text']}" for c in checks)
-    return {"ok": True, "verdict": verdict, "pass": passed, "warn": warned, "fail": failed, "output": output}
 
 
 def _process_output_text(value) -> str:
@@ -2104,6 +1952,20 @@ def _incident_context() -> platform_incidents.IncidentContext:
     )
 
 
+def _precheck_context() -> platform_precheck.PrecheckContext:
+    return platform_precheck.PrecheckContext(
+        prom_url=PRECHECK_PROM_URL,
+        grafana_url=PRECHECK_GRAFANA_URL,
+        bridge_url=BRIDGE_URL,
+        bigscreen_url=PRECHECK_BIGSCREEN_URL,
+        librenms_url=PRECHECK_LIBRENMS_URL,
+        player_targets_url=PRECHECK_PLAYER_TARGETS_URL,
+        config_issues=lambda: validate_config(
+            parse_config_text(read_config_text()),
+        ),
+    )
+
+
 def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
     """Bind the read router to the entrypoint's current compatibility API."""
     incident_context = _incident_context()
@@ -2131,6 +1993,7 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
 def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
     """Bind the write router to the entrypoint's current compatibility API."""
     incident_context = _incident_context()
+    precheck_context = _precheck_context()
     return platform_write_api.WriteApiDependencies(
         login_auth=login_auth,
         change_password_auth=change_password_auth,
@@ -2144,7 +2007,7 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
         rollback_config=rollback_config,
         new_incident=partial(platform_incidents.new_incident, incident_context),
         send_test_alert=send_test_alert,
-        run_precheck=run_precheck,
+        run_precheck=partial(platform_precheck.run_precheck, precheck_context),
         start_iperf_task=start_iperf_task,
         stop_iperf_task=stop_iperf_task,
         bridge_retire_resolve=bridge_retire_resolve,
