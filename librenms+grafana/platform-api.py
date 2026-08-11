@@ -22,7 +22,7 @@ import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 try:
     from telnetlib3.telnetlib import Telnet
@@ -44,6 +44,7 @@ from platform_config import (
 )
 from version_info import get_version_info
 from platform_api import auth as platform_auth
+from platform_api import read_api as platform_read_api
 from platform_api import storage as platform_storage
 from platform_api import transactions as platform_transactions
 from platform_api.settings import load_settings
@@ -2142,6 +2143,29 @@ def stop_iperf_task(data: dict) -> dict:
     return {"ok": True, "taskId": task_id, "state": "stopping", "message": "正在停止测速"}
 
 
+def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
+    """Bind the read router to the entrypoint's current compatibility API."""
+    return platform_read_api.ReadApiDependencies(
+        clock=time.time,
+        version_payload=version_payload,
+        auth_status=auth_status,
+        require_auth=require_auth,
+        config_payload=config_payload,
+        read_json_file=read_json_file,
+        history_path=STATE_DIR / "history.json",
+        read_apply_status=read_apply_status,
+        incident_list=incident_list,
+        iperf_status_payload=iperf_status_payload,
+        iperf_history_payload=iperf_history_payload,
+        get_dhcp_settings=get_dhcp_settings,
+        get_dhcp_bindings=get_dhcp_bindings,
+        bridge_retire_pending=bridge_retire_pending,
+        get_dhcp_dashboard=get_dhcp_dashboard,
+        config_path=CONFIG_PATH,
+        stamp=stamp,
+    )
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status: int = 200, headers: dict[str, str] | None = None):
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -2194,60 +2218,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            parsed_url = urlparse(self.path)
-            path = parsed_url.path.rstrip("/") or "/"
-            if path == "/health":
-                self._send_json({"ok": True, "time": int(time.time())})
-            elif path == "/version":
-                self._send_json(version_payload())
-            elif path == "/auth/status":
-                self._send_json(auth_status(self))
-            elif path == "/config":
-                require_auth(self)
-                payload = config_payload()
-                payload["history"] = read_json_file(STATE_DIR / "history.json", [])[:20]
-                self._send_json(payload)
-            elif path == "/config/apply-status":
-                require_auth(self)
-                operation_id = (parse_qs(parsed_url.query).get("operationId") or [""])[-1]
-                self._send_json(read_apply_status(operation_id))
-            elif path == "/incidents":
-                require_auth(self)
-                self._send_json({"ok": True, "incidents": incident_list()})
-            elif path == "/network/iperf3/status":
-                require_auth(self)
-                task_id = (parse_qs(parsed_url.query).get("taskId") or [""])[-1]
-                self._send_json(iperf_status_payload(task_id))
-            elif path == "/network/iperf3/history":
-                require_auth(self)
-                self._send_json(iperf_history_payload())
-            elif path == "/network/dhcp/settings":
-                require_auth(self)
-                self._send_json(get_dhcp_settings())
-            elif path == "/network/dhcp/bindings":
-                require_auth(self)
-                self._send_json(get_dhcp_bindings())
-            elif path == "/network/retire/pending":
-                require_auth(self)
-                self._send_json(bridge_retire_pending())
-            elif path == "/network/dhcp":
-                # 必须鉴权：它返回核心交换机的地址池/接口信息，force=1 还会真实
-                # 发起特权 Telnet 会话——绝不能让未登录方触发。
-                require_auth(self)
-                force = (parse_qs(parsed_url.query).get("force") or [""])[-1].lower() in ("1", "true", "yes")
-                self._send_json(get_dhcp_dashboard(force))
-            elif path == "/config/download":
-                # The single round-trippable config file: export this, edit or archive
-                # it, then re-import it via /config/import.
-                require_auth(self)
-                text = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else ""
-                self._send_bytes(
-                    text.encode("utf-8"),
-                    f"event-config-{stamp()}.yml",
-                    "application/x-yaml; charset=utf-8",
-                )
-            else:
-                self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
+            platform_read_api.handle_get(
+                self,
+                self.path,
+                _read_api_dependencies(),
+            )
         except AuthError as exc:
             self._send_json(exc.payload, exc.status)
         except DiagnosticError as exc:
