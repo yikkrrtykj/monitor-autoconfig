@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -7,6 +8,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def read(name: str) -> str:
     return (ROOT / name).read_text(encoding="utf-8")
+
+
+def test_deploy_entrypoint_is_executable_in_git():
+    tracked = subprocess.run(
+        ["git", "ls-files", "-s", "--", "librenms+grafana/deploy.sh"],
+        cwd=ROOT.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert tracked.split()[0] == "100755"
 
 
 def test_release_images_are_pinned_and_defaults_are_consistent():

@@ -421,7 +421,7 @@ service_is_enabled() {
 }
 
 restart_failed=false
-for service in bigscreen platform-api alertmanager-feishu-bridge feishu-ws; do
+for service in bigscreen platform-api feishu-ws; do
   if ! service_is_enabled "$service"; then
     echo "[deploy] SKIP: restart $service (profile not enabled)."
     continue
@@ -477,6 +477,22 @@ while :; do
     exit 1
   fi
   sleep "$LIBRENMS_CONFIG_INTERVAL"
+done
+
+# librenms-config may create or rotate /data/librenms-api-token. Restart only
+# the long-running consumers that can have begun a collection cycle with the
+# previous token, and do it only after the one-shot config container exits 0.
+for service in topology-collector alertmanager-feishu-bridge; do
+  if ! service_is_enabled "$service"; then
+    echo "[deploy] SKIP: restart $service (profile not enabled)."
+    continue
+  fi
+  docker compose restart "$service" || {
+    echo "[deploy] ERROR: restart $service failed." >&2
+    restart_failed=true
+    continue
+  }
+  echo "[deploy] Restarted $service after librenms-config."
 done
 
 if [ "$restart_failed" = true ]; then

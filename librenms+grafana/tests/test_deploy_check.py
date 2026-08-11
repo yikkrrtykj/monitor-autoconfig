@@ -13,6 +13,7 @@ SH = shutil.which("sh") or r"C:\Program Files\Git\usr\bin\sh.exe"
 
 
 DOCKER_STUB = r"""#!/bin/sh
+[ -z "${STUB_COMPOSE_LOG:-}" ] || printf '%s\n' "$*" >> "$STUB_COMPOSE_LOG"
 if [ "$1" = "compose" ]; then
   shift
   while [ "$#" -gt 0 ]; do
@@ -32,6 +33,20 @@ if [ "$1" = "compose" ]; then
       [ "$service" = "${STUB_MISSING_SERVICE:-}" ] && exit 0
       printf 'cid-%s\n' "$service"
       exit 0
+      ;;
+    exec)
+      [ "${1:-}" = "-T" ] && shift
+      service=${1:-}
+      [ "$#" -eq 0 ] || shift
+      if [ "$service" = platform-api ]; then
+        if [ "${STUB_PLATFORM_API_INTERNAL_HEALTH:-ok}" = fail ]; then
+          echo "Platform API container health request failed" >&2
+          exit 1
+        fi
+        printf '{"ok":true}\n'
+        exit 0
+      fi
+      exit 1
       ;;
   esac
   exit 0
@@ -84,6 +99,13 @@ url=""
 for argument in "$@"; do url=$argument; done
 [ -z "${STUB_HTTP_LOG:-}" ] || printf '%s\n' "$url" >> "$STUB_HTTP_LOG"
 case "$url" in
+  http://127.0.0.1:9200/health)
+    if [ "${STUB_HOST_PLATFORM_API_FAIL:-false}" = true ]; then
+      echo "host port 9200 is not published" >&2
+      exit 22
+    fi
+    printf '{"ok":true}\n'
+    ;;
   */metrics)
     echo "prometheus_config_last_reload_successful ${STUB_RELOAD_SUCCESS:-1}"
     ;;
@@ -130,7 +152,10 @@ def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json"
     shutil.copy2(ROOT / "deploy-check.sh", project / "deploy-check.sh")
     shutil.copy2(ROOT / "platform_config.py", project / "platform_config.py")
     shutil.copy2(ROOT / "version_info.py", project / "version_info.py")
-    (project / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (project / "docker-compose.yml").write_text(
+        "services:\n  platform-api:\n    image: fixture-platform-api\n",
+        encoding="utf-8",
+    )
     (project / ".env").write_text(env_text, encoding="utf-8")
 
     stub_bin = tmp_path / "bin"
@@ -148,6 +173,7 @@ def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json"
         "DEPLOY_CHECK_INTERVAL": "0",
         "STUB_STATE_DIR": str(tmp_path),
         "STUB_HTTP_LOG": str(tmp_path / "http.log"),
+        "STUB_COMPOSE_LOG": str(tmp_path / "compose.log"),
     })
     env.update({key: str(value) for key, value in overrides.items()})
     arguments = [SH, str(project / "deploy-check.sh")]
@@ -306,11 +332,41 @@ def test_default_mode_is_bootstrap_and_quiet_only_prints_result(tmp_path):
 def test_console_apply_checks_services_on_the_internal_compose_network(tmp_path):
     completed, _ = run_check(tmp_path, PLATFORM_API_SELF_APPLY="true")
     urls = (tmp_path / "http.log").read_text(encoding="utf-8")
+    compose_calls = (tmp_path / "compose.log").read_text(encoding="utf-8")
 
     assert completed.returncode == 0
     assert "http://prometheus:9090/-/healthy" in urls
     assert "http://grafana:3000/api/health" in urls
     assert "http://bigscreen/" in urls
+    assert "http://127.0.0.1:9200/health" in urls
+    assert "exec -T platform-api" not in compose_calls
+
+
+def test_host_bootstrap_checks_platform_api_inside_unpublished_container(tmp_path):
+    completed, payload = run_check(
+        tmp_path,
+        STUB_HOST_PLATFORM_API_FAIL="true",
+    )
+    urls = (tmp_path / "http.log").read_text(encoding="utf-8")
+    compose_calls = (tmp_path / "compose.log").read_text(encoding="utf-8")
+
+    assert completed.returncode == 0
+    assert checks_by_id(payload)["platform_api_http"]["status"] == "PASS"
+    assert "http://127.0.0.1:9200/health" not in urls
+    assert "exec -T platform-api python -c" in compose_calls
+
+
+def test_host_bootstrap_fails_when_platform_api_internal_health_fails(tmp_path):
+    completed, payload = run_check(
+        tmp_path,
+        STUB_PLATFORM_API_INTERNAL_HEALTH="fail",
+    )
+    check = checks_by_id(payload)["platform_api_http"]
+
+    assert completed.returncode == 1
+    assert check["status"] == "FAIL"
+    assert "Platform API container /health" in check["message"]
+    assert "container health request failed" in check["message"]
 
 
 def test_deploy_check_never_sources_the_environment_file():

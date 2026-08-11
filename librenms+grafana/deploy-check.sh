@@ -200,6 +200,39 @@ wait_for_http() {
   done
 }
 
+wait_for_platform_api() {
+  if [ "${PLATFORM_API_SELF_APPLY:-false}" = true ]; then
+    wait_for_http platform_api_http "Platform API reachable" \
+      "http://127.0.0.1:9200/health"
+    return $?
+  fi
+
+  last_error="container health endpoint unreachable"
+  while :; do
+    if compose exec -T platform-api python -c '
+import sys
+import urllib.request
+
+with urllib.request.urlopen(
+    "http://127.0.0.1:9200/health", timeout=int(sys.argv[1])
+) as response:
+    response.read()
+    if not 200 <= response.status < 300:
+        raise SystemExit(1)
+' "$DEPLOY_CHECK_HTTP_TIMEOUT" > "$HTTP_BODY" 2> "$HTTP_ERROR"; then
+      record PASS platform_api_http "Platform API reachable"
+      return 0
+    fi
+    last_error=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
+    [ -n "$last_error" ] || last_error="container health endpoint temporarily unreachable"
+    if deadline_reached; then
+      record FAIL platform_api_http "Platform API container /health timed out after ${DEPLOY_CHECK_TIMEOUT}s (last error: $last_error)"
+      return 1
+    fi
+    wait_interval
+  done
+}
+
 wait_for_prometheus_reload() {
   check_id=prometheus_reload
   last_state="reload metric unavailable"
@@ -421,8 +454,6 @@ LIBRENMS_PORT=$(env_value LIBRENMS_PORT 2>/dev/null || true)
 LIBRENMS_PORT=${LIBRENMS_PORT:-8002}
 BIGSCREEN_PORT=$(env_value BIGSCREEN_PORT 2>/dev/null || true)
 BIGSCREEN_PORT=${BIGSCREEN_PORT:-8088}
-PLATFORM_API_PORT=$(env_value PLATFORM_API_PORT 2>/dev/null || true)
-PLATFORM_API_PORT=${PLATFORM_API_PORT:-9200}
 BLACKBOX_EXPORTER_PORT=$(env_value BLACKBOX_EXPORTER_PORT 2>/dev/null || true)
 BLACKBOX_EXPORTER_PORT=${BLACKBOX_EXPORTER_PORT:-9115}
 SNMP_EXPORTER_PORT=$(env_value SNMP_EXPORTER_PORT 2>/dev/null || true)
@@ -434,7 +465,6 @@ if [ "${PLATFORM_API_SELF_APPLY:-false}" = true ]; then
   GRAFANA_URL="http://grafana:3000"
   LIBRENMS_URL="http://librenms:8000"
   BIGSCREEN_URL="http://bigscreen"
-  PLATFORM_API_URL="http://127.0.0.1:9200"
   BLACKBOX_EXPORTER_URL="http://blackbox-exporter:9115"
   SNMP_EXPORTER_URL="http://snmp-exporter:9116"
 else
@@ -442,7 +472,6 @@ else
   GRAFANA_URL="http://127.0.0.1:$GRAFANA_PORT"
   LIBRENMS_URL="http://127.0.0.1:$LIBRENMS_PORT"
   BIGSCREEN_URL="http://127.0.0.1:$BIGSCREEN_PORT"
-  PLATFORM_API_URL="http://127.0.0.1:$PLATFORM_API_PORT"
   BLACKBOX_EXPORTER_URL="http://127.0.0.1:$BLACKBOX_EXPORTER_PORT"
   SNMP_EXPORTER_URL="http://127.0.0.1:$SNMP_EXPORTER_PORT"
 fi
@@ -481,7 +510,7 @@ wait_for_http prometheus_http "Prometheus healthy" "$PROMETHEUS_URL/-/healthy" |
 wait_for_http grafana_http "Grafana API healthy" "$GRAFANA_URL/api/health" || true
 wait_for_http librenms_http "LibreNMS reachable" "$LIBRENMS_URL/" || true
 wait_for_http bigscreen_http "Bigscreen reachable" "$BIGSCREEN_URL/" || true
-wait_for_http platform_api_http "Platform API reachable" "$PLATFORM_API_URL/health" || true
+wait_for_platform_api || true
 wait_for_http blackbox_http "Blackbox exporter reachable" "$BLACKBOX_EXPORTER_URL/" || true
 wait_for_http snmp_http "SNMP exporter reachable" "$SNMP_EXPORTER_URL/" || true
 wait_for_prometheus_reload || true

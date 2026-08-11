@@ -26,7 +26,7 @@ if [ "$1" = "compose" ]; then
           echo monitor-platform-api:local
           ;;
         --services)
-          printf '%s\n' bigscreen platform-api alertmanager-feishu-bridge librenms-config
+          printf '%s\n' bigscreen platform-api topology-collector alertmanager-feishu-bridge librenms-config
           ;;
       esac
       exit 0
@@ -276,6 +276,23 @@ def test_librenms_config_exit_zero_allows_deploy_to_finish(tmp_path):
     )
 
 
+def test_token_consumers_restart_once_after_librenms_config_succeeds(tmp_path):
+    completed, log = run_deploy(tmp_path, STUB_LIBRENMS_CONFIG_EXIT="0")
+
+    assert completed.returncode == 0
+    config_start = log.index(
+        "compose up -d --force-recreate --no-deps librenms-config"
+    )
+    config_success = log.index("State.ExitCode")
+    topology_restart = log.index("compose restart topology-collector")
+    bridge_restart = log.index("compose restart alertmanager-feishu-bridge")
+    bootstrap = log.index("deploy-check bootstrap")
+    assert config_start < config_success < topology_restart < bootstrap
+    assert config_start < config_success < bridge_restart < bootstrap
+    assert log.count("compose restart topology-collector") == 1
+    assert log.count("compose restart alertmanager-feishu-bridge") == 1
+
+
 def test_librenms_config_nonzero_exit_fails_with_diagnostic_command(tmp_path):
     completed, log = run_deploy(tmp_path, STUB_LIBRENMS_CONFIG_EXIT="7")
 
@@ -283,6 +300,8 @@ def test_librenms_config_nonzero_exit_fails_with_diagnostic_command(tmp_path):
     assert "librenms-config failed (exit 7)" in completed.stderr
     assert "docker compose logs --tail=100 librenms-config" in completed.stderr
     assert "deploy-check bootstrap" not in log
+    assert "restart topology-collector" not in log
+    assert "restart alertmanager-feishu-bridge" not in log
 
 
 def test_compose_up_failure_is_fatal(tmp_path):

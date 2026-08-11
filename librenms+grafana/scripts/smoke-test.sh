@@ -7,6 +7,10 @@ MODE="${1:---static}"
 ENV_FILE="${SMOKE_ENV_FILE:-$WORK_DIR/.env.example}"
 
 cd "$WORK_DIR"
+if [[ ! -x "$WORK_DIR/deploy.sh" ]]; then
+  echo "[smoke] deploy.sh is not executable" >&2
+  exit 1
+fi
 docker compose --env-file "$ENV_FILE" config --quiet
 python3 -m py_compile ./*.py
 python3 - <<'PY'
