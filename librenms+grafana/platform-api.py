@@ -19,6 +19,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,6 +45,7 @@ from platform_config import (
 )
 from version_info import get_version_info
 from platform_api import auth as platform_auth
+from platform_api import incidents as platform_incidents
 from platform_api import read_api as platform_read_api
 from platform_api import storage as platform_storage
 from platform_api import transactions as platform_transactions
@@ -1083,56 +1085,6 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
         return {"ok": False, "operationId": operation_id, "error": f"回滚失败：{exc}"}
 
 
-def incident_list() -> list[dict]:
-    return read_json_file(INCIDENT_PATH, [])
-
-
-def save_incidents(items: list[dict]) -> None:
-    write_json_file(INCIDENT_PATH, items)
-
-
-def new_incident(data: dict) -> dict:
-    require_write()
-    items = incident_list()
-    next_id = max([int(item.get("id", 0)) for item in items] or [0]) + 1
-    now = int(time.time())
-    incident = {
-        "id": next_id,
-        "title": data.get("title") or "未命名事故",
-        "severity": data.get("severity") or "warn",
-        "status": data.get("status") or "open",
-        "scope": data.get("scope") or "",
-        "owner": data.get("owner") or "",
-        "rootCause": data.get("rootCause") or "",
-        "startedAt": data.get("startedAt") or now,
-        "recoveredAt": data.get("recoveredAt") or None,
-        "related": data.get("related") or {},
-        "events": data.get("events") or [{"time": now, "type": "note", "message": data.get("note") or "事故创建"}],
-    }
-    items.insert(0, incident)
-    save_incidents(items)
-    return incident
-
-
-def update_incident(incident_id: int, data: dict) -> dict:
-    require_write()
-    items = incident_list()
-    for item in items:
-        if int(item.get("id", 0)) == incident_id:
-            for key in ("title", "severity", "status", "scope", "owner", "rootCause", "recoveredAt", "related"):
-                if key in data:
-                    item[key] = data[key]
-            if data.get("event"):
-                item.setdefault("events", []).append({
-                    "time": int(time.time()),
-                    "type": data.get("eventType") or "note",
-                    "message": data["event"],
-                })
-            save_incidents(items)
-            return item
-    raise KeyError(f"incident {incident_id} not found")
-
-
 def bridge_retire_pending() -> dict:
     """Fetch the bridge's pending-delete device list (48h+ offline, unconfirmed)."""
     try:
@@ -2144,8 +2096,17 @@ def stop_iperf_task(data: dict) -> dict:
     return {"ok": True, "taskId": task_id, "state": "stopping", "message": "正在停止测速"}
 
 
+def _incident_context() -> platform_incidents.IncidentContext:
+    return platform_incidents.IncidentContext(
+        incident_path=INCIDENT_PATH,
+        require_write=require_write,
+        clock=time.time,
+    )
+
+
 def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
     """Bind the read router to the entrypoint's current compatibility API."""
+    incident_context = _incident_context()
     return platform_read_api.ReadApiDependencies(
         clock=time.time,
         version_payload=version_payload,
@@ -2155,7 +2116,7 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
         read_json_file=read_json_file,
         history_path=STATE_DIR / "history.json",
         read_apply_status=read_apply_status,
-        incident_list=incident_list,
+        incident_list=partial(platform_incidents.incident_list, incident_context),
         iperf_status_payload=iperf_status_payload,
         iperf_history_payload=iperf_history_payload,
         get_dhcp_settings=get_dhcp_settings,
@@ -2169,6 +2130,7 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
 
 def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
     """Bind the write router to the entrypoint's current compatibility API."""
+    incident_context = _incident_context()
     return platform_write_api.WriteApiDependencies(
         login_auth=login_auth,
         change_password_auth=change_password_auth,
@@ -2180,7 +2142,7 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
         save_config=save_config,
         apply_config=apply_config,
         rollback_config=rollback_config,
-        new_incident=new_incident,
+        new_incident=partial(platform_incidents.new_incident, incident_context),
         send_test_alert=send_test_alert,
         run_precheck=run_precheck,
         start_iperf_task=start_iperf_task,
@@ -2188,7 +2150,10 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
         bridge_retire_resolve=bridge_retire_resolve,
         test_dhcp_connection=test_dhcp_connection,
         save_dhcp_settings=save_dhcp_settings,
-        update_incident=update_incident,
+        update_incident=partial(
+            platform_incidents.update_incident,
+            incident_context,
+        ),
     )
 
 

@@ -145,7 +145,10 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(tmp_path):
         "ok": True,
         "operationId": operation_id,
     }
-    api.incident_list = lambda: [{"id": 7, "title": "fixture"}]
+    api.write_json_file(
+        api.INCIDENT_PATH,
+        [{"id": 7, "title": "fixture"}],
+    )
     api.iperf_status_payload = lambda task_id: {
         "ok": True,
         "taskId": task_id,
