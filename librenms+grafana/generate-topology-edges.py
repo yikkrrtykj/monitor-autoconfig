@@ -2294,19 +2294,56 @@ def _active_aggregate_member_identities(edge, side, devices):
     return identities
 
 
+def _external_neighbor_identities(invalid_neighbors):
+    """Return rejected LibreNMS neighbor identities safe for cache cleanup."""
+    identities = set()
+    for neighbor in invalid_neighbors or []:
+        if (
+            not isinstance(neighbor, dict) or
+            neighbor.get("reason") != "external-device-id"
+        ):
+            continue
+        local_ip = str(neighbor.get("from_ip") or "").strip()
+        local_port = normalize_port_name(neighbor.get("from_port"))
+        remote_name = normalize_hostname(neighbor.get("neighbor_name"))
+        remote_port = normalize_port_name(neighbor.get("neighbor_port"))
+        if local_ip and local_port and remote_name and remote_port:
+            identities.add((local_ip, local_port, remote_name, remote_port))
+    return identities
+
+
+def _matches_external_neighbor_identity(edge, identities):
+    """Whether a cached edge is a formerly misresolved external neighbor."""
+    for local_side, remote_side in (("from", "to"), ("to", "from")):
+        identity = (
+            str(edge.get(f"{local_side}_ip") or "").strip(),
+            normalize_port_name(edge.get(f"{local_side}_port")),
+            normalize_hostname(edge.get(f"{remote_side}_sysname")),
+            normalize_port_name(edge.get(f"{remote_side}_port")),
+        )
+        if identity in identities:
+            return True
+    return False
+
+
 def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
                                 now=None, retention_seconds=24 * 60 * 60,
-                                devices=None):
+                                devices=None, invalid_neighbors=None):
     """Keep missing confirmed LLDP/CDP edges long enough to diagnose outages.
 
     Live observations replace matching cache entries. A cached edge is dropped
     immediately when one of its resolved physical endpoints is now occupied by
     a different live peer; otherwise it is retained as stale for the configured
-    window. Server/FDB ownership has a separate durable ledger and is excluded.
+    window. Self-edges and current-cycle external-device identity collisions
+    are never retained. Server/FDB ownership has a separate durable ledger and
+    is excluded.
     """
     now = time.time() if now is None else float(now)
     retention_seconds = max(0, int(retention_seconds))
     configured = set(configured_device_ips or [])
+    external_neighbor_identities = _external_neighbor_identities(
+        invalid_neighbors
+    )
     live_keys = {_edge_cache_key(edge) for edge in live_edges}
     live_endpoint_identities = set()
     active_aggregate_identities = {}
@@ -2341,6 +2378,12 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
         left = str(source.get("from_ip") or "").strip()
         right = str(source.get("to_ip") or "").strip()
         if not left or not right or left not in configured or right not in configured:
+            continue
+        if left == right:
+            continue
+        if _matches_external_neighbor_identity(
+            source, external_neighbor_identities
+        ):
             continue
         if _edge_cache_key(source) in live_keys:
             continue
@@ -2736,6 +2779,7 @@ def _run_collection():
         device_ips,
         retention_seconds=edge_retention,
         devices=devices,
+        invalid_neighbors=placeholders,
     ) + server_edges
     write_json_atomic(edges_path, edges, sort_keys=True)
     write_json_atomic(attachments_path, confirmed_server_edges, sort_keys=True)

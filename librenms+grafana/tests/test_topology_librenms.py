@@ -602,6 +602,84 @@ def test_librenms_only_failure_never_calls_direct_snmp_and_retains_history(monke
     assert retained[0]["stale"] is True
 
 
+def test_retention_drops_stale_self_edge():
+    cached = [{
+        "from_ip": "192.168.10.53", "from_sysname": "Studio-3",
+        "from_port": "Gi1/0/37", "from_ifindex": 37,
+        "to_ip": "192.168.10.53", "to_sysname": "Studio-3",
+        "to_port": "24:5A:4C:59:CF:8D", "to_ifindex": None,
+        "last_seen": 100.0,
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        [], cached, ["192.168.10.53"],
+        now=200, retention_seconds=86400,
+    )
+
+    assert retained == []
+
+
+def test_retention_drops_stale_external_device_identity_collision():
+    source = topology_device(
+        "192.168.10.11", "Aggregation", 7, {601: "Gi6/0/1"},
+    )
+    ob_switch = topology_device(
+        "192.168.10.49", "OB-1", 9, {49: "Gi1/0/49"},
+    )
+    source["neighbors"] = [unified_neighbor(
+        601, "Gi6/0/1", "ob-1", 14, "78:45:58:4B:6B:A8",
+    )]
+    devices = {source["ip"]: source, ob_switch["ip"]: ob_switch}
+    live, invalid_neighbors = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+    cached = [{
+        "from_ip": source["ip"], "from_sysname": source["sysname"],
+        "from_port": "Gi6/0/1", "from_ifindex": 601,
+        "to_ip": ob_switch["ip"], "to_sysname": "OB-1",
+        "to_port": "78:45:58:4B:6B:A8", "to_ifindex": None,
+        "last_seen": 100.0,
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        live, cached, list(devices),
+        now=200, retention_seconds=86400,
+        invalid_neighbors=invalid_neighbors,
+    )
+
+    assert live == []
+    assert retained == []
+
+
+def test_retention_preserves_normal_stale_uplink_with_external_neighbors():
+    cached = [{
+        "from_ip": "192.168.10.254", "from_sysname": "Core",
+        "from_port": "Te1/0/6", "from_ifindex": 6,
+        "to_ip": "192.168.10.49", "to_sysname": "OB-1",
+        "to_port": "Gi1/0/49", "to_ifindex": 49,
+        "last_seen": 100.0,
+    }]
+    invalid_neighbors = [{
+        "from_ip": "192.168.10.11",
+        "from_port": "Gi6/0/1",
+        "neighbor_name": "OB-1",
+        "neighbor_port": "78:45:58:4B:6B:A8",
+        "neighbor_device_id": "14",
+        "reason": "external-device-id",
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        [], cached, ["192.168.10.254", "192.168.10.49"],
+        now=200, retention_seconds=86400,
+        invalid_neighbors=invalid_neighbors,
+    )
+
+    assert len(retained) == 1
+    assert retained[0]["from_port"] == "Te1/0/6"
+    assert retained[0]["to_port"] == "Gi1/0/49"
+    assert retained[0]["stale"] is True
+
+
 def test_full_librenms_cycle_reports_zero_adjacency_snmp_and_compatible_schema(
     monkeypatch, tmp_path, capsys
 ):
