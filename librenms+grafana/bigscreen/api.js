@@ -197,37 +197,7 @@
   // Mirrors DEVICE_DOWN_REQUIRE_SEEN_UP on the alerting side.
   function activeInfraPingQuery() {
     const jobs = "infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping";
-    return `max by (instance, job, target_ip) (max_over_time(probe_success{job=~"${jobs}"}[24h])) >= 1`;
-  }
-
-  function activeInfrastructurePingTargetKeys(items) {
-    const jobs = new Set(["infra-core-ping", "infra-dist-ping", "infra-fw-ping"]);
-    const keys = new Set();
-    (items || []).forEach((item) => {
-      const metric = item.metric || {};
-      const job = String(metric.job || "").trim();
-      const target = String(metric.target_ip || metric.instance || "").trim();
-      if (jobs.has(job) && target) keys.add(`${job}|${target}`);
-    });
-    return keys;
-  }
-
-  function currentInfrastructurePingTargetKeys(targets) {
-    const jobs = new Set(["infra-core-ping", "infra-dist-ping", "infra-fw-ping"]);
-    const keys = new Set();
-    (targets || []).forEach((target) => {
-      const job = String(target.job || "").trim();
-      const targetIp = String(target.targetIp || target.instance || "").trim();
-      // success=false is still a configured target and must remain in quorum.
-      if (jobs.has(job) && targetIp) keys.add(`${job}|${targetIp}`);
-    });
-    return keys;
-  }
-
-  function deployedInfrastructurePingTargetKeys(seenItems, currentTargets) {
-    const seen = activeInfrastructurePingTargetKeys(seenItems);
-    const current = currentInfrastructurePingTargetKeys(currentTargets);
-    return new Set(Array.from(seen).filter((key) => current.has(key)));
+    return `max by (instance) (max_over_time(probe_success{job=~"${jobs}"}[24h])) >= 1`;
   }
 
   function activeSeriesNames(items) {
@@ -744,9 +714,6 @@
     prometheusRangeCached,
     invalidateRangeCache,
     activeInfraPingQuery,
-    activeInfrastructurePingTargetKeys,
-    currentInfrastructurePingTargetKeys,
-    deployedInfrastructurePingTargetKeys,
     activeSeriesNames,
     filterSeriesByNames,
     isIspAutoDiscoveryEnabled,

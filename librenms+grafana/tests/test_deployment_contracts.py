@@ -204,7 +204,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260811d" in html
+    assert "app.js?v=20260810a" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -301,16 +301,16 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
     assert "[10s]" in target["expr"]
 
 
-def test_bigscreen_ping_trend_separates_overview_and_tournament_semantics():
+def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     api = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
     pages = read("bigscreen/pages.js")
     index = read("bigscreen/index.html")
 
-    # Keep the raw 2-second source stable. The overview uses a same-timestamp
-    # cross-target median with stable quorum; tournament pages keep each path.
+    # Keep the raw 2-second source stable, but suppress isolated 20 ms samples
+    # in both overview and tournament displays. Sustained incidents stay raw.
     assert "const end = Math.floor(now / step) * step;" in api
-    assert 'max by (instance, job, target_ip) (probe_icmp_duration_seconds{job=~' in pages
+    assert 'max by (instance) (probe_icmp_duration_seconds{job=~' in pages
     assert 'phase="rtt"})' in pages
     ping_trend = next(
         line for line in pages.splitlines()
@@ -320,28 +320,20 @@ def test_bigscreen_ping_trend_separates_overview_and_tournament_semantics():
     assert "infra-srv-ping" not in ping_trend
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
-    assert "const perTargetPingSeries = visibleInfraSeries" in app
-    ping_series_block = app.split("const perTargetPingSeries", 1)[1].split(");", 1)[0]
-    assert "mergeInfraSeries" not in ping_series_block
-    assert "buildInfrastructurePingTrend(perTargetPingSeries" in app
-    assert "const activePingSeries = pingTrend.series" in app
-    assert "expectedTargetKeys: infraExpectedPingTargets || new Set()" in app
-    assert "stepSeconds: 2" in app
-    assert "alignmentToleranceSeconds: 3" in app
-    assert "deployedInfrastructurePingTargetKeys(seenItems, currentTargets)" in app
-    assert "max by (instance, job, target_ip)" in api
-    assert "window.BIGSCREEN_PING_TREND_COVERAGE = Object.freeze" in app
-    assert "pingTrend.coverage.map" in app
+    assert "suppressIsolatedLatencySpikes(rawActivePingSeries" in app
+    assert "const correctedPingSeries = suppressIsolatedLatencySpikes" in app
+    assert "const activePingSeries = correctedPingSeries" in app
     assert "smoothLatencyJitter" not in app
     assert "nearby.sort" not in read("bigscreen/utils.js")
     assert "return previous.v" in read("bigscreen/utils.js")
     assert "infra-srv-ping" in pages
     assert "smoothNormalLatencyJitter" not in app
+    assert "threshold: 0.02" in app
+    assert "minConsecutive: 2" in app
     assert 'renderLineChart("pingTrendChart", activePingSeries' in app
     assert "Visual-only curve smoothing" in app
     assert "smooth: true" in app
-    assert "const pingGap = tournamentPing" in app
-    assert ": 3;" in app
+    assert "const pingGap = Math.max(5, estimateStepSeconds(activePingSeries) * 3)" in app
     assert "breakGapSeconds: pingGap" in app
     assert "renderInfraTrendCards" not in app
     assert ".infra-trend-grid" not in read("bigscreen/platform.css")
@@ -352,8 +344,6 @@ def test_bigscreen_ping_trend_separates_overview_and_tournament_semantics():
     assert '{ legend: "bottom", legendNamesOnly: true, calcs: [] }' in app
     assert "...tournamentPingLegend" in app
     assert ".screen.tournament-mode .trend-panel .bottom-legend.names-only-legend" in read("bigscreen/platform.css")
-    assert 'textContent = "典型设备 Ping 趋势"' in app
-    assert 'textContent = "舞台路径 Ping 趋势"' in app
 
     # Seat-based evidence first resolves the current Prometheus target and
     # does not silently reuse a manual IP left over from an earlier route.
@@ -368,11 +358,11 @@ def test_bigscreen_ping_trend_separates_overview_and_tournament_semantics():
     assert "min_over_time(probe_icmp_duration_seconds" not in pages
     assert pages.count("quantile_over_time(0.5, probe_icmp_duration_seconds") == 2
     assert pages.count("[30s]") == 3
-    assert "pages.js?v=20260811c" in index
+    assert "pages.js?v=20260804a" in index
     assert "players.js?v=20260802a" in index
-    assert "api.js?v=20260811c" in index
-    assert "app.js?v=20260811d" in index
-    assert "utils.js?v=20260811d" in index
+    assert "api.js?v=20260810a" in index
+    assert "app.js?v=20260810a" in index
+    assert "utils.js?v=20260804b" in index
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -428,11 +418,12 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert 'TOPOLOGY_SNMP_DELAY_MS: "${TOPOLOGY_SNMP_DELAY_MS:-500}"' in topology
 
 
-def test_large_series_legend_layout_contracts_remain_available():
+def test_large_ping_trend_keeps_every_switch_identifiable():
     app = read("bigscreen/app.js")
     css = read("bigscreen/style.css")
     index = read("bigscreen/index.html")
 
+    assert "sortLegendByMax: true" in app
     assert "const legendSeries = options.sortLegendByMax" in app
     assert 'series.length > 24' in app
     assert '"ultra-series"' in app
@@ -440,7 +431,7 @@ def test_large_series_legend_layout_contracts_remain_available():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260809a" in index
-    assert "app.js?v=20260811d" in index
+    assert "app.js?v=20260810a" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
