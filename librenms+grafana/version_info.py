@@ -16,7 +16,7 @@ def _version_candidates() -> tuple[Path, ...]:
     candidates = []
     if configured:
         candidates.append(Path(configured))
-    candidates.extend((MODULE_DIR / "VERSION", MODULE_DIR.parent / "VERSION"))
+    candidates.extend((MODULE_DIR.parent / "VERSION", MODULE_DIR / "VERSION"))
     return tuple(dict.fromkeys(candidates))
 
 

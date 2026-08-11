@@ -17,15 +17,48 @@ def load_version_info():
     return module
 
 
-def test_version_file_is_the_platform_version_source(monkeypatch, tmp_path):
+def version_paths(monkeypatch, tmp_path):
     module = load_version_info()
-    version_file = tmp_path / "VERSION"
-    version_file.write_text(EXPECTED_VERSION + "\n", encoding="utf-8")
-    monkeypatch.setattr(module, "_version_candidates", lambda: (version_file,))
+    module_dir = tmp_path / "repository" / "librenms+grafana"
+    module_dir.mkdir(parents=True)
+    monkeypatch.setattr(module, "MODULE_DIR", module_dir)
+    monkeypatch.delenv("PLATFORM_VERSION_FILE", raising=False)
     module.get_platform_version.cache_clear()
+    return module, module_dir.parent / "VERSION", module_dir / "VERSION"
+
+
+def test_repository_version_is_the_default_platform_version_source(monkeypatch, tmp_path):
+    module, repository_version, _ = version_paths(monkeypatch, tmp_path)
+    repository_version.write_text(EXPECTED_VERSION + "\n", encoding="utf-8")
 
     assert module.get_platform_version() == EXPECTED_VERSION
     assert module.get_version_info()["config_schema_supported"] == 1
+
+
+def test_module_version_cannot_override_repository_version(monkeypatch, tmp_path):
+    module, repository_version, module_version = version_paths(monkeypatch, tmp_path)
+    repository_version.write_text(EXPECTED_VERSION + "\n", encoding="utf-8")
+    module_version.write_text("2025.01.9\n", encoding="utf-8")
+
+    assert module.get_platform_version() == EXPECTED_VERSION
+
+
+def test_configured_version_file_keeps_highest_priority(monkeypatch, tmp_path):
+    module, repository_version, module_version = version_paths(monkeypatch, tmp_path)
+    configured_version = tmp_path / "configured-version"
+    configured_version.write_text("2030.12.3\n", encoding="utf-8")
+    repository_version.write_text(EXPECTED_VERSION + "\n", encoding="utf-8")
+    module_version.write_text("2025.01.9\n", encoding="utf-8")
+    monkeypatch.setenv("PLATFORM_VERSION_FILE", str(configured_version))
+
+    assert module.get_platform_version() == "2030.12.3"
+
+
+def test_module_version_remains_fallback_when_repository_version_is_missing(monkeypatch, tmp_path):
+    module, _, module_version = version_paths(monkeypatch, tmp_path)
+    module_version.write_text("2025.01.9\n", encoding="utf-8")
+
+    assert module.get_platform_version() == "2025.01.9"
 
 
 def test_missing_version_file_returns_unknown(monkeypatch, tmp_path):
