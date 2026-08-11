@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from platform_api import auth, read_api, settings, storage, transactions
+from platform_api import auth, read_api, settings, storage, transactions, write_api
 
 
 class DummyHandler:
@@ -232,6 +232,7 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
     assert package_dependencies("settings") == set()
     assert package_dependencies("storage") == set()
     assert package_dependencies("read_api") == set()
+    assert package_dependencies("write_api") == set()
     assert package_dependencies("auth") == {"storage"}
     assert package_dependencies("transactions") == {"storage"}
 
@@ -240,3 +241,5 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
     assert 'command: ["python", "/workspace/platform-api.py"]' in compose
     assert (root / "platform_api" / "__init__.py").is_file()
     assert read_api.handle_get.__module__ == "platform_api.read_api"
+    assert write_api.handle_post.__module__ == "platform_api.write_api"
+    assert write_api.handle_patch.__module__ == "platform_api.write_api"

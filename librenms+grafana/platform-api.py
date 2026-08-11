@@ -22,7 +22,7 @@ import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote
 
 try:
     from telnetlib3.telnetlib import Telnet
@@ -47,6 +47,7 @@ from platform_api import auth as platform_auth
 from platform_api import read_api as platform_read_api
 from platform_api import storage as platform_storage
 from platform_api import transactions as platform_transactions
+from platform_api import write_api as platform_write_api
 from platform_api.settings import load_settings
 from cisco_dhcp import (
     attach_dhcp_pool_exclusions,
@@ -2166,6 +2167,31 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
     )
 
 
+def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
+    """Bind the write router to the entrypoint's current compatibility API."""
+    return platform_write_api.WriteApiDependencies(
+        login_auth=login_auth,
+        change_password_auth=change_password_auth,
+        logout_auth=logout_auth,
+        clear_session_cookie=clear_session_cookie,
+        require_auth=require_auth,
+        config_payload=config_payload,
+        write_lock=WRITE_LOCK,
+        save_config=save_config,
+        apply_config=apply_config,
+        rollback_config=rollback_config,
+        new_incident=new_incident,
+        send_test_alert=send_test_alert,
+        run_precheck=run_precheck,
+        start_iperf_task=start_iperf_task,
+        stop_iperf_task=stop_iperf_task,
+        bridge_retire_resolve=bridge_retire_resolve,
+        test_dhcp_connection=test_dhcp_connection,
+        save_dhcp_settings=save_dhcp_settings,
+        update_incident=update_incident,
+    )
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status: int = 200, headers: dict[str, str] | None = None):
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -2232,79 +2258,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            path = urlparse(self.path).path.rstrip("/") or "/"
             data = self._body()
-            if path == "/auth/login":
-                payload, cookie = login_auth(
-                    str(data.get("username") or ""),
-                    str(data.get("password") or ""),
-                    str((self.client_address or ("", 0))[0]),
-                )
-                self._send_json(payload, headers={"Set-Cookie": cookie})
-            elif path == "/auth/change-password":
-                payload, cookie = change_password_auth(self, data)
-                self._send_json(payload, headers={"Set-Cookie": cookie})
-            elif path == "/auth/logout":
-                logout_auth(self)
-                self._send_json({"ok": True, "authenticated": False}, headers={"Set-Cookie": clear_session_cookie()})
-            elif path == "/config/validate":
-                require_auth(self)
-                self._send_json(config_payload(data.get("text", "")))
-            elif path == "/config/save":
-                auth = require_auth(self)
-                with WRITE_LOCK:
-                    self._send_json(save_config(data.get("text", ""), auth["username"], data.get("note", "")))
-            elif path == "/config/apply":
-                auth = require_auth(self)
-                text = data.get("text") if "text" in data else None
-                with WRITE_LOCK:
-                    self._send_json(apply_config(
-                        text,
-                        auth["username"],
-                        data.get("note", ""),
-                        data.get("operationId"),
-                    ))
-            elif path == "/config/rollback":
-                auth = require_auth(self)
-                with WRITE_LOCK:
-                    self._send_json(rollback_config(
-                        auth["username"],
-                        data.get("note", ""),
-                        data.get("operationId"),
-                    ))
-            elif path == "/config/import":
-                auth = require_auth(self)
-                with WRITE_LOCK:
-                    self._send_json(save_config(data.get("text", ""), auth["username"], "import"))
-            elif path == "/incidents":
-                require_auth(self)
-                # incidents.json 也是读-改-写，threaded server 下并发提交会互相覆盖
-                with WRITE_LOCK:
-                    self._send_json({"ok": True, "incident": new_incident(data)})
-            elif path == "/test-alert":
-                require_auth(self)
-                self._send_json(send_test_alert())
-            elif path == "/pre-check":
-                require_auth(self)
-                self._send_json(run_precheck())
-            elif path == "/network/iperf3":
-                require_auth(self)
-                self._send_json(start_iperf_task(data))
-            elif path == "/network/iperf3/stop":
-                require_auth(self)
-                self._send_json(stop_iperf_task(data))
-            elif path == "/network/retire/resolve":
-                require_auth(self)
-                self._send_json(bridge_retire_resolve(data))
-            elif path == "/network/dhcp/test":
-                require_auth(self)
-                self._send_json(test_dhcp_connection())
-            elif path == "/network/dhcp/settings":
-                require_auth(self)
-                with WRITE_LOCK:
-                    self._send_json(save_dhcp_settings(data))
-            else:
-                self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
+            platform_write_api.handle_post(
+                self,
+                self.path,
+                data,
+                _write_api_dependencies(),
+            )
         except AuthError as exc:
             self._send_json(exc.payload, exc.status)
         except DiagnosticError as exc:
@@ -2316,15 +2276,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         try:
-            require_auth(self)
-            path = urlparse(self.path).path.rstrip("/")
-            parts = [unquote(part) for part in path.split("/") if part]
-            if len(parts) == 2 and parts[0] == "incidents":
-                with WRITE_LOCK:
-                    incident = update_incident(int(parts[1]), self._body())
-                self._send_json({"ok": True, "incident": incident})
-            else:
-                self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
+            platform_write_api.handle_patch(
+                self,
+                self.path,
+                _write_api_dependencies(),
+            )
         except AuthError as exc:
             self._send_json(exc.payload, exc.status)
         except KeyError as exc:
