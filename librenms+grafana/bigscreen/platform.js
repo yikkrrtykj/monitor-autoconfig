@@ -4,6 +4,84 @@
   // Platform control helpers: pure scoring/lint logic shared by the browser UI
   // and unit tests. DOM rendering and Prometheus queries stay in app.js.
 
+  const APPLY_REQUEST_TIMEOUT_MS = 180000;
+  const APPLY_RECOVERY_FALLBACK_MS = 15 * 60 * 1000;
+  const APPLY_STATUS_DEADLINE_GRACE_MS = 30 * 1000;
+
+  function classifyApplyStatus(status) {
+    const state = String((status && status.state) || "").toLowerCase();
+    if (["succeeded", "pending", "failed"].includes(state)) return state;
+    if (state === "running") return "running";
+    return "unknown";
+  }
+
+  async function waitForApplyRecovery(operationId, options = {}) {
+    const fetchConfig = options.fetchConfig;
+    const fetchStatus = options.fetchStatus;
+    const sleep = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    const now = options.now || (() => Date.now());
+    const initialDelayMs = Math.max(0, Number(options.initialDelayMs ?? 3000));
+    const pollIntervalMs = Math.max(1, Number(options.pollIntervalMs ?? 2500));
+    const fallbackMs = Math.max(1, Number(options.maxMs ?? APPLY_RECOVERY_FALLBACK_MS));
+    const deadlineGraceMs = Math.max(0, Number(options.deadlineGraceMs ?? APPLY_STATUS_DEADLINE_GRACE_MS));
+    const startedAt = now();
+    let deadline = startedAt + fallbackMs;
+    let lastConfig = null;
+    let lastStatus = null;
+
+    await sleep(initialDelayMs);
+    while (now() < deadline) {
+      [lastConfig, lastStatus] = await Promise.all([
+        fetchConfig(),
+        fetchStatus(operationId)
+      ]);
+      const backendDeadline = Number(lastStatus && lastStatus.deadlineAt) * 1000;
+      if (Number.isFinite(backendDeadline) && backendDeadline > 0) {
+        deadline = Math.max(deadline, backendDeadline + deadlineGraceMs);
+      }
+      const outcome = classifyApplyStatus(lastStatus);
+      if (["succeeded", "pending", "failed"].includes(outcome)) {
+        return { outcome, config: lastConfig, status: lastStatus };
+      }
+      await sleep(pollIntervalMs);
+    }
+
+    const outcome = classifyApplyStatus(lastStatus);
+    return {
+      outcome: outcome === "running" ? "running" : "unknown",
+      config: lastConfig,
+      status: lastStatus
+    };
+  }
+
+  function applyRecoveryRenderPayload(recovery, action) {
+    const outcome = String((recovery && recovery.outcome) || "unknown");
+    const status = (recovery && recovery.status) || {};
+    const config = (recovery && recovery.config) || {};
+    const operationId = status.operationId || "";
+    if (outcome === "running") {
+      return {
+        pending: true,
+        pendingLabel: `应用任务仍在运行${operationId ? `（任务 ${operationId}）` : ""}`,
+        pendingNote: "任务仍在后端执行，请勿重复应用；可稍后刷新查看最终状态。"
+      };
+    }
+    if (outcome === "unknown") {
+      return {
+        ok: false,
+        errorTitle: "无法确认应用结果",
+        error: `任务状态不可用${operationId ? `（任务 ${operationId}）` : ""}，请刷新页面后重试查询。`
+      };
+    }
+    return {
+      ...status,
+      ok: outcome === "failed" ? false : status.ok !== false,
+      action,
+      issues: config.issues || [],
+      applied: Boolean(status.applied)
+    };
+  }
+
   function levelRank(level) {
     return { good: 0, info: 1, warn: 2, bad: 3 }[level] ?? 1;
   }
@@ -466,6 +544,12 @@
   }
 
   const ns = {
+    APPLY_REQUEST_TIMEOUT_MS,
+    APPLY_RECOVERY_FALLBACK_MS,
+    APPLY_STATUS_DEADLINE_GRACE_MS,
+    classifyApplyStatus,
+    waitForApplyRecovery,
+    applyRecoveryRenderPayload,
     levelRank,
     worstLevel,
     readinessScore,

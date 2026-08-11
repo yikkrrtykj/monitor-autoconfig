@@ -47,7 +47,10 @@
     readinessScore,
     summarizePlayers, summarizeTargets, summarizeServices,
     buildConfigRisks, buildTopologyFindings, buildReadinessChecks,
-    lintSwitchScene
+    lintSwitchScene,
+    APPLY_REQUEST_TIMEOUT_MS,
+    waitForApplyRecovery,
+    applyRecoveryRenderPayload
   } = window.BSPlatform;
   const { createIspCarousel } = window.BSIspCarousel;
   const {
@@ -1773,7 +1776,7 @@
       result.innerHTML = `
         <div class="control-apply-next pending">
           <strong>正在${escapeHtml(payload.pendingLabel || "处理")}…</strong>
-          <span>请稍候，不要重复点击或刷新页面。</span>
+          <span>${escapeHtml(payload.pendingNote || "请稍候，不要重复点击或刷新页面。")}</span>
         </div>
       `;
       return;
@@ -2379,25 +2382,6 @@
     });
   }
 
-  // Applying restarts the bigscreen nginx, so the HTTP response may be cut off.
-  // Poll the durable operation record; merely seeing /config again is not proof
-  // that the apply command or its post-restart health verification succeeded.
-  async function waitForPlatformRecovery(operationId, maxMs = 180000) {
-    const started = Date.now();
-    await new Promise((r) => setTimeout(r, 3000));
-    while (Date.now() - started < maxMs) {
-      const [cfg, status] = await Promise.all([
-        fetchPlatformConfig(),
-        fetchApplyStatus(operationId)
-      ]);
-      if (cfg && cfg.ok && status && ["succeeded", "pending", "failed"].includes(status.state)) {
-        return { config: cfg, status };
-      }
-      await new Promise((r) => setTimeout(r, 2500));
-    }
-    return null;
-  }
-
   function configOperationId(action) {
     const random = Math.random().toString(36).slice(2, 10);
     return `web-${action}-${Date.now()}-${random}`;
@@ -2426,9 +2410,9 @@
       } else if (action === "save") {
         result = await postPlatform("/config/save", payload);
       } else if (action === "apply") {
-        result = await postPlatform("/config/apply", payload, { timeoutMs: 180000 });
+        result = await postPlatform("/config/apply", payload, { timeoutMs: APPLY_REQUEST_TIMEOUT_MS });
       } else if (action === "rollback") {
-        result = await postPlatform("/config/rollback", { actor: "web", note: "rollback from control", operationId }, { timeoutMs: 180000 });
+        result = await postPlatform("/config/rollback", { actor: "web", note: "rollback from control", operationId }, { timeoutMs: APPLY_REQUEST_TIMEOUT_MS });
       }
       result.action = action;
       lastPlatformConfig = result;
@@ -2447,29 +2431,27 @@
     } catch (error) {
       if (action === "apply" || action === "rollback") {
         renderConfigResult({ pending: true, pendingLabel: "服务重启中，正在核对任务结果" });
-        const recovered = await waitForPlatformRecovery(operationId);
-        if (recovered) {
+        const recovered = await waitForApplyRecovery(operationId, {
+          fetchConfig: fetchPlatformConfig,
+          fetchStatus: fetchApplyStatus
+        });
+        const recoveryPayload = applyRecoveryRenderPayload(recovered, action);
+        if (["succeeded", "pending", "failed"].includes(recovered.outcome)) {
           const recoveredConfig = recovered.config;
-          const recoveredStatus = recovered.status;
-          lastPlatformConfig = recoveredConfig;
-          if (form) {
+          if (recoveredConfig && recoveredConfig.ok) {
+            lastPlatformConfig = recoveredConfig;
+          }
+          if (form && recoveredConfig && recoveredConfig.ok) {
             delete form.dataset.dirty;
             if (recoveredConfig.config) renderControlConfigForm(recoveredConfig.config);
           }
-          renderConfigResult({
-            ...recoveredStatus,
-            action,
-            issues: recoveredConfig.issues || [],
-            applied: Boolean(recoveredStatus.applied)
-          });
+          renderConfigResult(recoveryPayload);
           applyInProgress = false;
           refreshControlPanel();
         } else {
-          renderConfigResult({
-            ok: false,
-            errorTitle: "无法确认应用结果",
-            error: "服务重启后页面仍未恢复，请手动刷新页面查看当前配置。"
-          });
+          // A durable task that still says running is not an apply failure.
+          // Unknown is reserved for a task record that cannot be recovered.
+          renderConfigResult(recoveryPayload);
         }
       } else {
         renderConfigResult({ ok: false, errorTitle: `${label}失败`, error: error.message || "配置操作失败" });

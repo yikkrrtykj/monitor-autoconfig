@@ -1,8 +1,11 @@
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,6 +112,110 @@ def test_successful_apply_has_durable_success_record(monkeypatch, tmp_path):
     assert api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "new"
     assert "EVENT_NAME=new" in api.ENV_PATH.read_text(encoding="utf-8")
     assert api.read_apply_status("apply-test-0002")["state"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected"),
+    [
+        (b"stdout-\xff", b"stderr-bytes", "stdout-\ufffd\nstderr-bytes"),
+        ("stdout-text", None, "stdout-text"),
+        (None, "stderr-text", "stderr-text"),
+    ],
+)
+def test_apply_timeout_normalizes_captured_output(
+    monkeypatch, tmp_path, stdout, stderr, expected,
+):
+    api = load_api(tmp_path)
+    api.APPLY_TIMEOUT = 300
+    monkeypatch.delenv("DEPLOY_CHECK_TIMEOUT", raising=False)
+
+    def time_out(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(
+            ["/bin/sh", "apply-env.sh"], 300, output=stdout, stderr=stderr,
+        )
+
+    monkeypatch.setattr(api.subprocess, "run", time_out)
+
+    result = api.run_apply_command()
+
+    assert result["ok"] is False
+    assert result["error"] == "配置已写入，但自动应用超时（300s）"
+    assert result["applyOutput"] == expected
+
+
+def test_self_apply_bounds_deploy_check_below_parent_timeout(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    api.APPLY_TIMEOUT = 300
+    monkeypatch.setenv("DEPLOY_CHECK_TIMEOUT", "999")
+
+    env = api._host_exec_env()
+
+    assert env["PLATFORM_API_SELF_APPLY"] == "true"
+    assert env["DEPLOY_CHECK_TIMEOUT"] == "270"
+    assert int(env["DEPLOY_CHECK_TIMEOUT"]) < api.APPLY_TIMEOUT
+
+
+def test_timeout_finishes_durable_status_and_restores_runtime(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    api.APPLY_TIMEOUT = 300
+    seed(api)
+    calls = 0
+
+    def timeout_then_recover(args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise subprocess.TimeoutExpired(
+                args, 300, output=b"apply partial", stderr=b"health stalled",
+            )
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="runtime restored", stderr=None,
+        )
+
+    monkeypatch.setattr(api.subprocess, "run", timeout_then_recover)
+    monkeypatch.setattr(
+        api, "verify_runtime_after_apply", lambda: {"ok": True, "services": []},
+    )
+
+    result = api.apply_config(
+        config_text("new"), "admin", "timeout", "apply-timeout-bytes",
+    )
+    status = api.read_apply_status("apply-timeout-bytes")
+
+    assert result["ok"] is False
+    assert result["rolledBack"] is True
+    assert status["state"] == "failed"
+    assert status["error"] == "配置已写入，但自动应用超时（300s）"
+    assert status["runtimeRestored"] is True
+    assert status["applyOutput"] == "apply partial\nhealth stalled"
+
+
+def test_running_status_has_recovery_deadline_and_exceptions_finish_failed(
+    monkeypatch, tmp_path,
+):
+    api = load_api(tmp_path)
+    api.APPLY_TIMEOUT = 300
+    api.APPLY_VERIFY_TIMEOUT = 90
+    seed(api)
+    captured = {}
+
+    def observe_running_then_fail():
+        captured.update(api.read_apply_status("apply-deadline-test"))
+        raise RuntimeError("injected apply exception")
+
+    monkeypatch.setattr(api, "run_apply_command", observe_running_then_fail)
+
+    result = api.apply_config(
+        config_text("new"), "admin", "exception", "apply-deadline-test",
+    )
+    final = api.read_apply_status("apply-deadline-test")
+
+    assert captured["state"] == "running"
+    assert captured["timeoutSeconds"] == 810
+    assert captured["deadlineAt"] == captured["startedAt"] + 810
+    assert result["ok"] is False
+    assert final["state"] == "failed"
+    assert "injected apply exception" in final["error"]
 
 
 def test_rollback_restores_a_paired_snapshot_and_applies_it(monkeypatch, tmp_path):

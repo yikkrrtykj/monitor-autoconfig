@@ -77,6 +77,8 @@ APPLY_COMMAND = CORE_SETTINGS.apply_command
 APPLY_TIMEOUT = CORE_SETTINGS.apply_timeout
 APPLY_VERIFY_TIMEOUT = CORE_SETTINGS.apply_verify_timeout
 MAX_REQUEST_BODY_BYTES = CORE_SETTINGS.max_request_body_bytes
+APPLY_CHILD_TIMEOUT_MARGIN_SECONDS = 30
+APPLY_OPERATION_GRACE_SECONDS = 30
 IPERF3_COMMAND = os.environ.get(
     "PLATFORM_IPERF3_COMMAND",
     "iperf3",
@@ -555,6 +557,16 @@ def _host_exec_env() -> dict:
     # caller here would kill it before the durable operation result is written.
     # A direct host apply does not set this flag and therefore refreshes the API.
     env["PLATFORM_API_SELF_APPLY"] = "true"
+    requested_check_timeout = env.get("DEPLOY_CHECK_TIMEOUT", "180")
+    try:
+        requested_check_seconds = max(0, int(requested_check_timeout))
+    except ValueError:
+        # Preserve deploy-check's existing validation and explicit diagnostic
+        # for a malformed operator-provided value.
+        pass
+    else:
+        child_maximum = max(0, APPLY_TIMEOUT - APPLY_CHILD_TIMEOUT_MARGIN_SECONDS)
+        env["DEPLOY_CHECK_TIMEOUT"] = str(min(requested_check_seconds, child_maximum))
     plugin_dirs = ":".join([
         "/host/usr/libexec/docker/cli-plugins",
         "/host/usr/lib/docker/cli-plugins",
@@ -744,6 +756,25 @@ def _precheck_result(checks: list[dict]) -> dict:
     return {"ok": True, "verdict": verdict, "pass": passed, "warn": warned, "fail": failed, "output": output}
 
 
+def _process_output_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _combined_process_output(*parts) -> str:
+    return "\n".join(
+        text for text in (_process_output_text(part) for part in parts) if text
+    ).strip()
+
+
+def apply_operation_timeout_seconds() -> int:
+    """Upper bound for primary apply plus one deterministic recovery apply."""
+    return 2 * (APPLY_TIMEOUT + APPLY_VERIFY_TIMEOUT) + APPLY_OPERATION_GRACE_SECONDS
+
+
 def run_apply_command() -> dict:
     if not APPLY_ENABLED:
         return {
@@ -773,7 +804,7 @@ def run_apply_command() -> dict:
             "applyOutput": str(exc),
         }
     except subprocess.TimeoutExpired as exc:
-        output = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part).strip()
+        output = _combined_process_output(exc.stdout, exc.stderr)
         return {
             "ok": False,
             "error": f"配置已写入，但自动应用超时（{APPLY_TIMEOUT}s）",
@@ -782,7 +813,7 @@ def run_apply_command() -> dict:
             "applyOutput": output[-4000:],
         }
 
-    output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+    output = _combined_process_output(completed.stdout, completed.stderr)
     if completed.returncode != 0:
         return {
             "ok": False,
@@ -839,7 +870,16 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
         return {"ok": False, "operationId": operation_id, "error": f"应用配置失败：{exc}"}
     if not payload.get("ok") or payload.get("configTooNew"):
         return {**payload, "operationId": operation_id}
-    write_apply_status(operation_id, "running", action="apply", startedAt=int(time.time()))
+    started_at = int(time.time())
+    operation_timeout = apply_operation_timeout_seconds()
+    write_apply_status(
+        operation_id,
+        "running",
+        action="apply",
+        startedAt=started_at,
+        timeoutSeconds=operation_timeout,
+        deadlineAt=started_at + operation_timeout,
+    )
     snapshot = None
     try:
         bad = [item for item in payload["issues"] if item.get("level") == "bad"]
@@ -958,7 +998,16 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
     blocked = current_config_write_guard()
     if blocked:
         return {**blocked, "operationId": operation_id}
-    write_apply_status(operation_id, "running", action="rollback", startedAt=int(time.time()))
+    started_at = int(time.time())
+    operation_timeout = apply_operation_timeout_seconds()
+    write_apply_status(
+        operation_id,
+        "running",
+        action="rollback",
+        startedAt=started_at,
+        timeoutSeconds=operation_timeout,
+        deadlineAt=started_at + operation_timeout,
+    )
     snapshots = list_config_snapshots()
     if not snapshots:
         error_message = "没有可用的一致性配置快照；旧版分散备份不会自动混合回滚"

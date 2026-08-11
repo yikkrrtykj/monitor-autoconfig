@@ -127,7 +127,14 @@ compose() {
 
 http_get() {
   url=$1
-  if command -v curl >/dev/null 2>&1; then
+  if [ "${PLATFORM_API_SELF_APPLY:-false}" = true ]; then
+    # The platform container exposes host tools under /host/usr/bin so Docker
+    # remains available. A host curl found there cannot load its host libcurl
+    # inside python:slim; use the container's own Python for every self-apply
+    # HTTP probe instead of treating command presence as runtime capability.
+    python3 -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=int(sys.argv[2])).read())' \
+      "$url" "$DEPLOY_CHECK_HTTP_TIMEOUT"
+  elif command -v curl >/dev/null 2>&1; then
     curl -fsS --max-time "$DEPLOY_CHECK_HTTP_TIMEOUT" "$url"
   else
     python3 -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=int(sys.argv[2])).read())' \
@@ -516,7 +523,9 @@ wait_for_http snmp_http "SNMP exporter reachable" "$SNMP_EXPORTER_URL/" || true
 wait_for_prometheus_reload || true
 
 if [ "$MODE" = configured ]; then
-  DEADLINE=$(($(now_seconds) + DEPLOY_CHECK_TIMEOUT))
+  # Configured checks share the bootstrap deadline. Resetting it here allowed
+  # one invocation to consume two full timeout windows and outlive its parent
+  # platform-api apply process.
   CORE_SWITCH_VALUE=$(env_value CORE_SWITCH_PING 2>/dev/null || true)
   TOURNAMENT_SWITCHES_VALUE=$(env_value TOURNAMENT_SWITCHES 2>/dev/null || true)
   FIREWALL_VALUE=$(env_value FIREWALL_PING 2>/dev/null || true)

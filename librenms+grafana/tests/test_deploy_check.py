@@ -98,6 +98,11 @@ CURL_STUB = r"""#!/bin/sh
 url=""
 for argument in "$@"; do url=$argument; done
 [ -z "${STUB_HTTP_LOG:-}" ] || printf '%s\n' "$url" >> "$STUB_HTTP_LOG"
+[ -z "${STUB_HTTP_CLIENT_LOG:-}" ] || printf 'curl %s\n' "$url" >> "$STUB_HTTP_CLIENT_LOG"
+if [ "${STUB_CURL_BROKEN:-false}" = true ]; then
+  echo "curl: error while loading shared libraries: libcurl.so.4" >&2
+  exit 127
+fi
 case "$url" in
   http://127.0.0.1:9200/health)
     if [ "${STUB_HOST_PLATFORM_API_FAIL:-false}" = true ]; then
@@ -162,9 +167,54 @@ def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json"
     stub_bin.mkdir()
     _write_executable(stub_bin / "docker", DOCKER_STUB)
     _write_executable(stub_bin / "curl", CURL_STUB)
-    _write_executable(stub_bin / "sleep", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        stub_bin / "sleep",
+        """#!/bin/sh
+if [ -n "${STUB_FAKE_TIME_FILE:-}" ]; then
+  current=$(cat "$STUB_FAKE_TIME_FILE")
+  advance=${STUB_SLEEP_ADVANCE:-${1:-0}}
+  printf '%s\n' "$((current + advance))" > "$STUB_FAKE_TIME_FILE"
+fi
+exit 0
+""",
+    )
     python_path = Path(sys.executable).as_posix()
-    _write_executable(stub_bin / "python3", f'#!/bin/sh\nexec "{python_path}" "$@"\n')
+    _write_executable(
+        stub_bin / "python3",
+        f'''#!/bin/sh
+if [ "${{1:-}}" = "-c" ]; then
+  case "${{2:-}}" in
+    *urllib.request.urlopen*)
+      url=${{3:-}}
+      [ -z "${{STUB_HTTP_LOG:-}}" ] || printf '%s\n' "$url" >> "$STUB_HTTP_LOG"
+      [ -z "${{STUB_HTTP_CLIENT_LOG:-}}" ] || printf 'python %s\n' "$url" >> "$STUB_HTTP_CLIENT_LOG"
+      case "$url" in
+        */metrics) echo "prometheus_config_last_reload_successful ${{STUB_RELOAD_SUCCESS:-1}}" ;;
+        */api/v1/targets*) printf '%s\n' "${{STUB_TARGETS_JSON:-{{\"status\":\"success\",\"data\":{{\"activeTargets\":[]}}}}}}" ;;
+        */player-targets/status) printf '%s\n' "${{STUB_PLAYER_STATUS:-{{\"ok\":true,\"targets\":{{\"total\":0}}}}}}" ;;
+        *) printf '{{"ok":true}}\n' ;;
+      esac
+      exit 0
+      ;;
+  esac
+fi
+exec "{python_path}" "$@"
+''',
+    )
+
+    if str(overrides.get("STUB_FAKE_TIME", "false")).lower() == "true":
+        fake_time = tmp_path / "fake-time"
+        fake_time.write_text("0\n", encoding="utf-8")
+        _write_executable(
+            stub_bin / "date",
+            """#!/bin/sh
+if [ "${1:-}" = "+%s" ]; then
+  cat "$STUB_FAKE_TIME_FILE"
+  exit 0
+fi
+exec /usr/bin/date "$@"
+""",
+        )
 
     env = os.environ.copy()
     env.update({
@@ -173,8 +223,11 @@ def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json"
         "DEPLOY_CHECK_INTERVAL": "0",
         "STUB_STATE_DIR": str(tmp_path),
         "STUB_HTTP_LOG": str(tmp_path / "http.log"),
+        "STUB_HTTP_CLIENT_LOG": str(tmp_path / "http-client.log"),
         "STUB_COMPOSE_LOG": str(tmp_path / "compose.log"),
     })
+    if str(overrides.get("STUB_FAKE_TIME", "false")).lower() == "true":
+        env["STUB_FAKE_TIME_FILE"] = str(tmp_path / "fake-time")
     env.update({key: str(value) for key, value in overrides.items()})
     arguments = [SH, str(project / "deploy-check.sh")]
     if mode is not None:
@@ -330,8 +383,14 @@ def test_default_mode_is_bootstrap_and_quiet_only_prints_result(tmp_path):
 
 
 def test_console_apply_checks_services_on_the_internal_compose_network(tmp_path):
-    completed, _ = run_check(tmp_path, PLATFORM_API_SELF_APPLY="true")
+    completed, _ = run_check(
+        tmp_path,
+        mode="configured",
+        PLATFORM_API_SELF_APPLY="true",
+        STUB_CURL_BROKEN="true",
+    )
     urls = (tmp_path / "http.log").read_text(encoding="utf-8")
+    clients = (tmp_path / "http-client.log").read_text(encoding="utf-8")
     compose_calls = (tmp_path / "compose.log").read_text(encoding="utf-8")
 
     assert completed.returncode == 0
@@ -339,7 +398,30 @@ def test_console_apply_checks_services_on_the_internal_compose_network(tmp_path)
     assert "http://grafana:3000/api/health" in urls
     assert "http://bigscreen/" in urls
     assert "http://127.0.0.1:9200/health" in urls
+    assert "python http://prometheus:9090/-/healthy" in clients
+    assert "curl " not in clients
     assert "exec -T platform-api" not in compose_calls
+
+
+def test_configured_mode_uses_one_total_timeout_budget(tmp_path):
+    env_text = BASE_ENV.replace(
+        "CORE_SWITCH_PING=", "CORE_SWITCH_PING=core:192.0.2.10",
+    )
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=env_text,
+        DEPLOY_CHECK_TIMEOUT="10",
+        DEPLOY_CHECK_INTERVAL="6",
+        STUB_HEALTH_SERVICE="prometheus",
+        STUB_HEALTH_MODE="starting_once",
+        STUB_FAKE_TIME="true",
+        STUB_SLEEP_ADVANCE="6",
+    )
+
+    assert completed.returncode == 1
+    assert checks_by_id(payload)["configured_core"]["status"] == "FAIL"
+    assert payload["duration_seconds"] == 12
 
 
 def test_host_bootstrap_checks_platform_api_inside_unpublished_container(tmp_path):
