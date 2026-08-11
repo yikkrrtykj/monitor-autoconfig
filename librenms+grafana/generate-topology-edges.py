@@ -666,6 +666,7 @@ _INTERFACE_TYPE_ALIASES = {
     "gigabitethernet": "gi",
     "gi": "gi",
     "tengigabitethernet": "te",
+    "tengige": "te",
     "te": "te",
     "twentyfivegige": "twe",
     "twentyfivegigabitethernet": "twe",
@@ -676,7 +677,62 @@ _INTERFACE_TYPE_ALIASES = {
     "hundredgige": "hu",
     "hundredgigabitethernet": "hu",
     "hu": "hu",
+    "ethernet": "eth",
+    "eth": "eth",
 }
+
+_INTERFACE_TYPE_DISPLAY = {
+    "fa": "Fa",
+    "gi": "Gi",
+    "te": "Te",
+    "twe": "Twe",
+    "fo": "Fo",
+    "hu": "Hu",
+    "eth": "Eth",
+}
+
+
+def _canonical_topology_port_parts(name):
+    """Return a reliable physical identity and clean display label.
+
+    Parenthesized chassis/MAC metadata is removed only when the prefix itself
+    is a complete known interface name. A pure MAC therefore remains unknown
+    and can never be guessed into a physical port.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return "", ""
+    candidate = raw
+    annotation = re.fullmatch(r"(.+?)\s*\(([^()]*)\)\s*", raw)
+    if annotation and normalize_mac(annotation.group(2)):
+        candidate = annotation.group(1).strip()
+
+    compact = re.sub(r"[\s_-]+", "", candidate.lower())
+    aggregate = re.fullmatch(r"(?:portchannel|po)([0-9]+)", compact)
+    if aggregate:
+        number = str(int(aggregate.group(1)))
+        return f"agg:{number}", f"Po{number}"
+
+    physical = re.fullmatch(r"([a-z]+)([0-9]+(?:/[0-9]+)*)", compact)
+    if not physical:
+        return "", raw
+    interface_type = _INTERFACE_TYPE_ALIASES.get(physical.group(1))
+    if not interface_type:
+        return "", raw
+    path = "/".join(str(int(part)) for part in physical.group(2).split("/"))
+    display_type = _INTERFACE_TYPE_DISPLAY[interface_type]
+    return f"{interface_type}:{path}", f"{display_type}{path}"
+
+
+def canonical_topology_port_identity(name):
+    """Stable typed identity for a recognisable physical/aggregate port."""
+    return _canonical_topology_port_parts(name)[0]
+
+
+def canonical_topology_port_label(name):
+    """Clean display label without inventing an interface for unknown data."""
+    _, display = _canonical_topology_port_parts(name)
+    return display
 
 
 def typed_interface_identity(name):
@@ -1231,6 +1287,64 @@ def resolve_endpoint_conflicts(edges):
     return kept
 
 
+def canonical_physical_edge_key(edge):
+    """Undirected device+port key only when both endpoints are reliable."""
+    endpoints = []
+    for side in ("from", "to"):
+        ip = str(edge.get(f"{side}_ip") or "").strip()
+        port = canonical_topology_port_identity(edge.get(f"{side}_port"))
+        if not ip or not port:
+            return None
+        endpoints.append((ip, port))
+    return tuple(sorted(endpoints))
+
+
+def _orient_edge_like(edge, reference):
+    """Orient a reciprocal observation like the first retained observation."""
+    if (
+        edge.get("from_ip") != reference.get("to_ip") or
+        edge.get("to_ip") != reference.get("from_ip")
+    ):
+        return edge
+    oriented = dict(edge)
+    for field in ("ip", "sysname", "port", "ifindex"):
+        oriented[f"from_{field}"] = edge.get(f"to_{field}")
+        oriented[f"to_{field}"] = edge.get(f"from_{field}")
+    return oriented
+
+
+def dedupe_canonical_physical_edges(edges):
+    """Merge reciprocal rows only for the same proven physical port pair."""
+    output = []
+    positions = {}
+    for source in edges:
+        edge = dict(source)
+        for side in ("from", "to"):
+            field = f"{side}_port"
+            label = canonical_topology_port_label(edge.get(field))
+            if label:
+                edge[field] = label
+        key = canonical_physical_edge_key(edge)
+        if key is None:
+            output.append(edge)
+            continue
+        position = positions.get(key)
+        if position is None:
+            positions[key] = len(output)
+            output.append(edge)
+            continue
+
+        existing = output[position]
+        incoming = _orient_edge_like(edge, existing)
+        for field in (
+            "from_sysname", "from_port", "from_ifindex",
+            "to_sysname", "to_port", "to_ifindex",
+        ):
+            if not existing.get(field) and incoming.get(field):
+                existing[field] = incoming[field]
+    return output
+
+
 def _aggregate_member_details(device, endpoint_ifindex, endpoint_port=None):
     """Return (aggregate name, configured member names) for one edge endpoint."""
     ifnames = device.get("ifname", {})
@@ -1509,7 +1623,9 @@ def build_edges(devices, name_index):
                 "to_ifindex": remote_ifindex,
             })
 
-    edges = resolve_endpoint_conflicts(list(edges_by_key.values()))
+    edges = dedupe_canonical_physical_edges(
+        resolve_endpoint_conflicts(list(edges_by_key.values()))
+    )
     return enrich_aggregate_members(edges, devices), placeholder_neighbors
 
 

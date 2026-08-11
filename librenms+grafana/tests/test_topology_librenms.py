@@ -336,6 +336,167 @@ def test_normal_core_ob_cdp_and_librenms_observations_still_dedupe():
     assert edges[0]["to_port"] == "Gi1/0/49"
 
 
+@pytest.mark.parametrize(
+    ("long_name", "short_name", "identity", "label"),
+    [
+        ("GigabitEthernet27", "gi27 (00b1e3cff5ba)", "gi:27", "Gi27"),
+        ("GigabitEthernet1/0/27", "Gi1/0/27", "gi:1/0/27", "Gi1/0/27"),
+        ("TenGigabitEthernet1/0/6", "Te1/0/6", "te:1/0/6", "Te1/0/6"),
+        ("TwentyFiveGigE1/0/6", "Twe1/0/6", "twe:1/0/6", "Twe1/0/6"),
+        ("Port-channel1", "Po1", "agg:1", "Po1"),
+    ],
+)
+def test_topology_port_identity_normalizes_known_interface_spellings(
+    long_name, short_name, identity, label,
+):
+    assert gte.canonical_topology_port_identity(long_name) == identity
+    assert gte.canonical_topology_port_identity(short_name) == identity
+    assert gte.canonical_topology_port_label(long_name) == label
+    assert gte.canonical_topology_port_label(short_name) == label
+
+
+def test_pure_mac_port_id_is_not_guessed_as_an_interface():
+    mac = "00 B1 E3 CF F5 BA"
+
+    assert gte.canonical_topology_port_identity(mac) == ""
+    assert gte.canonical_topology_port_label(mac) == mac
+
+
+def test_canonical_slash_port_spellings_merge_as_one_physical_edge():
+    edges = [
+        {
+            "from_ip": "192.168.10.254",
+            "from_port": "TenGigabitEthernet1/0/7",
+            "to_ip": "192.168.10.31",
+            "to_port": "GigabitEthernet1/0/27",
+        },
+        {
+            "from_ip": "192.168.10.31",
+            "from_port": "Gi1/0/27",
+            "to_ip": "192.168.10.254",
+            "to_port": "Te1/0/7",
+        },
+    ]
+
+    deduped = gte.dedupe_canonical_physical_edges(edges)
+
+    assert len(deduped) == 1
+    assert deduped[0]["from_port"] == "Te1/0/7"
+    assert deduped[0]["to_port"] == "Gi1/0/27"
+
+
+def test_pure_mac_endpoint_observations_are_not_guessed_or_deduped():
+    edges = [
+        {
+            "from_ip": "192.168.10.254",
+            "from_port": "Te1/0/7",
+            "to_ip": "192.168.10.31",
+            "to_port": "00 B1 E3 CF F5 BA",
+        },
+        {
+            "from_ip": "192.168.10.31",
+            "from_port": "00 B1 E3 CF F5 BA",
+            "to_ip": "192.168.10.254",
+            "to_port": "Te1/0/7",
+        },
+    ]
+
+    deduped = gte.dedupe_canonical_physical_edges(edges)
+
+    assert len(deduped) == 2
+    assert all(
+        "00 B1 E3 CF F5 BA" in (edge["from_port"], edge["to_port"])
+        for edge in deduped
+    )
+
+
+def test_cdp_and_lldp_mac_annotated_reciprocal_port_merge_cleanly():
+    core = topology_device(
+        "192.168.10.254", "Core", 1, {7: "Te1/0/7"},
+    )
+    remote = topology_device(
+        "192.168.10.31", "VCR", 31, {27: "Gi27"},
+    )
+    core["cdp_device_id"] = {(7, 1): "VCR"}
+    core["cdp_device_port"] = {(7, 1): "GigabitEthernet27"}
+    core["cdp_address"] = {(7, 1): remote["ip"]}
+    core["neighbors"] = [unified_neighbor(
+        7, "Te1/0/7", "VCR", 31, "gi27 (00b1e3cff5ba)",
+    )]
+    devices = {core["ip"]: core, remote["ip"]: remote}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert placeholders == []
+    assert len(edges) == 1
+    assert edges[0]["from_port"] == "Te1/0/7"
+    assert edges[0]["to_port"] == "Gi27"
+    assert "00b1e3cff5ba" not in json.dumps(edges)
+
+
+def test_distinct_reciprocal_physical_pairs_remain_two_links():
+    core = topology_device(
+        "192.168.10.254", "Core", 1,
+        {101: "Te1/0/1", 201: "Te2/0/1"},
+    )
+    stack = topology_device(
+        "192.168.10.11", "Global-new-stack", 11,
+        {102: "Te1/0/2", 202: "Te2/0/2"},
+    )
+    core["neighbors"] = [
+        unified_neighbor(101, "Te1/0/1", stack["sysname"], 11, "Te1/0/2"),
+        unified_neighbor(201, "Te2/0/1", stack["sysname"], 11, "Te2/0/2"),
+    ]
+    stack["neighbors"] = [
+        unified_neighbor(102, "Te1/0/2", core["sysname"], 1, "Te1/0/1"),
+        unified_neighbor(202, "Te2/0/2", core["sysname"], 1, "Te2/0/1"),
+    ]
+    devices = {core["ip"]: core, stack["ip"]: stack}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert placeholders == []
+    assert len(edges) == 2
+    assert {
+        (edge["from_port"], edge["to_port"])
+        for edge in edges
+    } == {
+        ("Te1/0/1", "Te1/0/2"),
+        ("Te2/0/1", "Te2/0/2"),
+    }
+
+
+def test_aggregation_to_studio_link_remains_normal():
+    aggregation = topology_device(
+        "192.168.10.11", "Aggregation", 7, {451: "Gi4/0/51"},
+    )
+    studio = topology_device(
+        "192.168.10.53", "Studio-3", 23, {49: "Gi1/0/49"},
+    )
+    aggregation["neighbors"] = [unified_neighbor(
+        451, "Gi4/0/51", studio["sysname"], 23, "Gi1/0/49",
+    )]
+    studio["neighbors"] = [unified_neighbor(
+        49, "Gi1/0/49", aggregation["sysname"], 7, "Gi4/0/51",
+    )]
+    devices = {aggregation["ip"]: aggregation, studio["ip"]: studio}
+
+    edges, placeholders = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert placeholders == []
+    assert len(edges) == 1
+    assert edges[0]["from_ip"] == "192.168.10.11"
+    assert edges[0]["from_port"] == "Gi4/0/51"
+    assert edges[0]["to_ip"] == "192.168.10.53"
+    assert edges[0]["to_port"] == "Gi1/0/49"
+
+
 def test_external_identity_collision_is_summarized_without_unresolved_warning(
     capsys,
 ):
