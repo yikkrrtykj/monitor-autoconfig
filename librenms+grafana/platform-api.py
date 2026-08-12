@@ -6,13 +6,11 @@ telnetlib3 compatibility module so the service also works on Python 3.13+.
 """
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 import re
 import shlex
 import secrets
-import socket
 import subprocess
 import tempfile
 import threading
@@ -45,6 +43,7 @@ from version_info import get_version_info
 from platform_api import auth as platform_auth
 from platform_api import bridge as platform_bridge
 from platform_api import incidents as platform_incidents
+from platform_api import iperf as platform_iperf
 from platform_api import precheck as platform_precheck
 from platform_api import read_api as platform_read_api
 from platform_api import storage as platform_storage
@@ -952,36 +951,6 @@ def validate_network_host(value: str, field: str = "服务器") -> str:
     return host
 
 
-def _iperf_target_is_internal(host: str) -> bool:
-    """True when the target is (or resolves to) a non-public address.
-
-    覆盖私网/环回/链路本地/保留/组播/未指定地址；域名会先解析再逐个地址判断，
-    防止用一个解析到内网的域名绕过。解析失败按"非内网"放行——反正 iperf3
-    连不上会给出明确报错，这里不用抢先拦。
-    """
-    def non_public(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-        return (
-            addr.is_private or addr.is_loopback or addr.is_link_local
-            or addr.is_reserved or addr.is_multicast or addr.is_unspecified
-        )
-
-    try:
-        return non_public(ipaddress.ip_address(host))
-    except ValueError:
-        pass
-    try:
-        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-    except OSError:
-        return False
-    for info in infos:
-        try:
-            if non_public(ipaddress.ip_address(info[4][0])):
-                return True
-        except ValueError:
-            continue
-    return False
-
-
 def configured_core_switch_host() -> str:
     """Return the one configured core switch IP used by the DHCP dashboard."""
     config = parse_config_text(read_config_text())
@@ -1370,99 +1339,6 @@ def get_dhcp_dashboard(force: bool = False) -> dict:
         DHCP_LOCK.release()
 
 
-def parse_port_range(value, default: str = "5201-5210", max_ports: int = 10) -> list[int]:
-    text = str(value if value not in (None, "") else default).strip()
-    match = re.fullmatch(r"(\d{1,5})(?:\s*-\s*(\d{1,5}))?", text)
-    if not match:
-        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "端口应为单个端口或范围，例如 5201-5210")
-    start = int(match.group(1))
-    end = int(match.group(2) or start)
-    if not (1 <= start <= end <= 65535):
-        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "端口范围无效")
-    if end - start + 1 > max_ports:
-        raise DiagnosticError(HTTPStatus.BAD_REQUEST, f"一次最多尝试 {max_ports} 个端口")
-    return list(range(start, end + 1))
-
-
-def parse_iperf3_json(text: str) -> dict:
-    raw = str(text or "").strip()
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("iperf3 未返回可解析的 JSON")
-        payload = json.loads(raw[start:end + 1])
-    # 合法但非对象的 JSON（裸数组/数字/被代理截断的响应）必须走 ValueError，
-    # 否则 AttributeError 会越过调用方的逐端口重试直接把整次测速打成 500。
-    if not isinstance(payload, dict):
-        raise ValueError("iperf3 返回的 JSON 不是对象")
-    if payload.get("error"):
-        raise ValueError(str(payload["error"]))
-
-    def _as_dict(value) -> dict:
-        return value if isinstance(value, dict) else {}
-
-    ending = _as_dict(payload.get("end"))
-    received = _as_dict(ending.get("sum_received"))
-    sent = _as_dict(ending.get("sum_sent"))
-    fallback = _as_dict(ending.get("sum"))
-    bits_per_second = received.get("bits_per_second")
-    if bits_per_second is None:
-        bits_per_second = sent.get("bits_per_second", fallback.get("bits_per_second"))
-    if bits_per_second is None:
-        raise ValueError("iperf3 结果中没有速率数据")
-
-    def endpoint_stats(value: dict) -> dict:
-        return {
-            "mbps": round(float(value.get("bits_per_second") or 0) / 1_000_000, 2),
-            "bytes": int(value.get("bytes") or 0),
-            "seconds": round(float(value.get("seconds") or 0), 2),
-            "retransmits": int(value.get("retransmits") or 0),
-        }
-
-    intervals = []
-    for item in payload.get("intervals") or []:
-        if not isinstance(item, dict):
-            continue
-        interval = _as_dict(item.get("sum"))
-        if not interval and item.get("streams"):
-            streams = [stream for stream in item["streams"] if isinstance(stream, dict)]
-        else:
-            streams = []
-        if not interval and streams:
-            interval = {
-                "start": min(float(stream.get("start") or 0) for stream in streams),
-                "end": max(float(stream.get("end") or 0) for stream in streams),
-                "seconds": max(float(stream.get("seconds") or 0) for stream in streams),
-                "bytes": sum(int(stream.get("bytes") or 0) for stream in streams),
-                "bits_per_second": sum(float(stream.get("bits_per_second") or 0) for stream in streams),
-                "retransmits": sum(int(stream.get("retransmits") or 0) for stream in streams),
-            }
-        if not interval:
-            continue
-        intervals.append({
-            "start": round(float(interval.get("start") or 0), 2),
-            "end": round(float(interval.get("end") or 0), 2),
-            "seconds": round(float(interval.get("seconds") or 0), 2),
-            "bytes": int(interval.get("bytes") or 0),
-            "mbps": round(float(interval.get("bits_per_second") or 0) / 1_000_000, 2),
-            "retransmits": int(interval["retransmits"]) if interval.get("retransmits") is not None else None,
-        })
-
-    sender = endpoint_stats(sent or fallback)
-    receiver = endpoint_stats(received or fallback)
-    return {
-        "mbps": round(float(bits_per_second) / 1_000_000, 2),
-        "seconds": round(float(received.get("seconds") or sent.get("seconds") or fallback.get("seconds") or 0), 2),
-        "retransmits": int(sent.get("retransmits") or 0),
-        "bytes": receiver["bytes"],
-        "sender": sender,
-        "receiver": receiver,
-        "intervals": intervals,
-    }
-
-
 def _set_iperf_status(**updates) -> None:
     with IPERF_STATUS_LOCK:
         IPERF_STATUS.update(updates)
@@ -1533,23 +1409,6 @@ def _save_iperf_history(payload: dict) -> None:
         if isinstance(item, dict) and item.get("taskId") != summary["taskId"]
     ]]
     write_json_file(IPERF_HISTORY_PATH, history[:IPERF_HISTORY_LIMIT], mode=0o600)
-
-
-def _iperf_error_summary(stdout: str, stderr: str, returncode: int) -> str:
-    raw = (stderr or stdout or f"退出码 {returncode}").strip()
-    try:
-        payload = json.loads(raw)
-        raw = str(payload.get("error") or raw)
-    except (json.JSONDecodeError, TypeError):
-        pass
-    lowered = raw.lower()
-    if "control socket has closed unexpectedly" in lowered:
-        return "服务器中途关闭连接"
-    if "server is busy" in lowered:
-        return "服务器正忙"
-    if "unable to connect" in lowered or "connection refused" in lowered:
-        return "无法连接"
-    return re.sub(r"\s+", " ", raw)[-160:]
 
 
 class IperfCancelled(Exception):
@@ -1669,7 +1528,7 @@ def _run_iperf_direction(host: str, ports: list[int], duration: int, parallel: i
         error = (completed.stderr or "").strip()
         if completed.returncode == 0:
             try:
-                result = parse_iperf3_json(output)
+                result = platform_iperf.parse_iperf3_json(output)
                 _set_iperf_status(
                     percent=round(((direction_index + 1) / direction_total) * 100, 1),
                     message=f"{direction_label}完成，端口 {port}",
@@ -1678,7 +1537,9 @@ def _run_iperf_direction(host: str, ports: list[int], duration: int, parallel: i
             except (ValueError, TypeError) as exc:
                 attempts.append(f"{port}: {exc}")
         else:
-            attempts.append(f"{port}: {_iperf_error_summary(output, error, completed.returncode)}")
+            attempts.append(
+                f"{port}: {platform_iperf._iperf_error_summary(output, error, completed.returncode)}"
+            )
     detail = "；".join(attempts[-4:]) or "没有端口完成测试"
     raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"iperf3 测速失败：{detail}")
 
@@ -1688,13 +1549,15 @@ def run_iperf_test(data: dict, task_id: str = "", cancel_event: threading.Event 
         data.get("server") or "speedtest.hkg12.hk.leaseweb.net",
         "测速服务器",
     )
-    if not IPERF3_ALLOW_INTERNAL and _iperf_target_is_internal(host):
+    if not IPERF3_ALLOW_INTERNAL and platform_iperf._iperf_target_is_internal(host):
         raise DiagnosticError(
             HTTPStatus.BAD_REQUEST,
             "测速目标是内网地址。默认仅允许公网节点；确需测内网请在 .env 设置 "
             "PLATFORM_IPERF3_ALLOW_INTERNAL=true 后重新应用配置",
         )
-    ports = parse_port_range(data.get("ports"), "5201-5210", 10)
+    ports = platform_iperf.parse_port_range(
+        data.get("ports"), "5201-5210", 10, error_factory=DiagnosticError,
+    )
     try:
         duration = int(data.get("duration") or 10)
         parallel = int(data.get("parallel") or 10)

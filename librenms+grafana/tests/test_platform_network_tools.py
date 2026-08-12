@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from platform_api import iperf
+
 from .test_platform_transactions import load_api
 
 
@@ -55,18 +57,22 @@ def test_network_host_and_port_range_validation(tmp_path):
 
     assert api.validate_network_host("iperf.online.net") == "iperf.online.net"
     assert api.validate_network_host("192.168.10.254") == "192.168.10.254"
-    assert api.parse_port_range("5200-5202") == [5200, 5201, 5202]
+    assert iperf.parse_port_range(
+        "5200-5202", error_factory=api.DiagnosticError,
+    ) == [5200, 5201, 5202]
 
     with pytest.raises(api.DiagnosticError):
         api.validate_network_host("iperf.online.net; reboot")
     with pytest.raises(api.DiagnosticError):
-        api.parse_port_range("5200-5215")
+        iperf.parse_port_range(
+            "5200-5215", error_factory=api.DiagnosticError,
+        )
 
 
 def test_iperf_json_uses_receiver_rate_and_reports_retransmits(tmp_path):
     api = load_api(tmp_path)
 
-    result = api.parse_iperf3_json(_iperf_payload())
+    result = iperf.parse_iperf3_json(_iperf_payload())
 
     assert result["mbps"] == 950.0
     assert result["seconds"] == 10.01
@@ -119,7 +125,7 @@ def test_iperf_tries_next_port_without_using_a_shell(monkeypatch, tmp_path):
 def test_iperf_error_summary_hides_raw_json(tmp_path):
     api = load_api(tmp_path)
 
-    detail = api._iperf_error_summary(
+    detail = iperf._iperf_error_summary(
         json.dumps({"start": {}, "intervals": [], "end": {}, "error": "control socket has closed unexpectedly"}),
         "",
         1,
@@ -661,11 +667,11 @@ def test_config_editor_migrates_legacy_feishu_env_credentials(tmp_path):
 def test_iperf_internal_targets_gated_by_env(tmp_path):
     api = load_api(tmp_path)
     # 字面量内网/环回地址一律判内网;公网字面量放行
-    assert api._iperf_target_is_internal("192.168.10.5") is True
-    assert api._iperf_target_is_internal("10.0.0.1") is True
-    assert api._iperf_target_is_internal("127.0.0.1") is True
-    assert api._iperf_target_is_internal("169.254.169.254") is True
-    assert api._iperf_target_is_internal("23.249.58.14") is False
+    assert iperf._iperf_target_is_internal("192.168.10.5") is True
+    assert iperf._iperf_target_is_internal("10.0.0.1") is True
+    assert iperf._iperf_target_is_internal("127.0.0.1") is True
+    assert iperf._iperf_target_is_internal("169.254.169.254") is True
+    assert iperf._iperf_target_is_internal("23.249.58.14") is False
     # 默认开关关闭
     assert api.IPERF3_ALLOW_INTERNAL is False
     with pytest.raises(api.DiagnosticError) as exc:
@@ -685,10 +691,10 @@ def test_iperf_json_rejects_non_object_payloads(tmp_path):
     api = load_api(tmp_path)
     for bad in ("[1,2,3]", "42", '"text"'):
         with pytest.raises(ValueError):
-            api.parse_iperf3_json(bad)
+            iperf.parse_iperf3_json(bad)
     # 非 dict 的嵌套结构不炸 AttributeError,按 ValueError 处理
     with pytest.raises(ValueError):
-        api.parse_iperf3_json(json.dumps({"end": [], "intervals": "x"}))
+        iperf.parse_iperf3_json(json.dumps({"end": [], "intervals": "x"}))
 
 
 def test_dhcp_credentials_reject_control_characters(tmp_path):
