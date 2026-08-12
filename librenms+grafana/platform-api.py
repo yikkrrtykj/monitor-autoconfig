@@ -42,6 +42,7 @@ from platform_config import (
 from version_info import get_version_info
 from platform_api import auth as platform_auth
 from platform_api import bridge as platform_bridge
+from platform_api import dhcp_settings as platform_dhcp_settings
 from platform_api import incidents as platform_incidents
 from platform_api import iperf as platform_iperf
 from platform_api import precheck as platform_precheck
@@ -189,24 +190,6 @@ IPERF_STATUS: dict = {
 # simultaneous requests from multiple browser tabs into one CLI query.
 DHCP_LOCK = threading.Lock()
 DHCP_CACHE: dict = {}
-
-
-def dhcp_connection_settings() -> dict:
-    """Return runtime Telnet settings, preferring the private console store."""
-    stored = read_json_file(DHCP_SETTINGS_PATH, {})
-    if not isinstance(stored, dict):
-        stored = {}
-    try:
-        port = int(stored.get("port", DHCP_SWITCH_PORT))
-    except (TypeError, ValueError):
-        port = DHCP_SWITCH_PORT
-    return {
-        "username": str(stored.get("username", DHCP_SWITCH_USERNAME) or "").strip(),
-        "password": str(stored.get("password", DHCP_SWITCH_PASSWORD) or ""),
-        "enablePassword": str(stored.get("enablePassword", DHCP_SWITCH_ENABLE_PASSWORD) or ""),
-        "port": max(1, min(65535, port)),
-        "source": "console" if DHCP_SETTINGS_PATH.exists() else "environment",
-    }
 
 
 def _transaction_context() -> platform_transactions.TransactionContext:
@@ -969,57 +952,21 @@ def configured_core_switch_host() -> str:
     return validate_network_host(host, "核心 IP")
 
 
-def get_dhcp_settings() -> dict:
-    settings = dhcp_connection_settings()
-    return {
-        "ok": True,
-        "host": configured_core_switch_host(),
-        "username": settings["username"],
-        "port": settings["port"],
-        "passwordConfigured": bool(settings["password"]),
-        "enablePasswordConfigured": bool(settings["enablePassword"]),
-        "source": settings["source"],
-        "timeoutSeconds": DHCP_SWITCH_TIMEOUT,
-        "refreshSeconds": DHCP_REFRESH_SECONDS,
-    }
-
-
-def save_dhcp_settings(data: dict) -> dict:
-    if not WRITE_ENABLED:
-        raise DiagnosticError(HTTPStatus.FORBIDDEN, "当前环境不允许保存 Telnet 配置")
-    current = dhcp_connection_settings()
-    username = str(data.get("username", current["username"]) or "").strip()
-    password_input = data.get("password")
-    enable_input = data.get("enablePassword")
-    password = current["password"] if password_input in (None, "") else str(password_input)
-    enable_password = current["enablePassword"] if enable_input in (None, "") else str(enable_input)
-    try:
-        port = int(data.get("port", current["port"]))
-    except (TypeError, ValueError):
-        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 端口必须是数字")
-    if not 1 <= port <= 65535:
-        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 端口必须在 1-65535 之间")
-    if len(username) > 128:
-        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 用户名过长")
-    if len(password) > 512 or len(enable_password) > 512:
-        raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 密码过长")
-    # 凭据会被原样写进 Telnet 会话，换行/控制字符等于向交换机注入额外命令行。
-    for value in (username, password, enable_password):
-        if any(ord(ch) < 0x20 or ch == "\x7f" for ch in value):
-            raise DiagnosticError(HTTPStatus.BAD_REQUEST, "Telnet 凭据不能包含换行或控制字符")
-    write_json_file(DHCP_SETTINGS_PATH, {
-        "username": username,
-        "password": password,
-        "enablePassword": enable_password,
-        "port": port,
-        "updatedAt": int(time.time()),
-    }, mode=0o600)
-    try:
-        os.chmod(DHCP_SETTINGS_PATH, 0o600)
-    except OSError as exc:
-        print(f"[platform-api] dhcp settings chmod failed: {exc}", flush=True)
-    DHCP_CACHE.clear()
-    return get_dhcp_settings()
+def _dhcp_settings_context() -> platform_dhcp_settings.DhcpSettingsContext:
+    """Reflect compatibility globals while keeping runtime state in this module."""
+    return platform_dhcp_settings.DhcpSettingsContext(
+        settings_path=DHCP_SETTINGS_PATH,
+        default_username=DHCP_SWITCH_USERNAME,
+        default_password=DHCP_SWITCH_PASSWORD,
+        default_enable_password=DHCP_SWITCH_ENABLE_PASSWORD,
+        default_port=DHCP_SWITCH_PORT,
+        write_enabled=WRITE_ENABLED,
+        switch_timeout=DHCP_SWITCH_TIMEOUT,
+        refresh_seconds=DHCP_REFRESH_SECONDS,
+        core_host=configured_core_switch_host,
+        cache_clear=DHCP_CACHE.clear,
+        error_factory=DiagnosticError,
+    )
 
 
 def _telnet_expect(session, patterns: list[bytes], step: str):
@@ -1058,7 +1005,9 @@ def _telnet_command(session, command: str) -> str:
 
 
 def _open_cisco_telnet(host: str):
-    settings = dhcp_connection_settings()
+    settings = platform_dhcp_settings.dhcp_connection_settings(
+        _dhcp_settings_context(),
+    )
     username = settings["username"]
     password = settings["password"]
     enable_password = settings["enablePassword"]
@@ -1254,7 +1203,9 @@ def test_dhcp_connection() -> dict:
             message = "Telnet 登录成功，已进入特权模式"
         else:
             message = f"Telnet 登录成功，当前权限级别 {privilege_level}"
-        settings = dhcp_connection_settings()
+        settings = platform_dhcp_settings.dhcp_connection_settings(
+            _dhcp_settings_context(),
+        )
         return {
             "ok": True,
             "host": host,
@@ -1786,6 +1737,7 @@ def _precheck_context() -> platform_precheck.PrecheckContext:
 def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
     """Bind the read router to the entrypoint's current compatibility API."""
     incident_context = _incident_context()
+    dhcp_settings_context = _dhcp_settings_context()
     return platform_read_api.ReadApiDependencies(
         clock=time.time,
         version_payload=version_payload,
@@ -1798,7 +1750,10 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
         incident_list=partial(platform_incidents.incident_list, incident_context),
         iperf_status_payload=iperf_status_payload,
         iperf_history_payload=iperf_history_payload,
-        get_dhcp_settings=get_dhcp_settings,
+        get_dhcp_settings=partial(
+            platform_dhcp_settings.get_dhcp_settings,
+            dhcp_settings_context,
+        ),
         get_dhcp_bindings=get_dhcp_bindings,
         bridge_retire_pending=partial(
             platform_bridge.bridge_retire_pending,
@@ -1814,6 +1769,7 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
     """Bind the write router to the entrypoint's current compatibility API."""
     incident_context = _incident_context()
     precheck_context = _precheck_context()
+    dhcp_settings_context = _dhcp_settings_context()
     return platform_write_api.WriteApiDependencies(
         login_auth=login_auth,
         change_password_auth=change_password_auth,
@@ -1835,7 +1791,10 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
             BRIDGE_URL,
         ),
         test_dhcp_connection=test_dhcp_connection,
-        save_dhcp_settings=save_dhcp_settings,
+        save_dhcp_settings=partial(
+            platform_dhcp_settings.save_dhcp_settings,
+            dhcp_settings_context,
+        ),
         update_incident=partial(
             platform_incidents.update_incident,
             incident_context,

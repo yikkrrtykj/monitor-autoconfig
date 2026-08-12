@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from platform_api import iperf
+from platform_api import dhcp_settings
 
 from .test_platform_transactions import load_api
 
@@ -524,7 +525,7 @@ def test_dhcp_console_settings_are_private_and_override_environment(tmp_path):
     api.DHCP_SWITCH_ENABLE_PASSWORD = ""
     api.DHCP_SWITCH_PORT = 23
 
-    saved = api.save_dhcp_settings({
+    saved = dhcp_settings.save_dhcp_settings(api._dhcp_settings_context(), {
         "username": "console-user",
         "password": "console-password",
         "enablePassword": "enable-password",
@@ -543,13 +544,16 @@ def test_dhcp_console_settings_are_private_and_override_environment(tmp_path):
     # in the Linux platform-api container, where the private mode is enforced.
     if os.name != "nt":
         assert api.DHCP_SETTINGS_PATH.stat().st_mode & 0o077 == 0
-    runtime = api.dhcp_connection_settings()
+    runtime = dhcp_settings.dhcp_connection_settings(api._dhcp_settings_context())
     assert runtime["username"] == "console-user"
     assert runtime["password"] == "console-password"
     assert runtime["port"] == 2323
 
-    api.save_dhcp_settings({"username": "renamed", "password": "", "enablePassword": "", "port": 23})
-    preserved = api.dhcp_connection_settings()
+    dhcp_settings.save_dhcp_settings(
+        api._dhcp_settings_context(),
+        {"username": "renamed", "password": "", "enablePassword": "", "port": 23},
+    )
+    preserved = dhcp_settings.dhcp_connection_settings(api._dhcp_settings_context())
     assert preserved["username"] == "renamed"
     assert preserved["password"] == "console-password"
     assert preserved["enablePassword"] == "enable-password"
@@ -701,6 +705,12 @@ def test_dhcp_credentials_reject_control_characters(tmp_path):
     api = load_api(tmp_path)
     api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
     with pytest.raises(api.DiagnosticError):
-        api.save_dhcp_settings({"username": "admin\nshow run", "password": "x", "enablePassword": "", "port": 23})
+        dhcp_settings.save_dhcp_settings(
+            api._dhcp_settings_context(),
+            {"username": "admin\nshow run", "password": "x", "enablePassword": "", "port": 23},
+        )
     with pytest.raises(api.DiagnosticError):
-        api.save_dhcp_settings({"username": "admin", "password": "pass\r\nenable", "enablePassword": "", "port": 23})
+        dhcp_settings.save_dhcp_settings(
+            api._dhcp_settings_context(),
+            {"username": "admin", "password": "pass\r\nenable", "enablePassword": "", "port": 23},
+        )

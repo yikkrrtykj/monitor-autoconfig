@@ -155,7 +155,11 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_
         "state": "complete",
     }
     api.iperf_history_payload = lambda: {"ok": True, "history": [{"taskId": "old"}]}
-    api.get_dhcp_settings = lambda: {"ok": True, "host": "192.0.2.1"}
+    monkeypatch.setattr(
+        api.platform_dhcp_settings,
+        "get_dhcp_settings",
+        lambda _context: {"ok": True, "host": "192.0.2.1"},
+    )
     api.get_dhcp_bindings = lambda: {"ok": True, "bindings": [{"ip": "192.0.2.10"}]}
     monkeypatch.setattr(
         api.platform_bridge,
