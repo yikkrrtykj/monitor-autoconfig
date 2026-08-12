@@ -21,11 +21,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-try:
-    from telnetlib3.telnetlib import Telnet
-except ImportError:  # Python 3.12 developer/test fallback; production pins telnetlib3.
-    from telnetlib import Telnet
-
 from platform_config import (
     ConfigSchemaError,
     default_config_text,
@@ -43,6 +38,7 @@ from version_info import get_version_info
 from platform_api import auth as platform_auth
 from platform_api import bridge as platform_bridge
 from platform_api import dhcp_settings as platform_dhcp_settings
+from platform_api import dhcp_telnet as platform_dhcp_telnet
 from platform_api import incidents as platform_incidents
 from platform_api import iperf as platform_iperf
 from platform_api import precheck as platform_precheck
@@ -137,12 +133,6 @@ AUTH_CONTEXT = platform_auth.AuthContext(
 SESSIONS = AUTH_CONTEXT.sessions
 AUTH_FAILURES = AUTH_CONTEXT.failures
 AUTH_FAILURES_LOCK = AUTH_CONTEXT.failures_lock
-
-CISCO_PROMPT_RE = br"(?m)^[A-Za-z0-9_.:/()\[\]-]+[>#][ \t]*\r?$"
-CISCO_PRIV_PROMPT_RE = br"(?m)^[A-Za-z0-9_.:/()\[\]-]+#[ \t]*\r?$"
-CISCO_USER_PROMPT_RE = br"(?m)^[A-Za-z0-9_.:/()\[\]-]+>[ \t]*\r?$"
-CISCO_MORE_RE = br"(?i)--More--|<---\s*More\s*--->"
-
 
 AuthError = platform_auth.AuthError
 read_json_file = platform_storage.read_json_file
@@ -969,117 +959,30 @@ def _dhcp_settings_context() -> platform_dhcp_settings.DhcpSettingsContext:
     )
 
 
-def _telnet_expect(session, patterns: list[bytes], step: str):
-    index, match, output = session.expect(patterns, DHCP_SWITCH_TIMEOUT)
-    decoded = (output or b"").decode("utf-8", errors="replace")
-    if index < 0:
-        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"核心交换机 Telnet {step}超时")
-    return index, match, decoded
-
-
-def _telnet_command(session, command: str) -> str:
-    session.write(command.encode("ascii") + b"\n")
-    chunks = []
-    for _page in range(100):
-        index, _match, output = _telnet_expect(
-            session,
-            [CISCO_PROMPT_RE, CISCO_MORE_RE],
-            f"执行 {command} ",
-        )
-        chunks.append(output)
-        if index == 0:
-            break
-        session.write(b" ")
-    else:
-        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机分页输出超过安全上限")
-    output = "".join(chunks)
-    output = re.sub(r"(?i)--More--|<---\s*More\s*--->", "", output)
-    output = output.replace("\x08", "")
-    lines = output.replace("\r", "").splitlines()
-    if lines and lines[0].strip() == command:
-        lines.pop(0)
-    if lines and re.fullmatch(r"[A-Za-z0-9_.:/()\[\]-]+[>#]\s*", lines[-1]):
-        lines.pop()
-    cleaned = "\n".join(lines).strip()
-    return cleaned
-
-
-def _open_cisco_telnet(host: str):
-    settings = platform_dhcp_settings.dhcp_connection_settings(
-        _dhcp_settings_context(),
+def _dhcp_telnet_context() -> platform_dhcp_telnet.DhcpTelnetContext:
+    """Bind the transport to current settings without moving runtime ownership."""
+    return platform_dhcp_telnet.DhcpTelnetContext(
+        timeout=DHCP_SWITCH_TIMEOUT,
+        get_settings=partial(
+            platform_dhcp_settings.dhcp_connection_settings,
+            _dhcp_settings_context(),
+        ),
+        error_factory=DiagnosticError,
     )
-    username = settings["username"]
-    password = settings["password"]
-    enable_password = settings["enablePassword"]
-    if not password:
-        raise DiagnosticError(
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            "尚未配置核心交换机 Telnet 密码，请先在赛事控制台填写",
-        )
-    session = Telnet(host, settings["port"], DHCP_SWITCH_TIMEOUT)
-    username_prompt = br"(?im)^(?:user ?name|login):[ \t]*\r?$"
-    password_prompt = br"(?im)^password:[ \t]*\r?$"
-    command_prompt = CISCO_PROMPT_RE
-    failed_prompt = br"(?i)(?:login invalid|authentication failed|access denied)"
-    index, _match, _output = _telnet_expect(
-        session,
-        [username_prompt, password_prompt, command_prompt, failed_prompt],
-        "登录",
-    )
-    if index == 3:
-        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机拒绝 Telnet 登录")
-    if index == 0:
-        if not username:
-            raise DiagnosticError(HTTPStatus.SERVICE_UNAVAILABLE, "交换机要求用户名，但尚未配置 Telnet 用户名")
-        session.write(username.encode("utf-8") + b"\n")
-        index, _match, _output = _telnet_expect(
-            session,
-            [password_prompt, command_prompt, failed_prompt],
-            "用户名验证",
-        )
-        if index == 2:
-            raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机拒绝 Telnet 用户名")
-        if index == 1:
-            return session
-        index = 0
-    if index in (0, 1):
-        session.write(password.encode("utf-8") + b"\n")
-        index, match, _output = _telnet_expect(
-            session,
-            [command_prompt, failed_prompt, password_prompt],
-            "密码验证",
-        )
-        if index != 0:
-            raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机 Telnet 密码错误")
-        prompt = (match.group(0) if match else b"").strip()
-        if prompt.endswith(b">") and enable_password:
-            session.write(b"enable\n")
-            enable_index, _match, _output = _telnet_expect(
-                session,
-                [password_prompt, CISCO_PRIV_PROMPT_RE, failed_prompt, CISCO_USER_PROMPT_RE],
-                "进入特权模式",
-            )
-            if enable_index == 0:
-                session.write(enable_password.encode("utf-8") + b"\n")
-                enable_index, _match, _output = _telnet_expect(
-                    session,
-                    [CISCO_PRIV_PROMPT_RE, failed_prompt, password_prompt, CISCO_USER_PROMPT_RE],
-                    "特权密码验证",
-                )
-            elif enable_index == 1:
-                enable_index = 0
-            if enable_index != 0:
-                raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机 Enable 密码错误")
-    return session
 
 
 def collect_cisco_dhcp(host: str) -> dict:
     session = None
     warnings: list[str] = []
     try:
-        session = _open_cisco_telnet(host)
-        _telnet_command(session, "terminal length 0")
-        pool_output = _telnet_command(session, "show ip dhcp pool")
+        telnet_context = _dhcp_telnet_context()
+        session = platform_dhcp_telnet._open_cisco_telnet(telnet_context, host)
+        platform_dhcp_telnet._telnet_command(
+            telnet_context, session, "terminal length 0",
+        )
+        pool_output = platform_dhcp_telnet._telnet_command(
+            telnet_context, session, "show ip dhcp pool",
+        )
         if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", pool_output):
             raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机不支持 show ip dhcp pool")
 
@@ -1089,7 +992,9 @@ def collect_cisco_dhcp(host: str) -> dict:
             ("statistics", "show ip dhcp server statistics"),
             ("excluded", "show running-config | include ^ip dhcp excluded-address"),
         ):
-            output = _telnet_command(session, command)
+            output = platform_dhcp_telnet._telnet_command(
+                telnet_context, session, command,
+            )
             if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", output):
                 warnings.append(f"交换机不支持 {command}")
                 output = ""
@@ -1142,16 +1047,25 @@ def get_dhcp_bindings() -> dict:
         raise DiagnosticError(HTTPStatus.CONFLICT, "DHCP 面板正在读取交换机，请稍后再查询已用 IP")
     session = None
     try:
-        session = _open_cisco_telnet(host)
-        _telnet_command(session, "terminal length 0")
-        output = _telnet_command(session, "show ip dhcp binding")
+        telnet_context = _dhcp_telnet_context()
+        session = platform_dhcp_telnet._open_cisco_telnet(telnet_context, host)
+        platform_dhcp_telnet._telnet_command(
+            telnet_context, session, "terminal length 0",
+        )
+        output = platform_dhcp_telnet._telnet_command(
+            telnet_context, session, "show ip dhcp binding",
+        )
         if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", output):
             raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机不支持 show ip dhcp binding")
         bindings = parse_cisco_dhcp_bindings(output)
-        arp_output = _telnet_command(session, "show ip arp")
+        arp_output = platform_dhcp_telnet._telnet_command(
+            telnet_context, session, "show ip arp",
+        )
         arp_warning = ""
         if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", arp_output):
-            arp_output = _telnet_command(session, "show arp")
+            arp_output = platform_dhcp_telnet._telnet_command(
+                telnet_context, session, "show arp",
+            )
         if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", arp_output):
             arp_output = ""
             arp_warning = "交换机不支持读取 ARP 表，无法判断固定排除地址是否正在使用"
@@ -1192,8 +1106,11 @@ def test_dhcp_connection() -> dict:
     session = None
     started = time.monotonic()
     try:
-        session = _open_cisco_telnet(host)
-        privilege_output = _telnet_command(session, "show privilege")
+        telnet_context = _dhcp_telnet_context()
+        session = platform_dhcp_telnet._open_cisco_telnet(telnet_context, host)
+        privilege_output = platform_dhcp_telnet._telnet_command(
+            telnet_context, session, "show privilege",
+        )
         match = re.search(r"(?i)privilege\s+level\s+(?:is\s+)?(\d+)", privilege_output)
         privilege_level = int(match.group(1)) if match else None
         privileged = privilege_level == 15

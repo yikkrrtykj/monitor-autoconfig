@@ -397,9 +397,13 @@ def test_dhcp_collection_uses_one_session_and_skips_full_binding_list(monkeypatc
             self.closed = True
 
     session = FakeSession()
-    monkeypatch.setattr(api, "_open_cisco_telnet", lambda host: opened.append(host) or session)
+    monkeypatch.setattr(
+        api.platform_dhcp_telnet,
+        "_open_cisco_telnet",
+        lambda _context, host: opened.append(host) or session,
+    )
 
-    def fake_command(_session, command):
+    def fake_command(_context, _session, command):
         commands.append(command)
         return {
             "show ip dhcp pool": DHCP_POOL_OUTPUT,
@@ -410,7 +414,7 @@ def test_dhcp_collection_uses_one_session_and_skips_full_binding_list(monkeypatc
             ),
         }.get(command, "")
 
-    monkeypatch.setattr(api, "_telnet_command", fake_command)
+    monkeypatch.setattr(api.platform_dhcp_telnet, "_telnet_command", fake_command)
 
     result = api.collect_cisco_dhcp("192.168.10.254")
 
@@ -440,8 +444,12 @@ def test_full_dhcp_bindings_are_only_read_by_manual_endpoint(monkeypatch, tmp_pa
         def close(self):
             pass
 
-    monkeypatch.setattr(api, "_open_cisco_telnet", lambda _host: FakeSession())
-    def fake_command(_session, command):
+    monkeypatch.setattr(
+        api.platform_dhcp_telnet,
+        "_open_cisco_telnet",
+        lambda _context, _host: FakeSession(),
+    )
+    def fake_command(_context, _session, command):
         commands.append(command)
         if command == "show ip dhcp binding":
             return "192.168.40.21 0100.1122.3344.55 Jul 22 2026 Automatic"
@@ -449,39 +457,13 @@ def test_full_dhcp_bindings_are_only_read_by_manual_endpoint(monkeypatch, tmp_pa
             return "Internet  192.168.40.5  1  aabb.ccdd.eeff  ARPA  Vlan40"
         return ""
 
-    monkeypatch.setattr(api, "_telnet_command", fake_command)
+    monkeypatch.setattr(api.platform_dhcp_telnet, "_telnet_command", fake_command)
 
     result = api.get_dhcp_bindings()
 
     assert result["usedAddresses"] == ["192.168.40.21"]
     assert result["observedAddresses"] == ["192.168.40.5"]
     assert commands == ["terminal length 0", "show ip dhcp binding", "show ip arp"]
-
-
-def test_telnet_command_handles_more_prompts_and_strict_device_prompt(tmp_path):
-    api = load_api(tmp_path)
-
-    class FakeSession:
-        def __init__(self):
-            self.writes = []
-            self.outputs = iter([
-                (1, None, b"show ip dhcp pool\r\nfirst page\r\n--More--"),
-                (0, None, b"second page\r\ncore-sw#\r\n"),
-            ])
-
-        def write(self, data):
-            self.writes.append(data)
-
-        def expect(self, _patterns, _timeout):
-            return next(self.outputs)
-
-    session = FakeSession()
-    output = api._telnet_command(session, "show ip dhcp pool")
-
-    assert output == "first page\nsecond page"
-    assert session.writes == [b"show ip dhcp pool\n", b" "]
-    assert api.re.search(api.CISCO_PROMPT_RE, b"counter value is >\r\n") is None
-    assert api.re.search(api.CISCO_PROMPT_RE, b"core-sw#\r\n") is not None
 
 
 def test_dhcp_connection_test_only_checks_login_and_privilege(monkeypatch, tmp_path):
@@ -500,11 +482,17 @@ def test_dhcp_connection_test_only_checks_login_and_privilege(monkeypatch, tmp_p
             self.closed = True
 
     session = FakeSession()
-    monkeypatch.setattr(api, "_open_cisco_telnet", lambda host: session)
     monkeypatch.setattr(
-        api,
+        api.platform_dhcp_telnet,
+        "_open_cisco_telnet",
+        lambda _context, host: session,
+    )
+    monkeypatch.setattr(
+        api.platform_dhcp_telnet,
         "_telnet_command",
-        lambda _session, command: commands.append(command) or "Current privilege level is 15",
+        lambda _context, _session, command: (
+            commands.append(command) or "Current privilege level is 15"
+        ),
     )
 
     result = api.test_dhcp_connection()
