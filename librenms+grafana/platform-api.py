@@ -17,7 +17,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import urllib.error
 import urllib.request
 from functools import partial
 from http import HTTPStatus
@@ -44,6 +43,7 @@ from platform_config import (
 )
 from version_info import get_version_info
 from platform_api import auth as platform_auth
+from platform_api import bridge as platform_bridge
 from platform_api import incidents as platform_incidents
 from platform_api import precheck as platform_precheck
 from platform_api import read_api as platform_read_api
@@ -931,52 +931,6 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
             pass
         write_apply_status(operation_id, "failed", action="rollback", error=str(exc))
         return {"ok": False, "operationId": operation_id, "error": f"回滚失败：{exc}"}
-
-
-def bridge_retire_pending() -> dict:
-    """Fetch the bridge's pending-delete device list (48h+ offline, unconfirmed)."""
-    try:
-        with urllib.request.urlopen(f"{BRIDGE_URL}/retire/pending", timeout=8) as resp:
-            return json.loads(resp.read().decode("utf-8") or "{}")
-    except Exception as exc:
-        return {"ok": False, "error": f"无法连接告警服务：{exc}", "pending": []}
-
-
-def bridge_retire_resolve(data: dict) -> dict:
-    """Forward a confirm/keep decision to the bridge (which owns the state)."""
-    payload = json.dumps({
-        "key": str(data.get("key") or ""),
-        "action": str(data.get("action") or ""),
-        "token": str(data.get("token") or ""),
-    }).encode("utf-8")
-    request_obj = urllib.request.Request(
-        f"{BRIDGE_URL}/retire/resolve", data=payload, method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request_obj, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        try:
-            return json.loads(exc.read().decode("utf-8", errors="replace") or "{}")
-        except json.JSONDecodeError:
-            return {"ok": False, "error": f"告警服务返回 HTTP {exc.code}"}
-    except Exception as exc:
-        return {"ok": False, "error": f"无法连接告警服务：{exc}"}
-
-
-def send_test_alert() -> dict:
-    """Ask the Feishu bridge to push a test card, so operators can confirm the
-    alert path works before an event without waiting for a real incident."""
-    request = urllib.request.Request(
-        f"{BRIDGE_URL}/test-alert", data=b"{}", method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8") or "{}")
-    except Exception as exc:
-        return {"ok": False, "error": f"无法连接告警服务：{exc}"}
 
 
 def validate_network_host(value: str, field: str = "服务器") -> str:
@@ -1983,7 +1937,10 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
         iperf_history_payload=iperf_history_payload,
         get_dhcp_settings=get_dhcp_settings,
         get_dhcp_bindings=get_dhcp_bindings,
-        bridge_retire_pending=bridge_retire_pending,
+        bridge_retire_pending=partial(
+            platform_bridge.bridge_retire_pending,
+            BRIDGE_URL,
+        ),
         get_dhcp_dashboard=get_dhcp_dashboard,
         config_path=CONFIG_PATH,
         stamp=stamp,
@@ -2006,11 +1963,14 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
         apply_config=apply_config,
         rollback_config=rollback_config,
         new_incident=partial(platform_incidents.new_incident, incident_context),
-        send_test_alert=send_test_alert,
+        send_test_alert=partial(platform_bridge.send_test_alert, BRIDGE_URL),
         run_precheck=partial(platform_precheck.run_precheck, precheck_context),
         start_iperf_task=start_iperf_task,
         stop_iperf_task=stop_iperf_task,
-        bridge_retire_resolve=bridge_retire_resolve,
+        bridge_retire_resolve=partial(
+            platform_bridge.bridge_retire_resolve,
+            BRIDGE_URL,
+        ),
         test_dhcp_connection=test_dhcp_connection,
         save_dhcp_settings=save_dhcp_settings,
         update_incident=partial(

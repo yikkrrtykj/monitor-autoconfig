@@ -133,7 +133,7 @@ def test_all_protected_read_routes_still_require_auth(tmp_path):
         stop_server(server, thread)
 
 
-def test_protected_read_routes_keep_paths_queries_and_payloads(tmp_path):
+def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     api.CONFIG_PATH = tmp_path / "event-config.yml"
     api.CONFIG_PATH.write_text("event:\n  name: fixture\n", encoding="utf-8")
@@ -157,7 +157,14 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(tmp_path):
     api.iperf_history_payload = lambda: {"ok": True, "history": [{"taskId": "old"}]}
     api.get_dhcp_settings = lambda: {"ok": True, "host": "192.0.2.1"}
     api.get_dhcp_bindings = lambda: {"ok": True, "bindings": [{"ip": "192.0.2.10"}]}
-    api.bridge_retire_pending = lambda: {"ok": True, "pending": [{"key": "switch-1"}]}
+    monkeypatch.setattr(
+        api.platform_bridge,
+        "bridge_retire_pending",
+        lambda _bridge_url: {
+            "ok": True,
+            "pending": [{"key": "switch-1"}],
+        },
+    )
     observed_force = []
 
     def dhcp_dashboard(force=False):
