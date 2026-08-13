@@ -37,6 +37,7 @@ from platform_config import (
 from version_info import get_version_info
 from platform_api import auth as platform_auth
 from platform_api import bridge as platform_bridge
+from platform_api import dhcp_runtime as platform_dhcp_runtime
 from platform_api import dhcp_settings as platform_dhcp_settings
 from platform_api import dhcp_telnet as platform_dhcp_telnet
 from platform_api import incidents as platform_incidents
@@ -47,15 +48,6 @@ from platform_api import storage as platform_storage
 from platform_api import transactions as platform_transactions
 from platform_api import write_api as platform_write_api
 from platform_api.settings import load_settings
-from cisco_dhcp import (
-    attach_dhcp_pool_exclusions,
-    parse_cisco_arp_entries,
-    parse_cisco_dhcp_bindings,
-    parse_cisco_dhcp_conflicts,
-    parse_cisco_dhcp_excluded,
-    parse_cisco_dhcp_pools,
-    parse_cisco_dhcp_statistics,
-)
 
 
 CORE_SETTINGS = load_settings()
@@ -176,12 +168,6 @@ IPERF_STATUS: dict = {
     "percent": 0,
     "message": "尚未开始测速",
 }
-# Only one switch session may run at a time. The short cache also collapses
-# simultaneous requests from multiple browser tabs into one CLI query.
-DHCP_LOCK = threading.Lock()
-DHCP_CACHE: dict = {}
-
-
 def _transaction_context() -> platform_transactions.TransactionContext:
     """Reflect compatibility globals that existing callers may override."""
     return platform_transactions.TransactionContext(
@@ -954,7 +940,7 @@ def _dhcp_settings_context() -> platform_dhcp_settings.DhcpSettingsContext:
         switch_timeout=DHCP_SWITCH_TIMEOUT,
         refresh_seconds=DHCP_REFRESH_SECONDS,
         core_host=configured_core_switch_host,
-        cache_clear=DHCP_CACHE.clear,
+        cache_clear=platform_dhcp_runtime.clear_cache,
         error_factory=DiagnosticError,
     )
 
@@ -971,240 +957,21 @@ def _dhcp_telnet_context() -> platform_dhcp_telnet.DhcpTelnetContext:
     )
 
 
-def collect_cisco_dhcp(host: str) -> dict:
-    session = None
-    warnings: list[str] = []
-    try:
-        telnet_context = _dhcp_telnet_context()
-        session = platform_dhcp_telnet._open_cisco_telnet(telnet_context, host)
-        platform_dhcp_telnet._telnet_command(
-            telnet_context, session, "terminal length 0",
-        )
-        pool_output = platform_dhcp_telnet._telnet_command(
-            telnet_context, session, "show ip dhcp pool",
-        )
-        if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", pool_output):
-            raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机不支持 show ip dhcp pool")
-
-        optional_outputs = {}
-        for key, command in (
-            ("conflicts", "show ip dhcp conflict"),
-            ("statistics", "show ip dhcp server statistics"),
-            ("excluded", "show running-config | include ^ip dhcp excluded-address"),
-        ):
-            output = platform_dhcp_telnet._telnet_command(
-                telnet_context, session, command,
+def _dhcp_runtime_context() -> platform_dhcp_runtime.DhcpRuntimeContext:
+    """Bind DHCP orchestration to current composition-root dependencies."""
+    return platform_dhcp_runtime.DhcpRuntimeContext(
+        core_host=configured_core_switch_host,
+        telnet_context=_dhcp_telnet_context,
+        connection_settings=lambda: (
+            platform_dhcp_settings.dhcp_connection_settings(
+                _dhcp_settings_context(),
             )
-            if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", output):
-                warnings.append(f"交换机不支持 {command}")
-                output = ""
-            optional_outputs[key] = output
-        pools = parse_cisco_dhcp_pools(pool_output)
-        conflicts = parse_cisco_dhcp_conflicts(optional_outputs["conflicts"])
-        statistics = parse_cisco_dhcp_statistics(optional_outputs["statistics"])
-        excluded_addresses = parse_cisco_dhcp_excluded(optional_outputs["excluded"])
-        attach_dhcp_pool_exclusions(pools, excluded_addresses)
-        total = sum(pool["total"] for pool in pools)
-        leased = sum(pool["leased"] for pool in pools)
-        excluded = sum(pool["excluded"] for pool in pools)
-        usable = max(0, total - excluded)
-        return {
-            "ok": True,
-            "host": host,
-            "source": "devices.core.ip",
-            "pools": pools,
-            "conflicts": conflicts,
-            "excludedAddresses": excluded_addresses,
-            "statistics": statistics,
-            "summary": {
-                "poolCount": len(pools),
-                "total": total,
-                "leased": leased,
-                "excluded": excluded,
-                "available": max(0, usable - leased),
-                "utilization": round((leased / usable * 100) if usable else 0, 1),
-                "conflictCount": len(conflicts),
-            },
-            "warnings": warnings,
-        }
-    except DiagnosticError:
-        raise
-    except (EOFError, OSError) as exc:
-        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"无法读取核心交换机 DHCP：{exc}")
-    finally:
-        if session is not None:
-            try:
-                session.write(b"exit\n")
-                session.close()
-            except Exception:
-                pass
-
-
-def get_dhcp_bindings() -> dict:
-    """Read exact leases and current ARP neighbours on operator request."""
-    host = configured_core_switch_host()
-    if not DHCP_LOCK.acquire(blocking=False):
-        raise DiagnosticError(HTTPStatus.CONFLICT, "DHCP 面板正在读取交换机，请稍后再查询已用 IP")
-    session = None
-    try:
-        telnet_context = _dhcp_telnet_context()
-        session = platform_dhcp_telnet._open_cisco_telnet(telnet_context, host)
-        platform_dhcp_telnet._telnet_command(
-            telnet_context, session, "terminal length 0",
-        )
-        output = platform_dhcp_telnet._telnet_command(
-            telnet_context, session, "show ip dhcp binding",
-        )
-        if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", output):
-            raise DiagnosticError(HTTPStatus.BAD_GATEWAY, "核心交换机不支持 show ip dhcp binding")
-        bindings = parse_cisco_dhcp_bindings(output)
-        arp_output = platform_dhcp_telnet._telnet_command(
-            telnet_context, session, "show ip arp",
-        )
-        arp_warning = ""
-        if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", arp_output):
-            arp_output = platform_dhcp_telnet._telnet_command(
-                telnet_context, session, "show arp",
-            )
-        if re.search(r"(?im)^\s*%\s*(?:Invalid input|Unknown command)", arp_output):
-            arp_output = ""
-            arp_warning = "交换机不支持读取 ARP 表，无法判断固定排除地址是否正在使用"
-        arp_entries = parse_cisco_arp_entries(arp_output)
-        return {
-            "ok": True,
-            "host": host,
-            "bindings": bindings,
-            "usedAddresses": [item["ip"] for item in bindings],
-            "arpEntries": arp_entries,
-            "observedAddresses": [item["ip"] for item in arp_entries],
-            "parserWarning": (
-                "show ip dhcp binding 当前未返回可解析的活动地址"
-                if not bindings else ""
-            ),
-            "arpWarning": arp_warning,
-            "capturedAt": int(time.time()),
-        }
-    except DiagnosticError:
-        raise
-    except (EOFError, OSError) as exc:
-        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"无法读取核心交换机 DHCP 租约：{exc}")
-    finally:
-        if session is not None:
-            try:
-                session.write(b"exit\n")
-                session.close()
-            except Exception:
-                pass
-        DHCP_LOCK.release()
-
-
-def test_dhcp_connection() -> dict:
-    """Test the configured core switch login without collecting DHCP data."""
-    host = configured_core_switch_host()
-    if not DHCP_LOCK.acquire(blocking=False):
-        raise DiagnosticError(HTTPStatus.CONFLICT, "DHCP 面板正在读取交换机，请稍后再测试连接")
-    session = None
-    started = time.monotonic()
-    try:
-        telnet_context = _dhcp_telnet_context()
-        session = platform_dhcp_telnet._open_cisco_telnet(telnet_context, host)
-        privilege_output = platform_dhcp_telnet._telnet_command(
-            telnet_context, session, "show privilege",
-        )
-        match = re.search(r"(?i)privilege\s+level\s+(?:is\s+)?(\d+)", privilege_output)
-        privilege_level = int(match.group(1)) if match else None
-        privileged = privilege_level == 15
-        if privilege_level is None:
-            message = "Telnet 登录成功，交换机未返回权限级别"
-        elif privileged:
-            message = "Telnet 登录成功，已进入特权模式"
-        else:
-            message = f"Telnet 登录成功，当前权限级别 {privilege_level}"
-        settings = platform_dhcp_settings.dhcp_connection_settings(
-            _dhcp_settings_context(),
-        )
-        return {
-            "ok": True,
-            "host": host,
-            "port": settings["port"],
-            "login": True,
-            "privileged": privileged,
-            "privilegeLevel": privilege_level,
-            "latencyMs": round((time.monotonic() - started) * 1000),
-            "message": message,
-            "testedAt": int(time.time()),
-        }
-    except DiagnosticError:
-        raise
-    except (EOFError, OSError) as exc:
-        raise DiagnosticError(HTTPStatus.BAD_GATEWAY, f"无法连接核心交换机 Telnet：{exc}")
-    finally:
-        if session is not None:
-            try:
-                session.write(b"exit\n")
-                session.close()
-            except Exception:
-                pass
-        DHCP_LOCK.release()
-
-
-def _cached_dhcp_payload(refreshing: bool = False) -> dict | None:
-    payload = DHCP_CACHE.get("payload")
-    if not payload:
-        return None
-    age = max(0, time.monotonic() - float(DHCP_CACHE.get("monotonic") or 0))
-    return {**payload, "cached": True, "cacheAgeSeconds": round(age, 1), "refreshing": refreshing}
-
-
-def get_dhcp_dashboard(force: bool = False) -> dict:
-    host = configured_core_switch_host()
-    cached = _cached_dhcp_payload()
-    cache_seconds = max(10, DHCP_REFRESH_SECONDS - 5)
-    # Even the manual refresh button cannot create more than one switch session
-    # every 30 seconds. This keeps the read-only endpoint harmless if a browser
-    # is double-clicked or several operators open it together.
-    hard_minimum_seconds = 30
-    if (
-        cached
-        and cached.get("host") == host
-        and (
-            cached.get("cacheAgeSeconds", cache_seconds) < hard_minimum_seconds
-            or (not force and cached.get("cacheAgeSeconds", cache_seconds) < cache_seconds)
-        )
-    ):
-        return cached
-    if not DHCP_LOCK.acquire(blocking=False):
-        busy = _cached_dhcp_payload(refreshing=True)
-        if busy and busy.get("host") == host:
-            return busy
-        raise DiagnosticError(HTTPStatus.CONFLICT, "DHCP 面板正在刷新，请稍后再试")
-    try:
-        # Recheck after acquiring the lock in case another request just finished.
-        cached = _cached_dhcp_payload()
-        if (
-            cached
-            and cached.get("host") == host
-            and (
-                cached.get("cacheAgeSeconds", cache_seconds) < hard_minimum_seconds
-                or (not force and cached.get("cacheAgeSeconds", cache_seconds) < cache_seconds)
-            )
-        ):
-            return cached
-        collection_started = time.monotonic()
-        payload = {
-            **collect_cisco_dhcp(host),
-            "capturedAt": int(time.time()),
-            "collectionSeconds": round(time.monotonic() - collection_started, 2),
-            "refreshSeconds": DHCP_REFRESH_SECONDS,
-            "cached": False,
-            "cacheAgeSeconds": 0,
-            "refreshing": False,
-        }
-        DHCP_CACHE.clear()
-        DHCP_CACHE.update({"payload": payload, "monotonic": time.monotonic()})
-        return payload
-    finally:
-        DHCP_LOCK.release()
+        ),
+        refresh_seconds=DHCP_REFRESH_SECONDS,
+        error_factory=DiagnosticError,
+        clock=time.time,
+        monotonic=time.monotonic,
+    )
 
 
 def _set_iperf_status(**updates) -> None:
@@ -1655,6 +1422,7 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
     """Bind the read router to the entrypoint's current compatibility API."""
     incident_context = _incident_context()
     dhcp_settings_context = _dhcp_settings_context()
+    dhcp_runtime_context = _dhcp_runtime_context()
     return platform_read_api.ReadApiDependencies(
         clock=time.time,
         version_payload=version_payload,
@@ -1671,12 +1439,18 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
             platform_dhcp_settings.get_dhcp_settings,
             dhcp_settings_context,
         ),
-        get_dhcp_bindings=get_dhcp_bindings,
+        get_dhcp_bindings=partial(
+            platform_dhcp_runtime.get_dhcp_bindings,
+            dhcp_runtime_context,
+        ),
         bridge_retire_pending=partial(
             platform_bridge.bridge_retire_pending,
             BRIDGE_URL,
         ),
-        get_dhcp_dashboard=get_dhcp_dashboard,
+        get_dhcp_dashboard=partial(
+            platform_dhcp_runtime.get_dhcp_dashboard,
+            dhcp_runtime_context,
+        ),
         config_path=CONFIG_PATH,
         stamp=stamp,
     )
@@ -1687,6 +1461,7 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
     incident_context = _incident_context()
     precheck_context = _precheck_context()
     dhcp_settings_context = _dhcp_settings_context()
+    dhcp_runtime_context = _dhcp_runtime_context()
     return platform_write_api.WriteApiDependencies(
         login_auth=login_auth,
         change_password_auth=change_password_auth,
@@ -1707,7 +1482,10 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
             platform_bridge.bridge_retire_resolve,
             BRIDGE_URL,
         ),
-        test_dhcp_connection=test_dhcp_connection,
+        test_dhcp_connection=partial(
+            platform_dhcp_runtime.test_dhcp_connection,
+            dhcp_runtime_context,
+        ),
         save_dhcp_settings=partial(
             platform_dhcp_settings.save_dhcp_settings,
             dhcp_settings_context,

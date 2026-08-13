@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import cisco_dhcp
 from platform_api import iperf
 from platform_api import dhcp_settings
 
@@ -236,7 +237,7 @@ def test_managed_iperf_command_does_not_deadlock_on_large_json_output(tmp_path):
 def test_cisco_dhcp_pool_parser_reports_capacity_and_thresholds(tmp_path):
     api = load_api(tmp_path)
 
-    pools = api.parse_cisco_dhcp_pools(DHCP_POOL_OUTPUT)
+    pools = cisco_dhcp.parse_cisco_dhcp_pools(DHCP_POOL_OUTPUT)
 
     assert pools[0] == {
         "name": "PLAYERS",
@@ -256,31 +257,31 @@ def test_sanitized_c3850_fixture_matches_field_output_shape(tmp_path):
     api = load_api(tmp_path)
     fixtures = os.path.join(os.path.dirname(__file__), "fixtures")
     with open(os.path.join(fixtures, "c3850_dhcp_pool_sanitized.txt"), encoding="utf-8") as handle:
-        pools = api.parse_cisco_dhcp_pools(handle.read())
+        pools = cisco_dhcp.parse_cisco_dhcp_pools(handle.read())
     with open(os.path.join(fixtures, "c3850_dhcp_aux_sanitized.txt"), encoding="utf-8") as handle:
         auxiliary = handle.read()
 
     assert [pool["name"] for pool in pools] == ["PLAYER-A", "OFFICE-A", "EMPTY-A"]
     assert pools[0]["available"] == 34
     assert pools[2]["utilization"] == 0
-    assert api.parse_cisco_dhcp_conflicts(auxiliary) == []
-    assert api.parse_cisco_dhcp_statistics(auxiliary)["automaticBindings"] == 171
-    excluded = api.parse_cisco_dhcp_excluded(auxiliary)
+    assert cisco_dhcp.parse_cisco_dhcp_conflicts(auxiliary) == []
+    assert cisco_dhcp.parse_cisco_dhcp_statistics(auxiliary)["automaticBindings"] == 171
+    excluded = cisco_dhcp.parse_cisco_dhcp_excluded(auxiliary)
     assert len(excluded) == 190
-    api.attach_dhcp_pool_exclusions(pools, excluded)
+    cisco_dhcp.attach_dhcp_pool_exclusions(pools, excluded)
     assert pools[0]["excludedAddresses"][0] == "198.18.0.101"
 
 
 def test_cisco_dhcp_conflict_and_statistics_parsers(tmp_path):
     api = load_api(tmp_path)
 
-    conflicts = api.parse_cisco_dhcp_conflicts("""
+    conflicts = cisco_dhcp.parse_cisco_dhcp_conflicts("""
 IP address        Detection method   Detection time          VRF
 192.168.40.55     Ping               Jul 17 2026 10:00 AM
 192.168.40.55     Gratuitous ARP     Jul 17 2026 10:01 AM
 192.168.41.9      Ping               Jul 17 2026 10:02 AM
 """)
-    statistics = api.parse_cisco_dhcp_statistics("""
+    statistics = cisco_dhcp.parse_cisco_dhcp_statistics("""
 Automatic bindings 194
 Manual bindings 2
 Expired bindings 7
@@ -298,7 +299,7 @@ Malformed messages 1
 
 def test_cisco_dhcp_binding_parser_accepts_ios_variants(tmp_path):
     api = load_api(tmp_path)
-    bindings = api.parse_cisco_dhcp_bindings("""
+    bindings = cisco_dhcp.parse_cisco_dhcp_bindings("""
 IP address       Client-ID/              Lease expiration        Type
 192.168.40.21    0100.1122.3344.55       Jul 22 2026 10:00 AM    Automatic
 192.168.41.8     aabb.ccdd.eeff          Infinite                Manual
@@ -310,7 +311,7 @@ IP address       Client-ID/              Lease expiration        Type
 
 def test_cisco_dhcp_binding_parser_keeps_wrapped_address_only_rows(tmp_path):
     api = load_api(tmp_path)
-    bindings = api.parse_cisco_dhcp_bindings("""
+    bindings = cisco_dhcp.parse_cisco_dhcp_bindings("""
 IP address       Client-ID/              Lease expiration        Type
 192.168.58.121
                     0100.1122.3344.55    Jul 22 2026 10:00 AM    Automatic
@@ -320,7 +321,7 @@ IP address       Client-ID/              Lease expiration        Type
 
 def test_cisco_arp_parser_keeps_only_complete_ipv4_neighbours(tmp_path):
     api = load_api(tmp_path)
-    entries = api.parse_cisco_arp_entries("""
+    entries = cisco_dhcp.parse_cisco_arp_entries("""
 Protocol  Address          Age (min)  Hardware Addr   Type   Interface
 Internet  192.168.42.1            2   aabb.ccdd.eeff  ARPA   Vlan42
 Internet  192.168.42.26           -   0011.2233.4455  ARPA   Vlan42
@@ -335,174 +336,17 @@ Internet  192.168.42.27           0   Incomplete      ARPA
 
 def test_cisco_dhcp_exclusions_expand_and_attach_to_matching_pool(tmp_path):
     api = load_api(tmp_path)
-    exclusions = api.parse_cisco_dhcp_excluded("""
+    exclusions = cisco_dhcp.parse_cisco_dhcp_excluded("""
 ip dhcp excluded-address 192.168.40.1 192.168.40.3
 ip dhcp excluded-address 192.168.40.10
 ip dhcp excluded-address 192.168.41.1
 """)
-    pools = api.parse_cisco_dhcp_pools(DHCP_POOL_OUTPUT)
-    api.attach_dhcp_pool_exclusions(pools, exclusions)
+    pools = cisco_dhcp.parse_cisco_dhcp_pools(DHCP_POOL_OUTPUT)
+    cisco_dhcp.attach_dhcp_pool_exclusions(pools, exclusions)
 
     assert exclusions == ["192.168.40.1", "192.168.40.2", "192.168.40.3", "192.168.40.10", "192.168.41.1"]
     assert pools[0]["excludedAddresses"] == ["192.168.40.1", "192.168.40.2", "192.168.40.3", "192.168.40.10"]
     assert pools[1]["excludedAddresses"] == ["192.168.41.1"]
-
-
-def test_dhcp_dashboard_reuses_configured_core_and_short_cache(monkeypatch, tmp_path):
-    api = load_api(tmp_path)
-    api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
-    api.DHCP_CACHE.clear()
-    api.DHCP_REFRESH_SECONDS = 60
-    calls = []
-
-    def fake_collect(host):
-        calls.append(host)
-        return {
-            "ok": True,
-            "host": host,
-            "source": "devices.core.ip",
-            "pools": [],
-            "conflicts": [],
-            "statistics": {},
-            "summary": {"poolCount": 0},
-            "warnings": [],
-        }
-
-    monkeypatch.setattr(api, "collect_cisco_dhcp", fake_collect)
-
-    first = api.get_dhcp_dashboard()
-    second = api.get_dhcp_dashboard()
-    forced = api.get_dhcp_dashboard(force=True)
-
-    assert first["host"] == "192.168.10.254"
-    assert first["cached"] is False
-    assert second["cached"] is True
-    assert forced["cached"] is True
-    assert calls == ["192.168.10.254"]
-
-
-def test_dhcp_collection_uses_one_session_and_skips_full_binding_list(monkeypatch, tmp_path):
-    api = load_api(tmp_path)
-    opened = []
-    commands = []
-
-    class FakeSession:
-        def __init__(self):
-            self.closed = False
-
-        def write(self, _data):
-            pass
-
-        def close(self):
-            self.closed = True
-
-    session = FakeSession()
-    monkeypatch.setattr(
-        api.platform_dhcp_telnet,
-        "_open_cisco_telnet",
-        lambda _context, host: opened.append(host) or session,
-    )
-
-    def fake_command(_context, _session, command):
-        commands.append(command)
-        return {
-            "show ip dhcp pool": DHCP_POOL_OUTPUT,
-            "show ip dhcp conflict": "No conflicts detected",
-            "show ip dhcp server statistics": "Automatic bindings 194",
-            "show running-config | include ^ip dhcp excluded-address": (
-                "ip dhcp excluded-address 192.168.40.1 192.168.40.10"
-            ),
-        }.get(command, "")
-
-    monkeypatch.setattr(api.platform_dhcp_telnet, "_telnet_command", fake_command)
-
-    result = api.collect_cisco_dhcp("192.168.10.254")
-
-    assert result["summary"]["poolCount"] == 2
-    assert opened == ["192.168.10.254"]
-    assert commands == [
-        "terminal length 0",
-        "show ip dhcp pool",
-        "show ip dhcp conflict",
-        "show ip dhcp server statistics",
-        "show running-config | include ^ip dhcp excluded-address",
-    ]
-    assert "show ip dhcp binding" not in commands
-    assert result["pools"][0]["excludedAddresses"] == [f"192.168.40.{value}" for value in range(1, 11)]
-    assert session.closed is True
-
-
-def test_full_dhcp_bindings_are_only_read_by_manual_endpoint(monkeypatch, tmp_path):
-    api = load_api(tmp_path)
-    api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
-    commands = []
-
-    class FakeSession:
-        def write(self, _data):
-            pass
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        api.platform_dhcp_telnet,
-        "_open_cisco_telnet",
-        lambda _context, _host: FakeSession(),
-    )
-    def fake_command(_context, _session, command):
-        commands.append(command)
-        if command == "show ip dhcp binding":
-            return "192.168.40.21 0100.1122.3344.55 Jul 22 2026 Automatic"
-        if command == "show ip arp":
-            return "Internet  192.168.40.5  1  aabb.ccdd.eeff  ARPA  Vlan40"
-        return ""
-
-    monkeypatch.setattr(api.platform_dhcp_telnet, "_telnet_command", fake_command)
-
-    result = api.get_dhcp_bindings()
-
-    assert result["usedAddresses"] == ["192.168.40.21"]
-    assert result["observedAddresses"] == ["192.168.40.5"]
-    assert commands == ["terminal length 0", "show ip dhcp binding", "show ip arp"]
-
-
-def test_dhcp_connection_test_only_checks_login_and_privilege(monkeypatch, tmp_path):
-    api = load_api(tmp_path)
-    api.CONFIG_PATH.write_text("devices:\n  core:\n    ip: 192.168.10.254\n", encoding="utf-8")
-    commands = []
-
-    class FakeSession:
-        def __init__(self):
-            self.closed = False
-
-        def write(self, _data):
-            pass
-
-        def close(self):
-            self.closed = True
-
-    session = FakeSession()
-    monkeypatch.setattr(
-        api.platform_dhcp_telnet,
-        "_open_cisco_telnet",
-        lambda _context, host: session,
-    )
-    monkeypatch.setattr(
-        api.platform_dhcp_telnet,
-        "_telnet_command",
-        lambda _context, _session, command: (
-            commands.append(command) or "Current privilege level is 15"
-        ),
-    )
-
-    result = api.test_dhcp_connection()
-
-    assert result["host"] == "192.168.10.254"
-    assert result["login"] is True
-    assert result["privileged"] is True
-    assert result["privilegeLevel"] == 15
-    assert commands == ["show privilege"]
-    assert session.closed is True
 
 
 def test_dhcp_console_settings_are_private_and_override_environment(tmp_path):

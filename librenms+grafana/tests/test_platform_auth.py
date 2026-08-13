@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from http.server import HTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -268,41 +269,45 @@ def test_dhcp_get_preserves_diagnostic_http_status():
         api = load_platform_api(Path(tmp))
         api.ensure_dirs()
 
-        def fail_dashboard(_force=False):
+        def fail_dashboard(_context, _force=False):
             raise api.DiagnosticError(503, "尚未配置交换机密码")
 
-        api.get_dhcp_dashboard = fail_dashboard
-        server = HTTPServer(("127.0.0.1", 0), api.Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            base_url = f"http://127.0.0.1:{server.server_port}"
-            # 未登录必须 401：这个接口会驱动对核心交换机的特权 Telnet 会话
-            status, _, payload = request_json(f"{base_url}/network/dhcp")
-            assert status == 401
-            assert payload["error"] == "需要登录"
+        with patch.object(
+            api.platform_dhcp_runtime,
+            "get_dhcp_dashboard",
+            fail_dashboard,
+        ):
+            server = HTTPServer(("127.0.0.1", 0), api.Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                # 未登录必须 401：这个接口会驱动对核心交换机的特权 Telnet 会话
+                status, _, payload = request_json(f"{base_url}/network/dhcp")
+                assert status == 401
+                assert payload["error"] == "需要登录"
 
-            status, headers, _ = request_json(f"{base_url}/auth/login", {
-                "username": "admin",
-                "password": "global",
-            })
-            assert status == 200
-            cookie = headers["Set-Cookie"].split(";", 1)[0]
-            status, headers, _ = request_json(f"{base_url}/auth/change-password", {
-                "currentPassword": "global",
-                "newPassword": "StrongPass2026",
-                "confirmPassword": "StrongPass2026",
-            }, cookie=cookie)
-            assert status == 200
-            cookie = headers["Set-Cookie"].split(";", 1)[0]
+                status, headers, _ = request_json(f"{base_url}/auth/login", {
+                    "username": "admin",
+                    "password": "global",
+                })
+                assert status == 200
+                cookie = headers["Set-Cookie"].split(";", 1)[0]
+                status, headers, _ = request_json(f"{base_url}/auth/change-password", {
+                    "currentPassword": "global",
+                    "newPassword": "StrongPass2026",
+                    "confirmPassword": "StrongPass2026",
+                }, cookie=cookie)
+                assert status == 200
+                cookie = headers["Set-Cookie"].split(";", 1)[0]
 
-            # 登录后 DiagnosticError 的 HTTP 状态原样透传
-            status, _, payload = request_json(f"{base_url}/network/dhcp", cookie=cookie)
-            assert status == 503
-            assert payload == {"ok": False, "error": "尚未配置交换机密码"}
-        finally:
-            server.shutdown()
-            thread.join(timeout=5)
+                # 登录后 DiagnosticError 的 HTTP 状态原样透传
+                status, _, payload = request_json(f"{base_url}/network/dhcp", cookie=cookie)
+                assert status == 503
+                assert payload == {"ok": False, "error": "尚未配置交换机密码"}
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
 
 
 if __name__ == "__main__":

@@ -160,7 +160,11 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_
         "get_dhcp_settings",
         lambda _context: {"ok": True, "host": "192.0.2.1"},
     )
-    api.get_dhcp_bindings = lambda: {"ok": True, "bindings": [{"ip": "192.0.2.10"}]}
+    monkeypatch.setattr(
+        api.platform_dhcp_runtime,
+        "get_dhcp_bindings",
+        lambda _context: {"ok": True, "bindings": [{"ip": "192.0.2.10"}]},
+    )
     monkeypatch.setattr(
         api.platform_bridge,
         "bridge_retire_pending",
@@ -175,7 +179,11 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_
         observed_force.append(force)
         return {"ok": True, "force": force}
 
-    api.get_dhcp_dashboard = dhcp_dashboard
+    monkeypatch.setattr(
+        api.platform_dhcp_runtime,
+        "get_dhcp_dashboard",
+        lambda _context, force=False: dhcp_dashboard(force),
+    )
     server, thread, base_url = run_server(api)
     try:
         expected = {

@@ -55,7 +55,7 @@ def test_dhcp_settings_dependency_assembly_uses_new_module_without_wrappers(tmp_
     assert isinstance(read_callable.args[0], dhcp_settings.DhcpSettingsContext)
     assert isinstance(write_callable.args[0], dhcp_settings.DhcpSettingsContext)
     assert read_callable.args[0].core_host is api.configured_core_switch_host
-    assert read_callable.args[0].cache_clear.__self__ is api.DHCP_CACHE
+    assert read_callable.args[0].cache_clear is api.platform_dhcp_runtime.clear_cache
     assert not hasattr(api, "dhcp_connection_settings")
     assert not hasattr(api, "get_dhcp_settings")
     assert not hasattr(api, "save_dhcp_settings")
