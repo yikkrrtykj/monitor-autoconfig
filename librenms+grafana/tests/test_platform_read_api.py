@@ -75,11 +75,15 @@ def test_platform_api_remains_a_direct_docker_entrypoint(monkeypatch, tmp_path):
 def test_public_read_routes_and_unknown_path_keep_http_contract(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     monkeypatch.setattr(api.time, "time", lambda: 1_700_000_123.75)
-    api.version_payload = lambda: {
-        "ok": True,
-        "platform_version": "2026.08.1",
-        "git_commit": "fixture",
-    }
+    monkeypatch.setattr(
+        api.platform_event_config,
+        "version_payload",
+        lambda _context: {
+            "ok": True,
+            "platform_version": "2026.08.1",
+            "git_commit": "fixture",
+        },
+    )
     server, thread, base_url = run_server(api)
     try:
         status, headers, payload = request_json(f"{base_url}/health/")
@@ -139,7 +143,11 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_
     api.CONFIG_PATH.write_text("event:\n  name: fixture\n", encoding="utf-8")
     api.stamp = lambda: "fixture-stamp"
     history = [{"id": index} for index in range(25)]
-    api.config_payload = lambda: {"ok": True, "config": {"name": "fixture"}}
+    monkeypatch.setattr(
+        api.platform_event_config,
+        "config_payload",
+        lambda _context: {"ok": True, "config": {"name": "fixture"}},
+    )
     api.read_json_file = lambda path, default: history if path.name == "history.json" else default
     api.read_apply_status = lambda operation_id: {
         "ok": True,
@@ -245,13 +253,13 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_
         stop_server(server, thread)
 
 
-def test_read_failure_keeps_existing_500_json_mapping(tmp_path):
+def test_read_failure_keeps_existing_500_json_mapping(monkeypatch, tmp_path):
     api = load_api(tmp_path)
 
-    def fail_version():
+    def fail_version(_context):
         raise OSError("fixture version read failed")
 
-    api.version_payload = fail_version
+    monkeypatch.setattr(api.platform_event_config, "version_payload", fail_version)
     server, thread, base_url = run_server(api)
     try:
         status, _, payload = request_json(f"{base_url}/version")

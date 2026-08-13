@@ -20,15 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from platform_config import (
-    ConfigSchemaError,
-    default_config_text,
-    dump_simple_yaml,
-    inspect_config_schema,
     merge_env_file,
-    migrate_config,
-    parse_simple_yaml,
     read_env,
-    render_env,
     stamp,
     validate_config,
 )
@@ -38,6 +31,7 @@ from platform_api import bridge as platform_bridge
 from platform_api import dhcp_runtime as platform_dhcp_runtime
 from platform_api import dhcp_settings as platform_dhcp_settings
 from platform_api import dhcp_telnet as platform_dhcp_telnet
+from platform_api import event_config as platform_event_config
 from platform_api import incidents as platform_incidents
 from platform_api import iperf as platform_iperf
 from platform_api import iperf_runtime as platform_iperf_runtime
@@ -335,152 +329,15 @@ def logout_auth(handler: BaseHTTPRequestHandler) -> None:
     platform_auth.logout_auth(_sync_auth_context(), handler)
 
 
-def read_config_text() -> str:
-    if CONFIG_PATH.exists():
-        return CONFIG_PATH.read_text(encoding="utf-8")
-    return default_config_text(EXAMPLE_PATH)
-
-
-def parse_config_text(text: str):
-    config = parse_simple_yaml(text)
-    if not isinstance(config, dict):
-        raise ValueError("event config must be a mapping")
-    return config
-
-
-def _schema_response(status: dict) -> dict:
-    return {
-        "configSchemaOriginal": status["original_version"],
-        "configSchemaCurrent": status["current_version"],
-        "configSchemaSupported": status["current_supported"],
-        "migrationRequired": status["migration_required"],
-        "configTooNew": status["config_too_new"],
-    }
-
-
-def _schema_error_payload(message: str, config: dict | None = None) -> dict:
-    return {
-        "ok": False,
-        "error": message,
-        "config": config or {},
-        "issues": [{"level": "bad", "path": "schema_version", "message": message}],
-        "env": {},
-        "normalizedText": "",
-        "writeEnabled": False,
-    }
-
-
-def current_config_write_guard() -> dict | None:
-    """Refuse every config mutation when the on-disk file is not writable by
-    this schema version. The check happens before snapshots or target parsing so
-    an older platform cannot replace a newer config with submitted schema 1."""
-    if not CONFIG_PATH.exists():
-        return None
-    try:
-        config = parse_config_text(CONFIG_PATH.read_text(encoding="utf-8"))
-        status = inspect_config_schema(config)
-    except (OSError, ValueError) as exc:
-        return _schema_error_payload(f"Cannot modify event config: {exc}")
-    if status["config_too_new"]:
-        message = (
-            f"Refusing to modify schema {status['original_version']}; "
-            f"software supports schema {status['current_supported']}. "
-            "Upgrade the monitoring platform first."
-        )
-        return {**_schema_error_payload(message, config), **_schema_response(status)}
-    return None
-
-
-def config_payload(text: str | None = None) -> dict:
-    editing_existing = text is None
-    text = read_config_text() if editing_existing else text
-    config = parse_config_text(text)
-    try:
-        schema = inspect_config_schema(config)
-    except ConfigSchemaError as exc:
-        return {
-            **_schema_error_payload(str(exc), config),
-            "text": text,
-            "paths": {
-                "config": str(CONFIG_PATH),
-                "env": str(ENV_PATH),
-                "state": str(STATE_DIR),
-            },
-        }
-    if schema["config_too_new"]:
-        message = (
-            f"event-config schema {schema['original_version']} is newer than supported "
-            f"schema {schema['current_supported']}; upgrade the monitoring platform first"
-        )
-        return {
-            **_schema_error_payload(message, config),
-            **_schema_response(schema),
-            "ok": editing_existing,
-            "readOnly": True,
-            "text": text,
-            "paths": {
-                "config": str(CONFIG_PATH),
-                "env": str(ENV_PATH),
-                "state": str(STATE_DIR),
-            },
-        }
-
-    config = migrate_config(config)
-    existing_env = read_env(ENV_PATH)
-    # Migrate legacy .env-only application credentials into the authenticated
-    # editor model.  They are then visible beside the old webhook token and are
-    # persisted to event-config.yml on the next save/apply.  Do not do this for
-    # submitted text: an operator must still be able to clear a credential.
-    if editing_existing:
-        alerts = config.setdefault("alerts", {})
-        if isinstance(alerts, dict):
-            for config_key, env_key in (
-                ("feishu_app_id", "FEISHU_APP_ID"),
-                ("feishu_app_secret", "FEISHU_APP_SECRET"),
-                ("feishu_chat_id", "FEISHU_CHAT_ID"),
-            ):
-                if config_key not in alerts and existing_env.get(env_key):
-                    alerts[config_key] = existing_env[env_key]
-    issues = validate_config(config)
-    env = render_env(config, existing_env)
-    return {
-        "ok": True,
-        "text": text,
-        "config": config,
-        "normalizedText": dump_simple_yaml(config) + "\n",
-        "issues": issues,
-        "env": env,
-        "writeEnabled": WRITE_ENABLED,
-        **_schema_response(schema),
-        "paths": {
-            "config": str(CONFIG_PATH),
-            "env": str(ENV_PATH),
-            "state": str(STATE_DIR),
-        },
-    }
-
-
-def version_payload() -> dict:
-    payload = {"ok": True, **get_version_info()}
-    try:
-        config = parse_config_text(read_config_text())
-        status = inspect_config_schema(config)
-    except (OSError, ValueError) as exc:
-        return {
-            **payload,
-            "config_schema_original": None,
-            "config_schema_current": None,
-            "migration_required": False,
-            "config_too_new": False,
-            "config_schema_error": str(exc),
-        }
-    return {
-        **payload,
-        "config_schema_original": status["original_version"],
-        "config_schema_current": status["current_version"],
-        "migration_required": status["migration_required"],
-        "config_too_new": status["config_too_new"],
-    }
+def _event_config_context() -> platform_event_config.EventConfigContext:
+    return platform_event_config.EventConfigContext(
+        config_path=CONFIG_PATH,
+        example_path=EXAMPLE_PATH,
+        env_path=ENV_PATH,
+        state_dir=STATE_DIR,
+        write_enabled=WRITE_ENABLED,
+        get_version_info=get_version_info,
+    )
 
 
 def require_write() -> None:
@@ -633,10 +490,11 @@ def run_apply_command() -> dict:
 
 def save_config(text: str, actor: str = "", note: str = "") -> dict:
     require_write()
-    blocked = current_config_write_guard()
+    event_config_context = _event_config_context()
+    blocked = platform_event_config.current_config_write_guard(event_config_context)
     if blocked:
         return blocked
-    payload = config_payload(text)
+    payload = platform_event_config.config_payload(event_config_context, text)
     if not payload.get("ok") or payload.get("configTooNew"):
         return payload
     bad = [item for item in payload["issues"] if item.get("level") == "bad"]
@@ -645,17 +503,22 @@ def save_config(text: str, actor: str = "", note: str = "") -> dict:
     snapshot = create_config_snapshot("config.save", actor, note)
     atomic_write_text(CONFIG_PATH, payload["normalizedText"])
     append_history("config.save", actor, note, {"transactionId": snapshot["id"], "snapshot": snapshot["path"]})
-    return {**config_payload(), "transactionId": snapshot["id"], "snapshot": snapshot["path"]}
+    return {
+        **platform_event_config.config_payload(event_config_context),
+        "transactionId": snapshot["id"],
+        "snapshot": snapshot["path"],
+    }
 
 
 def apply_config(text: str | None, actor: str = "", note: str = "", operation_id: str | None = None) -> dict:
     require_write()
     operation_id = normalize_operation_id(operation_id, "apply")
-    blocked = current_config_write_guard()
+    event_config_context = _event_config_context()
+    blocked = platform_event_config.current_config_write_guard(event_config_context)
     if blocked:
         return {**blocked, "operationId": operation_id}
     try:
-        payload = config_payload(text) if text is not None else config_payload()
+        payload = platform_event_config.config_payload(event_config_context, text)
     except Exception as exc:
         return {"ok": False, "operationId": operation_id, "error": f"应用配置失败：{exc}"}
     if not payload.get("ok") or payload.get("configTooNew"):
@@ -707,7 +570,7 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
         })
         if failed:
             result = {
-                **config_payload(),
+                **platform_event_config.config_payload(event_config_context),
                 **apply_result,
                 "ok": False,
                 "operationId": operation_id,
@@ -737,7 +600,7 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
             applyOutput=apply_result.get("applyOutput", ""),
         )
         return {
-            **config_payload(),
+            **platform_event_config.config_payload(event_config_context),
             **apply_result,
             "operationId": operation_id,
             "transactionId": snapshot["id"],
@@ -785,7 +648,8 @@ def append_history(action: str, actor: str, note: str, detail: dict) -> None:
 def rollback_config(actor: str = "", note: str = "", operation_id: str | None = None) -> dict:
     require_write()
     operation_id = normalize_operation_id(operation_id, "rollback")
-    blocked = current_config_write_guard()
+    event_config_context = _event_config_context()
+    blocked = platform_event_config.current_config_write_guard(event_config_context)
     if blocked:
         return {**blocked, "operationId": operation_id}
     started_at = int(time.time())
@@ -829,7 +693,7 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
                 runtimeRestored=bool(recovery_result.get("applied")),
             )
             return {
-                **config_payload(),
+                **platform_event_config.config_payload(event_config_context),
                 "ok": False,
                 "operationId": operation_id,
                 "error": error_message,
@@ -856,7 +720,7 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
             applyOutput=apply_result.get("applyOutput", ""),
         )
         return {
-            **config_payload(),
+            **platform_event_config.config_payload(event_config_context),
             **apply_result,
             "operationId": operation_id,
             "restored": restored,
@@ -892,7 +756,10 @@ def validate_network_host(value: str, field: str = "服务器") -> str:
 
 def configured_core_switch_host() -> str:
     """Return the one configured core switch IP used by the DHCP dashboard."""
-    config = parse_config_text(read_config_text())
+    event_config_context = _event_config_context()
+    config = platform_event_config.parse_config_text(
+        platform_event_config.read_config_text(event_config_context)
+    )
     devices = config.get("devices") if isinstance(config.get("devices"), dict) else {}
     core = devices.get("core") if isinstance(devices.get("core"), dict) else {}
     host = str(core.get("ip") or "").strip()
@@ -990,23 +857,26 @@ def _precheck_context() -> platform_precheck.PrecheckContext:
         librenms_url=PRECHECK_LIBRENMS_URL,
         player_targets_url=PRECHECK_PLAYER_TARGETS_URL,
         config_issues=lambda: validate_config(
-            parse_config_text(read_config_text()),
+            platform_event_config.parse_config_text(
+                platform_event_config.read_config_text(_event_config_context())
+            ),
         ),
     )
 
 
 def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
     """Bind the read router to the entrypoint's current compatibility API."""
+    event_config_context = _event_config_context()
     incident_context = _incident_context()
     dhcp_settings_context = _dhcp_settings_context()
     dhcp_runtime_context = _dhcp_runtime_context()
     iperf_runtime_context = _iperf_runtime_context()
     return platform_read_api.ReadApiDependencies(
         clock=time.time,
-        version_payload=version_payload,
+        version_payload=partial(platform_event_config.version_payload, event_config_context),
         auth_status=auth_status,
         require_auth=require_auth,
-        config_payload=config_payload,
+        config_payload=partial(platform_event_config.config_payload, event_config_context),
         read_json_file=read_json_file,
         history_path=STATE_DIR / "history.json",
         read_apply_status=read_apply_status,
@@ -1042,6 +912,7 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
 
 def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
     """Bind the write router to the entrypoint's current compatibility API."""
+    event_config_context = _event_config_context()
     incident_context = _incident_context()
     precheck_context = _precheck_context()
     dhcp_settings_context = _dhcp_settings_context()
@@ -1053,7 +924,7 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
         logout_auth=logout_auth,
         clear_session_cookie=clear_session_cookie,
         require_auth=require_auth,
-        config_payload=config_payload,
+        config_payload=partial(platform_event_config.config_payload, event_config_context),
         write_lock=WRITE_LOCK,
         save_config=save_config,
         apply_config=apply_config,

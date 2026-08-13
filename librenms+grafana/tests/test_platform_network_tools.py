@@ -362,7 +362,7 @@ def test_config_editor_migrates_legacy_feishu_env_credentials(tmp_path):
         encoding="utf-8",
     )
 
-    payload = api.config_payload()
+    payload = api.platform_event_config.config_payload(api._event_config_context())
     assert payload["config"]["alerts"]["feishu_app_id"] == "cli_legacy"
     assert payload["config"]["alerts"]["feishu_app_secret"] == "legacy-secret"
     assert payload["config"]["alerts"]["feishu_chat_id"] == "oc_legacy"

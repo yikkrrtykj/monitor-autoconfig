@@ -84,7 +84,9 @@ def test_failed_apply_restores_both_files_and_records_failure(monkeypatch, tmp_p
 
     assert result["ok"] is False
     assert result["rolledBack"] is True
-    restored = api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))
+    restored = api.platform_event_config.parse_config_text(
+        api.CONFIG_PATH.read_text(encoding="utf-8")
+    )
     assert restored["event"]["name"] == "Fixture Legacy Event"
     assert "schema_version" not in restored
     assert restored["alerts"]["feishu_app_secret"] == "fixture-preserved-secret"
@@ -109,7 +111,9 @@ def test_successful_apply_has_durable_success_record(monkeypatch, tmp_path):
 
     assert result["applied"] is True
     assert result["state"] == "succeeded"
-    assert api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "new"
+    assert api.platform_event_config.parse_config_text(
+        api.CONFIG_PATH.read_text(encoding="utf-8")
+    )["event"]["name"] == "new"
     assert "EVENT_NAME=new" in api.ENV_PATH.read_text(encoding="utf-8")
     assert api.read_apply_status("apply-test-0002")["state"] == "succeeded"
 
@@ -312,7 +316,7 @@ def test_get_old_config_migrates_in_memory_without_rewriting_file(tmp_path):
     seed(api)
     original = api.CONFIG_PATH.read_bytes()
 
-    payload = api.config_payload()
+    payload = api.platform_event_config.config_payload(api._event_config_context())
 
     assert payload["ok"] is True
     assert payload["configSchemaOriginal"] == 0
@@ -328,13 +332,17 @@ def test_save_and_import_upgrade_schema_zero_to_one(tmp_path):
 
     saved = api.save_config(config_text("saved"), "admin", "save")
     assert saved["ok"] is True
-    assert api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert api.platform_event_config.parse_config_text(
+        api.CONFIG_PATH.read_text(encoding="utf-8")
+    )["schema_version"] == 1
 
     imported = json.loads(config_text("imported"))
     imported.pop("schema_version", None)
     result = api.save_config(json.dumps(imported), "admin", "import")
     assert result["ok"] is True
-    persisted = api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))
+    persisted = api.platform_event_config.parse_config_text(
+        api.CONFIG_PATH.read_text(encoding="utf-8")
+    )
     assert persisted["schema_version"] == 1
     assert persisted["event"]["name"] == "imported"
 
@@ -351,7 +359,9 @@ def test_apply_existing_schema_zero_writes_migrated_config(monkeypatch, tmp_path
     result = api.apply_config(None, "admin", "apply", "apply-schema-zero")
 
     assert result["ok"] is True
-    persisted = api.parse_config_text(api.CONFIG_PATH.read_text(encoding="utf-8"))
+    persisted = api.platform_event_config.parse_config_text(
+        api.CONFIG_PATH.read_text(encoding="utf-8")
+    )
     assert persisted["schema_version"] == 1
     assert "EVENT_NAME=old" in api.ENV_PATH.read_text(encoding="utf-8")
 
@@ -369,7 +379,7 @@ def test_newer_current_config_blocks_save_apply_import_and_rollback(monkeypatch,
     original_env = api.ENV_PATH.read_bytes()
     monkeypatch.setattr(api, "run_apply_command", lambda: (_ for _ in ()).throw(AssertionError("must not apply")))
 
-    readable = api.config_payload()
+    readable = api.platform_event_config.config_payload(api._event_config_context())
     assert readable["ok"] is True
     assert readable["readOnly"] is True
     assert readable["configTooNew"] is True

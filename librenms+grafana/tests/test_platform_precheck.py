@@ -91,7 +91,9 @@ def test_precheck_module_and_entrypoint_dependency_assembly(tmp_path):
     assert context.librenms_url == api.PRECHECK_LIBRENMS_URL
     assert context.player_targets_url == api.PRECHECK_PLAYER_TARGETS_URL
     assert context.config_issues() == api.validate_config(
-        api.parse_config_text(api.read_config_text())
+        api.platform_event_config.parse_config_text(
+            api.platform_event_config.read_config_text(api._event_config_context())
+        )
     )
     assert not hasattr(api, "run_precheck")
     assert not hasattr(api, "_prom_query")
