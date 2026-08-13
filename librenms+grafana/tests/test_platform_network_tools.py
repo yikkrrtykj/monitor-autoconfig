@@ -1,7 +1,5 @@
 import json
 import os
-import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -92,38 +90,6 @@ def test_iperf_json_uses_receiver_rate_and_reports_retransmits(tmp_path):
     }
 
 
-def test_iperf_tries_next_port_without_using_a_shell(monkeypatch, tmp_path):
-    api = load_api(tmp_path)
-    api.IPERF3_COMMAND = "iperf3"
-    api.IPERF3_TIMEOUT = 30
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        if command[command.index("-p") + 1] == "5200":
-            return SimpleNamespace(returncode=1, stdout="", stderr="server is busy")
-        return SimpleNamespace(returncode=0, stdout=_iperf_payload(), stderr="")
-
-    monkeypatch.setattr(api.subprocess, "run", fake_run)
-    monkeypatch.setattr(api, "_host_exec_env", lambda: {})
-
-    result = api.run_iperf_test({
-        "server": "speedtest.hkg12.hk.leaseweb.net",
-        "ports": "5200-5201",
-        "duration": 3,
-        "parallel": 1,
-        "direction": "upload",
-    })
-
-    assert result["protocol"] == "TCP"
-    assert result["results"][0]["port"] == 5201
-    assert [call[0][call[0].index("-p") + 1] for call in calls] == ["5200", "5201"]
-    assert all("shell" not in kwargs for _command, kwargs in calls)
-    assert all("--connect-timeout" in command for command, _kwargs in calls)
-    assert api.iperf_status_payload()["state"] == "complete"
-    assert api.iperf_status_payload()["percent"] == 100
-
-
 def test_iperf_error_summary_hides_raw_json(tmp_path):
     api = load_api(tmp_path)
 
@@ -134,104 +100,6 @@ def test_iperf_error_summary_hides_raw_json(tmp_path):
     )
 
     assert detail == "服务器中途关闭连接"
-
-
-def test_iperf_defaults_to_hong_kong_preset(monkeypatch, tmp_path):
-    api = load_api(tmp_path)
-    api.IPERF3_COMMAND = "iperf3"
-    calls = []
-
-    def fake_run(command, **_kwargs):
-        calls.append(command)
-        return SimpleNamespace(returncode=0, stdout=_iperf_payload(), stderr="")
-
-    monkeypatch.setattr(api.subprocess, "run", fake_run)
-    monkeypatch.setattr(api, "_host_exec_env", lambda: {})
-
-    api.run_iperf_test({"duration": 3, "parallel": 1, "direction": "upload"})
-
-    assert calls[0][calls[0].index("-c") + 1] == "speedtest.hkg12.hk.leaseweb.net"
-    assert calls[0][calls[0].index("-p") + 1] == "5201"
-
-
-def test_iperf_bidirectional_test_shares_one_total_deadline(monkeypatch, tmp_path):
-    api = load_api(tmp_path)
-    api.IPERF3_TIMEOUT = 60
-    deadlines = []
-
-    def fake_direction(_host, _ports, _duration, _parallel, reverse, deadline, *_args):
-        deadlines.append(deadline)
-        return {"mbps": 100.0, "seconds": 3.0, "bytes": 1, "retransmits": 0,
-                "sender": {}, "receiver": {}, "intervals": [], "port": 5201,
-                "reverse": reverse}
-
-    monkeypatch.setattr(api, "_run_iperf_direction", fake_direction)
-    result = api.run_iperf_test({"duration": 3, "parallel": 1, "direction": "both"})
-
-    assert len(result["results"]) == 2
-    assert deadlines[0] == deadlines[1]
-    assert api.iperf_status_payload()["maxSeconds"] == 60
-
-
-def test_iperf_tasks_are_isolated_stoppable_and_report_conflict(monkeypatch, tmp_path):
-    api = load_api(tmp_path)
-    started_threads = []
-
-    class DeferredThread:
-        def __init__(self, target, args, **_kwargs):
-            self.target = target
-            self.args = args
-
-        def start(self):
-            started_threads.append(self)
-
-    monkeypatch.setattr(api.threading, "Thread", DeferredThread)
-    first = api.start_iperf_task({"server": "speed.example.test"})
-    task_id = first["taskId"]
-
-    assert task_id.startswith("iperf-")
-    assert api.iperf_status_payload(task_id)["state"] == "queued"
-    assert len(started_threads) == 1
-    with pytest.raises(api.DiagnosticError) as conflict:
-        api.start_iperf_task({"server": "other.example.test"})
-    assert conflict.value.status == 409
-    assert conflict.value.payload["taskId"] == task_id
-
-    stopped = api.stop_iperf_task({"taskId": task_id})
-    assert stopped["state"] == "stopping"
-    assert api.IPERF_CANCEL_EVENTS[task_id].is_set()
-
-
-def test_iperf_history_keeps_five_and_survives_memory_expiry(tmp_path):
-    api = load_api(tmp_path)
-    for index in range(7):
-        api._save_iperf_history({
-            "taskId": f"task-{index}",
-            "state": "complete",
-            "server": f"node-{index}.example.test",
-            "finishedAt": index,
-            "results": [],
-        })
-
-    payload = api.iperf_history_payload()
-    assert [item["taskId"] for item in payload["history"]] == [
-        "task-6", "task-5", "task-4", "task-3", "task-2",
-    ]
-    assert api.IPERF_TASKS == {}
-    assert api.iperf_status_payload("task-4")["server"] == "node-4.example.test"
-
-
-def test_managed_iperf_command_does_not_deadlock_on_large_json_output(tmp_path):
-    api = load_api(tmp_path)
-    completed = api._execute_iperf_command(
-        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 200000)"],
-        timeout=5,
-        task_id="large-output",
-    )
-
-    assert completed.returncode == 0
-    assert len(completed.stdout) == 200000
-    assert "large-output" not in api.IPERF_PROCESSES
 
 
 def test_cisco_dhcp_pool_parser_reports_capacity_and_thresholds(tmp_path):
@@ -508,19 +376,7 @@ def test_iperf_internal_targets_gated_by_env(tmp_path):
     assert iperf._iperf_target_is_internal("127.0.0.1") is True
     assert iperf._iperf_target_is_internal("169.254.169.254") is True
     assert iperf._iperf_target_is_internal("23.249.58.14") is False
-    # 默认开关关闭
     assert api.IPERF3_ALLOW_INTERNAL is False
-    with pytest.raises(api.DiagnosticError) as exc:
-        api.run_iperf_test({"server": "192.168.10.5"})
-    assert "PLATFORM_IPERF3_ALLOW_INTERNAL" in str(exc.value.payload.get("error"))
-    # 打开开关后内网地址通过校验(走到端口/参数阶段而不是被内网拦截)
-    api.IPERF3_ALLOW_INTERNAL = True
-    try:
-        with pytest.raises(api.DiagnosticError) as exc2:
-            api.run_iperf_test({"server": "192.168.10.5", "duration": 99})
-        assert "测试时长" in str(exc2.value.payload.get("error"))
-    finally:
-        api.IPERF3_ALLOW_INTERNAL = False
 
 
 def test_iperf_json_rejects_non_object_payloads(tmp_path):

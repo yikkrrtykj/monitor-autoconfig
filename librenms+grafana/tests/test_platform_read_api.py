@@ -149,12 +149,20 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_
         api.INCIDENT_PATH,
         [{"id": 7, "title": "fixture"}],
     )
-    api.iperf_status_payload = lambda task_id: {
-        "ok": True,
-        "taskId": task_id,
-        "state": "complete",
-    }
-    api.iperf_history_payload = lambda: {"ok": True, "history": [{"taskId": "old"}]}
+    monkeypatch.setattr(
+        api.platform_iperf_runtime,
+        "iperf_status_payload",
+        lambda _context, task_id: {
+            "ok": True,
+            "taskId": task_id,
+            "state": "complete",
+        },
+    )
+    monkeypatch.setattr(
+        api.platform_iperf_runtime,
+        "iperf_history_payload",
+        lambda _context: {"ok": True, "history": [{"taskId": "old"}]},
+    )
     monkeypatch.setattr(
         api.platform_dhcp_settings,
         "get_dhcp_settings",

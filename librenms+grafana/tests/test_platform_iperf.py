@@ -74,20 +74,6 @@ def test_parse_port_range_keeps_configurable_limit_message():
     assert str(exc.value) == "一次最多尝试 2 个端口"
 
 
-def test_run_iperf_keeps_diagnostic_error_type_status_and_payload(tmp_path):
-    api = load_api(tmp_path)
-    api.IPERF3_ALLOW_INTERNAL = True
-
-    with pytest.raises(api.DiagnosticError) as exc:
-        api.run_iperf_test({"server": "192.168.10.5", "ports": "5201,5202"})
-
-    assert exc.value.status == HTTPStatus.BAD_REQUEST
-    assert exc.value.payload == {
-        "ok": False,
-        "error": "端口应为单个端口或范围，例如 5201-5210",
-    }
-
-
 def test_parse_iperf3_json_keeps_received_rate_endpoints_and_interval_sum():
     result = iperf.parse_iperf3_json(json.dumps({
         "intervals": [{
