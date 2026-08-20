@@ -9,11 +9,8 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
-import subprocess
 import threading
 import time
-import urllib.request
 from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +23,7 @@ from platform_config import (
     validate_config,
 )
 from version_info import get_version_info
+from platform_api import apply_runtime as platform_apply_runtime
 from platform_api import auth as platform_auth
 from platform_api import bridge as platform_bridge
 from platform_api import dhcp_runtime as platform_dhcp_runtime
@@ -62,8 +60,6 @@ APPLY_COMMAND = CORE_SETTINGS.apply_command
 APPLY_TIMEOUT = CORE_SETTINGS.apply_timeout
 APPLY_VERIFY_TIMEOUT = CORE_SETTINGS.apply_verify_timeout
 MAX_REQUEST_BODY_BYTES = CORE_SETTINGS.max_request_body_bytes
-APPLY_CHILD_TIMEOUT_MARGIN_SECONDS = 30
-APPLY_OPERATION_GRACE_SECONDS = 30
 IPERF3_COMMAND = os.environ.get(
     "PLATFORM_IPERF3_COMMAND",
     "iperf3",
@@ -345,147 +341,18 @@ def require_write() -> None:
         raise PermissionError("platform write endpoints are disabled")
 
 
-def _host_exec_env() -> dict:
-    """Env for running apply-env from inside the container. Prefer the container's
-    own binaries (python3, sed, ...) and only fall back to the host's for what the
-    slim image lacks (docker) -- so /host/usr/bin goes LAST. Putting it first ran
-    the host's dynamically-linked python3, which fails on missing libs here."""
-    env = os.environ.copy()
-    env["PATH"] = "/usr/local/bin:/usr/bin:/bin:/host/usr/bin"
-    # apply-env runs inside platform-api for console applies. Recreating the
-    # caller here would kill it before the durable operation result is written.
-    # A direct host apply does not set this flag and therefore refreshes the API.
-    env["PLATFORM_API_SELF_APPLY"] = "true"
-    requested_check_timeout = env.get("DEPLOY_CHECK_TIMEOUT", "180")
-    try:
-        requested_check_seconds = max(0, int(requested_check_timeout))
-    except ValueError:
-        # Preserve deploy-check's existing validation and explicit diagnostic
-        # for a malformed operator-provided value.
-        pass
-    else:
-        child_maximum = max(0, APPLY_TIMEOUT - APPLY_CHILD_TIMEOUT_MARGIN_SECONDS)
-        env["DEPLOY_CHECK_TIMEOUT"] = str(min(requested_check_seconds, child_maximum))
-    plugin_dirs = ":".join([
-        "/host/usr/libexec/docker/cli-plugins",
-        "/host/usr/lib/docker/cli-plugins",
-        "/host/usr/local/lib/docker/cli-plugins",
-        env.get("DOCKER_CLI_PLUGIN_EXTRA_DIRS", ""),
-    ]).strip(":")
-    if plugin_dirs:
-        env["DOCKER_CLI_PLUGIN_EXTRA_DIRS"] = plugin_dirs
-    return env
-
-
-def verify_runtime_after_apply() -> dict:
-    """Wait until the user-facing core services answer after recreation."""
-    checks = {
-        "Prometheus": f"{PRECHECK_PROM_URL}/-/ready",
-        "Grafana": f"{PRECHECK_GRAFANA_URL}/api/health",
-        "告警服务": f"{BRIDGE_URL}/health",
-        "大屏": f"{PRECHECK_BIGSCREEN_URL}/",
-    }
-    deadline = time.monotonic() + APPLY_VERIFY_TIMEOUT
-    last_errors: dict[str, str] = {}
-    while time.monotonic() < deadline:
-        last_errors = {}
-        for name, url in checks.items():
-            try:
-                with urllib.request.urlopen(url, timeout=5) as response:
-                    response.read(4096)
-                    if not 200 <= response.status < 400:
-                        raise RuntimeError(f"HTTP {response.status}")
-            except Exception as exc:
-                last_errors[name] = str(exc)
-        if not last_errors:
-            return {"ok": True, "services": sorted(checks)}
-        time.sleep(2)
-    return {"ok": False, "errors": last_errors}
-
-
-def _process_output_text(value) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value)
-
-
-def _combined_process_output(*parts) -> str:
-    return "\n".join(
-        text for text in (_process_output_text(part) for part in parts) if text
-    ).strip()
-
-
-def apply_operation_timeout_seconds() -> int:
-    """Upper bound for primary apply plus one deterministic recovery apply."""
-    return 2 * (APPLY_TIMEOUT + APPLY_VERIFY_TIMEOUT) + APPLY_OPERATION_GRACE_SECONDS
-
-
-def run_apply_command() -> dict:
-    if not APPLY_ENABLED:
-        return {
-            "needsRedeploy": True,
-            "nextStep": "cd librenms+grafana && ./apply-env.sh",
-            "applyOutput": "automatic apply is disabled",
-        }
-
-    env = _host_exec_env()
-
-    try:
-        completed = subprocess.run(
-            shlex.split(APPLY_COMMAND),
-            cwd=str(WORKDIR),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=APPLY_TIMEOUT,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        return {
-            "ok": False,
-            "error": "配置已写入，但自动应用失败：找不到 apply 命令",
-            "needsRedeploy": True,
-            "nextStep": "cd librenms+grafana && ./apply-env.sh",
-            "applyOutput": str(exc),
-        }
-    except subprocess.TimeoutExpired as exc:
-        output = _combined_process_output(exc.stdout, exc.stderr)
-        return {
-            "ok": False,
-            "error": f"配置已写入，但自动应用超时（{APPLY_TIMEOUT}s）",
-            "needsRedeploy": True,
-            "nextStep": "cd librenms+grafana && ./apply-env.sh",
-            "applyOutput": output[-4000:],
-        }
-
-    output = _combined_process_output(completed.stdout, completed.stderr)
-    if completed.returncode != 0:
-        return {
-            "ok": False,
-            "error": "配置已写入，但自动应用失败",
-            "needsRedeploy": True,
-            "nextStep": "cd librenms+grafana && ./apply-env.sh",
-            "applyOutput": output[-4000:],
-        }
-    verification = verify_runtime_after_apply()
-    if not verification.get("ok"):
-        errors = "；".join(f"{name}: {message}" for name, message in verification.get("errors", {}).items())
-        return {
-            "ok": False,
-            "error": "容器重建命令已完成，但关键服务未能恢复",
-            "needsRedeploy": True,
-            "nextStep": "cd librenms+grafana && ./apply-env.sh",
-            "applyOutput": (output + "\n运行验证失败：" + errors)[-4000:],
-            "verification": verification,
-        }
-    return {
-        "applied": True,
-        "needsRedeploy": False,
-        "applyOutput": output[-4000:],
-        "verification": verification,
-    }
+def _apply_runtime_context() -> platform_apply_runtime.ApplyRuntimeContext:
+    return platform_apply_runtime.ApplyRuntimeContext(
+        workdir=WORKDIR,
+        apply_enabled=APPLY_ENABLED,
+        apply_command=APPLY_COMMAND,
+        apply_timeout=APPLY_TIMEOUT,
+        verify_timeout=APPLY_VERIFY_TIMEOUT,
+        prom_url=PRECHECK_PROM_URL,
+        grafana_url=PRECHECK_GRAFANA_URL,
+        bridge_url=BRIDGE_URL,
+        bigscreen_url=PRECHECK_BIGSCREEN_URL,
+    )
 
 
 def save_config(text: str, actor: str = "", note: str = "") -> dict:
@@ -523,8 +390,11 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
         return {"ok": False, "operationId": operation_id, "error": f"应用配置失败：{exc}"}
     if not payload.get("ok") or payload.get("configTooNew"):
         return {**payload, "operationId": operation_id}
+    apply_runtime_context = _apply_runtime_context()
     started_at = int(time.time())
-    operation_timeout = apply_operation_timeout_seconds()
+    operation_timeout = platform_apply_runtime.apply_operation_timeout_seconds(
+        apply_runtime_context
+    )
     write_apply_status(
         operation_id,
         "running",
@@ -552,13 +422,15 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
             "snapshot": snapshot["path"],
             "envKeys": sorted(payload["env"]),
         })
-        apply_result = run_apply_command()
+        apply_result = platform_apply_runtime.run_apply_command(apply_runtime_context)
         failed = apply_result.get("ok") is False
         rollback_result = None
         restored = None
         if failed:
             restored = restore_config_snapshot(Path(snapshot["path"]))
-            rollback_result = run_apply_command()
+            rollback_result = platform_apply_runtime.run_apply_command(
+                apply_runtime_context
+            )
         append_history("config.apply_command", actor, note, {
             "operationId": operation_id,
             "transactionId": snapshot["id"],
@@ -612,7 +484,9 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
         if snapshot:
             try:
                 restored = restore_config_snapshot(Path(snapshot["path"]))
-                rollback_result = run_apply_command()
+                rollback_result = platform_apply_runtime.run_apply_command(
+                    apply_runtime_context
+                )
             except Exception as rollback_exc:
                 rollback_result = {"ok": False, "error": str(rollback_exc)}
         write_apply_status(
@@ -652,8 +526,11 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
     blocked = platform_event_config.current_config_write_guard(event_config_context)
     if blocked:
         return {**blocked, "operationId": operation_id}
+    apply_runtime_context = _apply_runtime_context()
     started_at = int(time.time())
-    operation_timeout = apply_operation_timeout_seconds()
+    operation_timeout = platform_apply_runtime.apply_operation_timeout_seconds(
+        apply_runtime_context
+    )
     write_apply_status(
         operation_id,
         "running",
@@ -672,10 +549,12 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
     guard = create_config_snapshot("config.rollback.guard", actor, note)
     try:
         restored = restore_config_snapshot(target)
-        apply_result = run_apply_command()
+        apply_result = platform_apply_runtime.run_apply_command(apply_runtime_context)
         if apply_result.get("ok") is False:
             restore_config_snapshot(Path(guard["path"]))
-            recovery_result = run_apply_command()
+            recovery_result = platform_apply_runtime.run_apply_command(
+                apply_runtime_context
+            )
             error_message = apply_result.get("error", "回滚后的服务应用失败")
             append_history("config.rollback_failed", actor, note, {
                 "operationId": operation_id,
@@ -834,7 +713,10 @@ def _iperf_runtime_context() -> platform_iperf_runtime.IperfRuntimeContext:
         validate_network_host=validate_network_host,
         read_json_file=read_json_file,
         write_json_file=write_json_file,
-        host_exec_env=_host_exec_env,
+        host_exec_env=partial(
+            platform_apply_runtime.host_exec_env,
+            _apply_runtime_context(),
+        ),
         clock=time.time,
         monotonic=time.monotonic,
     )

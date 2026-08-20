@@ -75,7 +75,11 @@ def test_failed_apply_restores_both_files_and_records_failure(monkeypatch, tmp_p
         {"ok": False, "error": "compose failed", "applyOutput": "bad"},
         {"applied": True, "needsRedeploy": False, "applyOutput": "restored"},
     ])
-    monkeypatch.setattr(api, "run_apply_command", lambda: next(outcomes))
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "run_apply_command",
+        lambda _context: next(outcomes),
+    )
 
     result = api.apply_config(
         (CONFIG_FIXTURES / "event-config-v1.yml").read_text(encoding="utf-8"),
@@ -101,11 +105,15 @@ def test_failed_apply_restores_both_files_and_records_failure(monkeypatch, tmp_p
 def test_successful_apply_has_durable_success_record(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     seed(api)
-    monkeypatch.setattr(api, "run_apply_command", lambda: {
-        "applied": True,
-        "needsRedeploy": False,
-        "applyOutput": "ok",
-    })
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "run_apply_command",
+        lambda _context: {
+            "applied": True,
+            "needsRedeploy": False,
+            "applyOutput": "ok",
+        },
+    )
 
     result = api.apply_config(config_text("new"), "admin", "apply", "apply-test-0002")
 
@@ -138,9 +146,9 @@ def test_apply_timeout_normalizes_captured_output(
             ["/bin/sh", "apply-env.sh"], 300, output=stdout, stderr=stderr,
         )
 
-    monkeypatch.setattr(api.subprocess, "run", time_out)
+    monkeypatch.setattr(api.platform_apply_runtime.subprocess, "run", time_out)
 
-    result = api.run_apply_command()
+    result = api.platform_apply_runtime.run_apply_command(api._apply_runtime_context())
 
     assert result["ok"] is False
     assert result["error"] == "配置已写入，但自动应用超时（300s）"
@@ -152,7 +160,7 @@ def test_self_apply_bounds_deploy_check_below_parent_timeout(monkeypatch, tmp_pa
     api.APPLY_TIMEOUT = 300
     monkeypatch.setenv("DEPLOY_CHECK_TIMEOUT", "999")
 
-    env = api._host_exec_env()
+    env = api.platform_apply_runtime.host_exec_env(api._apply_runtime_context())
 
     assert env["PLATFORM_API_SELF_APPLY"] == "true"
     assert env["DEPLOY_CHECK_TIMEOUT"] == "270"
@@ -176,9 +184,15 @@ def test_timeout_finishes_durable_status_and_restores_runtime(monkeypatch, tmp_p
             args=args, returncode=0, stdout="runtime restored", stderr=None,
         )
 
-    monkeypatch.setattr(api.subprocess, "run", timeout_then_recover)
     monkeypatch.setattr(
-        api, "verify_runtime_after_apply", lambda: {"ok": True, "services": []},
+        api.platform_apply_runtime.subprocess,
+        "run",
+        timeout_then_recover,
+    )
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "verify_runtime_after_apply",
+        lambda _context: {"ok": True, "services": []},
     )
 
     result = api.apply_config(
@@ -203,11 +217,15 @@ def test_running_status_has_recovery_deadline_and_exceptions_finish_failed(
     seed(api)
     captured = {}
 
-    def observe_running_then_fail():
+    def observe_running_then_fail(_context):
         captured.update(api.read_apply_status("apply-deadline-test"))
         raise RuntimeError("injected apply exception")
 
-    monkeypatch.setattr(api, "run_apply_command", observe_running_then_fail)
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "run_apply_command",
+        observe_running_then_fail,
+    )
 
     result = api.apply_config(
         config_text("new"), "admin", "exception", "apply-deadline-test",
@@ -227,11 +245,15 @@ def test_rollback_restores_a_paired_snapshot_and_applies_it(monkeypatch, tmp_pat
     seed(api, env="CUSTOM=paired-old\n")
     saved = api.save_config(config_text("new"), "admin", "save")
     api.ENV_PATH.write_text("CUSTOM=mutated\n", encoding="utf-8")
-    monkeypatch.setattr(api, "run_apply_command", lambda: {
-        "applied": True,
-        "needsRedeploy": False,
-        "applyOutput": "ok",
-    })
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "run_apply_command",
+        lambda _context: {
+            "applied": True,
+            "needsRedeploy": False,
+            "applyOutput": "ok",
+        },
+    )
 
     result = api.rollback_config("admin", "rollback", "rollback-test-01")
 
@@ -263,9 +285,9 @@ def test_failed_rollback_restore_does_not_leave_a_half_restored_pair(monkeypatch
         api.platform_transactions, "atomic_write_text", fail_second_restore_write,
     )
     monkeypatch.setattr(
-        api,
+        api.platform_apply_runtime,
         "run_apply_command",
-        lambda: (_ for _ in ()).throw(AssertionError("must not apply")),
+        lambda _context: (_ for _ in ()).throw(AssertionError("must not apply")),
     )
 
     result = api.rollback_config("admin", "rollback", "rollback-half-state")
@@ -282,9 +304,13 @@ def test_repeated_rollback_walks_back_without_restoring_guard(monkeypatch, tmp_p
     seed(api, "old")
     api.save_config(config_text("new"), "admin", "first")
     api.save_config(config_text("newer"), "admin", "second")
-    monkeypatch.setattr(api, "run_apply_command", lambda: {
-        "applied": True, "needsRedeploy": False, "applyOutput": "ok",
-    })
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "run_apply_command",
+        lambda _context: {
+            "applied": True, "needsRedeploy": False, "applyOutput": "ok",
+        },
+    )
 
     first = api.rollback_config("admin", "rollback", "rollback-test-02")
     second = api.rollback_config("admin", "rollback", "rollback-test-03")
@@ -350,11 +376,15 @@ def test_save_and_import_upgrade_schema_zero_to_one(tmp_path):
 def test_apply_existing_schema_zero_writes_migrated_config(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     seed(api)
-    monkeypatch.setattr(api, "run_apply_command", lambda: {
-        "applied": True,
-        "needsRedeploy": False,
-        "applyOutput": "ok",
-    })
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "run_apply_command",
+        lambda _context: {
+            "applied": True,
+            "needsRedeploy": False,
+            "applyOutput": "ok",
+        },
+    )
 
     result = api.apply_config(None, "admin", "apply", "apply-schema-zero")
 
@@ -377,7 +407,11 @@ def test_newer_current_config_blocks_save_apply_import_and_rollback(monkeypatch,
     api.ENV_PATH.write_text("CUSTOM=future\n", encoding="utf-8")
     original_config = api.CONFIG_PATH.read_bytes()
     original_env = api.ENV_PATH.read_bytes()
-    monkeypatch.setattr(api, "run_apply_command", lambda: (_ for _ in ()).throw(AssertionError("must not apply")))
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "run_apply_command",
+        lambda _context: (_ for _ in ()).throw(AssertionError("must not apply")),
+    )
 
     readable = api.platform_event_config.config_payload(api._event_config_context())
     assert readable["ok"] is True
@@ -424,7 +458,11 @@ def test_apply_of_newer_submitted_schema_writes_no_files(monkeypatch, tmp_path):
     api.ENV_PATH.write_text("CUSTOM=current\n", encoding="utf-8")
     before_config = api.CONFIG_PATH.read_bytes()
     before_env = api.ENV_PATH.read_bytes()
-    monkeypatch.setattr(api, "run_apply_command", lambda: (_ for _ in ()).throw(AssertionError("must not apply")))
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "run_apply_command",
+        lambda _context: (_ for _ in ()).throw(AssertionError("must not apply")),
+    )
 
     result = api.apply_config(
         json.dumps({"schema_version": 2, "custom_future": {"keep": True}}),

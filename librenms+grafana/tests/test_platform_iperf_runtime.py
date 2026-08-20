@@ -168,7 +168,8 @@ def test_context_keeps_runtime_dependencies_explicit(tmp_path):
     assert context.validate_network_host is api.validate_network_host
     assert context.read_json_file is api.read_json_file
     assert context.write_json_file is api.write_json_file
-    assert context.host_exec_env is api._host_exec_env
+    assert context.host_exec_env.func is api.platform_apply_runtime.host_exec_env
+    assert context.host_exec_env.args == (api._apply_runtime_context(),)
 
 
 def test_composed_context_preserves_diagnostic_error_type_status_and_payload(tmp_path):

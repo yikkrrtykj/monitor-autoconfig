@@ -197,13 +197,17 @@ def test_http_auth_flow():
                 {"ok": False, "error": "compose failed", "applyOutput": "bad"},
                 {"applied": True, "needsRedeploy": False, "applyOutput": "restored"},
             ])
-            api.run_apply_command = lambda: next(outcomes)
-            status, _, payload = request_json(f"{base_url}/config/apply", {
-                "text": (CONFIG_FIXTURES / "event-config-v1.yml").read_text(
-                    encoding="utf-8"
-                ),
-                "operationId": "http-apply-failure",
-            }, cookie=cookie)
+            with patch.object(
+                api.platform_apply_runtime,
+                "run_apply_command",
+                side_effect=lambda _context: next(outcomes),
+            ):
+                status, _, payload = request_json(f"{base_url}/config/apply", {
+                    "text": (CONFIG_FIXTURES / "event-config-v1.yml").read_text(
+                        encoding="utf-8"
+                    ),
+                    "operationId": "http-apply-failure",
+                }, cookie=cookie)
             assert status == 200
             assert payload["ok"] is False
             assert payload["rolledBack"] is True
