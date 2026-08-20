@@ -149,10 +149,14 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_
         lambda _context: {"ok": True, "config": {"name": "fixture"}},
     )
     api.read_json_file = lambda path, default: history if path.name == "history.json" else default
-    api.read_apply_status = lambda operation_id: {
-        "ok": True,
-        "operationId": operation_id,
-    }
+    monkeypatch.setattr(
+        api.platform_config_transaction,
+        "read_apply_status",
+        lambda _context, operation_id: {
+            "ok": True,
+            "operationId": operation_id,
+        },
+    )
     api.write_json_file(
         api.INCIDENT_PATH,
         [{"id": 7, "title": "fixture"}],

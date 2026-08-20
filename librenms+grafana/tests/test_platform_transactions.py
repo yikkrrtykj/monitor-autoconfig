@@ -51,6 +51,12 @@ def seed(api, name="old", env="CUSTOM=old\n"):
     api.ENV_PATH.write_text(env, encoding="utf-8")
 
 
+def read_apply_status(api, operation_id: str) -> dict:
+    return api.platform_config_transaction.read_apply_status(
+        api._config_transaction_context(), operation_id,
+    )
+
+
 def test_save_snapshots_config_and_env_as_one_generation(tmp_path):
     api = load_api(tmp_path)
     seed(api)
@@ -97,7 +103,7 @@ def test_failed_apply_restores_both_files_and_records_failure(monkeypatch, tmp_p
     assert api.CONFIG_PATH.read_text(encoding="utf-8") == original_config
     assert api.ENV_PATH.read_text(encoding="utf-8") == original_env
     assert not list(api.CONFIG_PATH.parent.glob(".*.tmp"))
-    status = api.read_apply_status("apply-test-0001")
+    status = read_apply_status(api, "apply-test-0001")
     assert status["state"] == "failed"
     assert status["runtimeRestored"] is True
 
@@ -123,7 +129,7 @@ def test_successful_apply_has_durable_success_record(monkeypatch, tmp_path):
         api.CONFIG_PATH.read_text(encoding="utf-8")
     )["event"]["name"] == "new"
     assert "EVENT_NAME=new" in api.ENV_PATH.read_text(encoding="utf-8")
-    assert api.read_apply_status("apply-test-0002")["state"] == "succeeded"
+    assert read_apply_status(api, "apply-test-0002")["state"] == "succeeded"
 
 
 @pytest.mark.parametrize(
@@ -198,7 +204,7 @@ def test_timeout_finishes_durable_status_and_restores_runtime(monkeypatch, tmp_p
     result = api.apply_config(
         config_text("new"), "admin", "timeout", "apply-timeout-bytes",
     )
-    status = api.read_apply_status("apply-timeout-bytes")
+    status = read_apply_status(api, "apply-timeout-bytes")
 
     assert result["ok"] is False
     assert result["rolledBack"] is True
@@ -218,7 +224,7 @@ def test_running_status_has_recovery_deadline_and_exceptions_finish_failed(
     captured = {}
 
     def observe_running_then_fail(_context):
-        captured.update(api.read_apply_status("apply-deadline-test"))
+        captured.update(read_apply_status(api, "apply-deadline-test"))
         raise RuntimeError("injected apply exception")
 
     monkeypatch.setattr(
@@ -230,7 +236,7 @@ def test_running_status_has_recovery_deadline_and_exceptions_finish_failed(
     result = api.apply_config(
         config_text("new"), "admin", "exception", "apply-deadline-test",
     )
-    final = api.read_apply_status("apply-deadline-test")
+    final = read_apply_status(api, "apply-deadline-test")
 
     assert captured["state"] == "running"
     assert captured["timeoutSeconds"] == 810
@@ -261,7 +267,7 @@ def test_rollback_restores_a_paired_snapshot_and_applies_it(monkeypatch, tmp_pat
     assert result["restored"]["transactionId"] == saved["transactionId"]
     assert json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "old"
     assert api.ENV_PATH.read_text(encoding="utf-8") == "CUSTOM=paired-old\n"
-    assert api.read_apply_status("rollback-test-01")["state"] == "succeeded"
+    assert read_apply_status(api, "rollback-test-01")["state"] == "succeeded"
 
 
 def test_failed_rollback_restore_does_not_leave_a_half_restored_pair(monkeypatch, tmp_path):
@@ -271,7 +277,7 @@ def test_failed_rollback_restore_does_not_leave_a_half_restored_pair(monkeypatch
     api.ENV_PATH.write_text("CUSTOM=new\n", encoding="utf-8")
     before_config = api.CONFIG_PATH.read_bytes()
     before_env = api.ENV_PATH.read_bytes()
-    real_atomic_write = api.platform_transactions.atomic_write_text
+    real_atomic_write = api.platform_config_transaction.atomic_write_text
     write_count = 0
 
     def fail_second_restore_write(path, text):
@@ -282,7 +288,7 @@ def test_failed_rollback_restore_does_not_leave_a_half_restored_pair(monkeypatch
         real_atomic_write(path, text)
 
     monkeypatch.setattr(
-        api.platform_transactions, "atomic_write_text", fail_second_restore_write,
+        api.platform_config_transaction, "atomic_write_text", fail_second_restore_write,
     )
     monkeypatch.setattr(
         api.platform_apply_runtime,
@@ -296,7 +302,7 @@ def test_failed_rollback_restore_does_not_leave_a_half_restored_pair(monkeypatch
     assert "injected paired restore failure" in result["error"]
     assert api.CONFIG_PATH.read_bytes() == before_config
     assert api.ENV_PATH.read_bytes() == before_env
-    assert api.read_apply_status("rollback-half-state")["state"] == "failed"
+    assert read_apply_status(api, "rollback-half-state")["state"] == "failed"
 
 
 def test_repeated_rollback_walks_back_without_restoring_guard(monkeypatch, tmp_path):
@@ -319,7 +325,9 @@ def test_repeated_rollback_walks_back_without_restoring_guard(monkeypatch, tmp_p
     assert json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "old"
     assert all(
         api.read_json_file(path / "metadata.json", {}).get("action") != "config.rollback.guard"
-        for path in api.list_config_snapshots()
+        for path in api.platform_config_transaction.list_config_snapshots(
+            api._config_transaction_context(),
+        )
     )
 
 
@@ -330,8 +338,14 @@ def test_generated_state_retention_is_bounded(tmp_path):
     api.APPLY_STATUS_RETENTION = 3
 
     for index in range(5):
-        api.create_config_snapshot(f"test.{index}")
-        api.write_apply_status(f"retention-{index:04d}", "succeeded")
+        api.platform_config_transaction.create_config_snapshot(
+            api._config_transaction_context(), f"test.{index}",
+        )
+        api.platform_config_transaction.write_apply_status(
+            api._config_transaction_context(),
+            f"retention-{index:04d}",
+            "succeeded",
+        )
 
     assert len(list(api.TRANSACTION_DIR.iterdir())) == 2
     assert len(list(api.APPLY_STATUS_DIR.glob("*.json"))) == 3

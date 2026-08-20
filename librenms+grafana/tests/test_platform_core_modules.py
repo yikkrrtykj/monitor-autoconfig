@@ -8,11 +8,11 @@ import pytest
 
 from platform_api import (
     auth,
+    config_transaction,
     incidents,
     read_api,
     settings,
     storage,
-    transactions,
     write_api,
 )
 
@@ -24,9 +24,10 @@ class DummyHandler:
 
 def transaction_context(tmp_path: Path, retention: int = 50):
     workspace = tmp_path / "workspace"
-    return transactions.TransactionContext(
+    return config_transaction.ConfigTransactionContext(
         config_path=workspace / "event-config.yml",
         env_path=workspace / ".env",
+        history_path=tmp_path / "state" / "history.json",
         transaction_dir=tmp_path / "state" / "history" / "transactions",
         apply_status_dir=tmp_path / "state" / "apply-status",
         transaction_retention=retention,
@@ -180,7 +181,7 @@ def test_transaction_snapshot_metadata_and_paired_restore(tmp_path):
     context.config_path.write_text("event: old\n", encoding="utf-8")
     context.env_path.write_text("EVENT_NAME=old\n", encoding="utf-8")
 
-    snapshot = transactions.create_config_snapshot(
+    snapshot = config_transaction.create_config_snapshot(
         context, "config.apply", "admin", "fixture",
     )
     directory = Path(snapshot["path"])
@@ -199,7 +200,7 @@ def test_transaction_snapshot_metadata_and_paired_restore(tmp_path):
 
     context.config_path.write_text("event: new\n", encoding="utf-8")
     context.env_path.write_text("EVENT_NAME=new\n", encoding="utf-8")
-    restored = transactions.restore_config_snapshot(context, directory)
+    restored = config_transaction.restore_config_snapshot(context, directory)
 
     assert restored["transactionId"] == snapshot["id"]
     assert context.config_path.read_text(encoding="utf-8") == "event: old\n"
@@ -213,15 +214,17 @@ def test_transaction_retention_listing_order_and_consumed_filter(tmp_path):
     context.env_path.write_text("EVENT_NAME=fixture\n", encoding="utf-8")
 
     created = [
-        transactions.create_config_snapshot(context, f"config.{index}")
+        config_transaction.create_config_snapshot(context, f"config.{index}")
         for index in range(3)
     ]
     assert len(list(context.transaction_dir.iterdir())) == 2
-    listed = transactions.list_config_snapshots(context)
+    listed = config_transaction.list_config_snapshots(context)
     assert listed == sorted(listed, reverse=True)
 
-    transactions.mark_config_snapshot_consumed(Path(created[-1]["path"]))
-    assert Path(created[-1]["path"]) not in transactions.list_config_snapshots(context)
+    config_transaction.mark_config_snapshot_consumed(Path(created[-1]["path"]))
+    assert Path(created[-1]["path"]) not in config_transaction.list_config_snapshots(
+        context,
+    )
 
 
 def test_platform_api_package_dependency_direction_and_compose_mount():
@@ -243,7 +246,7 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
     assert package_dependencies("write_api") == set()
     assert package_dependencies("incidents") == {"storage"}
     assert package_dependencies("auth") == {"storage"}
-    assert package_dependencies("transactions") == {"storage"}
+    assert package_dependencies("config_transaction") == {"storage"}
 
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
     assert "- ./:/workspace" in compose

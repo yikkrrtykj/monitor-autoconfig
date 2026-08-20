@@ -1,4 +1,4 @@
-"""Consistent config snapshots and apply-status persistence."""
+"""Config snapshots, history, and apply-status persistence."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,9 +12,10 @@ from .storage import atomic_write_text, read_json_file, write_json_file
 
 
 @dataclass(frozen=True)
-class TransactionContext:
+class ConfigTransactionContext:
     config_path: Path
     env_path: Path
+    history_path: Path
     transaction_dir: Path
     apply_status_dir: Path
     transaction_retention: int = 50
@@ -35,7 +36,10 @@ def normalize_operation_id(value: str | None, prefix: str = "op") -> str:
     return new_operation_id(prefix)
 
 
-def apply_status_path(context: TransactionContext, operation_id: str) -> Path:
+def apply_status_path(
+    context: ConfigTransactionContext,
+    operation_id: str,
+) -> Path:
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,96}", str(operation_id or "")):
         raise ValueError("invalid operation id")
     return context.apply_status_dir / f"{operation_id}.json"
@@ -60,7 +64,7 @@ def prune_retained_paths(paths, keep: int) -> None:
             )
 
 
-def prune_generated_state(context: TransactionContext) -> None:
+def prune_generated_state(context: ConfigTransactionContext) -> None:
     if context.transaction_dir.exists():
         prune_retained_paths(
             context.transaction_dir.iterdir(), context.transaction_retention,
@@ -73,7 +77,7 @@ def prune_generated_state(context: TransactionContext) -> None:
 
 
 def write_apply_status(
-    context: TransactionContext,
+    context: ConfigTransactionContext,
     operation_id: str,
     state: str,
     **detail,
@@ -90,7 +94,10 @@ def write_apply_status(
     return payload
 
 
-def read_apply_status(context: TransactionContext, operation_id: str) -> dict:
+def read_apply_status(
+    context: ConfigTransactionContext,
+    operation_id: str,
+) -> dict:
     clean = str(operation_id or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,96}", clean):
         return {
@@ -109,7 +116,7 @@ def read_apply_status(context: TransactionContext, operation_id: str) -> dict:
 
 
 def create_config_snapshot(
-    context: TransactionContext,
+    context: ConfigTransactionContext,
     action: str,
     actor: str = "",
     note: str = "",
@@ -135,7 +142,7 @@ def create_config_snapshot(
     return {**metadata, "path": str(directory)}
 
 
-def list_config_snapshots(context: TransactionContext) -> list[Path]:
+def list_config_snapshots(context: ConfigTransactionContext) -> list[Path]:
     if not context.transaction_dir.exists():
         return []
     eligible = []
@@ -162,7 +169,7 @@ def mark_config_snapshot_consumed(directory: Path) -> None:
 
 
 def restore_config_snapshot(
-    context: TransactionContext,
+    context: ConfigTransactionContext,
     directory: Path,
 ) -> dict:
     metadata = read_json_file(directory / "metadata.json", {})
@@ -188,3 +195,21 @@ def restore_config_snapshot(
         context.env_path.unlink()
         restored["env"] = "removed"
     return restored
+
+
+def append_history(
+    context: ConfigTransactionContext,
+    action: str,
+    actor: str,
+    note: str,
+    detail: dict,
+) -> None:
+    history = read_json_file(context.history_path, [])
+    history.insert(0, {
+        "time": int(time.time()),
+        "action": action,
+        "actor": actor,
+        "note": note,
+        "detail": detail,
+    })
+    write_json_file(context.history_path, history[:200])

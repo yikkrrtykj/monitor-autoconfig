@@ -26,6 +26,7 @@ from version_info import get_version_info
 from platform_api import apply_runtime as platform_apply_runtime
 from platform_api import auth as platform_auth
 from platform_api import bridge as platform_bridge
+from platform_api import config_transaction as platform_config_transaction
 from platform_api import dhcp_runtime as platform_dhcp_runtime
 from platform_api import dhcp_settings as platform_dhcp_settings
 from platform_api import dhcp_telnet as platform_dhcp_telnet
@@ -36,7 +37,6 @@ from platform_api import iperf_runtime as platform_iperf_runtime
 from platform_api import precheck as platform_precheck
 from platform_api import read_api as platform_read_api
 from platform_api import storage as platform_storage
-from platform_api import transactions as platform_transactions
 from platform_api import write_api as platform_write_api
 from platform_api.settings import load_settings
 
@@ -107,8 +107,10 @@ AUTH_CONTEXT = platform_auth.AuthContext(
     failure_window_seconds=AUTH_FAILURE_WINDOW_SECONDS,
     failure_limit=AUTH_FAILURE_LIMIT,
     lock_seconds=AUTH_LOCK_SECONDS,
-    history_writer=lambda action, actor, note, detail: append_history(
-        action, actor, note, detail,
+    history_writer=lambda action, actor, note, detail: (
+        platform_config_transaction.append_history(
+            _config_transaction_context(), action, actor, note, detail,
+        )
     ),
 )
 SESSIONS = AUTH_CONTEXT.sessions
@@ -138,63 +140,17 @@ def ensure_dirs() -> None:
 # Serializes config-mutating requests so the now-threaded server can't interleave
 # two saves/applies writing the same files.
 WRITE_LOCK = threading.Lock()
-def _transaction_context() -> platform_transactions.TransactionContext:
+def _config_transaction_context(
+) -> platform_config_transaction.ConfigTransactionContext:
     """Reflect compatibility globals that existing callers may override."""
-    return platform_transactions.TransactionContext(
+    return platform_config_transaction.ConfigTransactionContext(
         config_path=CONFIG_PATH,
         env_path=ENV_PATH,
+        history_path=STATE_DIR / "history.json",
         transaction_dir=TRANSACTION_DIR,
         apply_status_dir=APPLY_STATUS_DIR,
         transaction_retention=TRANSACTION_RETENTION,
         apply_status_retention=APPLY_STATUS_RETENTION,
-    )
-
-
-new_operation_id = platform_transactions.new_operation_id
-normalize_operation_id = platform_transactions.normalize_operation_id
-prune_retained_paths = platform_transactions.prune_retained_paths
-mark_config_snapshot_consumed = platform_transactions.mark_config_snapshot_consumed
-
-
-def apply_status_path(operation_id: str) -> Path:
-    return platform_transactions.apply_status_path(
-        _transaction_context(), operation_id,
-    )
-
-
-def prune_generated_state() -> None:
-    platform_transactions.prune_generated_state(_transaction_context())
-
-
-def write_apply_status(operation_id: str, state: str, **detail) -> dict:
-    return platform_transactions.write_apply_status(
-        _transaction_context(), operation_id, state, **detail,
-    )
-
-
-def read_apply_status(operation_id: str) -> dict:
-    return platform_transactions.read_apply_status(
-        _transaction_context(), operation_id,
-    )
-
-
-def create_config_snapshot(
-    action: str,
-    actor: str = "",
-    note: str = "",
-) -> dict:
-    return platform_transactions.create_config_snapshot(
-        _transaction_context(), action, actor, note,
-    )
-
-
-def list_config_snapshots() -> list[Path]:
-    return platform_transactions.list_config_snapshots(_transaction_context())
-
-
-def restore_config_snapshot(directory: Path) -> dict:
-    return platform_transactions.restore_config_snapshot(
-        _transaction_context(), directory,
     )
 
 
@@ -358,6 +314,7 @@ def _apply_runtime_context() -> platform_apply_runtime.ApplyRuntimeContext:
 def save_config(text: str, actor: str = "", note: str = "") -> dict:
     require_write()
     event_config_context = _event_config_context()
+    config_transaction_context = _config_transaction_context()
     blocked = platform_event_config.current_config_write_guard(event_config_context)
     if blocked:
         return blocked
@@ -367,9 +324,17 @@ def save_config(text: str, actor: str = "", note: str = "") -> dict:
     bad = [item for item in payload["issues"] if item.get("level") == "bad"]
     if bad:
         return {**payload, "ok": False, "error": "config has blocking validation errors"}
-    snapshot = create_config_snapshot("config.save", actor, note)
+    snapshot = platform_config_transaction.create_config_snapshot(
+        config_transaction_context, "config.save", actor, note,
+    )
     atomic_write_text(CONFIG_PATH, payload["normalizedText"])
-    append_history("config.save", actor, note, {"transactionId": snapshot["id"], "snapshot": snapshot["path"]})
+    platform_config_transaction.append_history(
+        config_transaction_context,
+        "config.save",
+        actor,
+        note,
+        {"transactionId": snapshot["id"], "snapshot": snapshot["path"]},
+    )
     return {
         **platform_event_config.config_payload(event_config_context),
         "transactionId": snapshot["id"],
@@ -379,8 +344,11 @@ def save_config(text: str, actor: str = "", note: str = "") -> dict:
 
 def apply_config(text: str | None, actor: str = "", note: str = "", operation_id: str | None = None) -> dict:
     require_write()
-    operation_id = normalize_operation_id(operation_id, "apply")
+    operation_id = platform_config_transaction.normalize_operation_id(
+        operation_id, "apply",
+    )
     event_config_context = _event_config_context()
+    config_transaction_context = _config_transaction_context()
     blocked = platform_event_config.current_config_write_guard(event_config_context)
     if blocked:
         return {**blocked, "operationId": operation_id}
@@ -395,7 +363,8 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
     operation_timeout = platform_apply_runtime.apply_operation_timeout_seconds(
         apply_runtime_context
     )
-    write_apply_status(
+    platform_config_transaction.write_apply_status(
+        config_transaction_context,
         operation_id,
         "running",
         action="apply",
@@ -408,38 +377,62 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
         bad = [item for item in payload["issues"] if item.get("level") == "bad"]
         if bad:
             result = {**payload, "ok": False, "error": "config has blocking validation errors", "operationId": operation_id}
-            write_apply_status(operation_id, "failed", action="apply", error=result["error"])
+            platform_config_transaction.write_apply_status(
+                config_transaction_context,
+                operation_id,
+                "failed",
+                action="apply",
+                error=result["error"],
+            )
             return result
 
-        snapshot = create_config_snapshot("config.apply", actor, note)
+        snapshot = platform_config_transaction.create_config_snapshot(
+            config_transaction_context, "config.apply", actor, note,
+        )
         if text is not None or payload.get("migrationRequired"):
             atomic_write_text(CONFIG_PATH, payload["normalizedText"])
         rendered = merge_env_file(ENV_PATH, payload["env"])
         atomic_write_text(ENV_PATH, rendered)
-        append_history("config.apply", actor, note, {
-            "operationId": operation_id,
-            "transactionId": snapshot["id"],
-            "snapshot": snapshot["path"],
-            "envKeys": sorted(payload["env"]),
-        })
+        platform_config_transaction.append_history(
+            config_transaction_context,
+            "config.apply",
+            actor,
+            note,
+            {
+                "operationId": operation_id,
+                "transactionId": snapshot["id"],
+                "snapshot": snapshot["path"],
+                "envKeys": sorted(payload["env"]),
+            },
+        )
         apply_result = platform_apply_runtime.run_apply_command(apply_runtime_context)
         failed = apply_result.get("ok") is False
         rollback_result = None
         restored = None
         if failed:
-            restored = restore_config_snapshot(Path(snapshot["path"]))
+            restored = platform_config_transaction.restore_config_snapshot(
+                config_transaction_context, Path(snapshot["path"]),
+            )
             rollback_result = platform_apply_runtime.run_apply_command(
                 apply_runtime_context
             )
-        append_history("config.apply_command", actor, note, {
-            "operationId": operation_id,
-            "transactionId": snapshot["id"],
-            "applied": bool(apply_result.get("applied")),
-            "needsRedeploy": bool(apply_result.get("needsRedeploy")),
-            "error": apply_result.get("error", ""),
-            "rolledBack": bool(restored),
-            "runtimeRestored": bool(rollback_result and rollback_result.get("applied")),
-        })
+        platform_config_transaction.append_history(
+            config_transaction_context,
+            "config.apply_command",
+            actor,
+            note,
+            {
+                "operationId": operation_id,
+                "transactionId": snapshot["id"],
+                "applied": bool(apply_result.get("applied")),
+                "needsRedeploy": bool(apply_result.get("needsRedeploy")),
+                "error": apply_result.get("error", ""),
+                "rolledBack": bool(restored),
+                "runtimeRestored": bool(
+                    rollback_result and rollback_result.get("applied")
+                ),
+            },
+        )
         if failed:
             result = {
                 **platform_event_config.config_payload(event_config_context),
@@ -451,7 +444,8 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
                 "restored": restored,
                 "rollbackApply": rollback_result,
             }
-            write_apply_status(
+            platform_config_transaction.write_apply_status(
+                config_transaction_context,
                 operation_id,
                 "failed",
                 action="apply",
@@ -463,7 +457,8 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
             return result
 
         state = "succeeded" if apply_result.get("applied") else "pending"
-        status = write_apply_status(
+        status = platform_config_transaction.write_apply_status(
+            config_transaction_context,
             operation_id,
             state,
             action="apply",
@@ -483,13 +478,16 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
         rollback_result = None
         if snapshot:
             try:
-                restored = restore_config_snapshot(Path(snapshot["path"]))
+                restored = platform_config_transaction.restore_config_snapshot(
+                    config_transaction_context, Path(snapshot["path"]),
+                )
                 rollback_result = platform_apply_runtime.run_apply_command(
                     apply_runtime_context
                 )
             except Exception as rollback_exc:
                 rollback_result = {"ok": False, "error": str(rollback_exc)}
-        write_apply_status(
+        platform_config_transaction.write_apply_status(
+            config_transaction_context,
             operation_id,
             "failed",
             action="apply",
@@ -505,24 +503,13 @@ def apply_config(text: str | None, actor: str = "", note: str = "", operation_id
             "rollbackApply": rollback_result,
         }
 
-
-def append_history(action: str, actor: str, note: str, detail: dict) -> None:
-    history_path = STATE_DIR / "history.json"
-    history = read_json_file(history_path, [])
-    history.insert(0, {
-        "time": int(time.time()),
-        "action": action,
-        "actor": actor,
-        "note": note,
-        "detail": detail,
-    })
-    write_json_file(history_path, history[:200])
-
-
 def rollback_config(actor: str = "", note: str = "", operation_id: str | None = None) -> dict:
     require_write()
-    operation_id = normalize_operation_id(operation_id, "rollback")
+    operation_id = platform_config_transaction.normalize_operation_id(
+        operation_id, "rollback",
+    )
     event_config_context = _event_config_context()
+    config_transaction_context = _config_transaction_context()
     blocked = platform_event_config.current_config_write_guard(event_config_context)
     if blocked:
         return {**blocked, "operationId": operation_id}
@@ -531,7 +518,8 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
     operation_timeout = platform_apply_runtime.apply_operation_timeout_seconds(
         apply_runtime_context
     )
-    write_apply_status(
+    platform_config_transaction.write_apply_status(
+        config_transaction_context,
         operation_id,
         "running",
         action="rollback",
@@ -539,31 +527,52 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
         timeoutSeconds=operation_timeout,
         deadlineAt=started_at + operation_timeout,
     )
-    snapshots = list_config_snapshots()
+    snapshots = platform_config_transaction.list_config_snapshots(
+        config_transaction_context,
+    )
     if not snapshots:
         error_message = "没有可用的一致性配置快照；旧版分散备份不会自动混合回滚"
-        write_apply_status(operation_id, "failed", action="rollback", error=error_message)
+        platform_config_transaction.write_apply_status(
+            config_transaction_context,
+            operation_id,
+            "failed",
+            action="rollback",
+            error=error_message,
+        )
         return {"ok": False, "operationId": operation_id, "error": error_message}
 
     target = snapshots[0]
-    guard = create_config_snapshot("config.rollback.guard", actor, note)
+    guard = platform_config_transaction.create_config_snapshot(
+        config_transaction_context, "config.rollback.guard", actor, note,
+    )
     try:
-        restored = restore_config_snapshot(target)
+        restored = platform_config_transaction.restore_config_snapshot(
+            config_transaction_context, target,
+        )
         apply_result = platform_apply_runtime.run_apply_command(apply_runtime_context)
         if apply_result.get("ok") is False:
-            restore_config_snapshot(Path(guard["path"]))
+            platform_config_transaction.restore_config_snapshot(
+                config_transaction_context, Path(guard["path"]),
+            )
             recovery_result = platform_apply_runtime.run_apply_command(
                 apply_runtime_context
             )
             error_message = apply_result.get("error", "回滚后的服务应用失败")
-            append_history("config.rollback_failed", actor, note, {
-                "operationId": operation_id,
-                "targetTransactionId": restored.get("transactionId"),
-                "guardTransactionId": guard["id"],
-                "error": error_message,
-                "runtimeRestored": bool(recovery_result.get("applied")),
-            })
-            write_apply_status(
+            platform_config_transaction.append_history(
+                config_transaction_context,
+                "config.rollback_failed",
+                actor,
+                note,
+                {
+                    "operationId": operation_id,
+                    "targetTransactionId": restored.get("transactionId"),
+                    "guardTransactionId": guard["id"],
+                    "error": error_message,
+                    "runtimeRestored": bool(recovery_result.get("applied")),
+                },
+            )
+            platform_config_transaction.write_apply_status(
+                config_transaction_context,
                 operation_id,
                 "failed",
                 action="rollback",
@@ -581,15 +590,22 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
             }
 
         state = "succeeded" if apply_result.get("applied") else "pending"
-        mark_config_snapshot_consumed(target)
-        append_history("config.rollback", actor, note, {
-            "operationId": operation_id,
-            "targetTransactionId": restored.get("transactionId"),
-            "guardTransactionId": guard["id"],
-            "restored": restored,
-            "applied": bool(apply_result.get("applied")),
-        })
-        write_apply_status(
+        platform_config_transaction.mark_config_snapshot_consumed(target)
+        platform_config_transaction.append_history(
+            config_transaction_context,
+            "config.rollback",
+            actor,
+            note,
+            {
+                "operationId": operation_id,
+                "targetTransactionId": restored.get("transactionId"),
+                "guardTransactionId": guard["id"],
+                "restored": restored,
+                "applied": bool(apply_result.get("applied")),
+            },
+        )
+        platform_config_transaction.write_apply_status(
+            config_transaction_context,
             operation_id,
             state,
             action="rollback",
@@ -607,10 +623,18 @@ def rollback_config(actor: str = "", note: str = "", operation_id: str | None = 
         }
     except Exception as exc:
         try:
-            restore_config_snapshot(Path(guard["path"]))
+            platform_config_transaction.restore_config_snapshot(
+                config_transaction_context, Path(guard["path"]),
+            )
         except Exception:
             pass
-        write_apply_status(operation_id, "failed", action="rollback", error=str(exc))
+        platform_config_transaction.write_apply_status(
+            config_transaction_context,
+            operation_id,
+            "failed",
+            action="rollback",
+            error=str(exc),
+        )
         return {"ok": False, "operationId": operation_id, "error": f"回滚失败：{exc}"}
 
 
@@ -753,6 +777,7 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
     dhcp_settings_context = _dhcp_settings_context()
     dhcp_runtime_context = _dhcp_runtime_context()
     iperf_runtime_context = _iperf_runtime_context()
+    config_transaction_context = _config_transaction_context()
     return platform_read_api.ReadApiDependencies(
         clock=time.time,
         version_payload=partial(platform_event_config.version_payload, event_config_context),
@@ -761,7 +786,10 @@ def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
         config_payload=partial(platform_event_config.config_payload, event_config_context),
         read_json_file=read_json_file,
         history_path=STATE_DIR / "history.json",
-        read_apply_status=read_apply_status,
+        read_apply_status=partial(
+            platform_config_transaction.read_apply_status,
+            config_transaction_context,
+        ),
         incident_list=partial(platform_incidents.incident_list, incident_context),
         iperf_status_payload=partial(
             platform_iperf_runtime.iperf_status_payload,
