@@ -388,18 +388,15 @@ def test_version_payload_preserves_version_data_on_config_error(tmp_path):
 def test_entrypoint_builds_direct_read_and_write_dependencies(tmp_path):
     api = load_api(tmp_path)
 
-    read_dependencies = api._read_api_dependencies()
+    read_context = api._read_api_context()
     write_dependencies = api._write_api_dependencies()
 
-    assert read_dependencies.version_payload.func is event_config.version_payload
-    assert read_dependencies.config_payload.func is event_config.config_payload
     assert write_dependencies.config_payload.func is event_config.config_payload
-    for dependency in (
-        read_dependencies.version_payload,
-        read_dependencies.config_payload,
-        write_dependencies.config_payload,
-    ):
-        context = dependency.args[0]
+    contexts = (
+        read_context.event_config_context,
+        write_dependencies.config_payload.args[0],
+    )
+    for context in contexts:
         assert context.config_path == api.CONFIG_PATH
         assert context.example_path == api.EXAMPLE_PATH
         assert context.env_path == api.ENV_PATH

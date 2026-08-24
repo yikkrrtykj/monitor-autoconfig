@@ -246,7 +246,15 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
 
     assert package_dependencies("settings") == set()
     assert package_dependencies("storage") == set()
-    assert package_dependencies("read_api") == set()
+    assert package_dependencies("read_api") == {
+        "bridge",
+        "config_transaction",
+        "dhcp_runtime",
+        "dhcp_settings",
+        "event_config",
+        "incidents",
+        "iperf_runtime",
+    }
     assert package_dependencies("write_api") == set()
     assert package_dependencies("incidents") == {"storage"}
     assert package_dependencies("auth") == {"storage"}

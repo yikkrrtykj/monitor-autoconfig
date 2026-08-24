@@ -42,7 +42,7 @@ def make_context(
 def test_dhcp_settings_dependency_assembly_uses_new_module_without_wrappers(tmp_path):
     api = load_api(tmp_path)
 
-    read_callable = api._read_api_dependencies().get_dhcp_settings
+    read_context = api._read_api_context()
     write_callable = api._write_api_dependencies().save_dhcp_settings
 
     assert dhcp_settings.dhcp_connection_settings.__module__ == (
@@ -50,12 +50,11 @@ def test_dhcp_settings_dependency_assembly_uses_new_module_without_wrappers(tmp_
     )
     assert dhcp_settings.get_dhcp_settings.__module__ == "platform_api.dhcp_settings"
     assert dhcp_settings.save_dhcp_settings.__module__ == "platform_api.dhcp_settings"
-    assert read_callable.func is dhcp_settings.get_dhcp_settings
     assert write_callable.func is dhcp_settings.save_dhcp_settings
-    assert isinstance(read_callable.args[0], dhcp_settings.DhcpSettingsContext)
+    assert isinstance(read_context.dhcp_settings_context, dhcp_settings.DhcpSettingsContext)
     assert isinstance(write_callable.args[0], dhcp_settings.DhcpSettingsContext)
-    assert read_callable.args[0].core_host is api.configured_core_switch_host
-    assert read_callable.args[0].cache_clear is api.platform_dhcp_runtime.clear_cache
+    assert read_context.dhcp_settings_context.core_host is api.configured_core_switch_host
+    assert read_context.dhcp_settings_context.cache_clear is api.platform_dhcp_runtime.clear_cache
     assert not hasattr(api, "dhcp_connection_settings")
     assert not hasattr(api, "get_dhcp_settings")
     assert not hasattr(api, "save_dhcp_settings")

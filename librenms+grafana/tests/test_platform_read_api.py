@@ -42,7 +42,7 @@ def stop_server(server, thread):
 
 
 def test_read_api_module_imports_independently():
-    assert read_api.ReadApiDependencies.__module__ == "platform_api.read_api"
+    assert read_api.ReadApiContext.__module__ == "platform_api.read_api"
     assert callable(read_api.handle_get)
 
 

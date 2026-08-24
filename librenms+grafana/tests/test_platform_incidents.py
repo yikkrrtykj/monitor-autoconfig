@@ -232,18 +232,17 @@ def test_missing_update_malformed_input_and_write_guard_errors_are_unchanged(
 
 def test_entrypoint_incident_dependencies_keep_path_clock_guard_and_lock(tmp_path):
     api = load_api(tmp_path)
-    read_dependencies = api._read_api_dependencies()
+    read_context = api._read_api_context()
     write_dependencies = api._write_api_dependencies()
 
-    read_context = read_dependencies.incident_list.args[0]
+    read_incident_context = read_context.incident_context
     create_context = write_dependencies.new_incident.args[0]
     update_context = write_dependencies.update_incident.args[0]
-    for context in (read_context, create_context, update_context):
+    for context in (read_incident_context, create_context, update_context):
         assert context.incident_path == api.INCIDENT_PATH
         assert context.require_write is api.require_write
         assert context.clock is api.time.time
     assert write_dependencies.write_lock is api.WRITE_LOCK
-    assert read_dependencies.incident_list.func is incidents.incident_list
     assert write_dependencies.new_incident.func is incidents.new_incident
     assert write_dependencies.update_incident.func is incidents.update_incident
 

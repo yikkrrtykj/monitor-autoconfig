@@ -27,7 +27,7 @@ class _Response:
 def test_bridge_module_and_entrypoint_dependency_assembly(tmp_path):
     api = load_api(tmp_path)
 
-    pending = api._read_api_dependencies().bridge_retire_pending
+    read_context = api._read_api_context()
     write_dependencies = api._write_api_dependencies()
     resolve = write_dependencies.bridge_retire_resolve
     test_alert = write_dependencies.send_test_alert
@@ -35,8 +35,7 @@ def test_bridge_module_and_entrypoint_dependency_assembly(tmp_path):
     assert bridge.bridge_retire_pending.__module__ == "platform_api.bridge"
     assert bridge.bridge_retire_resolve.__module__ == "platform_api.bridge"
     assert bridge.send_test_alert.__module__ == "platform_api.bridge"
-    assert pending.func is bridge.bridge_retire_pending
-    assert pending.args == (api.BRIDGE_URL,)
+    assert read_context.bridge_url == api.BRIDGE_URL
     assert resolve.func is bridge.bridge_retire_resolve
     assert resolve.args == (api.BRIDGE_URL,)
     assert test_alert.func is bridge.send_test_alert

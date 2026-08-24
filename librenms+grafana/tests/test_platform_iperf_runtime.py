@@ -118,14 +118,12 @@ def completed_result(port=5201):
 
 def test_runtime_is_extracted_and_routers_bind_directly_without_wrappers(tmp_path):
     api = load_api(tmp_path)
-    read_deps = api._read_api_dependencies()
+    read_context = api._read_api_context()
     write_deps = api._write_api_dependencies()
 
-    assert read_deps.iperf_status_payload.func is iperf_runtime.iperf_status_payload
-    assert read_deps.iperf_history_payload.func is iperf_runtime.iperf_history_payload
     assert write_deps.start_iperf_task.func is iperf_runtime.start_iperf_task
     assert write_deps.stop_iperf_task.func is iperf_runtime.stop_iperf_task
-    assert read_deps.iperf_status_payload.args[0].history_path == api.IPERF_HISTORY_PATH
+    assert read_context.iperf_runtime_context.history_path == api.IPERF_HISTORY_PATH
     assert write_deps.start_iperf_task.args[0].command == api.IPERF3_COMMAND
 
     for name in (

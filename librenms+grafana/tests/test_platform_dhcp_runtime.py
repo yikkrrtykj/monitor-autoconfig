@@ -1,9 +1,11 @@
+from dataclasses import replace
 from http import HTTPStatus
 
 import pytest
 
 from platform_api import dhcp_runtime
 from platform_api import dhcp_settings
+from platform_api import read_api
 
 from .test_platform_transactions import load_api
 
@@ -84,18 +86,12 @@ def reset_runtime_state():
 
 def test_runtime_is_extracted_and_routers_bind_directly_without_wrappers(tmp_path):
     api = load_api(tmp_path)
-    read_deps = api._read_api_dependencies()
+    read_context = api._read_api_context()
     write_deps = api._write_api_dependencies()
 
-    assert read_deps.get_dhcp_bindings.func is dhcp_runtime.get_dhcp_bindings
-    assert read_deps.get_dhcp_dashboard.func is dhcp_runtime.get_dhcp_dashboard
+    assert isinstance(read_context.dhcp_runtime_context, dhcp_runtime.DhcpRuntimeContext)
     assert write_deps.test_dhcp_connection.func is dhcp_runtime.test_dhcp_connection
-    for callable_ in (
-        read_deps.get_dhcp_bindings,
-        read_deps.get_dhcp_dashboard,
-        write_deps.test_dhcp_connection,
-    ):
-        assert isinstance(callable_.args[0], dhcp_runtime.DhcpRuntimeContext)
+    assert isinstance(write_deps.test_dhcp_connection.args[0], dhcp_runtime.DhcpRuntimeContext)
     assert not hasattr(api, "DHCP_LOCK")
     assert not hasattr(api, "DHCP_CACHE")
     assert not hasattr(api, "collect_cisco_dhcp")
@@ -545,7 +541,7 @@ def test_settings_save_clears_runtime_cache_through_composition_root(tmp_path):
     assert dhcp_runtime.DHCP_CACHE == {}
 
 
-def test_router_partials_keep_context_first_and_route_arguments(tmp_path, monkeypatch):
+def test_read_domain_keeps_context_first_and_route_arguments(tmp_path, monkeypatch):
     api = load_api(tmp_path)
     calls = []
     monkeypatch.setattr(
@@ -566,11 +562,27 @@ def test_router_partials_keep_context_first_and_route_arguments(tmp_path, monkey
         lambda context: calls.append(("test", context)) or {"ok": True},
     )
 
-    read_deps = api._read_api_dependencies()
+    read_context = replace(
+        api._read_api_context(),
+        require_auth=lambda _handler: {"username": "fixture"},
+    )
     write_deps = api._write_api_dependencies()
-    assert read_deps.get_dhcp_bindings() == {"ok": True}
-    assert read_deps.get_dhcp_dashboard(True) == {"ok": True}
+
+    class Handler:
+        def __init__(self):
+            self.payloads = []
+
+        def _send_json(self, payload, status=200):
+            self.payloads.append((status, payload))
+
+    handler = Handler()
+    read_api.handle_get(handler, "/network/dhcp/bindings", read_context)
+    read_api.handle_get(handler, "/network/dhcp?force=yes", read_context)
     assert write_deps.test_dhcp_connection() == {"ok": True}
+    assert handler.payloads == [
+        (200, {"ok": True}),
+        (200, {"ok": True}),
+    ]
     assert [item[0] for item in calls] == ["bindings", "dashboard", "test"]
     assert calls[1][2] is True
     assert all(isinstance(item[1], dhcp_runtime.DhcpRuntimeContext) for item in calls)

@@ -1,7 +1,6 @@
 import json
 import os
 from dataclasses import FrozenInstanceError
-from functools import partial
 from pathlib import Path
 
 import pytest
@@ -302,7 +301,7 @@ def test_snapshot_listing_excludes_guards_and_consumed_entries(monkeypatch, tmp_
 def test_platform_api_owns_only_context_and_direct_module_wiring(tmp_path):
     api = load_api(tmp_path)
     context = api._config_transaction_context()
-    read_apply_status = api._read_api_dependencies().read_apply_status
+    read_context = api._read_api_context()
 
     assert context == config_transaction.ConfigTransactionContext(
         config_path=api.CONFIG_PATH,
@@ -313,9 +312,7 @@ def test_platform_api_owns_only_context_and_direct_module_wiring(tmp_path):
         transaction_retention=api.TRANSACTION_RETENTION,
         apply_status_retention=api.APPLY_STATUS_RETENTION,
     )
-    assert isinstance(read_apply_status, partial)
-    assert read_apply_status.func is config_transaction.read_apply_status
-    assert read_apply_status.args == (context,)
+    assert read_context.transaction_context == context
     for name in (
         "new_operation_id",
         "normalize_operation_id",

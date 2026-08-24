@@ -15,6 +15,7 @@ from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 from platform_config import (
     merge_env_file,
@@ -459,52 +460,18 @@ def _precheck_context() -> platform_precheck.PrecheckContext:
     )
 
 
-def _read_api_dependencies() -> platform_read_api.ReadApiDependencies:
-    """Bind the read router to the entrypoint's current compatibility API."""
-    event_config_context = _event_config_context()
-    incident_context = _incident_context()
-    dhcp_settings_context = _dhcp_settings_context()
-    dhcp_runtime_context = _dhcp_runtime_context()
-    iperf_runtime_context = _iperf_runtime_context()
-    config_transaction_context = _config_transaction_context()
-    return platform_read_api.ReadApiDependencies(
-        clock=time.time,
-        version_payload=partial(platform_event_config.version_payload, event_config_context),
-        auth_status=auth_status,
+def _read_api_context() -> platform_read_api.ReadApiContext:
+    """Assemble the explicit dependencies for the read-only API domain."""
+    return platform_read_api.ReadApiContext(
+        event_config_context=_event_config_context(),
+        transaction_context=_config_transaction_context(),
+        incident_context=_incident_context(),
+        iperf_runtime_context=_iperf_runtime_context(),
+        dhcp_settings_context=_dhcp_settings_context(),
+        dhcp_runtime_context=_dhcp_runtime_context(),
+        bridge_url=BRIDGE_URL,
         require_auth=require_auth,
-        config_payload=partial(platform_event_config.config_payload, event_config_context),
         read_json_file=read_json_file,
-        history_path=STATE_DIR / "history.json",
-        read_apply_status=partial(
-            platform_config_transaction.read_apply_status,
-            config_transaction_context,
-        ),
-        incident_list=partial(platform_incidents.incident_list, incident_context),
-        iperf_status_payload=partial(
-            platform_iperf_runtime.iperf_status_payload,
-            iperf_runtime_context,
-        ),
-        iperf_history_payload=partial(
-            platform_iperf_runtime.iperf_history_payload,
-            iperf_runtime_context,
-        ),
-        get_dhcp_settings=partial(
-            platform_dhcp_settings.get_dhcp_settings,
-            dhcp_settings_context,
-        ),
-        get_dhcp_bindings=partial(
-            platform_dhcp_runtime.get_dhcp_bindings,
-            dhcp_runtime_context,
-        ),
-        bridge_retire_pending=partial(
-            platform_bridge.bridge_retire_pending,
-            BRIDGE_URL,
-        ),
-        get_dhcp_dashboard=partial(
-            platform_dhcp_runtime.get_dhcp_dashboard,
-            dhcp_runtime_context,
-        ),
-        config_path=CONFIG_PATH,
         stamp=stamp,
     )
 
@@ -612,11 +579,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            platform_read_api.handle_get(
-                self,
-                self.path,
-                _read_api_dependencies(),
-            )
+            path = urlparse(self.path).path.rstrip("/") or "/"
+            if path == "/health":
+                self._send_json({"ok": True, "time": int(time.time())})
+            elif path == "/auth/status":
+                self._send_json(auth_status(self))
+            else:
+                platform_read_api.handle_get(
+                    self,
+                    self.path,
+                    _read_api_context(),
+                )
         except AuthError as exc:
             self._send_json(exc.payload, exc.status)
         except DiagnosticError as exc:
