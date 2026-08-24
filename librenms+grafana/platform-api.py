@@ -50,7 +50,6 @@ CONFIG_PATH = CORE_SETTINGS.config_path
 EXAMPLE_PATH = CORE_SETTINGS.example_path
 ENV_PATH = CORE_SETTINGS.env_path
 INCIDENT_PATH = CORE_SETTINGS.incident_path
-AUTH_PATH = CORE_SETTINGS.auth_path
 DHCP_SETTINGS_PATH = CORE_SETTINGS.dhcp_settings_path
 IPERF_HISTORY_PATH = CORE_SETTINGS.iperf_history_path
 HISTORY_DIR = CORE_SETTINGS.history_dir
@@ -84,42 +83,26 @@ PRECHECK_GRAFANA_URL = os.environ.get("PLATFORM_PRECHECK_GRAFANA_URL", "http://g
 PRECHECK_BIGSCREEN_URL = os.environ.get("PLATFORM_PRECHECK_BIGSCREEN_URL", "http://bigscreen").rstrip("/")
 PRECHECK_LIBRENMS_URL = os.environ.get("PLATFORM_PRECHECK_LIBRENMS_URL", "http://librenms:8000").rstrip("/")
 PRECHECK_PLAYER_TARGETS_URL = os.environ.get("PLATFORM_PRECHECK_PLAYER_TARGETS_URL", "http://player-targets:9199").rstrip("/")
-AUTH_ENABLED = CORE_SETTINGS.auth_enabled
-AUTH_ADMIN_USER = CORE_SETTINGS.auth_admin_user
-AUTH_DEFAULT_PASSWORD = CORE_SETTINGS.auth_default_password
-AUTH_COOKIE_NAME = CORE_SETTINGS.auth_cookie_name
-AUTH_COOKIE_SECURE = CORE_SETTINGS.auth_cookie_secure
-AUTH_SESSION_SECONDS = CORE_SETTINGS.auth_session_seconds
-PASSWORD_MIN_LENGTH = CORE_SETTINGS.password_min_length
-PASSWORD_HASH_ITERATIONS = platform_auth.PASSWORD_HASH_ITERATIONS
-AUTH_FAILURE_WINDOW_SECONDS = CORE_SETTINGS.auth_failure_window_seconds
-AUTH_FAILURE_LIMIT = CORE_SETTINGS.auth_failure_limit
-AUTH_LOCK_SECONDS = CORE_SETTINGS.auth_lock_seconds
 TRANSACTION_RETENTION = CORE_SETTINGS.transaction_retention
 APPLY_STATUS_RETENTION = CORE_SETTINGS.apply_status_retention
 AUTH_CONTEXT = platform_auth.AuthContext(
-    auth_path=AUTH_PATH,
-    enabled=AUTH_ENABLED,
-    admin_user=AUTH_ADMIN_USER,
-    default_password=AUTH_DEFAULT_PASSWORD,
-    cookie_name=AUTH_COOKIE_NAME,
-    cookie_secure=AUTH_COOKIE_SECURE,
-    session_seconds=AUTH_SESSION_SECONDS,
-    password_min_length=PASSWORD_MIN_LENGTH,
-    failure_window_seconds=AUTH_FAILURE_WINDOW_SECONDS,
-    failure_limit=AUTH_FAILURE_LIMIT,
-    lock_seconds=AUTH_LOCK_SECONDS,
+    auth_path=CORE_SETTINGS.auth_path,
+    enabled=CORE_SETTINGS.auth_enabled,
+    admin_user=CORE_SETTINGS.auth_admin_user,
+    default_password=CORE_SETTINGS.auth_default_password,
+    cookie_name=CORE_SETTINGS.auth_cookie_name,
+    cookie_secure=CORE_SETTINGS.auth_cookie_secure,
+    session_seconds=CORE_SETTINGS.auth_session_seconds,
+    password_min_length=CORE_SETTINGS.password_min_length,
+    failure_window_seconds=CORE_SETTINGS.auth_failure_window_seconds,
+    failure_limit=CORE_SETTINGS.auth_failure_limit,
+    lock_seconds=CORE_SETTINGS.auth_lock_seconds,
     history_writer=lambda action, actor, note, detail: (
         platform_config_transaction.append_history(
             _config_transaction_context(), action, actor, note, detail,
         )
     ),
 )
-SESSIONS = AUTH_CONTEXT.sessions
-AUTH_FAILURES = AUTH_CONTEXT.failures
-AUTH_FAILURES_LOCK = AUTH_CONTEXT.failures_lock
-
-AuthError = platform_auth.AuthError
 read_json_file = platform_storage.read_json_file
 write_json_file = platform_storage.write_json_file
 
@@ -135,7 +118,7 @@ def ensure_dirs() -> None:
     platform_storage.ensure_directories((
         STATE_DIR, HISTORY_DIR, TRANSACTION_DIR, APPLY_STATUS_DIR,
     ))
-    ensure_auth_store()
+    platform_auth.ensure_auth_store(AUTH_CONTEXT)
 
 
 # Serializes config-mutating requests so the now-threaded server can't interleave
@@ -153,133 +136,6 @@ def _config_transaction_context(
         transaction_retention=TRANSACTION_RETENTION,
         apply_status_retention=APPLY_STATUS_RETENTION,
     )
-
-
-def _sync_auth_context() -> platform_auth.AuthContext:
-    """Reflect compatibility globals that existing callers may override."""
-    AUTH_CONTEXT.auth_path = AUTH_PATH
-    AUTH_CONTEXT.enabled = AUTH_ENABLED
-    AUTH_CONTEXT.admin_user = AUTH_ADMIN_USER
-    AUTH_CONTEXT.default_password = AUTH_DEFAULT_PASSWORD
-    AUTH_CONTEXT.cookie_name = AUTH_COOKIE_NAME
-    AUTH_CONTEXT.cookie_secure = AUTH_COOKIE_SECURE
-    AUTH_CONTEXT.session_seconds = AUTH_SESSION_SECONDS
-    AUTH_CONTEXT.password_min_length = PASSWORD_MIN_LENGTH
-    AUTH_CONTEXT.failure_window_seconds = AUTH_FAILURE_WINDOW_SECONDS
-    AUTH_CONTEXT.failure_limit = AUTH_FAILURE_LIMIT
-    AUTH_CONTEXT.lock_seconds = AUTH_LOCK_SECONDS
-    AUTH_CONTEXT.sessions = SESSIONS
-    AUTH_CONTEXT.failures = AUTH_FAILURES
-    AUTH_CONTEXT.failures_lock = AUTH_FAILURES_LOCK
-    return AUTH_CONTEXT
-
-
-b64encode = platform_auth.b64encode
-b64decode = platform_auth.b64decode
-hash_password = platform_auth.hash_password
-verify_password = platform_auth.verify_password
-parse_cookies = platform_auth.parse_cookies
-_auth_failure_keys = platform_auth.auth_failure_keys
-
-
-def ensure_auth_store() -> None:
-    platform_auth.ensure_auth_store(_sync_auth_context())
-
-
-def read_auth_store() -> dict:
-    return platform_auth.read_auth_store(_sync_auth_context())
-
-
-def write_auth_store(store: dict) -> None:
-    platform_auth.write_auth_store(_sync_auth_context(), store)
-
-
-def password_strength_error(password: str) -> str | None:
-    return platform_auth.password_strength_error(_sync_auth_context(), password)
-
-
-def prune_sessions() -> None:
-    platform_auth.prune_sessions(_sync_auth_context())
-
-
-def create_session(username: str) -> str:
-    return platform_auth.create_session(_sync_auth_context(), username)
-
-
-def current_session(handler: BaseHTTPRequestHandler) -> dict | None:
-    return platform_auth.current_session(_sync_auth_context(), handler)
-
-
-def session_cookie(token: str, max_age: int | None = None) -> str:
-    return platform_auth.session_cookie(
-        _sync_auth_context(), token, max_age=max_age,
-    )
-
-
-def clear_session_cookie() -> str:
-    return platform_auth.clear_session_cookie(_sync_auth_context())
-
-
-def auth_status(handler: BaseHTTPRequestHandler) -> dict:
-    return platform_auth.auth_status(_sync_auth_context(), handler)
-
-
-def require_auth(
-    handler: BaseHTTPRequestHandler,
-    allow_must_change: bool = False,
-) -> dict:
-    return platform_auth.require_auth(
-        _sync_auth_context(), handler, allow_must_change=allow_must_change,
-    )
-
-
-def _auth_lock_remaining(
-    username: str,
-    client_ip: str,
-    now: float | None = None,
-) -> int:
-    return platform_auth.auth_lock_remaining(
-        _sync_auth_context(), username, client_ip, now=now,
-    )
-
-
-def _record_auth_failure(
-    username: str,
-    client_ip: str,
-    now: float | None = None,
-) -> int:
-    return platform_auth.record_auth_failure(
-        _sync_auth_context(), username, client_ip, now=now,
-    )
-
-
-def _clear_auth_failures(username: str, client_ip: str) -> None:
-    platform_auth.clear_auth_failures(
-        _sync_auth_context(), username, client_ip,
-    )
-
-
-def login_auth(
-    username: str,
-    password: str,
-    client_ip: str = "",
-) -> tuple[dict, str]:
-    return platform_auth.login_auth(
-        _sync_auth_context(), username, password, client_ip,
-    )
-
-
-def change_password_auth(
-    handler: BaseHTTPRequestHandler,
-    data: dict,
-) -> tuple[dict, str]:
-    return platform_auth.change_password_auth(
-        _sync_auth_context(), handler, data,
-    )
-
-
-def logout_auth(handler: BaseHTTPRequestHandler) -> None:
-    platform_auth.logout_auth(_sync_auth_context(), handler)
 
 
 def _event_config_context() -> platform_event_config.EventConfigContext:
@@ -323,7 +179,7 @@ def _config_write_context() -> platform_config_write.ConfigWriteContext:
         merge_env_file=merge_env_file,
         atomic_write_text=platform_storage.atomic_write_text,
         clock=time.time,
-        require_auth=require_auth,
+        require_auth=partial(platform_auth.require_auth, AUTH_CONTEXT),
         write_lock=WRITE_LOCK,
     )
 
@@ -470,7 +326,7 @@ def _read_api_context() -> platform_read_api.ReadApiContext:
         dhcp_settings_context=_dhcp_settings_context(),
         dhcp_runtime_context=_dhcp_runtime_context(),
         bridge_url=BRIDGE_URL,
-        require_auth=require_auth,
+        require_auth=partial(platform_auth.require_auth, AUTH_CONTEXT),
         read_json_file=read_json_file,
         stamp=stamp,
     )
@@ -486,11 +342,17 @@ def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
     iperf_runtime_context = _iperf_runtime_context()
     config_write_context = _config_write_context()
     return platform_write_api.WriteApiDependencies(
-        login_auth=login_auth,
-        change_password_auth=change_password_auth,
-        logout_auth=logout_auth,
-        clear_session_cookie=clear_session_cookie,
-        require_auth=require_auth,
+        login_auth=partial(platform_auth.login_auth, AUTH_CONTEXT),
+        change_password_auth=partial(
+            platform_auth.change_password_auth,
+            AUTH_CONTEXT,
+        ),
+        logout_auth=partial(platform_auth.logout_auth, AUTH_CONTEXT),
+        clear_session_cookie=partial(
+            platform_auth.clear_session_cookie,
+            AUTH_CONTEXT,
+        ),
+        require_auth=partial(platform_auth.require_auth, AUTH_CONTEXT),
         config_payload=partial(platform_event_config.config_payload, event_config_context),
         write_lock=WRITE_LOCK,
         handle_config_post=partial(
@@ -553,20 +415,35 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
-            raise AuthError(HTTPStatus.BAD_REQUEST, "Content-Length 无效")
+            raise platform_auth.AuthError(
+                HTTPStatus.BAD_REQUEST,
+                "Content-Length 无效",
+            )
         if length < 0:
-            raise AuthError(HTTPStatus.BAD_REQUEST, "Content-Length 无效")
+            raise platform_auth.AuthError(
+                HTTPStatus.BAD_REQUEST,
+                "Content-Length 无效",
+            )
         if length > MAX_REQUEST_BODY_BYTES:
-            raise AuthError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "请求内容过大")
+            raise platform_auth.AuthError(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "请求内容过大",
+            )
         if length == 0:
             return {}
         try:
             raw = self.rfile.read(length).decode("utf-8")
             payload = json.loads(raw) if raw.strip() else {}
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise AuthError(HTTPStatus.BAD_REQUEST, "请求内容不是有效 JSON")
+            raise platform_auth.AuthError(
+                HTTPStatus.BAD_REQUEST,
+                "请求内容不是有效 JSON",
+            )
         if not isinstance(payload, dict):
-            raise AuthError(HTTPStatus.BAD_REQUEST, "请求内容必须是 JSON 对象")
+            raise platform_auth.AuthError(
+                HTTPStatus.BAD_REQUEST,
+                "请求内容必须是 JSON 对象",
+            )
         return payload
 
     def do_OPTIONS(self):
@@ -583,14 +460,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/health":
                 self._send_json({"ok": True, "time": int(time.time())})
             elif path == "/auth/status":
-                self._send_json(auth_status(self))
+                self._send_json(platform_auth.auth_status(AUTH_CONTEXT, self))
             else:
                 platform_read_api.handle_get(
                     self,
                     self.path,
                     _read_api_context(),
                 )
-        except AuthError as exc:
+        except platform_auth.AuthError as exc:
             self._send_json(exc.payload, exc.status)
         except DiagnosticError as exc:
             self._send_json(exc.payload, exc.status)
@@ -606,7 +483,7 @@ class Handler(BaseHTTPRequestHandler):
                 data,
                 _write_api_dependencies(),
             )
-        except AuthError as exc:
+        except platform_auth.AuthError as exc:
             self._send_json(exc.payload, exc.status)
         except DiagnosticError as exc:
             self._send_json(exc.payload, exc.status)
@@ -622,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.path,
                 _write_api_dependencies(),
             )
-        except AuthError as exc:
+        except platform_auth.AuthError as exc:
             self._send_json(exc.payload, exc.status)
         except KeyError as exc:
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.NOT_FOUND)

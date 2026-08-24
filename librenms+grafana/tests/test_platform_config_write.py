@@ -52,14 +52,19 @@ def test_context_is_explicit_immutable_and_directly_wired(tmp_path):
     assert context.merge_env_file is api.merge_env_file
     assert context.atomic_write_text is api.platform_storage.atomic_write_text
     assert context.clock is api.time.time
-    assert context.require_auth is api.require_auth
+    assert isinstance(context.require_auth, partial)
+    assert context.require_auth.func is api.platform_auth.require_auth
+    assert context.require_auth.args == (api.AUTH_CONTEXT,)
     assert context.write_lock is api.WRITE_LOCK
     with pytest.raises(FrozenInstanceError):
         context.write_enabled = False
 
     assert isinstance(dependency, partial)
     assert dependency.func is config_write.handle_post
-    assert dependency.args == (context,)
+    wired_context = dependency.args[0]
+    assert replace(wired_context, require_auth=context.require_auth) == context
+    assert wired_context.require_auth.func is api.platform_auth.require_auth
+    assert wired_context.require_auth.args == (api.AUTH_CONTEXT,)
     for name in ("save_config", "apply_config", "rollback_config"):
         assert not hasattr(api, name)
 
