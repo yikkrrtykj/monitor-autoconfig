@@ -6,7 +6,7 @@ import pytest
 
 from platform_api import apply_runtime
 
-from .test_platform_transactions import load_api, seed
+from .test_platform_transactions import apply_config, load_api, seed
 
 
 def make_context(tmp_path: Path, **overrides):
@@ -394,7 +394,9 @@ def test_entrypoint_calls_runtime_directly_and_keeps_one_context(
 
     monkeypatch.setattr(apply_runtime, "run_apply_command", fail_then_recover)
 
-    result = api.apply_config(None, operation_id="apply-runtime-direct")
+    result = apply_config(
+        api, None, operation_id="apply-runtime-direct",
+    )
 
     assert result["ok"] is False
     assert result["rolledBack"] is True

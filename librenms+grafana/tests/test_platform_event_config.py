@@ -5,7 +5,13 @@ import pytest
 
 from platform_api import event_config
 
-from .test_platform_transactions import CONFIG_FIXTURES, load_api
+from .test_platform_transactions import (
+    CONFIG_FIXTURES,
+    apply_config,
+    load_api,
+    rollback_config,
+    save_config,
+)
 
 
 def make_context(tmp_path: Path, *, write_enabled: bool = True):
@@ -413,12 +419,12 @@ def test_entrypoint_mutations_call_new_write_guard_directly(monkeypatch, tmp_pat
 
     monkeypatch.setattr(event_config, "current_config_write_guard", guard)
 
-    assert api.save_config("{}") == blocked
-    assert api.apply_config("{}", operation_id="event-config-apply") == {
+    assert save_config(api, "{}") == blocked
+    assert apply_config(api, "{}", operation_id="event-config-apply") == {
         **blocked,
         "operationId": "event-config-apply",
     }
-    assert api.rollback_config(operation_id="event-config-rollback") == {
+    assert rollback_config(api, operation_id="event-config-rollback") == {
         **blocked,
         "operationId": "event-config-rollback",
     }

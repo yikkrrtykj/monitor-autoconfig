@@ -57,11 +57,40 @@ def read_apply_status(api, operation_id: str) -> dict:
     )
 
 
+def save_config(api, text: str, actor: str = "", note: str = "") -> dict:
+    return api.platform_config_write.save_config(
+        api._config_write_context(), text, actor, note,
+    )
+
+
+def apply_config(
+    api,
+    text: str | None,
+    actor: str = "",
+    note: str = "",
+    operation_id: str | None = None,
+) -> dict:
+    return api.platform_config_write.apply_config(
+        api._config_write_context(), text, actor, note, operation_id,
+    )
+
+
+def rollback_config(
+    api,
+    actor: str = "",
+    note: str = "",
+    operation_id: str | None = None,
+) -> dict:
+    return api.platform_config_write.rollback_config(
+        api._config_write_context(), actor, note, operation_id,
+    )
+
+
 def test_save_snapshots_config_and_env_as_one_generation(tmp_path):
     api = load_api(tmp_path)
     seed(api)
 
-    result = api.save_config(config_text("new"), "admin", "save")
+    result = save_config(api, config_text("new"), "admin", "save")
 
     assert result["ok"] is True
     snapshot = api.TRANSACTION_DIR / result["transactionId"]
@@ -87,7 +116,7 @@ def test_failed_apply_restores_both_files_and_records_failure(monkeypatch, tmp_p
         lambda _context: next(outcomes),
     )
 
-    result = api.apply_config(
+    result = apply_config(api,
         (CONFIG_FIXTURES / "event-config-v1.yml").read_text(encoding="utf-8"),
         "admin", "apply", "apply-test-0001",
     )
@@ -121,7 +150,9 @@ def test_successful_apply_has_durable_success_record(monkeypatch, tmp_path):
         },
     )
 
-    result = api.apply_config(config_text("new"), "admin", "apply", "apply-test-0002")
+    result = apply_config(
+        api, config_text("new"), "admin", "apply", "apply-test-0002",
+    )
 
     assert result["applied"] is True
     assert result["state"] == "succeeded"
@@ -201,7 +232,7 @@ def test_timeout_finishes_durable_status_and_restores_runtime(monkeypatch, tmp_p
         lambda _context: {"ok": True, "services": []},
     )
 
-    result = api.apply_config(
+    result = apply_config(api,
         config_text("new"), "admin", "timeout", "apply-timeout-bytes",
     )
     status = read_apply_status(api, "apply-timeout-bytes")
@@ -233,7 +264,7 @@ def test_running_status_has_recovery_deadline_and_exceptions_finish_failed(
         observe_running_then_fail,
     )
 
-    result = api.apply_config(
+    result = apply_config(api,
         config_text("new"), "admin", "exception", "apply-deadline-test",
     )
     final = read_apply_status(api, "apply-deadline-test")
@@ -249,7 +280,7 @@ def test_running_status_has_recovery_deadline_and_exceptions_finish_failed(
 def test_rollback_restores_a_paired_snapshot_and_applies_it(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     seed(api, env="CUSTOM=paired-old\n")
-    saved = api.save_config(config_text("new"), "admin", "save")
+    saved = save_config(api, config_text("new"), "admin", "save")
     api.ENV_PATH.write_text("CUSTOM=mutated\n", encoding="utf-8")
     monkeypatch.setattr(
         api.platform_apply_runtime,
@@ -261,7 +292,7 @@ def test_rollback_restores_a_paired_snapshot_and_applies_it(monkeypatch, tmp_pat
         },
     )
 
-    result = api.rollback_config("admin", "rollback", "rollback-test-01")
+    result = rollback_config(api, "admin", "rollback", "rollback-test-01")
 
     assert result["applied"] is True
     assert result["restored"]["transactionId"] == saved["transactionId"]
@@ -273,7 +304,7 @@ def test_rollback_restores_a_paired_snapshot_and_applies_it(monkeypatch, tmp_pat
 def test_failed_rollback_restore_does_not_leave_a_half_restored_pair(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     seed(api, env="CUSTOM=old\n")
-    api.save_config(config_text("new"), "admin", "save")
+    save_config(api, config_text("new"), "admin", "save")
     api.ENV_PATH.write_text("CUSTOM=new\n", encoding="utf-8")
     before_config = api.CONFIG_PATH.read_bytes()
     before_env = api.ENV_PATH.read_bytes()
@@ -296,7 +327,7 @@ def test_failed_rollback_restore_does_not_leave_a_half_restored_pair(monkeypatch
         lambda _context: (_ for _ in ()).throw(AssertionError("must not apply")),
     )
 
-    result = api.rollback_config("admin", "rollback", "rollback-half-state")
+    result = rollback_config(api, "admin", "rollback", "rollback-half-state")
 
     assert result["ok"] is False
     assert "injected paired restore failure" in result["error"]
@@ -308,8 +339,8 @@ def test_failed_rollback_restore_does_not_leave_a_half_restored_pair(monkeypatch
 def test_repeated_rollback_walks_back_without_restoring_guard(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     seed(api, "old")
-    api.save_config(config_text("new"), "admin", "first")
-    api.save_config(config_text("newer"), "admin", "second")
+    save_config(api, config_text("new"), "admin", "first")
+    save_config(api, config_text("newer"), "admin", "second")
     monkeypatch.setattr(
         api.platform_apply_runtime,
         "run_apply_command",
@@ -318,8 +349,8 @@ def test_repeated_rollback_walks_back_without_restoring_guard(monkeypatch, tmp_p
         },
     )
 
-    first = api.rollback_config("admin", "rollback", "rollback-test-02")
-    second = api.rollback_config("admin", "rollback", "rollback-test-03")
+    first = rollback_config(api, "admin", "rollback", "rollback-test-02")
+    second = rollback_config(api, "admin", "rollback", "rollback-test-03")
 
     assert first["restored"]["transactionId"] != second["restored"]["transactionId"]
     assert json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "old"
@@ -370,7 +401,7 @@ def test_save_and_import_upgrade_schema_zero_to_one(tmp_path):
     api = load_api(tmp_path)
     seed(api)
 
-    saved = api.save_config(config_text("saved"), "admin", "save")
+    saved = save_config(api, config_text("saved"), "admin", "save")
     assert saved["ok"] is True
     assert api.platform_event_config.parse_config_text(
         api.CONFIG_PATH.read_text(encoding="utf-8")
@@ -378,7 +409,7 @@ def test_save_and_import_upgrade_schema_zero_to_one(tmp_path):
 
     imported = json.loads(config_text("imported"))
     imported.pop("schema_version", None)
-    result = api.save_config(json.dumps(imported), "admin", "import")
+    result = save_config(api, json.dumps(imported), "admin", "import")
     assert result["ok"] is True
     persisted = api.platform_event_config.parse_config_text(
         api.CONFIG_PATH.read_text(encoding="utf-8")
@@ -400,7 +431,7 @@ def test_apply_existing_schema_zero_writes_migrated_config(monkeypatch, tmp_path
         },
     )
 
-    result = api.apply_config(None, "admin", "apply", "apply-schema-zero")
+    result = apply_config(api, None, "admin", "apply", "apply-schema-zero")
 
     assert result["ok"] is True
     persisted = api.platform_event_config.parse_config_text(
@@ -434,10 +465,14 @@ def test_newer_current_config_blocks_save_apply_import_and_rollback(monkeypatch,
     assert readable["config"]["custom_future"] == {"keep": "untouched"}
     assert readable["env"] == {}
 
-    save_result = api.save_config(config_text("older"), "admin", "save")
-    import_result = api.save_config(config_text("imported"), "admin", "import")
-    apply_result = api.apply_config(config_text("older"), "admin", "apply", "apply-too-new")
-    rollback_result = api.rollback_config("admin", "rollback", "rollback-too-new")
+    save_result = save_config(api, config_text("older"), "admin", "save")
+    import_result = save_config(api, config_text("imported"), "admin", "import")
+    apply_result = apply_config(
+        api, config_text("older"), "admin", "apply", "apply-too-new",
+    )
+    rollback_result = rollback_config(
+        api, "admin", "rollback", "rollback-too-new",
+    )
 
     for result in (save_result, import_result, apply_result, rollback_result):
         assert result["ok"] is False
@@ -457,7 +492,7 @@ def test_import_of_newer_schema_is_rejected_before_overwrite(tmp_path):
     before_env = api.ENV_PATH.read_bytes()
     incoming = json.dumps({"schema_version": 2, "custom_future": {"secret": "keep"}})
 
-    result = api.save_config(incoming, "admin", "import")
+    result = save_config(api, incoming, "admin", "import")
 
     assert result["ok"] is False
     assert result["configTooNew"] is True
@@ -478,7 +513,7 @@ def test_apply_of_newer_submitted_schema_writes_no_files(monkeypatch, tmp_path):
         lambda _context: (_ for _ in ()).throw(AssertionError("must not apply")),
     )
 
-    result = api.apply_config(
+    result = apply_config(api,
         json.dumps({"schema_version": 2, "custom_future": {"keep": True}}),
         "admin",
         "apply",

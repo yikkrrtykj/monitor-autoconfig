@@ -242,16 +242,16 @@ def test_http_auth_flow():
 
             observed = {}
 
-            def fake_save(text, actor, note):
+            def fake_save(_context, text, actor, note):
                 observed.update(text=text, actor=actor, note=note)
                 return {"ok": True}
 
-            api.save_config = fake_save
-            status, _, payload = request_json(f"{base_url}/config/save", {
-                "text": "event: {}",
-                "actor": "forged-admin",
-                "note": "audit",
-            }, cookie=cookie)
+            with patch.object(api.platform_config_write, "save_config", fake_save):
+                status, _, payload = request_json(f"{base_url}/config/save", {
+                    "text": "event: {}",
+                    "actor": "forged-admin",
+                    "note": "audit",
+                }, cookie=cookie)
             assert status == 200
             assert payload["ok"] is True
             assert observed["actor"] == "admin"

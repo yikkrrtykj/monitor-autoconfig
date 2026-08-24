@@ -234,11 +234,15 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
         source = (root / "platform_api" / f"{module_name}.py").read_text(
             encoding="utf-8",
         )
-        return {
-            node.module
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.ImportFrom) and node.level == 1
-        }
+        dependencies = set()
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.ImportFrom) or node.level != 1:
+                continue
+            if node.module:
+                dependencies.add(node.module)
+            else:
+                dependencies.update(alias.name for alias in node.names)
+        return dependencies
 
     assert package_dependencies("settings") == set()
     assert package_dependencies("storage") == set()
@@ -247,6 +251,9 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
     assert package_dependencies("incidents") == {"storage"}
     assert package_dependencies("auth") == {"storage"}
     assert package_dependencies("config_transaction") == {"storage"}
+    assert package_dependencies("config_write") == {
+        "apply_runtime", "config_transaction", "event_config",
+    }
 
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
     assert "- ./:/workspace" in compose

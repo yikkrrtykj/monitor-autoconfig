@@ -4,6 +4,7 @@ import urllib.error
 import urllib.request
 from http import HTTPStatus
 from http.server import HTTPServer
+from unittest.mock import patch
 
 from platform_api import write_api
 
@@ -66,6 +67,18 @@ def build_dependencies(calls):
         calls.append(("require_auth", (handler,)))
         return {"username": "fixture-admin"}
 
+    def handle_config_post(handler, path, data):
+        if path not in {
+            "/config/save",
+            "/config/apply",
+            "/config/rollback",
+            "/config/import",
+        }:
+            return False
+        calls.append(("handle_config_post", (handler, path, data)))
+        handler._send_json({"ok": True, "route": "handle_config_post"})
+        return True
+
     return write_api.WriteApiDependencies(
         login_auth=login,
         change_password_auth=change_password,
@@ -74,15 +87,7 @@ def build_dependencies(calls):
         require_auth=require,
         config_payload=lambda text: result("config_payload", text),
         write_lock=RecordingLock(calls),
-        save_config=lambda text, actor, note: result(
-            "save_config", text, actor, note
-        ),
-        apply_config=lambda text, actor, note, operation_id: result(
-            "apply_config", text, actor, note, operation_id
-        ),
-        rollback_config=lambda actor, note, operation_id: result(
-            "rollback_config", actor, note, operation_id
-        ),
+        handle_config_post=handle_config_post,
         new_incident=lambda data: result("new_incident", data),
         send_test_alert=lambda: result("send_test_alert"),
         run_precheck=lambda: result("run_precheck"),
@@ -160,20 +165,6 @@ def test_public_auth_post_routes_keep_payload_cookie_and_client_contract():
 def test_every_protected_post_route_dispatches_to_existing_business_function():
     cases = [
         ("/config/validate", {"text": "cfg"}, "config_payload", False),
-        ("/config/save", {"text": "cfg", "note": "save"}, "save_config", True),
-        (
-            "/config/apply",
-            {"text": "cfg", "note": "apply", "operationId": "op-1"},
-            "apply_config",
-            True,
-        ),
-        (
-            "/config/rollback",
-            {"note": "rollback", "operationId": "op-2"},
-            "rollback_config",
-            True,
-        ),
-        ("/config/import", {"text": "imported"}, "save_config", True),
         ("/incidents", {"title": "fixture"}, "new_incident", True),
         ("/test-alert", {}, "send_test_alert", False),
         ("/pre-check", {}, "run_precheck", False),
@@ -210,45 +201,30 @@ def test_every_protected_post_route_dispatches_to_existing_business_function():
             assert names.index(business) < names.index("lock.exit"), path
         assert handler.sent[0][1:] == (200, None), path
 
+def test_config_routes_delegate_normalized_path_and_body_to_injected_domain():
     calls = []
     deps = build_dependencies(calls)
-    handler = FakeHandler(calls)
-    write_api.handle_post(handler, "/config/apply", {}, deps)
-    assert business_args(calls, "apply_config") == (
-        None,
-        "fixture-admin",
-        "",
-        None,
-    )
-
-
-def test_config_route_arguments_and_incident_response_schema_remain_exact():
-    calls = []
-    deps = build_dependencies(calls)
-
     handler = FakeHandler(calls)
     write_api.handle_post(
         handler,
-        "/config/save",
+        "/config/save/?ignored=1",
         {"text": "cfg", "note": "audit", "actor": "forged"},
         deps,
     )
-    assert business_args(calls, "save_config") == (
-        "cfg",
-        "fixture-admin",
-        "audit",
+    assert business_args(calls, "handle_config_post") == (
+        handler,
+        "/config/save",
+        {"text": "cfg", "note": "audit", "actor": "forged"},
     )
+    assert handler.sent == [
+        ({"ok": True, "route": "handle_config_post"}, 200, None),
+    ]
 
-    calls.clear()
-    handler = FakeHandler(calls)
-    write_api.handle_post(handler, "/config/import", {"text": "imported"}, deps)
-    assert business_args(calls, "save_config") == (
-        "imported",
-        "fixture-admin",
-        "import",
-    )
 
-    calls.clear()
+def test_incident_response_schema_remains_exact():
+    calls = []
+    deps = build_dependencies(calls)
+
     handler = FakeHandler(calls)
     data = {"title": "fixture"}
     write_api.handle_post(handler, "/incidents", data, deps)
@@ -323,18 +299,19 @@ def test_entrypoint_wiring_preserves_monkeypatch_and_body_error_contract(tmp_pat
     api = load_api(tmp_path)
     observed = {}
 
-    def fake_save(text, actor, note):
+    def fake_save(_context, text, actor, note):
         observed.update(text=text, actor=actor, note=note)
         return {"ok": True, "saved": "fixture"}
 
-    api.save_config = fake_save
-    assert api._write_api_dependencies().save_config is fake_save
     server, thread, base_url = run_server(api)
     try:
-        status, _, payload = request_raw(
-            f"{base_url}/config/save",
-            json.dumps({"text": "cfg", "note": "audit"}).encode(),
-        )
+        with patch.object(api.platform_config_write, "save_config", fake_save):
+            dependency = api._write_api_dependencies().handle_config_post
+            assert dependency.func is api.platform_config_write.handle_post
+            status, _, payload = request_raw(
+                f"{base_url}/config/save",
+                json.dumps({"text": "cfg", "note": "audit"}).encode(),
+            )
         assert status == 200
         assert payload == {"ok": True, "saved": "fixture"}
         assert observed == {

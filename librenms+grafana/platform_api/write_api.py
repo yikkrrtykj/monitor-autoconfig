@@ -1,8 +1,8 @@
 """Write HTTP routing for the platform API compatibility entrypoint.
 
-The entrypoint owns request parsing, exception-to-HTTP mapping, locks, and all
-stateful business operations. Importing this module therefore performs no file
-or network access and starts no background work.
+The router selects a top-level endpoint and delegates config writes to one
+injected domain callable. Importing it performs no file or network access and
+starts no background work.
 """
 from __future__ import annotations
 
@@ -21,9 +21,7 @@ class WriteApiDependencies:
     require_auth: Callable[[Any], dict]
     config_payload: Callable[[str], dict]
     write_lock: Any
-    save_config: Callable[[str, str, str], dict]
-    apply_config: Callable[[str | None, str, str, Any], dict]
-    rollback_config: Callable[[str, str, Any], dict]
+    handle_config_post: Callable[[Any, str, dict], bool]
     new_incident: Callable[[dict], dict]
     send_test_alert: Callable[[], dict]
     run_precheck: Callable[[], dict]
@@ -62,44 +60,8 @@ def handle_post(
     elif path == "/config/validate":
         deps.require_auth(handler)
         handler._send_json(deps.config_payload(data.get("text", "")))
-    elif path == "/config/save":
-        auth = deps.require_auth(handler)
-        with deps.write_lock:
-            handler._send_json(
-                deps.save_config(
-                    data.get("text", ""),
-                    auth["username"],
-                    data.get("note", ""),
-                )
-            )
-    elif path == "/config/apply":
-        auth = deps.require_auth(handler)
-        text = data.get("text") if "text" in data else None
-        with deps.write_lock:
-            handler._send_json(
-                deps.apply_config(
-                    text,
-                    auth["username"],
-                    data.get("note", ""),
-                    data.get("operationId"),
-                )
-            )
-    elif path == "/config/rollback":
-        auth = deps.require_auth(handler)
-        with deps.write_lock:
-            handler._send_json(
-                deps.rollback_config(
-                    auth["username"],
-                    data.get("note", ""),
-                    data.get("operationId"),
-                )
-            )
-    elif path == "/config/import":
-        auth = deps.require_auth(handler)
-        with deps.write_lock:
-            handler._send_json(
-                deps.save_config(data.get("text", ""), auth["username"], "import")
-            )
+    elif deps.handle_config_post(handler, path, data):
+        pass
     elif path == "/incidents":
         deps.require_auth(handler)
         # incidents.json is read-modify-write; concurrent submissions must
