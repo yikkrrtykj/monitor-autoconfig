@@ -33,6 +33,7 @@ from platform_api import dhcp_runtime as platform_dhcp_runtime
 from platform_api import dhcp_settings as platform_dhcp_settings
 from platform_api import dhcp_telnet as platform_dhcp_telnet
 from platform_api import event_config as platform_event_config
+from platform_api import health as platform_health
 from platform_api import incidents as platform_incidents
 from platform_api import iperf as platform_iperf
 from platform_api import iperf_runtime as platform_iperf_runtime
@@ -147,6 +148,10 @@ def _event_config_context() -> platform_event_config.EventConfigContext:
         write_enabled=WRITE_ENABLED,
         get_version_info=get_version_info,
     )
+
+
+def _health_context() -> platform_health.HealthContext:
+    return platform_health.HealthContext(clock=time.time)
 
 
 def require_write() -> None:
@@ -458,7 +463,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path = urlparse(self.path).path.rstrip("/") or "/"
             if path == "/health":
-                self._send_json({"ok": True, "time": int(time.time())})
+                self._send_json(platform_health.health_payload(
+                    _health_context(),
+                ))
             elif path == "/auth/status":
                 self._send_json(platform_auth.auth_status(AUTH_CONTEXT, self))
             else:

@@ -256,6 +256,7 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
         "iperf_runtime",
     }
     assert package_dependencies("write_api") == set()
+    assert package_dependencies("health") == set()
     assert package_dependencies("incidents") == {"storage"}
     assert package_dependencies("auth") == {"storage"}
     assert package_dependencies("config_transaction") == {"storage"}
