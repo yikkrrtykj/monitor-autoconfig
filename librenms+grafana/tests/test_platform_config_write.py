@@ -84,7 +84,7 @@ def test_save_success_preserves_snapshot_history_and_response(tmp_path):
     assert (snapshot / "event-config.yml").read_text(encoding="utf-8") == config_text(
         "old"
     )
-    history = api.read_json_file(api.STATE_DIR / "history.json", [])
+    history = api.platform_storage.read_json_file(api.STATE_DIR / "history.json", [])
     assert history[0]["action"] == "config.save"
     assert history[0]["detail"] == {
         "transactionId": result["transactionId"],
@@ -233,7 +233,7 @@ def test_rollback_success_keeps_guard_before_restore_and_consumes_target(
         ("create", "config.rollback.guard"),
         ("restore", saved["transactionId"]),
     ]
-    metadata = api.read_json_file(
+    metadata = api.platform_storage.read_json_file(
         api.TRANSACTION_DIR / saved["transactionId"] / "metadata.json", {},
     )
     assert metadata["consumedAt"]

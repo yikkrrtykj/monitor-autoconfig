@@ -1,7 +1,6 @@
-"""Platform API for event config, incidents, and network diagnostics.
+"""Compose the platform API domains and serve their HTTP routes.
 
-This service is intentionally small. It owns the writable platform state while
-the bigscreen remains a static UI served by nginx. Cisco Telnet uses the pinned
+The bigscreen remains a static UI served by nginx. Cisco Telnet uses the pinned
 telnetlib3 compatibility module so the service also works on Python 3.13+.
 """
 from __future__ import annotations
@@ -14,7 +13,6 @@ import time
 from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import urlparse
 
 from platform_config import (
@@ -23,7 +21,6 @@ from platform_config import (
     stamp,
     validate_config,
 )
-from version_info import get_version_info
 from platform_api import apply_runtime as platform_apply_runtime
 from platform_api import auth as platform_auth
 from platform_api import bridge as platform_bridge
@@ -35,13 +32,13 @@ from platform_api import dhcp_telnet as platform_dhcp_telnet
 from platform_api import event_config as platform_event_config
 from platform_api import health as platform_health
 from platform_api import incidents as platform_incidents
-from platform_api import iperf as platform_iperf
 from platform_api import iperf_runtime as platform_iperf_runtime
 from platform_api import precheck as platform_precheck
 from platform_api import read_api as platform_read_api
 from platform_api import storage as platform_storage
 from platform_api import write_api as platform_write_api
 from platform_api.settings import load_settings
+from version_info import get_version_info
 
 
 CORE_SETTINGS = load_settings()
@@ -104,8 +101,6 @@ AUTH_CONTEXT = platform_auth.AuthContext(
         )
     ),
 )
-read_json_file = platform_storage.read_json_file
-write_json_file = platform_storage.write_json_file
 
 
 class DiagnosticError(Exception):
@@ -125,9 +120,10 @@ def ensure_dirs() -> None:
 # Serializes config-mutating requests so the now-threaded server can't interleave
 # two saves/applies writing the same files.
 WRITE_LOCK = threading.Lock()
-def _config_transaction_context(
-) -> platform_config_transaction.ConfigTransactionContext:
-    """Reflect compatibility globals that existing callers may override."""
+
+
+def _config_transaction_context() -> platform_config_transaction.ConfigTransactionContext:
+    """Bind transaction storage to the current application settings."""
     return platform_config_transaction.ConfigTransactionContext(
         config_path=CONFIG_PATH,
         env_path=ENV_PATH,
@@ -230,7 +226,7 @@ def configured_core_switch_host() -> str:
 
 
 def _dhcp_settings_context() -> platform_dhcp_settings.DhcpSettingsContext:
-    """Reflect compatibility globals while keeping runtime state in this module."""
+    """Bind DHCP settings to the current application configuration."""
     return platform_dhcp_settings.DhcpSettingsContext(
         settings_path=DHCP_SETTINGS_PATH,
         default_username=DHCP_SWITCH_USERNAME,
@@ -286,8 +282,8 @@ def _iperf_runtime_context() -> platform_iperf_runtime.IperfRuntimeContext:
         allow_internal=IPERF3_ALLOW_INTERNAL,
         error_factory=DiagnosticError,
         validate_network_host=validate_network_host,
-        read_json_file=read_json_file,
-        write_json_file=write_json_file,
+        read_json_file=platform_storage.read_json_file,
+        write_json_file=platform_storage.write_json_file,
         host_exec_env=partial(
             platform_apply_runtime.host_exec_env,
             _apply_runtime_context(),
@@ -332,13 +328,13 @@ def _read_api_context() -> platform_read_api.ReadApiContext:
         dhcp_runtime_context=_dhcp_runtime_context(),
         bridge_url=BRIDGE_URL,
         require_auth=partial(platform_auth.require_auth, AUTH_CONTEXT),
-        read_json_file=read_json_file,
+        read_json_file=platform_storage.read_json_file,
         stamp=stamp,
     )
 
 
 def _write_api_dependencies() -> platform_write_api.WriteApiDependencies:
-    """Bind the write router to the entrypoint's current compatibility API."""
+    """Assemble explicit dependencies for the write API router."""
     event_config_context = _event_config_context()
     incident_context = _incident_context()
     precheck_context = _precheck_context()

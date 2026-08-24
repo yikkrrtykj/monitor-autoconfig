@@ -355,7 +355,9 @@ def test_repeated_rollback_walks_back_without_restoring_guard(monkeypatch, tmp_p
     assert first["restored"]["transactionId"] != second["restored"]["transactionId"]
     assert json.loads(api.CONFIG_PATH.read_text(encoding="utf-8"))["event"]["name"] == "old"
     assert all(
-        api.read_json_file(path / "metadata.json", {}).get("action") != "config.rollback.guard"
+        api.platform_storage.read_json_file(
+            path / "metadata.json", {},
+        ).get("action") != "config.rollback.guard"
         for path in api.platform_config_transaction.list_config_snapshots(
             api._config_transaction_context(),
         )

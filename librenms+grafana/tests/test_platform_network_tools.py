@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -261,7 +262,7 @@ def test_dhcp_console_settings_are_private_and_override_environment(tmp_path):
 
 def test_platform_api_image_contains_iperf_and_telnet_clients(tmp_path):
     api = load_api(tmp_path)
-    root = api.Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[1]
 
     dockerfile = (root / "docker" / "platform-api" / "Dockerfile").read_text(encoding="utf-8")
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
@@ -277,7 +278,7 @@ def test_platform_api_image_contains_iperf_and_telnet_clients(tmp_path):
 
 def test_dhcp_page_and_platform_service_wiring(tmp_path):
     api = load_api(tmp_path)
-    root = api.Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[1]
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
     pages = (root / "bigscreen" / "pages.js").read_text(encoding="utf-8")
     app = (root / "bigscreen" / "app.js").read_text(encoding="utf-8")
@@ -327,7 +328,7 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
 
 def test_network_overview_precedes_dhcp_and_non_24_pools_are_grouped_by_c_block(tmp_path):
     api = load_api(tmp_path)
-    root = api.Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[1]
     pages = (root / "bigscreen" / "pages.js").read_text(encoding="utf-8")
     app = (root / "bigscreen" / "app.js").read_text(encoding="utf-8")
     css = (root / "bigscreen" / "platform.css").read_text(encoding="utf-8")

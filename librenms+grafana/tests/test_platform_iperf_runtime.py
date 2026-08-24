@@ -164,8 +164,8 @@ def test_context_keeps_runtime_dependencies_explicit(tmp_path):
     assert context.allow_internal == api.IPERF3_ALLOW_INTERNAL
     assert context.error_factory is api.DiagnosticError
     assert context.validate_network_host is api.validate_network_host
-    assert context.read_json_file is api.read_json_file
-    assert context.write_json_file is api.write_json_file
+    assert context.read_json_file is api.platform_storage.read_json_file
+    assert context.write_json_file is api.platform_storage.write_json_file
     assert context.host_exec_env.func is api.platform_apply_runtime.host_exec_env
     assert context.host_exec_env.args == (api._apply_runtime_context(),)
 

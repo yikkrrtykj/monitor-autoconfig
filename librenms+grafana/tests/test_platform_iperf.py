@@ -31,7 +31,7 @@ def test_iperf_helpers_are_extracted_without_entrypoint_wrappers(tmp_path):
     assert iperf.parse_iperf3_json.__module__ == "platform_api.iperf"
     assert iperf._iperf_error_summary.__module__ == "platform_api.iperf"
     assert iperf._iperf_target_is_internal.__module__ == "platform_api.iperf"
-    assert api.platform_iperf is iperf
+    assert not hasattr(api, "platform_iperf")
     assert not hasattr(api, "parse_port_range")
     assert not hasattr(api, "parse_iperf3_json")
     assert not hasattr(api, "_iperf_error_summary")
