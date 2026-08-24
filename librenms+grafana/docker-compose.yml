@@ -857,7 +857,7 @@ services:
       # what the slim image lacks (docker). Host-first ran the host's python3,
       # which fails on missing shared libs inside the container.
       PATH: "/usr/local/bin:/usr/bin:/bin:/host/usr/bin"
-    command: ["python", "/workspace/platform-api.py"]
+    command: ["python", "-m", "platform_api.main"]
     networks:
       - monitor
     healthcheck:

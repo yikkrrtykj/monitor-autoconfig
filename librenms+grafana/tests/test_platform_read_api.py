@@ -46,7 +46,7 @@ def test_read_api_module_imports_independently():
     assert callable(read_api.handle_get)
 
 
-def test_platform_api_remains_a_direct_docker_entrypoint(monkeypatch, tmp_path):
+def test_platform_api_package_module_remains_docker_entrypoint(monkeypatch, tmp_path):
     observed = {}
 
     class FakeServer:
@@ -65,7 +65,7 @@ def test_platform_api_remains_a_direct_docker_entrypoint(monkeypatch, tmp_path):
     monkeypatch.setenv("PLATFORM_API_PORT", "9200")
     monkeypatch.setattr(http_server, "ThreadingHTTPServer", FakeServer)
 
-    runpy.run_path(str(ROOT / "platform-api.py"), run_name="__main__")
+    runpy.run_module("platform_api.main", run_name="__main__")
 
     assert observed["address"] == ("0.0.0.0", 9200)
     assert observed["handler"].__name__ == "Handler"

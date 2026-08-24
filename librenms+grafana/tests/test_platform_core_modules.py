@@ -266,8 +266,10 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
 
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
     assert "- ./:/workspace" in compose
-    assert 'command: ["python", "/workspace/platform-api.py"]' in compose
+    assert 'command: ["python", "-m", "platform_api.main"]' in compose
     assert (root / "platform_api" / "__init__.py").is_file()
+    assert (root / "platform_api" / "main.py").is_file()
+    assert not (root / "platform-api.py").exists()
     assert read_api.handle_get.__module__ == "platform_api.read_api"
     assert write_api.handle_post.__module__ == "platform_api.write_api"
     assert write_api.handle_patch.__module__ == "platform_api.write_api"

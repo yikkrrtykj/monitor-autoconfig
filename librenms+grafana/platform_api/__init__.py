@@ -1,1 +1,1 @@
-"""Core helpers for the platform API compatibility entrypoint."""
+"""Platform API domains and executable application entrypoint."""
