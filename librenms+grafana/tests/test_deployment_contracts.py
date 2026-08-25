@@ -204,7 +204,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260810a" in html
+    assert "app.js?v=20260825b" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -311,21 +311,38 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     # Keep the raw 2-second source stable, but suppress isolated 20 ms samples
     # in both overview and tournament displays. Sustained incidents stay raw.
     assert "const end = Math.floor(now / step) * step;" in api
+    assert 'const cacheKey = `${query}|${win.step}`;' in api
     assert 'max by (instance) (probe_icmp_duration_seconds{job=~' in pages
     assert 'phase="rtt"})' in pages
     ping_trend = next(
         line for line in pages.splitlines()
         if line.strip().startswith("pingTrend:")
     )
+    ping_success_trend = next(
+        line for line in pages.splitlines()
+        if line.strip().startswith("pingSuccessTrend:")
+    )
+    infrastructure_trend_jobs = "infra-core-ping|infra-dist-ping|infra-fw-ping"
+    assert infrastructure_trend_jobs in ping_trend
+    assert infrastructure_trend_jobs in ping_success_trend
+    assert 'max by (instance) (probe_success{job=~' in ping_success_trend
     assert "infra-dist-ping" in ping_trend
     assert "infra-srv-ping" not in ping_trend
+    assert "infra-srv-ping" not in ping_success_trend
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
-    assert "const { buildInfrastructurePingPresentation } = window.BSPingTransform;" in app
+    assert "prometheusRangeCached(pingSuccessTrendQuery, metricName, 2)" in app
+    assert "const pingSuccessTrendQuery = queries.pingSuccessTrend || \"\";" in app
     assert (
-        "const { displayLatencySeries } = "
-        "buildInfrastructurePingPresentation(rawActivePingSeries);"
+        "const activePingSuccessSeries = "
+        "visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap("
+        "filterDeployed(pingSuccessSeries, (s) => s.name), nameMap), \"max\"));"
     ) in app
+    assert "const { buildInfrastructurePingPresentation } = window.BSPingTransform;" in app
+    assert "buildInfrastructurePingPresentation({" in app
+    assert "latencySeries: rawActivePingSeries" in app
+    assert "successSeries: activePingSuccessSeries" in app
+    assert "buildInfrastructurePingPresentation(rawActivePingSeries)" not in app
     legacy_spike_helper = "suppressIsolated" + "LatencySpikes"
     assert legacy_spike_helper not in app
     assert legacy_spike_helper not in read("bigscreen/utils.js")
@@ -368,16 +385,34 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
 
     # The headline switch value is a responsive median, not the single lowest
     # sample in a minute (which becomes zero after one failed probe).
+    ping_gauge = next(
+        line.strip() for line in pages.splitlines()
+        if line.strip().startswith("pingGauge:")
+    )
+    loss_query = next(
+        line.strip() for line in pages.splitlines()
+        if line.strip().startswith("loss:")
+    )
+    assert ping_gauge == (
+        "pingGauge: 'avg by (instance, job) (quantile_over_time(0.5, "
+        "probe_icmp_duration_seconds{job=~\"infra-core-ping|infra-dist-ping|infra-fw-ping\","
+        "phase=\"rtt\"}[30s])) or avg by (instance, job) (quantile_over_time(0.5, "
+        "probe_icmp_duration_seconds{job=~\"infra-isp-ping|infra-srv-ping\",phase=\"rtt\"}[30s]))',"
+    )
+    assert loss_query == (
+        "loss: 'max by (instance, job, target_ip) (1 - avg_over_time("
+        "probe_success{job=~\"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping\"}[30s]))'"
+    )
     assert "min_over_time(probe_icmp_duration_seconds" not in pages
     assert pages.count("quantile_over_time(0.5, probe_icmp_duration_seconds") == 2
     assert pages.count("[30s]") == 3
-    assert "pages.js?v=20260804a" in index
+    assert "pages.js?v=20260825b" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260810a" in index
+    assert "app.js?v=20260825b" in index
     assert "utils.js?v=20260804b" in index
     assert "metrics/ping-transform.js?v=20260825a" in index
-    assert index.index("metrics/ping-transform.js?v=20260825a") < index.index("app.js?v=20260810a")
+    assert index.index("metrics/ping-transform.js?v=20260825a") < index.index("app.js?v=20260825b")
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -461,7 +496,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260809a" in index
-    assert "app.js?v=20260810a" in index
+    assert "app.js?v=20260825b" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

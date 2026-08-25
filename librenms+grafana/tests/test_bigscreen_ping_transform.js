@@ -372,6 +372,24 @@ assert.deepStrictEqual(failureInterrupted, [
   { t: 8, v: 0.003 }
 ], 'failure interrupts the high run and neither failure zero nor presentation values enter the raw baseline');
 
+assert.deepStrictEqual(
+  v2Values([
+    { t: 100, v: 0.002 },
+    { t: 102, v: 0 },
+    { t: 104, v: 0.003 }
+  ], [
+    { t: 100, v: 1 },
+    { t: 102, v: 0 },
+    { t: 104, v: 1 }
+  ]),
+  [
+    { t: 100, v: 0.002 },
+    { t: 102, v: null, status: 'failure' },
+    { t: 104, v: 0.003 }
+  ],
+  'the production RTT/success fixture presents a failure sentinel instead of zero milliseconds'
+);
+
 const provisionalRun = buildV2([
   { t: 0, v: 0.002 },
   { t: 2, v: 0.004 },

@@ -2,6 +2,7 @@
   const config = window.BIGSCREEN_CONFIG || {};
   const queries = window.BIGSCREEN_QUERIES || {};
   const pingTrendQuery = queries.pingTrend || "";
+  const pingSuccessTrendQuery = queries.pingSuccessTrend || "";
   const pingGaugeQuery = queries.pingGauge || "";
   const uptimeQuery = queries.uptime || "";
   const lossQuery = queries.loss || "";
@@ -990,17 +991,23 @@
   async function refreshCharts() {
     const seq = ++chartSeq;
     try {
-      const [pingSeries, lossSeries, ispTraffic] = await Promise.all([
-        // Fetch the raw 2-second infrastructure probes. Display filtering is
-        // applied below without changing the Prometheus history.
+      const [pingSeries, pingSuccessSeries, lossSeries, ispTraffic] = await Promise.all([
+        // Fetch the raw 2-second infrastructure RTT and success probes.
+        // prometheusRangeCached keys by query + step, so these remain
+        // independent caches even though their evaluation grids are aligned.
         prometheusRangeCached(pingTrendQuery, metricName, 2),
+        prometheusRangeCached(pingSuccessTrendQuery, metricName, 2),
         prometheusRangeCached(lossQuery),
         fetchIspTraffic()
       ]);
       const nameMap = await fetchInfraDeviceNames();
       if (seq !== chartSeq) return;
       const rawActivePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
-      const { displayLatencySeries } = buildInfrastructurePingPresentation(rawActivePingSeries);
+      const activePingSuccessSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSuccessSeries, (s) => s.name), nameMap), "max"));
+      const { displayLatencySeries } = buildInfrastructurePingPresentation({
+        latencySeries: rawActivePingSeries,
+        successSeries: activePingSuccessSeries
+      });
       // Prometheus does not return placeholder samples while a target/series
       // is temporarily absent. Never join the two real samples surrounding
       // that hole: doing so draws a convincing but entirely synthetic ramp.
