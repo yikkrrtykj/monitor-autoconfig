@@ -139,7 +139,8 @@
           hash = Math.imul(hash, 16777619);
         }
       });
-      return `${item.name}#${values.length}#${hash >>> 0}`;
+      const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;
+      return `${item.name}#${values.length}#${hash >>> 0}${currentStatus}`;
     }).join("|");
   }
 
@@ -237,6 +238,25 @@
       max: Math.max(...finiteValues),
       mean: average(finiteValues),
       min: Math.min(...finiteValues)
+    };
+  }
+
+  function lineSeriesHasTimeline(item) {
+    return Boolean(item) && (item.values || []).some((point) => Number.isFinite(point.t));
+  }
+
+  function lineSeriesCurrentDisplay(item, stats) {
+    const currentStatus = item && item.currentStatus;
+    if (currentStatus === "offline") {
+      return { currentStatus, label: "OFFLINE", value: null };
+    }
+    if (currentStatus === "unknown") {
+      return { currentStatus, label: "--", value: null };
+    }
+    return {
+      currentStatus: currentStatus === "online" ? "online" : null,
+      label: null,
+      value: stats && Number.isFinite(stats.last) ? stats.last : null
     };
   }
 
@@ -411,6 +431,8 @@
     stepPathFromPoints,
     isDrawableLinePoint,
     lineSeriesStats,
+    lineSeriesHasTimeline,
+    lineSeriesCurrentDisplay,
     lineFailurePoints,
     splitPointsOnGaps,
     parseIspBandwidthConfig,

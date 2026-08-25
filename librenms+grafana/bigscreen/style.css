@@ -552,6 +552,15 @@ body {
   margin-right: 2px;
 }
 
+.legend-current-status {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.legend-current-status.legend-status-offline {
+  color: #ff4d66;
+}
+
 .heatmap {
   --heatmap-name-width: 150px;
   --heatmap-gap: 8px;

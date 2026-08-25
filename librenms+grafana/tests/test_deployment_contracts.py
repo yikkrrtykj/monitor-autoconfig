@@ -204,7 +204,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260825b" in html
+    assert "app.js?v=20260825c" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -409,10 +409,10 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "pages.js?v=20260825b" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260825b" in index
-    assert "utils.js?v=20260804b" in index
+    assert "app.js?v=20260825c" in index
+    assert "utils.js?v=20260825a" in index
     assert "metrics/ping-transform.js?v=20260825a" in index
-    assert index.index("metrics/ping-transform.js?v=20260825a") < index.index("app.js?v=20260825b")
+    assert index.index("metrics/ping-transform.js?v=20260825a") < index.index("app.js?v=20260825c")
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -431,6 +431,30 @@ def test_bigscreen_line_chart_supports_explicit_failure_points():
     assert 'stroke:#ff4d66' in app
     assert "${failureMarkers}" in app
     assert "smooth: true" in app
+
+
+def test_bigscreen_ping_legend_uses_authoritative_series_status():
+    app = read("bigscreen/app.js")
+    utils = read("bigscreen/utils.js")
+    css = read("bigscreen/style.css")
+    index = read("bigscreen/index.html")
+
+    assert "const series = seriesList.filter(lineSeriesHasTimeline);" in app
+    assert "lineSeriesCurrentDisplay(item, stats)" in app
+    assert "currentStatusLegend: true" in app
+    assert '(currentStatusLegend ? ["last", "max"] : ["mean", "max"])' in app
+    assert 'currentDisplay.currentStatus === "offline"' in app
+    assert '<span class="legend-current-status legend-status-offline">OFFLINE</span>' in app
+    assert '.legend-current-status.legend-status-offline' in css
+    assert "color: #ff4d66;" in css
+    assert 'if (currentStatus === "offline")' in utils
+    assert 'if (currentStatus === "unknown")' in utils
+    assert 'label: "OFFLINE"' in utils
+    assert 'label: "--"' in utils
+    assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
+    assert "style.css?v=20260825a" in index
+    assert "utils.js?v=20260825a" in index
+    assert "app.js?v=20260825c" in index
 
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
@@ -495,8 +519,8 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".compact-series .side-legend" in css
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
-    assert "style.css?v=20260809a" in index
-    assert "app.js?v=20260825b" in index
+    assert "style.css?v=20260825a" in index
+    assert "app.js?v=20260825c" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

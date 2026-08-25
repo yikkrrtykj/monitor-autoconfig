@@ -21,7 +21,8 @@
     formatUptime, formatBits, formatTime, niceMax, roundUpToStep, average,
     networkLabel, seatLabel, gaugeColor, gaugePercent,
     linePathFromPoints, stepPathFromPoints, splitPointsOnGaps,
-    seriesSignature, lineSeriesStats, lineFailurePoints,
+    seriesSignature, lineSeriesStats, lineSeriesHasTimeline,
+    lineSeriesCurrentDisplay, lineFailurePoints,
     buildCsv, formatTimestampFull, groupAddressesByCBlock
   } = window.BSUtils;
   const { buildInfrastructurePingPresentation } = window.BSPingTransform;
@@ -306,9 +307,7 @@
 
   function renderLineChart(containerId, seriesList, options) {
     const container = document.getElementById(containerId);
-    const series = seriesList.filter((item) => (
-      (item.values || []).some((point) => Number.isFinite(point.t))
-    ));
+    const series = seriesList.filter(lineSeriesHasTimeline);
     if (!series.length) {
       renderNoData(container);
       return;
@@ -402,7 +401,8 @@
         `;
       }).join("");
     }).join("");
-    const calcs = options.calcs || ["mean", "max"];
+    const currentStatusLegend = !!options.currentStatusLegend;
+    const calcs = options.calcs || (currentStatusLegend ? ["last", "max"] : ["mean", "max"]);
     const calcsExplicit = !!options.calcs;
     const calcLabels = { last: "最近", max: "最高", mean: "平均", min: "最低" };
     const seriesColor = new Map(series.map((item, index) => [
@@ -421,19 +421,37 @@
     const legend = legendSeries.map((item) => {
       const color = seriesColor.get(item);
       const stats = statsBySeries.get(item);
+      const currentDisplay = currentStatusLegend
+        ? lineSeriesCurrentDisplay(item, stats)
+        : null;
       const cells = calcs.map((calc) => {
         const stat = stats[calc];
-        const value = escapeHtml(Number.isFinite(stat) ? valueFormatter(stat) : "-");
+        const isCurrentCell = currentStatusLegend && calc === "last";
+        const displayValue = isCurrentCell && currentDisplay.label !== null
+          ? currentDisplay.label
+          : (isCurrentCell ? currentDisplay.value : stat);
+        const value = escapeHtml(Number.isFinite(displayValue)
+          ? valueFormatter(displayValue)
+          : (typeof displayValue === "string" ? displayValue : (currentStatusLegend ? "--" : "-")));
+        const statusClass = isCurrentCell && currentDisplay.currentStatus === "offline"
+          ? ' class="legend-current-status legend-status-offline"'
+          : "";
         if (calcsExplicit) {
           const label = escapeHtml(calcLabels[calc] || calc);
-          return `<span><i class="legend-calc-label">${label}</i> ${value}</span>`;
+          return `<span${statusClass}><i class="legend-calc-label">${label}</i> ${value}</span>`;
         }
-        return `<span>${value}</span>`;
+        return `<span${statusClass}>${value}</span>`;
       }).join("");
+      const namesOnlyStatus = options.legendNamesOnly
+        && currentDisplay
+        && currentDisplay.currentStatus === "offline"
+        ? '<span class="legend-current-status legend-status-offline">OFFLINE</span>'
+        : "";
       return `
         <div class="legend-row" title="${escapeHtml(item.name)}">
           <span class="legend-swatch" style="background:${color}"></span>
           <span class="legend-name">${escapeHtml(item.name)}</span>
+          ${namesOnlyStatus}
           ${cells}
         </div>
       `;
@@ -1028,6 +1046,7 @@
           // 1/2/2.5/5 chart scale: e.g. a 27 ms peak gets a 30 ms ceiling.
           maxRoundStep: 0.01,
           breakGapSeconds: pingGap,
+          currentStatusLegend: true,
           // Visual-only curve smoothing: linePathFromPoints reads the display
           // samples but never changes them. Legend and scale calculations
           // continue to use the same presentation values above.

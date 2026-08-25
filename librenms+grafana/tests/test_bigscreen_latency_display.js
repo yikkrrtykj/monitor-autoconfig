@@ -5,6 +5,8 @@ const {
   stepPathFromPoints,
   splitPointsOnGaps,
   lineSeriesStats,
+  lineSeriesHasTimeline,
+  lineSeriesCurrentDisplay,
   lineFailurePoints,
   seriesSignature
 } = require('../bigscreen/utils.js');
@@ -93,6 +95,61 @@ assert.deepStrictEqual(
   'a real finite zero remains a valid latency value without implying failure'
 );
 
+const statusHistoryValues = [
+  { t: 100, v: 0.002 },
+  { t: 102, v: 0.0087 },
+  { t: 104, v: null, status: 'failure' }
+];
+const statusHistoryStats = lineSeriesStats(statusHistoryValues);
+assert.deepStrictEqual(
+  lineSeriesCurrentDisplay({ currentStatus: 'online' }, statusHistoryStats),
+  { currentStatus: 'online', label: null, value: 0.0087 },
+  'online legend state uses the latest finite RTT even when the final history point is a failure sentinel'
+);
+assert.deepStrictEqual(
+  lineSeriesCurrentDisplay({ currentStatus: 'offline' }, statusHistoryStats),
+  { currentStatus: 'offline', label: 'OFFLINE', value: null },
+  'offline legend state comes only from the authoritative series currentStatus'
+);
+assert.strictEqual(statusHistoryStats.max, 0.0087, 'offline status preserves the finite historical maximum');
+assert.deepStrictEqual(
+  lineSeriesCurrentDisplay({ currentStatus: 'offline' }, lineSeriesStats([{ t: 100, v: 0 }])),
+  { currentStatus: 'offline', label: 'OFFLINE', value: null },
+  'offline legend state never presents a finite zero as zero milliseconds'
+);
+assert.deepStrictEqual(
+  lineSeriesCurrentDisplay({ currentStatus: 'unknown' }, statusHistoryStats),
+  { currentStatus: 'unknown', label: '--', value: null },
+  'unknown legend state remains neutral instead of being inferred as offline'
+);
+assert.deepStrictEqual(
+  lineSeriesCurrentDisplay({}, statusHistoryStats),
+  { currentStatus: null, label: null, value: 0.0087 },
+  'legacy series without currentStatus keep their existing latest finite value behavior'
+);
+
+const allFailureSeries = {
+  name: 'switch-offline',
+  currentStatus: 'offline',
+  values: [{ t: 100, v: null, status: 'failure' }]
+};
+assert.strictEqual(lineSeriesHasTimeline(allFailureSeries), true, 'all-failure series remains eligible for chart and legend rendering');
+assert.deepStrictEqual(
+  lineSeriesStats(allFailureSeries.values),
+  { last: null, max: null, mean: null, min: null },
+  'offline status and failure sentinels do not enter latency statistics or Y-axis maximum inputs'
+);
+assert.deepStrictEqual(
+  lineSeriesCurrentDisplay(allFailureSeries, lineSeriesStats(allFailureSeries.values)),
+  { currentStatus: 'offline', label: 'OFFLINE', value: null },
+  'an all-failure series still exposes OFFLINE while its historical maximum remains missing'
+);
+assert.deepStrictEqual(
+  lineFailurePoints(allFailureSeries.values),
+  [{ t: 100, v: null, status: 'failure' }],
+  'the existing single failure marker remains available for an all-failure series'
+);
+
 const failureSignature = seriesSignature([{
   name: 'switch-a',
   values: [{ t: 100, v: null, status: 'failure' }]
@@ -106,6 +163,13 @@ assert.notStrictEqual(
   unknownSignature,
   'failure and unknown states must invalidate the render cache independently'
 );
+const unchangedStatusPoints = [{ t: 100, v: 0.002 }];
+const onlineSeriesSignature = seriesSignature([{ name: 'switch-a', currentStatus: 'online', values: unchangedStatusPoints }]);
+const offlineSeriesSignature = seriesSignature([{ name: 'switch-a', currentStatus: 'offline', values: unchangedStatusPoints }]);
+const unknownSeriesSignature = seriesSignature([{ name: 'switch-a', currentStatus: 'unknown', values: unchangedStatusPoints }]);
+assert.notStrictEqual(onlineSeriesSignature, offlineSeriesSignature, 'online to offline invalidates the render cache without RTT changes');
+assert.notStrictEqual(offlineSeriesSignature, unknownSeriesSignature, 'offline to unknown invalidates the render cache without RTT changes');
+assert.notStrictEqual(offlineSeriesSignature, onlineSeriesSignature, 'offline to online invalidates the render cache without RTT changes');
 assert.strictEqual(
   seriesSignature([{
     name: 'switch-a',
