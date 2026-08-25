@@ -20,6 +20,7 @@
     formatUptime, formatBits, formatTime, niceMax, roundUpToStep, average,
     networkLabel, seatLabel, gaugeColor, gaugePercent,
     linePathFromPoints, stepPathFromPoints, splitPointsOnGaps,
+    seriesSignature, lineSeriesStats, lineFailurePoints,
     buildCsv, formatTimestampFull, groupAddressesByCBlock
   } = window.BSUtils;
   const { buildInfrastructurePingPresentation } = window.BSPingTransform;
@@ -106,26 +107,6 @@
     clearIntervalFn: (handle) => window.clearInterval(handle),
     onPageChange: () => renderIspPanels(ispTrafficResults)
   });
-
-  // Skip re-rendering a chart when its data hasn't changed since last paint.
-  // The live edge is deliberately re-read because Prometheus may correct a
-  // recent query_range value after scrape lag. Include every visible point in
-  // the digest so an in-place correction triggers a repaint even when the
-  // series length and final timestamp stay unchanged.
-  function seriesSignature(seriesList) {
-    return seriesList.map((item) => {
-      const values = item.values || [];
-      let hash = 2166136261;
-      values.forEach((point) => {
-        const token = `${point.t}=${point.v};`;
-        for (let index = 0; index < token.length; index += 1) {
-          hash ^= token.charCodeAt(index);
-          hash = Math.imul(hash, 16777619);
-        }
-      });
-      return `${item.name}#${values.length}#${hash >>> 0}`;
-    }).join("|");
-  }
 
   function shouldRender(key, signature) {
     if (renderSignatures.get(key) === signature) {
@@ -324,7 +305,9 @@
 
   function renderLineChart(containerId, seriesList, options) {
     const container = document.getElementById(containerId);
-    const series = seriesList.filter((item) => item.values.length);
+    const series = seriesList.filter((item) => (
+      (item.values || []).some((point) => Number.isFinite(point.t))
+    ));
     if (!series.length) {
       renderNoData(container);
       return;
@@ -345,10 +328,21 @@
     };
     const plotWidth = width - pad.left - pad.right;
     const plotHeight = height - pad.top - pad.bottom;
-    const times = series.flatMap((item) => item.values.map((point) => point.t));
+    const times = series
+      .flatMap((item) => item.values.map((point) => point.t))
+      .filter((timestamp) => Number.isFinite(timestamp));
     const minT = Math.min(...times);
     const maxT = Math.max(...times);
-    const rawMax = Math.max(options.minMax || 0, ...series.flatMap((item) => item.values.map((point) => point.v)));
+    const statsBySeries = new Map(series.map((item) => [
+      item,
+      lineSeriesStats(item.values)
+    ]));
+    const rawMax = Math.max(
+      options.minMax || 0,
+      ...Array.from(statsBySeries.values())
+        .map((stats) => stats.max)
+        .filter((value) => Number.isFinite(value))
+    );
     const fixedMax = Number(options.maxY);
     const maxRoundStep = Number(options.maxRoundStep);
     const roundedMax = Number.isFinite(maxRoundStep) && maxRoundStep > 0
@@ -391,6 +385,22 @@
         return `${areaPath ? `<path class="chart-area" d="${areaPath}" style="fill:${color}" />` : ""}<path class="chart-line" d="${linePath}" style="stroke:${color}" />`;
       }).join("");
     }).join("");
+    const failureMarkerY = height - pad.bottom - 6;
+    const failureMarkers = series.map((item) => {
+      return lineFailurePoints(item.values).map((point) => {
+        const x = xOf(point.t);
+        const arm = 4;
+        const title = `${item.name} 探测失败 ${formatTime(point.t)}`;
+        const markerStyle = "stroke:#ff4d66;stroke-width:2.4;stroke-linecap:round";
+        return `
+          <g class="chart-failure-marker" role="img" aria-label="${escapeHtml(title)}">
+            <title>${escapeHtml(title)}</title>
+            <line x1="${(x - arm).toFixed(1)}" y1="${(failureMarkerY - arm).toFixed(1)}" x2="${(x + arm).toFixed(1)}" y2="${(failureMarkerY + arm).toFixed(1)}" style="${markerStyle}" />
+            <line x1="${(x + arm).toFixed(1)}" y1="${(failureMarkerY - arm).toFixed(1)}" x2="${(x - arm).toFixed(1)}" y2="${(failureMarkerY + arm).toFixed(1)}" style="${markerStyle}" />
+          </g>
+        `;
+      }).join("");
+    }).join("");
     const calcs = options.calcs || ["mean", "max"];
     const calcsExplicit = !!options.calcs;
     const calcLabels = { last: "最近", max: "最高", mean: "平均", min: "最低" };
@@ -400,22 +410,19 @@
     ]));
     const legendSeries = options.sortLegendByMax
       ? [...series].sort((left, right) => {
-        const leftMax = Math.max(...left.values.map((point) => point.v));
-        const rightMax = Math.max(...right.values.map((point) => point.v));
-        return rightMax - leftMax || left.name.localeCompare(right.name, "zh-CN");
+        const leftMax = statsBySeries.get(left).max;
+        const rightMax = statsBySeries.get(right).max;
+        const comparableLeftMax = Number.isFinite(leftMax) ? leftMax : -Infinity;
+        const comparableRightMax = Number.isFinite(rightMax) ? rightMax : -Infinity;
+        return comparableRightMax - comparableLeftMax || left.name.localeCompare(right.name, "zh-CN");
       })
       : series;
     const legend = legendSeries.map((item) => {
       const color = seriesColor.get(item);
-      const values = item.values.map((point) => point.v);
-      const stats = {
-        last: values[values.length - 1],
-        max: Math.max(...values),
-        mean: average(values),
-        min: Math.min(...values),
-      };
+      const stats = statsBySeries.get(item);
       const cells = calcs.map((calc) => {
-        const value = escapeHtml(valueFormatter(stats[calc]));
+        const stat = stats[calc];
+        const value = escapeHtml(Number.isFinite(stat) ? valueFormatter(stat) : "-");
         if (calcsExplicit) {
           const label = escapeHtml(calcLabels[calc] || calc);
           return `<span><i class="legend-calc-label">${label}</i> ${value}</span>`;
@@ -450,6 +457,7 @@
           ${timeGridLines}
           ${gridLines}
           ${paths}
+          ${failureMarkers}
           ${timeLabels}
         </svg>
         <div class="${legendClass} ${legendModeClass}">${legendHeader}${legend}</div>

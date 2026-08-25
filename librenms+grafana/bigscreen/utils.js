@@ -2,7 +2,7 @@
   'use strict';
 
   /**
-   * @typedef {{ t: number, v: number }} DataPoint
+   * @typedef {{ t: number, v: number|null, status?: "failure"|"unknown" }} DataPoint
    * @typedef {{ name: string, metric: Record<string,string>, values: DataPoint[] }} Series
    * @typedef {{ name: string, value: number, metric: Record<string,string> }} InstantItem
    * @typedef {{ team: number, seat: number, ip: string, network: string, success: boolean, latency: number|null }} Player
@@ -122,6 +122,27 @@
     return usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : 0;
   }
 
+  // Include every visible point so a corrected cached range sample triggers a
+  // repaint even when the series length and final timestamp stay unchanged.
+  function seriesSignature(seriesList) {
+    return seriesList.map((item) => {
+      const values = item.values || [];
+      let hash = 2166136261;
+      values.forEach((point) => {
+        // Preserve the existing token for ordinary {t, v} points. Explicit
+        // renderer states must still invalidate a cached paint when a point
+        // changes between failure and unknown without changing t/v.
+        const status = point.status === undefined ? "" : `@${point.status}`;
+        const token = `${point.t}=${point.v}${status};`;
+        for (let index = 0; index < token.length; index += 1) {
+          hash ^= token.charCodeAt(index);
+          hash = Math.imul(hash, 16777619);
+        }
+      });
+      return `${item.name}#${values.length}#${hash >>> 0}`;
+    }).join("|");
+  }
+
   function uniqueNames(names) {
     return Array.from(new Set(names.map((name) => String(name || "").trim()).filter(Boolean)));
   }
@@ -196,17 +217,57 @@
     return commands.join(" ");
   }
 
-  function splitPointsOnGaps(values, maxGapSeconds) {
-    if (!values.length) return [];
-    const maxGap = Number(maxGapSeconds);
-    if (!Number.isFinite(maxGap) || maxGap <= 0) return [values.slice()];
-    const segments = [[values[0]]];
-    for (let index = 1; index < values.length; index += 1) {
-      const point = values[index];
-      const previous = values[index - 1];
-      if (point.t - previous.t > maxGap) segments.push([]);
-      segments[segments.length - 1].push(point);
+  function isDrawableLinePoint(point) {
+    return Boolean(point)
+      && point.status !== "failure"
+      && point.status !== "unknown"
+      && Number.isFinite(point.t)
+      && Number.isFinite(point.v);
+  }
+
+  function lineSeriesStats(values) {
+    const finiteValues = (values || [])
+      .filter(isDrawableLinePoint)
+      .map((point) => point.v);
+    if (!finiteValues.length) {
+      return { last: null, max: null, mean: null, min: null };
     }
+    return {
+      last: finiteValues[finiteValues.length - 1],
+      max: Math.max(...finiteValues),
+      mean: average(finiteValues),
+      min: Math.min(...finiteValues)
+    };
+  }
+
+  function lineFailurePoints(values) {
+    return (values || []).filter((point) => (
+      point
+      && point.status === "failure"
+      && Number.isFinite(point.t)
+    ));
+  }
+
+  function splitPointsOnGaps(values, maxGapSeconds) {
+    if (!values || !values.length) return [];
+    const maxGap = Number(maxGapSeconds);
+    const enforceTimeGap = Number.isFinite(maxGap) && maxGap > 0;
+    const segments = [];
+    let current = [];
+    values.forEach((point) => {
+      if (!isDrawableLinePoint(point)) {
+        if (current.length) segments.push(current);
+        current = [];
+        return;
+      }
+      const previous = current[current.length - 1];
+      if (previous && enforceTimeGap && point.t - previous.t > maxGap) {
+        segments.push(current);
+        current = [];
+      }
+      current.push(point);
+    });
+    if (current.length) segments.push(current);
     return segments;
   }
 
@@ -340,6 +401,7 @@
     niceMax,
     roundUpToStep,
     average,
+    seriesSignature,
     uniqueNames,
     networkLabel,
     seatLabel,
@@ -347,6 +409,9 @@
     gaugePercent,
     linePathFromPoints,
     stepPathFromPoints,
+    isDrawableLinePoint,
+    lineSeriesStats,
+    lineFailurePoints,
     splitPointsOnGaps,
     parseIspBandwidthConfig,
     parseIspIps,

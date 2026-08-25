@@ -383,6 +383,21 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert 'if (player.ip) params.set("ip", player.ip)' in app
 
 
+def test_bigscreen_line_chart_supports_explicit_failure_points():
+    app = read("bigscreen/app.js")
+    utils = read("bigscreen/utils.js")
+
+    assert 'point.status !== "failure"' in utils
+    assert 'point.status !== "unknown"' in utils
+    assert "Number.isFinite(point.v)" in utils
+    assert "lineSeriesStats(item.values)" in app
+    assert "lineFailurePoints(item.values)" in app
+    assert 'class="chart-failure-marker"' in app
+    assert 'stroke:#ff4d66' in app
+    assert "${failureMarkers}" in app
+    assert "smooth: true" in app
+
+
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
     compose = read("docker-compose.yml")
     example = read(".env.example")
