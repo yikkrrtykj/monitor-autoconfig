@@ -204,7 +204,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260825c" in html
+    assert "app.js?v=20260825d" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -301,15 +301,15 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
     assert "[10s]" in target["expr"]
 
 
-def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
+def test_bigscreen_ping_trend_uses_adaptive_causal_presentation():
     api = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
     ping_transform = read("bigscreen/metrics/ping-transform.js")
     pages = read("bigscreen/pages.js")
     index = read("bigscreen/index.html")
 
-    # Keep the raw 2-second source stable, but suppress isolated 20 ms samples
-    # in both overview and tournament displays. Sustained incidents stay raw.
+    # Keep the raw 2-second source stable while the object-input adapter applies
+    # timestamp-aware adaptive suppression and causal presentation smoothing.
     assert "const end = Math.floor(now / step) * step;" in api
     assert 'const cacheKey = `${query}|${win.step}`;' in api
     assert 'max by (instance) (probe_icmp_duration_seconds{job=~' in pages
@@ -354,14 +354,34 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "return previous.v" in ping_transform
     assert "infra-srv-ping" in pages
     assert "smoothNormalLatencyJitter" not in app
+    assert "baselineWindowSeconds: 60" in ping_transform
+    assert "minimumBaselinePoints: 6" in ping_transform
+    assert "minimumThreshold: 0.008" in ping_transform
+    assert "medianMultiplier: 3" in ping_transform
+    assert "madScale: 1.4826" in ping_transform
+    assert "madMultiplier: 6" in ping_transform
+    assert "persistentRunSeconds: 4" in ping_transform
+    assert "fallbackNominalStepSeconds: 2" in ping_transform
+    assert "maximumCandidateGapSteps: 1.5" in ping_transform
+    assert "smoothingWindowPoints: 3" in ping_transform
+    assert "emaAlpha: 0.5" in ping_transform
+    assert "rawValue > threshold" in ping_transform
+    assert "timestamp - run.startT >= SUCCESS_AWARE_DISPLAY_POLICY.persistentRunSeconds" in ping_transform
+    assert "highRun.forEach" not in ping_transform
+    assert "resetPresentationState();" in ping_transform
+    assert 'currentStatus = "unknown";' in ping_transform
     assert "threshold: 0.02" in ping_transform
     assert "minConsecutive: 2" in ping_transform
     assert "maxGapSeconds: 3" in ping_transform
     assert "replacementRadius: 5" in ping_transform
     assert "replacementWindowSeconds: 15" in ping_transform
     assert 'renderLineChart("pingTrendChart", displayLatencySeries' in app
-    assert "Visual-only curve smoothing" in app
-    assert "smooth: true" in app
+    assert "The adapter already applies trailing causal smoothing" in app
+    ping_render = app.split(
+        'renderLineChart("pingTrendChart", displayLatencySeries, {', 1
+    )[1].split("});", 1)[0]
+    assert "smooth: false" in ping_render
+    assert "smooth: true" not in ping_render
     assert "const pingGap = Math.max(5, estimateStepSeconds(displayLatencySeries) * 3)" in app
     assert 'shouldRender("pingTrendChart", seriesSignature(displayLatencySeries))' in app
     assert "breakGapSeconds: pingGap" in app
@@ -409,10 +429,10 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "pages.js?v=20260825b" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260825c" in index
+    assert "app.js?v=20260825d" in index
     assert "utils.js?v=20260825a" in index
-    assert "metrics/ping-transform.js?v=20260825a" in index
-    assert index.index("metrics/ping-transform.js?v=20260825a") < index.index("app.js?v=20260825c")
+    assert "metrics/ping-transform.js?v=20260825b" in index
+    assert index.index("metrics/ping-transform.js?v=20260825b") < index.index("app.js?v=20260825d")
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -454,7 +474,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
     assert "style.css?v=20260825a" in index
     assert "utils.js?v=20260825a" in index
-    assert "app.js?v=20260825c" in index
+    assert "app.js?v=20260825d" in index
 
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
@@ -520,7 +540,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260825a" in index
-    assert "app.js?v=20260825c" in index
+    assert "app.js?v=20260825d" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

@@ -1047,10 +1047,9 @@
           maxRoundStep: 0.01,
           breakGapSeconds: pingGap,
           currentStatusLegend: true,
-          // Visual-only curve smoothing: linePathFromPoints reads the display
-          // samples but never changes them. Legend and scale calculations
-          // continue to use the same presentation values above.
-          smooth: true,
+          // The adapter already applies trailing causal smoothing. Keep the
+          // Ping SVG linear so a future point cannot reshape an earlier segment.
+          smooth: false,
           // When many switches are present, put the largest observed latency
           // first so the line responsible for the chart scale is immediately
           // identifiable instead of falling below the clipped viewport.

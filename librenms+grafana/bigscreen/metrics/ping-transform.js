@@ -114,9 +114,44 @@
   }
 
   const SUCCESS_AWARE_DISPLAY_POLICY = Object.freeze({
-    threshold: 0.02,
-    persistentRunSeconds: 4
+    baselineWindowSeconds: 60,
+    minimumBaselinePoints: 6,
+    minimumThreshold: 0.008,
+    medianMultiplier: 3,
+    madScale: 1.4826,
+    madMultiplier: 6,
+    persistentRunSeconds: 4,
+    fallbackNominalStepSeconds: 2,
+    maximumCandidateGapSteps: 1.5,
+    cadenceWindowPoints: 8,
+    minimumCadenceDeltas: 2,
+    smoothingWindowPoints: 3,
+    emaAlpha: 0.5
   });
+
+  function median(numbers) {
+    if (!numbers.length) return null;
+    const sorted = [...numbers].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2
+      ? sorted[middle]
+      : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  function adaptiveThreshold(baseline) {
+    if (baseline.length < SUCCESS_AWARE_DISPLAY_POLICY.minimumBaselinePoints) return null;
+    const rawValues = baseline.map((point) => point.v);
+    const baselineMedian = median(rawValues);
+    const mad = median(rawValues.map((value) => Math.abs(value - baselineMedian)));
+    return Math.max(
+      SUCCESS_AWARE_DISPLAY_POLICY.minimumThreshold,
+      baselineMedian * SUCCESS_AWARE_DISPLAY_POLICY.medianMultiplier,
+      baselineMedian
+        + SUCCESS_AWARE_DISPLAY_POLICY.madMultiplier
+        * SUCCESS_AWARE_DISPLAY_POLICY.madScale
+        * mad
+    );
+  }
 
   function seriesIdentity(series, index, sourceKind) {
     const metric = (series && series.metric) || {};
@@ -190,23 +225,101 @@
       ...successByTimestamp.keys()
     ])).sort((left, right) => left - right);
     const values = [];
-    const normalRawBaseline = [];
-    let highRun = [];
-    let highRunStart = null;
+    const stableRawBaseline = [];
+    const cadenceTimestamps = [];
+    const smoothableValues = [];
+    let abnormalRun = null;
+    let previousSmooth = null;
     let openGapStatus = null;
     let currentStatus = "unknown";
 
-    function endHighRun() {
-      highRun = [];
-      highRunStart = null;
+    function resetSmoothing() {
+      smoothableValues.length = 0;
+      previousSmooth = null;
+    }
+
+    function resetPresentationState() {
+      stableRawBaseline.length = 0;
+      cadenceTimestamps.length = 0;
+      abnormalRun = null;
+      resetSmoothing();
     }
 
     function appendGap(timestamp, status) {
-      endHighRun();
+      resetPresentationState();
       if (openGapStatus !== status) {
         values.push({ t: timestamp, v: null, status });
       }
       openGapStatus = status;
+    }
+
+    function expireBaseline(timestamp) {
+      const oldestAllowed = timestamp - SUCCESS_AWARE_DISPLAY_POLICY.baselineWindowSeconds;
+      while (stableRawBaseline.length && stableRawBaseline[0].t < oldestAllowed) {
+        stableRawBaseline.shift();
+      }
+    }
+
+    function inferNominalStep() {
+      const deltas = [];
+      for (let index = 1; index < cadenceTimestamps.length; index += 1) {
+        const delta = cadenceTimestamps[index] - cadenceTimestamps[index - 1];
+        if (Number.isFinite(delta) && delta > 0) deltas.push(delta);
+      }
+      if (deltas.length < SUCCESS_AWARE_DISPLAY_POLICY.minimumCadenceDeltas) {
+        return SUCCESS_AWARE_DISPLAY_POLICY.fallbackNominalStepSeconds;
+      }
+      return median(deltas);
+    }
+
+    function rememberSuccessfulTimestamp(timestamp) {
+      cadenceTimestamps.push(timestamp);
+      while (cadenceTimestamps.length > SUCCESS_AWARE_DISPLAY_POLICY.cadenceWindowPoints) {
+        cadenceTimestamps.shift();
+      }
+    }
+
+    function rememberStableRaw(timestamp, value) {
+      stableRawBaseline.push({ t: timestamp, v: value });
+    }
+
+    function recentStableRawMean() {
+      const recent = stableRawBaseline.slice(-2).map((point) => point.v);
+      if (!recent.length) return null;
+      return recent.reduce((sum, value) => sum + value, 0) / recent.length;
+    }
+
+    function smoothPresentation(value) {
+      smoothableValues.push(value);
+      while (smoothableValues.length > SUCCESS_AWARE_DISPLAY_POLICY.smoothingWindowPoints) {
+        smoothableValues.shift();
+      }
+      const currentMedian = median(smoothableValues);
+      const smoothed = Number.isFinite(previousSmooth)
+        ? SUCCESS_AWARE_DISPLAY_POLICY.emaAlpha * currentMedian
+          + (1 - SUCCESS_AWARE_DISPLAY_POLICY.emaAlpha) * previousSmooth
+        : currentMedian;
+      previousSmooth = smoothed;
+      return smoothed;
+    }
+
+    function startsOrContinuesCandidateRun(timestamp, threshold, nominalStep) {
+      const maximumGap = nominalStep * SUCCESS_AWARE_DISPLAY_POLICY.maximumCandidateGapSteps;
+      if (
+        abnormalRun
+        && timestamp - abnormalRun.lastT <= maximumGap
+      ) {
+        abnormalRun.lastT = timestamp;
+        abnormalRun.threshold = threshold;
+        return abnormalRun;
+      }
+      abnormalRun = {
+        startT: timestamp,
+        lastT: timestamp,
+        threshold,
+        confirmed: false
+      };
+      return abnormalRun;
     }
 
     timestamps.forEach((timestamp) => {
@@ -224,33 +337,58 @@
 
       const rawPoint = latencyByTimestamp.get(timestamp);
       if (!rawPoint || !Number.isFinite(rawPoint.v)) {
+        currentStatus = "unknown";
         appendGap(timestamp, "unknown");
         return;
       }
 
       openGapStatus = null;
       const rawValue = rawPoint.v;
-      if (rawValue < SUCCESS_AWARE_DISPLAY_POLICY.threshold) {
-        endHighRun();
-        values.push(successfulLatencyPoint(rawPoint, timestamp, rawValue));
-        normalRawBaseline.push(rawValue);
-        if (normalRawBaseline.length > 2) normalRawBaseline.shift();
+      expireBaseline(timestamp);
+      const nominalStep = inferNominalStep();
+      const currentThreshold = adaptiveThreshold(stableRawBaseline);
+      const runThreshold = abnormalRun && abnormalRun.confirmed && Number.isFinite(abnormalRun.threshold)
+        ? abnormalRun.threshold
+        : null;
+      const threshold = Number.isFinite(currentThreshold) ? currentThreshold : runThreshold;
+      let candidate = Number.isFinite(threshold) && rawValue > threshold;
+
+      if (candidate && abnormalRun) {
+        const maximumGap = nominalStep * SUCCESS_AWARE_DISPLAY_POLICY.maximumCandidateGapSteps;
+        if (timestamp - abnormalRun.lastT > maximumGap) {
+          abnormalRun = null;
+          candidate = Number.isFinite(currentThreshold) && rawValue > currentThreshold;
+        }
+      }
+
+      if (candidate) {
+        const run = startsOrContinuesCandidateRun(timestamp, threshold, nominalStep);
+        rememberSuccessfulTimestamp(timestamp);
+        if (timestamp - run.startT >= SUCCESS_AWARE_DISPLAY_POLICY.persistentRunSeconds) {
+          if (!run.confirmed) {
+            run.confirmed = true;
+            resetSmoothing();
+          }
+          values.push(successfulLatencyPoint(rawPoint, timestamp, rawValue));
+          return;
+        }
+
+        const replacement = recentStableRawMean();
+        const presentationValue = Number.isFinite(replacement) ? replacement : rawValue;
+        values.push(successfulLatencyPoint(
+          rawPoint,
+          timestamp,
+          smoothPresentation(presentationValue)
+        ));
         return;
       }
 
-      if (!highRun.length) highRunStart = timestamp;
-      const replacement = normalRawBaseline.length
-        ? normalRawBaseline.reduce((sum, value) => sum + value, 0) / normalRawBaseline.length
-        : rawValue;
-      const displayPoint = successfulLatencyPoint(rawPoint, timestamp, replacement);
-      values.push(displayPoint);
-      highRun.push({ point: displayPoint, rawValue });
-
-      if (timestamp - highRunStart >= SUCCESS_AWARE_DISPLAY_POLICY.persistentRunSeconds) {
-        highRun.forEach((entry) => {
-          entry.point.v = entry.rawValue;
-        });
-      }
+      const recoveringFromPersistent = abnormalRun && abnormalRun.confirmed;
+      abnormalRun = null;
+      if (recoveringFromPersistent) resetSmoothing();
+      rememberStableRaw(timestamp, rawValue);
+      rememberSuccessfulTimestamp(timestamp);
+      values.push(successfulLatencyPoint(rawPoint, timestamp, smoothPresentation(rawValue)));
     });
 
     const source = group.source || {};

@@ -34,6 +34,37 @@ function v2Values(latencyValues, successValues, name = 'switch-a') {
     .displayLatencySeries[0].values;
 }
 
+function onlineSuccessFor(latencyValues) {
+  return latencyValues.map((point) => ({ t: point.t, v: 1 }));
+}
+
+function timedValues(numbers, start = 0, step = 2) {
+  return numbers.map((v, index) => ({ t: start + index * step, v }));
+}
+
+function warmBaseline(value = 0.002, start = 0, step = 2) {
+  return timedValues(Array(6).fill(value), start, step);
+}
+
+function outputNumbers(latencyValues, successValues = onlineSuccessFor(latencyValues)) {
+  return v2Values(latencyValues, successValues).map((point) => point.v);
+}
+
+function assertNumbers(actual, expected, message, epsilon = 1e-12) {
+  assert.strictEqual(actual.length, expected.length, message);
+  actual.forEach((value, index) => {
+    if (value === null || expected[index] === null) {
+      assert.strictEqual(value, expected[index], `${message} at index ${index}`);
+      return;
+    }
+    assert.ok(
+      Math.abs(value - expected[index]) <= epsilon,
+      `${message} at index ${index}: expected ${expected[index]}, got ${value}`
+    );
+  });
+}
+
+// The dormant array-input adapter intentionally retains its legacy behavior.
 const isolatedInput = series([
   { t: 100, v: 0.002 },
   { t: 102, v: 0.2 },
@@ -98,7 +129,7 @@ const normalBaseline = [
 assert.deepStrictEqual(
   buildInfrastructurePingPresentation(series(normalBaseline)).displayLatencySeries[0].values,
   normalBaseline,
-  'normal latency samples remain unchanged without averaging or smoothing'
+  'legacy normal latency samples remain unchanged'
 );
 
 assert.deepStrictEqual(
@@ -109,19 +140,19 @@ assert.deepStrictEqual(
     { t: 110, v: 0.005 }
   ]),
   [0.003, 0.003, 0.005, 0.005],
-  'high samples separated by more than three seconds are isolated independently'
+  'legacy high samples separated by more than three seconds remain independent'
 );
 
-const incident = [
+const legacyIncident = [
   { t: 100, v: 0.002 },
   { t: 102, v: 0.06 },
   { t: 104, v: 0.2 },
   { t: 106, v: 0.003 }
 ];
 assert.deepStrictEqual(
-  displayValues(incident),
-  incident.map((point) => point.v),
-  'sustained high-latency incidents remain unchanged'
+  displayValues(legacyIncident),
+  legacyIncident.map((point) => point.v),
+  'legacy sustained high-latency incidents remain unchanged'
 );
 
 assert.deepStrictEqual(
@@ -130,13 +161,13 @@ assert.deepStrictEqual(
     { t: 102, v: 0.004 }
   ]),
   [0.004, 0.004],
-  'the following normal sample is used when no preceding sample exists'
+  'the following normal sample remains available only to the legacy path'
 );
 
 assert.deepStrictEqual(
   displayValues([{ t: 100, v: 0.2 }]),
   [0.2],
-  'an isolated spike remains unchanged when no normal replacement exists'
+  'legacy isolated spikes remain raw when no normal replacement exists'
 );
 
 assert.deepStrictEqual(
@@ -145,7 +176,7 @@ assert.deepStrictEqual(
     { t: 115, v: 0.2 }
   ]),
   [0.003, 0.003],
-  'a replacement exactly fifteen seconds away remains usable'
+  'legacy replacement exactly fifteen seconds away remains usable'
 );
 
 assert.deepStrictEqual(
@@ -154,7 +185,7 @@ assert.deepStrictEqual(
     { t: 116, v: 0.2 }
   ]),
   [0.003, 0.2],
-  'a replacement more than fifteen seconds away is rejected'
+  'legacy replacement more than fifteen seconds away remains rejected'
 );
 
 assert.deepStrictEqual(
@@ -163,7 +194,7 @@ assert.deepStrictEqual(
     { t: 102, v: 0 }
   ]),
   [0, 0],
-  'zero remains a usable normal replacement under the current algorithm'
+  'legacy zero remains a usable normal replacement'
 );
 
 const independentInput = series([
@@ -188,7 +219,7 @@ assert.strictEqual(independentInput[0].name, 'switch-a');
 assert.strictEqual(independentInput[0].metric.instance, 'switch-a');
 assert.strictEqual(independentInput[0].values[0].v, 0.002);
 
-const multiple = buildInfrastructurePingPresentation([
+const multipleLegacy = buildInfrastructurePingPresentation([
   ...series([
     { t: 100, v: 0.002 },
     { t: 102, v: 0.2 },
@@ -200,20 +231,14 @@ const multiple = buildInfrastructurePingPresentation([
   ], 'switch-b')
 ]);
 assert.deepStrictEqual(
-  multiple.displayLatencySeries.map((item) => item.values.map((point) => point.v)),
+  multipleLegacy.displayLatencySeries.map((item) => item.values.map((point) => point.v)),
   [[0.002, 0.002, 0.004], [0.006, 0.007]],
-  'each series is transformed independently'
+  'legacy series remain transformed independently'
 );
 
-const normalV2 = buildV2([
-  { t: 100, v: 0.002 },
-  { t: 102, v: 0.003 },
-  { t: 104, v: 0.019 }
-], [
-  { t: 100, v: 1 },
-  { t: 102, v: 1 },
-  { t: 104, v: 1 }
-]);
+// Production object-input success-aware presentation.
+const stableTwoMilliseconds = warmBaseline();
+const normalV2 = buildV2(stableTwoMilliseconds, onlineSuccessFor(stableTwoMilliseconds));
 assert.deepStrictEqual(
   Object.keys(normalV2),
   ['displayLatencySeries'],
@@ -221,257 +246,302 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   normalV2.displayLatencySeries[0].values.map((point) => point.v),
-  [0.002, 0.003, 0.019],
-  'successful latency below 20 ms remains exactly raw'
+  Array(6).fill(0.002),
+  'stable 2 ms RTT remains stable through causal smoothing'
 );
 assert.strictEqual(normalV2.displayLatencySeries[0].currentStatus, 'online');
 assert.ok(!Object.prototype.hasOwnProperty.call(normalV2, 'rawLatencySeries'));
 
+const stableOneMillisecond = warmBaseline(0.001);
 assert.deepStrictEqual(
-  v2Values([
-    { t: 100, v: 0.002 },
-    { t: 102, v: 0.004 },
-    { t: 104, v: 0.02 }
-  ], [
-    { t: 100, v: 1 },
-    { t: 102, v: 1 },
-    { t: 104, v: 1 }
-  ]).map((point) => point.v),
-  [0.002, 0.004, 0.003],
-  '20 ms is high latency and uses the mean of the previous two raw normal samples'
+  outputNumbers(stableOneMillisecond),
+  Array(6).fill(0.001),
+  'a stable 1 ms server is not over-smoothed or shifted'
 );
 
-assert.deepStrictEqual(
-  v2Values([
-    { t: 0, v: 0.002 },
-    { t: 2, v: 0.004 },
-    { t: 10, v: 0.08 },
-    { t: 13.999, v: 0.09 }
-  ], [
-    { t: 0, v: 1 },
-    { t: 2, v: 1 },
-    { t: 10, v: 1 },
-    { t: 13.999, v: 1 }
-  ]).map((point) => point.v),
-  [0.002, 0.004, 0.003, 0.003],
-  'a high run spanning 3.999 seconds remains provisional'
+const combJitter = timedValues([0.002, 0.003, 0.006, 0.002, 0.007, 0.003, 0.008, 0.002, 0.006, 0.003]);
+assertNumbers(
+  outputNumbers(combJitter),
+  [0.002, 0.00225, 0.002625, 0.0028125, 0.00440625, 0.003703125,
+    0.0053515625, 0.00417578125, 0.005087890625, 0.0040439453125],
+  '2-8 ms comb jitter is reduced by trailing median plus EMA'
 );
 
+const singleTwenty = [...warmBaseline(), { t: 12, v: 0.02 }];
 assert.deepStrictEqual(
-  v2Values([
-    { t: 0, v: 0.002 },
-    { t: 2, v: 0.004 },
-    { t: 10, v: 0.08 },
-    { t: 14, v: 0.09 }
-  ], [
-    { t: 0, v: 1 },
-    { t: 2, v: 1 },
-    { t: 10, v: 1 },
-    { t: 14, v: 1 }
-  ]).map((point) => point.v),
-  [0.002, 0.004, 0.08, 0.09],
-  'a high run spanning exactly four seconds restores the complete raw run'
+  outputNumbers(singleTwenty),
+  Array(7).fill(0.002),
+  'a single 20 ms candidate is replaced from the past stable baseline'
 );
 
-const oneSecondHighValues = [0.08, 0.09, 0.1, 0.11, 0.12];
+const singleExtreme = [...warmBaseline(), { t: 12, v: 0.1 }];
 assert.deepStrictEqual(
-  v2Values([
-    { t: 0, v: 0.002 },
-    ...oneSecondHighValues.map((v, index) => ({ t: 10 + index, v }))
-  ], [
-    { t: 0, v: 1 },
-    ...oneSecondHighValues.map((_v, index) => ({ t: 10 + index, v: 1 }))
-  ]).map((point) => point.v),
-  [0.002, ...oneSecondHighValues],
-  'one-second samples still use a four-second persistence boundary'
+  outputNumbers(singleExtreme),
+  Array(7).fill(0.002),
+  'a single 100 ms candidate is suppressed without creating a high platform'
 );
 
-const twoSecondHighValues = [0.08, 0.09, 0.1];
+const threeSecondBurst = [
+  ...warmBaseline(),
+  { t: 12, v: 0.02 },
+  { t: 15, v: 0.1 }
+];
 assert.deepStrictEqual(
-  v2Values([
-    { t: 0, v: 0.002 },
-    ...twoSecondHighValues.map((v, index) => ({ t: 10 + index * 2, v }))
-  ], [
-    { t: 0, v: 1 },
-    ...twoSecondHighValues.map((_v, index) => ({ t: 10 + index * 2, v: 1 }))
-  ]).map((point) => point.v),
-  [0.002, ...twoSecondHighValues],
-  'two-second samples restore the run when the third high point reaches four seconds'
+  outputNumbers(threeSecondBurst),
+  Array(8).fill(0.002),
+  'a continuous three-second candidate burst remains provisional and suppressed'
 );
 
+const justUnderFourSeconds = [
+  ...warmBaseline(),
+  { t: 12, v: 0.012 },
+  { t: 13.999, v: 0.015 },
+  { t: 15.999, v: 0.018 }
+];
 assert.deepStrictEqual(
-  v2Values([
-    { t: 0, v: 0.002 },
-    { t: 10, v: 0.08 },
-    { t: 11.4, v: 0.09 },
-    { t: 14.2, v: 0.1 }
-  ], [
-    { t: 0, v: 1 },
-    { t: 10, v: 1 },
-    { t: 11.4, v: 1 },
-    { t: 14.2, v: 1 }
-  ]).map((point) => point.v),
-  [0.002, 0.08, 0.09, 0.1],
-  'non-uniform sample spacing is classified only by timestamp span'
+  outputNumbers(justUnderFourSeconds),
+  Array(9).fill(0.002),
+  'a continuous candidate run spanning 3.999 seconds remains provisional'
 );
 
+const exactPersistentRun = [
+  ...warmBaseline(),
+  { t: 12, v: 0.012 },
+  { t: 14, v: 0.015 },
+  { t: 16, v: 0.018 },
+  { t: 18, v: 0.022 }
+];
+const exactPersistentOutput = outputNumbers(exactPersistentRun);
+assertNumbers(
+  exactPersistentOutput,
+  [...Array(6).fill(0.002), 0.002, 0.002, 0.018, 0.022],
+  'the four-second confirmation point and later persistent points stay raw'
+);
 assert.deepStrictEqual(
-  v2Values([
-    { t: 100, v: 0.006 },
-    { t: 102, v: 0.08 }
-  ], [
-    { t: 100, v: 1 },
-    { t: 102, v: 1 }
-  ]).map((point) => point.v),
-  [0.006, 0.006],
-  'one prior normal raw sample is used directly'
+  exactPersistentOutput.slice(6, 8),
+  [0.002, 0.002],
+  'persistent confirmation never rewrites provisional history'
 );
 
-assert.deepStrictEqual(
-  v2Values([
-    { t: 100, v: 0.08 },
-    { t: 102, v: 0.09 }
-  ], [
-    { t: 100, v: 1 },
-    { t: 102, v: 1 }
-  ]).map((point) => point.v),
-  [0.08, 0.09],
-  'a provisional high run remains raw when no prior normal baseline exists'
+const persistentRecovery = [
+  ...exactPersistentRun,
+  { t: 20, v: 0.004 },
+  { t: 22, v: 0.004 }
+];
+assertNumbers(
+  outputNumbers(persistentRecovery).slice(-4),
+  [0.018, 0.022, 0.004, 0.004],
+  'persistent raw bypasses EMA and recovery reinitializes smoothing without a high tail'
 );
 
-assert.deepStrictEqual(
-  v2Values([
-    { t: 100, v: 0.08 },
-    { t: 102, v: 0.004 }
-  ], [
-    { t: 100, v: 1 },
-    { t: 102, v: 1 }
-  ]).map((point) => point.v),
-  [0.08, 0.004],
-  'future normal samples are never used to replace an earlier high point'
+const priorThresholdBaseline = timedValues([0.002, 0.002, 0.002, 0.007, 0.007, 0.007]);
+const madThresholdSequence = [
+  ...priorThresholdBaseline,
+  { t: 12, v: 0.02 },
+  { t: 14, v: 0.04 }
+];
+assertNumbers(
+  outputNumbers(madThresholdSequence).slice(-2),
+  [0.006375, 0.0131875],
+  'scaled MAD raises the dynamic threshold above the floor and median multiplier'
 );
 
-const failureInterrupted = v2Values([
-  { t: 0, v: 0.002 },
-  { t: 2, v: 0.004 },
-  { t: 4, v: 0.08 },
-  { t: 6, v: 0 },
-  { t: 8, v: 0.09 }
-], [
-  { t: 0, v: 1 },
-  { t: 2, v: 1 },
-  { t: 4, v: 1 },
-  { t: 6, v: 0 },
-  { t: 8, v: 1 }
-]);
-assert.deepStrictEqual(failureInterrupted, [
-  { t: 0, v: 0.002 },
-  { t: 2, v: 0.004 },
-  { t: 4, v: 0.003 },
-  { t: 6, v: null, status: 'failure' },
-  { t: 8, v: 0.003 }
-], 'failure interrupts the high run and neither failure zero nor presentation values enter the raw baseline');
-
-assert.deepStrictEqual(
-  v2Values([
-    { t: 100, v: 0.002 },
-    { t: 102, v: 0 },
-    { t: 104, v: 0.003 }
-  ], [
-    { t: 100, v: 1 },
-    { t: 102, v: 0 },
-    { t: 104, v: 1 }
-  ]),
-  [
-    { t: 100, v: 0.002 },
-    { t: 102, v: null, status: 'failure' },
-    { t: 104, v: 0.003 }
-  ],
-  'the production RTT/success fixture presents a failure sentinel instead of zero milliseconds'
+const priorThresholdSequence = [
+  ...priorThresholdBaseline,
+  { t: 12, v: 0.04 },
+  { t: 14, v: 0.05 }
+];
+assertNumbers(
+  outputNumbers(priorThresholdSequence).slice(-2),
+  [0.006375, 0.0066875],
+  'threshold uses only the prior baseline and candidates never contaminate it'
 );
 
-const provisionalRun = buildV2([
-  { t: 0, v: 0.002 },
-  { t: 2, v: 0.004 },
-  { t: 10, v: 0.08 },
-  { t: 12, v: 0.09 }
-], [
-  { t: 0, v: 1 },
-  { t: 2, v: 1 },
-  { t: 10, v: 1 },
-  { t: 12, v: 1 }
-]);
-assert.deepStrictEqual(
-  provisionalRun.displayLatencySeries[0].values.map((point) => point.v),
-  [0.002, 0.004, 0.003, 0.003]
+const thresholdEquality = [
+  ...warmBaseline(),
+  { t: 12, v: 0.008 },
+  { t: 14, v: 0.02 }
+];
+assertNumbers(
+  outputNumbers(thresholdEquality).slice(-2),
+  [0.002, 0.0035],
+  'raw RTT equal to the 8 ms threshold is stable and enters the raw baseline'
 );
-const confirmedRun = buildV2([
-  { t: 0, v: 0.002 },
-  { t: 2, v: 0.004 },
-  { t: 10, v: 0.08 },
-  { t: 12, v: 0.09 },
+
+const warmupBoundary = [
+  ...timedValues(Array(5).fill(0.002)),
+  { t: 10, v: 0.1 },
+  { t: 12, v: 0.1 },
   { t: 14, v: 0.1 }
-], [
-  { t: 0, v: 1 },
-  { t: 2, v: 1 },
-  { t: 10, v: 1 },
-  { t: 12, v: 1 },
-  { t: 14, v: 1 }
-]);
-assert.deepStrictEqual(
-  confirmedRun.displayLatencySeries[0].values.map((point) => point.v),
-  [0.002, 0.004, 0.08, 0.09, 0.1],
-  'a later point reaching four seconds restores every earlier point in the high run'
+];
+assertNumbers(
+  outputNumbers(warmupBoundary).slice(-3),
+  [0.002, 0.0265, 0.03875],
+  'the sixth point remains warmup and adaptive candidate detection starts at the seventh'
 );
 
-const recoveredFailureRun = buildV2([
-  { t: 106, v: 0.005 }
-], [
-  { t: 100, v: 0 },
-  { t: 102, v: 0 },
-  { t: 104, v: 0 },
-  { t: 106, v: 1 }
-]);
-assert.deepStrictEqual(recoveredFailureRun.displayLatencySeries[0].values, [
-  { t: 100, v: null, status: 'failure' },
-  { t: 106, v: 0.005 }
-], 'a consecutive failure run produces one marker and successful latency resumes afterwards');
-assert.strictEqual(recoveredFailureRun.displayLatencySeries[0].currentStatus, 'online');
+const expiredBaseline = [
+  ...warmBaseline(),
+  { t: 71, v: 0.1 },
+  { t: 73, v: 0.1 }
+];
+assertNumbers(
+  outputNumbers(expiredBaseline).slice(-2),
+  [0.002, 0.051],
+  'baseline points expire by their real 60-second timestamps and warmup restarts'
+);
 
-const overnightFailures = Array.from({ length: 450 }, (_, index) => ({
+const provisionalBaselineExpiry = [
+  ...[-60, -59, -57, -55, -53, -51].map((t) => ({ t, v: 0.002 })),
+  { t: 0, v: 0.02 },
+  { t: 2, v: 0.02 },
+  { t: 4, v: 0.02 }
+];
+assertNumbers(
+  outputNumbers(provisionalBaselineExpiry).slice(-3),
+  [0.002, 0.002, 0.011],
+  'a provisional run ends and returns to warmup when baseline expiry leaves fewer than six points'
+);
+
+const longPersistentBaseline = warmBaseline();
+const longPersistentCandidates = [
+  { t: 12, v: 0.012 },
+  { t: 14, v: 0.015 },
+  { t: 16, v: 0.018 },
+  ...Array.from({ length: 29 }, (_, index) => ({ t: 18 + index * 2, v: 0.02 }))
+];
+const longPersistentRecovery = [
+  ...longPersistentBaseline,
+  ...longPersistentCandidates,
+  { t: 76, v: 0.002 },
+  { t: 78, v: 0.1 }
+];
+const longPersistentOutput = outputNumbers(longPersistentRecovery);
+assert.deepStrictEqual(
+  longPersistentOutput.slice(8, -2),
+  longPersistentCandidates.slice(2).map((point) => point.v),
+  'a confirmed persistent run stays raw after every original baseline point expires'
+);
+assertNumbers(
+  longPersistentOutput.slice(-2),
+  [0.002, 0.0265],
+  'persistent recovery resets smoothing and cached threshold before warmup restarts'
+);
+
+const maximumContinuousGap = [
+  ...warmBaseline(),
+  { t: 12, v: 0.012 },
+  { t: 15, v: 0.015 },
+  { t: 16, v: 0.018 }
+];
+assertNumbers(
+  outputNumbers(maximumContinuousGap).slice(-3),
+  [0.002, 0.002, 0.018],
+  'a candidate gap equal to 1.5 nominal steps remains continuous'
+);
+
+const brokenCandidateRun = [
+  ...warmBaseline(),
+  { t: 12, v: 0.012 },
+  { t: 15.001, v: 0.015 },
+  { t: 17, v: 0.018 }
+];
+assert.deepStrictEqual(
+  outputNumbers(brokenCandidateRun),
+  Array(9).fill(0.002),
+  'a candidate gap above 1.5 nominal steps starts a new provisional run'
+);
+
+const inferredOneSecondCadence = [
+  ...warmBaseline(0.002, 0, 1),
+  { t: 6, v: 0.012 },
+  { t: 8, v: 0.015 },
+  { t: 10, v: 0.018 }
+];
+assert.deepStrictEqual(
+  outputNumbers(inferredOneSecondCadence),
+  Array(9).fill(0.002),
+  'nominal step inferred from timestamps prevents two-second gaps joining a one-second run'
+);
+
+const candidateCadenceChange = [
+  ...warmBaseline(),
+  { t: 12, v: 0.012 },
+  { t: 13, v: 0.015 },
+  { t: 14, v: 0.018 },
+  { t: 15, v: 0.022 },
+  { t: 16, v: 0.025 },
+  { t: 18, v: 0.027 }
+];
+assert.strictEqual(
+  outputNumbers(candidateCadenceChange).at(-1),
+  0.002,
+  'candidate timestamps participate in cadence inference and split the later two-second gap'
+);
+
+const prefixCandidate = [...warmBaseline(), { t: 12, v: 0.012 }, { t: 14, v: 0.015 }];
+assert.deepStrictEqual(
+  outputNumbers(prefixCandidate),
+  exactPersistentOutput.slice(0, prefixCandidate.length),
+  'adding a future confirmation point leaves the earlier presentation prefix unchanged'
+);
+
+const failureResetLatency = [
+  ...warmBaseline(),
+  { t: 12, v: 0.1 },
+  { t: 14, v: 0 },
+  { t: 16, v: 0.1 }
+];
+const failureResetSuccess = onlineSuccessFor(failureResetLatency);
+failureResetSuccess[7].v = 0;
+const failureReset = buildV2(failureResetLatency, failureResetSuccess);
+assert.deepStrictEqual(failureReset.displayLatencySeries[0].values.slice(-3), [
+  { t: 12, v: 0.002 },
+  { t: 14, v: null, status: 'failure' },
+  { t: 16, v: 0.1 }
+], 'failure clears baseline, candidate run, cadence and smoothing before recovery warmup');
+assert.strictEqual(failureReset.displayLatencySeries[0].currentStatus, 'online');
+
+const unknownResetLatency = [
+  ...warmBaseline(),
+  { t: 12, v: 0.1 },
+  { t: 14, v: 0.1 },
+  { t: 16, v: 0.1 }
+];
+const unknownResetSuccess = onlineSuccessFor(unknownResetLatency)
+  .filter((point) => point.t !== 14);
+const unknownReset = buildV2(unknownResetLatency, unknownResetSuccess);
+assert.deepStrictEqual(unknownReset.displayLatencySeries[0].values.slice(-3), [
+  { t: 12, v: 0.002 },
+  { t: 14, v: null, status: 'unknown' },
+  { t: 16, v: 0.1 }
+], 'unknown evidence clears all presentation state and recovery starts warmup');
+
+const onlineWithoutRtt = buildInfrastructurePingPresentation({
+  latencySeries: [],
+  successSeries: successSeries([{ t: 100, v: 1 }])
+});
+assert.deepStrictEqual(onlineWithoutRtt.displayLatencySeries[0].values, [
+  { t: 100, v: null, status: 'unknown' }
+]);
+assert.strictEqual(
+  onlineWithoutRtt.displayLatencySeries[0].currentStatus,
+  'unknown',
+  'success without a finite RTT is unknown rather than online'
+);
+
+const repeatedFailures = Array.from({ length: 450 }, (_, index) => ({
   t: 100 + index * 2,
   v: 0
 }));
-const overnightPresentation = buildInfrastructurePingPresentation({
+const allFailurePresentation = buildInfrastructurePingPresentation({
   latencySeries: [],
-  successSeries: successSeries(overnightFailures)
+  successSeries: successSeries(repeatedFailures)
 });
-assert.deepStrictEqual(overnightPresentation.displayLatencySeries[0].values, [
+assert.deepStrictEqual(allFailurePresentation.displayLatencySeries[0].values, [
   { t: 100, v: null, status: 'failure' }
-], 'a long offline window is compressed to one failure marker');
-assert.strictEqual(
-  overnightPresentation.displayLatencySeries[0].currentStatus,
-  'offline',
-  'a series whose newest explicit success value is zero remains offline'
-);
-
-const missingSuccess = buildInfrastructurePingPresentation({
-  latencySeries: series([
-    { t: 100, v: 0.002 },
-    { t: 102, v: 0.08 },
-    { t: 104, v: 0.003 }
-  ]),
-  successSeries: []
-});
-assert.deepStrictEqual(missingSuccess.displayLatencySeries[0].values, [
-  { t: 100, v: null, status: 'unknown' }
-], 'consecutive latency points without success evidence collapse into one unknown gap');
-assert.strictEqual(missingSuccess.displayLatencySeries[0].currentStatus, 'unknown');
-assert.strictEqual(
-  missingSuccess.displayLatencySeries[0].values.some((point) => point.status === 'failure'),
-  false,
-  'missing success never fabricates a failure marker'
-);
+], 'an all-failure series remains present with one compressed marker');
+assert.strictEqual(allFailurePresentation.displayLatencySeries[0].currentStatus, 'offline');
 
 const staleOfflineThenUnknown = buildV2([
   { t: 100, v: 0 },
@@ -486,28 +556,8 @@ assert.deepStrictEqual(staleOfflineThenUnknown.displayLatencySeries[0].values, [
 assert.strictEqual(
   staleOfflineThenUnknown.displayLatencySeries[0].currentStatus,
   'unknown',
-  'newer unknown evidence must not preserve a stale offline status'
+  'newer unknown evidence replaces stale offline status'
 );
-
-const unknownInterrupted = v2Values([
-  { t: 0, v: 0.002 },
-  { t: 2, v: 0.004 },
-  { t: 4, v: 0.08 },
-  { t: 6, v: 0.09 },
-  { t: 8, v: 0.1 }
-], [
-  { t: 0, v: 1 },
-  { t: 2, v: 1 },
-  { t: 4, v: 1 },
-  { t: 8, v: 1 }
-]);
-assert.deepStrictEqual(unknownInterrupted, [
-  { t: 0, v: 0.002 },
-  { t: 2, v: 0.004 },
-  { t: 4, v: 0.003 },
-  { t: 6, v: null, status: 'unknown' },
-  { t: 8, v: 0.003 }
-], 'unknown evidence interrupts a high run without becoming a failure marker');
 
 const unequalLengths = buildV2([
   { t: 100, v: 0.002 },
@@ -523,12 +573,29 @@ assert.deepStrictEqual(unequalLengths.displayLatencySeries[0].values, [
   { t: 102, v: null, status: 'unknown' },
   { t: 104, v: null, status: 'failure' },
   { t: 106, v: 0.004 }
-], 'success-only and latency-only timestamps are aligned by timestamp rather than array index');
+], 'RTT and success are aligned by timestamp rather than array index');
 assert.strictEqual(unequalLengths.displayLatencySeries[0].currentStatus, 'online');
+
+const multiSeriesInput = {
+  latencySeries: [
+    ...series(warmBaseline(0.001), 'switch-a'),
+    ...series([...warmBaseline(0.002), { t: 12, v: 0.1 }], 'switch-b')
+  ],
+  successSeries: [
+    ...successSeries(onlineSuccessFor(warmBaseline(0.001)), 'switch-a'),
+    ...successSeries(onlineSuccessFor([...warmBaseline(0.002), { t: 12, v: 0.1 }]), 'switch-b')
+  ]
+};
+const multiSeriesOutput = buildInfrastructurePingPresentation(multiSeriesInput);
+assert.deepStrictEqual(
+  multiSeriesOutput.displayLatencySeries.map((item) => item.values.map((point) => point.v)),
+  [Array(6).fill(0.001), Array(7).fill(0.002)],
+  'adaptive and smoothing state remains independent per device'
+);
 
 const orderedMultiSeriesInput = {
   latencySeries: [
-    ...series([{ t: 100, v: 0.002 }, { t: 102, v: 0.08 }], 'switch-a'),
+    ...series([{ t: 100, v: 0.002 }, { t: 102, v: 0.003 }], 'switch-a'),
     ...series([{ t: 100, v: 0.006 }, { t: 102, v: 0.007 }], 'switch-b')
   ],
   successSeries: [
@@ -538,7 +605,7 @@ const orderedMultiSeriesInput = {
 };
 const shuffledMultiSeriesInput = {
   latencySeries: [
-    ...series([{ t: 102, v: 0.08 }, { t: 100, v: 0.002 }], 'switch-a'),
+    ...series([{ t: 102, v: 0.003 }, { t: 100, v: 0.002 }], 'switch-a'),
     ...series([{ t: 102, v: 0.007 }, { t: 100, v: 0.006 }], 'switch-b')
   ],
   successSeries: [
@@ -555,7 +622,7 @@ assert.deepStrictEqual(
 const immutableV2Input = {
   latencySeries: series([
     { t: 100, v: 0.002, note: 'normal' },
-    { t: 102, v: 0.08, note: 'high' }
+    { t: 102, v: 0.08, note: 'warmup' }
   ]),
   successSeries: successSeries([
     { t: 100, v: 1, note: 'online' },
@@ -569,6 +636,26 @@ immutableV2Output.displayLatencySeries[0].name = 'changed-output';
 immutableV2Output.displayLatencySeries[0].metric.instance = 'changed-instance';
 immutableV2Output.displayLatencySeries[0].values[0].v = 0.9;
 assert.deepStrictEqual(immutableV2Input, immutableV2Before, 'v2 output metadata and points do not alias input data');
+
+const fullWindowLatency = Array.from({ length: 450 }, (_, index) => {
+  let v = [0.002, 0.003, 0.006, 0.002, 0.007, 0.003][index % 6];
+  if (index % 97 === 50) v = 0.1;
+  if (index >= 200 && index <= 204) v = [0.012, 0.015, 0.018, 0.022, 0.025][index - 200];
+  return { t: index * 2, v };
+});
+const fullWindowSuccess = onlineSuccessFor(fullWindowLatency);
+const fullWindowOutput = v2Values(fullWindowLatency, fullWindowSuccess);
+for (let length = 1; length <= fullWindowLatency.length; length += 1) {
+  const prefixOutput = v2Values(
+    fullWindowLatency.slice(0, length),
+    fullWindowSuccess.slice(0, length)
+  );
+  assert.deepStrictEqual(
+    prefixOutput,
+    fullWindowOutput.slice(0, length),
+    `15-minute full calculation remains prefix-causal at length ${length}`
+  );
+}
 
 function legacyReferenceValues(values) {
   const threshold = 0.02;
