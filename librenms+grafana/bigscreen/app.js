@@ -20,9 +20,9 @@
     formatUptime, formatBits, formatTime, niceMax, roundUpToStep, average,
     networkLabel, seatLabel, gaugeColor, gaugePercent,
     linePathFromPoints, stepPathFromPoints, splitPointsOnGaps,
-    buildCsv, formatTimestampFull, groupAddressesByCBlock,
-    suppressIsolatedLatencySpikes
+    buildCsv, formatTimestampFull, groupAddressesByCBlock
   } = window.BSUtils;
+  const { buildInfrastructurePingPresentation } = window.BSPingTransform;
   const {
     prometheusBaseUrl, fetchWithTimeout,
     prometheusQuery, prometheusInstant, prometheusRangeFor,
@@ -992,25 +992,17 @@
       const nameMap = await fetchInfraDeviceNames();
       if (seq !== chartSeq) return;
       const rawActivePingSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(pingSeries, (s) => s.name), nameMap), "max"));
-      // Correct only an isolated >=20 ms response. Every other point, including
-      // the complete low-latency baseline, must remain the original 2-second
-      // Prometheus sample. No averaging or median filter is allowed here.
-      const correctedPingSeries = suppressIsolatedLatencySpikes(rawActivePingSeries, {
-        threshold: 0.02,
-        minConsecutive: 2,
-        maxGapSeconds: 3
-      });
-      const activePingSeries = correctedPingSeries;
+      const { displayLatencySeries } = buildInfrastructurePingPresentation(rawActivePingSeries);
       // Prometheus does not return placeholder samples while a target/series
       // is temporarily absent. Never join the two real samples surrounding
       // that hole: doing so draws a convincing but entirely synthetic ramp.
-      const pingGap = Math.max(5, estimateStepSeconds(activePingSeries) * 3);
+      const pingGap = Math.max(5, estimateStepSeconds(displayLatencySeries) * 3);
       const activeLossSeries = visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap(filterDeployed(lossSeries, (s) => s.name), nameMap), "max"));
-      if (shouldRender("pingTrendChart", seriesSignature(activePingSeries))) {
+      if (shouldRender("pingTrendChart", seriesSignature(displayLatencySeries))) {
         const tournamentPingLegend = document.querySelector(".screen.tournament-mode")
           ? { legend: "bottom", legendNamesOnly: true, calcs: [] }
           : {};
-        renderLineChart("pingTrendChart", activePingSeries, {
+        renderLineChart("pingTrendChart", displayLatencySeries, {
           axisFormatter: formatPingText,
           valueFormatter: formatPingText,
           // Keep network infrastructure devices in the combined Ping trend.
@@ -1021,9 +1013,9 @@
           // 1/2/2.5/5 chart scale: e.g. a 27 ms peak gets a 30 ms ceiling.
           maxRoundStep: 0.01,
           breakGapSeconds: pingGap,
-          // Visual-only curve smoothing: linePathFromPoints reads the raw
+          // Visual-only curve smoothing: linePathFromPoints reads the display
           // samples but never changes them. Legend and scale calculations
-          // continue to use the original values above.
+          // continue to use the same presentation values above.
           smooth: true,
           // When many switches are present, put the largest observed latency
           // first so the line responsible for the chart scale is immediately

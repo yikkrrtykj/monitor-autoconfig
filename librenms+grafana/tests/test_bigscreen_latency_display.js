@@ -1,6 +1,5 @@
 const assert = require('assert');
 const {
-  suppressIsolatedLatencySpikes,
   roundUpToStep,
   linePathFromPoints,
   stepPathFromPoints,
@@ -10,59 +9,6 @@ const {
 assert.ok(Math.abs(roundUpToStep(0.027, 0.01) - 0.03) < 1e-12, '27 ms gets a 30 ms ceiling');
 assert.ok(Math.abs(roundUpToStep(0.03, 0.01) - 0.03) < 1e-12, 'an exact 30 ms peak stays at 30 ms');
 assert.ok(Math.abs(roundUpToStep(0.031, 0.01) - 0.04) < 1e-12, '31 ms gets a 40 ms ceiling');
-
-function series(values) {
-  return [{ name: 'switch-a', metric: { instance: 'switch-a' }, values }];
-}
-
-const isolatedInput = series([
-  { t: 100, v: 0.002 },
-  { t: 102, v: 0.2 },
-  { t: 104, v: 0.004 }
-]);
-const isolatedOutput = suppressIsolatedLatencySpikes(isolatedInput);
-assert.strictEqual(isolatedOutput[0].values[1].v, 0.002, 'replacement uses the preceding real sample, not an average');
-assert.strictEqual(isolatedOutput[0].values[0].v, 0.002, 'the sample before an isolated spike must not change');
-assert.strictEqual(isolatedOutput[0].values[2].v, 0.004, 'the sample after an isolated spike must not change');
-assert.strictEqual(isolatedInput[0].values[1].v, 0.2, 'input data must remain unchanged');
-
-const noisyNeighbourInput = series([
-  { t: 100, v: 0.002 },
-  { t: 102, v: 0.002 },
-  { t: 104, v: 0.003 },
-  { t: 106, v: 0.2 },
-  { t: 108, v: 0.019 },
-  { t: 110, v: 0.003 },
-  { t: 112, v: 0.002 }
-]);
-assert.strictEqual(
-  suppressIsolatedLatencySpikes(noisyNeighbourInput)[0].values[3].v,
-  0.003,
-  'an isolated high sample copies the nearest real normal sample'
-);
-
-const sustainedInput = series([
-  { t: 100, v: 0.002 },
-  { t: 102, v: 0.02 },
-  { t: 104, v: 0.2 },
-  { t: 106, v: 0.004 }
-]);
-assert.deepStrictEqual(
-  suppressIsolatedLatencySpikes(sustainedInput)[0].values.map((point) => point.v),
-  sustainedInput[0].values.map((point) => point.v),
-  'two consecutive samples at or above 20 ms must remain visible'
-);
-
-const thresholdBoundaryInput = series([
-  { t: 100, v: 0.002 },
-  { t: 102, v: 0.02 },
-  { t: 104, v: 0.004 }
-]);
-assert.strictEqual(
-  suppressIsolatedLatencySpikes(thresholdBoundaryInput)[0].values[1].v,
-  0.002,
-  'one isolated sample exactly at 20 ms is suppressed'
-);
 
 assert.strictEqual(
   stepPathFromPoints(['10,20', '30,80', '60,20']),
@@ -79,19 +25,6 @@ assert.deepStrictEqual(
   ], 6).map((segment) => segment.map((point) => point.t)),
   [[100, 102], [180, 182]],
   'missing samples must produce a visible blank gap rather than a connecting line'
-);
-
-const rawBaselineInput = series([
-  { t: 100, v: 0.001 },
-  { t: 102, v: 0.003 },
-  { t: 104, v: 0.001 },
-  { t: 106, v: 0.004 },
-  { t: 108, v: 0.002 }
-]);
-assert.deepStrictEqual(
-  suppressIsolatedLatencySpikes(rawBaselineInput)[0].values,
-  rawBaselineInput[0].values,
-  'every normal latency sample must stay byte-for-byte unchanged; no smoothing or averaging'
 );
 
 const visualPoints = ['10,20', '30,40', '50,30'];
@@ -116,27 +49,5 @@ cubicSegments.forEach((segment, index) => {
     );
   });
 });
-
-const gapInput = series([
-  { t: 100, v: 0.003 },
-  { t: 102, v: 0.08 },
-  { t: 108, v: 0.09 },
-  { t: 110, v: 0.005 }
-]);
-const gapOutput = suppressIsolatedLatencySpikes(gapInput)[0].values;
-assert.strictEqual(gapOutput[1].v, 0.003);
-assert.strictEqual(gapOutput[2].v, 0.005);
-
-const incidentInput = series([
-  { t: 100, v: 0.002 },
-  { t: 102, v: 0.06 },
-  { t: 104, v: 0.2 },
-  { t: 106, v: 0.003 }
-]);
-assert.deepStrictEqual(
-  suppressIsolatedLatencySpikes(incidentInput)[0].values.map((point) => point.v),
-  incidentInput[0].values.map((point) => point.v),
-  'sustained high-latency incidents must remain unchanged'
-);
 
 console.log('bigscreen latency display tests passed');

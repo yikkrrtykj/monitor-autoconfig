@@ -304,6 +304,7 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
 def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     api = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
+    ping_transform = read("bigscreen/metrics/ping-transform.js")
     pages = read("bigscreen/pages.js")
     index = read("bigscreen/index.html")
 
@@ -320,20 +321,32 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "infra-srv-ping" not in ping_trend
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
     assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
-    assert "suppressIsolatedLatencySpikes(rawActivePingSeries" in app
-    assert "const correctedPingSeries = suppressIsolatedLatencySpikes" in app
-    assert "const activePingSeries = correctedPingSeries" in app
+    assert "const { buildInfrastructurePingPresentation } = window.BSPingTransform;" in app
+    assert (
+        "const { displayLatencySeries } = "
+        "buildInfrastructurePingPresentation(rawActivePingSeries);"
+    ) in app
+    legacy_spike_helper = "suppressIsolated" + "LatencySpikes"
+    assert legacy_spike_helper not in app
+    assert legacy_spike_helper not in read("bigscreen/utils.js")
+    assert "const ns = { buildInfrastructurePingPresentation };" in ping_transform
+    assert "correctedPingSeries" not in app
+    assert "activePingSeries" not in app
     assert "smoothLatencyJitter" not in app
-    assert "nearby.sort" not in read("bigscreen/utils.js")
-    assert "return previous.v" in read("bigscreen/utils.js")
+    assert "nearby.sort" not in ping_transform
+    assert "return previous.v" in ping_transform
     assert "infra-srv-ping" in pages
     assert "smoothNormalLatencyJitter" not in app
-    assert "threshold: 0.02" in app
-    assert "minConsecutive: 2" in app
-    assert 'renderLineChart("pingTrendChart", activePingSeries' in app
+    assert "threshold: 0.02" in ping_transform
+    assert "minConsecutive: 2" in ping_transform
+    assert "maxGapSeconds: 3" in ping_transform
+    assert "replacementRadius: 5" in ping_transform
+    assert "replacementWindowSeconds: 15" in ping_transform
+    assert 'renderLineChart("pingTrendChart", displayLatencySeries' in app
     assert "Visual-only curve smoothing" in app
     assert "smooth: true" in app
-    assert "const pingGap = Math.max(5, estimateStepSeconds(activePingSeries) * 3)" in app
+    assert "const pingGap = Math.max(5, estimateStepSeconds(displayLatencySeries) * 3)" in app
+    assert 'shouldRender("pingTrendChart", seriesSignature(displayLatencySeries))' in app
     assert "breakGapSeconds: pingGap" in app
     assert "renderInfraTrendCards" not in app
     assert ".infra-trend-grid" not in read("bigscreen/platform.css")
@@ -363,6 +376,8 @@ def test_bigscreen_ping_trend_is_combined_and_filters_isolated_spikes():
     assert "api.js?v=20260810a" in index
     assert "app.js?v=20260810a" in index
     assert "utils.js?v=20260804b" in index
+    assert "metrics/ping-transform.js?v=20260825a" in index
+    assert index.index("metrics/ping-transform.js?v=20260825a") < index.index("app.js?v=20260810a")
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
