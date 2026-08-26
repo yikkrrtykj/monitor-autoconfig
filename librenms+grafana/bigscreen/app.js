@@ -30,6 +30,7 @@
   const { createLossHeatmapRenderer } = window.BSLossHeatmap;
   const { createIspChartRenderer } = window.BSIspChart;
   const { createEvidenceChartRenderer } = window.BSEvidenceChart;
+  const { createTopologyPanel } = window.BSTopologyPanel;
   const { buildInfrastructurePingPresentation } = window.BSPingTransform;
   const {
     prometheusBaseUrl, fetchWithTimeout,
@@ -349,6 +350,17 @@
     estimateStepSeconds,
     average,
     escapeHtml
+  });
+  const topologyPanel = createTopologyPanel({
+    document,
+    location: window.location,
+    buildTopologyLayers,
+    topologyLayout,
+    renderTopologySvg,
+    topologyNodeKindLabel,
+    topologyLatencyIp,
+    escapeHtml,
+    formatPingText
   });
 
   function renderSparkline(containerId, seriesList) {
@@ -4066,10 +4078,6 @@
   // ---- Network topology ----
 
   let topologyTimer = null;
-  // Latest laid-out nodes; the click handlers read from here so an in-place
-  // latency update (render skipped) still shows fresh numbers in the detail
-  // panel without rebinding events.
-  let topologyNodes = [];
 
   function stopTopologyRefresh() {
     if (topologyTimer) {
@@ -4078,172 +4086,8 @@
     }
   }
 
-  function bindTopologyNodeEvents() {
-    const detail = document.getElementById("topologyDetail");
-    const canvas = document.getElementById("topologyCanvas");
-    if (canvas) {
-      canvas.onclick = (event) => {
-        if (event.target.closest && event.target.closest(".topology-node")) return;
-        detail.hidden = true;
-      };
-    }
-    document.querySelectorAll(".topology-node").forEach((el) => {
-      const handler = (event) => {
-        if (event && event.stopPropagation) event.stopPropagation();
-        const idx = Number(el.dataset.idx);
-        const node = topologyNodes[idx];
-        if (!node) return;
-        const syslogUrl = node.ip ? `${window.location.protocol}//${window.location.hostname}:3000/d/device-syslog?var-host=${encodeURIComponent(node.ip)}` : "";
-        const latencyIp = topologyLatencyIp(node);
-        detail.hidden = false;
-        detail.innerHTML = `
-          <header><strong>${escapeHtml(node.name)}</strong><span class="dot ${node.level}"></span></header>
-          <dl>
-            <dt>类型</dt><dd>${escapeHtml(topologyNodeKindLabel(node.kind))}</dd>
-            <dt>IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
-            <dt>状态</dt><dd>${node.success === undefined ? "无数据" : (node.success ? "在线" : "离线")}</dd>
-            <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
-          </dl>
-          <div class="topology-detail-actions">
-            ${latencyIp ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(latencyIp)}">延迟</a>` : ""}
-            ${syslogUrl ? `<a class="detail-link" href="${escapeHtml(syslogUrl)}">Syslog</a>` : ""}
-          </div>
-        `;
-      };
-      el.addEventListener("click", handler);
-      el.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          handler(event);
-        }
-      });
-    });
-  }
-
-  const topoView = { scale: 1, x: 0, y: 0 };
-
-  function applyTopoView() {
-    const canvas = document.getElementById("topologyCanvas");
-    const svg = canvas && canvas.querySelector(".topology-svg");
-    if (!svg) return;
-    const baseWidth = Number(svg.dataset.baseWidth || 0);
-    const baseHeight = Number(svg.dataset.baseHeight || 0);
-    if (!baseWidth || !baseHeight) return;
-    const viewWidth = baseWidth / topoView.scale;
-    const viewHeight = baseHeight / topoView.scale;
-    svg.setAttribute("viewBox", `${topoView.x} ${topoView.y} ${viewWidth} ${viewHeight}`);
-  }
-
-  function resetTopoView() {
-    topoView.scale = 1;
-    topoView.x = 0;
-    topoView.y = 0;
-    applyTopoView();
-  }
-
-  // Drag to pan, wheel to zoom. Bound once on the canvas container so it
-  // survives the 10s re-render; the transform itself is re-applied each refresh.
-  function setupTopoPanZoom() {
-    const canvas = document.getElementById("topologyCanvas");
-    if (!canvas || canvas.dataset.panzoom === "1") return;
-    canvas.dataset.panzoom = "1";
-
-    let pointerDown = false;
-    let dragging = false;
-    let moved = false;
-    let startX = 0;
-    let startY = 0;
-    let originX = 0;
-    let originY = 0;
-    let originScale = 1;
-    let activePointer = null;
-
-    canvas.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      pointerDown = true;
-      dragging = false;
-      moved = false;
-      startX = event.clientX;
-      startY = event.clientY;
-      originX = topoView.x;
-      originY = topoView.y;
-      originScale = topoView.scale;
-      activePointer = event.pointerId;
-      // Don't capture or preventDefault yet — a plain click must still reach the node.
-    });
-
-    canvas.addEventListener("pointermove", (event) => {
-      if (!pointerDown) return;
-      const dx = event.clientX - startX;
-      const dy = event.clientY - startY;
-      if (!dragging && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
-        dragging = true;
-        moved = true;
-        canvas.classList.add("topology-grabbing");
-        try { canvas.setPointerCapture(activePointer); } catch (e) {}
-      }
-      if (!dragging) return;
-      const svg = canvas.querySelector(".topology-svg");
-      const baseWidth = Number(svg && svg.dataset.baseWidth || 0);
-      const baseHeight = Number(svg && svg.dataset.baseHeight || 0);
-      const rect = canvas.getBoundingClientRect();
-      if (!baseWidth || !baseHeight || !rect.width || !rect.height) return;
-      topoView.x = originX - dx * (baseWidth / originScale) / rect.width;
-      topoView.y = originY - dy * (baseHeight / originScale) / rect.height;
-      applyTopoView();
-    });
-
-    const endDrag = () => {
-      if (!pointerDown) return;
-      pointerDown = false;
-      if (dragging) {
-        canvas.classList.remove("topology-grabbing");
-        try { canvas.releasePointerCapture(activePointer); } catch (e) {}
-      }
-      dragging = false;
-    };
-    canvas.addEventListener("pointerup", endDrag);
-    canvas.addEventListener("pointercancel", endDrag);
-
-    // If the pointer actually dragged, swallow the trailing click so it neither
-    // clears the detail panel nor opens a node.
-    canvas.addEventListener("click", (event) => {
-      if (moved) {
-        event.stopPropagation();
-        moved = false;
-      }
-    }, true);
-
-    canvas.addEventListener("wheel", (event) => {
-      event.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const svg = canvas.querySelector(".topology-svg");
-      const baseWidth = Number(svg && svg.dataset.baseWidth || 0);
-      const baseHeight = Number(svg && svg.dataset.baseHeight || 0);
-      if (!baseWidth || !baseHeight || !rect.width || !rect.height) return;
-      const cx = event.clientX - rect.left;
-      const cy = event.clientY - rect.top;
-      const viewWidth = baseWidth / topoView.scale;
-      const viewHeight = baseHeight / topoView.scale;
-      const focusX = topoView.x + (cx / rect.width) * viewWidth;
-      const focusY = topoView.y + (cy / rect.height) * viewHeight;
-      const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
-      const next = Math.min(4, Math.max(0.3, topoView.scale * factor));
-      topoView.scale = next;
-      topoView.x = focusX - (cx / rect.width) * (baseWidth / topoView.scale);
-      topoView.y = focusY - (cy / rect.height) * (baseHeight / topoView.scale);
-      applyTopoView();
-    }, { passive: false });
-
-    canvas.addEventListener("dblclick", resetTopoView);
-    // Belt-and-suspenders: stop the browser from drag-selecting the SVG labels.
-    canvas.addEventListener("selectstart", (event) => event.preventDefault());
-    canvas.addEventListener("dragstart", (event) => event.preventDefault());
-  }
-
   async function refreshTopology() {
-    const canvas = document.getElementById("topologyCanvas");
-    if (!canvas) return;
+    if (!topologyPanel.isAvailable()) return;
     const seq = ++topologySeq;
     try {
       const [allTargets, edges, seenItems] = await Promise.all([
@@ -4257,33 +4101,15 @@
       const targets = seenUp.size
         ? allTargets.filter((t) => t.job === "infra-fw-unit-snmp" || t.job === "infra-isp-ping" || seenUp.has(t.instance))
         : allTargets;
-      const layers = buildTopologyLayers(targets);
-      const containerWidth = Math.max(640, canvas.clientWidth || 1200);
-      const height = Math.max(420, canvas.clientHeight || 680);
-      // Lay the graph out at its natural width so a long row of access switches
-      // doesn't get squeezed/overlapped; pan & zoom let you explore the rest.
-      const maxRow = Math.max(
-        layers.isps.length, layers.firewalls.length,
-        layers.cores.length,
-        // Attached servers can share the same downstream row as access
-        // switches, so reserve width for both populations together.
-        layers.dists.length + layers.servers.length,
-        1
-      );
-      const width = Math.max(containerWidth, maxRow * 168 + 48);
-      const layout = topologyLayout(layers, width, height, edges);
-      topologyNodes = layout.nodes;
+      const { layout, width } = topologyPanel.prepare(targets, edges);
       if (shouldRender("topology", topologySignature(layout, width, edges))) {
-        canvas.innerHTML = renderTopologySvg(layout, width);
-        bindTopologyNodeEvents();
-        setupTopoPanZoom();
-        applyTopoView();
+        topologyPanel.render({ layout, width });
       } else {
         // Same structure and status levels: refresh only the latency readouts
         // in place, keeping the pan/zoom view and skipping the SVG rebuild.
-        updateTopologyLatencyTexts(canvas);
+        topologyPanel.updateLatency(layout.nodes);
       }
-      document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · 拖动平移·滚轮缩放·双击复位${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
+      topologyPanel.updateStatus(edges);
       lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== topologySeq) return;
@@ -4291,14 +4117,14 @@
       // even when the data signature is unchanged.
       renderSignatures.delete("topology");
       console.error("Topology fetch failed:", error);
-      canvas.innerHTML = `<div class="topology-error">拓扑数据拉取失败: ${escapeHtml(error.message || "")}</div>`;
+      topologyPanel.showError(error.message || "");
     }
   }
 
   // Skip the SVG rebuild when nothing the layout depends on changed: node set,
   // kinds, names, status levels, the LLDP edge list and the canvas width. Raw
   // latency is excluded on purpose -- it jitters every sample and is patched
-  // into the existing DOM by updateTopologyLatencyTexts instead.
+  // into the existing DOM through the panel's incremental update instead.
   function topologySignature(layout, width, edges) {
     const nodesSig = layout.nodes.map((node) => `${node.kind}|${node.ip || ""}|${node.name}|${node.level}`).join("#");
     const edgesSig = (edges || []).map((edge) => [
@@ -4307,17 +4133,6 @@
       edge.stale === true ? "stale" : "live"
     ].join("|")).join("#");
     return `${width}@${nodesSig}@@${edgesSig}`;
-  }
-
-  function updateTopologyLatencyTexts(canvas) {
-    canvas.querySelectorAll(".topology-node").forEach((el) => {
-      const node = topologyNodes[Number(el.dataset.idx)];
-      const text = el.querySelector(".topology-node-latency");
-      if (!node || !text) return;
-      text.textContent = Number.isFinite(node.latency)
-        ? formatPingText(node.latency)
-        : (node.kind === "isp" && node.success === true ? "在线" : "");
-    });
   }
 
   function startTopologyRefresh() {
@@ -4343,10 +4158,8 @@
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", true);
-    const detail = document.getElementById("topologyDetail");
-    detail.hidden = true;
-    detail.innerHTML = `<div class="topology-empty">点击任意节点查看详情</div>`;
-    resetTopoView();
+    topologyPanel.clearDetail();
+    topologyPanel.resetView();
     startTopologyRefresh();
   }
 
