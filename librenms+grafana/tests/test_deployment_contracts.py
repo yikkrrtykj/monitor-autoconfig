@@ -204,7 +204,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260826d" in html
+    assert "app.js?v=20260826e" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -252,11 +252,40 @@ def test_loss_heatmap_splits_large_device_lists_into_two_columns():
     assert "const bucketCount = 60" in heatmap
     assert 'point.v > 0.5 ? "bad" : point.v > 0.01 ? "warn" : "good"' in heatmap
     assert "charts/loss-heatmap.js?v=20260826a" in index
-    assert index.index("charts/loss-heatmap.js?v=20260826a") < index.index("app.js?v=20260826d")
+    assert index.index("charts/loss-heatmap.js?v=20260826a") < index.index("app.js?v=20260826e")
     assert ".heatmap.heatmap-split" in css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
     assert ".heatmap-axis-times > span" in css
     assert "white-space: nowrap" in css
+
+
+def test_isp_and_evidence_use_business_specific_line_chart_facades():
+    app = read("bigscreen/app.js")
+    isp_chart = read("bigscreen/charts/isp-chart.js")
+    evidence_chart = read("bigscreen/charts/evidence-chart.js")
+    index = read("bigscreen/index.html")
+
+    assert "const { createIspChartRenderer } = window.BSIspChart;" in app
+    assert "const { createEvidenceChartRenderer } = window.BSEvidenceChart;" in app
+    assert "const renderIspChart = createIspChartRenderer({" in app
+    assert "const renderEvidenceCharts = createEvidenceChartRenderer({" in app
+    assert "renderLineChart(" not in app
+    assert "renderIspChart({" in app
+    assert "renderEvidenceCharts({" in app
+    assert "createIspCarousel" not in isp_chart
+    assert "ispChartMaxBps(result.name, resultIndex)" in isp_chart
+    assert 'calcs: ["last", "max"]' in isp_chart
+    assert "renderEvidenceSummary(summaryContainerId" in evidence_chart
+    assert "const latencyGap = Math.max(5, estimateStepSeconds(latencySeries) * 3)" in evidence_chart
+    assert "const successGap = Math.max(5, estimateStepSeconds(successSeries) * 3)" in evidence_chart
+    assert 'calcs: ["last", "min"]' in evidence_chart
+    assert 'color: "#73d17a"' in evidence_chart
+    assert "charts/isp-chart.js?v=20260826a" in index
+    assert "charts/evidence-chart.js?v=20260826a" in index
+    assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/isp-chart.js?v=20260826a")
+    assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/evidence-chart.js?v=20260826a")
+    assert index.index("charts/isp-chart.js?v=20260826a") < index.index("app.js?v=20260826e")
+    assert index.index("charts/evidence-chart.js?v=20260826a") < index.index("app.js?v=20260826e")
 
 
 def test_grafana_device_names_survive_low_frequency_snmp_scrapes():
@@ -318,6 +347,7 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     app = read("bigscreen/app.js")
     line_chart = read("bigscreen/charts/line-chart.js")
     ping_chart = read("bigscreen/charts/ping-chart.js")
+    evidence_chart = read("bigscreen/charts/evidence-chart.js")
     ping_transform = read("bigscreen/metrics/ping-transform.js")
     pages = read("bigscreen/pages.js")
     index = read("bigscreen/index.html")
@@ -468,17 +498,17 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "pages.js?v=20260826a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260826d" in index
+    assert "app.js?v=20260826e" in index
     assert "utils.js?v=20260825a" in index
     assert "charts/line-chart.js?v=20260826a" in index
     assert "charts/ping-chart.js?v=20260826a" in index
     assert "metrics/ping-transform.js?v=20260826b" in index
     assert index.index("utils.js?v=20260825a") < index.index("charts/line-chart.js?v=20260826a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/ping-chart.js?v=20260826a")
-    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260826d")
-    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260826d")
-    assert "step: true" in app
-    assert "breakGapSeconds" in app
+    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260826e")
+    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260826e")
+    assert "step: true" in evidence_chart
+    assert "breakGapSeconds" in evidence_chart
     assert 'if (player.ip) params.set("ip", player.ip)' in app
 
 
@@ -532,7 +562,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
     assert "style.css?v=20260825a" in index
     assert "utils.js?v=20260825a" in index
-    assert "app.js?v=20260826d" in index
+    assert "app.js?v=20260826e" in index
 
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
@@ -599,7 +629,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260825a" in index
-    assert "app.js?v=20260826d" in index
+    assert "app.js?v=20260826e" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

@@ -28,6 +28,8 @@
   const { createLineChartRenderer } = window.BSLineChart;
   const { createPingChartRenderer } = window.BSPingChart;
   const { createLossHeatmapRenderer } = window.BSLossHeatmap;
+  const { createIspChartRenderer } = window.BSIspChart;
+  const { createEvidenceChartRenderer } = window.BSEvidenceChart;
   const { buildInfrastructurePingPresentation } = window.BSPingTransform;
   const {
     prometheusBaseUrl, fetchWithTimeout,
@@ -335,6 +337,19 @@
     formatTime,
     escapeHtml
   });
+  const renderIspChart = createIspChartRenderer({
+    renderLineChart,
+    formatBits,
+    ispChartMaxBps
+  });
+  const renderEvidenceCharts = createEvidenceChartRenderer({
+    document,
+    renderLineChart,
+    formatPingText,
+    estimateStepSeconds,
+    average,
+    escapeHtml
+  });
 
   function renderSparkline(containerId, seriesList) {
     const container = document.getElementById(containerId);
@@ -417,19 +432,11 @@
     ispGrid.appendChild(fragment);
     visibleResults.forEach((result, visibleIndex) => {
       const resultIndex = firstResultIndex + visibleIndex;
-      renderLineChart(`ispChart${resultIndex}`, [result.download, result.upload], {
-        axisFormatter: formatBits,
-        valueFormatter: formatBits,
-        minWidth: compactTournamentChart ? 120 : 320,
-        axisPadLeft: compactTournamentChart ? 76 : 92,
-        axisPadRight: compactTournamentChart ? 12 : 38,
-        axisPadTop: compactTournamentChart ? 6 : 12,
-        axisPadBottom: compactTournamentChart ? 20 : undefined,
-        fill: true,
-        legend: "bottom",
-        maxY: ispChartMaxBps(result.name, resultIndex),
-        minMax: 1,
-        calcs: ["last", "max"]
+      renderIspChart({
+        containerId: `ispChart${resultIndex}`,
+        result,
+        resultIndex,
+        compactTournamentChart
       });
     });
   }
@@ -1121,20 +1128,6 @@
     return `${seat} ${ip}${network}`.trim() || "选手";
   }
 
-  function formatOnlineAxis(value) {
-    if (value <= 0.01) return "离线";
-    if (value >= 0.99) return "在线";
-    return "";
-  }
-
-  function formatOnlineState(value) {
-    return value >= 0.5 ? "在线" : "离线";
-  }
-
-  function flattenSeriesValues(seriesList) {
-    return seriesList.flatMap((series) => series.values.map((point) => point.v)).filter((value) => Number.isFinite(value));
-  }
-
   function estimateStepSeconds(seriesList) {
     const times = seriesList.flatMap((series) => series.values.map((point) => point.t)).sort((a, b) => a - b);
     const gaps = [];
@@ -1149,54 +1142,6 @@
       ? gaps[middle]
       : (gaps[middle - 1] + gaps[middle]) / 2;
     return Math.max(1, Math.round(median));
-  }
-
-  function evidenceVerdict(latencyValues, successValues) {
-    const maxLatency = latencyValues.length ? Math.max(...latencyValues) : null;
-    const avgLatency = latencyValues.length ? average(latencyValues) : null;
-    const failCount = successValues.filter((value) => value < 0.5).length;
-
-    if (!latencyValues.length && !successValues.length) {
-      return { level: "unknown", text: "没有查到数据" };
-    }
-    if (failCount > 0) {
-      return { level: "bad", text: "存在断线/探测失败" };
-    }
-    if (avgLatency !== null && avgLatency >= 0.08) {
-      return { level: "bad", text: "持续高延迟" };
-    }
-    if (maxLatency !== null && maxLatency >= 0.1) {
-      return { level: "warn", text: "有高延迟尖峰" };
-    }
-    if (maxLatency !== null && maxLatency >= 0.04) {
-      return { level: "warn", text: "有轻微抖动" };
-    }
-    return { level: "good", text: "未见明显网络异常" };
-  }
-
-  function renderEvidenceSummary(context, latencySeries, successSeries) {
-    const container = document.getElementById("evidenceSummary");
-    const latencyValues = flattenSeriesValues(latencySeries);
-    const successValues = flattenSeriesValues(successSeries);
-    const verdict = evidenceVerdict(latencyValues, successValues);
-    const maxLatency = latencyValues.length ? formatPingText(Math.max(...latencyValues)) : "-";
-    const avgLatency = latencyValues.length ? formatPingText(average(latencyValues)) : "-";
-    const onlineRate = successValues.length ? `${(average(successValues) * 100).toFixed(1)}%` : "-";
-    const failCount = successValues.filter((value) => value < 0.5).length;
-    const offlineSeconds = failCount ? `${Math.round(failCount * estimateStepSeconds(successSeries))}s` : "0s";
-
-    container.innerHTML = `
-      <div class="evidence-verdict ${verdict.level}">
-        <span>${escapeHtml(context.label)}</span>
-        <strong>${escapeHtml(verdict.text)}</strong>
-      </div>
-      <div class="evidence-kpis">
-        <div><span>平均延迟</span><strong>${escapeHtml(avgLatency)}</strong></div>
-        <div><span>最高延迟</span><strong>${escapeHtml(maxLatency)}</strong></div>
-        <div><span>在线率</span><strong>${escapeHtml(onlineRate)}</strong></div>
-        <div><span>离线累计</span><strong>${escapeHtml(offlineSeconds)}</strong></div>
-      </div>
-    `;
   }
 
   let lastEvidenceExport = null;
@@ -1262,27 +1207,13 @@
         queryWindow,
         slug: requestedIp || `T${team}S${seat}`
       };
-      renderEvidenceSummary({ label }, latencySeries, successSeries);
-      const latencyGap = Math.max(5, estimateStepSeconds(latencySeries) * 3);
-      const successGap = Math.max(5, estimateStepSeconds(successSeries) * 3);
-      renderLineChart("evidenceLatencyChart", latencySeries, {
-        axisFormatter: formatPingText,
-        valueFormatter: formatPingText,
-        minMax: 0.005,
-        smooth: true,
-        breakGapSeconds: latencyGap,
-        legend: "bottom"
-      });
-      renderLineChart("evidenceSuccessChart", successSeries.map((series) => ({ ...series, color: "#73d17a" })), {
-        axisFormatter: formatOnlineAxis,
-        valueFormatter: formatOnlineState,
-        calcs: ["last", "min"],
-        minMax: 1,
-        smooth: false,
-        step: true,
-        breakGapSeconds: successGap,
-        fill: true,
-        legend: "bottom"
+      renderEvidenceCharts({
+        summaryContainerId: "evidenceSummary",
+        latencyContainerId: "evidenceLatencyChart",
+        successContainerId: "evidenceSuccessChart",
+        context: { label },
+        latencySeries,
+        successSeries
       });
     } catch (error) {
       if (seq !== evidenceSeq || activePageId !== "evidence") return;
