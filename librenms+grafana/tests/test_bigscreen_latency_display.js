@@ -1,7 +1,6 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
 const {
   roundUpToStep,
   linePathFromPoints,
@@ -106,20 +105,19 @@ function pingSeries(name, job, values) {
 }
 
 const managementDefinitions = [
-  { name: 'core-1', job: 'infra-core-ping', success: [1, 1, 1, 1] },
-  { name: 'stage1', job: 'infra-dist-ping', success: [1, 1, 1, 1] },
-  { name: 'stage2', job: 'infra-dist-ping', success: [1, 1, 1, 1] },
-  { name: 'stage3', job: 'infra-dist-ping', success: [1, 1, 0, 0] },
-  { name: 'stage4', job: 'infra-dist-ping', success: [1, 1] },
-  { name: 'firewall', job: 'infra-fw-ping', success: [1, 1, 1, 1] }
+  { name: 'core-1', job: 'infra-core-ping', success: [1, 1, 1, 1, 1, 1, 1] },
+  { name: 'stage1', job: 'infra-dist-ping', success: [1, 1, 1, 1, 1, 1, 1] },
+  { name: 'stage2', job: 'infra-dist-ping', success: [1, 1, 1, 0, 1, 1, 1] },
+  { name: 'stage4', job: 'infra-dist-ping', success: [1, 1, 1] },
+  { name: 'firewall', job: 'infra-fw-ping', success: [1, 1, 1, 1, 1, 1, 1] }
 ];
-const managementTimes = [100, 102, 104, 106];
-const mixedManagementLatency = managementDefinitions.map((definition, definitionIndex) => pingSeries(
+const managementTimes = [100, 102, 104, 106, 108, 110, 112];
+const mixedManagementLatency = managementDefinitions.map((definition) => pingSeries(
   definition.name,
   definition.job,
   managementTimes.map((t, pointIndex) => ({
     t,
-    v: [0.002, 0.009, 0.1, 0.2][(definitionIndex + pointIndex) % 4]
+    v: [0.002, 0.002, 0.002, 0.15, 0.002, 0.002, 0.002][pointIndex]
   }))
 ));
 const mixedManagementSuccess = managementDefinitions.map((definition) => pingSeries(
@@ -135,35 +133,40 @@ const serverPresentation = pingSeries('server', 'infra-srv-ping', [
   { t: 100, v: 0.002 },
   { t: 102, v: 0.003 },
   { t: 104, v: 0.008 },
-  { t: 106, v: 0.004 }
+  { t: 106, v: 0.004 },
+  { t: 108, v: 0.003 },
+  { t: 110, v: 0.004 },
+  { t: 112, v: 0.003 }
 ]);
 serverPresentation.presentationMode = 'latency';
 const businessProbePresentation = pingSeries('business-probe', 'business-latency-probe', [
   { t: 100, v: 0.001 },
   { t: 102, v: 0.002 },
   { t: 104, v: 0.003 },
-  { t: 106, v: 0.002 }
+  { t: 106, v: 0.002 },
+  { t: 108, v: 0.001 },
+  { t: 110, v: 0.002 },
+  { t: 112, v: 0.001 }
 ]);
 businessProbePresentation.presentationMode = 'latency';
 const realLatencyPresentation = [serverPresentation, businessProbePresentation];
 
 function latencyDomainMax(seriesList, minimum = 0.005) {
   const latencyMaxima = seriesList
-    .filter((item) => item.presentationMode !== 'management-reachability')
     .map((item) => lineSeriesStats(item.values).max)
     .filter((value) => Number.isFinite(value));
   return Math.max(minimum, ...latencyMaxima);
 }
 
 managementPresentation.forEach((item) => {
-  assert.deepStrictEqual(
-    lineSeriesStats(item.values),
-    { last: null, max: null, mean: null, min: null },
-    'management reachability has no finite latency statistic or Y-domain input'
+  assert.strictEqual(item.presentationMode, 'management-rtt');
+  assert.ok(
+    item.values.some((point) => Number.isFinite(point.v) && point.v > 0),
+    'every online management series contributes a real non-zero RTT curve'
   );
   assert.ok(
-    item.values.every((point) => point.v === null),
-    'management reachability carries categorical points without a zero RTT placeholder'
+    lineSeriesStats(item.values).max <= 0.002,
+    'the management CPU spike does not dominate RTT statistics or the mixed Y-domain'
   );
 });
 assert.deepStrictEqual(
@@ -172,61 +175,56 @@ assert.deepStrictEqual(
     'core-1': 'online',
     stage1: 'online',
     stage2: 'online',
-    stage3: 'offline',
     stage4: 'unknown',
     firewall: 'online'
   },
-  'each management device retains its own authoritative online/offline/unknown state'
+  'management RTT retains authoritative online/offline/unknown state alongside numeric history'
 );
 assert.strictEqual(
   latencyDomainMax(realLatencyPresentation),
   latencyDomainMax([...managementPresentation, ...realLatencyPresentation]),
-  'management status series cannot change the mixed chart latency Y-domain'
+  'filtered management RTT below the real server peak keeps the mixed chart scale unchanged'
 );
 assert.strictEqual(
   latencyDomainMax([...managementPresentation, ...realLatencyPresentation]),
   0.008,
-  'the mixed chart Y-domain is determined by the real server/business latency only'
+  'the mixed chart Y-domain includes all finite presentation RTT values'
 );
 assert.strictEqual(
   roundUpToStep(latencyDomainMax([...managementPresentation, ...realLatencyPresentation]), 0.01),
   roundUpToStep(latencyDomainMax(realLatencyPresentation), 0.01),
-  'management status series cannot change the rounded real-latency axis scale'
+  'filtered management RTT below the real-latency maximum cannot change the rounded axis scale'
 );
 assert.strictEqual(
   latencyDomainMax(managementPresentation),
   0.005,
-  'an all-management input has no measured latency maximum'
+  'an all-management RTT input keeps the existing 5 ms presentation floor'
 );
 
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'bigscreen', 'app.js'), 'utf8');
-const laneFunctionStart = appSource.indexOf('  function reachabilityLaneLayout');
-const laneFunctionEnd = appSource.indexOf('\n\n  function renderLineChart', laneFunctionStart);
-assert.ok(laneFunctionStart >= 0 && laneFunctionEnd > laneFunctionStart, 'renderer exposes a local pure lane layout helper');
-const reachabilityLaneLayout = vm.runInNewContext(
-  `(${appSource.slice(laneFunctionStart, laneFunctionEnd).trim()})`
-);
-const sixLaneLayout = reachabilityLaneLayout(managementPresentation.length, 48);
-assert.strictEqual(sixLaneLayout.positions.length, managementPresentation.length);
-assert.strictEqual(
-  new Set(sixLaneLayout.positions.map((value) => value.toFixed(6))).size,
-  managementPresentation.length,
-  'core, stage switches, and firewall receive independent status Y coordinates'
-);
-const laneGaps = sixLaneLayout.positions.slice(1).map((value, index) => (
-  value - sixLaneLayout.positions[index]
-));
+assert.ok(!appSource.includes('MANAGEMENT_REACHABILITY_MODE'));
+assert.ok(!appSource.includes('reachabilityLaneLayout'));
+assert.ok(!appSource.includes('chart-reachability-line'));
+assert.ok(!appSource.includes('chart-reachability-separator'));
+assert.ok(!appSource.includes('axisPadTop: 48'));
+assert.ok(!appSource.includes('{ currentStatus: "online", label: "ONLINE", value: null }'));
 assert.ok(
-  laneGaps.every((gap) => gap > sixLaneLayout.strokeWidth),
-  'adjacent online status strokes cannot cover each other'
+  appSource.includes('const segments = splitPointsOnGaps(item.values, options.breakGapSeconds);'),
+  'all Ping policies use the ordinary millisecond line renderer'
 );
-assert.ok(
-  laneGaps.every((gap) => gap > sixLaneLayout.markerArm * 2),
-  'an online lane cannot cover the neighbouring device failure marker'
+const managementFailureItem = managementPresentation.find((item) => item.name === 'stage2');
+assert.deepStrictEqual(
+  lineFailurePoints(managementFailureItem.values),
+  [{ t: 106, v: null, status: 'failure' }],
+  'management failure remains a gap with an explicit failure marker'
 );
-assert.ok(
-  appSource.includes('axisPadTop: 48'),
-  'the Ping chart reserves one fixed status band independent of management series count'
+assert.deepStrictEqual(
+  lineSeriesCurrentDisplay(
+    managementPresentation.find((item) => item.name === 'core-1'),
+    lineSeriesStats(managementPresentation.find((item) => item.name === 'core-1').values)
+  ),
+  { currentStatus: 'online', label: null, value: 0.002 },
+  'an online management legend exposes the latest RTT rather than ONLINE or --'
 );
 
 const statusHistoryValues = [

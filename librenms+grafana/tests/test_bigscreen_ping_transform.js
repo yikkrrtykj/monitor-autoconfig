@@ -259,68 +259,170 @@ assert.strictEqual(normalV2.displayLatencySeries[0].currentStatus, 'online');
 assert.ok(!Object.prototype.hasOwnProperty.call(normalV2, 'rawLatencySeries'));
 assert.strictEqual(normalV2.displayLatencySeries[0].presentationMode, 'latency');
 
-const managementNormal = timedValues([0.001, 0.002, 0.003]);
+const managementNormal = timedValues([0.001, 0.0014, 0.0018, 0.0022, 0.0026, 0.003]);
 const managementNormalOutput = buildJobV2('infra-dist-ping', managementNormal);
+const managementNormalValues = managementNormalOutput.displayLatencySeries[0].values;
 assert.strictEqual(
   managementNormalOutput.displayLatencySeries[0].presentationMode,
-  'management-reachability'
+  'management-rtt'
 );
-assert.deepStrictEqual(
-  managementNormalOutput.displayLatencySeries[0].values,
-  managementNormal.map((point) => ({ t: point.t, v: null, status: 'online' })),
-  'successful management-switch RTT is presented as categorical online reachability'
+assert.deepStrictEqual(managementNormalValues.slice(0, 2), [
+  { t: 0, v: null, status: 'warming' },
+  { t: 2, v: null, status: 'warming' }
+], 'management RTT uses a two-sample visual warm-up without inventing latency');
+assert.ok(
+  managementNormalValues.slice(2).every((point) => (
+    Number.isFinite(point.v) && point.v >= 0.001 && point.v <= 0.003 && !point.status
+  )),
+  'management RTT becomes a finite millisecond trend after causal warm-up'
+);
+assert.ok(
+  managementNormalValues.at(-1).v > managementNormalValues[2].v,
+  'a normal 1-to-3 ms baseline trend remains visible at low amplitude'
 );
 
-const managementSlope = timedValues([
+const managementStableBaseline = timedValues(Array(31).fill(0.002));
+const managementSlopeArtifact = [
   0.00926, 0.00856, 0.0073, 0.00667, 0.00532,
   0.00469, 0.00312, 0.00282, 0.00143
-]);
-assert.deepStrictEqual(
-  buildJobV2('infra-core-ping', managementSlope)
-    .displayLatencySeries[0].values.map((point) => point.v),
-  Array(managementSlope.length).fill(null),
-  'management-plane 9-to-1 ms scheduling slopes cannot become a business latency curve'
+];
+const managementSlope = [
+  ...managementStableBaseline,
+  ...timedValues(managementSlopeArtifact, 62)
+];
+const managementSlopeOutput = buildJobV2('infra-core-ping', managementSlope)
+  .displayLatencySeries[0].values.map((point) => point.v);
+assert.ok(
+  Math.max(...managementSlopeOutput.slice(-managementSlopeArtifact.length)) <= 0.002,
+  'the trailing low quantile removes the 9-to-1 ms management scheduling staircase'
 );
 
-const managementCpuSpikes = timedValues([0.002, 0.1, 0.2, 0.002]);
+const managementCpuSpikes = timedValues([0.002, 0.002, 0.15, 0.002, 0.002]);
 assert.deepStrictEqual(
   buildJobV2('infra-dist-ping', managementCpuSpikes)
     .displayLatencySeries[0].values.map((point) => point.v),
-  Array(managementCpuSpikes.length).fill(null),
-  'finite 100-200 ms management CPU spikes remain online reachability samples'
+  [null, null, 0.002, 0.002, 0.002],
+  'an isolated 150 ms management CPU spike stays near the measured network floor'
 );
+
+const managementColdStartSpike = buildJobV2(
+  'infra-dist-ping',
+  timedValues([0.15, 0.002, 0.002, 0.002])
+).displayLatencySeries[0];
+assert.deepStrictEqual(managementColdStartSpike.values, [
+  { t: 0, v: null, status: 'warming' },
+  { t: 2, v: null, status: 'warming' },
+  { t: 4, v: 0.002 },
+  { t: 6, v: 0.002 }
+], 'a cold-start 150 ms sample remains a warm-up gap instead of creating a decaying spike');
+assert.strictEqual(managementColdStartSpike.currentStatus, 'online');
 
 const firewallManagementOutput = buildJobV2('infra-fw-ping', managementCpuSpikes)
   .displayLatencySeries[0];
-assert.strictEqual(firewallManagementOutput.presentationMode, 'management-reachability');
+assert.strictEqual(firewallManagementOutput.presentationMode, 'management-rtt');
 assert.ok(
-  firewallManagementOutput.values.every((point) => point.v === null && point.status === 'online'),
-  'the firewall device-local Ping is control-plane reachability rather than data-plane latency'
+  firewallManagementOutput.values.slice(2).every((point) => Number.isFinite(point.v)),
+  'the firewall device-local Ping retains filtered RTT instead of a reachability-only lane'
 );
 
-const managementSustainedHigh = timedValues([
-  0.008, 0.01, 0.02, 0.05, 0.1, 0.2, 0.2, 0.2
-]);
+const managementDomBurst = timedValues([0.002, 0.038, 0.171, 0.106, 0.06, 0.005, 0.002]);
+const managementDomBurstOutput = buildJobV2('infra-dist-ping', managementDomBurst)
+  .displayLatencySeries[0].values.map((point) => point.v);
+assert.ok(
+  Math.max(...managementDomBurstOutput) <= 0.0035,
+  'a DOM-triggered 38-171 ms burst remains close to the causal low RTT estimate'
+);
+
+const managementRegimeShift = [
+  ...timedValues(Array(31).fill(0.002)),
+  ...timedValues(Array(31).fill(0.012), 62)
+];
+const managementRegimeShiftOutput = buildJobV2('infra-dist-ping', managementRegimeShift)
+  .displayLatencySeries[0].values.map((point) => point.v);
+const highRegimeOutput = managementRegimeShiftOutput.slice(31);
 assert.deepStrictEqual(
-  buildJobV2('infra-dist-ping', managementSustainedHigh)
-    .displayLatencySeries[0].values.map((point) => point.v),
-  Array(managementSustainedHigh.length).fill(null),
-  'sustained finite management RTT does not inherit the latency-path persistence rule'
+  highRegimeOutput.slice(0, 12),
+  Array(12).fill(0.002),
+  'the 30-second low-quantile window does not mistake the first positive delay samples for a new baseline'
+);
+assert.ok(
+  highRegimeOutput[12] > 0.002,
+  'a sustained 12 ms regime begins to appear causally after 24 seconds'
+);
+assert.ok(
+  highRegimeOutput.at(-1) > 0.0119 && highRegimeOutput.at(-1) <= 0.012,
+  'a genuine 60-second 12 ms baseline shift converges to the new RTT instead of staying pinned at 2 ms'
 );
 
-const managementFailureLatency = timedValues([0.002, 0.2, 0.003], 100);
+const majorityHighRegime = [
+  ...timedValues(Array(31).fill(0.002)),
+  ...timedValues(
+    Array.from({ length: 31 }, (_, index) => [0.012, 0.012, 0.012, 0.012, 0.002][index % 5]),
+    62
+  )
+];
+const majorityHighOutput = buildJobV2('infra-dist-ping', majorityHighRegime)
+  .displayLatencySeries[0].values.map((point) => point.v).slice(31);
+assert.ok(
+  majorityHighOutput.at(-1) > 0.009 && majorityHighOutput.at(-1) < 0.012,
+  'an 80%-high/20%-low regime remains clearly elevated after 60 seconds'
+);
+assert.ok(
+  Math.max(...majorityHighOutput) > 0.011,
+  'occasional low samples cannot permanently pin a majority-high regime to the old 2 ms floor'
+);
+
+const managementTimestampExpiry = [
+  { t: 0, v: 0.002 },
+  { t: 2, v: 0.002 },
+  { t: 4, v: 0.002 },
+  { t: 40, v: 0.012 },
+  { t: 42, v: 0.012 },
+  { t: 44, v: 0.012 }
+];
+assert.deepStrictEqual(buildJobV2('infra-dist-ping', managementTimestampExpiry)
+  .displayLatencySeries[0].values, [
+  { t: 0, v: null, status: 'warming' },
+  { t: 2, v: null, status: 'warming' },
+  { t: 4, v: 0.002 },
+  { t: 40, v: null, status: 'warming' },
+  { t: 42, v: null, status: 'warming' },
+  { t: 44, v: 0.012 }
+],
+  'the management window expires by real timestamps and does not retain stale low samples or EMA state'
+);
+
+const managementRecovery = [
+  ...timedValues(Array(31).fill(0.012)),
+  ...timedValues(Array(31).fill(0.002), 62)
+];
+const managementRecoveryOutput = buildJobV2('infra-core-ping', managementRecovery)
+  .displayLatencySeries[0].values.map((point) => point.v).slice(31);
+assert.ok(
+  managementRecoveryOutput.at(-1) >= 0.002 && managementRecoveryOutput.at(-1) < 0.0021,
+  'a sustained recovery from 12 ms converges back to the 2 ms network floor'
+);
+
+const managementFailureLatency = timedValues([
+  0.002, 0.002, 0.002, 0.002, 0.15, 0.002, 0.002, 0.002
+], 100);
 const managementFailureSuccess = onlineSuccessFor(managementFailureLatency);
-managementFailureSuccess[1].v = 0;
+managementFailureSuccess[3].v = 0;
 const managementFailure = buildJobV2(
   'infra-dist-ping',
   managementFailureLatency,
   managementFailureSuccess
 );
 assert.deepStrictEqual(managementFailure.displayLatencySeries[0].values, [
-  { t: 100, v: null, status: 'online' },
-  { t: 102, v: null, status: 'failure' },
-  { t: 104, v: null, status: 'online' }
-], 'management optimization preserves real failure gaps and online recovery');
+  { t: 100, v: null, status: 'warming' },
+  { t: 102, v: null, status: 'warming' },
+  { t: 104, v: 0.002 },
+  { t: 106, v: null, status: 'failure' },
+  { t: 108, v: null, status: 'warming' },
+  { t: 110, v: null, status: 'warming' },
+  { t: 112, v: 0.002 },
+  { t: 114, v: 0.002 }
+], 'failure recovery suppresses a first-sample 150 ms spike with a fresh causal warm-up');
 assert.strictEqual(managementFailure.displayLatencySeries[0].currentStatus, 'online');
 
 const managementMissingRtt = buildInfrastructurePingPresentation({
@@ -331,7 +433,7 @@ const managementMissingRtt = buildInfrastructurePingPresentation({
   ], 'switch-a', 'infra-core-ping')
 });
 assert.deepStrictEqual(managementMissingRtt.displayLatencySeries[0].values, [
-  { t: 100, v: null, status: 'online' },
+  { t: 100, v: null, status: 'warming' },
   { t: 102, v: null, status: 'unknown' }
 ]);
 assert.strictEqual(
@@ -379,7 +481,7 @@ const managementAllFailure = buildInfrastructurePingPresentation({
 });
 assert.strictEqual(
   managementAllFailure.displayLatencySeries[0].presentationMode,
-  'management-reachability'
+  'management-rtt'
 );
 assert.deepStrictEqual(managementAllFailure.displayLatencySeries[0].values, [
   { t: 100, v: null, status: 'failure' }
@@ -392,7 +494,7 @@ for (let length = 1; length <= managementSlope.length; length += 1) {
       .displayLatencySeries[0].values,
     buildJobV2('infra-core-ping', managementSlope)
       .displayLatencySeries[0].values.slice(0, length),
-    `management reachability remains prefix-causal at length ${length}`
+    `management RTT low-quantile presentation remains prefix-causal at length ${length}`
   );
 }
 
@@ -403,7 +505,7 @@ const realLatencyProbe = [
   { t: 16, v: 0.12 },
   { t: 18, v: 0.13 }
 ];
-for (const job of ['infra-srv-ping', 'business-latency-probe']) {
+for (const job of ['infra-srv-ping', 'infra-isp-ping', 'business-latency-probe']) {
   const latencyOutput = buildJobV2(job, realLatencyProbe).displayLatencySeries[0];
   assert.strictEqual(latencyOutput.presentationMode, 'latency');
   assert.deepStrictEqual(

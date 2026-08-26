@@ -129,15 +129,22 @@
     emaAlpha: 0.5
   });
 
+  const MANAGEMENT_RTT_DISPLAY_POLICY = Object.freeze({
+    windowSeconds: 30,
+    minimumWindowPoints: 3,
+    quantile: 0.2,
+    emaAlpha: 0.5
+  });
+
   // These jobs probe a switch or firewall device-local/control-plane address.
-  // Their finite RTT is not a data-plane latency measurement, so the customer
-  // display uses it only as evidence that the device is reachable.
-  const MANAGEMENT_REACHABILITY_PING_JOBS = new Set([
+  // Preserve their RTT semantics while estimating the lower network-delay
+  // component underneath positive management scheduling delay.
+  const MANAGEMENT_RTT_PING_JOBS = new Set([
     "infra-core-ping",
     "infra-dist-ping",
     "infra-fw-ping"
   ]);
-  const MANAGEMENT_REACHABILITY_PRESENTATION_MODE = "management-reachability";
+  const MANAGEMENT_RTT_PRESENTATION_MODE = "management-rtt";
   const LATENCY_PRESENTATION_MODE = "latency";
 
   function median(numbers) {
@@ -147,6 +154,13 @@
     return sorted.length % 2
       ? sorted[middle]
       : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  function nearestRankQuantile(numbers, quantile) {
+    if (!numbers.length) return null;
+    const sorted = [...numbers].sort((left, right) => left - right);
+    const rank = Math.max(1, Math.ceil(Math.min(1, Math.max(0, quantile)) * sorted.length));
+    return sorted[rank - 1];
   }
 
   function adaptiveThreshold(baseline) {
@@ -233,15 +247,9 @@
 
   function presentationModeForGroup(group) {
     if (!group.jobs || !group.jobs.size) return LATENCY_PRESENTATION_MODE;
-    return Array.from(group.jobs).every((job) => MANAGEMENT_REACHABILITY_PING_JOBS.has(job))
-      ? MANAGEMENT_REACHABILITY_PRESENTATION_MODE
+    return Array.from(group.jobs).every((job) => MANAGEMENT_RTT_PING_JOBS.has(job))
+      ? MANAGEMENT_RTT_PRESENTATION_MODE
       : LATENCY_PRESENTATION_MODE;
-  }
-
-  function successfulManagementReachabilityPoint(source, timestamp) {
-    // Management reachability is categorical. Keep latency explicitly absent;
-    // the renderer gives ONLINE points a status lane outside the RTT domain.
-    return { ...(source || {}), t: timestamp, v: null, status: "online" };
   }
 
   function buildSuccessAwareSeries(group) {
@@ -255,8 +263,10 @@
     const stableRawBaseline = [];
     const cadenceTimestamps = [];
     const smoothableValues = [];
+    const managementRawWindow = [];
     let abnormalRun = null;
     let previousSmooth = null;
+    let previousManagementEstimate = null;
     let openGapStatus = null;
     let currentStatus = "unknown";
     const presentationMode = presentationModeForGroup(group);
@@ -269,6 +279,8 @@
     function resetPresentationState() {
       stableRawBaseline.length = 0;
       cadenceTimestamps.length = 0;
+      managementRawWindow.length = 0;
+      previousManagementEstimate = null;
       abnormalRun = null;
       resetSmoothing();
     }
@@ -331,6 +343,28 @@
       return smoothed;
     }
 
+    function managementRttPresentation(timestamp, value) {
+      const oldestAllowed = timestamp - MANAGEMENT_RTT_DISPLAY_POLICY.windowSeconds;
+      while (managementRawWindow.length && managementRawWindow[0].t < oldestAllowed) {
+        managementRawWindow.shift();
+      }
+      if (!managementRawWindow.length) previousManagementEstimate = null;
+      managementRawWindow.push({ t: timestamp, v: value });
+      if (managementRawWindow.length < MANAGEMENT_RTT_DISPLAY_POLICY.minimumWindowPoints) {
+        return null;
+      }
+      const lowQuantile = nearestRankQuantile(
+        managementRawWindow.map((point) => point.v),
+        MANAGEMENT_RTT_DISPLAY_POLICY.quantile
+      );
+      const estimate = Number.isFinite(previousManagementEstimate)
+        ? MANAGEMENT_RTT_DISPLAY_POLICY.emaAlpha * lowQuantile
+          + (1 - MANAGEMENT_RTT_DISPLAY_POLICY.emaAlpha) * previousManagementEstimate
+        : lowQuantile;
+      previousManagementEstimate = estimate;
+      return estimate;
+    }
+
     function startsOrContinuesCandidateRun(timestamp, threshold, nominalStep) {
       const maximumGap = nominalStep * SUCCESS_AWARE_DISPLAY_POLICY.maximumCandidateGapSteps;
       if (
@@ -371,12 +405,21 @@
       }
 
       openGapStatus = null;
-      if (presentationMode === MANAGEMENT_REACHABILITY_PRESENTATION_MODE) {
-        values.push(successfulManagementReachabilityPoint(rawPoint, timestamp));
+      const rawValue = rawPoint.v;
+      if (presentationMode === MANAGEMENT_RTT_PRESENTATION_MODE) {
+        const presentationValue = managementRttPresentation(timestamp, rawValue);
+        if (!Number.isFinite(presentationValue)) {
+          values.push({ ...rawPoint, t: timestamp, v: null, status: "warming" });
+          return;
+        }
+        values.push(successfulLatencyPoint(
+          rawPoint,
+          timestamp,
+          presentationValue
+        ));
         return;
       }
 
-      const rawValue = rawPoint.v;
       expireBaseline(timestamp);
       const nominalStep = inferNominalStep();
       const currentThreshold = adaptiveThreshold(stableRawBaseline);

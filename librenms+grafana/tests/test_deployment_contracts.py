@@ -204,7 +204,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260826a" in html
+    assert "app.js?v=20260826b" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -301,7 +301,7 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
     assert "[10s]" in target["expr"]
 
 
-def test_bigscreen_ping_trend_uses_job_aware_presentation():
+def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     api = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
     ping_transform = read("bigscreen/metrics/ping-transform.js")
@@ -311,7 +311,7 @@ def test_bigscreen_ping_trend_uses_job_aware_presentation():
     env_example = read(".env.example")
 
     # Keep the raw 2-second source stable and retain job metadata so the adapter
-    # can separate switch-management reachability from real latency targets.
+    # can select management-RTT or latency presentation without IP heuristics.
     assert "const end = Math.floor(now / step) * step;" in api
     assert 'const cacheKey = `${query}|${win.step}`;' in api
     assert 'max by (instance, job) (probe_icmp_duration_seconds{job=~' in pages
@@ -353,14 +353,19 @@ def test_bigscreen_ping_trend_uses_job_aware_presentation():
     assert '"infra-dist-ping"' in ping_transform
     assert '"infra-fw-ping"' in ping_transform
     assert "192.168." not in ping_transform
-    assert 'const MANAGEMENT_REACHABILITY_PRESENTATION_MODE = "management-reachability";' in ping_transform
+    assert 'const MANAGEMENT_RTT_PRESENTATION_MODE = "management-rtt";' in ping_transform
     assert 'const LATENCY_PRESENTATION_MODE = "latency";' in ping_transform
+    assert "windowSeconds: 30" in ping_transform
+    assert "minimumWindowPoints: 3" in ping_transform
+    assert "quantile: 0.2" in ping_transform
+    assert "emaAlpha: 0.5" in ping_transform
     assert "group.jobs.add(job);" in ping_transform
     assert "Array.from(group.jobs).every" in ping_transform
-    assert "successfulManagementReachabilityPoint(rawPoint, timestamp)" in ping_transform
-    assert 'v: null, status: "online"' in ping_transform
+    assert "managementRttPresentation(timestamp, rawValue)" in ping_transform
+    assert "nearestRankQuantile" in ping_transform
+    assert 'v: null, status: "warming"' in ping_transform
+    assert 'v: null, status: "online"' not in ping_transform
     assert 'v: 0, status: "online"' not in ping_transform
-    assert 'status: "online"' in ping_transform
     assert "presentationMode," in ping_transform
     assert 'firewall_ping = named_targets([firewall], "ip")' in platform_config
     assert '"FIREWALL_PING": firewall_ping' in platform_config
@@ -448,10 +453,10 @@ def test_bigscreen_ping_trend_uses_job_aware_presentation():
     assert "pages.js?v=20260826a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260826a" in index
+    assert "app.js?v=20260826b" in index
     assert "utils.js?v=20260825a" in index
-    assert "metrics/ping-transform.js?v=20260826a" in index
-    assert index.index("metrics/ping-transform.js?v=20260826a") < index.index("app.js?v=20260826a")
+    assert "metrics/ping-transform.js?v=20260826b" in index
+    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260826b")
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -484,27 +489,17 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert '(currentStatusLegend ? ["last", "max"] : ["mean", "max"])' in app
     assert 'currentDisplay.currentStatus === "offline"' in app
     assert '<span class="legend-current-status legend-status-offline">OFFLINE</span>' in app
-    assert 'const MANAGEMENT_REACHABILITY_MODE = "management-reachability";' in app
-    assert "isManagementReachabilitySeries(item)" in app
-    assert '{ currentStatus: "online", label: "ONLINE", value: null }' in app
-    assert 'reachabilityOnly && !isCurrentCell' in app
-    assert "const latencySeries = series.filter((item) => !isManagementReachabilitySeries(item));" in app
-    assert "...latencySeries" in app
-    assert "splitOnlineStatusOnGaps(item.values, options.breakGapSeconds)" in app
-    assert 'class="chart-reachability-line"' in app
-    assert "linePathFromPoints(points, false)" in app
-    assert '管理可达性：在线' in app
-    assert 'class="chart-axis chart-reachability-label"' in app
-    assert "管理状态" in app
-    assert "function reachabilityLaneLayout(seriesCount, statusBandBottom)" in app
-    assert '.sort((left, right) => left.name.localeCompare(right.name, "zh-CN"))' in app
-    assert "const positions = Array.from({ length: count }" in app
-    assert "strokeWidth: Math.min(2.4" in app
-    assert "markerArm: Math.min(2" in app
-    assert 'class="chart-reachability-separator"' in app
-    assert "axisPadTop: 48" in app
-    assert "const gridLines = latencySeries.length" in app
-    assert "const markerY = reachabilityMarker ? statusLaneY.get(item) : latencyFailureMarkerY;" in app
+    assert 'const MANAGEMENT_REACHABILITY_MODE = "management-reachability";' not in app
+    assert "isManagementReachabilitySeries(item)" not in app
+    assert '{ currentStatus: "online", label: "ONLINE", value: null }' not in app
+    assert "splitOnlineStatusOnGaps" not in app
+    assert 'class="chart-reachability-line"' not in app
+    assert 'class="chart-reachability-separator"' not in app
+    assert "reachabilityLaneLayout" not in app
+    assert "axisPadTop: 48" not in app
+    assert "...Array.from(statsBySeries.values())" in app
+    assert "const segments = splitPointsOnGaps(item.values, options.breakGapSeconds);" in app
+    assert "const failureMarkerY = height - pad.bottom - 6;" in app
     assert '.legend-current-status.legend-status-offline' in css
     assert "color: #ff4d66;" in css
     assert 'if (currentStatus === "offline")' in utils
@@ -514,7 +509,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
     assert "style.css?v=20260825a" in index
     assert "utils.js?v=20260825a" in index
-    assert "app.js?v=20260826a" in index
+    assert "app.js?v=20260826b" in index
 
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
@@ -580,7 +575,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260825a" in index
-    assert "app.js?v=20260826a" in index
+    assert "app.js?v=20260826b" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
