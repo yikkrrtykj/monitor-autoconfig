@@ -11,6 +11,7 @@
   const playerSnapshotWindow = "15s";
   const playerOfflineGraceWindow = "5m";
   const seriesColors = ["#73d17a", "#ffe32d", "#5b8ff9", "#ff9f43", "#ff4d66", "#b877db", "#40c4ff", "#b8e986", "#f8e71c"];
+  const MANAGEMENT_REACHABILITY_MODE = "management-reachability";
   const pages = window.BIGSCREEN_PAGES || [];
   const teamLayouts = window.BIGSCREEN_TEAM_LAYOUTS || {};
 
@@ -305,6 +306,51 @@
     container.innerHTML = `<div class="no-data">${message || "暂无数据"}</div>`;
   }
 
+  function isManagementReachabilitySeries(item) {
+    return item && item.presentationMode === MANAGEMENT_REACHABILITY_MODE;
+  }
+
+  function splitOnlineStatusOnGaps(values, maxGapSeconds) {
+    const maxGap = Number(maxGapSeconds);
+    const enforceTimeGap = Number.isFinite(maxGap) && maxGap > 0;
+    const segments = [];
+    let current = [];
+    (values || []).forEach((point) => {
+      if (!point || point.status !== "online" || !Number.isFinite(point.t)) {
+        if (current.length) segments.push(current);
+        current = [];
+        return;
+      }
+      if (
+        current.length
+        && enforceTimeGap
+        && point.t - current[current.length - 1].t > maxGap
+      ) {
+        segments.push(current);
+        current = [];
+      }
+      current.push(point);
+    });
+    if (current.length) segments.push(current);
+    return segments;
+  }
+
+  function reachabilityLaneLayout(seriesCount, statusBandBottom) {
+    const count = Math.max(0, Math.floor(Number(seriesCount) || 0));
+    const laneTop = 5;
+    const laneBottom = Math.max(laneTop, Number(statusBandBottom) - 8);
+    const laneSpacing = count > 1 ? (laneBottom - laneTop) / (count - 1) : laneBottom - laneTop;
+    const positions = Array.from({ length: count }, (_, index) => (
+      count > 1 ? laneTop + laneSpacing * index : (laneTop + laneBottom) / 2
+    ));
+    return {
+      positions,
+      strokeWidth: Math.min(2.4, Math.max(0.4, laneSpacing * 0.45)),
+      markerArm: Math.min(2, Math.max(0.25, laneSpacing * 0.35)),
+      labelY: (laneTop + laneBottom) / 2 + 4
+    };
+  }
+
   function renderLineChart(containerId, seriesList, options) {
     const container = document.getElementById(containerId);
     const series = seriesList.filter(lineSeriesHasTimeline);
@@ -333,14 +379,18 @@
       .filter((timestamp) => Number.isFinite(timestamp));
     const minT = Math.min(...times);
     const maxT = Math.max(...times);
+    const latencySeries = series.filter((item) => !isManagementReachabilitySeries(item));
+    const reachabilitySeries = series
+      .filter(isManagementReachabilitySeries)
+      .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
     const statsBySeries = new Map(series.map((item) => [
       item,
       lineSeriesStats(item.values)
     ]));
     const rawMax = Math.max(
       options.minMax || 0,
-      ...Array.from(statsBySeries.values())
-        .map((stats) => stats.max)
+      ...latencySeries
+        .map((item) => statsBySeries.get(item).max)
         .filter((value) => Number.isFinite(value))
     );
     const fixedMax = Number(options.maxY);
@@ -354,11 +404,21 @@
 
     const xOf = (timestamp) => pad.left + ((timestamp - minT) / Math.max(1, maxT - minT)) * plotWidth;
     const yOf = (value) => pad.top + (1 - Math.min(1, Math.max(0, value / maxV))) * plotHeight;
+    const reachabilityLayout = reachabilityLaneLayout(reachabilitySeries.length, pad.top);
+    const statusLaneY = new Map(reachabilitySeries.map((item, index) => [
+      item,
+      reachabilityLayout.positions[index]
+    ]));
     const timeTicks = [minT, minT + (maxT - minT) * 0.25, minT + (maxT - minT) * 0.5, minT + (maxT - minT) * 0.75, maxT];
-    const gridLines = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-      const y = pad.top + (1 - ratio) * plotHeight;
-      return `<line class="chart-grid-line" x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" /><text class="chart-axis" x="${pad.left - 10}" y="${y + 4}" text-anchor="end">${escapeHtml(axisFormatter(maxV * ratio))}</text>`;
-    }).join("");
+    const gridLines = latencySeries.length
+      ? [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+        const y = pad.top + (1 - ratio) * plotHeight;
+        return `<line class="chart-grid-line" x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" /><text class="chart-axis" x="${pad.left - 10}" y="${y + 4}" text-anchor="end">${escapeHtml(axisFormatter(maxV * ratio))}</text>`;
+      }).join("")
+      : "";
+    const reachabilityGuide = reachabilitySeries.length
+      ? `<line class="chart-reachability-separator" x1="${pad.left}" y1="${pad.top - 1}" x2="${width - pad.right}" y2="${pad.top - 1}" style="stroke:rgba(125,139,160,.22);stroke-width:1" /><text class="chart-axis chart-reachability-label" x="${pad.left - 10}" y="${reachabilityLayout.labelY.toFixed(1)}" text-anchor="end">管理状态</text>`
+      : "";
     const timeGridLines = timeTicks.map((timestamp) => {
       const x = xOf(timestamp);
       return `<line class="chart-time-line" x1="${x}" y1="${pad.top}" x2="${x}" y2="${height - pad.bottom}" />`;
@@ -373,6 +433,17 @@
     }).join("");
     const paths = series.map((item, index) => {
       const color = item.color || seriesColors[index % seriesColors.length];
+      if (isManagementReachabilitySeries(item)) {
+        const laneY = statusLaneY.get(item);
+        const statusPaths = splitOnlineStatusOnGaps(item.values, options.breakGapSeconds)
+          .map((values) => {
+            const points = values.map((point) => `${xOf(point.t).toFixed(1)},${laneY.toFixed(1)}`);
+            return `<path class="chart-reachability-line" d="${linePathFromPoints(points, false)}" style="fill:none;stroke:${color};stroke-width:${reachabilityLayout.strokeWidth.toFixed(2)};stroke-linecap:round;stroke-dasharray:6 4" />`;
+          }).join("");
+        if (!statusPaths) return "";
+        const title = `${item.name} 管理可达性：在线`;
+        return `<g class="chart-reachability-series" role="img" aria-label="${escapeHtml(title)}"><title>${escapeHtml(title)}</title>${statusPaths}</g>`;
+      }
       const segments = splitPointsOnGaps(item.values, options.breakGapSeconds);
       return segments.map((values) => {
         const points = values.map((point) => `${xOf(point.t).toFixed(1)},${yOf(point.v).toFixed(1)}`);
@@ -385,18 +456,20 @@
         return `${areaPath ? `<path class="chart-area" d="${areaPath}" style="fill:${color}" />` : ""}<path class="chart-line" d="${linePath}" style="stroke:${color}" />`;
       }).join("");
     }).join("");
-    const failureMarkerY = height - pad.bottom - 6;
+    const latencyFailureMarkerY = height - pad.bottom - 6;
     const failureMarkers = series.map((item) => {
       return lineFailurePoints(item.values).map((point) => {
         const x = xOf(point.t);
-        const arm = 4;
+        const reachabilityMarker = isManagementReachabilitySeries(item);
+        const markerY = reachabilityMarker ? statusLaneY.get(item) : latencyFailureMarkerY;
+        const arm = reachabilityMarker ? reachabilityLayout.markerArm : 4;
         const title = `${item.name} 探测失败 ${formatTime(point.t)}`;
         const markerStyle = "stroke:#ff4d66;stroke-width:2.4;stroke-linecap:round";
         return `
           <g class="chart-failure-marker" role="img" aria-label="${escapeHtml(title)}">
             <title>${escapeHtml(title)}</title>
-            <line x1="${(x - arm).toFixed(1)}" y1="${(failureMarkerY - arm).toFixed(1)}" x2="${(x + arm).toFixed(1)}" y2="${(failureMarkerY + arm).toFixed(1)}" style="${markerStyle}" />
-            <line x1="${(x + arm).toFixed(1)}" y1="${(failureMarkerY - arm).toFixed(1)}" x2="${(x - arm).toFixed(1)}" y2="${(failureMarkerY + arm).toFixed(1)}" style="${markerStyle}" />
+            <line x1="${(x - arm).toFixed(1)}" y1="${(markerY - arm).toFixed(1)}" x2="${(x + arm).toFixed(1)}" y2="${(markerY + arm).toFixed(1)}" style="${markerStyle}" />
+            <line x1="${(x + arm).toFixed(1)}" y1="${(markerY - arm).toFixed(1)}" x2="${(x - arm).toFixed(1)}" y2="${(markerY + arm).toFixed(1)}" style="${markerStyle}" />
           </g>
         `;
       }).join("");
@@ -421,15 +494,20 @@
     const legend = legendSeries.map((item) => {
       const color = seriesColor.get(item);
       const stats = statsBySeries.get(item);
+      const reachabilityOnly = isManagementReachabilitySeries(item);
       const currentDisplay = currentStatusLegend
-        ? lineSeriesCurrentDisplay(item, stats)
+        ? (reachabilityOnly && item.currentStatus === "online"
+          ? { currentStatus: "online", label: "ONLINE", value: null }
+          : lineSeriesCurrentDisplay(item, stats))
         : null;
       const cells = calcs.map((calc) => {
         const stat = stats[calc];
         const isCurrentCell = currentStatusLegend && calc === "last";
-        const displayValue = isCurrentCell && currentDisplay.label !== null
-          ? currentDisplay.label
-          : (isCurrentCell ? currentDisplay.value : stat);
+        const displayValue = reachabilityOnly && !isCurrentCell
+          ? "--"
+          : (isCurrentCell && currentDisplay.label !== null
+            ? currentDisplay.label
+            : (isCurrentCell ? currentDisplay.value : stat));
         const value = escapeHtml(Number.isFinite(displayValue)
           ? valueFormatter(displayValue)
           : (typeof displayValue === "string" ? displayValue : (currentStatusLegend ? "--" : "-")));
@@ -475,6 +553,7 @@
         <svg class="line-chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" focusable="false">
           ${timeGridLines}
           ${gridLines}
+          ${reachabilityGuide}
           ${paths}
           ${failureMarkers}
           ${timeLabels}
@@ -1042,6 +1121,10 @@
           // Servers remain in their dedicated gauges. A 5 ms floor avoids
           // exaggerating sub-millisecond jitter.
           minMax: 0.005,
+          // Reserve a fixed management-status band above the RTT grid. The
+          // latency plot geometry stays identical as devices go online/offline
+          // or as management series are added and removed.
+          axisPadTop: 48,
           // Ping is easier to read in decimal milliseconds than the generic
           // 1/2/2.5/5 chart scale: e.g. a 27 ms peak gets a 30 ms ceiling.
           maxRoundStep: 0.01,

@@ -129,6 +129,17 @@
     emaAlpha: 0.5
   });
 
+  // These jobs probe a switch or firewall device-local/control-plane address.
+  // Their finite RTT is not a data-plane latency measurement, so the customer
+  // display uses it only as evidence that the device is reachable.
+  const MANAGEMENT_REACHABILITY_PING_JOBS = new Set([
+    "infra-core-ping",
+    "infra-dist-ping",
+    "infra-fw-ping"
+  ]);
+  const MANAGEMENT_REACHABILITY_PRESENTATION_MODE = "management-reachability";
+  const LATENCY_PRESENTATION_MODE = "latency";
+
   function median(numbers) {
     if (!numbers.length) return null;
     const sorted = [...numbers].sort((left, right) => left - right);
@@ -174,6 +185,7 @@
       if (!group) {
         group = {
           source: series,
+          jobs: new Set(),
           latencyValues: [],
           successValues: []
         };
@@ -188,6 +200,8 @@
       } else {
         group.successValues.push(...((series && series.values) || []));
       }
+      const job = String((((series || {}).metric || {}).job) || "").trim();
+      if (job) group.jobs.add(job);
     }
 
     (latencySeries || []).forEach((series, index) => addSeries(series, index, "latency"));
@@ -217,6 +231,19 @@
     return point;
   }
 
+  function presentationModeForGroup(group) {
+    if (!group.jobs || !group.jobs.size) return LATENCY_PRESENTATION_MODE;
+    return Array.from(group.jobs).every((job) => MANAGEMENT_REACHABILITY_PING_JOBS.has(job))
+      ? MANAGEMENT_REACHABILITY_PRESENTATION_MODE
+      : LATENCY_PRESENTATION_MODE;
+  }
+
+  function successfulManagementReachabilityPoint(source, timestamp) {
+    // Management reachability is categorical. Keep latency explicitly absent;
+    // the renderer gives ONLINE points a status lane outside the RTT domain.
+    return { ...(source || {}), t: timestamp, v: null, status: "online" };
+  }
+
   function buildSuccessAwareSeries(group) {
     const latencyByTimestamp = pointsByTimestamp(group.latencyValues);
     const successByTimestamp = pointsByTimestamp(group.successValues);
@@ -232,6 +259,7 @@
     let previousSmooth = null;
     let openGapStatus = null;
     let currentStatus = "unknown";
+    const presentationMode = presentationModeForGroup(group);
 
     function resetSmoothing() {
       smoothableValues.length = 0;
@@ -343,6 +371,11 @@
       }
 
       openGapStatus = null;
+      if (presentationMode === MANAGEMENT_REACHABILITY_PRESENTATION_MODE) {
+        values.push(successfulManagementReachabilityPoint(rawPoint, timestamp));
+        return;
+      }
+
       const rawValue = rawPoint.v;
       expireBaseline(timestamp);
       const nominalStep = inferNominalStep();
@@ -394,6 +427,7 @@
     const source = group.source || {};
     const result = {
       ...source,
+      presentationMode,
       currentStatus,
       values
     };
@@ -414,8 +448,8 @@
 
   /**
    * Array input retains the deployed legacy presentation contract. Object
-   * input is the success-aware v2 contract and intentionally returns display
-   * data only; production will switch to it in a later wiring commit.
+   * input is the production success-aware contract and intentionally returns
+   * display data only.
    */
   function buildInfrastructurePingPresentation(input) {
     if (Array.isArray(input) || input === undefined || input === null) {

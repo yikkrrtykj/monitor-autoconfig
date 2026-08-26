@@ -4,8 +4,8 @@
     // Keep server health in the dedicated gauges. The shared trend is for
     // network infrastructure only, otherwise server1/server2 obscure the two
     // tournament-switch paths operators need to compare during a match.
-    pingTrend: 'max by (instance) (probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"})',
-    pingSuccessTrend: 'max by (instance) (probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping"})',
+    pingTrend: 'max by (instance, job) (probe_icmp_duration_seconds{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping",phase="rtt"})',
+    pingSuccessTrend: 'max by (instance, job) (probe_success{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping"})',
     // Infrastructure is scraped every 2 seconds.  A 30-second median uses
     // roughly 15 samples: stable against switch control-plane ICMP spikes and
     // failed-probe zeroes, but more representative than the single 1m minimum.
