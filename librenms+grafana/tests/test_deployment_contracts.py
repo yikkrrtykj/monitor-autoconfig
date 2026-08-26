@@ -204,7 +204,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260826b" in html
+    assert "app.js?v=20260826c" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -304,6 +304,8 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
 def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     api = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
+    line_chart = read("bigscreen/charts/line-chart.js")
+    ping_chart = read("bigscreen/charts/ping-chart.js")
     ping_transform = read("bigscreen/metrics/ping-transform.js")
     pages = read("bigscreen/pages.js")
     index = read("bigscreen/index.html")
@@ -399,24 +401,25 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "maxGapSeconds: 3" in ping_transform
     assert "replacementRadius: 5" in ping_transform
     assert "replacementWindowSeconds: 15" in ping_transform
-    assert 'renderLineChart("pingTrendChart", displayLatencySeries' in app
-    assert "The adapter already applies trailing causal smoothing" in app
-    ping_render = app.split(
-        'renderLineChart("pingTrendChart", displayLatencySeries, {', 1
-    )[1].split("});", 1)[0]
-    assert "smooth: false" in ping_render
-    assert "smooth: true" not in ping_render
-    assert "const pingGap = Math.max(5, estimateStepSeconds(displayLatencySeries) * 3)" in app
+    assert "const { createPingChartRenderer } = window.BSPingChart;" in app
+    assert "const renderPingChart = createPingChartRenderer({" in app
+    assert "renderPingChart({" in app
+    assert 'containerId: "pingTrendChart"' in app
+    assert "series: displayLatencySeries" in app
+    assert "The adapter already applies trailing causal smoothing" in ping_chart
+    assert "smooth: false" in ping_chart
+    assert "smooth: true" not in ping_chart
+    assert "const pingGap = Math.max(5, estimateStepSeconds(series) * 3)" in ping_chart
     assert 'shouldRender("pingTrendChart", seriesSignature(displayLatencySeries))' in app
-    assert "breakGapSeconds: pingGap" in app
+    assert "breakGapSeconds: pingGap" in ping_chart
     assert "renderInfraTrendCards" not in app
     assert ".infra-trend-grid" not in read("bigscreen/platform.css")
-    assert "minMax: 0.005" in app
-    assert "maxRoundStep: 0.01" in app
-    assert "roundUpToStep(rawMax, maxRoundStep)" in app
-    assert 'const tournamentPingLegend = document.querySelector(".screen.tournament-mode")' in app
-    assert '{ legend: "bottom", legendNamesOnly: true, calcs: [] }' in app
-    assert "...tournamentPingLegend" in app
+    assert "minMax: 0.005" in ping_chart
+    assert "maxRoundStep: 0.01" in ping_chart
+    assert "roundUpToStep(rawMax, maxRoundStep)" in line_chart
+    assert "const tournamentPingLegend = tournamentMode" in ping_chart
+    assert '{ legend: "bottom", legendNamesOnly: true, calcs: [] }' in ping_chart
+    assert "...tournamentPingLegend" in ping_chart
     assert ".screen.tournament-mode .trend-panel .bottom-legend.names-only-legend" in read("bigscreen/platform.css")
 
     # Seat-based evidence first resolves the current Prometheus target and
@@ -453,53 +456,61 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "pages.js?v=20260826a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260826b" in index
+    assert "app.js?v=20260826c" in index
     assert "utils.js?v=20260825a" in index
+    assert "charts/line-chart.js?v=20260826a" in index
+    assert "charts/ping-chart.js?v=20260826a" in index
     assert "metrics/ping-transform.js?v=20260826b" in index
-    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260826b")
+    assert index.index("utils.js?v=20260825a") < index.index("charts/line-chart.js?v=20260826a")
+    assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/ping-chart.js?v=20260826a")
+    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260826c")
+    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260826c")
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
 
 
 def test_bigscreen_line_chart_supports_explicit_failure_points():
-    app = read("bigscreen/app.js")
+    line_chart = read("bigscreen/charts/line-chart.js")
     utils = read("bigscreen/utils.js")
 
     assert 'point.status !== "failure"' in utils
     assert 'point.status !== "unknown"' in utils
     assert "Number.isFinite(point.v)" in utils
-    assert "lineSeriesStats(item.values)" in app
-    assert "lineFailurePoints(item.values)" in app
-    assert 'class="chart-failure-marker"' in app
-    assert 'stroke:#ff4d66' in app
-    assert "${failureMarkers}" in app
-    assert "smooth: true" in app
+    assert "lineSeriesStats(item.values)" in line_chart
+    assert "lineFailurePoints(item.values)" in line_chart
+    assert 'class="chart-failure-marker"' in line_chart
+    assert 'stroke:#ff4d66' in line_chart
+    assert "${failureMarkers}" in line_chart
+    assert "options.smooth" in line_chart
 
 
 def test_bigscreen_ping_legend_uses_authoritative_series_status():
     app = read("bigscreen/app.js")
+    line_chart = read("bigscreen/charts/line-chart.js")
+    ping_chart = read("bigscreen/charts/ping-chart.js")
     utils = read("bigscreen/utils.js")
     css = read("bigscreen/style.css")
     index = read("bigscreen/index.html")
 
-    assert "const series = seriesList.filter(lineSeriesHasTimeline);" in app
-    assert "lineSeriesCurrentDisplay(item, stats)" in app
-    assert "currentStatusLegend: true" in app
-    assert '(currentStatusLegend ? ["last", "max"] : ["mean", "max"])' in app
-    assert 'currentDisplay.currentStatus === "offline"' in app
-    assert '<span class="legend-current-status legend-status-offline">OFFLINE</span>' in app
-    assert 'const MANAGEMENT_REACHABILITY_MODE = "management-reachability";' not in app
-    assert "isManagementReachabilitySeries(item)" not in app
-    assert '{ currentStatus: "online", label: "ONLINE", value: null }' not in app
-    assert "splitOnlineStatusOnGaps" not in app
-    assert 'class="chart-reachability-line"' not in app
-    assert 'class="chart-reachability-separator"' not in app
-    assert "reachabilityLaneLayout" not in app
-    assert "axisPadTop: 48" not in app
-    assert "...Array.from(statsBySeries.values())" in app
-    assert "const segments = splitPointsOnGaps(item.values, options.breakGapSeconds);" in app
-    assert "const failureMarkerY = height - pad.bottom - 6;" in app
+    renderer_sources = app + line_chart + ping_chart
+    assert "const series = seriesList.filter(lineSeriesHasTimeline);" in line_chart
+    assert "lineSeriesCurrentDisplay(item, stats)" in line_chart
+    assert "currentStatusLegend: true" in ping_chart
+    assert '(currentStatusLegend ? ["last", "max"] : ["mean", "max"])' in line_chart
+    assert 'currentDisplay.currentStatus === "offline"' in line_chart
+    assert '<span class="legend-current-status legend-status-offline">OFFLINE</span>' in line_chart
+    assert 'const MANAGEMENT_REACHABILITY_MODE = "management-reachability";' not in renderer_sources
+    assert "isManagementReachabilitySeries(item)" not in renderer_sources
+    assert '{ currentStatus: "online", label: "ONLINE", value: null }' not in renderer_sources
+    assert "splitOnlineStatusOnGaps" not in renderer_sources
+    assert 'class="chart-reachability-line"' not in renderer_sources
+    assert 'class="chart-reachability-separator"' not in renderer_sources
+    assert "reachabilityLaneLayout" not in renderer_sources
+    assert "axisPadTop: 48" not in renderer_sources
+    assert "...Array.from(statsBySeries.values())" in line_chart
+    assert "const segments = splitPointsOnGaps(item.values, options.breakGapSeconds);" in line_chart
+    assert "const failureMarkerY = height - pad.bottom - 6;" in line_chart
     assert '.legend-current-status.legend-status-offline' in css
     assert "color: #ff4d66;" in css
     assert 'if (currentStatus === "offline")' in utils
@@ -509,7 +520,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
     assert "style.css?v=20260825a" in index
     assert "utils.js?v=20260825a" in index
-    assert "app.js?v=20260826b" in index
+    assert "app.js?v=20260826c" in index
 
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
@@ -563,19 +574,20 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
 
 
 def test_large_ping_trend_keeps_every_switch_identifiable():
-    app = read("bigscreen/app.js")
+    line_chart = read("bigscreen/charts/line-chart.js")
+    ping_chart = read("bigscreen/charts/ping-chart.js")
     css = read("bigscreen/style.css")
     index = read("bigscreen/index.html")
 
-    assert "sortLegendByMax: true" in app
-    assert "const legendSeries = options.sortLegendByMax" in app
-    assert 'series.length > 24' in app
-    assert '"ultra-series"' in app
+    assert "sortLegendByMax: true" in ping_chart
+    assert "const legendSeries = options.sortLegendByMax" in line_chart
+    assert 'series.length > 24' in line_chart
+    assert '"ultra-series"' in line_chart
     assert ".compact-series .side-legend" in css
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260825a" in index
-    assert "app.js?v=20260826b" in index
+    assert "app.js?v=20260826c" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

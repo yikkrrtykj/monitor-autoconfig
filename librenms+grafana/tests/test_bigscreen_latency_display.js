@@ -202,15 +202,25 @@ assert.strictEqual(
 );
 
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'bigscreen', 'app.js'), 'utf8');
-assert.ok(!appSource.includes('MANAGEMENT_REACHABILITY_MODE'));
-assert.ok(!appSource.includes('reachabilityLaneLayout'));
-assert.ok(!appSource.includes('chart-reachability-line'));
-assert.ok(!appSource.includes('chart-reachability-separator'));
-assert.ok(!appSource.includes('axisPadTop: 48'));
-assert.ok(!appSource.includes('{ currentStatus: "online", label: "ONLINE", value: null }'));
+const lineChartSource = fs.readFileSync(
+  path.join(__dirname, '..', 'bigscreen', 'charts', 'line-chart.js'),
+  'utf8'
+);
+const rendererSources = `${appSource}\n${lineChartSource}`;
+assert.ok(!rendererSources.includes('MANAGEMENT_REACHABILITY_MODE'));
+assert.ok(!rendererSources.includes('reachabilityLaneLayout'));
+assert.ok(!rendererSources.includes('chart-reachability-line'));
+assert.ok(!rendererSources.includes('chart-reachability-separator'));
+assert.ok(!rendererSources.includes('axisPadTop: 48'));
+assert.ok(!rendererSources.includes('{ currentStatus: "online", label: "ONLINE", value: null }'));
 assert.ok(
-  appSource.includes('const segments = splitPointsOnGaps(item.values, options.breakGapSeconds);'),
+  lineChartSource.includes('const segments = splitPointsOnGaps(item.values, options.breakGapSeconds);'),
   'all Ping policies use the ordinary millisecond line renderer'
+);
+assert.ok(!appSource.includes('function renderLineChart('), 'app.js no longer owns the shared renderer');
+assert.ok(
+  appSource.includes('const renderLineChart = createLineChartRenderer({'),
+  'app.js wires the extracted shared renderer through explicit dependencies'
 );
 const managementFailureItem = managementPresentation.find((item) => item.name === 'stage2');
 assert.deepStrictEqual(
