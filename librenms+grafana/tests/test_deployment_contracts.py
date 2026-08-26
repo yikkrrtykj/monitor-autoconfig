@@ -204,7 +204,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260826c" in html
+    assert "app.js?v=20260826d" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -236,11 +236,23 @@ def test_retired_isp_history_is_filtered_by_current_prometheus_targets():
 
 def test_loss_heatmap_splits_large_device_lists_into_two_columns():
     app = read("bigscreen/app.js")
+    heatmap = read("bigscreen/charts/loss-heatmap.js")
+    index = read("bigscreen/index.html")
     css = read("bigscreen/style.css")
 
-    assert "const splitColumns = series.length > 12" in app
-    assert "series.slice(0, splitAt)" in app
-    assert "series.slice(splitAt)" in app
+    assert "const { createLossHeatmapRenderer } = window.BSLossHeatmap;" in app
+    assert "const renderLossHeatmap = createLossHeatmapRenderer({" in app
+    assert 'renderLossHeatmap("lossHeatmap", activeLossSeries)' in app
+    assert 'renderLossHeatmap("lossHeatmap", [])' in app
+    assert 'renderNoData(document.getElementById("lossHeatmap"))' not in app
+    assert "function renderHeatmap(" not in app
+    assert "const splitColumns = series.length > 12" in heatmap
+    assert "series.slice(0, splitAt)" in heatmap
+    assert "series.slice(splitAt)" in heatmap
+    assert "const bucketCount = 60" in heatmap
+    assert 'point.v > 0.5 ? "bad" : point.v > 0.01 ? "warn" : "good"' in heatmap
+    assert "charts/loss-heatmap.js?v=20260826a" in index
+    assert index.index("charts/loss-heatmap.js?v=20260826a") < index.index("app.js?v=20260826d")
     assert ".heatmap.heatmap-split" in css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
     assert ".heatmap-axis-times > span" in css
@@ -456,15 +468,15 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "pages.js?v=20260826a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260826c" in index
+    assert "app.js?v=20260826d" in index
     assert "utils.js?v=20260825a" in index
     assert "charts/line-chart.js?v=20260826a" in index
     assert "charts/ping-chart.js?v=20260826a" in index
     assert "metrics/ping-transform.js?v=20260826b" in index
     assert index.index("utils.js?v=20260825a") < index.index("charts/line-chart.js?v=20260826a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/ping-chart.js?v=20260826a")
-    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260826c")
-    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260826c")
+    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260826d")
+    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260826d")
     assert "step: true" in app
     assert "breakGapSeconds" in app
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -520,7 +532,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
     assert "style.css?v=20260825a" in index
     assert "utils.js?v=20260825a" in index
-    assert "app.js?v=20260826c" in index
+    assert "app.js?v=20260826d" in index
 
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
@@ -587,7 +599,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260825a" in index
-    assert "app.js?v=20260826c" in index
+    assert "app.js?v=20260826d" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
