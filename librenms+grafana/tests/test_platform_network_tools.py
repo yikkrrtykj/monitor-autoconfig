@@ -282,6 +282,7 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
     pages = (root / "bigscreen" / "pages.js").read_text(encoding="utf-8")
     app = (root / "bigscreen" / "app.js").read_text(encoding="utf-8")
+    config_editor = (root / "bigscreen" / "config" / "config-editor.js").read_text(encoding="utf-8")
     iperf_ui = (root / "bigscreen" / "iperf.js").read_text(encoding="utf-8")
     iperf_nodes = json.loads((root / "bigscreen" / "iperf-servers.json").read_text(encoding="utf-8"))
     index = (root / "bigscreen" / "index.html").read_text(encoding="utf-8")
@@ -290,13 +291,13 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     assert 'path: "/dhcp"' in pages
     assert 'id="dhcpPanel"' in index
     assert 'id="dhcpConnectionTest"' not in index
-    assert 'id="controlDhcpSettingsForm"' in app
-    assert 'id="controlDhcpHost"' not in app
+    assert 'id="controlDhcpSettingsForm"' in config_editor
+    assert 'id="controlDhcpHost"' not in config_editor
     assert 'href="/control#core-telnet"' in app
-    assert "核心/防火墙" in app
+    assert "核心/防火墙" in config_editor
     assert "testDhcpConnection" in app
     assert "fetchDhcpSettings" in app
-    assert app.index('postPlatform("/config/save"') < app.index("saveDhcpSettings(credentials)")
+    assert config_editor.index('postPlatform("/config/save"') < config_editor.index("saveDhcpSettings(credentials)")
     configured_nodes = json.dumps(iperf_nodes, ensure_ascii=False)
     assert "speedtest.hkg12.hk.leaseweb.net" in configured_nodes
     assert "speedtest.sin1.sg.leaseweb.net" in configured_nodes

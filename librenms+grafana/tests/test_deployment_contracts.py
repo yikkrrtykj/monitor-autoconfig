@@ -138,15 +138,15 @@ def test_bigscreen_runtime_config_is_encoded_before_javascript_embedding():
 
 
 def test_control_basic_section_only_contains_event_name_and_layout():
-    app = read("bigscreen/app.js")
+    config_editor = read("bigscreen/config/config-editor.js")
     config_model = read("bigscreen/config/config-model.js")
-    basic = app.split("<h3>基础</h3>", 1)[1].split("</section>", 1)[0]
+    basic = config_editor.split("<h3>基础</h3>", 1)[1].split("</section>", 1)[0]
 
     assert 'configInput("event.name", "赛事名称"' in basic
     assert 'configInput("event.default_layout", "默认赛制"' in basic
     assert "teamOrderConfigMarkup()" in basic
-    assert "data-team-order-slot" in app
-    assert "data-team-order-reset" in app
+    assert "data-team-order-slot" in config_editor
+    assert "data-team-order-reset" in config_editor
     assert "event.security_mode" not in basic
     assert "event.public_base_url" not in basic
     assert "delete value.event.security_mode" in config_model
@@ -155,11 +155,12 @@ def test_control_basic_section_only_contains_event_name_and_layout():
 
 def test_bigscreen_config_model_is_loaded_before_app_and_owns_only_pure_helpers():
     app = read("bigscreen/app.js")
+    config_editor = read("bigscreen/config/config-editor.js")
     config_model = read("bigscreen/config/config-model.js")
     index = read("bigscreen/index.html")
 
-    assert "const {" in app
-    assert "} = window.BSConfigModel;" in app
+    assert "model: window.BSConfigModel" in app
+    assert "} = model;" in config_editor
     for name in (
         "cloneControlConfig",
         "asConfigArray",
@@ -173,22 +174,50 @@ def test_bigscreen_config_model_is_loaded_before_app_and_owns_only_pure_helpers(
     ):
         assert f"function {name}(" in config_model
         assert f"function {name}(" not in app
+        assert f"function {name}(" not in config_editor
     assert "document." not in config_model
     assert "fetch(" not in config_model
     assert "postPlatform" not in config_model
     assert "dirty" not in config_model
     assert "applyInProgress" not in config_model
     assert "config/config-model.js?v=20260827a" in index
-    assert index.index("config/config-model.js?v=20260827a") < index.index("app.js?v=20260827a")
+    assert index.index("config/config-model.js?v=20260827a") < index.index("config/config-editor.js?v=20260827a")
+
+
+def test_bigscreen_config_editor_is_loaded_before_app_and_owns_editor_state_and_dom():
+    app = read("bigscreen/app.js")
+    config_editor = read("bigscreen/config/config-editor.js")
+    index = read("bigscreen/index.html")
+
+    assert "function createConfigEditor(" in config_editor
+    assert "return { bind, render, isApplyInProgress };" in config_editor
+    assert "const configEditor = createConfigEditor({" in app
+    assert "configEditor.render(snapshot.platformConfig, snapshot.dhcpSettings)" in app
+    assert "configEditor.isApplyInProgress()" in app
+    assert "configEditor.bind()" in app
+    for token in (
+        "function renderControlConfigForm(",
+        "function collectControlConfigForm(",
+        "function renderConfigEditor(",
+        "function runConfigAction(",
+        "dataset.telnetDirty",
+        "configResultSticky",
+        "controlConfigImportFile",
+    ):
+        assert token in config_editor
+        assert token not in app
+    assert "config/config-editor.js?v=20260827a" in index
+    assert index.index("config/config-model.js?v=20260827a") < index.index("config/config-editor.js?v=20260827a")
+    assert index.index("config/config-editor.js?v=20260827a") < index.index("app.js?v=20260827b")
 
 
 def test_control_number_inputs_do_not_expose_or_react_to_wheel_spinners():
-    app = read("bigscreen/app.js")
+    config_editor = read("bigscreen/config/config-editor.js")
     css = read("bigscreen/platform.css")
 
-    assert 'configForm.addEventListener("wheel"' in app
-    assert 'input.type === "number"' in app
-    assert "input.blur()" in app
+    assert 'configForm.addEventListener("wheel"' in config_editor
+    assert 'input.type === "number"' in config_editor
+    assert "input.blur()" in config_editor
     assert 'input[type="number"]::-webkit-inner-spin-button' in css
     assert "-webkit-appearance: none" in css
     assert "-moz-appearance: textfield" in css
@@ -234,17 +263,17 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260827a" in html
+    assert "app.js?v=20260827b" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
-    app = read("bigscreen/app.js")
+    config_editor = read("bigscreen/config/config-editor.js")
 
-    assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in app
-    assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in app
-    assert 'configInput("alerts.feishu_chat_id", "告警及巡检群名称或 Chat ID"' in app
-    assert "下载/上传" in app
-    assert "1000/100" in app
+    assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in config_editor
+    assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in config_editor
+    assert 'configInput("alerts.feishu_chat_id", "告警及巡检群名称或 Chat ID"' in config_editor
+    assert "下载/上传" in config_editor
+    assert "1000/100" in config_editor
 
     ws = read("feishu-ws-client.py")
     assert "poll_site_group_commands" in ws
@@ -282,7 +311,7 @@ def test_loss_heatmap_splits_large_device_lists_into_two_columns():
     assert "const bucketCount = 60" in heatmap
     assert 'point.v > 0.5 ? "bad" : point.v > 0.01 ? "warn" : "good"' in heatmap
     assert "charts/loss-heatmap.js?v=20260826a" in index
-    assert index.index("charts/loss-heatmap.js?v=20260826a") < index.index("app.js?v=20260827a")
+    assert index.index("charts/loss-heatmap.js?v=20260826a") < index.index("app.js?v=20260827b")
     assert ".heatmap.heatmap-split" in css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
     assert ".heatmap-axis-times > span" in css
@@ -314,8 +343,8 @@ def test_isp_and_evidence_use_business_specific_line_chart_facades():
     assert "charts/evidence-chart.js?v=20260826a" in index
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/isp-chart.js?v=20260826a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/evidence-chart.js?v=20260826a")
-    assert index.index("charts/isp-chart.js?v=20260826a") < index.index("app.js?v=20260827a")
-    assert index.index("charts/evidence-chart.js?v=20260826a") < index.index("app.js?v=20260827a")
+    assert index.index("charts/isp-chart.js?v=20260826a") < index.index("app.js?v=20260827b")
+    assert index.index("charts/evidence-chart.js?v=20260826a") < index.index("app.js?v=20260827b")
 
 
 def test_topology_browser_controller_is_extracted_without_owning_refresh_or_data_fetch():
@@ -349,7 +378,7 @@ def test_topology_browser_controller_is_extracted_without_owning_refresh_or_data
     assert "shouldRender" not in panel
     assert "charts/topology-panel.js?v=20260826a" in index
     assert index.index("topology.js?v=20260809a") < index.index("charts/topology-panel.js?v=20260826a")
-    assert index.index("charts/topology-panel.js?v=20260826a") < index.index("app.js?v=20260827a")
+    assert index.index("charts/topology-panel.js?v=20260826a") < index.index("app.js?v=20260827b")
 
 
 def test_grafana_device_names_survive_low_frequency_snmp_scrapes():
@@ -562,15 +591,15 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "pages.js?v=20260826a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260827a" in index
+    assert "app.js?v=20260827b" in index
     assert "utils.js?v=20260825a" in index
     assert "charts/line-chart.js?v=20260826a" in index
     assert "charts/ping-chart.js?v=20260826a" in index
     assert "metrics/ping-transform.js?v=20260826b" in index
     assert index.index("utils.js?v=20260825a") < index.index("charts/line-chart.js?v=20260826a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/ping-chart.js?v=20260826a")
-    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260827a")
-    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260827a")
+    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260827b")
+    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260827b")
     assert "step: true" in evidence_chart
     assert "breakGapSeconds" in evidence_chart
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -626,7 +655,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
     assert "style.css?v=20260825a" in index
     assert "utils.js?v=20260825a" in index
-    assert "app.js?v=20260827a" in index
+    assert "app.js?v=20260827b" in index
 
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
@@ -693,7 +722,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260825a" in index
-    assert "app.js?v=20260827a" in index
+    assert "app.js?v=20260827b" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
@@ -797,7 +826,7 @@ def test_interconnect_job_collects_port_channel_member_relationships():
 def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_thresholds():
     compose = read("docker-compose.yml")
     prometheus = read("prometheus-gen-config.sh")
-    app = read("bigscreen/app.js")
+    config_editor = read("bigscreen/config/config-editor.js")
     env = read(".env.example")
 
     assert "cisco_resources:" in compose
@@ -807,8 +836,8 @@ def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_t
     assert 'write_snmp_job "infra-switch-resources"' in prometheus
     assert '"cisco_resources" "$SWITCH_RESOURCE_SCRAPE_INTERVAL"' in prometheus
     assert "SWITCH_RESOURCE_SCRAPE_INTERVAL=120s" in env
-    assert 'configInput("alerts.cpu_alert_percent", "交换机 CPU 告警阈值（%）"' in app
-    assert 'configInput("alerts.memory_alert_percent", "交换机内存告警阈值（%）"' in app
+    assert 'configInput("alerts.cpu_alert_percent", "交换机 CPU 告警阈值（%）"' in config_editor
+    assert 'configInput("alerts.memory_alert_percent", "交换机内存告警阈值（%）"' in config_editor
 
 
 def test_poll_pressure_defaults_and_existing_env_are_migrated():
@@ -844,7 +873,7 @@ def test_poll_pressure_defaults_and_existing_env_are_migrated():
 
 def test_gateway_mac_flap_alert_is_configurable_and_enabled_by_default():
     compose = read("docker-compose.yml")
-    app = read("bigscreen/app.js")
+    config_editor = read("bigscreen/config/config-editor.js")
     env = read(".env.example")
 
     assert "native_vlan_mismatch,mac_flap,errdisable,bpduguard,loopback" in compose
@@ -852,10 +881,10 @@ def test_gateway_mac_flap_alert_is_configurable_and_enabled_by_default():
     assert "SYSLOG_GATEWAY_UPLINK_PORTS" in compose
     assert "SYSLOG_MAC_FLAP_WINDOW_SECONDS" in compose
     assert "SYSLOG_MAC_FLAP_THRESHOLD" in compose
-    assert 'configInput("alerts.gateway_macs", "关键网关 MAC（逗号分隔）"' in app
-    assert 'configInput("alerts.gateway_uplink_ports", "网关正常上联接口（逗号分隔）"' in app
-    assert 'configInput("alerts.mac_flap_window_seconds", "MAC 漂移统计窗口（秒）"' in app
-    assert 'configInput("alerts.mac_flap_threshold", "普通 MAC 告警次数"' in app
+    assert 'configInput("alerts.gateway_macs", "关键网关 MAC（逗号分隔）"' in config_editor
+    assert 'configInput("alerts.gateway_uplink_ports", "网关正常上联接口（逗号分隔）"' in config_editor
+    assert 'configInput("alerts.mac_flap_window_seconds", "MAC 漂移统计窗口（秒）"' in config_editor
+    assert 'configInput("alerts.mac_flap_threshold", "普通 MAC 告警次数"' in config_editor
     assert "SYSLOG_MAC_FLAP_WINDOW_SECONDS=60" in env
     assert "SYSLOG_MAC_FLAP_THRESHOLD=3" in env
 
@@ -890,7 +919,7 @@ def test_platform_version_and_config_schema_are_wired_into_runtime_and_console()
 
 def test_abandoned_offline_bundle_workflow_is_not_shipped():
     client = read("bigscreen/api.js")
-    app = read("bigscreen/app.js")
+    config_editor = read("bigscreen/config/config-editor.js")
     readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
 
     assert not (ROOT / "offline-package.sh").exists()
@@ -900,11 +929,11 @@ def test_abandoned_offline_bundle_workflow_is_not_shipped():
     assert "install-offline.sh" not in readme
     assert "VM/OVA" in readme
     assert "事故和部署清单" not in readme
-    assert '/\\.zip$/i.test(file.name)' in app
-    assert 'text.slice(0, 2) === "PK"' in app
-    assert "不支持导入压缩包" in app
-    assert "请选择 event-config.yml 配置文件" in app
-    assert 'postPlatform("/config/validate"' in app
+    assert '/\\.zip$/i.test(file.name)' in config_editor
+    assert 'text.slice(0, 2) === "PK"' in config_editor
+    assert "不支持导入压缩包" in config_editor
+    assert "请选择 event-config.yml 配置文件" in config_editor
+    assert 'postPlatform("/config/validate"' in config_editor
 
 
 def test_librenms_source_patch_checks_content_instead_of_fixed_line_numbers():
