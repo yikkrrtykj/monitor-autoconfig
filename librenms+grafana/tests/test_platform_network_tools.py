@@ -282,6 +282,7 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
     pages = (root / "bigscreen" / "pages.js").read_text(encoding="utf-8")
     app = (root / "bigscreen" / "app.js").read_text(encoding="utf-8")
+    dhcp_panel = (root / "bigscreen" / "dhcp" / "dhcp-panel.js").read_text(encoding="utf-8")
     config_editor = (root / "bigscreen" / "config" / "config-editor.js").read_text(encoding="utf-8")
     iperf_ui = (root / "bigscreen" / "iperf.js").read_text(encoding="utf-8")
     iperf_nodes = json.loads((root / "bigscreen" / "iperf-servers.json").read_text(encoding="utf-8"))
@@ -293,7 +294,7 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     assert 'id="dhcpConnectionTest"' not in index
     assert 'id="controlDhcpSettingsForm"' in config_editor
     assert 'id="controlDhcpHost"' not in config_editor
-    assert 'href="/control#core-telnet"' in app
+    assert 'href="/control#core-telnet"' in dhcp_panel
     assert "核心/防火墙" in config_editor
     assert "testDhcpConnection" in app
     assert "fetchDhcpSettings" in app
@@ -323,8 +324,9 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     assert "iperf-interval-table" in iperf_ui
     assert "接收端全程平均" in iperf_ui
     assert 'src="./iperf.js' in index
-    assert 'document.visibilityState === "hidden"' in app
-    assert "stopDhcpRefresh()" in app
+    assert 'document.visibilityState === "hidden"' in dhcp_panel
+    assert "dhcpPanel.stop()" in app
+    assert 'document.addEventListener("visibilitychange"' in dhcp_panel
 
 
 def test_network_overview_precedes_dhcp_and_non_24_pools_are_grouped_by_c_block(tmp_path):
@@ -332,23 +334,24 @@ def test_network_overview_precedes_dhcp_and_non_24_pools_are_grouped_by_c_block(
     root = Path(__file__).resolve().parents[1]
     pages = (root / "bigscreen" / "pages.js").read_text(encoding="utf-8")
     app = (root / "bigscreen" / "app.js").read_text(encoding="utf-8")
+    dhcp_panel = (root / "bigscreen" / "dhcp" / "dhcp-panel.js").read_text(encoding="utf-8")
     css = (root / "bigscreen" / "platform.css").read_text(encoding="utf-8")
 
     assert pages.index('id: "infra"') < pages.index('id: "dhcp"')
-    assert "dhcp-address-blocks" in app
-    assert "${block.prefix}.0/24" in app
-    assert 'addressBlockCount > 1 ? " multi-block"' in app
+    assert "dhcp-address-blocks" in dhcp_panel
+    assert "${block.prefix}.0/24" in dhcp_panel
+    assert 'addressBlockCount > 1 ? " multi-block"' in dhcp_panel
     assert 'id="dhcpPoolSearch"' in (root / "bigscreen" / "index.html").read_text(encoding="utf-8")
-    assert "renderDhcpPoolBrowser" in app
+    assert "renderDhcpPoolBrowser" in dhcp_panel
     assert ".dhcp-address-block" in css
     assert ".dhcp-pool-directory" in css
     assert ".dhcp-pool-detail" in css
     assert ".dhcp-pool-card.multi-block" in css
     assert "grid-template-columns: 300px minmax(0, 1fr)" in css
-    assert 'const directoryScrollTop = previousDirectory ? previousDirectory.scrollTop : 0;' in app
-    assert 'nextDirectory.scrollTop = selectionChanged ? 0 : directoryScrollTop' in app
-    assert 'if (detail) detail.scrollTop = 0;' in app
-    assert "查询已用 IP" in app
+    assert 'const directoryScrollTop = previousDirectory ? previousDirectory.scrollTop : 0;' in dhcp_panel
+    assert 'nextDirectory.scrollTop = selectionChanged ? 0 : directoryScrollTop' in dhcp_panel
+    assert 'if (detail) detail.scrollTop = 0;' in dhcp_panel
+    assert "查询已用 IP" in dhcp_panel
     assert "/network/dhcp/bindings" in (root / "bigscreen" / "api.js").read_text(encoding="utf-8")
     assert "content-visibility: auto" not in css
 
