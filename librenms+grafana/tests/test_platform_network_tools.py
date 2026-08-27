@@ -282,6 +282,7 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
     pages = (root / "bigscreen" / "pages.js").read_text(encoding="utf-8")
     app = (root / "bigscreen" / "app.js").read_text(encoding="utf-8")
+    iperf_controller = (root / "bigscreen" / "control" / "iperf-controller.js").read_text(encoding="utf-8")
     dhcp_panel = (root / "bigscreen" / "dhcp" / "dhcp-panel.js").read_text(encoding="utf-8")
     config_editor = (root / "bigscreen" / "config" / "config-editor.js").read_text(encoding="utf-8")
     iperf_ui = (root / "bigscreen" / "iperf.js").read_text(encoding="utf-8")
@@ -307,20 +308,20 @@ def test_dhcp_page_and_platform_service_wiring(tmp_path):
     assert "84.17.57.129" in configured_nodes
     assert "sgp.proof.ovh.net" in configured_nodes
     assert "speedtest.tangerang2.myrepublic.net.id" in configured_nodes
-    assert "土耳其·伊斯坦布尔" in app
-    assert "中国大陆（自有服务器）" not in app
-    assert "马来西亚（自有服务器）" not in app
-    assert "泰国（自有服务器）" not in app
-    assert '<option value="custom">自定义</option>' in app
-    assert "window.confirm" not in app
-    assert 'id="iperfConfirm"' in app
-    assert 'id="iperfProgress"' in app
-    assert "fetchIperfStatus" in app
-    assert "最长约 60 秒" in app
-    assert 'id="iperfPublicServer"' in app
-    assert 'id="iperfPorts"' in app and "readonly" in app
-    assert "iperfServer.readOnly = !view.isCustom" in app
-    assert "iperfPorts.readOnly = !view.isCustom" in app
+    assert "土耳其·伊斯坦布尔" in iperf_controller
+    assert "中国大陆（自有服务器）" not in iperf_controller
+    assert "马来西亚（自有服务器）" not in iperf_controller
+    assert "泰国（自有服务器）" not in iperf_controller
+    assert '<option value="custom">自定义</option>' in iperf_controller
+    assert "window.confirm" not in app and "window.confirm" not in iperf_controller
+    assert 'id="iperfConfirm"' in iperf_controller
+    assert 'id="iperfProgress"' in iperf_controller
+    assert "fetchIperfStatus" in iperf_controller
+    assert "最长约 60 秒" in iperf_controller
+    assert 'id="iperfPublicServer"' in iperf_controller
+    assert 'id="iperfPorts"' in iperf_controller and "readonly" in iperf_controller
+    assert "iperfServer.readOnly = !view.isCustom" in iperf_controller
+    assert "iperfPorts.readOnly = !view.isCustom" in iperf_controller
     assert "iperf-interval-table" in iperf_ui
     assert "接收端全程平均" in iperf_ui
     assert 'src="./iperf.js' in index
