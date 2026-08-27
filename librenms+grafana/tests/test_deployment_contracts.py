@@ -208,7 +208,45 @@ def test_bigscreen_config_editor_is_loaded_before_app_and_owns_editor_state_and_
         assert token not in app
     assert "config/config-editor.js?v=20260827a" in index
     assert index.index("config/config-model.js?v=20260827a") < index.index("config/config-editor.js?v=20260827a")
-    assert index.index("config/config-editor.js?v=20260827a") < index.index("app.js?v=20260827b")
+    assert index.index("config/config-editor.js?v=20260827a") < index.index("app.js?v=20260827c")
+
+
+def test_bigscreen_dhcp_model_is_loaded_before_app_and_owns_only_pure_helpers():
+    app = read("bigscreen/app.js")
+    dhcp_model = read("bigscreen/dhcp/dhcp-model.js")
+    index = read("bigscreen/index.html")
+
+    assert "} = window.BSDhcpModel;" in app
+    for name in (
+        "dhcpRangeAddresses",
+        "compactDhcpAddresses",
+        "dhcpPoolKey",
+        "dhcpIpv4Number",
+        "dhcpPoolMatchesSearch",
+        "dhcpPoolMatchesFilter",
+        "dhcpPoolSortValue",
+        "compareDhcpPools",
+        "buildDhcpAddressContext",
+        "dhcpAddressState",
+    ):
+        assert f"function {name}(" in dhcp_model
+        assert f"function {name}(" not in app
+    for token in (
+        "document.",
+        "querySelector",
+        "fetch(",
+        "BSApi",
+        "setTimeout",
+        "setInterval",
+        "activePageId",
+        "dhcpTimer",
+        "dhcpSelectedPoolKey",
+        "dhcpPoolSearchText",
+        "dhcpPoolFilterValue",
+    ):
+        assert token not in dhcp_model
+    assert "dhcp/dhcp-model.js?v=20260827a" in index
+    assert index.index("dhcp/dhcp-model.js?v=20260827a") < index.index("app.js?v=20260827c")
 
 
 def test_control_number_inputs_do_not_expose_or_react_to_wheel_spinners():
@@ -263,7 +301,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in app
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260827b" in html
+    assert "app.js?v=20260827c" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -311,7 +349,7 @@ def test_loss_heatmap_splits_large_device_lists_into_two_columns():
     assert "const bucketCount = 60" in heatmap
     assert 'point.v > 0.5 ? "bad" : point.v > 0.01 ? "warn" : "good"' in heatmap
     assert "charts/loss-heatmap.js?v=20260826a" in index
-    assert index.index("charts/loss-heatmap.js?v=20260826a") < index.index("app.js?v=20260827b")
+    assert index.index("charts/loss-heatmap.js?v=20260826a") < index.index("app.js?v=20260827c")
     assert ".heatmap.heatmap-split" in css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
     assert ".heatmap-axis-times > span" in css
@@ -343,8 +381,8 @@ def test_isp_and_evidence_use_business_specific_line_chart_facades():
     assert "charts/evidence-chart.js?v=20260826a" in index
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/isp-chart.js?v=20260826a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/evidence-chart.js?v=20260826a")
-    assert index.index("charts/isp-chart.js?v=20260826a") < index.index("app.js?v=20260827b")
-    assert index.index("charts/evidence-chart.js?v=20260826a") < index.index("app.js?v=20260827b")
+    assert index.index("charts/isp-chart.js?v=20260826a") < index.index("app.js?v=20260827c")
+    assert index.index("charts/evidence-chart.js?v=20260826a") < index.index("app.js?v=20260827c")
 
 
 def test_topology_browser_controller_is_extracted_without_owning_refresh_or_data_fetch():
@@ -378,7 +416,7 @@ def test_topology_browser_controller_is_extracted_without_owning_refresh_or_data
     assert "shouldRender" not in panel
     assert "charts/topology-panel.js?v=20260826a" in index
     assert index.index("topology.js?v=20260809a") < index.index("charts/topology-panel.js?v=20260826a")
-    assert index.index("charts/topology-panel.js?v=20260826a") < index.index("app.js?v=20260827b")
+    assert index.index("charts/topology-panel.js?v=20260826a") < index.index("app.js?v=20260827c")
 
 
 def test_grafana_device_names_survive_low_frequency_snmp_scrapes():
@@ -591,15 +629,15 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "pages.js?v=20260826a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260827b" in index
+    assert "app.js?v=20260827c" in index
     assert "utils.js?v=20260825a" in index
     assert "charts/line-chart.js?v=20260826a" in index
     assert "charts/ping-chart.js?v=20260826a" in index
     assert "metrics/ping-transform.js?v=20260826b" in index
     assert index.index("utils.js?v=20260825a") < index.index("charts/line-chart.js?v=20260826a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/ping-chart.js?v=20260826a")
-    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260827b")
-    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260827b")
+    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260827c")
+    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260827c")
     assert "step: true" in evidence_chart
     assert "breakGapSeconds" in evidence_chart
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -655,7 +693,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
     assert "style.css?v=20260825a" in index
     assert "utils.js?v=20260825a" in index
-    assert "app.js?v=20260827b" in index
+    assert "app.js?v=20260827c" in index
 
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
@@ -722,7 +760,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260825a" in index
-    assert "app.js?v=20260827b" in index
+    assert "app.js?v=20260827c" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():

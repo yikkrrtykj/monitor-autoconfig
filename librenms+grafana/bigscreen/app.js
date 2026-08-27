@@ -25,6 +25,11 @@
     lineSeriesCurrentDisplay, lineFailurePoints,
     buildCsv, formatTimestampFull, groupAddressesByCBlock
   } = window.BSUtils;
+  const {
+    dhcpRangeAddresses, compactDhcpAddresses, dhcpPoolKey,
+    dhcpPoolMatchesSearch, dhcpPoolMatchesFilter, compareDhcpPools,
+    buildDhcpAddressContext, dhcpAddressState
+  } = window.BSDhcpModel;
   const { createConfigEditor } = window.BSConfigEditor;
   const { createLineChartRenderer } = window.BSLineChart;
   const { createPingChartRenderer } = window.BSPingChart;
@@ -2367,83 +2372,6 @@
     `;
   }
 
-  function dhcpRangeAddresses(rangeText, limit = 4096) {
-    const match = String(rangeText || "").match(/^\s*(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})\s*$/);
-    if (!match) return [];
-    const toNumber = (value) => {
-      const parts = value.split(".").map(Number);
-      if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
-      return (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256) + parts[3];
-    };
-    const toAddress = (value) => [24, 16, 8, 0].map((shift) => Math.floor(value / (2 ** shift)) % 256).join(".");
-    const start = toNumber(match[1]);
-    const end = toNumber(match[2]);
-    if (start == null || end == null || end < start || end - start + 1 > limit) return [];
-    return Array.from({ length: end - start + 1 }, (_item, index) => toAddress(start + index));
-  }
-
-  function compactDhcpAddresses(values) {
-    const toNumber = (value) => {
-      const parts = String(value || "").split(".").map(Number);
-      if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
-      return (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256) + parts[3];
-    };
-    const entries = [...new Set(values || [])]
-      .map((ip) => ({ ip, number: toNumber(ip) }))
-      .filter((item) => item.number != null)
-      .sort((left, right) => left.number - right.number);
-    const ranges = [];
-    for (const entry of entries) {
-      const current = ranges[ranges.length - 1];
-      if (current && entry.number === current.endNumber + 1) {
-        current.end = entry.ip;
-        current.endNumber = entry.number;
-      } else {
-        ranges.push({ start: entry.ip, end: entry.ip, endNumber: entry.number });
-      }
-    }
-    return ranges.map((range) => range.start === range.end ? range.start : `${range.start}–${range.end}`).join("、");
-  }
-
-  function dhcpPoolKey(pool) {
-    return `${encodeURIComponent(String(pool.name || ""))}|${encodeURIComponent(String(pool.range || ""))}`;
-  }
-
-  function dhcpIpv4Number(value) {
-    const parts = String(value || "").trim().split(".").map(Number);
-    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
-    return (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256) + parts[3];
-  }
-
-  function dhcpPoolMatchesSearch(pool, query) {
-    const needle = String(query || "").trim().toLowerCase();
-    if (!needle) return true;
-    const searchable = `${pool.name || ""} ${pool.range || ""}`.toLowerCase();
-    if (searchable.includes(needle)) return true;
-    const address = dhcpIpv4Number(needle);
-    const rangeMatch = String(pool.range || "").match(/^\s*(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})\s*$/);
-    if (address == null || !rangeMatch) return false;
-    const start = dhcpIpv4Number(rangeMatch[1]);
-    const end = dhcpIpv4Number(rangeMatch[2]);
-    return start != null && end != null && address >= start && address <= end;
-  }
-
-  function dhcpPoolMatchesFilter(pool, conflicts) {
-    if (dhcpPoolFilterValue === "active") return Number(pool.leased || 0) > 0;
-    if (dhcpPoolFilterValue === "excluded") return Number(pool.excluded || 0) > 0;
-    if (dhcpPoolFilterValue === "attention") {
-      const poolAddresses = new Set(dhcpRangeAddresses(pool.range));
-      return ["warn", "bad"].includes(String(pool.level || ""))
-        || (conflicts || []).some((ip) => poolAddresses.has(ip));
-    }
-    return true;
-  }
-
-  function dhcpPoolSortValue(pool) {
-    const match = String(pool.range || "").match(/^\s*(\d{1,3}(?:\.\d{1,3}){3})/);
-    return match ? dhcpIpv4Number(match[1]) : null;
-  }
-
   function dhcpPoolCard(pool, conflicts) {
     const pct = Math.max(0, Math.min(100, Number(pool.utilization || 0)));
     const addressBlockCount = groupAddressesByCBlock(dhcpRangeAddresses(pool.range)).length;
@@ -2473,16 +2401,9 @@
     const directoryScrollTop = previousDirectory ? previousDirectory.scrollTop : 0;
     const detailScrollTop = previousDetail ? previousDetail.scrollTop : 0;
     const previousSelectedPoolKey = dhcpSelectedPoolKey;
-    const sortedPools = [...pools].sort((left, right) => {
-      const leftValue = dhcpPoolSortValue(left);
-      const rightValue = dhcpPoolSortValue(right);
-      if (leftValue != null && rightValue != null && leftValue !== rightValue) return leftValue - rightValue;
-      if (leftValue != null && rightValue == null) return -1;
-      if (leftValue == null && rightValue != null) return 1;
-      return String(left.name || "").localeCompare(String(right.name || ""), "zh-CN", { numeric: true });
-    });
+    const sortedPools = [...pools].sort(compareDhcpPools);
     const visiblePools = sortedPools.filter((pool) =>
-      dhcpPoolMatchesSearch(pool, dhcpPoolSearchText) && dhcpPoolMatchesFilter(pool, conflicts)
+      dhcpPoolMatchesSearch(pool, dhcpPoolSearchText) && dhcpPoolMatchesFilter(pool, conflicts, dhcpPoolFilterValue)
     );
     if (!visiblePools.some((pool) => dhcpPoolKey(pool) === dhcpSelectedPoolKey)) {
       dhcpSelectedPoolKey = visiblePools.length ? dhcpPoolKey(visiblePools[0]) : "";
@@ -2521,15 +2442,9 @@
     const addresses = dhcpRangeAddresses(pool.range);
     if (!addresses.length) return '<div class="dhcp-address-note">交换机未返回可展开的地址范围。</div>';
     const addressBlocks = groupAddressesByCBlock(addresses);
-    const excluded = new Set(pool.excludedAddresses || []);
-    const conflictSet = new Set(conflicts || []);
-    const bindingDetails = new Map((bindingPayload && bindingPayload.bindings || [])
-      .map((item) => [String(item.ip || ""), String(item.detail || "")]));
-    const arpDetails = new Map((bindingPayload && bindingPayload.arpEntries || [])
-      .map((item) => [String(item.ip || ""), String(item.detail || "")]));
-    const used = new Set(bindingPayload && bindingPayload.usedAddresses || []);
-    const observed = new Set(bindingPayload && bindingPayload.observedAddresses || []);
-    const reservedUsed = new Set([...excluded].filter((ip) => used.has(ip) || observed.has(ip)));
+    const {
+      excluded, conflictSet, bindingDetails, arpDetails, used, reservedUsed
+    } = buildDhcpAddressContext(pool, conflicts, bindingPayload);
     const excludedList = [...excluded];
     const exclusionNote = excludedList.length
       ? `排除地址：${compactDhcpAddresses(excludedList)}`
@@ -2552,11 +2467,7 @@
               <strong>${escapeHtml(`${block.prefix}.0/24`)}</strong>
               <div class="dhcp-address-grid">
                 ${block.addresses.map((ip) => {
-                  const status = conflictSet.has(ip) ? "conflict"
-                    : reservedUsed.has(ip) ? "reserved-used"
-                    : excluded.has(ip) ? "excluded"
-                    : used.has(ip) ? "used"
-                    : "pool";
+                  const status = dhcpAddressState(ip, conflictSet, reservedUsed, excluded, used);
                   const label = ip.slice(ip.lastIndexOf("."));
                   const statusText = status === "conflict" ? "冲突"
                     : status === "reserved-used"
