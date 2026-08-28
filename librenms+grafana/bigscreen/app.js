@@ -41,11 +41,10 @@
   const { createTopologyPanel } = window.BSTopologyPanel;
   const { buildInfrastructurePingPresentation } = window.BSPingTransform;
   const {
-    prometheusBaseUrl, fetchWithTimeout,
     prometheusQuery, prometheusInstant, prometheusRangeFor,
     prometheusRangeCached, invalidateRangeCache,
-    activeInfraPingQuery, activeSeriesNames, filterSeriesByNames,
-    fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispCapacityBps, ispChartMaxBps,
+    activeInfraPingQuery, activeSeriesNames,
+    fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
@@ -777,15 +776,6 @@
           note: item.note || ""
         })).join("")
       : `<div class="control-empty good">当前没有需要关注的问题</div>`;
-  }
-
-  function renderControlChecklist(checks) {
-    const element = document.getElementById("controlChecklist");
-    if (!element) return;
-    const wanted = new Set(["赛前", "基础设施", "采集"]);
-    const items = checks.filter((item) => wanted.has(item.section));
-    element.innerHTML = items.map(controlItemHtml).join("") ||
-      `<div class="control-empty">暂无检查项</div>`;
   }
 
   function renderControlTopology(targetSummary, topologyFindings, edges) {
