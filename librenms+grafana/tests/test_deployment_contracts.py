@@ -208,7 +208,7 @@ def test_bigscreen_config_editor_is_loaded_before_app_and_owns_editor_state_and_
         assert token not in app
     assert "config/config-editor.js?v=20260827a" in index
     assert index.index("config/config-model.js?v=20260827a") < index.index("config/config-editor.js?v=20260827a")
-    assert index.index("config/config-editor.js?v=20260827a") < index.index("app.js?v=20260828e")
+    assert index.index("config/config-editor.js?v=20260827a") < index.index("app.js?v=20260828f")
 
 
 def test_bigscreen_dhcp_model_is_loaded_before_app_and_owns_only_pure_helpers():
@@ -313,7 +313,7 @@ def test_bigscreen_dhcp_panel_owns_page_state_dom_api_and_refresh_lifecycle():
     assert "seq !== dhcpSeq" in panel
     assert "dhcp/dhcp-panel.js?v=20260827a" in index
     assert index.index("dhcp/dhcp-model.js?v=20260827a") < index.index("dhcp/dhcp-panel.js?v=20260827a")
-    assert index.index("dhcp/dhcp-panel.js?v=20260827a") < index.index("app.js?v=20260828e")
+    assert index.index("dhcp/dhcp-panel.js?v=20260827a") < index.index("app.js?v=20260828f")
 
 
 def test_control_number_inputs_do_not_expose_or_react_to_wheel_spinners():
@@ -369,7 +369,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert 'data-label="IP"' in wireless_panel
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
     assert "platform.css?v=20260803b" in html
-    assert "app.js?v=20260828e" in html
+    assert "app.js?v=20260828f" in html
 
 
 def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
@@ -393,22 +393,23 @@ def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
 
 
 def test_retired_isp_history_is_filtered_by_current_prometheus_targets():
-    app = read("bigscreen/app.js")
-    assert "infraCurrentTargets" in app
-    assert "fetchTopologyTargets()" in app
-    assert "!infraCurrentTargets.has(name)" in app
+    controller = read("bigscreen/infra/infra-controller.js")
+    assert "infraCurrentTargets" in controller
+    assert "fetchTopologyTargets()" in controller
+    assert "!infraCurrentTargets.has(name)" in controller
 
 
 def test_loss_heatmap_splits_large_device_lists_into_two_columns():
     app = read("bigscreen/app.js")
+    infra_controller = read("bigscreen/infra/infra-controller.js")
     heatmap = read("bigscreen/charts/loss-heatmap.js")
     index = read("bigscreen/index.html")
     css = read("bigscreen/style.css")
 
     assert "const { createLossHeatmapRenderer } = window.BSLossHeatmap;" in app
     assert "const renderLossHeatmap = createLossHeatmapRenderer({" in app
-    assert 'renderLossHeatmap("lossHeatmap", activeLossSeries)' in app
-    assert 'renderLossHeatmap("lossHeatmap", [])' in app
+    assert 'renderLossHeatmap("lossHeatmap", activeLossSeries)' in infra_controller
+    assert 'renderLossHeatmap("lossHeatmap", [])' in infra_controller
     assert 'renderNoData(document.getElementById("lossHeatmap"))' not in app
     assert "function renderHeatmap(" not in app
     assert "const splitColumns = series.length > 12" in heatmap
@@ -417,7 +418,7 @@ def test_loss_heatmap_splits_large_device_lists_into_two_columns():
     assert "const bucketCount = 60" in heatmap
     assert 'point.v > 0.5 ? "bad" : point.v > 0.01 ? "warn" : "good"' in heatmap
     assert "charts/loss-heatmap.js?v=20260826a" in index
-    assert index.index("charts/loss-heatmap.js?v=20260826a") < index.index("app.js?v=20260828e")
+    assert index.index("charts/loss-heatmap.js?v=20260826a") < index.index("app.js?v=20260828f")
     assert ".heatmap.heatmap-split" in css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
     assert ".heatmap-axis-times > span" in css
@@ -426,6 +427,7 @@ def test_loss_heatmap_splits_large_device_lists_into_two_columns():
 
 def test_isp_and_evidence_use_business_specific_line_chart_facades():
     app = read("bigscreen/app.js")
+    infra_controller = read("bigscreen/infra/infra-controller.js")
     isp_chart = read("bigscreen/charts/isp-chart.js")
     evidence_chart = read("bigscreen/charts/evidence-chart.js")
     evidence_panel = read("bigscreen/evidence/evidence-panel.js")
@@ -438,7 +440,7 @@ def test_isp_and_evidence_use_business_specific_line_chart_facades():
     assert "const renderEvidenceCharts = createEvidenceChartRenderer({" in app
     assert "const evidencePanel = createEvidencePanel({" in app
     assert "renderLineChart(" not in app
-    assert "renderIspChart({" in app
+    assert "renderIspChart({" in infra_controller
     assert "renderEvidenceCharts({" not in app
     assert "renderEvidenceCharts({" in evidence_panel
     assert "createIspCarousel" not in isp_chart
@@ -454,9 +456,9 @@ def test_isp_and_evidence_use_business_specific_line_chart_facades():
     assert "evidence/evidence-panel.js?v=20260827a" in index
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/isp-chart.js?v=20260826a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/evidence-chart.js?v=20260826a")
-    assert index.index("charts/isp-chart.js?v=20260826a") < index.index("app.js?v=20260828e")
+    assert index.index("charts/isp-chart.js?v=20260826a") < index.index("app.js?v=20260828f")
     assert index.index("charts/evidence-chart.js?v=20260826a") < index.index("evidence/evidence-panel.js?v=20260827a")
-    assert index.index("evidence/evidence-panel.js?v=20260827a") < index.index("app.js?v=20260828e")
+    assert index.index("evidence/evidence-panel.js?v=20260827a") < index.index("app.js?v=20260828f")
 
 
 def test_incident_panel_owns_form_queries_rendering_and_request_lifecycle():
@@ -499,7 +501,7 @@ def test_incident_panel_owns_form_queries_rendering_and_request_lifecycle():
     assert "incident.js?v=20260803a" in index
     assert "incident/incident-panel.js?v=20260827a" in index
     assert index.index("incident.js?v=20260803a") < index.index("incident/incident-panel.js?v=20260827a")
-    assert index.index("incident/incident-panel.js?v=20260827a") < index.index("app.js?v=20260828e")
+    assert index.index("incident/incident-panel.js?v=20260827a") < index.index("app.js?v=20260828f")
 
 
 def test_wireless_panel_is_loaded_after_players_and_owns_page_controller():
@@ -534,7 +536,7 @@ def test_wireless_panel_is_loaded_after_players_and_owns_page_controller():
     assert "players.js?v=20260802a" in index
     assert "wireless/wireless-panel.js?v=20260827a" in index
     assert index.index("players.js?v=20260802a") < index.index("wireless/wireless-panel.js?v=20260827a")
-    assert index.index("wireless/wireless-panel.js?v=20260827a") < index.index("app.js?v=20260828e")
+    assert index.index("wireless/wireless-panel.js?v=20260827a") < index.index("app.js?v=20260828f")
 
 
 def test_tournament_panel_is_loaded_after_players_and_owns_page_controller():
@@ -577,14 +579,77 @@ def test_tournament_panel_is_loaded_after_players_and_owns_page_controller():
         assert shared_token in app
         assert shared_token not in panel
     assert "function showTournament(page)" in app
-    assert "startInfraRefresh();" in app
-    assert "startInfraRefresh" not in panel
+    assert "infraController.start();" in app
+    assert "infraController.enterTournamentMode();" in app
+    assert "startInfraRefresh" not in app
     assert "ispCarousel" not in panel
     assert "controlPanel" not in panel
     assert "players.js?v=20260802a" in index
     assert "tournament/tournament-panel.js?v=20260828a" in index
     assert index.index("players.js?v=20260802a") < index.index("tournament/tournament-panel.js?v=20260828a")
-    assert index.index("tournament/tournament-panel.js?v=20260828a") < index.index("app.js?v=20260828e")
+    assert index.index("tournament/tournament-panel.js?v=20260828a") < index.index("app.js?v=20260828f")
+
+
+def test_infra_controller_owns_refresh_rendering_and_isp_lifecycle():
+    app = read("bigscreen/app.js")
+    controller = read("bigscreen/infra/infra-controller.js")
+    index = read("bigscreen/index.html")
+
+    assert "const { createInfraController } = window.BSInfraController;" in app
+    assert "const infraController = createInfraController({" in app
+    assert "infraController.enterInfraMode();" in app
+    assert "infraController.enterTournamentMode();" in app
+    assert "infraController.start();" in app
+    assert "infraController.stop();" in app
+    assert "infraController.hasScheduledRefresh()" in app
+    assert "infraController.refreshForResize();" in app
+    assert "return { createInfraController };" in controller
+    assert "return {\n      start,\n      stop,\n      enterInfraMode,\n      enterTournamentMode,\n      hasScheduledRefresh,\n      refreshForResize\n    };" in controller
+    for token in (
+        "let gaugeTimer = null;",
+        "let chartTimer = null;",
+        "let seenUpTimer = null;",
+        "let infraSeenUp = null;",
+        "let infraCurrentTargets = null;",
+        "let gaugeSeq = 0;",
+        "let chartSeq = 0;",
+        "let stageDeviceRegexCache = null;",
+        "let ispTrafficResults = [];",
+        "function stageDevicePattern()",
+        "function renderGaugeGrid(",
+        "function renderIspPanels(",
+        "async function refreshInfraSeenUp()",
+        "async function refreshGauges()",
+        "async function refreshCharts()",
+        "const ispCarousel = createIspCarousel({",
+        "window.setInterval(refreshGauges, 5000)",
+        "window.setInterval(refreshCharts, 5000)",
+        "window.setInterval(refreshInfraSeenUp, 30000)",
+        "prometheusRangeCached(pingTrendQuery, metricName, 2)",
+        "prometheusRangeCached(pingSuccessTrendQuery, metricName, 2)",
+        "buildInfrastructurePingPresentation({",
+    ):
+        assert token in controller
+        assert token not in app
+    for shared_token in (
+        "function activePage()",
+        "function shouldRender(",
+        "const renderSignatures = new Map();",
+        "function renderNoData(",
+        "function setVisible(",
+        "function activeInfraPingQuery",
+    ):
+        if shared_token == "function activeInfraPingQuery":
+            assert "activeInfraPingQuery," in app
+        else:
+            assert shared_token in app
+        assert shared_token not in controller
+    assert "isStageFilterActive: () => Boolean(activePage().kind)" in app
+    assert "onDataSuccess: () => { lastDataSuccessAt = Date.now(); }" in app
+    assert "clearRenderSignatures: () => renderSignatures.clear()" in app
+    assert "infra/infra-controller.js?v=20260828a" in index
+    assert index.index("isp-carousel.js?v=20260731a") < index.index("infra/infra-controller.js?v=20260828a")
+    assert index.index("infra/infra-controller.js?v=20260828a") < index.index("app.js?v=20260828f")
 
 
 def test_iperf_controller_is_loaded_after_pure_helpers_and_owns_browser_state_machine():
@@ -620,7 +685,7 @@ def test_iperf_controller_is_loaded_after_pure_helpers_and_owns_browser_state_ma
     assert "control/iperf-controller.js?v=20260828a" in index
     assert index.index("iperf.js?v=20260803a") < index.index("control/iperf-controller.js?v=20260828a")
     assert index.index("control/iperf-controller.js?v=20260828a") < index.index("control/delivery-panel.js?v=20260828a")
-    assert index.index("control/delivery-panel.js?v=20260828a") < index.index("app.js?v=20260828e")
+    assert index.index("control/delivery-panel.js?v=20260828a") < index.index("app.js?v=20260828f")
 
 
 def test_delivery_panel_owns_operator_actions_and_mounts_existing_iperf_controller_once():
@@ -663,7 +728,7 @@ def test_delivery_panel_owns_operator_actions_and_mounts_existing_iperf_controll
     assert "control/delivery-panel.js?v=20260828a" in index
     assert index.index("control/iperf-controller.js?v=20260828a") < index.index("control/delivery-panel.js?v=20260828a")
     assert index.index("control/delivery-panel.js?v=20260828a") < index.index("control/auth-controller.js?v=20260828a")
-    assert index.index("control/auth-controller.js?v=20260828a") < index.index("app.js?v=20260828e")
+    assert index.index("control/auth-controller.js?v=20260828a") < index.index("app.js?v=20260828f")
 
 
 def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache():
@@ -713,7 +778,7 @@ def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache(
         assert app_token in app
         assert app_token not in controller
     assert "control/auth-controller.js?v=20260828a" in index
-    assert index.index("control/auth-controller.js?v=20260828a") < index.index("app.js?v=20260828e")
+    assert index.index("control/auth-controller.js?v=20260828a") < index.index("app.js?v=20260828f")
 
 
 def test_incident_registry_owns_control_record_rendering_and_write_actions():
@@ -752,7 +817,7 @@ def test_incident_registry_owns_control_record_rendering_and_write_actions():
         assert app_token not in registry
     assert "control/incident-registry.js?v=20260828a" in index
     assert index.index("control/auth-controller.js?v=20260828a") < index.index("control/incident-registry.js?v=20260828a")
-    assert index.index("control/incident-registry.js?v=20260828a") < index.index("app.js?v=20260828e")
+    assert index.index("control/incident-registry.js?v=20260828a") < index.index("app.js?v=20260828f")
 
 
 def test_topology_browser_controller_is_extracted_without_owning_refresh_or_data_fetch():
@@ -786,7 +851,7 @@ def test_topology_browser_controller_is_extracted_without_owning_refresh_or_data
     assert "shouldRender" not in panel
     assert "charts/topology-panel.js?v=20260826a" in index
     assert index.index("topology.js?v=20260809a") < index.index("charts/topology-panel.js?v=20260826a")
-    assert index.index("charts/topology-panel.js?v=20260826a") < index.index("app.js?v=20260828e")
+    assert index.index("charts/topology-panel.js?v=20260826a") < index.index("app.js?v=20260828f")
 
 
 def test_grafana_device_names_survive_low_frequency_snmp_scrapes():
@@ -846,6 +911,7 @@ def test_grafana_ping_trend_keeps_short_spikes_across_refresh_alignment():
 def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     api = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
+    infra_controller = read("bigscreen/infra/infra-controller.js")
     line_chart = read("bigscreen/charts/line-chart.js")
     ping_chart = read("bigscreen/charts/ping-chart.js")
     evidence_chart = read("bigscreen/charts/evidence-chart.js")
@@ -878,19 +944,19 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "infra-srv-ping" not in ping_trend
     assert "infra-srv-ping" not in ping_success_trend
     assert "max_over_time(probe_icmp_duration_seconds" not in pages
-    assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in app
-    assert "prometheusRangeCached(pingSuccessTrendQuery, metricName, 2)" in app
-    assert "const pingSuccessTrendQuery = queries.pingSuccessTrend || \"\";" in app
+    assert "prometheusRangeCached(pingTrendQuery, metricName, 2)" in infra_controller
+    assert "prometheusRangeCached(pingSuccessTrendQuery, metricName, 2)" in infra_controller
+    assert "const pingSuccessTrendQuery = queries.pingSuccessTrend || \"\";" in infra_controller
     assert (
         "const activePingSuccessSeries = "
         "visibleInfraSeries(mergeInfraSeries(renameListWithInfraMap("
         "filterDeployed(pingSuccessSeries, (s) => s.name), nameMap), \"max\"));"
-    ) in app
+    ) in infra_controller
     assert "const { buildInfrastructurePingPresentation } = window.BSPingTransform;" in app
-    assert "buildInfrastructurePingPresentation({" in app
-    assert "latencySeries: rawActivePingSeries" in app
-    assert "successSeries: activePingSuccessSeries" in app
-    assert "buildInfrastructurePingPresentation(rawActivePingSeries)" not in app
+    assert "buildInfrastructurePingPresentation({" in infra_controller
+    assert "latencySeries: rawActivePingSeries" in infra_controller
+    assert "successSeries: activePingSuccessSeries" in infra_controller
+    assert "buildInfrastructurePingPresentation(rawActivePingSeries)" not in infra_controller
     legacy_spike_helper = "suppressIsolated" + "LatencySpikes"
     assert legacy_spike_helper not in app
     assert legacy_spike_helper not in read("bigscreen/utils.js")
@@ -947,14 +1013,14 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "replacementWindowSeconds: 15" in ping_transform
     assert "const { createPingChartRenderer } = window.BSPingChart;" in app
     assert "const renderPingChart = createPingChartRenderer({" in app
-    assert "renderPingChart({" in app
-    assert 'containerId: "pingTrendChart"' in app
-    assert "series: displayLatencySeries" in app
+    assert "renderPingChart({" in infra_controller
+    assert 'containerId: "pingTrendChart"' in infra_controller
+    assert "series: displayLatencySeries" in infra_controller
     assert "The adapter already applies trailing causal smoothing" in ping_chart
     assert "smooth: false" in ping_chart
     assert "smooth: true" not in ping_chart
     assert "const pingGap = Math.max(5, estimateStepSeconds(series) * 3)" in ping_chart
-    assert 'shouldRender("pingTrendChart", seriesSignature(displayLatencySeries))' in app
+    assert 'shouldRender("pingTrendChart", seriesSignature(displayLatencySeries))' in infra_controller
     assert "breakGapSeconds: pingGap" in ping_chart
     assert "renderInfraTrendCards" not in app
     assert ".infra-trend-grid" not in read("bigscreen/platform.css")
@@ -1005,15 +1071,15 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "pages.js?v=20260826a" in index
     assert "players.js?v=20260802a" in index
     assert "api.js?v=20260810a" in index
-    assert "app.js?v=20260828e" in index
+    assert "app.js?v=20260828f" in index
     assert "utils.js?v=20260825a" in index
     assert "charts/line-chart.js?v=20260826a" in index
     assert "charts/ping-chart.js?v=20260826a" in index
     assert "metrics/ping-transform.js?v=20260826b" in index
     assert index.index("utils.js?v=20260825a") < index.index("charts/line-chart.js?v=20260826a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/ping-chart.js?v=20260826a")
-    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260828e")
-    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260828e")
+    assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260828f")
+    assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260828f")
     assert "step: true" in evidence_chart
     assert "breakGapSeconds" in evidence_chart
     assert 'if (player.ip) params.set("ip", player.ip)' in app
@@ -1069,7 +1135,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
     assert "style.css?v=20260825a" in index
     assert "utils.js?v=20260825a" in index
-    assert "app.js?v=20260828e" in index
+    assert "app.js?v=20260828f" in index
 
 
 def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
@@ -1084,11 +1150,12 @@ def test_player_targets_keep_recently_offline_seats_visible_for_five_minutes():
 
 def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():
     app = read("bigscreen/app.js")
+    infra_controller = read("bigscreen/infra/infra-controller.js")
     css = read("bigscreen/platform.css")
     index = read("bigscreen/index.html")
 
     assert "createIspCarousel" in app
-    assert "intervalMs: 10000" in app
+    assert "intervalMs: 10000" in infra_controller
     assert 'screen.className = "screen infra-mode";' in app
     assert 'screen.className = `screen tournament-mode' in app
     assert '.screen.tournament-mode .isp-grid.isp-paged' in css
@@ -1136,7 +1203,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
     assert "style.css?v=20260825a" in index
-    assert "app.js?v=20260828e" in index
+    assert "app.js?v=20260828f" in index
 
 
 def test_feishu_bridge_does_not_create_librenms_transport():
