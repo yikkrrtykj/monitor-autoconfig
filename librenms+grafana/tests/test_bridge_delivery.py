@@ -1,8 +1,6 @@
 import json
 import importlib.util
-import io
 from pathlib import Path
-from urllib import error
 
 
 _spec = importlib.util.spec_from_file_location(
@@ -13,79 +11,8 @@ bridge = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bridge)
 
 
-class _FakeResponse:
-    def __init__(self, payload, status=200):
-        self.payload = payload
-        self.status = status
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def read(self):
-        return json.dumps(self.payload).encode("utf-8")
-
-
 def _card():
     return {"card": {"header": {"title": {"content": "test"}}}}
-
-
-def test_feishu_http_200_business_error_is_retried(monkeypatch):
-    responses = iter([
-        _FakeResponse({"code": 19002, "msg": "invalid token"}),
-        _FakeResponse({"code": 0, "msg": "success"}),
-    ])
-    calls = []
-
-    def fake_urlopen(req, timeout):
-        calls.append((req, timeout))
-        return next(responses)
-
-    monkeypatch.setattr(bridge, "TOKEN", "token")
-    monkeypatch.setattr(bridge, "DRY_RUN", False)
-    monkeypatch.setattr(bridge, "FEISHU_SEND_MAX_ATTEMPTS", 2)
-    monkeypatch.setattr(bridge, "FEISHU_SEND_RETRY_BASE_SECONDS", 0)
-    monkeypatch.setattr(bridge.request, "urlopen", fake_urlopen)
-
-    assert bridge.send_feishu(_card()) is True
-    assert len(calls) == 2
-
-
-def test_feishu_network_failure_is_not_acknowledged(monkeypatch):
-    calls = []
-
-    def fake_urlopen(req, timeout):
-        calls.append((req, timeout))
-        raise error.URLError("offline")
-
-    monkeypatch.setattr(bridge, "TOKEN", "token")
-    monkeypatch.setattr(bridge, "DRY_RUN", False)
-    monkeypatch.setattr(bridge, "FEISHU_SEND_MAX_ATTEMPTS", 3)
-    monkeypatch.setattr(bridge, "FEISHU_SEND_RETRY_BASE_SECONDS", 0)
-    monkeypatch.setattr(bridge.request, "urlopen", fake_urlopen)
-
-    assert bridge.send_feishu(_card()) is False
-    assert len(calls) == 3
-
-
-def test_approved_app_bot_is_preferred_for_normal_alerts(monkeypatch):
-    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "cli_x")
-    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "secret")
-    monkeypatch.setattr(bridge, "send_feishu_app_card", lambda _card: True)
-    monkeypatch.setattr(bridge, "_send_feishu_webhook", lambda _card: (_ for _ in ()).throw(AssertionError("webhook should not run")))
-
-    assert bridge.send_feishu(_card()) is True
-
-
-def test_normal_alert_falls_back_to_webhook_when_app_delivery_fails(monkeypatch):
-    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "cli_x")
-    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "secret")
-    monkeypatch.setattr(bridge, "send_feishu_app_card", lambda _card: False)
-    monkeypatch.setattr(bridge, "_send_feishu_webhook", lambda _card: True)
-
-    assert bridge.send_feishu(_card()) is True
 
 
 def test_every_outgoing_card_is_prefixed_with_event_name(monkeypatch):
@@ -95,6 +22,25 @@ def test_every_outgoing_card_is_prefixed_with_event_name(monkeypatch):
     assert decorated["card"]["header"]["title"]["content"] == "【EWC 上海站】 test"
     assert original["card"]["header"]["title"]["content"] == "test"
     assert bridge._with_event_name(decorated)["card"]["header"]["title"]["content"] == "【EWC 上海站】 test"
+
+
+def test_bridge_delivery_wrappers_decorate_then_delegate(monkeypatch):
+    monkeypatch.setattr(bridge, "EVENT_NAME", "EWC 上海站")
+    calls = []
+    monkeypatch.setattr(bridge._FEISHU_DELIVERY, "send", lambda value: calls.append(("send", value)) or True)
+    monkeypatch.setattr(bridge._FEISHU_DELIVERY, "send_app", lambda value: calls.append(("app", value)) or True)
+    monkeypatch.setattr(bridge._FEISHU_DELIVERY, "send_webhook", lambda value: calls.append(("webhook", value)) or True)
+    original = _card()
+
+    assert bridge.send_feishu(original) is True
+    assert bridge.send_feishu_app_card(original) is True
+    assert bridge._send_feishu_webhook(original) is True
+    assert [name for name, _value in calls] == ["send", "app", "webhook"]
+    assert all(
+        value["card"]["header"]["title"]["content"] == "【EWC 上海站】 test"
+        for _name, value in calls
+    )
+    assert original["card"]["header"]["title"]["content"] == "test"
 
 
 def test_bot_network_audit_merges_status_and_offline_details(monkeypatch):
@@ -421,25 +367,6 @@ def test_device_list_read_uses_shared_librenms_client(monkeypatch):
 
     assert bridge.fetch_librenms_devices("token") == [{"device_id": 7, "hostname": "edge"}]
     assert calls == [("token", 10)]
-
-
-def test_proactive_alert_chat_uses_name_and_never_guesses_between_groups(monkeypatch):
-    chats = _FakeResponse({
-        "code": 0,
-        "data": {"items": [
-            {"chat_id": "oc_shanghai", "name": "上海赛事告警"},
-            {"chat_id": "oc_beijing", "name": "北京赛事告警"},
-        ]},
-    })
-    monkeypatch.setattr(bridge.request, "urlopen", lambda _req, timeout: chats)
-    bridge._FEISHU_APP_CHAT["chat_id"] = ""
-    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "北京赛事告警")
-    monkeypatch.setattr(bridge, "EVENT_NAME", "")
-    assert bridge._feishu_app_chat_id("token") == "oc_beijing"
-
-    bridge._FEISHU_APP_CHAT["chat_id"] = ""
-    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "")
-    assert bridge._feishu_app_chat_id("token") == ""
 
 
 def test_online_dedupe_is_committed_only_after_delivery(monkeypatch, tmp_path):
@@ -886,8 +813,7 @@ def test_pending_delete_notify_downgrades_to_webhook_when_app_send_fails(monkeyp
         "down_since": 100.0, "pending_delete": True, "pending_token": "t",
         "pending_notified": False, "pending_last_notified": None,
     }}
-    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "cli_x")
-    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "secret")
+    monkeypatch.setattr(bridge, "feishu_app_configured", lambda: True)
     # 应用发卡失败 -> 必须回退到 webhook 通知卡
     monkeypatch.setattr(bridge, "send_feishu_app_card", lambda card: False)
     webhook_calls = []
@@ -918,82 +844,6 @@ def test_pending_delete_notify_downgrades_to_webhook_when_app_send_fails(monkeyp
     assert not webhook_calls
 
 
-def test_feishu_app_chat_lookup_reads_all_pages(monkeypatch):
-    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "比赛告警群")
-    bridge._FEISHU_APP_CHAT["chat_id"] = ""
-    responses = iter([
-        _FakeResponse({
-            "code": 0,
-            "data": {
-                "items": [{"chat_id": "oc_other", "name": "公司告警群"}],
-                "has_more": True,
-                "page_token": "next-page",
-            },
-        }),
-        _FakeResponse({
-            "code": 0,
-            "data": {
-                "items": [{"chat_id": "oc_event", "name": "比赛告警群"}],
-                "has_more": False,
-            },
-        }),
-    ])
-    urls = []
-
-    def fake_urlopen(req, timeout):
-        urls.append(req.full_url)
-        return next(responses)
-
-    monkeypatch.setattr(bridge.request, "urlopen", fake_urlopen)
-    assert bridge._feishu_app_chat_id("tenant-token") == "oc_event"
-    assert len(urls) == 2
-    assert "page_token=next-page" in urls[1]
-
-
-def test_feishu_chat_http_400_exposes_business_code_and_permission_hint(monkeypatch):
-    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "比赛告警群")
-    bridge._FEISHU_APP_CHAT["chat_id"] = ""
-    body = io.BytesIO(json.dumps({
-        "code": 99991672,
-        "msg": "no permission to read chat",
-    }).encode("utf-8"))
-
-    def fail_with_business_error(_req, timeout):
-        del timeout
-        raise error.HTTPError(
-            "https://open.feishu.cn/open-apis/im/v1/chats",
-            400,
-            "Bad Request",
-            {},
-            body,
-        )
-
-    monkeypatch.setattr(bridge.request, "urlopen", fail_with_business_error)
-    assert bridge._feishu_app_chat_id("tenant-token") == ""
-    health = bridge.bridge_health_payload()["delivery"]
-    assert health["appChatResolved"] is False
-    assert "code=99991672" in health["lastAppError"]
-    assert "im:chat:read" in health["lastAppError"]
-
-
-def test_card_send_error_does_not_erase_successful_direct_chat_resolution(monkeypatch):
-    monkeypatch.setattr(bridge, "DRY_RUN", False)
-    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "cli_test")
-    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "secret")
-    monkeypatch.setattr(bridge, "FEISHU_CHAT_ID", "oc_direct")
-    monkeypatch.setattr(bridge, "_feishu_tenant_token", lambda: "tenant-token")
-    monkeypatch.setattr(
-        bridge,
-        "_feishu_api_post",
-        lambda *_args, **_kwargs: {"code": 230002, "msg": "message rejected"},
-    )
-
-    assert bridge.send_feishu_app_card(_card()) is False
-    health = bridge.bridge_health_payload()["delivery"]
-    assert health["appChatResolved"] is True
-    assert "code=230002" in health["lastAppError"]
-
-
 def test_pending_delete_notify_not_committed_when_all_sends_fail(monkeypatch):
     key = "infra-dist-ping|192.168.10.27"
     states = {key: {
@@ -1001,8 +851,7 @@ def test_pending_delete_notify_not_committed_when_all_sends_fail(monkeypatch):
         "down_since": 100.0, "pending_delete": True, "pending_token": "t",
         "pending_notified": False, "pending_last_notified": None,
     }}
-    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "")
-    monkeypatch.setattr(bridge, "FEISHU_APP_SECRET", "")
+    monkeypatch.setattr(bridge, "feishu_app_configured", lambda: False)
     monkeypatch.setattr(bridge, "send_feishu", lambda card: False)
     # 发送失败时不置 notified，下轮还会重试
     assert bridge.notify_pending_delete_states(states, 1000.0) is False

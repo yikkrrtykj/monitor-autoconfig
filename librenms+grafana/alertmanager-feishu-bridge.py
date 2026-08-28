@@ -99,6 +99,7 @@ import threading
 import time
 from urllib import error, parse, request
 
+from feishu_delivery import FeishuDelivery
 from librenms_client import LibreNMSClient
 from network_syslog import (
     MacFlapTracker,
@@ -609,6 +610,21 @@ def log(message):
     print(f"[{datetime.now().isoformat(timespec='seconds')}] {message}", file=sys.stderr, flush=True)
 
 
+_FEISHU_DELIVERY = FeishuDelivery(
+    webhook_token=TOKEN,
+    dry_run=DRY_RUN,
+    send_max_attempts=FEISHU_SEND_MAX_ATTEMPTS,
+    retry_base_seconds=FEISHU_SEND_RETRY_BASE_SECONDS,
+    app_id=FEISHU_APP_ID,
+    app_secret=FEISHU_APP_SECRET,
+    chat_id=FEISHU_CHAT_ID,
+    event_name=EVENT_NAME,
+    log=log,
+    health_state=DELIVERY_HEALTH,
+    health_lock=HEALTH_LOCK,
+)
+
+
 def mark_watcher_health(name, ok=True, error_message=""):
     with HEALTH_LOCK:
         state = WATCHER_HEALTH.setdefault(name, {})
@@ -619,30 +635,6 @@ def mark_watcher_health(name, ok=True, error_message=""):
         else:
             state["lastFailureAt"] = state["lastPollAt"]
             state["lastError"] = str(error_message or "unknown error")[:300]
-
-
-def mark_delivery_health(ok, error_message="", channel=""):
-    with HEALTH_LOCK:
-        if channel:
-            DELIVERY_HEALTH["lastChannel"] = channel
-        if ok:
-            DELIVERY_HEALTH["lastSuccessAt"] = int(time.time())
-            DELIVERY_HEALTH["lastError"] = ""
-        else:
-            DELIVERY_HEALTH["lastFailureAt"] = int(time.time())
-            DELIVERY_HEALTH["lastError"] = str(error_message or "delivery failed")[:300]
-
-
-def mark_app_resolution(ok, error_message=""):
-    with HEALTH_LOCK:
-        DELIVERY_HEALTH["appChatResolved"] = bool(ok)
-        DELIVERY_HEALTH["lastAppError"] = "" if ok else str(error_message or "群解析失败")[:500]
-
-
-def mark_app_error(error_message):
-    """Record an application delivery error without rewriting chat resolution."""
-    with HEALTH_LOCK:
-        DELIVERY_HEALTH["lastAppError"] = str(error_message or "应用投递失败")[:500]
 
 
 def bridge_health_payload():
@@ -2436,298 +2428,20 @@ def _with_event_name(card):
     return decorated
 
 
-def _feishu_response_result(response_text):
-    """Return (ok, detail) for a Feishu webhook JSON response.
-
-    Feishu reports token/permission/rate-limit failures in a JSON business code,
-    often while the HTTP status itself is 200.  Treating every HTTP 200 as a
-    success permanently loses alerts, so a recognizable zero code is required.
-    """
-    try:
-        payload = json.loads(str(response_text or "").strip())
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return False, "response is not valid JSON"
-    if not isinstance(payload, dict):
-        return False, "response JSON is not an object"
-    code = payload.get("code")
-    if code is None:
-        code = payload.get("StatusCode", payload.get("status_code"))
-    try:
-        ok = int(code) == 0
-    except (TypeError, ValueError):
-        return False, "response has no recognizable business code"
-    detail = str(payload.get("msg") or payload.get("StatusMessage") or payload.get("message") or "")
-    return ok, detail or f"code={code}"
-
-
 def _send_feishu_webhook(card):
-    card = _with_event_name(card)
-    if DRY_RUN:
-        log(f"[DRY] would POST card: {card['card']['header']['title']['content']}")
-        mark_delivery_health(True, channel="dry-run")
-        return True
-    if not TOKEN:
-        log("[WARN] FEISHU_ROBOT_TOKEN empty, dropping alert (set token or enable DRY_RUN)")
-        mark_delivery_health(False, "FEISHU_ROBOT_TOKEN is empty", "webhook")
-        return False
-    url = f"https://open.feishu.cn/open-apis/bot/v2/hook/{TOKEN}"
-    data = json.dumps(card).encode("utf-8")
-    req = request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    last_error = "delivery failed"
-    for attempt in range(1, FEISHU_SEND_MAX_ATTEMPTS + 1):
-        try:
-            with request.urlopen(req, timeout=5) as resp:
-                response_text = resp.read().decode("utf-8", errors="replace")
-            ok, detail = _feishu_response_result(response_text)
-            if ok:
-                log(f"feishu response: {response_text[:200]}")
-                mark_delivery_health(True, channel="webhook")
-                return True
-            last_error = detail
-            log(
-                f"[ERR] feishu rejected alert attempt "
-                f"{attempt}/{FEISHU_SEND_MAX_ATTEMPTS}: {detail}; response={response_text[:200]}"
-            )
-        except error.URLError as exc:
-            last_error = str(exc)
-            log(f"[ERR] feishu request attempt {attempt}/{FEISHU_SEND_MAX_ATTEMPTS} failed: {exc}")
-        except Exception as exc:
-            last_error = str(exc)
-            log(f"[ERR] unexpected Feishu error attempt {attempt}/{FEISHU_SEND_MAX_ATTEMPTS}: {exc}")
-        if attempt < FEISHU_SEND_MAX_ATTEMPTS:
-            delay = FEISHU_SEND_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
-            if delay > 0:
-                time.sleep(delay)
-    mark_delivery_health(False, last_error, "webhook")
-    return False
-
-
-_FEISHU_APP_TOKEN = {"token": "", "expires_at": 0.0}
-_FEISHU_APP_TOKEN_LOCK = threading.Lock()
-_FEISHU_APP_CHAT = {"chat_id": ""}
+    return _FEISHU_DELIVERY.send_webhook(_with_event_name(card))
 
 
 def feishu_app_configured():
-    return bool(FEISHU_APP_ID and FEISHU_APP_SECRET)
-
-
-def _feishu_api_post(path, payload, token=""):
-    headers = {"Content-Type": "application/json; charset=utf-8"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = request.Request(
-        f"https://open.feishu.cn{path}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-    )
-    with request.urlopen(req, timeout=8) as resp:
-        return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
-
-
-def _feishu_tenant_token():
-    """Cached tenant_access_token；过期前 120 秒刷新。失败返回空串。"""
-    now = time.time()
-    with _FEISHU_APP_TOKEN_LOCK:
-        if _FEISHU_APP_TOKEN["token"] and now < _FEISHU_APP_TOKEN["expires_at"] - 120:
-            return _FEISHU_APP_TOKEN["token"]
-    try:
-        data = _feishu_api_post(
-            "/open-apis/auth/v3/tenant_access_token/internal",
-            {"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET},
-        )
-    except error.HTTPError as exc:
-        detail = _feishu_http_error_detail(exc)
-        mark_app_error(detail)
-        log(f"[APP] tenant token request failed: {detail}")
-        return ""
-    except Exception as exc:
-        mark_app_error(exc)
-        log(f"[APP] tenant token request failed: {exc}")
-        return ""
-    if data.get("code") != 0 or not data.get("tenant_access_token"):
-        detail = f"code={data.get('code')} msg={str(data.get('msg'))[:160]}"
-        mark_app_error(detail)
-        log(f"[APP] tenant token rejected: {detail}")
-        return ""
-    with _FEISHU_APP_TOKEN_LOCK:
-        _FEISHU_APP_TOKEN["token"] = data["tenant_access_token"]
-        _FEISHU_APP_TOKEN["expires_at"] = now + float(data.get("expire") or 3600)
-        return _FEISHU_APP_TOKEN["token"]
-
-
-def _feishu_http_error_detail(exc):
-    """Return Feishu's business code/message instead of only ``HTTP 400``."""
-    try:
-        raw = exc.read().decode("utf-8", errors="replace")
-    except Exception:
-        raw = ""
-    try:
-        payload = json.loads(raw or "{}")
-    except (TypeError, ValueError, json.JSONDecodeError):
-        payload = {}
-    code = payload.get("code") if isinstance(payload, dict) else None
-    message = payload.get("msg") if isinstance(payload, dict) else None
-    detail = f"HTTP {getattr(exc, 'code', '?')}"
-    if code is not None:
-        detail += f" code={code}"
-    if message:
-        detail += f" msg={str(message)[:240]}"
-    elif raw:
-        detail += f" body={raw[:240]}"
-    if code in (99991672, 99991679):
-        detail += "; 请给应用开通“查看群信息 (im:chat:read)”权限并发布新版本"
-    elif code in (230006, 232025):
-        detail += "; 请开启机器人能力并发布应用"
-    elif code == 232034:
-        detail += "; 请在当前租户安装并启用应用"
-    elif code in (230002, 232011):
-        detail += "; 请把应用机器人加入目标群并确认机器人仍在群内"
-    elif code in (230034, 232006):
-        detail += "; 请检查 oc_ 开头的 Chat ID 是否有效且与接收类型一致"
-    elif code == 230035:
-        detail += "; 请检查群禁言、机器人发言权限和租户沟通权限"
-    elif code in (230001, 232001):
-        detail += "; 请求参数无效，请结合 msg 检查 Chat ID、接收类型和消息内容"
-    return detail
-
-
-def _feishu_app_chat_id(token):
-    """Resolve the proactive alert group safely.
-
-    Incoming @ queries always reply to their source message and do not use this
-    setting.  For proactive alerts an ``oc_`` id is accepted directly; a group
-    name is resolved from the bot's chat list.  With several groups we never
-    silently choose the first one, which could send one venue's alert elsewhere.
-    """
-    if FEISHU_CHAT_ID.startswith("oc_"):
-        mark_app_resolution(True)
-        return FEISHU_CHAT_ID
-    if _FEISHU_APP_CHAT["chat_id"]:
-        return _FEISHU_APP_CHAT["chat_id"]
-    items = []
-    page_token = ""
-    try:
-        while True:
-            query = {"page_size": "100"}
-            if page_token:
-                query["page_token"] = page_token
-            req = request.Request(
-                "https://open.feishu.cn/open-apis/im/v1/chats?" + parse.urlencode(query),
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            with request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
-            if data.get("code") not in (None, 0):
-                raise RuntimeError(f"code={data.get('code')} msg={data.get('msg')}")
-            page = data.get("data") or {}
-            items.extend(
-                item for item in (page.get("items") or [])
-                if isinstance(item, dict) and item.get("chat_id")
-            )
-            if not page.get("has_more") or not page.get("page_token"):
-                break
-            page_token = str(page["page_token"])
-    except error.HTTPError as exc:
-        detail = _feishu_http_error_detail(exc)
-        mark_app_resolution(False, detail)
-        log(f"[APP] chat list failed: {detail}")
-        return ""
-    except Exception as exc:
-        detail = str(exc)
-        mark_app_resolution(False, detail)
-        log(f"[APP] chat list failed: {detail}")
-        return ""
-
-    def match_name(value):
-        wanted = str(value or "").strip().casefold()
-        if not wanted:
-            return []
-        return [item for item in items if str(item.get("name") or "").strip().casefold() == wanted]
-
-    candidates = match_name(FEISHU_CHAT_ID) if FEISHU_CHAT_ID else match_name(EVENT_NAME)
-    reason = "configured group name" if FEISHU_CHAT_ID else "event name"
-    if len(candidates) == 1:
-        item = candidates[0]
-    elif not FEISHU_CHAT_ID and not candidates and len(items) == 1:
-        item = items[0]
-        reason = "only bot group"
-    else:
-        if not items:
-            detail = "机器人不在任何群；请把自建应用机器人加入告警群"
-            mark_app_resolution(False, detail)
-            log(f"[APP] {detail}")
-        elif FEISHU_CHAT_ID:
-            detail = f"告警群名称 '{FEISHU_CHAT_ID}' 不存在或不唯一；建议直接填写 oc_ 开头的 chat_id"
-            mark_app_resolution(False, detail)
-            log(f"[APP] {detail}")
-        else:
-            names = ", ".join(str(entry.get("name") or entry.get("chat_id")) for entry in items[:10])
-            detail = f"机器人属于多个群 ({names})；请把 FEISHU_CHAT_ID 设置为群名或 oc_ 开头的 chat_id"
-            mark_app_resolution(False, detail)
-            log(f"[APP] {detail}")
-        return ""
-    chat_id = str(item.get("chat_id") or "")
-    if chat_id:
-        _FEISHU_APP_CHAT["chat_id"] = chat_id
-        mark_app_resolution(True)
-        log(f"[APP] selected chat {chat_id} ({str(item.get('name'))[:40]}) by {reason}")
-        return chat_id
-    return ""
+    return _FEISHU_DELIVERY.app_configured()
 
 
 def send_feishu_app_card(card):
-    """通过自建应用机器人发交互卡片（带回传按钮）。失败返回 False。"""
-    card = _with_event_name(card)
-    if DRY_RUN:
-        log(f"[DRY][APP] would send interactive card: {card['card']['header']['title']['content']}")
-        return True
-    if not feishu_app_configured():
-        return False
-    token = _feishu_tenant_token()
-    if not token:
-        return False
-    chat_id = _feishu_app_chat_id(token)
-    if not chat_id:
-        return False
-    try:
-        data = _feishu_api_post(
-            "/open-apis/im/v1/messages?receive_id_type=chat_id",
-            {
-                "receive_id": chat_id,
-                "msg_type": "interactive",
-                "content": json.dumps(card["card"], ensure_ascii=False),
-            },
-            token=token,
-        )
-    except error.HTTPError as exc:
-        detail = _feishu_http_error_detail(exc)
-        mark_app_error(detail)
-        log(f"[APP] interactive card send failed: {detail}")
-        return False
-    except Exception as exc:
-        mark_app_error(exc)
-        log(f"[APP] interactive card send failed: {exc}")
-        return False
-    if data.get("code") != 0:
-        detail = f"code={data.get('code')} msg={str(data.get('msg'))[:160]}"
-        mark_app_error(detail)
-        log(f"[APP] interactive card rejected: {detail}")
-        return False
-    mark_app_resolution(True)
-    return True
+    return _FEISHU_DELIVERY.send_app(_with_event_name(card))
 
 
 def send_feishu(card):
-    """Prefer the approved app bot; retain the webhook as a safe fallback."""
-    if feishu_app_configured():
-        if send_feishu_app_card(card):
-            mark_delivery_health(True, channel="app")
-            return True
-        with HEALTH_LOCK:
-            app_error = DELIVERY_HEALTH.get("lastAppError") or "应用卡片发送失败"
-            DELIVERY_HEALTH["lastAppError"] = app_error
-        log("[APP] app delivery failed; falling back to FEISHU_ROBOT_TOKEN")
-    return _send_feishu_webhook(card)
+    return _FEISHU_DELIVERY.send(_with_event_name(card))
 
 
 def send_device_online_once(card, *identity_values):

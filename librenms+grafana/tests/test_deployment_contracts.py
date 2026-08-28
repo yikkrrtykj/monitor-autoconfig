@@ -106,11 +106,12 @@ def test_feishu_ws_sidecar_is_profile_gated_and_optional():
     assert "FEISHU_APP_ID=" in env
 
 
-def test_alert_bridge_mounts_its_split_syslog_parser():
+def test_alert_bridge_mounts_its_split_runtime_modules():
     compose = read("docker-compose.yml")
     bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split("  librenms:", 1)[0]
 
     assert "./alertmanager-feishu-bridge.py:/app/bridge.py:ro" in bridge_service
+    assert "./feishu_delivery.py:/app/feishu_delivery.py:ro" in bridge_service
     assert "./librenms_client.py:/app/librenms_client.py:ro" in bridge_service
     assert "./network_syslog.py:/app/network_syslog.py:ro" in bridge_service
     assert 'LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"' in bridge_service
