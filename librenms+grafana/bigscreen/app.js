@@ -39,6 +39,7 @@
   const { createIperfController } = window.BSIperfController;
   const { createDeliveryPanel } = window.BSDeliveryPanel;
   const { createAuthController } = window.BSAuthController;
+  const { createIncidentRegistry } = window.BSIncidentRegistry;
   const { createTopologyPanel } = window.BSTopologyPanel;
   const { buildInfrastructurePingPresentation } = window.BSPingTransform;
   const {
@@ -85,7 +86,6 @@
   const renderSignatures = new Map();
   let lastDataSuccessAt = 0;
   let lastControlReport = null;
-  let lastIncidents = [];
   const DATA_STALE_AFTER_MS = 20000;
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
   const ispCarousel = createIspCarousel({
@@ -440,6 +440,16 @@
     logoutPlatformAuth,
     onAuthenticated: () => refreshControlPanel(),
     onLoggedOut: () => { lastControlReport = null; }
+  });
+  const incidentRegistry = createIncidentRegistry({
+    document,
+    escapeHtml,
+    formatTimestampFull,
+    fetchIncidents,
+    postPlatform,
+    patchPlatform,
+    getControlReport: () => lastControlReport,
+    now: () => Date.now()
   });
   const topologyPanel = createTopologyPanel({
     document,
@@ -837,64 +847,6 @@
   }
 
 
-  function renderIncidentList(payload) {
-    const incidents = payload && payload.incidents ? payload.incidents : [];
-    lastIncidents = incidents;
-    const list = document.getElementById("controlIncidentList");
-    if (!list) return;
-    if (payload && payload.error) {
-      list.innerHTML = `<div class="control-empty bad">${escapeHtml(payload.error)}</div>`;
-      return;
-    }
-    if (!incidents.length) {
-      list.innerHTML = `<div class="control-empty">暂无事故记录</div>`;
-      return;
-    }
-    list.innerHTML = incidents.slice(0, 12).map((item) => {
-      const started = item.startedAt ? formatTimestampFull(item.startedAt) : "-";
-      const duration = item.recoveredAt && item.startedAt ? `${Math.max(0, Math.round((item.recoveredAt - item.startedAt) / 60))} 分钟` : "进行中";
-      return `
-        <div class="incident-record ${item.severity || "warn"}">
-          <span>#${escapeHtml(item.id)} · ${escapeHtml(item.status || "open")}</span>
-          <strong>${escapeHtml(item.title || "")}</strong>
-          <em>${escapeHtml(started)} · ${escapeHtml(duration)} · ${escapeHtml(item.owner || "未分配")}</em>
-          ${item.status === "resolved" ? "" : `<button type="button" data-resolve-incident="${escapeHtml(item.id)}">标记恢复</button>`}
-        </div>
-      `;
-    }).join("");
-    list.querySelectorAll("[data-resolve-incident]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        try {
-          await patchPlatform(`/incidents/${button.dataset.resolveIncident}`, {
-            status: "resolved",
-            recoveredAt: Math.floor(Date.now() / 1000),
-            event: "标记恢复",
-            eventType: "recovery"
-          });
-          renderIncidentList(await fetchIncidents());
-        } catch (error) {
-          renderIncidentList({ incidents: lastIncidents, error: error.message || "更新事故失败" });
-        }
-      });
-    });
-  }
-
-  async function createControlIncident() {
-    const input = document.getElementById("controlIncidentTitle");
-    const title = (input && input.value.trim()) || "现场事故";
-    const related = lastControlReport ? {
-      readiness: lastControlReport.readiness,
-      checks: lastControlReport.checks.filter((item) => item.level === "bad" || item.level === "warn").slice(0, 8)
-    } : {};
-    try {
-      await postPlatform("/incidents", { title, severity: lastControlReport && lastControlReport.readiness.level === "bad" ? "bad" : "warn", related });
-      if (input) input.value = "";
-      renderIncidentList(await fetchIncidents());
-    } catch (error) {
-      renderIncidentList({ incidents: lastIncidents, error: error.message || "创建事故失败" });
-    }
-  }
-
   function renderControlIncidentFlow(snapshot) {
     const nowValue = dateTimeInputValue(new Date());
     const worst = snapshot.readiness.level;
@@ -997,7 +949,7 @@
     renderControlConfig(snapshot);
     configEditor.render(snapshot.platformConfig, snapshot.dhcpSettings);
     renderControlIncidentFlow(snapshot);
-    renderIncidentList(snapshot.incidents);
+    incidentRegistry.render(snapshot.incidents);
     deliveryPanel.render();
     lastControlReport = snapshot;
     lastDataSuccessAt = Date.now();
@@ -1047,11 +999,7 @@
       }
     });
     configEditor.bind();
-    const incidentCreate = document.getElementById("controlIncidentCreate");
-    if (incidentCreate && !incidentCreate.dataset.bound) {
-      incidentCreate.addEventListener("click", createControlIncident);
-      incidentCreate.dataset.bound = "1";
-    }
+    incidentRegistry.bind();
     renderControlLint();
   }
 
