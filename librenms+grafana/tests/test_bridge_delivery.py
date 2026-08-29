@@ -333,7 +333,7 @@ def test_online_dedupe_is_committed_only_after_delivery(monkeypatch, tmp_path):
         calls.append(card)
         return next(outcomes)
 
-    monkeypatch.setattr(bridge, "DEVICE_ONLINE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(bridge._ONLINE_IDENTITY, "state_file", str(state_file))
     monkeypatch.setattr(bridge, "send_feishu", fake_send)
 
     assert bridge.send_device_online_once(_card(), "switch-1", "10.0.0.1") is False
@@ -350,15 +350,11 @@ def test_online_delivery_does_not_hold_state_lock_during_network_io(monkeypatch,
     lock_was_free = []
 
     def fake_send(_card):
-        acquired = bridge.DEVICE_ONLINE_STATE_LOCK.acquire(blocking=False)
-        lock_was_free.append(acquired)
-        if acquired:
-            bridge.DEVICE_ONLINE_STATE_LOCK.release()
+        lock_was_free.append(bridge._ONLINE_IDENTITY.known_identities() == set())
         return True
 
-    monkeypatch.setattr(bridge, "DEVICE_ONLINE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(bridge._ONLINE_IDENTITY, "state_file", str(state_file))
     monkeypatch.setattr(bridge, "send_feishu", fake_send)
-    bridge.DEVICE_ONLINE_INFLIGHT.clear()
 
     assert bridge.send_device_online_once(_card(), "switch-1", "10.0.0.1") is True
     assert lock_was_free == [True]
@@ -394,7 +390,7 @@ def test_ap_ip_change_does_not_send_a_second_deployment(monkeypatch, tmp_path):
     state_file = tmp_path / "online.json"
     sent = []
 
-    monkeypatch.setattr(bridge, "DEVICE_ONLINE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(bridge._ONLINE_IDENTITY, "state_file", str(state_file))
     monkeypatch.setattr(bridge, "send_feishu", lambda card: sent.append(card) or True)
 
     mac = "aa:bb:cc:dd:ee:ff"
@@ -705,7 +701,7 @@ def test_new_lifecycle_online_card_bypasses_lifetime_dedupe(monkeypatch, tmp_pat
     state_file.write_text(json.dumps(["switch-1", "10.0.0.1"]), encoding="utf-8")
     calls = []
 
-    monkeypatch.setattr(bridge, "DEVICE_ONLINE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(bridge._ONLINE_IDENTITY, "state_file", str(state_file))
     monkeypatch.setattr(bridge, "send_feishu", lambda card: calls.append(card) or True)
 
     assert bridge.send_device_online_new_lifecycle(_card(), "switch-1", "10.0.0.1") is True

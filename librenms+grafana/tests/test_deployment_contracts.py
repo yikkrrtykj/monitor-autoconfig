@@ -112,6 +112,7 @@ def test_alert_bridge_mounts_its_split_runtime_modules():
 
     assert "./alertmanager-feishu-bridge.py:/app/bridge.py:ro" in bridge_service
     assert "./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro" in bridge_service
+    assert "./bridge_online_identity.py:/app/bridge_online_identity.py:ro" in bridge_service
     assert "./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro" in bridge_service
     assert "./bridge_sysname_watcher.py:/app/bridge_sysname_watcher.py:ro" in bridge_service
     assert "./feishu_delivery.py:/app/feishu_delivery.py:ro" in bridge_service
@@ -134,6 +135,28 @@ def test_alert_bridge_delegates_sysname_watching_to_its_split_runtime_module():
     assert "SYSNAME_STATE_FILE =" in bridge
     assert "pending_changes = {}" not in bridge
     assert "pending_changes = {}" in watcher
+
+
+def test_alert_bridge_delegates_online_identity_to_its_split_runtime_module():
+    bridge = read("alertmanager-feishu-bridge.py")
+    service = read("bridge_online_identity.py")
+
+    assert "from bridge_online_identity import OnlineIdentityService" in bridge
+    assert "_ONLINE_IDENTITY = OnlineIdentityService(" in bridge
+    assert "state_file=DEVICE_ONLINE_STATE_FILE" in bridge
+    assert "return _ONLINE_IDENTITY.mark_notified(*values)" in bridge
+    assert "return _ONLINE_IDENTITY.migrate(primary, *legacy_values)" in bridge
+    assert "return _ONLINE_IDENTITY.send_once(card, *identity_values)" in bridge
+    assert "return _ONLINE_IDENTITY.send_new_lifecycle(card, *identity_values)" in bridge
+    assert "DEVICE_ONLINE_STATE_LOCK" not in bridge
+    assert "DEVICE_ONLINE_INFLIGHT" not in bridge
+    assert "_load_json_set(DEVICE_ONLINE_STATE_FILE)" not in bridge
+    assert "_save_json_set(DEVICE_ONLINE_STATE_FILE" not in bridge
+    assert "_ONLINE_IDENTITY.known_identities()" in bridge
+    assert "import threading" in service
+    assert "import alertmanager" not in service
+    assert "import feishu" not in service
+    assert "import librenms" not in service
 
 
 def test_named_volume_and_bind_mount_contract_is_not_mixed():

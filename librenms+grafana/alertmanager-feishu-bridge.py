@@ -100,6 +100,7 @@ import time
 from urllib import error, parse, request
 
 from bridge_isp_watcher import IspBandwidthWatcher
+from bridge_online_identity import OnlineIdentityService
 from bridge_resource_watcher import ResourceWatcher
 from bridge_sysname_watcher import SysnameChangeWatcher
 from feishu_delivery import FeishuDelivery
@@ -342,8 +343,6 @@ SEVERITY_COLOR = {
 }
 
 EVENT_ID_LOCK = threading.Lock()
-DEVICE_ONLINE_STATE_LOCK = threading.Lock()
-DEVICE_ONLINE_INFLIGHT = set()
 DEVICE_DOWN_STATE_LOCK = threading.Lock()
 STACKWISE_STATE_LOCK = threading.Lock()
 DEVICE_RESOURCE_STATE_LOCK = threading.Lock()
@@ -420,35 +419,12 @@ def _save_json_dict(path, values):
 
 
 def mark_device_online_notified(*values):
-    clean = {str(value).strip() for value in values if str(value or "").strip()}
-    if not clean:
-        return False
-    with DEVICE_ONLINE_STATE_LOCK:
-        items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
-        if clean.issubset(items):
-            return False
-        items.update(clean)
-        return _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
+    return _ONLINE_IDENTITY.mark_notified(*values)
 
 
 def migrate_device_online_identity(primary, *legacy_values):
     """Attach a stable identity to an already-notified legacy name/IP."""
-    primary = str(primary or "").strip()
-    legacy = {
-        str(value).strip()
-        for value in legacy_values
-        if str(value or "").strip()
-    }
-    if not primary:
-        return False
-    with DEVICE_ONLINE_STATE_LOCK:
-        items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
-        if primary in items:
-            return True
-        if not (legacy & items):
-            return False
-        items.add(primary)
-        return _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
+    return _ONLINE_IDENTITY.migrate(primary, *legacy_values)
 
 
 def _as_float(value, default=None):
@@ -2478,45 +2454,20 @@ def send_feishu(card):
     return _FEISHU_DELIVERY.send(_with_event_name(card))
 
 
+_ONLINE_IDENTITY = OnlineIdentityService(
+    state_file=DEVICE_ONLINE_STATE_FILE,
+    load_set=_load_json_set,
+    save_set=_save_json_set,
+    send=lambda card: send_feishu(card),
+)
+
+
 def send_device_online_once(card, *identity_values):
-    """Ensure an online card was delivered once; persist keys only after success."""
-    clean = {str(value).strip() for value in identity_values if str(value or "").strip()}
-    if not clean:
-        return False
-    # Reserve the identities under the lock, but never hold it across network
-    # I/O. A failed Feishu request may take many seconds and must not stall the
-    # AP and LibreNMS watchers that share this de-duplication state.
-    with DEVICE_ONLINE_STATE_LOCK:
-        items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
-        if clean & items:
-            if not clean.issubset(items):
-                items.update(clean)
-                _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
-            return True
-        if clean & DEVICE_ONLINE_INFLIGHT:
-            return False
-        DEVICE_ONLINE_INFLIGHT.update(clean)
-    delivered = send_feishu(card)
-    with DEVICE_ONLINE_STATE_LOCK:
-        DEVICE_ONLINE_INFLIGHT.difference_update(clean)
-        if not delivered:
-            return False
-        items = _load_json_set(DEVICE_ONLINE_STATE_FILE)
-        items.update(clean)
-        return _save_json_set(DEVICE_ONLINE_STATE_FILE, items)
+    return _ONLINE_IDENTITY.send_once(card, *identity_values)
 
 
 def send_device_online_new_lifecycle(card, *identity_values):
-    """Deliver a new-device card even when this IP/name was notified before.
-
-    Re-enrollment is an explicit new lifecycle, so the normal lifetime de-dupe
-    must not suppress it. Keep the identities recorded after delivery so the
-    regular LibreNMS watcher does not send a duplicate card.
-    """
-    if not send_feishu(card):
-        return False
-    mark_device_online_notified(*identity_values)
-    return True
+    return _ONLINE_IDENTITY.send_new_lifecycle(card, *identity_values)
 
 
 def _norm_label(value):
@@ -4872,8 +4823,7 @@ def device_watcher():
             log("[WATCHER] still no token, watcher disabled")
             return
 
-    with DEVICE_ONLINE_STATE_LOCK:
-        notified = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+    notified = _ONLINE_IDENTITY.known_identities()
     log(f"[WATCHER] loaded {len(notified)} notified devices")
     first_successful_poll = True
     model_wait_started = {}
@@ -4893,8 +4843,7 @@ def device_watcher():
             continue
         mark_watcher_health("device-online", True)
 
-        with DEVICE_ONLINE_STATE_LOCK:
-            persisted_notified = _load_json_set(DEVICE_ONLINE_STATE_FILE)
+        persisted_notified = _ONLINE_IDENTITY.known_identities()
         if persisted_notified:
             notified.update(persisted_notified)
 
@@ -4912,11 +4861,8 @@ def device_watcher():
                 notified.update(keys)
                 seeded += 1
             if seeded:
-                with DEVICE_ONLINE_STATE_LOCK:
-                    current = _load_json_set(DEVICE_ONLINE_STATE_FILE)
-                    current.update(notified)
-                    _save_json_set(DEVICE_ONLINE_STATE_FILE, current)
-                    notified = current
+                _ONLINE_IDENTITY.mark_notified(*notified)
+                notified.update(_ONLINE_IDENTITY.known_identities())
             log(f"[WATCHER] initialized baseline with {seeded} existing SNMP devices")
             first_successful_poll = False
             time.sleep(SWITCH_WATCH_INTERVAL)
@@ -4958,11 +4904,8 @@ def device_watcher():
                     changed = True
 
         if changed:
-            with DEVICE_ONLINE_STATE_LOCK:
-                current = _load_json_set(DEVICE_ONLINE_STATE_FILE)
-                current.update(notified)
-                _save_json_set(DEVICE_ONLINE_STATE_FILE, current)
-                notified = current
+            _ONLINE_IDENTITY.mark_notified(*notified)
+            notified.update(_ONLINE_IDENTITY.known_identities())
         time.sleep(SWITCH_WATCH_INTERVAL)
 
 
