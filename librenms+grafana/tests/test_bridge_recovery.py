@@ -726,23 +726,6 @@ def test_late_errdisable_is_suppressed_after_aggregate_alert(monkeypatch):
     bridge.reset_link_event_correlation()
 
 
-def test_wan_keyword_digit_suffix_requires_boundary():
-    # WatchGuard 这类防火墙 SNMP 只报 eth0/eth1 物理名：填 eth1 只能命中 eth1，
-    # 不能顺带把 eth10~eth15 当成 WAN 口；非数字结尾的关键词维持包含匹配。
-    original = bridge.FIREWALL_WAN_IF_FILTER
-    try:
-        bridge.FIREWALL_WAN_IF_FILTER = "telecom,WAN,eth0,eth1"
-        assert bridge._is_wan_port("eth0") is True
-        assert bridge._is_wan_port("eth1") is True
-        assert bridge._is_wan_port("eth10") is False
-        assert bridge._is_wan_port("eth15") is False
-        assert bridge._is_wan_port("WAN1") is True
-        assert bridge._is_wan_port("telecom-200M") is True
-        assert bridge._is_wan_port("lan-port") is False
-    finally:
-        bridge.FIREWALL_WAN_IF_FILTER = original
-
-
 def _mac_flap_event(mac="0011.2233.4455", vlan="41", port_a="Gi1/0/20", port_b="Po1"):
     parsed = bridge.parse_network_syslog_event(
         f"%SW_MATM-4-MACFLAP_NOTIF: Host {mac} in vlan {vlan} "

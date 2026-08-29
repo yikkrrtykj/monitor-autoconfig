@@ -99,6 +99,7 @@ import threading
 import time
 from urllib import error, parse, request
 
+from bridge_isp_watcher import IspBandwidthWatcher
 from feishu_delivery import FeishuDelivery
 from librenms_client import LibreNMSClient
 from network_syslog import (
@@ -2489,44 +2490,6 @@ def _norm_label(value):
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
-def _parse_bandwidth_config(raw):
-    raw = str(raw or "").strip()
-    cfg = {"default": None, "per": []}
-    if not raw:
-        return cfg
-    try:
-        mbps = float(raw)
-        cfg["default"] = {"down": mbps, "up": mbps}
-        return cfg
-    except ValueError:
-        pass
-
-    for item in raw.split(","):
-        item = item.strip()
-        if not item or ":" not in item:
-            continue
-        label, bandwidth = [part.strip() for part in item.split(":", 1)]
-        parts = [part.strip() for part in bandwidth.split("/", 1)]
-        try:
-            down = float(parts[0])
-        except (TypeError, ValueError):
-            continue
-        try:
-            up = float(parts[1]) if len(parts) > 1 else down
-        except (TypeError, ValueError):
-            up = down
-        if label == "*":
-            cfg["default"] = {"down": down, "up": up}
-            continue
-        cfg["per"].append({
-            "label": label.lower(),
-            "norm": _norm_label(label),
-            "down": down,
-            "up": up,
-        })
-    return cfg
-
-
 def _parse_named_targets(raw):
     names = {}
     for item in str(raw or "").split(","):
@@ -2559,27 +2522,6 @@ def _isp_target_names():
     names = _parse_named_targets(BIGSCREEN_ISP_IPS)
     names.update(_parse_named_targets(ISP_PING))
     return names
-
-
-def _wan_keywords():
-    return [part.strip().lower() for part in FIREWALL_WAN_IF_FILTER.split(",") if part.strip()]
-
-
-def _wan_label(metric):
-    return (metric.get("ifAlias") or metric.get("ifName") or metric.get("ifDescr") or "").strip()
-
-
-def _is_wan_port(label):
-    # 以数字结尾的关键词按边界匹配：WatchGuard 等防火墙 SNMP 只报 eth0/eth1
-    # 物理名，填 eth1 不能顺带命中 eth10~eth15；其它关键词维持包含匹配。
-    lower = label.lower()
-    for keyword in _wan_keywords():
-        if keyword[-1:].isdigit():
-            if re.search(re.escape(keyword) + r"(?:\D|$)", lower):
-                return True
-        elif keyword in lower:
-            return True
-    return False
 
 
 def _interconnect_keywords():
@@ -2639,97 +2581,6 @@ def _if_admin_is_up(metric, value):
             return None
         return str(status_label).lower() == "up"
     return int(value) == 1
-
-
-def _bandwidth_for_label(label, direction, cfg, index=None):
-    lower = label.lower()
-    norm = _norm_label(label)
-    # 取最具体（名字最长）的匹配：双线场景配了 "电信:500,电信2:200" 时，
-    # 端口 电信2 必须拿到自己的 200，而不是被兜底的 "电信" 抢先命中。
-    best = None
-    for entry in cfg["per"]:
-        if (entry["label"] and entry["label"] in lower) or (entry["norm"] and entry["norm"] in norm):
-            if best is None or len(entry["norm"]) > len(best["norm"]):
-                best = entry
-    if best is not None:
-        return best["down"] if direction == "in" else best["up"]
-    if isinstance(index, int) and 0 <= index < len(cfg["per"]):
-        entry = cfg["per"][index]
-        return entry["down"] if direction == "in" else entry["up"]
-    default = cfg["default"] or {"down": 1000.0, "up": 1000.0}
-    return default["down"] if direction == "in" else default["up"]
-
-
-def _counter_glitch_limit_bps(capacity_mbps, factor=None):
-    """Bps ceiling above which a rate sample is a counter glitch, or None if off.
-
-    A WAN port cannot legitimately carry many times its configured capacity;
-    values far beyond it only appear when rate() spans an SNMP counter jump
-    (firewall replaced, HA member switch, snmpd restart).
-    """
-    factor = ISP_ALERT_SPIKE_IGNORE_FACTOR if factor is None else factor
-    if not factor or factor <= 0:
-        return None
-    try:
-        capacity = float(capacity_mbps)
-    except (TypeError, ValueError):
-        return None
-    if capacity <= 0:
-        return None
-    return capacity * 1000000 * factor
-
-
-def _dedupe_wan_labels(results):
-    """同名 WAN 口（双电信/双联通）按 ifIndex 排位补 -1/-2 后缀。
-
-    不加后缀时两条线会共用同一个告警状态键和卡片名，互相覆盖。后缀与
-    ISP 网关自动发现的重名编号规则一致（同样按 ifIndex 升序），带宽配置
-    写 电信-1/电信-2（或 电信1，匹配时忽略符号）即可分线绑定。单线不受影响。
-    """
-    # 每条物理线以 ifIndex 标识（同口的 in/out 共用一个 ifIndex）。ifIndex 缺失
-    # 或重复时退回按“同 label 同方向内出现次序”区分——fetch_wan_rates 先扫完 in
-    # 再扫 out，同一物理口在两个方向的次序一致，所以后缀在 in/out 间也一致。
-    # 这样即便 ifIndex 全缺，两条同名线也不会塌缩成同一个状态键。
-    occ = {}
-    for sample in results:
-        try:
-            ifi = int(sample.get("if_index"))
-        except (TypeError, ValueError):
-            ifi = None
-        dir_key = (sample["label"], sample["direction"])
-        seq = occ.get(dir_key, 0)
-        occ[dir_key] = seq + 1
-        # 有 ifIndex 用 (0, ifIndex)，无则用 (1, 次序)，保证可排序且方向无关。
-        sample["_line"] = (0, ifi) if ifi is not None else (1, seq)
-
-    idents = {}
-    for sample in results:
-        idents.setdefault(sample["label"], set()).add(sample["_line"])
-    ranks = {
-        label: {ident: pos + 1 for pos, ident in enumerate(sorted(values))}
-        for label, values in idents.items()
-        if len(values) > 1
-    }
-    for sample in results:
-        label = sample["label"]
-        if label in ranks:
-            sample["label"] = f"{label}-{ranks[label][sample['_line']]}"
-        sample["key"] = f"{sample['label']}|{sample['direction']}"
-        sample.pop("_line", None)
-    return results
-
-
-def _bandwidth_indexes(rates):
-    ports = {}
-    for sample in rates:
-        label = sample["label"]
-        try:
-            if_index = int(sample.get("if_index"))
-        except (TypeError, ValueError):
-            if_index = 2**31
-        ports[label] = min(if_index, ports.get(label, 2**31))
-    ordered = sorted(ports, key=lambda label: (ports[label], label.lower()))
-    return {label: index for index, label in enumerate(ordered)}
 
 
 def prometheus_query(query):
@@ -2925,201 +2776,32 @@ def device_resource_watcher():
         time.sleep(DEVICE_RESOURCE_ALERT_POLL_INTERVAL)
 
 
-def fetch_wan_rates():
-    results = []
-    for direction, metric in (("in", "ifHCInOctets"), ("out", "ifHCOutOctets")):
-        query = f'rate({metric}{{job="firewall-snmp"}}[{ISP_ALERT_RATE_WINDOW}]) * 8'
-        for item in prometheus_query(query):
-            metric_labels = item.get("metric") or {}
-            label = _wan_label(metric_labels)
-            if not label or not _is_wan_port(label):
-                continue
-            try:
-                value_bps = float((item.get("value") or [None, "nan"])[1])
-            except (TypeError, ValueError):
-                continue
-            if value_bps < 0:
-                continue
-            results.append({
-                "key": f"{label}|{direction}",
-                "label": label,
-                "direction": direction,
-                "value_bps": value_bps,
-                "if_index": metric_labels.get("ifIndex"),
-                "target_ip": metric_labels.get("target_ip") or metric_labels.get("instance") or "",
-            })
-    return _dedupe_wan_labels(results)
-
-
-def log_isp_status(rates, bandwidth_cfg):
-    if not rates:
-        log(
-            "[ISP] no WAN traffic series matched "
-            f"FIREWALL_WAN_IF_FILTER={FIREWALL_WAN_IF_FILTER!r}; "
-            "check Prometheus job=firewall-snmp labels ifAlias/ifName/ifDescr"
-        )
-        return
-
-    rows = []
-    indexes = _bandwidth_indexes(rates)
-    for sample in sorted(rates, key=lambda item: item["value_bps"], reverse=True)[:6]:
-        capacity_mbps = _bandwidth_for_label(
-            sample["label"], sample["direction"], bandwidth_cfg, indexes.get(sample["label"])
-        )
-        threshold_bps = capacity_mbps * 1000000 * (ISP_SATURATION_PERCENT / 100.0)
-        rows.append(
-            f"{sample['label']} {sample['direction']}="
-            f"{format_bps(sample['value_bps'])}/{format_bps(threshold_bps)}"
-        )
-    log("[ISP] rates " + "; ".join(rows))
+_ISP_BANDWIDTH_WATCHER = IspBandwidthWatcher(
+    enabled=ISP_ALERT_ENABLED,
+    alert_for_seconds=ISP_ALERT_FOR_SECONDS,
+    poll_interval=ISP_ALERT_POLL_INTERVAL,
+    rate_window=ISP_ALERT_RATE_WINDOW,
+    resolve_seconds=ISP_ALERT_RESOLVE_SECONDS,
+    status_interval=ISP_ALERT_STATUS_INTERVAL,
+    spike_ignore_factor=ISP_ALERT_SPIKE_IGNORE_FACTOR,
+    data_missing_alert_seconds=ISP_DATA_MISSING_ALERT_SECONDS,
+    wan_filter=FIREWALL_WAN_IF_FILTER,
+    bandwidth_config=BIGSCREEN_ISP_MAX_BANDWIDTH,
+    saturation_percent=ISP_SATURATION_PERCENT,
+    prometheus_url=PROMETHEUS_URL,
+    prometheus_query=prometheus_query,
+    normalize_label=_norm_label,
+    format_bps=format_bps,
+    build_bandwidth_card=build_isp_bandwidth_card,
+    build_data_missing_card=build_isp_data_missing_card,
+    send=send_feishu,
+    mark_watcher_health=mark_watcher_health,
+    log=log,
+)
 
 
 def isp_bandwidth_watcher():
-    if not ISP_ALERT_ENABLED:
-        log("[ISP] realtime bandwidth watcher disabled")
-        return
-    time.sleep(30)
-    bandwidth_cfg = _parse_bandwidth_config(BIGSCREEN_ISP_MAX_BANDWIDTH)
-    last_status_log = 0.0
-    data_seen = False
-    data_missing_since = None
-    data_missing_alerting = False
-    # Per-link alert state must exist before the first non-empty Prometheus
-    # response. Without this initialization the first WAN sample raises a
-    # NameError on every supervisor restart and the watcher never becomes ready.
-    states = {}
-    log(
-        "[ISP] realtime bandwidth watcher enabled "
-        f"(threshold={ISP_SATURATION_PERCENT:g}%, for={ISP_ALERT_FOR_SECONDS}s, "
-        f"poll={ISP_ALERT_POLL_INTERVAL}s, rate_window={ISP_ALERT_RATE_WINDOW}, "
-        f"spike_ignore_factor={ISP_ALERT_SPIKE_IGNORE_FACTOR:g}, "
-        f"data_missing_after={ISP_DATA_MISSING_ALERT_SECONDS}s, prometheus={PROMETHEUS_URL})"
-    )
-
-    while True:
-        now = time.time()
-        try:
-            rates = fetch_wan_rates()
-        except Exception as exc:
-            mark_watcher_health("isp-bandwidth", False, exc)
-            log(f"[ISP] poll failed: {exc}")
-            time.sleep(ISP_ALERT_POLL_INTERVAL)
-            continue
-        mark_watcher_health("isp-bandwidth", True)
-
-        # 数据中断守护：以前有 WAN 序列、现在整体消失（换防火墙后 SNMP 认证
-        # 不通 / 接口名不再匹配 WAN 关键词 / 采集挂了），静默丢监控比误报更危险。
-        if rates:
-            if data_missing_alerting:
-                missing = now - data_missing_since if data_missing_since else 0
-                log(f"[ISP] WAN traffic series recovered after {int(missing)}s gap")
-                # 发送成功才清警报位；失败下轮重试，恢复卡不能悄悄丢
-                if not send_feishu(build_isp_data_missing_card(missing, recovered=True)):
-                    time.sleep(ISP_ALERT_POLL_INTERVAL)
-                    continue
-            data_seen = True
-            data_missing_since = None
-            data_missing_alerting = False
-        elif data_seen and ISP_DATA_MISSING_ALERT_SECONDS > 0:
-            if data_missing_since is None:
-                data_missing_since = now
-            elif not data_missing_alerting and now - data_missing_since >= ISP_DATA_MISSING_ALERT_SECONDS:
-                log(
-                    "[ISP] ALERT WAN traffic series missing for "
-                    f"{int(now - data_missing_since)}s; check firewall SNMP and FIREWALL_WAN_IF_FILTER"
-                )
-                # 与设备/带宽告警一致：投递确认后才置位，失败则下轮重发。
-                # "监控静默丢数据"的警报自己更不能被静默丢掉。
-                if send_feishu(build_isp_data_missing_card(now - data_missing_since, recovered=False)):
-                    data_missing_alerting = True
-
-        if now - last_status_log >= ISP_ALERT_STATUS_INTERVAL:
-            log_isp_status(rates, bandwidth_cfg)
-            last_status_log = now
-
-        seen = set()
-        indexes = _bandwidth_indexes(rates)
-        for sample in rates:
-            seen.add(sample["key"])
-            capacity_mbps = _bandwidth_for_label(
-                sample["label"], sample["direction"], bandwidth_cfg, indexes.get(sample["label"])
-            )
-            glitch_limit = _counter_glitch_limit_bps(capacity_mbps)
-            if glitch_limit is not None and sample["value_bps"] >= glitch_limit:
-                log(
-                    f"[ISP] ignore counter glitch {sample['label']} {sample['direction']} "
-                    f"{format_bps(sample['value_bps'])} (> {format_bps(glitch_limit)}, "
-                    f"capacity {capacity_mbps:g} Mbps)"
-                )
-                continue
-            threshold_bps = capacity_mbps * 1000000 * (ISP_SATURATION_PERCENT / 100.0)
-            state = states.setdefault(sample["key"], {
-                "active_since": None,
-                "clear_since": None,
-                "alerting": False,
-                "alert_started": None,
-                "last_value": 0.0,
-            })
-            state["last_value"] = sample["value_bps"]
-
-            if sample["value_bps"] >= threshold_bps:
-                if state["active_since"] is None:
-                    state["active_since"] = now
-                state["clear_since"] = None
-                duration = now - state["active_since"]
-                if not state["alerting"] and duration >= ISP_ALERT_FOR_SECONDS:
-                    event = {
-                        **sample,
-                        "threshold_bps": threshold_bps,
-                        "capacity_mbps": capacity_mbps,
-                        "percent": ISP_SATURATION_PERCENT,
-                        "duration": duration,
-                    }
-                    log(
-                        f"[ISP] ALERT {sample['label']} {sample['direction']} "
-                        f"{format_bps(sample['value_bps'])} >= {format_bps(threshold_bps)}"
-                    )
-                    if send_feishu(build_isp_bandwidth_card(event, recovered=False)):
-                        state["alerting"] = True
-                        state["alert_started"] = state["active_since"]
-            else:
-                state["active_since"] = None
-                if state["alerting"]:
-                    if state["clear_since"] is None:
-                        state["clear_since"] = now
-                    clear_duration = now - state["clear_since"]
-                    if clear_duration >= ISP_ALERT_RESOLVE_SECONDS:
-                        # 持续 = 整段饱和时长（首次越过阈值→恢复），不是 30 秒恢复防抖
-                        _start = state["alert_started"] if state["alert_started"] is not None else state["clear_since"]
-                        saturated_duration = now - _start
-                        event = {
-                            **sample,
-                            "threshold_bps": threshold_bps,
-                            "capacity_mbps": capacity_mbps,
-                            "percent": ISP_SATURATION_PERCENT,
-                            "duration": saturated_duration,
-                        }
-                        log(
-                            f"[ISP] RECOVER {sample['label']} {sample['direction']} "
-                            f"{format_bps(sample['value_bps'])} < {format_bps(threshold_bps)}"
-                        )
-                        if send_feishu(build_isp_bandwidth_card(event, recovered=True)):
-                            state["alerting"] = False
-                            state["alert_started"] = None
-                else:
-                    state["clear_since"] = None
-
-        for key, state in list(states.items()):
-            if key in seen:
-                continue
-            if state.get("alerting"):
-                # A vanished Prometheus series is not proof of recovery. Keep the
-                # delivered alert active until the series returns with a clear value.
-                state["clear_since"] = None
-            elif state.get("clear_since") and now - state["clear_since"] >= ISP_ALERT_RESOLVE_SECONDS:
-                states.pop(key, None)
-
-        time.sleep(ISP_ALERT_POLL_INTERVAL)
+    return _ISP_BANDWIDTH_WATCHER.run()
 
 
 def classify_interconnect(lag_up, member_ups):
