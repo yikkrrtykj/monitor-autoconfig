@@ -141,6 +141,7 @@ services:
       - ./alertmanager-feishu-bridge.py:/app/bridge.py:ro
       - ./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro
       - ./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro
+      - ./bridge_sysname_watcher.py:/app/bridge_sysname_watcher.py:ro
       - ./feishu_delivery.py:/app/feishu_delivery.py:ro
       - ./lag_ownership.py:/app/lag_ownership.py:ro
       - ./librenms_client.py:/app/librenms_client.py:ro

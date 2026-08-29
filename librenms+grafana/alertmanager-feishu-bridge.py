@@ -101,6 +101,7 @@ from urllib import error, parse, request
 
 from bridge_isp_watcher import IspBandwidthWatcher
 from bridge_resource_watcher import ResourceWatcher
+from bridge_sysname_watcher import SysnameChangeWatcher
 from feishu_delivery import FeishuDelivery
 from lag_ownership import resolve_lag_ownership
 from librenms_client import LibreNMSClient
@@ -4965,108 +4966,27 @@ def device_watcher():
         time.sleep(SWITCH_WATCH_INTERVAL)
 
 
+_SYSNAME_WATCHER = SysnameChangeWatcher(
+    enabled=SYSNAME_CHANGE_ALERT_ENABLED,
+    librenms_url=LIBRENMS_URL,
+    poll_interval=SYSNAME_CHANGE_POLL_INTERVAL,
+    confirm_polls=SYSNAME_CHANGE_CONFIRM_POLLS,
+    state_file=SYSNAME_STATE_FILE,
+    load_state=_load_json_dict,
+    save_state=_save_json_dict,
+    get_token=_librenms_token,
+    fetch_devices=fetch_librenms_devices,
+    meaningful_sysname=_meaningful_sysname,
+    sysname_changed=_sysname_changed,
+    build_card=build_sysname_change_card,
+    send=send_feishu,
+    mark_watcher_health=mark_watcher_health,
+    log=log,
+)
+
+
 def sysname_change_watcher():
-    """Alert on switch sysName (hostname) changes, with old -> new.
-
-    LibreNMS alert rules have no reliable "changed" operator, and the alert
-    webhook only carries the current sysName, so neither can show old -> new.
-    Instead the bridge tracks each device's sysName itself by polling
-    /api/v0/devices and persisting a snapshot; when a device's sysName differs
-    from the stored value it pushes a Feishu card showing old -> new.
-
-    A fresh deploy (no snapshot) seeds the baseline silently to avoid an alert
-    storm on first run. The snapshot is replaced each poll so a removed/re-added
-    device (new device_id) does not false-alert.
-    """
-    if not SYSNAME_CHANGE_ALERT_ENABLED:
-        log("[SYSNAME] sysName change watcher disabled")
-        return
-    if not LIBRENMS_URL:
-        log("[SYSNAME] LIBRENMS_URL not set, sysName change watcher disabled")
-        return
-
-    time.sleep(30)  # let LibreNMS/API token settle after a (re)start
-    snapshot = _load_json_dict(SYSNAME_STATE_FILE)
-    pending_changes = {}
-    seeded = bool(snapshot)
-    log(
-        "[SYSNAME] sysName change watcher enabled "
-        f"(poll={SYSNAME_CHANGE_POLL_INTERVAL}s, tracked={len(snapshot)})"
-    )
-
-    while True:
-        token = _librenms_token()
-        if not token:
-            mark_watcher_health("sysname-change", False, "LibreNMS token unavailable")
-            log("[SYSNAME] no API token yet, retrying...")
-            time.sleep(SYSNAME_CHANGE_POLL_INTERVAL)
-            continue
-        try:
-            devices = fetch_librenms_devices(token)
-        except Exception as exc:
-            mark_watcher_health("sysname-change", False, exc)
-            log(f"[SYSNAME] poll failed: {exc}")
-            time.sleep(SYSNAME_CHANGE_POLL_INTERVAL)
-            continue
-        mark_watcher_health("sysname-change", True)
-
-        current = {}
-        for dev in devices:
-            device_id = str(dev.get("device_id") or "")
-            sys_name = str(dev.get("sysName") or "").strip()
-            if not device_id:
-                continue
-            ip = str(dev.get("ip") or dev.get("hostname") or "").strip()
-            hostname = str(dev.get("hostname") or "").strip()
-            previous = snapshot.get(device_id) or {}
-            prev_name = str(previous.get("sysName") or "").strip()
-
-            # LibreNMS can briefly expose malformed values such as "2" while
-            # a poll/update is in flight. Do not replace a valid baseline with
-            # that artifact; otherwise the following good poll falsely reports
-            # "2 -> real-name" as a device rename.
-            if not _meaningful_sysname(sys_name):
-                pending_changes.pop(device_id, None)
-                if prev_name:
-                    current[device_id] = previous
-                continue
-
-            current[device_id] = {"sysName": sys_name, "ip": ip, "hostname": hostname}
-            if seeded and _sysname_changed(prev_name, sys_name):
-                pending = pending_changes.get(device_id) or {}
-                if str(pending.get("sysName") or "").casefold() == sys_name.casefold():
-                    confirmations = int(pending.get("confirmations") or 0) + 1
-                else:
-                    confirmations = 1
-                pending_changes[device_id] = {
-                    "sysName": sys_name,
-                    "confirmations": confirmations,
-                }
-                if confirmations < SYSNAME_CHANGE_CONFIRM_POLLS:
-                    current[device_id] = previous
-                    log(
-                        f"[SYSNAME] candidate device_id={device_id} "
-                        f"{prev_name} -> {sys_name} ({confirmations}/"
-                        f"{SYSNAME_CHANGE_CONFIRM_POLLS})"
-                    )
-                    continue
-                log(f"[SYSNAME] CHANGE device_id={device_id} {prev_name} -> {sys_name} ({ip})")
-                if not send_feishu(build_sysname_change_card(prev_name, sys_name, ip=ip, hostname=hostname)):
-                    # Retain the previous snapshot so the same change is retried
-                    # on the next successful LibreNMS poll.
-                    current[device_id] = snapshot[device_id]
-                else:
-                    pending_changes.pop(device_id, None)
-            else:
-                pending_changes.pop(device_id, None)
-
-        snapshot = current
-        _save_json_dict(SYSNAME_STATE_FILE, snapshot)
-        if not seeded:
-            seeded = True
-            log(f"[SYSNAME] baseline recorded for {len(snapshot)} device(s)")
-
-        time.sleep(SYSNAME_CHANGE_POLL_INTERVAL)
+    return _SYSNAME_WATCHER.run()
 
 
 class Handler(BaseHTTPRequestHandler):

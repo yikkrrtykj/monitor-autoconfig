@@ -113,10 +113,27 @@ def test_alert_bridge_mounts_its_split_runtime_modules():
     assert "./alertmanager-feishu-bridge.py:/app/bridge.py:ro" in bridge_service
     assert "./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro" in bridge_service
     assert "./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro" in bridge_service
+    assert "./bridge_sysname_watcher.py:/app/bridge_sysname_watcher.py:ro" in bridge_service
     assert "./feishu_delivery.py:/app/feishu_delivery.py:ro" in bridge_service
     assert "./librenms_client.py:/app/librenms_client.py:ro" in bridge_service
     assert "./network_syslog.py:/app/network_syslog.py:ro" in bridge_service
     assert 'LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"' in bridge_service
+
+
+def test_alert_bridge_delegates_sysname_watching_to_its_split_runtime_module():
+    bridge = read("alertmanager-feishu-bridge.py")
+    watcher = read("bridge_sysname_watcher.py")
+
+    assert "from bridge_sysname_watcher import SysnameChangeWatcher" in bridge
+    assert "_SYSNAME_WATCHER = SysnameChangeWatcher(" in bridge
+    assert "return _SYSNAME_WATCHER.run()" in bridge
+    assert 'start_watcher("sysname-change", sysname_change_watcher)' in bridge
+    assert "SYSNAME_CHANGE_ALERT_ENABLED =" in bridge
+    assert "SYSNAME_CHANGE_POLL_INTERVAL =" in bridge
+    assert "SYSNAME_CHANGE_CONFIRM_POLLS =" in bridge
+    assert "SYSNAME_STATE_FILE =" in bridge
+    assert "pending_changes = {}" not in bridge
+    assert "pending_changes = {}" in watcher
 
 
 def test_named_volume_and_bind_mount_contract_is_not_mixed():
