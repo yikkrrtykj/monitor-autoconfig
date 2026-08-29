@@ -140,6 +140,7 @@ services:
     volumes:
       - ./alertmanager-feishu-bridge.py:/app/bridge.py:ro
       - ./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro
+      - ./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro
       - ./feishu_delivery.py:/app/feishu_delivery.py:ro
       - ./librenms_client.py:/app/librenms_client.py:ro
       - ./network_syslog.py:/app/network_syslog.py:ro

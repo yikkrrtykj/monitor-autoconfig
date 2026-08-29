@@ -112,6 +112,7 @@ def test_alert_bridge_mounts_its_split_runtime_modules():
 
     assert "./alertmanager-feishu-bridge.py:/app/bridge.py:ro" in bridge_service
     assert "./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro" in bridge_service
+    assert "./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro" in bridge_service
     assert "./feishu_delivery.py:/app/feishu_delivery.py:ro" in bridge_service
     assert "./librenms_client.py:/app/librenms_client.py:ro" in bridge_service
     assert "./network_syslog.py:/app/network_syslog.py:ro" in bridge_service
