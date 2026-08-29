@@ -141,6 +141,8 @@ def test_new_device_card_always_contains_model_line(monkeypatch):
     card = bridge.build_device_online_card({"display": "rts1", "ip": "192.168.10.31"})
     text = json.dumps(card, ensure_ascii=False)
     assert "型号：暂未识别" in text
+    assert card["card"]["header"]["title"]["content"] == "#1 🔵 新设备部署"
+    assert "subtitle" not in card["card"]["header"]
 
 
 def test_new_device_card_prefers_inventory_model(monkeypatch):

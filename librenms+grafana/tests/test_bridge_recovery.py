@@ -336,9 +336,9 @@ def test_interconnect_card_names_the_down_physical_port_and_peer(monkeypatch):
     assert "链路聚合告警" in text              # framed as a LAG event, not a full outage
     assert "剩 Gi1/0/5 在线" in text           # status shows the surviving leg
     assert card["card"]["header"]["template"] == "orange"
-    assert card["card"]["header"]["title"]["content"] == "#1 链路聚合告警"
+    assert card["card"]["header"]["title"]["content"] == "#1 🟠 链路聚合告警"
     assert "subtitle" not in card["card"]["header"]
-    assert "状态：冗余降低" in card["card"]["body"]["elements"][0]["content"]
+    assert "🟠 状态：冗余降低" in card["card"]["body"]["elements"][0]["content"]
 
 
 def test_peer_switch_resolves_from_lldp_by_down_member_port():
@@ -430,10 +430,12 @@ def test_interconnect_card_describes_protocol_down_without_fake_member(monkeypat
     assert "异常接口：Po1（聚合接口）" in text
     assert "物理成员均为 UP，疑似聚合协议异常" in text
     assert card["card"]["header"]["template"] == "red"
+    assert card["card"]["header"]["title"]["content"] == "#1 🔴 链路聚合告警"
+    assert "🔴 状态：聚合链路 DOWN（物理成员均为 UP，疑似聚合协议异常）" in text
     assert "subtitle" not in card["card"]["header"]
 
 
-def test_interconnect_recovery_uses_green_header_without_severity_emoji(monkeypatch):
+def test_interconnect_recovery_uses_green_title_and_status(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
     card = bridge.build_interconnect_card({
         "device": "core", "ip": "10.0.0.1", "port": "Po1",
@@ -442,9 +444,9 @@ def test_interconnect_recovery_uses_green_header_without_severity_emoji(monkeypa
     }, recovered=True)
 
     assert card["card"]["header"]["template"] == "green"
-    assert card["card"]["header"]["title"]["content"] == "#1 链路聚合恢复"
+    assert card["card"]["header"]["title"]["content"] == "#1 🟢 链路聚合恢复"
     assert "subtitle" not in card["card"]["header"]
-    assert "状态：链路冗余已恢复" in card["card"]["body"]["elements"][0]["content"]
+    assert "🟢 状态：链路冗余已恢复" in card["card"]["body"]["elements"][0]["content"]
 
 
 def test_interconnect_card_does_not_claim_alias_is_a_peer_switch(monkeypatch):
@@ -513,9 +515,19 @@ def test_sysname_change_is_a_notification_not_an_alert(monkeypatch):
     card = bridge.build_sysname_change_card("ac", "pgs-ac", ip="192.168.10.56")
     header = card["card"]["header"]
 
-    assert header["title"]["content"] == "#1 ✏️ sysName 变更"
+    assert header["title"]["content"] == "#1 🟡 sysName 变更"
     assert "subtitle" not in header
     assert "告警" not in header["title"]["content"]
+
+
+def test_test_card_uses_blue_information_title(monkeypatch):
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    card = bridge.build_test_card()
+    header = card["card"]["header"]
+
+    assert header["title"]["content"] == "#1 🔵 测试告警"
+    assert header["template"] == "blue"
+    assert "subtitle" not in header
 
 
 def test_sysname_change_rejects_numeric_ip_and_case_only_artifacts():
@@ -536,16 +548,36 @@ def test_device_down_and_recovery_titles_are_distinct(monkeypatch):
         "ac", "192.168.10.56", recovered=True, offline_seconds=425,
     )
 
-    assert down["card"]["header"]["title"]["content"] == "#1 设备离线告警"
-    assert recovered["card"]["header"]["title"]["content"] == "#1 设备上线恢复"
+    assert down["card"]["header"]["title"]["content"] == "#1 🔴 设备离线告警"
+    assert recovered["card"]["header"]["title"]["content"] == "#1 🟢 设备上线恢复"
     assert "subtitle" not in down["card"]["header"]
     assert "subtitle" not in recovered["card"]["header"]
-    assert "状态：DOWN" in down["card"]["body"]["elements"][0]["content"]
-    assert "状态：UP" in recovered["card"]["body"]["elements"][0]["content"]
+    assert "🔴 状态：DOWN" in down["card"]["body"]["elements"][0]["content"]
+    assert "🟢 状态：UP" in recovered["card"]["body"]["elements"][0]["content"]
+
+    isp_down = bridge.build_device_down_card(
+        "telecom", "222.72.19.237", recovered=False, offline_seconds=10,
+        job="infra-isp-ping",
+    )
+    isp_recovered = bridge.build_device_down_card(
+        "telecom", "222.72.19.237", recovered=True, offline_seconds=20,
+        job="infra-isp-ping",
+    )
+    assert isp_down["card"]["header"]["title"]["content"] == "#1 🔴 外网 ISP 告警"
+    assert isp_recovered["card"]["header"]["title"]["content"] == "#1 🟢 外网 ISP 恢复"
+    assert "🔴 状态：DOWN" in isp_down["card"]["body"]["elements"][0]["content"]
+    assert "🟢 状态：UP" in isp_recovered["card"]["body"]["elements"][0]["content"]
 
 
 def test_librenms_recovery_callback_does_not_reuse_offline_title(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
+    alert = bridge.build_librenms_card({
+        "state": "1",
+        "name": "设备离线告警",
+        "severity": "disaster",
+        "sysName": "ac",
+        "ip": "192.168.10.56",
+    })
     card = bridge.build_librenms_card({
         "state": "0",
         "name": "设备离线告警",
@@ -553,12 +585,14 @@ def test_librenms_recovery_callback_does_not_reuse_offline_title(monkeypatch):
         "ip": "192.168.10.56",
     })
 
-    assert card["card"]["header"]["title"]["content"] == "#1 设备上线恢复"
+    assert alert["card"]["header"]["title"]["content"] == "#1 🔴 设备离线告警"
+    assert "🔴 状态：DOWN" in alert["card"]["body"]["elements"][0]["content"]
+    assert card["card"]["header"]["title"]["content"] == "#1 🟢 设备上线恢复"
     assert "subtitle" not in card["card"]["header"]
-    assert "状态：UP" in card["card"]["body"]["elements"][0]["content"]
+    assert "🟢 状态：UP" in card["card"]["body"]["elements"][0]["content"]
 
 
-def test_resource_cards_use_header_color_without_severity_emoji(monkeypatch):
+def test_resource_cards_use_natural_titles_with_severity_emoji(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
     sample = {"kind": "cpu", "name": "core", "ip": "10.0.0.1", "value": 95}
 
@@ -566,11 +600,20 @@ def test_resource_cards_use_header_color_without_severity_emoji(monkeypatch):
     recovered = bridge.build_device_resource_card(sample, recovered=True, duration=120)
 
     assert alert["card"]["header"]["template"] == "orange"
-    assert alert["card"]["header"]["title"]["content"] == "#1 交换机 CPU 持续高占用"
+    assert alert["card"]["header"]["title"]["content"] == "#1 🟠 交换机 CPU 高占用"
     assert recovered["card"]["header"]["template"] == "green"
-    assert recovered["card"]["header"]["title"]["content"] == "#1 交换机 CPU 已恢复"
+    assert recovered["card"]["header"]["title"]["content"] == "#1 🟢 交换机 CPU 恢复"
     assert "subtitle" not in alert["card"]["header"]
     assert "subtitle" not in recovered["card"]["header"]
+
+    memory = {"kind": "memory", "name": "core", "ip": "10.0.0.1", "value": 86.4, "pool": "Processor"}
+    memory_alert = bridge.build_device_resource_card(memory, recovered=False, duration=600)
+    memory_recovered = bridge.build_device_resource_card(memory, recovered=True, duration=60)
+    assert memory_alert["card"]["header"]["title"]["content"] == "#1 🟠 交换机内存高占用"
+    assert memory_recovered["card"]["header"]["title"]["content"] == "#1 🟢 交换机内存恢复"
+    assert "内存池：Processor" in memory_alert["card"]["body"]["elements"][0]["content"]
+    assert "subtitle" not in memory_alert["card"]["header"]
+    assert "subtitle" not in memory_recovered["card"]["header"]
 
 
 def test_fetch_interconnect_members_maps_aggregate_to_member_ifindexes(monkeypatch):
@@ -688,8 +731,10 @@ def test_36430_authoritative_ownership_pipeline_builds_only_the_real_po3_alert(m
     text = json.dumps(card, ensure_ascii=False)
 
     assert peer == "PGS-stage1"
+    assert card["card"]["header"]["title"]["content"] == "#36430 🔴 链路聚合告警"
+    assert "subtitle" not in card["card"]["header"]
     assert "异常接口：Te1/0/4、Te2/0/4" in text
-    assert "状态：聚合链路 DOWN" in text
+    assert "🔴 状态：聚合链路 DOWN" in text
     assert "在线成员：?" not in text
     assert "Lan-Server" not in text
     assert "To-Broadcast" not in text
@@ -747,12 +792,12 @@ def test_errdisable_card_keeps_title_and_explains_raw_reason(monkeypatch):
     header = card["card"]["header"]
     body = card["card"]["body"]["elements"][0]["content"]
 
-    assert header["title"]["content"] == "#35659 接口被保护关闭"
+    assert header["title"]["content"] == "#35659 🟠 接口被保护关闭"
     assert "subtitle" not in header
     assert header["template"] == "orange"
     assert "设备：lan-server (192.168.10.47)" in body
     assert "接口：Gi1/1/2" in body
-    assert "状态：Err-disable" in body
+    assert "🟠 状态：Err-disable" in body
     assert "原因：link-flap（链路频繁抖动）" in body
 
 
@@ -787,18 +832,25 @@ def test_network_risk_cards_are_orange_and_recovery_is_green(monkeypatch):
             "color": "orange", "port": "Gi1/0/4", "reason": "loopback",
         }, recovered=True, duration=20,
     )
+    critical = bridge.build_network_syslog_card(
+        "core", "message", {
+            "kind": "unknown", "title": "🚨 数据中断", "color": "red", "port": "Gi1/0/5",
+        },
+    )
 
     assert mac_flap["card"]["header"]["template"] == "orange"
-    assert mac_flap["card"]["header"]["title"]["content"] == "#1 网关 MAC 异常移动"
+    assert mac_flap["card"]["header"]["title"]["content"] == "#1 🟠 网关 MAC 异常移动"
     assert "原因：MAC flap（MAC地址漂移）" in mac_flap["card"]["body"]["elements"][0]["content"]
     assert bpdu["card"]["header"]["template"] == "orange"
-    assert bpdu["card"]["header"]["title"]["content"] == "#1 BPDU 保护触发"
+    assert bpdu["card"]["header"]["title"]["content"] == "#1 🟠 BPDU 保护触发"
     assert recovered["card"]["header"]["template"] == "green"
-    assert recovered["card"]["header"]["title"]["content"] == "#1 接口保护恢复"
+    assert recovered["card"]["header"]["title"]["content"] == "#1 🟢 接口保护恢复"
+    assert critical["card"]["header"]["template"] == "red"
+    assert critical["card"]["header"]["title"]["content"] == "#1 🔴 数据中断"
     assert "subtitle" not in mac_flap["card"]["header"]
     assert "subtitle" not in bpdu["card"]["header"]
     assert "subtitle" not in recovered["card"]["header"]
-    assert "状态：已恢复" in recovered["card"]["body"]["elements"][0]["content"]
+    assert "🟢 状态：已恢复" in recovered["card"]["body"]["elements"][0]["content"]
 
 
 def test_late_errdisable_is_suppressed_after_aggregate_alert(monkeypatch):

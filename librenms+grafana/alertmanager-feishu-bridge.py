@@ -2038,9 +2038,21 @@ def build_librenms_card(payload):
         }.get(rule_name, rule_name)
         color = "green"
         state_text = "UP"
+        title_emoji = "🟢"
+        state_emoji = "🟢"
     else:
         color = SEVERITY_COLOR.get(severity, "yellow")
         state_text = "DOWN"
+        title_emoji = (
+            "🔴"
+            if rule_name in {"设备离线告警", "外网 ISP 告警"}
+            else {"red": "🔴", "orange": "🟠", "yellow": "🟡", "blue": "🔵"}.get(
+                color, "🟠"
+            )
+        )
+        state_emoji = "🔴"
+
+    rule_name = f"{title_emoji} {format_card_alert_name(rule_name)}"
 
     title = next_event_title()
 
@@ -2049,7 +2061,7 @@ def build_librenms_card(payload):
     ip_str = f" ({ip})" if ip and ip != dev_name else ""
     lines = [
         f"🖥 设备：{dev_name}{ip_str}",
-        f"状态：{state_text}",
+        f"{state_emoji} 状态：{state_text}",
     ]
     if elapsed and elapsed not in ("0s",):
         label = "恢复耗时" if recovered else "断线时间"
@@ -2070,7 +2082,7 @@ def build_sysname_change_card(old_name, new_name, ip="", hostname=""):
         f"✏️ sysName：{old_name} → {new_name}",
         f"⏰ 时间：{ts}",
     ]
-    return _make_card(next_event_title(), "✏️ sysName 变更", "yellow", "\n".join(lines))
+    return _make_card(next_event_title(), "🟡 sysName 变更", "yellow", "\n".join(lines))
 
 
 def build_test_card():
@@ -2080,7 +2092,7 @@ def build_test_card():
         "📡 这是一条测试告警，收到即代表机器人配置无误。",
         f"⏰ 时间：{ts}",
     ]
-    return _make_card(next_event_title(), "🔔 测试告警", "blue", "\n".join(lines))
+    return _make_card(next_event_title(), "🔵 测试告警", "blue", "\n".join(lines))
 
 
 def build_device_online_card(device):
@@ -2155,7 +2167,7 @@ def format_mac_flap_reason():
 def format_card_alert_name(value, fallback="网络安全事件"):
     """Remove display-only severity symbols without changing the source event title."""
     text = str(value or fallback).strip()
-    return re.sub(r"^(?:🔴|🟠|🟢|❌|✅|🚨|🛑|⛔|⚠️)\s*", "", text)
+    return re.sub(r"^(?:🔴|🟠|🟢|🔵|🟡|❌|✅|🚨|🛑|⛔|⚠️)\s*", "", text)
 
 
 def build_isp_bandwidth_card(event, recovered=False):
@@ -2167,12 +2179,12 @@ def build_isp_bandwidth_card(event, recovered=False):
     lines = [
         f"🌐 ISP：{event['label']}",
         f"📶 方向：{direction_text}",
-        f"状态：{state_text}",
+        f"{'🟢' if recovered else '🟠'} 状态：{state_text}",
         f"📈 当前：{format_bps(event['value_bps'])}",
         f"⏳ {duration_label}：{format_alert_duration(event['duration'], recovered)}",
         f"⏰ 时间：{ts}",
     ]
-    subtitle = "外网 ISP 带宽恢复" if recovered else "外网 ISP 带宽超限"
+    subtitle = "🟢 外网 ISP 带宽恢复" if recovered else "🟠 外网 ISP 带宽超限"
     return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
@@ -2182,13 +2194,13 @@ def build_isp_data_missing_card(missing_seconds, recovered=False):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
         "🌐 对象：防火墙 WAN 流量采集",
-        f"状态：{state_text}",
+        f"{'🟢' if recovered else '🔴'} 状态：{state_text}",
         f"⏳ 中断时长：{format_duration(missing_seconds)}",
         f"⏰ 时间：{ts}",
     ]
     if not recovered:
         lines.append("💡 请检查防火墙 SNMP 是否可达、FIREWALL_WAN_IF_FILTER 是否匹配新接口名")
-    subtitle = "外网流量采集恢复" if recovered else "外网流量采集中断"
+    subtitle = "🟢 外网流量采集恢复" if recovered else "🔴 外网流量采集中断"
     return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
@@ -2234,7 +2246,7 @@ def build_retire_confirm_card(state, key, interactive):
         lines.append("👉 请到赛事控制台『待删除设备』面板确认删除或保留。")
     title = state.get("pending_event_title") or next_event_title()
     state["pending_event_title"] = title
-    return _make_card(title, "设备待删除确认", "orange", "\n".join(lines), extra_elements=extra)
+    return _make_card(title, "🟠 设备待删除确认", "orange", "\n".join(lines), extra_elements=extra)
 
 
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
@@ -2248,13 +2260,13 @@ def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downs
     label = "ISP" if is_isp else "设备"
     label_emoji = "🌐" if is_isp else "🖥"
     if is_isp:
-        subtitle = "外网 ISP 恢复" if recovered else "外网 ISP 告警"
+        subtitle = "🟢 外网 ISP 恢复" if recovered else "🔴 外网 ISP 告警"
     else:
-        subtitle = "设备上线恢复" if recovered else "设备离线告警"
+        subtitle = "🟢 设备上线恢复" if recovered else "🔴 设备离线告警"
     duration_label = "恢复耗时" if recovered else "断线时间"
     lines = [
         f"{label_emoji} {label}：{dev}",
-        f"状态：{state_text}",
+        f"{'🟢' if recovered else '🔴'} 状态：{state_text}",
         f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
     ]
     if not recovered and downstream:
@@ -2297,17 +2309,18 @@ def build_interconnect_card(event, recovered=False):
     aggregate_down = event.get("status") == "down"
     color = "green" if recovered else ("red" if aggregate_down else "orange")
     if recovered:
-        subtitle = "链路聚合恢复"
+        subtitle = "🟢 链路聚合恢复"
         lines = [
             f"🖥 设备：{device_text}",
             f"🔌 物理口：{_join_ports(down_members) if down_members else event.get('port', '?')} 已恢复",
             peer_line,
-            "状态：链路冗余已恢复",
+            "🟢 状态：链路冗余已恢复",
             f"⏳ 恢复耗时：{format_alert_duration(event.get('duration'), True)}",
             f"⏰ 时间：{ts}",
         ]
     else:
-        subtitle = "链路聚合告警"
+        status_emoji = "🔴" if aggregate_down else "🟠"
+        subtitle = f"{status_emoji} 链路聚合告警"
         protocol_down = aggregate_down and not down_members and bool(up_members)
         port_text = (
             _join_ports(down_members)
@@ -2334,7 +2347,7 @@ def build_interconnect_card(event, recovered=False):
                 f"📋 触发原因：{cause_device} {cause_port} 被保护关闭（{cause_reason}）"
             )
         lines.extend([
-            f"状态：{state_text}",
+            f"{status_emoji} 状态：{state_text}",
             f"⏳ 持续时间：{format_alert_duration(event.get('duration'), False)}",
             f"⏰ 时间：{ts}",
         ])
@@ -2352,11 +2365,11 @@ def build_ap_down_card(name, ip, model, recovered, offline_seconds=0):
     duration_label = "恢复耗时" if recovered else "断线时长"
     lines = [
         f"📶 AP：{dev}",
-        f"状态：{state_text}",
+        f"{'🟢' if recovered else '🔴'} 状态：{state_text}",
         f"⏳ {duration_label}：{format_alert_duration(offline_seconds, recovered)}",
         f"⏰ 时间：{ts}",
     ]
-    subtitle = "AP 上线恢复" if recovered else "AP 掉线告警"
+    subtitle = "🟢 AP 上线恢复" if recovered else "🔴 AP 掉线告警"
     return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
@@ -2365,7 +2378,6 @@ def build_device_resource_card(sample, recovered, duration=0):
     label = "CPU" if kind == "cpu" else "内存"
     threshold = DEVICE_CPU_ALERT_PERCENT if kind == "cpu" else DEVICE_MEMORY_ALERT_PERCENT
     color = "green" if recovered else "orange"
-    status = "已恢复" if recovered else "持续高占用"
     device = sample.get("name") or sample.get("ip") or "?"
     ip = sample.get("ip") or ""
     device_text = f"{device} ({ip})" if ip and ip != device else device
@@ -2380,7 +2392,11 @@ def build_device_resource_card(sample, recovered, duration=0):
     elif sample.get("pool"):
         lines.append(f"🧠 内存池：{sample['pool']}")
     lines.append(f"⏰ 时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    return _make_card(next_event_title(), f"交换机 {label} {status}", color, "\n".join(lines))
+    if kind == "cpu":
+        subtitle = "🟢 交换机 CPU 恢复" if recovered else "🟠 交换机 CPU 高占用"
+    else:
+        subtitle = "🟢 交换机内存恢复" if recovered else "🟠 交换机内存高占用"
+    return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
 def _card_preview_title(title, subtitle):
@@ -4472,12 +4488,12 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
         if event.get("reason"):
             lines.append(f"📋 原因：{format_errdisable_reason(event.get('reason'))}")
         if recovered:
-            lines.append("状态：已恢复")
+            lines.append("🟢 状态：已恢复")
             lines.append(f"⏳ 恢复耗时：{format_alert_duration(duration, recovered=True)}")
             lines.append(f"⏰ 时间：{ts}")
-            return _make_card(next_event_title(), "BPDU 保护恢复", "green", "\n".join(lines))
+            return _make_card(next_event_title(), "🟢 BPDU 保护恢复", "green", "\n".join(lines))
         lines.append(f"⏰ 时间：{ts}")
-        return _make_card(next_event_title(), "BPDU 保护触发", "orange", "\n".join(lines))
+        return _make_card(next_event_title(), "🟠 BPDU 保护触发", "orange", "\n".join(lines))
 
     if kind == "native_vlan_mismatch":
         lines.extend([
@@ -4507,7 +4523,7 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
     elif kind == "errdisable":
         lines.extend([
             f"🔌 接口：{event.get('port') or '未知'}",
-            *([] if recovered else ["状态：Err-disable"]),
+            *([] if recovered else ["🟠 状态：Err-disable"]),
             f"📋 原因：{format_errdisable_reason(event.get('reason'))}",
         ])
     else:
@@ -4516,7 +4532,7 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
         ])
 
     if recovered:
-        lines.append("状态：已恢复")
+        lines.append("🟢 状态：已恢复")
         lines.append(f"⏳ 恢复耗时：{format_alert_duration(duration, recovered=True)}")
     lines.append(f"⏰ 时间：{ts}")
 
@@ -4528,7 +4544,7 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
         }
         return _make_card(
             next_event_title(),
-            recovery_titles.get(kind, "网络安全事件恢复"),
+            f"🟢 {recovery_titles.get(kind, '网络安全事件恢复')}",
             "green",
             "\n".join(lines),
         )
@@ -4538,9 +4554,12 @@ def build_network_syslog_card(host, message, event, recovered=False, duration=0)
         "bpduguard", "storm_control", "loopback",
     }
     color = "orange" if kind in risk_kinds else (event.get("color") or "orange")
+    title_emoji = {
+        "red": "🔴", "orange": "🟠", "yellow": "🟡", "blue": "🔵", "green": "🟢",
+    }.get(color, "🟠")
     return _make_card(
         next_event_title(),
-        format_card_alert_name(event.get("title")),
+        f"{title_emoji} {format_card_alert_name(event.get('title'))}",
         color,
         "\n".join(lines),
     )
