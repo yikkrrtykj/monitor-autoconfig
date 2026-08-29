@@ -286,6 +286,9 @@ def test_classify_interconnect_distinguishes_degraded_from_down():
     # No member visibility (no ifStackTable) -> nothing to say.
     assert bridge.classify_interconnect(True, []) == "unknown"
     assert bridge.classify_interconnect(False, []) == "unknown"
+    # Missing physical ifOperStatus is not equivalent to an online member.
+    assert bridge.classify_interconnect(True, [True, None]) == "unknown"
+    assert bridge.classify_interconnect(False, [True, None]) == "unknown"
 
 
 def test_interconnect_fetch_skips_admin_down_bundle(monkeypatch):
@@ -333,7 +336,8 @@ def test_interconnect_card_names_the_down_physical_port_and_peer(monkeypatch):
     assert "链路聚合告警" in text              # framed as a LAG event, not a full outage
     assert "剩 Gi1/0/5 在线" in text           # status shows the surviving leg
     assert card["card"]["header"]["template"] == "orange"
-    assert card["card"]["header"]["subtitle"]["content"] == "链路聚合告警"
+    assert card["card"]["header"]["title"]["content"] == "#1 链路聚合告警"
+    assert "subtitle" not in card["card"]["header"]
     assert "状态：冗余降低" in card["card"]["body"]["elements"][0]["content"]
 
 
@@ -344,7 +348,9 @@ def test_peer_switch_resolves_from_lldp_by_down_member_port():
     ]
     peer_map = bridge.build_peer_map(edges)
     # The down member's LLDP neighbor is the peer switch.
-    assert bridge.resolve_peer_switch(peer_map, "192.168.10.254", ["Gi1/0/4", "Po4"]) == "douyucarnival-stage4"
+    assert bridge.resolve_peer_switch(
+        peer_map, "192.168.10.254", ["Gi1/0/4"], aggregate_port="Po4",
+    ) == "douyucarnival-stage4"
     # Unknown ports -> "" (card falls back to the alias).
     assert bridge.resolve_peer_switch(peer_map, "192.168.10.254", ["Po9"]) == ""
 
@@ -380,6 +386,39 @@ def test_peer_switch_uses_c1000_member_array_and_rejects_tied_conflicts():
     ) == ""
 
 
+def test_physical_peer_wins_over_conflicting_aggregate_fallback():
+    peer_map = bridge.build_peer_map([
+        {"from_ip": "10.0.0.1", "from_port": "Te1/0/4", "to_sysname": "PGS-stage1", "stale": True},
+        {"from_ip": "10.0.0.1", "from_port": "Po2", "to_sysname": "Lan-Server"},
+    ])
+
+    assert bridge.resolve_peer_switch(
+        peer_map, "10.0.0.1", ["Te1/0/4"], aggregate_port="Po2",
+    ) == "PGS-stage1"
+
+
+def test_aggregate_peer_is_used_only_when_physical_members_have_no_candidates():
+    peer_map = bridge.build_peer_map([
+        {"from_ip": "10.0.0.1", "from_port": "Po2", "to_sysname": "Lan-Server"},
+    ])
+
+    assert bridge.resolve_peer_switch(
+        peer_map, "10.0.0.1", ["Te1/0/4"], aggregate_port="Po2",
+    ) == "Lan-Server"
+
+
+def test_ambiguous_physical_peer_cannot_fall_back_to_aggregate():
+    peer_map = bridge.build_peer_map([
+        {"from_ip": "10.0.0.1", "from_port": "Te1/0/4", "to_sysname": "stage-a"},
+        {"from_ip": "10.0.0.1", "from_port": "Te1/0/4", "to_sysname": "stage-b"},
+        {"from_ip": "10.0.0.1", "from_port": "Po2", "to_sysname": "Lan-Server"},
+    ])
+
+    assert bridge.resolve_peer_switch(
+        peer_map, "10.0.0.1", ["Te1/0/4"], aggregate_port="Po2",
+    ) == ""
+
+
 def test_interconnect_card_describes_protocol_down_without_fake_member(monkeypatch):
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#1")
     card = bridge.build_interconnect_card({
@@ -388,9 +427,10 @@ def test_interconnect_card_describes_protocol_down_without_fake_member(monkeypat
     })
     text = json.dumps(card, ensure_ascii=False)
     assert "聚合链路 DOWN" in text
-    assert "Po1" in text
+    assert "异常接口：Po1（聚合接口）" in text
+    assert "物理成员均为 UP，疑似聚合协议异常" in text
     assert card["card"]["header"]["template"] == "red"
-    assert card["card"]["header"]["subtitle"]["content"] == "链路聚合告警"
+    assert "subtitle" not in card["card"]["header"]
 
 
 def test_interconnect_recovery_uses_green_header_without_severity_emoji(monkeypatch):
@@ -402,7 +442,8 @@ def test_interconnect_recovery_uses_green_header_without_severity_emoji(monkeypa
     }, recovered=True)
 
     assert card["card"]["header"]["template"] == "green"
-    assert card["card"]["header"]["subtitle"]["content"] == "链路聚合恢复"
+    assert card["card"]["header"]["title"]["content"] == "#1 链路聚合恢复"
+    assert "subtitle" not in card["card"]["header"]
     assert "状态：链路冗余已恢复" in card["card"]["body"]["elements"][0]["content"]
 
 
@@ -411,10 +452,14 @@ def test_interconnect_card_does_not_claim_alias_is_a_peer_switch(monkeypatch):
     card = bridge.build_interconnect_card({
         "device": "new-stack", "ip": "192.168.10.11", "port": "Po16",
         "alias": "old-stage-name", "peer_switch": "", "down_members": ["Te1/0/1"],
+        "down_member_details": [{
+            "name": "Te1/0/1", "alias": "current-stage", "descr": "TenGigabitEthernet1/0/1",
+        }],
         "up_members": [], "status": "down", "duration": 8,
     })
     text = json.dumps(card, ensure_ascii=False)
-    assert "对端交换机：未确认（接口描述：old-stage-name）" in text
+    assert "对端交换机：未确认（接口描述：current-stage）" in text
+    assert "old-stage-name" not in text
     assert "对端交换机：old-stage-name" not in text
 
 
@@ -468,7 +513,8 @@ def test_sysname_change_is_a_notification_not_an_alert(monkeypatch):
     card = bridge.build_sysname_change_card("ac", "pgs-ac", ip="192.168.10.56")
     header = card["card"]["header"]
 
-    assert header["subtitle"]["content"] == "✏️ sysName 变更"
+    assert header["title"]["content"] == "#1 ✏️ sysName 变更"
+    assert "subtitle" not in header
     assert "告警" not in header["title"]["content"]
 
 
@@ -490,8 +536,10 @@ def test_device_down_and_recovery_titles_are_distinct(monkeypatch):
         "ac", "192.168.10.56", recovered=True, offline_seconds=425,
     )
 
-    assert down["card"]["header"]["subtitle"]["content"] == "设备离线告警"
-    assert recovered["card"]["header"]["subtitle"]["content"] == "设备上线恢复"
+    assert down["card"]["header"]["title"]["content"] == "#1 设备离线告警"
+    assert recovered["card"]["header"]["title"]["content"] == "#1 设备上线恢复"
+    assert "subtitle" not in down["card"]["header"]
+    assert "subtitle" not in recovered["card"]["header"]
     assert "状态：DOWN" in down["card"]["body"]["elements"][0]["content"]
     assert "状态：UP" in recovered["card"]["body"]["elements"][0]["content"]
 
@@ -505,7 +553,8 @@ def test_librenms_recovery_callback_does_not_reuse_offline_title(monkeypatch):
         "ip": "192.168.10.56",
     })
 
-    assert card["card"]["header"]["subtitle"]["content"] == "设备上线恢复"
+    assert card["card"]["header"]["title"]["content"] == "#1 设备上线恢复"
+    assert "subtitle" not in card["card"]["header"]
     assert "状态：UP" in card["card"]["body"]["elements"][0]["content"]
 
 
@@ -517,9 +566,11 @@ def test_resource_cards_use_header_color_without_severity_emoji(monkeypatch):
     recovered = bridge.build_device_resource_card(sample, recovered=True, duration=120)
 
     assert alert["card"]["header"]["template"] == "orange"
-    assert alert["card"]["header"]["subtitle"]["content"] == "交换机 CPU 持续高占用"
+    assert alert["card"]["header"]["title"]["content"] == "#1 交换机 CPU 持续高占用"
     assert recovered["card"]["header"]["template"] == "green"
-    assert recovered["card"]["header"]["subtitle"]["content"] == "交换机 CPU 已恢复"
+    assert recovered["card"]["header"]["title"]["content"] == "#1 交换机 CPU 已恢复"
+    assert "subtitle" not in alert["card"]["header"]
+    assert "subtitle" not in recovered["card"]["header"]
 
 
 def test_fetch_interconnect_members_maps_aggregate_to_member_ifindexes(monkeypatch):
@@ -548,56 +599,100 @@ def test_fetch_interconnect_members_ignores_inactive_relationships(monkeypatch):
     }
 
 
-def test_stale_down_bundle_loses_members_owned_by_current_up_bundle():
-    ports = [
-        {
-            "ip": "192.168.10.254", "port": "Po2", "lag_up": True,
-            "members": [
-                {"ifindex": "10", "name": "Te1/0/3", "up": True},
-                {"ifindex": "29", "name": "Te2/0/3", "up": True},
-                # IOS-XE also left one unrelated stale relationship on Po2.
-                {"ifindex": "11", "name": "Te1/0/4", "up": True},
-            ],
-        },
-        {
-            "ip": "192.168.10.254", "port": "Po10", "lag_up": False,
-            "members": [
-                {"ifindex": "10", "name": "Te1/0/3", "up": True},
-                {"ifindex": "29", "name": "Te2/0/3", "up": True},
-            ],
-        },
+def test_fetch_interconnect_members_isolates_ambiguous_ifstack_without_authority(monkeypatch):
+    rows = [
+        {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "47", "ifStackLowerLayer": "10"}, "value": [0, "1"]},
+        {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "48", "ifStackLowerLayer": "10"}, "value": [0, "1"]},
+    ]
+    monkeypatch.setattr(
+        bridge, "prometheus_query",
+        lambda expr: rows if expr.startswith("ifStackStatus") else [],
+    )
+
+    assert bridge.fetch_interconnect_members("infra-switch-ifmib") == {}
+    assert bridge.fetch_interconnect_members.last_conflicts["10.0.0.1"][10]["reason"] == "ambiguous-ifstack"
+
+
+def test_36430_authoritative_ownership_pipeline_builds_only_the_real_po3_alert(monkeypatch):
+    ip = "192.168.10.254"
+
+    def interface(index, name, alias, up):
+        return {
+            "metric": {
+                "job": "infra-switch-ifmib", "target_ip": ip,
+                "display_name": "global_sw3850-12xs_stack",
+                "ifIndex": str(index), "ifName": name,
+                "ifDescr": name, "ifAlias": alias,
+            },
+            "value": [0, "1" if up else "2"],
+        }
+
+    oper = [
+        interface(47, "Po2", "To-Broadcast", True),
+        interface(183, "Po3", "pgs-stage1", False),
+        interface(10, "Te1/0/3", "To-Global-Data", True),
+        interface(29, "Te2/0/3", "To-Global-Data", True),
+        interface(11, "Te1/0/4", "pgs-stage1", False),
+        interface(30, "Te2/0/4", "pgs-stage1", False),
+    ]
+    admin = [
+        {"metric": {**item["metric"]}, "value": [0, "1"]}
+        for item in oper
+    ]
+    ifstack = [
+        {"metric": {"target_ip": ip, "ifStackHigherLayer": high, "ifStackLowerLayer": low}, "value": [0, "1"]}
+        for high, low in (("47", "10"), ("47", "11"), ("47", "29"), ("183", "11"), ("183", "30"))
     ]
 
-    resolved = bridge.suppress_shadowed_down_aggregates(ports)
+    def indexed(label, rows):
+        return [
+            {"metric": {"target_ip": ip, label: str(index)}, "value": [0, str(value)]}
+            for index, value in rows
+        ]
 
-    assert len(resolved[0]["members"]) == 3
-    assert resolved[1]["members"] == []
-    assert resolved[1]["shadowed_by"] == "Po2"
-    assert bridge.classify_interconnect(False, []) == "unknown"
+    metrics = {
+        "ifOperStatus": oper,
+        "ifAdminStatus": admin,
+        "ifStackStatus": ifstack,
+        "pagpGroupIfIndex": indexed("physicalIfIndex", ((10, 47), (29, 47))),
+        "dot3adAggActorAdminKey": indexed("aggregateIfIndex", ((47, 2), (183, 3))),
+        "dot3adAggPortActorAdminKey": indexed("physicalIfIndex", ((11, 3), (30, 3))),
+        "dot3adAggPortAttachedAggID": indexed("physicalIfIndex", ((11, 0), (30, 0))),
+    }
+    monkeypatch.setattr(
+        bridge, "prometheus_query",
+        lambda expr: next((values for name, values in metrics.items() if expr.startswith(name)), []),
+    )
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#36430")
 
-
-def test_real_down_bundle_is_kept_when_only_some_members_overlap():
-    ports = [
-        {
-            "ip": "192.168.10.254", "port": "Po2", "lag_up": True,
-            "members": [
-                {"ifindex": "11", "name": "Te1/0/4", "up": True},
-                {"ifindex": "29", "name": "Te2/0/3", "up": True},
-            ],
-        },
-        {
-            "ip": "192.168.10.254", "port": "Po3", "lag_up": False,
-            "members": [
-                {"ifindex": "11", "name": "Te1/0/4", "up": False},
-                {"ifindex": "30", "name": "Te2/0/4", "up": False},
-            ],
-        },
-    ]
-
-    resolved = bridge.suppress_shadowed_down_aggregates(ports)
-
-    assert len(resolved[1]["members"]) == 2
+    ports = bridge.fetch_interconnect_ports("infra-switch-ifmib")
+    po2 = next(port for port in ports if port["port"] == "Po2")
+    po3 = next(port for port in ports if port["port"] == "Po3")
+    assert [member["name"] for member in po2["members"]] == ["Te1/0/3", "Te2/0/3"]
+    assert [member["name"] for member in po3["members"]] == ["Te1/0/4", "Te2/0/4"]
+    assert bridge.classify_interconnect(True, [True, True]) == "healthy"
     assert bridge.classify_interconnect(False, [False, False]) == "down"
+
+    peer_map = bridge.build_peer_map([
+        {"from_ip": ip, "from_port": "Te1/0/3", "from_aggregate_port": "Po2", "from_member_ports": ["Te1/0/3", "Te2/0/3"], "to_sysname": "Lan-Server"},
+        {"from_ip": ip, "from_port": "Te1/0/4", "from_aggregate_port": "Po3", "from_member_ports": ["Te1/0/4", "Te2/0/4"], "to_sysname": "PGS-stage1", "stale": True},
+    ])
+    down_details = [member for member in po3["members"] if member["up"] is False]
+    down_names = [member["name"] for member in down_details]
+    peer = bridge.resolve_peer_switch(peer_map, ip, down_names, aggregate_port="Po3")
+    card = bridge.build_interconnect_card({
+        **po3, "status": "down", "duration": 6,
+        "down_members": down_names, "down_member_details": down_details,
+        "up_members": [], "peer_switch": peer,
+    })
+    text = json.dumps(card, ensure_ascii=False)
+
+    assert peer == "PGS-stage1"
+    assert "异常接口：Te1/0/4、Te2/0/4" in text
+    assert "状态：聚合链路 DOWN" in text
+    assert "在线成员：?" not in text
+    assert "Lan-Server" not in text
+    assert "To-Broadcast" not in text
 
 
 def test_member_errdisable_is_merged_into_peer_aggregate_alert(monkeypatch):
@@ -653,7 +748,7 @@ def test_errdisable_card_keeps_title_and_explains_raw_reason(monkeypatch):
     body = card["card"]["body"]["elements"][0]["content"]
 
     assert header["title"]["content"] == "#35659 接口被保护关闭"
-    assert header["subtitle"]["content"] == "接口被保护关闭"
+    assert "subtitle" not in header
     assert header["template"] == "orange"
     assert "设备：lan-server (192.168.10.47)" in body
     assert "接口：Gi1/1/2" in body
@@ -694,12 +789,15 @@ def test_network_risk_cards_are_orange_and_recovery_is_green(monkeypatch):
     )
 
     assert mac_flap["card"]["header"]["template"] == "orange"
-    assert mac_flap["card"]["header"]["subtitle"]["content"] == "网关 MAC 异常移动"
+    assert mac_flap["card"]["header"]["title"]["content"] == "#1 网关 MAC 异常移动"
     assert "原因：MAC flap（MAC地址漂移）" in mac_flap["card"]["body"]["elements"][0]["content"]
     assert bpdu["card"]["header"]["template"] == "orange"
-    assert bpdu["card"]["header"]["subtitle"]["content"] == "BPDU 保护触发"
+    assert bpdu["card"]["header"]["title"]["content"] == "#1 BPDU 保护触发"
     assert recovered["card"]["header"]["template"] == "green"
-    assert recovered["card"]["header"]["subtitle"]["content"] == "接口保护恢复"
+    assert recovered["card"]["header"]["title"]["content"] == "#1 接口保护恢复"
+    assert "subtitle" not in mac_flap["card"]["header"]
+    assert "subtitle" not in bpdu["card"]["header"]
+    assert "subtitle" not in recovered["card"]["header"]
     assert "状态：已恢复" in recovered["card"]["body"]["elements"][0]["content"]
 
 

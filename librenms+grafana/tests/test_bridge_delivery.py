@@ -465,8 +465,10 @@ def test_ap_down_and_recovery_titles_are_distinct():
     down = bridge.build_ap_down_card("AP-1", "192.0.2.10", "U6-LR", False, 10)
     recovered = bridge.build_ap_down_card("AP-1", "192.0.2.10", "U6-LR", True, 15)
 
-    assert down["card"]["header"]["subtitle"]["content"] == "AP 掉线告警"
-    assert recovered["card"]["header"]["subtitle"]["content"] == "AP 上线恢复"
+    assert down["card"]["header"]["title"]["content"].endswith("AP 掉线告警")
+    assert recovered["card"]["header"]["title"]["content"].endswith("AP 上线恢复")
+    assert "subtitle" not in down["card"]["header"]
+    assert "subtitle" not in recovered["card"]["header"]
     assert "状态：DOWN" in down["card"]["body"]["elements"][0]["content"]
     assert "状态：UP" in recovered["card"]["body"]["elements"][0]["content"]
 
@@ -754,6 +756,8 @@ def test_retire_confirm_card_has_buttons_only_when_app_configured():
     assert actions == {"retire_delete", "retire_keep"}
     assert all(b["behaviors"][0]["value"]["token"] == "tok-9" for b in buttons)
     assert all(b["behaviors"][0]["type"] == "callback" for b in buttons)
+    assert interactive["card"]["header"]["title"]["content"].endswith("设备待删除确认")
+    assert "subtitle" not in interactive["card"]["header"]
 
     # 没配应用：退化为纯通知卡（无按钮），提示到控制台确认
     plain = bridge.build_retire_confirm_card(state, "k", False)

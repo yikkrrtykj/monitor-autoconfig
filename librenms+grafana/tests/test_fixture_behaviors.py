@@ -64,13 +64,12 @@ def test_cisco_2960x_fixture_combines_ifstack_pagp_and_lacp_stack_members():
     ifstack = gte.parse_if_stack_status(data["ifStack"])
     pagp = gte.parse_member_aggregate_ifindex(data["pagpGroupIfIndex"])
     lacp = gte.parse_member_aggregate_ifindex(data["lacpAttachedAggId"])
-    combined = gte.merge_aggregate_member_maps(ifstack, pagp, lacp)
+    combined = gte.resolve_aggregate_member_maps(
+        ifstack, pagp=pagp, attached=lacp,
+    )["members_by_aggregate"]
 
     assert ifnames[20102] == "Gi2/0/2"
     assert combined == {5001: [10102, 20102], 5002: [10103, 20103]}
-    assert gte.incomplete_active_aggregate_ifindexes(
-        ifnames, gte.parse_if_oper_status(data["ifOperStatus"]), combined,
-    ) == set()
 
 
 def test_c1000_and_small_business_fixture_preserves_port_and_alias_differences():

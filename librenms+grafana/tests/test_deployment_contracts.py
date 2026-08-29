@@ -1294,11 +1294,23 @@ def test_interconnect_job_collects_port_channel_member_relationships():
 
     assert "cat > /tmp/snmp-ifstack.yml" in compose
     assert "ifStackStatus" in compose
+    assert "pagpGroupIfIndex" in compose
+    assert "1.3.6.1.4.1.9.9.98.1.1.1.1.8" in compose
+    assert "dot3adAggActorAdminKey" in compose
+    assert "1.2.840.10006.300.43.1.1.1.1.6" in compose
+    assert "dot3adAggPortActorAdminKey" in compose
+    assert "1.2.840.10006.300.43.1.2.1.1.4" in compose
+    assert "dot3adAggPortAttachedAggID" in compose
+    assert "1.2.840.10006.300.43.1.2.1.1.13" in compose
+    assert "ActorSystemID" not in compose
     assert "--config.file=/tmp/snmp-ifstack.yml" in compose
+    assert "./lag_ownership.py:/app/lag_ownership.py:ro" in compose
+    assert "./lag_ownership.py:/lag_ownership.py:ro" in compose
     assert (
         'write_snmp_job "infra-switch-ifmib"  "$INTERCONNECT_SNMP_TARGETS"     '
         '"if_mib, if_stack"'
     ) in prometheus
+    assert prometheus.count('write_snmp_job "infra-switch-ifmib"') == 1
     # if_stack is the sole owner of this table. Keeping it in if_mib used to
     # walk the same table twice in one scrape (and on every firewall too).
     assert "      - ifStackTable" not in snmp

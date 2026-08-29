@@ -142,6 +142,7 @@ services:
       - ./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro
       - ./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro
       - ./feishu_delivery.py:/app/feishu_delivery.py:ro
+      - ./lag_ownership.py:/app/lag_ownership.py:ro
       - ./librenms_client.py:/app/librenms_client.py:ro
       - ./network_syslog.py:/app/network_syslog.py:ro
       - /etc/localtime:/etc/localtime:ro
@@ -307,6 +308,10 @@ services:
           if_stack:
             walk:
               - 1.3.6.1.2.1.31.1.2.1.3
+              - 1.3.6.1.4.1.9.9.98.1.1.1.1.8
+              - 1.2.840.10006.300.43.1.1.1.1.6
+              - 1.2.840.10006.300.43.1.2.1.1.4
+              - 1.2.840.10006.300.43.1.2.1.1.13
             max_repetitions: 25
             retries: 0
             timeout: 2s
@@ -327,6 +332,34 @@ services:
                   4: createAndGo
                   5: createAndWait
                   6: destroy
+              - name: pagpGroupIfIndex
+                oid: 1.3.6.1.4.1.9.9.98.1.1.1.1.8
+                type: gauge
+                help: Aggregate ifIndex configured for this Cisco physical interface.
+                indexes:
+                  - labelname: physicalIfIndex
+                    type: gauge
+              - name: dot3adAggActorAdminKey
+                oid: 1.2.840.10006.300.43.1.1.1.1.6
+                type: gauge
+                help: Configured LACP actor admin key for this aggregate interface.
+                indexes:
+                  - labelname: aggregateIfIndex
+                    type: gauge
+              - name: dot3adAggPortActorAdminKey
+                oid: 1.2.840.10006.300.43.1.2.1.1.4
+                type: gauge
+                help: Configured LACP actor admin key for this physical interface.
+                indexes:
+                  - labelname: physicalIfIndex
+                    type: gauge
+              - name: dot3adAggPortAttachedAggID
+                oid: 1.2.840.10006.300.43.1.2.1.1.13
+                type: gauge
+                help: Currently attached aggregate ifIndex for this physical interface.
+                indexes:
+                  - labelname: physicalIfIndex
+                    type: gauge
         EOF
         cat > /tmp/snmp-stackwise.yml <<'EOF'
         modules:
@@ -665,6 +698,7 @@ services:
     volumes:
       - topology-data:/targets
       - ./generate-topology-edges.py:/generate-topology-edges.py:ro
+      - ./lag_ownership.py:/lag_ownership.py:ro
       - ./discover-switch-targets.py:/discover-switch-targets.py:ro
       - ./discover-stackwise-targets.py:/discover-stackwise-targets.py:ro
       - ./discover-isp-targets.py:/discover-isp-targets.py:ro

@@ -62,6 +62,7 @@ from target_utils import (
     write_json_atomic,
 )
 from librenms_client import LibreNMSClient, LibreNMSError, age_seconds
+from lag_ownership import resolve_lag_ownership
 
 SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
 IF_NAME_OID = "1.3.6.1.2.1.31.1.1.1.1"
@@ -72,6 +73,8 @@ IF_STACK_STATUS_OID = "1.3.6.1.2.1.31.1.2.1.3"
 PAGP_GROUP_IFINDEX_OID = "1.3.6.1.4.1.9.9.98.1.1.1.1.8"
 # IEEE8023-LAG-MIB dot3adAggPortAttachedAggID for LACP member -> aggregator.
 DOT3AD_ATTACHED_AGG_ID_OID = "1.2.840.10006.300.43.1.2.1.1.13"
+DOT3AD_AGG_ACTOR_ADMIN_KEY_OID = "1.2.840.10006.300.43.1.1.1.1.6"
+DOT3AD_PORT_ACTOR_ADMIN_KEY_OID = "1.2.840.10006.300.43.1.2.1.1.4"
 LLDP_LOC_PORT_DESC_OID = "1.0.8802.1.1.2.1.3.7.1.3"
 LLDP_REM_PORT_ID_OID = "1.0.8802.1.1.2.1.4.1.1.7"
 LLDP_REM_PORT_DESC_OID = "1.0.8802.1.1.2.1.4.1.1.8"
@@ -409,8 +412,8 @@ def parse_member_aggregate_ifindex(output):
     return mapping
 
 
-def merge_aggregate_member_maps(*mappings):
-    """Union IF-MIB, Cisco static/PAgP, and IEEE LACP member relations."""
+def merge_ifstack_claims(*mappings):
+    """Union raw ifStack observations before ownership is resolved."""
     merged = {}
     for mapping in mappings:
         for aggregate_ifindex, member_ifindexes in (mapping or {}).items():
@@ -421,20 +424,49 @@ def merge_aggregate_member_maps(*mappings):
     return merged
 
 
-def incomplete_active_aggregate_ifindexes(ifnames, ifoper, member_map):
-    """Return active Port-channels without at least two known physical members.
+def parse_indexed_integer(output):
+    """Parse a one-index integer SNMP column into ``{row_ifindex: value}``."""
+    parsed = {}
+    for line in output.strip().split("\n"):
+        parts, value = parse_oid_value(line)
+        if not parts:
+            continue
+        try:
+            row_index = int(parts[-1])
+        except ValueError:
+            continue
+        parenthesized = re.search(r"\(([0-9]+)\)", value)
+        numeric = re.search(r"(?:INTEGER:\s*)?([0-9]+)\s*$", value, re.IGNORECASE)
+        match = parenthesized or numeric
+        if match:
+            parsed[row_index] = int(match.group(1))
+    return parsed
 
-    Some Catalyst stacks publish just one lower-layer row in IF-MIB even when
-    two links are bundled. A single row is therefore incomplete, not sufficient
-    evidence to skip the Cisco/IEEE aggregation tables.
-    """
-    return {
-        ifindex
-        for ifindex, name in (ifnames or {}).items()
-        if normalize_port_name(name).startswith("agg")
-        and (ifoper or {}).get(ifindex) == 1
-        and len(set((member_map or {}).get(ifindex, []))) < 2
-    }
+
+def member_to_aggregate(mapping):
+    """Invert ``aggregate -> members`` while preserving only unique rows."""
+    direct = {}
+    for aggregate, members in (mapping or {}).items():
+        for member in members or []:
+            direct[member] = aggregate
+    return direct
+
+
+def resolve_aggregate_member_maps(
+    ifstack,
+    pagp=None,
+    attached=None,
+    aggregate_admin_keys=None,
+    physical_admin_keys=None,
+):
+    """Apply the shared authoritative ownership rules to topology inputs."""
+    return resolve_lag_ownership(
+        ifstack_claims=ifstack,
+        pagp_group_ifindex=member_to_aggregate(pagp),
+        attached_aggregate_id=member_to_aggregate(attached),
+        aggregate_admin_keys=aggregate_admin_keys,
+        physical_admin_keys=physical_admin_keys,
+    )
 
 
 def parse_lldp_loc_port_desc(output):
@@ -884,26 +916,33 @@ def _empty_device(ip):
 
 
 def poll_snmp_lag(ip, community, ifname, ifoper, initial=None):
-    """Collect only aggregate membership, preserving all existing fallbacks."""
-    ifstack = merge_aggregate_member_maps(
+    """Collect and authoritatively resolve aggregate membership over SNMP."""
+    ifstack = merge_ifstack_claims(
         initial or {},
         parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID)),
     )
-    if incomplete_active_aggregate_ifindexes(ifname, ifoper, ifstack):
-        ifstack = merge_aggregate_member_maps(
-            ifstack,
-            parse_member_aggregate_ifindex(
-                snmpwalk(ip, community, PAGP_GROUP_IFINDEX_OID)
-            ),
+    resolution = resolve_aggregate_member_maps(
+        ifstack,
+        pagp=parse_member_aggregate_ifindex(
+            snmpwalk(ip, community, PAGP_GROUP_IFINDEX_OID)
+        ),
+        attached=parse_member_aggregate_ifindex(
+            snmpwalk(ip, community, DOT3AD_ATTACHED_AGG_ID_OID)
+        ),
+        aggregate_admin_keys=parse_indexed_integer(
+            snmpwalk(ip, community, DOT3AD_AGG_ACTOR_ADMIN_KEY_OID)
+        ),
+        physical_admin_keys=parse_indexed_integer(
+            snmpwalk(ip, community, DOT3AD_PORT_ACTOR_ADMIN_KEY_OID)
+        ),
+    )
+    if resolution["conflicts"]:
+        details = ", ".join(
+            f"ifIndex {member}: {data['reason']} {data.get('candidates', [])}"
+            for member, data in sorted(resolution["conflicts"].items())
         )
-    if incomplete_active_aggregate_ifindexes(ifname, ifoper, ifstack):
-        ifstack = merge_aggregate_member_maps(
-            ifstack,
-            parse_member_aggregate_ifindex(
-                snmpwalk(ip, community, DOT3AD_ATTACHED_AGG_ID_OID)
-            ),
-        )
-    return ifstack
+        print(f"[WARN] {ip}: isolated ambiguous LAG ownership ({details})", file=sys.stderr)
+    return resolution["members_by_aggregate"]
 
 
 def poll_snmp_neighbors(ip, community):
@@ -1138,7 +1177,7 @@ def poll_device_librenms(ip, community, client, collect_arp=True, mode="hybrid")
             result["source"]["links"] = "unavailable"
 
     try:
-        result["ifstack"] = _librenms_ifstack(client, metadata, port_by_id)
+        librenms_ifstack = _librenms_ifstack(client, metadata, port_by_id)
     except LibreNMSError as exc:
         _log_librenms_fallback(ip, "port_stack", exc)
         if mode == "hybrid":
@@ -1147,14 +1186,18 @@ def poll_device_librenms(ip, community, client, collect_arp=True, mode="hybrid")
         else:
             result["source"]["lag"] = "unavailable"
     else:
-        if incomplete_active_aggregate_ifindexes(ifname, ifoper, result["ifstack"]):
-            if mode == "hybrid":
-                result["ifstack"] = poll_snmp_lag(
-                    ip, community, ifname, ifoper, initial=result["ifstack"]
-                )
-                result["source"]["lag"] = "hybrid"
-            else:
-                result["source"]["lag"] = "incomplete"
+        if mode == "hybrid":
+            # Always consult direct Cisco/IEEE aggregation tables. A stale
+            # ifStack can look "complete" while assigning one member to two
+            # Port-channels, so member count is not a validity check.
+            result["ifstack"] = poll_snmp_lag(
+                ip, community, ifname, ifoper, initial=librenms_ifstack
+            )
+            result["source"]["lag"] = "hybrid"
+        else:
+            result["ifstack"] = resolve_aggregate_member_maps(
+                librenms_ifstack
+            )["members_by_aggregate"]
 
     result["poll_seconds"] = round(time.monotonic() - started, 3)
     return result

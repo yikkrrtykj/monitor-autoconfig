@@ -90,7 +90,12 @@ def collect_fixture_devices(client, monkeypatch, mode="hybrid"):
         raise AssertionError("complete LibreNMS fixture must not use adjacency SNMP")
 
     monkeypatch.setattr(gte, "poll_snmp_neighbors", forbidden)
-    monkeypatch.setattr(gte, "poll_snmp_lag", forbidden)
+    monkeypatch.setattr(
+        gte,
+        "poll_snmp_lag",
+        lambda _ip, _community, _ifname, _ifoper, initial=None:
+            gte.resolve_aggregate_member_maps(initial or {})["members_by_aggregate"],
+    )
     return {
         ip: gte.poll_device_librenms(
             ip, "secret-community", client, collect_arp=False, mode=mode
@@ -147,7 +152,7 @@ def test_direct_snmp_mode_never_calls_librenms(monkeypatch):
     assert result is sentinel
 
 
-def test_direct_snmp_baseline_counts_one_get_and_ten_walks(monkeypatch):
+def test_direct_snmp_baseline_counts_authoritative_lag_walks(monkeypatch):
     class Result:
         stdout = ""
 
@@ -157,7 +162,7 @@ def test_direct_snmp_baseline_counts_one_get_and_ten_walks(monkeypatch):
     gte.poll_device_snmp("192.168.10.254", "community", collect_arp=False)
     stats = gte.collection_stats_snapshot()
     assert stats["direct_snmp_gets"] == 1
-    assert stats["direct_snmp_walks"] == 10
+    assert stats["direct_snmp_walks"] == 14
     assert stats["server_snmp_gets"] == 0
     assert stats["server_snmp_walks"] == 0
 
@@ -687,20 +692,25 @@ def test_down_librenms_port_is_not_a_current_edge(monkeypatch):
     assert edges == []
 
 
-def test_complete_two_member_port_stack_skips_snmp_supplement(monkeypatch):
+def test_complete_two_member_port_stack_still_checks_authoritative_snmp(monkeypatch):
     client = FixtureClient()
+    calls = []
+
+    def resolve(ip, community, _ifname, _ifoper, initial=None):
+        calls.append((ip, community, initial))
+        return gte.resolve_aggregate_member_maps(initial or {})["members_by_aggregate"]
+
     monkeypatch.setattr(
         gte,
         "poll_snmp_lag",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("complete port_stack must not run LAG SNMP")
-        ),
+        resolve,
     )
     device = gte.poll_device_librenms(
         "192.168.10.254", "community", client, collect_arp=False, mode="hybrid"
     )
+    assert calls == [("192.168.10.254", "community", {400: [102, 202]})]
     assert device["ifstack"] == {400: [102, 202]}
-    assert device["source"]["lag"] == "librenms"
+    assert device["source"]["lag"] == "hybrid"
 
 
 def test_incomplete_port_stack_uses_only_lag_supplement(monkeypatch):
@@ -712,7 +722,9 @@ def test_incomplete_port_stack_uses_only_lag_supplement(monkeypatch):
 
     def supplement(ip, community, ifname, ifoper, initial=None):
         calls.append((ip, community, initial))
-        return gte.merge_aggregate_member_maps(initial, {400: [102, 202]})
+        return gte.resolve_aggregate_member_maps(
+            gte.merge_ifstack_claims(initial, {400: [102, 202]})
+        )["members_by_aggregate"]
 
     monkeypatch.setattr(gte, "poll_snmp_lag", supplement)
     monkeypatch.setattr(
@@ -762,7 +774,7 @@ def test_one_device_links_failure_falls_back_only_that_device(monkeypatch):
     monkeypatch.setattr(
         gte,
         "poll_snmp_lag",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("LAG is complete")),
+        lambda _ip, _community, _ifname, _ifoper, initial=None: initial,
     )
     core = gte.poll_device_librenms(
         "192.168.10.254", "community", client, collect_arp=False, mode="hybrid"
@@ -795,13 +807,13 @@ def test_explicit_fresh_poll_and_discovery_metadata_stays_librenms(monkeypatch):
     monkeypatch.setattr(
         gte,
         "poll_snmp_lag",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("complete API LAG")),
+        lambda _ip, _community, _ifname, _ifoper, initial=None: initial,
     )
     device = gte.poll_device_librenms(
         "192.168.10.254", "community", client, collect_arp=False, mode="hybrid"
     )
     assert device["freshness"] == {"poll": "fresh", "discovery": "fresh"}
-    assert device["source"] == {"ports": "librenms", "links": "librenms", "lag": "librenms"}
+    assert device["source"] == {"ports": "librenms", "links": "librenms", "lag": "hybrid"}
 
 
 def test_explicit_stale_poll_data_falls_back_full_device(monkeypatch):
@@ -1013,11 +1025,11 @@ def test_full_librenms_cycle_reports_zero_adjacency_snmp_and_compatible_schema(
     assert gte._run_collection() == 0
 
     log = capsys.readouterr().err
-    assert "adjacency stats: api_requests=7 snmp_walks=0 snmp_gets=0" in log
-    assert "source summary: librenms=2 hybrid=0 direct-snmp=0" in log
-    # No server is configured, so the unchanged server-ARP stage also has no
-    # work. The complete fixture cycle performs no direct SNMP operation.
-    assert commands == []
+    assert "adjacency stats: api_requests=7 snmp_walks=10 snmp_gets=0" in log
+    assert "source summary: librenms=0 hybrid=2 direct-snmp=0" in log
+    # No server is configured, so only the five authoritative LAG walks per
+    # topology device use direct SNMP; adjacency remains LibreNMS sourced.
+    assert len(commands) == 10
     edges = json.loads((tmp_path / "edges.json").read_text(encoding="utf-8"))
     assert len(edges) == 1
     assert "source" not in edges[0]

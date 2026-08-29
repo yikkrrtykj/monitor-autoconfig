@@ -78,10 +78,12 @@ def test_poll_device_uses_pagp_mapping_for_static_etherchannel(monkeypatch):
 
     assert device["ifstack"] == {400: [102, 202]}
     assert gte.PAGP_GROUP_IFINDEX_OID in walked
-    assert gte.DOT3AD_ATTACHED_AGG_ID_OID not in walked
+    assert gte.DOT3AD_ATTACHED_AGG_ID_OID in walked
+    assert gte.DOT3AD_AGG_ACTOR_ADMIN_KEY_OID in walked
+    assert gte.DOT3AD_PORT_ACTOR_ADMIN_KEY_OID in walked
 
 
-def test_poll_device_skips_fallback_lag_mibs_when_ifstack_is_complete(monkeypatch):
+def test_poll_device_checks_authoritative_lag_mibs_even_when_ifstack_looks_complete(monkeypatch):
     walked = []
     responses = {
         gte.IF_NAME_OID: (
@@ -110,8 +112,10 @@ def test_poll_device_skips_fallback_lag_mibs_when_ifstack_is_complete(monkeypatc
     device = gte.poll_device("192.168.10.12", "global", collect_arp=False)
 
     assert device["ifstack"] == {400: [102, 202]}
-    assert gte.PAGP_GROUP_IFINDEX_OID not in walked
-    assert gte.DOT3AD_ATTACHED_AGG_ID_OID not in walked
+    assert gte.PAGP_GROUP_IFINDEX_OID in walked
+    assert gte.DOT3AD_ATTACHED_AGG_ID_OID in walked
+    assert gte.DOT3AD_AGG_ACTOR_ADMIN_KEY_OID in walked
+    assert gte.DOT3AD_PORT_ACTOR_ADMIN_KEY_OID in walked
 
 
 # ---- strip_string_value() ----
@@ -183,16 +187,50 @@ def test_parse_pagp_manual_etherchannel_member_mapping():
     assert gte.parse_member_aggregate_ifindex(out) == {400: [102, 202]}
 
 
-def test_parse_ieee_lacp_member_mapping_and_merge_with_ifstack():
+def test_parse_ieee_lacp_member_mapping_and_resolve_with_ifstack():
     out = (
         ".1.2.840.10006.300.43.1.2.1.1.13.103 = INTEGER: 401\n"
         ".1.2.840.10006.300.43.1.2.1.1.13.203 = INTEGER: 401"
     )
     lacp = gte.parse_member_aggregate_ifindex(out)
     assert lacp == {401: [103, 203]}
-    assert gte.merge_aggregate_member_maps(
-        {400: [102]}, {400: [202]}, lacp
-    ) == {400: [102, 202], 401: [103, 203]}
+    assert gte.resolve_aggregate_member_maps(
+        {400: [102, 202]}, attached=lacp
+    )["members_by_aggregate"] == {400: [102, 202], 401: [103, 203]}
+
+
+def test_parse_indexed_lacp_admin_keys_and_resolve_detached_members():
+    aggregate_keys = gte.parse_indexed_integer(
+        ".1.2.840.10006.300.43.1.1.1.1.6.47 = INTEGER: 2\n"
+        ".1.2.840.10006.300.43.1.1.1.1.6.183 = INTEGER: 3"
+    )
+    physical_keys = gte.parse_indexed_integer(
+        ".1.2.840.10006.300.43.1.2.1.1.4.11 = INTEGER: 3\n"
+        ".1.2.840.10006.300.43.1.2.1.1.4.30 = INTEGER: 3"
+    )
+
+    resolution = gte.resolve_aggregate_member_maps(
+        {47: [11], 183: [11, 30]},
+        aggregate_admin_keys=aggregate_keys,
+        physical_admin_keys=physical_keys,
+    )
+    assert resolution["members_by_aggregate"] == {183: [11, 30]}
+
+
+def test_topology_36430_resolution_removes_stale_po2_member():
+    resolution = gte.resolve_aggregate_member_maps(
+        {47: [10, 11, 29], 183: [11, 30]},
+        pagp={47: [10, 29]},
+        attached={},
+        aggregate_admin_keys={47: 2, 183: 3},
+        physical_admin_keys={11: 3, 30: 3},
+    )
+
+    assert resolution["members_by_aggregate"] == {
+        47: [10, 29],
+        183: [11, 30],
+    }
+    assert resolution["conflicts"] == {}
 
 
 # ---- parse_lldp_loc_port_desc() ----
