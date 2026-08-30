@@ -119,6 +119,8 @@ def test_alert_bridge_mounts_its_split_runtime_modules():
     assert "./librenms_client.py:/app/librenms_client.py:ro" in bridge_service
     assert "./network_syslog.py:/app/network_syslog.py:ro" in bridge_service
     assert 'LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"' in bridge_service
+    assert 'INTERCONNECT_STATE_FILE: "${INTERCONNECT_STATE_FILE:-}"' in bridge_service
+    assert "- bridge-state:/bridge-state" in bridge_service
 
 
 def test_alert_bridge_delegates_sysname_watching_to_its_split_runtime_module():

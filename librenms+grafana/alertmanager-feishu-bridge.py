@@ -77,6 +77,8 @@ Env:
   INTERCONNECT_ALERT_FOR_SECONDS seconds a link must be down before alerting
   INTERCONNECT_ALERT_POLL_INTERVAL seconds between interconnect checks
   INTERCONNECT_ALERT_JOBS comma list of SNMP jobs to watch
+  INTERCONNECT_STATE_FILE persisted active interconnect alerts
+                            (default /bridge-state/interconnect-alerts.json)
   INTERCONNECT_SYSLOG_MERGE_SECONDS seconds to merge a member err-disable event
     into the matching Port-channel redundancy alert instead of sending two cards
   INTERCONNECT_PORT_FILTER comma list of interface keywords/prefixes
@@ -305,6 +307,9 @@ DEVICE_RESOURCE_STATE_FILE = os.environ.get(
     "DEVICE_RESOURCE_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "device-resource-alerts.json"),
 )
+INTERCONNECT_STATE_FILE = os.environ.get("INTERCONNECT_STATE_FILE") or os.path.join(
+    BRIDGE_STATE_DIR, "interconnect-alerts.json",
+)
 UNIFI_AP_STATE_FILE = os.environ.get(
     "UNIFI_AP_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "unifi-ap-alerts.json"),
@@ -416,6 +421,42 @@ def _load_json_dict(path):
 def _save_json_dict(path, values):
     payload = json.dumps(values, ensure_ascii=False, sort_keys=True)
     return _atomic_write_text(path, payload)
+
+
+def load_interconnect_alert_states():
+    loaded = {}
+    for key, value in _load_json_dict(INTERCONNECT_STATE_FILE).items():
+        if not key or not isinstance(value, dict) or not value.get("alerting"):
+            continue
+        down_members = value.get("down_members")
+        last_port = value.get("last_port")
+        loaded[str(key)] = {
+            "alerting": True,
+            "down_since": _as_float(value.get("down_since")),
+            "down_members": [str(item) for item in down_members]
+            if isinstance(down_members, list) else [],
+            "peer_switch": str(value.get("peer_switch") or ""),
+            "last_port": dict(last_port) if isinstance(last_port, dict) else {},
+            "handoff_logged": False,
+            "missing_since": None,
+        }
+    return loaded
+
+
+def save_interconnect_alert_states(states):
+    active = {}
+    for key, state in states.items():
+        if not state.get("alerting"):
+            continue
+        last_port = state.get("last_port")
+        active[str(key)] = {
+            "alerting": True,
+            "down_since": state.get("down_since"),
+            "down_members": list(state.get("down_members") or []),
+            "peer_switch": state.get("peer_switch") or "",
+            "last_port": dict(last_port) if isinstance(last_port, dict) else {},
+        }
+    return _save_json_dict(INTERCONNECT_STATE_FILE, active)
 
 
 def mark_device_online_notified(*values):
@@ -2843,7 +2884,7 @@ def interconnect_watcher():
         return
 
     jobs_regex = "|".join(safe_jobs)
-    states = {}
+    states = load_interconnect_alert_states()
     last_status_log = 0.0
     last_name_refresh = 0.0
     librenms_names = {}
@@ -2939,6 +2980,7 @@ def interconnect_watcher():
                         complete_interconnect_merge(event, cause, now)
                         state["alerting"] = True
                         state["handoff_logged"] = False
+                        save_interconnect_alert_states(states)
             else:
                 if state["alerting"]:
                     if status == "healthy":
@@ -2954,6 +2996,7 @@ def interconnect_watcher():
                             state["down_since"] = None
                             state["down_members"] = []
                             state["handoff_logged"] = False
+                            save_interconnect_alert_states(states)
                 else:
                     state["down_since"] = None
                     state["down_members"] = []
@@ -2981,6 +3024,7 @@ def interconnect_watcher():
             log(f"[LINK] RECOVER vanished aggregate {event.get('device', '?')} {event.get('port', '?')}")
             if send_feishu(build_interconnect_card(event, recovered=True)):
                 states.pop(key, None)
+                save_interconnect_alert_states(states)
 
         time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
 
