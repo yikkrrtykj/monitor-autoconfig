@@ -215,14 +215,12 @@ def test_external_device_id_does_not_fallback_to_same_named_local_switch():
     )
 
     assert edges == []
-    assert placeholders == [{
-        "from_ip": "192.168.10.53",
-        "from_port": "Gi1/0/37",
-        "neighbor_name": "Studio-3",
-        "neighbor_port": "24:5A:4C:59:CF:8D",
-        "neighbor_device_id": "32",
-        "reason": "external-device-id",
-    }]
+    assert len(placeholders) == 1
+    assert placeholders[0]["from_ip"] == "192.168.10.53"
+    assert placeholders[0]["from_port"] == "Gi1/0/37"
+    assert placeholders[0]["neighbor_device_id"] == "32"
+    assert placeholders[0]["reason"] == "external-device-id"
+    assert placeholders[0]["resolution_state"] == "external_device"
 
 
 def test_external_ap_device_id_does_not_collide_with_ob_switch_name():
@@ -245,6 +243,92 @@ def test_external_ap_device_id_does_not_collide_with_ob_switch_name():
     assert placeholders[0]["neighbor_device_id"] == "14"
     assert placeholders[0]["reason"] == "external-device-id"
     assert placeholders[0]["neighbor_port"] == "78:45:58:4B:6B:A8"
+
+
+def test_duplicate_remote_device_id_is_ambiguous_and_does_not_use_name():
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
+    )
+    first = topology_device(
+        "192.168.10.2", "First", 7, {2: "Gi1/0/2"}
+    )
+    second = topology_device(
+        "192.168.10.3", "Second", 7, {3: "Gi1/0/3"}
+    )
+    source["neighbors"] = [unified_neighbor(
+        1, "Gi1/0/1", "First", 7, "Gi1/0/2"
+    )]
+    devices = {
+        source["ip"]: source, first["ip"]: first, second["ip"]: second,
+    }
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0
+    )
+
+    assert edges == []
+    assert diagnostics[0]["resolution_state"] == "ambiguous_device"
+    assert diagnostics[0]["candidate_devices"] == [
+        "192.168.10.2", "192.168.10.3"
+    ]
+
+
+def test_strong_remote_device_id_name_mismatch_keeps_edge_and_diagnoses():
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
+    )
+    first = topology_device(
+        "192.168.10.2", "First", 2, {2: "Gi1/0/2"}
+    )
+    second = topology_device(
+        "192.168.10.3", "Second", 3, {3: "Gi1/0/3"}
+    )
+    source["neighbors"] = [unified_neighbor(
+        1, "Gi1/0/1", "Second", 2, "Gi1/0/2"
+    )]
+    devices = {
+        source["ip"]: source, first["ip"]: first, second["ip"]: second,
+    }
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0
+    )
+
+    assert len(edges) == 1
+    assert edges[0]["to_ip"] == first["ip"]
+    assert diagnostics[0]["resolution_state"] == "partial"
+    assert diagnostics[0]["resolution_reason"] == "identity-name-mismatch"
+    assert diagnostics[0]["raw_remote_identity"]["device_id"] == "2"
+
+
+def test_shared_short_alias_does_not_hide_strong_id_full_name_diagnostic():
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
+    )
+    first = topology_device(
+        "192.168.10.2", "foo.site-a", 2, {2: "Gi1/0/2"}
+    )
+    second = topology_device(
+        "192.168.10.3", "foo.site-b", 3, {3: "Gi1/0/3"}
+    )
+    source["neighbors"] = [unified_neighbor(
+        1, "Gi1/0/1", "foo.site-b", 2, "Gi1/0/2"
+    )]
+
+    def build(order):
+        devices = {device["ip"]: device for device in order}
+        return gte.build_edges(
+            devices, gte.build_name_index(devices), evidence_seen_at=123.0
+        )
+
+    forward = build([source, first, second])
+    reverse = build([second, first, source])
+
+    assert forward == reverse
+    assert len(forward[0]) == 1
+    assert forward[0][0]["to_ip"] == first["ip"]
+    assert len(forward[1]) == 1
+    assert forward[1][0]["resolution_reason"] == "identity-name-mismatch"
 
 
 def test_configured_remote_device_id_still_builds_infrastructure_edge():
@@ -289,6 +373,297 @@ def test_missing_remote_device_id_keeps_legacy_hostname_fallback():
     assert placeholders == []
     assert len(edges) == 1
     assert edges[0]["to_ip"] == "192.168.10.49"
+
+
+def test_stale_remote_port_id_falls_back_to_unique_remote_port_name():
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
+    )
+    remote = topology_device(
+        "192.168.10.2", "Remote", 2, {2: "Gi1/0/2"}
+    )
+    source["neighbors"] = [unified_neighbor(
+        1, "Gi1/0/1", "Remote", 2, "Gi1/0/2", remote_port_id=999,
+    )]
+    devices = {source["ip"]: source, remote["ip"]: remote}
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0
+    )
+
+    assert diagnostics == []
+    assert len(edges) == 1
+    assert edges[0]["to_ifindex"] == 2
+    assert edges[0]["to_port"] == "Gi1/0/2"
+
+
+def test_ambiguous_remote_port_emits_partial_edge_and_invalidates_exact_cache():
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
+    )
+    remote = topology_device(
+        "192.168.10.2", "Remote", 2,
+        {21: "Gi1/0/21", 22: "GigabitEthernet1/0/21"},
+    )
+    source["neighbors"] = [unified_neighbor(
+        1, "Gi1/0/1", "Remote", 2, "Gi1/0/21"
+    )]
+    devices = {source["ip"]: source, remote["ip"]: remote}
+
+    invalidation_hints = []
+    live, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert len(live) == 1
+    assert live[0]["from_ifindex"] == 1
+    assert live[0]["to_ifindex"] is None
+    assert diagnostics[0]["resolution_state"] == "ambiguous_port"
+    assert diagnostics[0]["candidate_ports"] == [21, 22]
+    cached = [
+        {
+            "from_ip": source["ip"], "from_port": "Gi1/0/1", "from_ifindex": 1,
+            "to_ip": remote["ip"], "to_port": "Gi1/0/21", "to_ifindex": 21,
+            "last_seen": 100.0,
+        },
+        {
+            "from_ip": source["ip"], "from_port": "Gi1/0/1", "from_ifindex": 1,
+            "to_ip": "192.168.10.3", "to_port": "Gi1/0/3", "to_ifindex": 3,
+            "last_seen": 100.0,
+        },
+    ]
+    retained = gte.retain_cached_network_edges(
+        live, cached, [*devices, "192.168.10.3"], now=200.0,
+        invalidation_hints=invalidation_hints,
+    )
+    assert len(retained) == 2
+    assert sum(edge["stale"] is False for edge in retained) == 1
+    assert sum(edge["stale"] is True for edge in retained) == 1
+    assert all(
+        edge["to_ip"] != remote["ip"] or edge["to_ifindex"] is None
+        for edge in retained
+    )
+
+
+def test_mutually_exclusive_partial_neighbors_never_reach_topology_edges():
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
+    )
+    first = topology_device("192.168.10.2", "First", 2, {})
+    second = topology_device("192.168.10.3", "Second", 3, {})
+    source["neighbors"] = [
+        unified_neighbor(1, "Gi1/0/1", "First", 2, "unknown-first"),
+        unified_neighbor(1, "Gi1/0/1", "Second", 3, "unknown-second"),
+    ]
+    devices = {
+        source["ip"]: source, first["ip"]: first, second["ip"]: second,
+    }
+    invalidation_hints = []
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert edges == []
+    conflicts = [
+        record for record in diagnostics
+        if record["resolution_state"] == "endpoint_conflict"
+    ]
+    assert len(conflicts) == 1
+    assert conflicts[0]["candidate_devices"] == [
+        first["ip"], second["ip"],
+    ]
+    assert invalidation_hints[-1]["remote_ips"] == [
+        first["ip"], second["ip"],
+    ]
+
+
+def test_remote_device_id_and_cdp_address_conflict_blocks_the_endpoint():
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
+    )
+    first = topology_device(
+        "192.168.10.2", "First", 2, {2: "Gi1/0/2"}
+    )
+    second = topology_device(
+        "192.168.10.3", "Second", 3, {3: "Gi1/0/3"}
+    )
+    source["neighbors"] = [unified_neighbor(
+        1, "Gi1/0/1", "First", 2, "Gi1/0/2"
+    )]
+    source["cdp_device_id"] = {(1, 1): "Second"}
+    source["cdp_device_port"] = {(1, 1): "Gi1/0/3"}
+    source["cdp_address"] = {(1, 1): second["ip"]}
+    devices = {
+        source["ip"]: source, first["ip"]: first, second["ip"]: second,
+    }
+
+    invalidation_hints = []
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert edges == []
+    conflicts = [
+        record for record in diagnostics
+        if record["resolution_state"] == "conflicting_identity"
+    ]
+    assert len(conflicts) == 1
+    assert conflicts[0]["candidate_devices"] == [
+        "192.168.10.2", "192.168.10.3"
+    ]
+    assert conflicts[0]["resolution_reason"] == \
+        "conflicting-strong-device-identity"
+    cached = [{
+        "from_ip": source["ip"], "from_port": "Gi1/0/1", "from_ifindex": 1,
+        "to_ip": first["ip"], "to_port": "Gi1/0/2", "to_ifindex": 2,
+        "last_seen": 100.0,
+    }]
+    assert gte.retain_cached_network_edges(
+        [], cached, list(devices), now=200.0,
+        invalidation_hints=invalidation_hints,
+    ) == []
+
+
+def test_ambiguous_device_without_safe_local_endpoint_does_not_clear_cache():
+    source = topology_device("192.168.10.1", "Source", 1, {})
+    first = topology_device("192.168.10.2", "Duplicate", 2, {2: "Gi1/0/2"})
+    second = topology_device("192.168.10.3", "Duplicate", 3, {3: "Gi1/0/3"})
+    source["neighbors"] = [unified_neighbor(
+        99, "unknown-local", "Duplicate", "", "Gi1/0/2"
+    )]
+    devices = {
+        source["ip"]: source, first["ip"]: first, second["ip"]: second,
+    }
+
+    invalidation_hints = []
+    live, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert live == []
+    assert diagnostics[0]["resolution_state"] == "ambiguous_device"
+    assert diagnostics[0]["candidate_devices"] == [
+        "192.168.10.2", "192.168.10.3"
+    ]
+    assert "cache-invalidation-unsafe" in diagnostics[0]["resolution_reason"]
+    assert "_cache_invalidation" not in diagnostics[0]
+    cached = [{
+        "from_ip": source["ip"], "from_port": "Gi1/0/99", "from_ifindex": 99,
+        "to_ip": first["ip"], "to_port": "Gi1/0/2", "to_ifindex": 2,
+        "last_seen": 100.0,
+    }]
+    retained = gte.retain_cached_network_edges(
+        live, cached, list(devices), now=200.0,
+        invalidation_hints=invalidation_hints,
+    )
+    assert len(retained) == 1
+    assert retained[0]["stale"] is True
+
+
+def test_diagnostics_snapshot_is_deterministic_and_strips_private_hints(tmp_path):
+    path = tmp_path / "topology-diagnostics.json"
+    ambiguous = {
+        "from_ip": "10.0.0.1", "from_port": "Gi1/0/1", "from_ifindex": 1,
+        "protocol": "lldp", "raw_remote_identity": {"name": "Remote"},
+        "raw_remote_port": "Gi1/0/2", "resolution_state": "ambiguous_port",
+        "resolution_reason": "ambiguous-port-identity",
+        "candidate_devices": ["10.0.0.3", "10.0.0.2"],
+        "candidate_ports": [22, 21],
+        "evidence_seen_at": 123.0, "_partial_edge": True,
+        "_cache_invalidation": {"local_ip": "10.0.0.1"},
+    }
+    unknown = {
+        "from_ip": "10.0.0.9", "protocol": "cdp",
+        "raw_remote_identity": {"name": "Missing"},
+        "resolution_state": "unknown_device", "resolution_reason": "unknown-device",
+        "candidate_devices": [], "candidate_ports": [],
+        "evidence_seen_at": 123.0,
+    }
+    resolved = {
+        "from_ip": "10.0.0.8", "resolution_state": "resolved",
+        "evidence_seen_at": 123.0,
+    }
+    records = [unknown, resolved, ambiguous]
+
+    first = gte.write_topology_diagnostics(path, records, generated_at=123.0)
+    reversed_snapshot = gte.build_topology_diagnostics(
+        list(reversed(records)), generated_at=123.0
+    )
+    second = gte.write_topology_diagnostics(path, [], generated_at=124.0)
+
+    assert first == reversed_snapshot
+    assert list(first) == ["schema_version", "generated_at", "summary", "records"]
+    assert list(first["summary"]) == list(gte.TOPOLOGY_DIAGNOSTIC_SUMMARY_KEYS)
+    assert first["summary"]["partial"] == 1
+    assert first["summary"]["ambiguous_port"] == 1
+    assert first["summary"]["unknown_device"] == 1
+    assert len(first["records"]) == 2
+    ambiguous_record = next(
+        record for record in first["records"]
+        if record["resolution_state"] == "ambiguous_port"
+    )
+    assert ambiguous_record["candidate_devices"] == ["10.0.0.2", "10.0.0.3"]
+    assert ambiguous_record["candidate_ports"] == [21, 22]
+    assert "_cache_invalidation" not in ambiguous_record
+    assert json.loads(path.read_text(encoding="utf-8")) == second
+    assert second["generated_at"] == 124.0
+    assert second["records"] == []
+
+
+def test_diagnostics_and_cache_invalidation_are_independent(monkeypatch):
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
+    )
+    remote = topology_device(
+        "192.168.10.2", "Remote", 2,
+        {21: "Gi1/0/21", 22: "GigabitEthernet1/0/21"},
+    )
+    source["neighbors"] = [unified_neighbor(
+        1, "Gi1/0/1", "Remote", 2, "Gi1/0/21"
+    )]
+    devices = {source["ip"]: source, remote["ip"]: remote}
+    invalidation_hints = []
+    live, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0,
+        invalidation_hints=invalidation_hints,
+    )
+    cached = [{
+        "from_ip": source["ip"], "from_port": "Gi1/0/1", "from_ifindex": 1,
+        "to_ip": remote["ip"], "to_port": "Gi1/0/21", "to_ifindex": 21,
+        "last_seen": 100.0,
+    }]
+
+    assert invalidation_hints
+    assert all("_cache_invalidation" not in record for record in diagnostics)
+    expected = gte.retain_cached_network_edges(
+        live, cached, list(devices), now=200.0,
+        invalidation_hints=invalidation_hints,
+    )
+
+    diagnostics.clear()
+    assert gte.build_topology_diagnostics(
+        diagnostics, generated_at=123.0
+    )["records"] == []
+    assert gte.retain_cached_network_edges(
+        live, cached, list(devices), now=200.0,
+        invalidation_hints=invalidation_hints,
+    ) == expected
+
+    monkeypatch.setattr(
+        gte, "write_topology_diagnostics",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    with pytest.raises(OSError, match="disk full"):
+        gte.write_topology_diagnostics("unused", diagnostics)
+    assert gte.retain_cached_network_edges(
+        live, cached, list(devices), now=200.0,
+        invalidation_hints=invalidation_hints,
+    ) == expected
 
 
 def test_self_edge_is_recorded_but_never_emitted():
@@ -630,12 +1005,12 @@ def test_unmatched_classification_does_not_change_edge_output(capsys):
     }
 
     edges_before, placeholders = gte.build_edges(
-        devices, gte.build_name_index(devices),
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0,
     )
     placeholders_before = json.loads(json.dumps(placeholders))
     gte.log_unmatched_neighbors(placeholders)
     edges_after, placeholders_after = gte.build_edges(
-        devices, gte.build_name_index(devices),
+        devices, gte.build_name_index(devices), evidence_seen_at=123.0,
     )
     capsys.readouterr()
 
@@ -948,8 +1323,10 @@ def test_retention_drops_stale_external_device_identity_collision():
         601, "Gi6/0/1", "ob-1", 14, "78:45:58:4B:6B:A8",
     )]
     devices = {source["ip"]: source, ob_switch["ip"]: ob_switch}
-    live, invalid_neighbors = gte.build_edges(
+    invalidation_hints = []
+    live, diagnostics = gte.build_edges(
         devices, gte.build_name_index(devices),
+        invalidation_hints=invalidation_hints,
     )
     cached = [{
         "from_ip": source["ip"], "from_sysname": source["sysname"],
@@ -962,7 +1339,7 @@ def test_retention_drops_stale_external_device_identity_collision():
     retained = gte.retain_cached_network_edges(
         live, cached, list(devices),
         now=200, retention_seconds=86400,
-        invalid_neighbors=invalid_neighbors,
+        invalidation_hints=invalidation_hints,
     )
 
     assert live == []
@@ -977,19 +1354,18 @@ def test_retention_preserves_normal_stale_uplink_with_external_neighbors():
         "to_port": "Gi1/0/49", "to_ifindex": 49,
         "last_seen": 100.0,
     }]
-    invalid_neighbors = [{
-        "from_ip": "192.168.10.11",
-        "from_port": "Gi6/0/1",
-        "neighbor_name": "OB-1",
-        "neighbor_port": "78:45:58:4B:6B:A8",
-        "neighbor_device_id": "14",
-        "reason": "external-device-id",
+    invalidation_hints = [{
+        "kind": "external-neighbor",
+        "local_ip": "192.168.10.11",
+        "local_port": "Gi6/0/1",
+        "remote_name": "OB-1",
+        "remote_port": "78:45:58:4B:6B:A8",
     }]
 
     retained = gte.retain_cached_network_edges(
         [], cached, ["192.168.10.254", "192.168.10.49"],
         now=200, retention_seconds=86400,
-        invalid_neighbors=invalid_neighbors,
+        invalidation_hints=invalidation_hints,
     )
 
     assert len(retained) == 1
@@ -1039,3 +1415,38 @@ def test_full_librenms_cycle_reports_zero_adjacency_snmp_and_compatible_schema(
         "from_aggregate_port", "from_member_ports",
         "to_aggregate_port", "to_member_ports", "last_seen", "stale",
     }
+    diagnostics = json.loads(
+        (tmp_path / "topology-diagnostics.json").read_text(encoding="utf-8")
+    )
+    assert diagnostics["schema_version"] == 1
+    assert diagnostics["records"] == []
+
+
+def test_diagnostics_write_failure_does_not_block_production_outputs(
+    monkeypatch, tmp_path, capsys
+):
+    device = topology_device("192.168.10.1", "Only-Switch", None, {})
+    device["source"] = {
+        "ports": "direct-snmp", "links": "direct-snmp", "lag": "direct-snmp"
+    }
+    monkeypatch.setattr(
+        gte, "collect_device_by_source",
+        lambda *_args, **_kwargs: device,
+    )
+    monkeypatch.setattr(
+        gte, "write_topology_diagnostics",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setenv("TOPOLOGY_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("TOPOLOGY_DEVICES", "192.168.10.1")
+    monkeypatch.setenv("TOPOLOGY_DATA_SOURCE", "direct-snmp")
+    monkeypatch.setenv("TOPOLOGY_SERVER_ATTACHMENT_SOURCE", "direct-snmp")
+    monkeypatch.setenv("SERVER_PING", "")
+    monkeypatch.setenv("CORE_SWITCH_PING", "")
+    monkeypatch.setenv("FIREWALL_PING", "")
+
+    assert gte._run_collection() == 0
+
+    assert (tmp_path / "edges.json").exists()
+    assert (tmp_path / "server-attachments.json").exists()
+    assert "topology diagnostics write failed (OSError)" in capsys.readouterr().err

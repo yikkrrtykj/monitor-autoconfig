@@ -6,6 +6,7 @@ direct SNMP remains the bounded per-device/per-component fallback.  Emit:
 
   edges.json              (consumed by the bigscreen /topology page)
   server-attachments.json (durable last-confirmed server/FDB locations)
+  topology-diagnostics.json (current-cycle resolver diagnostics)
 
 Env vars:
   TOPOLOGY_DATA_SOURCE       hybrid (default), librenms, or direct-snmp.
@@ -786,32 +787,242 @@ def typed_interface_identity(name):
     return f"{interface_type}:{match.group(2)}"
 
 
-def resolve_ifindex_by_name(port_name, ifname_map):
-    typed_target = typed_interface_identity(port_name)
-    if typed_target:
-        typed_matches = [
-            ifindex for ifindex, name in ifname_map.items()
-            if typed_interface_identity(name) == typed_target
-        ]
-        if len(typed_matches) == 1:
-            return typed_matches[0]
+def _candidate_add(index, identity, value):
+    identity = str(identity or "").strip()
+    if identity and value not in (None, ""):
+        index.setdefault(identity, set()).add(value)
 
-    exact_target = str(port_name or "").strip().lower()
-    exact_matches = [
-        ifindex for ifindex, name in ifname_map.items()
-        if str(name or "").strip().lower() == exact_target
+
+def _candidate_sort_key(value):
+    if isinstance(value, int):
+        return (0, value)
+    return (1, str(value))
+
+
+def _resolution(state, value=None, strategy="", reason="", candidates=None,
+                evidence=None):
+    """Return the common deterministic device/port resolution contract."""
+    ordered = sorted(set(candidates or []), key=_candidate_sort_key)
+    return {
+        "state": state,
+        "value": value if state == "resolved" else None,
+        "strategy": strategy,
+        "reason": reason,
+        "candidates": ordered,
+        "evidence": list(evidence or []),
+    }
+
+
+def _safe_ifalias_identity(alias):
+    """Accept an ifAlias only when its complete value is an interface name."""
+    raw = str(alias or "").strip()
+    compact = re.sub(r"[\s_-]+", "", raw.lower())
+    if not (
+        re.fullmatch(r"(?:portchannel|po)[0-9]+", compact) or
+        re.fullmatch(r"[a-z]+[0-9]+(?:/[0-9]+)*", compact)
+    ):
+        return ""
+    return canonical_topology_port_identity(raw)
+
+
+def build_port_identity_indexes(device):
+    """Build candidate-set indexes from already collected IF-MIB/LibreNMS data."""
+    indexes = {
+        "by_port_id": {},
+        "by_ifindex": {},
+        "by_exact_ifname": {},
+        "by_ifdescr_identity": {},
+        "by_typed_identity": {},
+        "by_normalized_identity": {},
+        "by_safe_ifalias": {},
+        "by_unique_suffix": {},
+    }
+
+    records = [
+        dict(record) for record in device.get("port_records", [])
+        if isinstance(record, dict)
     ]
-    if len(exact_matches) == 1:
-        return exact_matches[0]
+    if not records:
+        records = [
+            dict(record) for record in device.get("port_by_id", {}).values()
+            if isinstance(record, dict)
+        ]
+    for record in records:
+        ifindex = _as_positive_int(record.get("ifIndex"))
+        if ifindex is None:
+            continue
+        _candidate_add(indexes["by_ifindex"], str(ifindex), ifindex)
+        _candidate_add(indexes["by_port_id"], record.get("port_id"), ifindex)
 
-    target = normalize_port_name(port_name)
-    if not target:
+        ifname = str(record.get("ifName") or "").strip()
+        ifdescr = str(record.get("ifDescr") or "").strip()
+        ifalias = str(record.get("ifAlias") or "").strip()
+        if ifname:
+            _candidate_add(indexes["by_exact_ifname"], ifname.lower(), ifindex)
+        if ifdescr:
+            _candidate_add(indexes["by_ifdescr_identity"], ifdescr.lower(), ifindex)
+        for identity in (ifname, ifdescr):
+            typed = canonical_topology_port_identity(identity)
+            normalized = normalize_port_name(identity)
+            _candidate_add(indexes["by_typed_identity"], typed, ifindex)
+            _candidate_add(indexes["by_normalized_identity"], normalized, ifindex)
+            lowered = identity.lower()
+            _candidate_add(indexes["by_unique_suffix"], lowered, ifindex)
+            if "/" in lowered:
+                _candidate_add(
+                    indexes["by_unique_suffix"], lowered.rsplit("/", 1)[-1], ifindex
+                )
+        # An alias is identity evidence only when the entire alias is itself a
+        # recognisable interface. Descriptive text and token extraction are unsafe.
+        safe_alias = _safe_ifalias_identity(ifalias)
+        _candidate_add(indexes["by_safe_ifalias"], safe_alias, ifindex)
+
+    for raw_ifindex, ifname in device.get("ifname", {}).items():
+        ifindex = _as_positive_int(raw_ifindex)
+        if ifindex is None:
+            continue
+        _candidate_add(indexes["by_ifindex"], str(ifindex), ifindex)
+        name = str(ifname or "").strip()
+        if not name:
+            continue
+        _candidate_add(indexes["by_exact_ifname"], name.lower(), ifindex)
+        _candidate_add(
+            indexes["by_typed_identity"],
+            canonical_topology_port_identity(name),
+            ifindex,
+        )
+        _candidate_add(
+            indexes["by_normalized_identity"], normalize_port_name(name), ifindex
+        )
+        lowered = name.lower()
+        _candidate_add(indexes["by_unique_suffix"], lowered, ifindex)
+        if "/" in lowered:
+            _candidate_add(
+                indexes["by_unique_suffix"], lowered.rsplit("/", 1)[-1], ifindex
+            )
+    return indexes
+
+
+def _resolve_port_layer(indexes, index_name, identity, strategy, evidence):
+    if not identity:
         return None
-    matches = [ifindex for ifindex, name in ifname_map.items()
-               if normalize_port_name(name) == target]
-    if len(matches) == 1:
-        return matches[0]
+    candidates = indexes.get(index_name, {}).get(str(identity), set())
+    ordered = sorted(set(candidates), key=_candidate_sort_key)
+    evidence.append({
+        "kind": strategy,
+        "identity": str(identity),
+        "candidates": ordered,
+    })
+    if len(ordered) == 1:
+        return _resolution(
+            "resolved", ordered[0], strategy, "unique-port-identity",
+            ordered, evidence,
+        )
+    if len(ordered) > 1:
+        return _resolution(
+            "ambiguous", strategy=strategy, reason="ambiguous-port-identity",
+            candidates=ordered, evidence=evidence,
+        )
     return None
+
+
+def _resolve_port_exact_layer(indexes, identity, evidence):
+    if not identity:
+        return None
+    candidates = set(indexes.get("by_exact_ifname", {}).get(identity, set()))
+    candidates.update(
+        indexes.get("by_ifdescr_identity", {}).get(identity, set())
+    )
+    ordered = sorted(candidates, key=_candidate_sort_key)
+    evidence.append({
+        "kind": "exact-ifname-or-ifdescr",
+        "identity": identity,
+        "candidates": ordered,
+    })
+    if len(ordered) == 1:
+        return _resolution(
+            "resolved", ordered[0], "exact-ifname-or-ifdescr",
+            "unique-port-identity", ordered, evidence,
+        )
+    if len(ordered) > 1:
+        return _resolution(
+            "ambiguous", strategy="exact-ifname-or-ifdescr",
+            reason="ambiguous-port-identity", candidates=ordered,
+            evidence=evidence,
+        )
+    return None
+
+
+def resolve_port_identity(device_or_indexes, port_name=None, port_id=None,
+                          ifindex=None):
+    """Resolve a port by precedence, stopping at the first ambiguous layer."""
+    if "by_ifindex" in device_or_indexes:
+        indexes = device_or_indexes
+    else:
+        indexes = build_port_identity_indexes(device_or_indexes)
+    evidence = []
+
+    explicit_layers = (
+        ("by_port_id", str(port_id).strip() if port_id not in (None, "") else "",
+         "librenms-port-id"),
+        ("by_ifindex", str(_as_positive_int(ifindex) or ""), "explicit-ifindex"),
+    )
+    for index_name, identity, strategy in explicit_layers:
+        result = _resolve_port_layer(
+            indexes, index_name, identity, strategy, evidence
+        )
+        if result is not None:
+            return result
+
+    raw_name = str(port_name or "").strip()
+    if not raw_name:
+        if evidence:
+            return _resolution(
+                "not_found", strategy=evidence[-1]["kind"],
+                reason="explicit-port-not-found", evidence=evidence,
+            )
+        return _resolution(
+            "no_strategy", reason="no-port-identity", evidence=evidence
+        )
+    result = _resolve_port_layer(
+        indexes, "by_typed_identity",
+        canonical_topology_port_identity(raw_name), "typed-canonical", evidence
+    )
+    if result is not None:
+        return result
+    result = _resolve_port_exact_layer(indexes, raw_name.lower(), evidence)
+    if result is not None:
+        return result
+    for index_name, identity, strategy in (
+        ("by_normalized_identity", normalize_port_name(raw_name), "normalized"),
+        ("by_safe_ifalias", canonical_topology_port_identity(raw_name),
+         "safe-ifalias"),
+    ):
+        result = _resolve_port_layer(
+            indexes, index_name, identity, strategy, evidence
+        )
+        if result is not None:
+            return result
+
+    # Vendor bridge names such as bridge/ether4 are accepted only as a final,
+    # unique suffix match. Ordinary Cisco numeric path components are never
+    # extracted as tokens.
+    suffix = raw_name.lower().rsplit("/", 1)[-1] if "/" in raw_name else ""
+    result = _resolve_port_layer(
+        indexes, "by_unique_suffix", suffix, "unique-slash-suffix", evidence
+    )
+    if result is not None:
+        return result
+    return _resolution(
+        "not_found", strategy="all-port-identities", reason="unknown-port",
+        evidence=evidence,
+    )
+
+
+def resolve_ifindex_by_name(port_name, ifname_map):
+    """Compatibility wrapper: return only an unambiguously resolved ifIndex."""
+    result = resolve_port_identity({"ifname": ifname_map}, port_name=port_name)
+    return result["value"] if result["state"] == "resolved" else None
 
 
 def resolve_ifindex(loc_port, ifname_map, loc_port_desc_map):
@@ -821,9 +1032,11 @@ def resolve_ifindex(loc_port, ifname_map, loc_port_desc_map):
     """
     desc = loc_port_desc_map.get(loc_port)
     if desc:
-        resolved = resolve_ifindex_by_name(desc, ifname_map)
-        if resolved is not None:
-            return resolved
+        result = resolve_port_identity({"ifname": ifname_map}, port_name=desc)
+        if result["state"] == "resolved":
+            return result["value"]
+        if result["state"] == "ambiguous":
+            return None
 
     # On IOS the LLDP local port number normally is the ifIndex.  Keep that as
     # the fallback, but only after trying lldpLocPortDesc: SG220 uses a bridge
@@ -899,6 +1112,7 @@ def _empty_device(ip):
         "ifoper": {},
         "ifstack": {},
         "port_by_id": {},
+        "port_records": [],
         "librenms_metadata": {},
         "arp": {},
         "neighbors": [],
@@ -1150,6 +1364,7 @@ def poll_device_librenms(ip, community, client, collect_arp=True, mode="hybrid")
         "ifname": ifname,
         "ifoper": ifoper,
         "port_by_id": port_by_id,
+        "port_records": _records,
         "freshness": {"poll": poll_freshness, "discovery": discovery_freshness},
         "source": {"ports": "librenms", "links": "librenms", "lag": "librenms"},
     })
@@ -1219,53 +1434,190 @@ def collect_device_by_source(ip, community, collect_arp, mode, client=None,
     )
 
 
-def build_name_index(devices):
-    """{hostname: ip}. Stores both full hostname and first-dot-stripped variant."""
-    index = {}
-    for device in devices.values():
-        if not device["sysname"]:
-            continue
-        full = device["sysname"].strip().lower()
-        base = normalize_hostname(device["sysname"])
-        if full:
-            index.setdefault(full, device["ip"])
-        if base:
-            index.setdefault(base, device["ip"])
-    return index
-
-
-def build_device_id_index(devices):
-    """Map LibreNMS device_id values without ever treating them as IP/ifIndex."""
-    index = {}
-    for ip, device in devices.items():
-        device_id = device.get("device_id")
-        if device_id not in (None, ""):
-            index.setdefault(str(device_id), ip)
-    return index
-
-
-def configured_core_neighbor_ip(devices, neighbor_name):
-    """Map a core CDP SVI alias to the console's canonical core IP."""
-    full_name = str(neighbor_name or "").strip().lower()
-    names = {name for name in (full_name, normalize_hostname(full_name)) if name}
-    if not names:
-        return None
+def build_device_identity_indexes(devices):
+    """Build deterministic candidate sets for every supported device identity."""
+    indexes = {
+        "by_device_id": {},
+        "by_management_ip": {},
+        "by_full_name": {},
+        "by_short_name": {},
+        "by_scoped_core_alias": {},
+    }
     core_ips = {
         ip
         for entry in os.environ.get("CORE_SWITCH_PING", "").split(",")
         for ip in expand_device_entry(entry)
     }
-    matches = []
-    for ip in core_ips:
-        sysname = (devices.get(ip) or {}).get("sysname")
-        aliases = {
-            name for name in (
-                str(sysname or "").strip().lower(), normalize_hostname(sysname)
-            ) if name
-        }
-        if names & aliases:
-            matches.append(ip)
-    return matches[0] if len(matches) == 1 else None
+    for key_ip in sorted(devices):
+        device = devices[key_ip]
+        ip = str(device.get("ip") or key_ip).strip()
+        _candidate_add(indexes["by_management_ip"], ip, ip)
+        device_id = device.get("device_id")
+        if device_id not in (None, ""):
+            _candidate_add(indexes["by_device_id"], str(device_id).strip(), ip)
+        full = str(device.get("sysname") or "").strip().lower()
+        short = normalize_hostname(full)
+        _candidate_add(indexes["by_full_name"], full, ip)
+        _candidate_add(indexes["by_short_name"], short, ip)
+        if ip in core_ips:
+            _candidate_add(indexes["by_scoped_core_alias"], full, ip)
+            _candidate_add(indexes["by_scoped_core_alias"], short, ip)
+    return indexes
+
+
+def build_name_index(devices):
+    """Compatibility name for the Phase 1 candidate-set identity indexes."""
+    return build_device_identity_indexes(devices)
+
+
+def build_device_id_index(devices):
+    """Return all LibreNMS device_id candidates; duplicate IDs stay ambiguous."""
+    return build_device_identity_indexes(devices)["by_device_id"]
+
+
+def _device_evidence(indexes, index_name, identity, kind):
+    identity = str(identity or "").strip().lower() \
+        if "name" in index_name or "alias" in index_name \
+        else str(identity or "").strip()
+    candidates = sorted(
+        indexes.get(index_name, {}).get(identity, set()), key=str
+    )
+    return identity, candidates, {
+        "kind": kind,
+        "identity": identity,
+        "candidates": candidates,
+    }
+
+
+def resolve_device_identity(indexes, remote_device_id=None, management_ip=None,
+                            name=None, allow_scoped_core=False):
+    """Resolve current-cycle device evidence without guessing through ambiguity."""
+    evidence = []
+    strong = []
+    if remote_device_id not in (None, ""):
+        identity, candidates, item = _device_evidence(
+            indexes, "by_device_id", remote_device_id, "librenms-device-id"
+        )
+        evidence.append(item)
+        strong.append(("librenms-device-id", identity, candidates))
+    if management_ip not in (None, ""):
+        identity, candidates, item = _device_evidence(
+            indexes, "by_management_ip", management_ip, "management-ip"
+        )
+        evidence.append(item)
+        strong.append(("management-ip", identity, candidates))
+
+    if strong:
+        all_candidates = sorted(
+            {candidate for _, _, candidates in strong for candidate in candidates},
+            key=str,
+        )
+        if any(len(candidates) > 1 for _, _, candidates in strong):
+            return _resolution(
+                "ambiguous", strategy="strong-identity",
+                reason="ambiguous-strong-device-identity",
+                candidates=all_candidates, evidence=evidence,
+            )
+        resolved = [candidates[0] for _, _, candidates in strong if candidates]
+        missing = [kind for kind, _, candidates in strong if not candidates]
+        if len(set(resolved)) > 1 or (resolved and missing):
+            return _resolution(
+                "conflict", strategy="strong-identity",
+                reason="conflicting-strong-device-identity",
+                candidates=all_candidates, evidence=evidence,
+            )
+        if not resolved:
+            # Cisco may advertise a core SVI other than the configured
+            # management address. This is the only scoped exception.
+            if allow_scoped_core and name:
+                full = str(name).strip().lower()
+                short = normalize_hostname(full)
+                scoped = set()
+                for alias in (full, short):
+                    _, candidates, item = _device_evidence(
+                        indexes, "by_scoped_core_alias", alias,
+                        "configured-core-alias",
+                    )
+                    evidence.append(item)
+                    scoped.update(candidates)
+                if len(scoped) == 1:
+                    value = sorted(scoped, key=str)[0]
+                    return _resolution(
+                        "resolved", value, "configured-core-alias",
+                        "unique-configured-core-alias", [value], evidence,
+                    )
+                if len(scoped) > 1:
+                    return _resolution(
+                        "ambiguous", strategy="configured-core-alias",
+                        reason="ambiguous-configured-core-alias",
+                        candidates=scoped, evidence=evidence,
+                    )
+            kind = strong[0][0]
+            reason = "external-device-id" if kind == "librenms-device-id" \
+                else "unknown-management-ip"
+            return _resolution(
+                "not_found", strategy=kind, reason=reason, evidence=evidence
+            )
+
+        value = resolved[0]
+        reason = "unique-strong-device-identity"
+        if name:
+            full = str(name).strip().lower()
+            _, full_candidates, item = _device_evidence(
+                indexes, "by_full_name", full, "full-name"
+            )
+            evidence.append(item)
+            if full_candidates:
+                if len(full_candidates) != 1 or full_candidates[0] != value:
+                    reason = "identity-name-mismatch"
+            else:
+                _, short_candidates, item = _device_evidence(
+                    indexes, "by_short_name", normalize_hostname(full),
+                    "short-name",
+                )
+                evidence.append(item)
+                if short_candidates and value not in short_candidates:
+                    reason = "identity-name-mismatch"
+        return _resolution(
+            "resolved", value, strong[0][0], reason, [value], evidence
+        )
+
+    full = str(name or "").strip().lower()
+    if not full:
+        return _resolution("no_strategy", reason="no-device-identity")
+    for index_name, identity, strategy in (
+        ("by_full_name", full, "full-name"),
+        ("by_short_name", normalize_hostname(full), "short-name"),
+    ):
+        identity, candidates, item = _device_evidence(
+            indexes, index_name, identity, strategy
+        )
+        evidence.append(item)
+        if len(candidates) == 1:
+            return _resolution(
+                "resolved", candidates[0], strategy, "unique-device-name",
+                candidates, evidence,
+            )
+        if len(candidates) > 1:
+            return _resolution(
+                "ambiguous", strategy=strategy,
+                reason="ambiguous-device-name", candidates=candidates,
+                evidence=evidence,
+            )
+    return _resolution(
+        "not_found", strategy="device-name", reason="unknown-device",
+        evidence=evidence,
+    )
+
+
+def configured_core_neighbor_ip(devices, neighbor_name):
+    """Map a core CDP SVI alias to the console's canonical core IP."""
+    indexes = build_device_identity_indexes(devices)
+    full = str(neighbor_name or "").strip().lower()
+    candidates = set()
+    for alias in (full, normalize_hostname(full)):
+        candidates.update(indexes["by_scoped_core_alias"].get(alias, set()))
+    return sorted(candidates, key=str)[0] if len(candidates) == 1 else None
 
 
 def canonical_edge_key(edge):
@@ -1279,10 +1631,11 @@ def merge_edge(edges_by_key, edge):
     and a CDP view of the same link, or both directions, collapse into one)."""
     if edge.get("from_ip") and edge.get("from_ip") == edge.get("to_ip"):
         return
+    device_level_identity = edge.pop("_device_identity_resolved", False)
     if not any(
         _has_physical_endpoint_evidence(edge, side)
         for side in ("from", "to")
-    ):
+    ) and not device_level_identity:
         return
     key = canonical_edge_key(edge)
     existing = edges_by_key.get(key)
@@ -1296,7 +1649,28 @@ def merge_edge(edges_by_key, edge):
             existing[field] = edge[field]
 
 
-def resolve_endpoint_conflicts(edges):
+def _edge_evidence_rank(edge):
+    return (
+        edge.get("_observations", 1),
+        int(edge.get("from_ifindex") is not None) +
+        int(edge.get("to_ifindex") is not None),
+        int(bool(edge.get("from_port"))) + int(bool(edge.get("to_port"))),
+    )
+
+
+def _stable_edge_signature(edge):
+    endpoints = []
+    for side in ("from", "to"):
+        endpoints.append((
+            str(edge.get(f"{side}_ip") or ""),
+            str(edge.get(f"{side}_ifindex") or ""),
+            str(edge.get(f"{side}_port") or ""),
+        ))
+    return tuple(sorted(endpoints))
+
+
+def resolve_endpoint_conflicts(edges, diagnostics=None, evidence_seen_at=None,
+                               invalidation_hints=None):
     """Keep one physical neighbor per resolved interface.
 
     SG220 can expose an off-by-one LLDP bridge-port row alongside the correct
@@ -1304,14 +1678,105 @@ def resolve_endpoint_conflicts(edges):
     one 23->24 row from each side. A physical ifIndex cannot terminate two
     different links, so keep the bidirectionally-confirmed edge.
     """
+    diagnostics = diagnostics if diagnostics is not None else []
+    invalidation_hints = (
+        invalidation_hints if invalidation_hints is not None else []
+    )
+    evidence_seen_at = time.time() if evidence_seen_at is None else evidence_seen_at
+    endpoint_edges = {}
+    for edge in edges:
+        for side in ("from", "to"):
+            endpoint = (
+                str(edge.get(f"{side}_ip") or ""),
+                edge.get(f"{side}_ifindex"),
+            )
+            if endpoint[0] and endpoint[1] is not None:
+                endpoint_edges.setdefault(endpoint, []).append(edge)
+
+    contested = set()
+    for endpoint in sorted(endpoint_edges, key=lambda item: (item[0], str(item[1]))):
+        candidates = endpoint_edges[endpoint]
+        top_rank = max(_edge_evidence_rank(edge) for edge in candidates)
+        top_edges = [
+            edge for edge in candidates if _edge_evidence_rank(edge) == top_rank
+        ]
+        signatures = {_stable_edge_signature(edge) for edge in top_edges}
+        if len(signatures) < 2:
+            continue
+        contested.add(endpoint)
+        candidate_edges = []
+        top_remote_ips = set()
+        remote_ports = set()
+        local_port = ""
+        for edge in sorted(top_edges, key=_stable_edge_signature):
+            if (
+                str(edge.get("from_ip") or "") == endpoint[0] and
+                edge.get("from_ifindex") == endpoint[1]
+            ):
+                local_side, remote_side = "from", "to"
+            else:
+                local_side, remote_side = "to", "from"
+            local_port = local_port or str(edge.get(f"{local_side}_port") or "")
+            remote_ip = str(edge.get(f"{remote_side}_ip") or "")
+            remote_port = str(edge.get(f"{remote_side}_port") or "")
+            if remote_ip:
+                top_remote_ips.add(remote_ip)
+            if remote_port:
+                remote_ports.add(remote_port)
+            candidate_edges.append({
+                "remote_ip": remote_ip,
+                "remote_ifindex": edge.get(f"{remote_side}_ifindex"),
+                "remote_port": remote_port,
+                "rank": list(top_rank),
+            })
+        diagnostics.append({
+            "from_ip": endpoint[0],
+            "from_port": local_port or None,
+            "from_ifindex": endpoint[1],
+            "protocol": "endpoint-conflict",
+            "raw_remote_identity": {"candidate_edges": candidate_edges},
+            "raw_remote_port": None,
+            "resolution_state": "endpoint_conflict",
+            "resolution_reason": "equal-ranked-resolved-endpoint",
+            "candidate_devices": sorted(top_remote_ips),
+            "candidate_ports": sorted(remote_ports),
+            "evidence_seen_at": evidence_seen_at,
+        })
+
+        all_remote_ips = set()
+        for edge in candidates:
+            if (
+                str(edge.get("from_ip") or "") == endpoint[0] and
+                edge.get("from_ifindex") == endpoint[1]
+            ):
+                remote_side = "to"
+            else:
+                remote_side = "from"
+            remote_ip = str(edge.get(f"{remote_side}_ip") or "")
+            if remote_ip:
+                all_remote_ips.add(remote_ip)
+        if all_remote_ips:
+            invalidation_hints.append({
+                "kind": "endpoint-candidates",
+                "local_ip": endpoint[0],
+                "local_ifindex": endpoint[1],
+                "local_port": local_port,
+                "remote_ips": sorted(all_remote_ips),
+            })
+
     ranked = sorted(
-        edges,
+        [
+            edge for edge in edges
+            if not any(
+                (str(edge.get(f"{side}_ip") or ""), edge.get(f"{side}_ifindex"))
+                in contested
+                for side in ("from", "to")
+            )
+        ],
         key=lambda edge: (
-            edge.get("_observations", 1),
-            int(edge.get("from_ifindex") is not None) + int(edge.get("to_ifindex") is not None),
-            int(bool(edge.get("from_port"))) + int(bool(edge.get("to_port"))),
+            tuple(-part for part in _edge_evidence_rank(edge)),
+            _stable_edge_signature(edge),
         ),
-        reverse=True,
     )
     occupied = set()
     kept = []
@@ -1321,10 +1786,9 @@ def resolve_endpoint_conflicts(edges):
             (edge.get("to_ip"), edge.get("to_ifindex")),
         ]
         resolved = [endpoint for endpoint in endpoints if endpoint[0] and endpoint[1] is not None]
-        if len(resolved) == 2 and any(endpoint in occupied for endpoint in resolved):
+        if any(endpoint in occupied for endpoint in resolved):
             continue
-        if len(resolved) == 2:
-            occupied.update(resolved)
+        occupied.update(resolved)
         edge.pop("_observations", None)
         kept.append(edge)
     return kept
@@ -1440,10 +1904,96 @@ def enrich_aggregate_members(edges, devices):
     return enriched
 
 
-def build_edges(devices, name_index):
+def _diagnostic_state_for_device(result):
+    if result["state"] == "ambiguous":
+        return "ambiguous_device"
+    if result["state"] == "conflict":
+        return "conflicting_identity"
+    if result.get("reason") == "external-device-id":
+        return "external_device"
+    return "unknown_device"
+
+
+def _diagnostic_record(device, from_port, from_ifindex, protocol,
+                       neighbor_name, remote_port, result, observed_at,
+                       neighbor_device_id="", management_ip="",
+                       candidate_ports=None, partial=False):
+    state = result.get("state", "not_found")
+    if state in {"ambiguous", "not_found", "no_strategy"} and candidate_ports is not None:
+        resolution_state = "ambiguous_port" if state == "ambiguous" else "unknown_port"
+    else:
+        resolution_state = _diagnostic_state_for_device(result)
+    record = {
+        "from_ip": str(device.get("ip") or ""),
+        "from_sysname": str(device.get("sysname") or ""),
+        "from_port": from_port or None,
+        "from_ifindex": from_ifindex,
+        "protocol": str(protocol or "").lower(),
+        "raw_remote_identity": {
+            "device_id": str(neighbor_device_id or ""),
+            "management_ip": str(management_ip or ""),
+            "name": str(neighbor_name or ""),
+        },
+        "raw_remote_port": remote_port or None,
+        "resolution_state": resolution_state,
+        "resolution_reason": result.get("reason") or state,
+        "candidate_devices": sorted(result.get("candidates") or [], key=str),
+        "candidate_ports": sorted(candidate_ports or [], key=_candidate_sort_key),
+        "evidence_seen_at": observed_at,
+        # Legacy names keep bounded unmatched-neighbor logging and the existing
+        # external-device cache rule compatible while diagnostics are upgraded.
+        "neighbor_name": neighbor_name,
+        "neighbor_port": remote_port,
+    }
+    if neighbor_device_id not in (None, ""):
+        record["neighbor_device_id"] = str(neighbor_device_id)
+    if result.get("reason") == "external-device-id":
+        record["reason"] = "external-device-id"
+    elif result.get("reason") == "self-edge":
+        record["reason"] = "self-edge"
+    if partial:
+        record["_partial_edge"] = True
+    return record
+
+
+def _local_lldp_port_resolution(device, loc_port, port_indexes):
+    desc = device.get("loc_port_desc", {}).get(loc_port)
+    if desc:
+        result = resolve_port_identity(port_indexes, port_name=desc)
+        if result["state"] in {"resolved", "ambiguous"}:
+            return result, desc
+    result = resolve_port_identity(port_indexes, ifindex=loc_port)
+    return result, desc
+
+
+def build_edges(devices, name_index, evidence_seen_at=None,
+                invalidation_hints=None):
     edges_by_key = {}
-    placeholder_neighbors = []
-    device_id_index = build_device_id_index(devices)
+    diagnostics = []
+    invalidation_hints = (
+        invalidation_hints if invalidation_hints is not None else []
+    )
+    strong_endpoint_claims = {}
+    observed_at = time.time() if evidence_seen_at is None else evidence_seen_at
+    identity_indexes = (
+        name_index if isinstance(name_index, dict) and "by_device_id" in name_index
+        else build_device_identity_indexes(devices)
+    )
+    # Collection completes concurrently, so dict insertion order is unstable.
+    # LibreNMS device IDs preserve the established inventory/core-first order;
+    # numeric IPv4 is the deterministic tie-breaker and direct-SNMP fallback.
+    def device_traversal_key(ip):
+        device_id = _as_positive_int(devices[ip].get("device_id"))
+        return (
+            device_id is None,
+            device_id if device_id is not None else 0,
+            IPv4Address(ip),
+        )
+
+    device_ips = sorted(devices, key=device_traversal_key)
+    port_indexes = {
+        ip: build_port_identity_indexes(devices[ip]) for ip in device_ips
+    }
 
     def interface_is_usable(device, ifindex):
         if ifindex is None:
@@ -1451,225 +2001,334 @@ def build_edges(devices, name_index):
         status = device.get("ifoper", {}).get(ifindex)
         return status is None or status == 1
 
-    for ip, device in devices.items():
-        for (tm, loc_port, rem_idx), neighbor_name in device["rem_sys"].items():
-            neighbor_ip = name_index.get(neighbor_name.strip().lower()) or \
-                          name_index.get(normalize_hostname(neighbor_name))
-            local_ifindex = resolve_ifindex(loc_port, device["ifname"], device["loc_port_desc"])
-            local_port_name = device["ifname"].get(local_ifindex) if local_ifindex else device["loc_port_desc"].get(loc_port)
-            remote_port_name = device["rem_port_desc"].get((tm, loc_port, rem_idx)) or \
-                               device["rem_port_id"].get((tm, loc_port, rem_idx))
+    def add_device_diagnostic(device, protocol, local_name, local_ifindex,
+                              neighbor_name, remote_name, result,
+                              neighbor_device_id="", management_ip=""):
+        record = _diagnostic_record(
+            device, local_name, local_ifindex, protocol, neighbor_name,
+            remote_name, result, observed_at, neighbor_device_id,
+            management_ip,
+        )
+        if (
+            result["state"] in {"ambiguous", "conflict"} and
+            local_ifindex is not None and result.get("candidates")
+        ):
+            invalidation_hints.append({
+                "kind": "endpoint-candidates",
+                "local_ip": device.get("ip"),
+                "local_ifindex": local_ifindex,
+                "local_port": local_name,
+                "remote_ips": sorted(result["candidates"], key=str),
+            })
+        elif result["state"] in {"ambiguous", "conflict"}:
+            record["resolution_reason"] += ":cache-invalidation-unsafe"
+        if result.get("reason") == "external-device-id":
+            invalidation_hints.append({
+                "kind": "external-neighbor",
+                "local_ip": device.get("ip"),
+                "local_port": local_name,
+                "remote_name": neighbor_name,
+                "remote_port": remote_name,
+            })
+        diagnostics.append(record)
 
-            if neighbor_ip is None:
-                placeholder_neighbors.append({
-                    "from_ip": ip,
-                    "from_port": local_port_name,
-                    "neighbor_name": neighbor_name,
-                    "neighbor_port": remote_port_name,
-                })
-                continue
-            if neighbor_ip == ip:
-                placeholder_neighbors.append({
-                    "from_ip": ip,
-                    "from_port": local_port_name,
-                    "neighbor_name": neighbor_name,
-                    "neighbor_port": remote_port_name,
-                    "reason": "self-edge",
-                })
-                continue
+    def add_port_diagnostic(device, protocol, local_name, local_ifindex,
+                            neighbor_name, remote_name, remote_ip, result,
+                            is_remote=True, neighbor_device_id="",
+                            management_ip=""):
+        record = _diagnostic_record(
+            device, local_name, local_ifindex, protocol, neighbor_name,
+            remote_name, result, observed_at,
+            neighbor_device_id=neighbor_device_id,
+            management_ip=management_ip,
+            candidate_ports=result.get("candidates"), partial=True,
+        )
+        record["candidate_devices"] = [remote_ip] if remote_ip else []
+        if (
+            is_remote and result["state"] == "ambiguous" and
+            local_ifindex is not None and remote_ip
+        ):
+            invalidation_hints.append({
+                "kind": "endpoint-candidates",
+                "local_ip": device.get("ip"),
+                "local_ifindex": local_ifindex,
+                "local_port": local_name,
+                "remote_ips": [remote_ip],
+            })
+        elif is_remote and result["state"] == "ambiguous":
+            record["resolution_reason"] += ":cache-invalidation-unsafe"
+        diagnostics.append(record)
 
-            remote_ifindex = None
-            remote = devices.get(neighbor_ip)
-            if remote and remote_port_name:
-                remote_ifindex = resolve_ifindex_by_name(remote_port_name, remote["ifname"])
-                if remote_ifindex is not None:
-                    remote_port_name = remote["ifname"].get(remote_ifindex, remote_port_name)
+    def add_name_mismatch(device, protocol, local_name, local_ifindex,
+                          neighbor_name, remote_name, result,
+                          neighbor_device_id="", management_ip=""):
+        if result.get("reason") != "identity-name-mismatch":
+            return
+        record = _diagnostic_record(
+            device, local_name, local_ifindex, protocol, neighbor_name,
+            remote_name, result, observed_at, neighbor_device_id,
+            management_ip,
+        )
+        record["resolution_state"] = "partial"
+        record["candidate_devices"] = [result["value"]]
+        diagnostics.append(record)
 
-            # LLDP/CDP tables may retain a stale management-port neighbor after
-            # the physical interface has gone down. Keep unknown status for
-            # compatibility, but never emit an edge known to be down at either
-            # resolved endpoint.
-            if not interface_is_usable(device, local_ifindex):
-                continue
-            if remote and not interface_is_usable(remote, remote_ifindex):
-                continue
+    def emit_resolved_observation(device, protocol, local_port_name,
+                                  local_result, neighbor_name,
+                                  remote_port_name, device_result,
+                                  remote_port_id=None, neighbor_device_id="",
+                                  management_ip=""):
+        ip = device["ip"]
+        neighbor_ip = device_result["value"]
+        local_ifindex = local_result["value"] \
+            if local_result["state"] == "resolved" else None
+        if neighbor_ip == ip:
+            self_result = _resolution(
+                "not_found", strategy="self-check", reason="self-edge",
+                candidates=[ip], evidence=device_result.get("evidence"),
+            )
+            add_device_diagnostic(
+                device, protocol, local_port_name, local_ifindex,
+                neighbor_name, remote_port_name, self_result,
+            )
+            diagnostics[-1]["resolution_state"] = "invalid_response"
+            return
 
-            edge = {
-                "from_ip": ip,
-                "from_sysname": device["sysname"],
-                "from_port": local_port_name,
-                "from_ifindex": local_ifindex,
-                "to_ip": neighbor_ip,
-                "to_sysname": neighbor_name,
-                "to_port": remote_port_name,
-                "to_ifindex": remote_ifindex,
+        if (
+            local_ifindex is not None and
+            device_result.get("strategy") in {
+                "librenms-device-id", "management-ip"
             }
-            merge_edge(edges_by_key, edge)
-
-        # --- CDP neighbors (Cisco). cdpCacheIfIndex in the OID is the real local
-        # ifIndex, and cdpCacheAddress gives the neighbor's IP directly. ---
-        for (if_index, dev_index), neighbor_name in device.get("cdp_device_id", {}).items():
-            addr_ip = device.get("cdp_address", {}).get((if_index, dev_index))
-            if addr_ip:
-                # An ordinary neighbor's advertised address is authoritative;
-                # hostname fallback could turn a same-named AP into a switch.
-                # The explicitly configured core is the sole exception because
-                # Cisco may advertise one of its other gateway SVIs over CDP.
-                neighbor_ip = addr_ip if addr_ip in devices else configured_core_neighbor_ip(
-                    devices, neighbor_name
-                )
-            else:
-                neighbor_ip = name_index.get((neighbor_name or "").strip().lower()) or \
-                              name_index.get(normalize_hostname(neighbor_name))
-            local_port_name = device.get("ifname", {}).get(if_index)
-            remote_port_name = device.get("cdp_device_port", {}).get((if_index, dev_index))
-
-            if neighbor_ip is None:
-                placeholder_neighbors.append({
-                    "from_ip": ip,
-                    "from_port": local_port_name,
-                    "neighbor_name": neighbor_name,
-                    "neighbor_port": remote_port_name,
-                })
-                continue
-            if neighbor_ip == ip:
-                placeholder_neighbors.append({
-                    "from_ip": ip,
-                    "from_port": local_port_name,
-                    "neighbor_name": neighbor_name,
-                    "neighbor_port": remote_port_name,
-                    "reason": "self-edge",
-                })
-                continue
-
-            remote_ifindex = None
-            remote = devices.get(neighbor_ip)
-            if remote and remote_port_name:
-                remote_ifindex = resolve_ifindex_by_name(remote_port_name, remote["ifname"])
-                if remote_ifindex is not None:
-                    remote_port_name = remote["ifname"].get(remote_ifindex, remote_port_name)
-
-            if not interface_is_usable(device, if_index):
-                continue
-            if remote and not interface_is_usable(remote, remote_ifindex):
-                continue
-
-            merge_edge(edges_by_key, {
-                "from_ip": ip,
-                "from_sysname": device.get("sysname"),
-                "from_port": local_port_name,
-                "from_ifindex": if_index,
-                "to_ip": neighbor_ip,
-                "to_sysname": neighbor_name,
-                "to_port": remote_port_name,
-                "to_ifindex": remote_ifindex,
+        ):
+            strong_endpoint_claims.setdefault((ip, local_ifindex), []).append({
+                "remote_ip": neighbor_ip,
+                "strategy": device_result["strategy"],
+                "neighbor_name": neighbor_name,
+                "neighbor_device_id": str(neighbor_device_id or ""),
+                "management_ip": str(management_ip or ""),
+                "remote_port": remote_port_name or None,
             })
 
-        # --- Unified LibreNMS xDP neighbors.  local_port_id/remote_port_id
-        # were resolved through each device's port table by the adapter; they
-        # are never interpreted as IF-MIB ifIndex values directly. ---
+        remote = devices.get(neighbor_ip)
+        remote_result = resolve_port_identity(
+            port_indexes[neighbor_ip], port_name=remote_port_name,
+            port_id=remote_port_id,
+        )
+        remote_ifindex = remote_result["value"] \
+            if remote_result["state"] == "resolved" else None
+        if local_ifindex is not None:
+            local_port_name = device.get("ifname", {}).get(
+                local_ifindex, local_port_name
+            )
+        if remote_ifindex is not None:
+            remote_port_name = remote.get("ifname", {}).get(
+                remote_ifindex, remote_port_name
+            )
+
+        if local_result["state"] != "resolved":
+            add_port_diagnostic(
+                device, protocol, local_port_name, local_ifindex,
+                neighbor_name, remote_port_name, neighbor_ip, local_result,
+                is_remote=False,
+                neighbor_device_id=neighbor_device_id,
+                management_ip=management_ip,
+            )
+        if remote_result["state"] != "resolved":
+            add_port_diagnostic(
+                device, protocol, local_port_name, local_ifindex,
+                neighbor_name, remote_port_name, neighbor_ip, remote_result,
+                is_remote=True,
+                neighbor_device_id=neighbor_device_id,
+                management_ip=management_ip,
+            )
+        add_name_mismatch(
+            device, protocol, local_port_name, local_ifindex,
+            neighbor_name, remote_port_name, device_result,
+            neighbor_device_id, management_ip,
+        )
+        if not interface_is_usable(device, local_ifindex):
+            return
+        if not interface_is_usable(remote, remote_ifindex):
+            return
+        merge_edge(edges_by_key, {
+            "from_ip": ip,
+            "from_sysname": device.get("sysname"),
+            "from_port": local_port_name,
+            "from_ifindex": local_ifindex,
+            "to_ip": neighbor_ip,
+            "to_sysname": neighbor_name,
+            "to_port": remote_port_name,
+            "to_ifindex": remote_ifindex,
+            "_device_identity_resolved": True,
+        })
+
+    for ip in device_ips:
+        device = devices[ip]
+        local_indexes = port_indexes[ip]
+        for (tm, loc_port, rem_idx), neighbor_name in sorted(
+            device.get("rem_sys", {}).items()
+        ):
+            local_result, local_desc = _local_lldp_port_resolution(
+                device, loc_port, local_indexes
+            )
+            local_ifindex = local_result["value"] \
+                if local_result["state"] == "resolved" else None
+            local_port_name = device.get("ifname", {}).get(
+                local_ifindex, local_desc
+            )
+            remote_port_name = (
+                device.get("rem_port_desc", {}).get((tm, loc_port, rem_idx)) or
+                device.get("rem_port_id", {}).get((tm, loc_port, rem_idx))
+            )
+            result = resolve_device_identity(identity_indexes, name=neighbor_name)
+            if result["state"] != "resolved":
+                add_device_diagnostic(
+                    device, "lldp", local_port_name, local_ifindex,
+                    neighbor_name, remote_port_name, result,
+                )
+                continue
+            emit_resolved_observation(
+                device, "lldp", local_port_name, local_result, neighbor_name,
+                remote_port_name, result,
+            )
+
+        # cdpCacheIfIndex is a real local IF-MIB ifIndex. An advertised CDP
+        # address is strong evidence and only the configured-core SVI rule may
+        # recover an address outside the managed inventory.
+        for (if_index, dev_index), neighbor_name in sorted(
+            device.get("cdp_device_id", {}).items()
+        ):
+            addr_ip = device.get("cdp_address", {}).get((if_index, dev_index))
+            local_result = resolve_port_identity(
+                local_indexes, ifindex=if_index
+            )
+            local_ifindex = local_result["value"] \
+                if local_result["state"] == "resolved" else None
+            local_port_name = device.get("ifname", {}).get(local_ifindex)
+            remote_port_name = device.get("cdp_device_port", {}).get(
+                (if_index, dev_index)
+            )
+            result = resolve_device_identity(
+                identity_indexes, management_ip=addr_ip if addr_ip else None,
+                name=neighbor_name, allow_scoped_core=bool(addr_ip),
+            )
+            if result["state"] != "resolved":
+                add_device_diagnostic(
+                    device, "cdp", local_port_name, local_ifindex,
+                    neighbor_name, remote_port_name, result,
+                    management_ip=addr_ip or "",
+                )
+                continue
+            emit_resolved_observation(
+                device, "cdp", local_port_name, local_result, neighbor_name,
+                remote_port_name, result, management_ip=addr_ip or "",
+            )
+
+        # LibreNMS remote_device_id and port_id stay typed identities and are
+        # never reinterpreted as management IPs or IF-MIB indexes.
         for neighbor in device.get("neighbors", []):
             if _link_is_inactive(neighbor):
                 continue
+            protocol = str(neighbor.get("protocol") or "xdp").strip().lower()
             neighbor_name = str(neighbor.get("neighbor_name") or "").strip()
             neighbor_device_id = neighbor.get("neighbor_device_id")
-            neighbor_device_id_text = (
-                str(neighbor_device_id).strip()
-                if neighbor_device_id is not None else ""
-            )
-            neighbor_ip = None
-            external_device_id = False
-            if neighbor_device_id_text:
-                # A non-empty LibreNMS device ID is authoritative identity.
-                # If it is outside the configured topology inventory, keep it
-                # external instead of reinterpreting a colliding sysName.
-                neighbor_ip = device_id_index.get(neighbor_device_id_text)
-                external_device_id = neighbor_ip is None
-            else:
-                neighbor_ip = name_index.get(neighbor_name.lower()) or \
-                              name_index.get(normalize_hostname(neighbor_name))
-                if neighbor_ip is None:
-                    neighbor_ip = configured_core_neighbor_ip(
-                        devices, neighbor_name
-                    )
-
-            local_ifindex = _as_positive_int(neighbor.get("local_ifindex"))
             local_port_name = str(neighbor.get("local_port") or "").strip()
-            if local_ifindex is None and local_port_name:
-                local_ifindex = resolve_ifindex_by_name(
-                    local_port_name, device.get("ifname", {})
+            local_ifindex_hint = _as_positive_int(neighbor.get("local_ifindex"))
+            if local_ifindex_hint is not None:
+                local_result = resolve_port_identity(
+                    local_indexes, ifindex=local_ifindex_hint
                 )
+            else:
+                local_result = resolve_port_identity(
+                    local_indexes, port_name=local_port_name
+                )
+            local_ifindex = local_result["value"] \
+                if local_result["state"] == "resolved" else None
             if local_ifindex is not None:
                 local_port_name = device.get("ifname", {}).get(
                     local_ifindex, local_port_name
                 )
-
             remote_port_name = str(neighbor.get("neighbor_port") or "").strip()
-            remote_ifindex = None
-            remote = devices.get(neighbor_ip) if neighbor_ip else None
-            remote_port_id = neighbor.get("neighbor_port_id")
-            if remote and remote_port_id not in (None, ""):
-                remote_record = remote.get("port_by_id", {}).get(str(remote_port_id))
-                remote_ifindex = _as_positive_int(
-                    (remote_record or {}).get("ifIndex")
+            result = resolve_device_identity(
+                identity_indexes,
+                remote_device_id=neighbor_device_id
+                if neighbor_device_id not in (None, "") else None,
+                name=neighbor_name,
+            )
+            if result["state"] != "resolved":
+                add_device_diagnostic(
+                    device, protocol, local_port_name, local_ifindex,
+                    neighbor_name, remote_port_name, result,
+                    neighbor_device_id=neighbor_device_id or "",
                 )
-                if remote_ifindex is not None:
-                    remote_port_name = remote.get("ifname", {}).get(
-                        remote_ifindex,
-                        (remote_record or {}).get("ifName") or remote_port_name,
-                    )
-            if remote and remote_ifindex is None and remote_port_name:
-                remote_ifindex = resolve_ifindex_by_name(
-                    remote_port_name, remote.get("ifname", {})
-                )
-                if remote_ifindex is not None:
-                    remote_port_name = remote.get("ifname", {}).get(
-                        remote_ifindex, remote_port_name
-                    )
+                continue
+            emit_resolved_observation(
+                device, protocol, local_port_name, local_result, neighbor_name,
+                remote_port_name, result,
+                remote_port_id=neighbor.get("neighbor_port_id"),
+                neighbor_device_id=neighbor_device_id or "",
+            )
 
-            if neighbor_ip is None:
-                placeholder = {
-                    "from_ip": ip,
-                    "from_port": local_port_name,
-                    "neighbor_name": neighbor_name,
-                    "neighbor_port": remote_port_name,
-                }
-                if external_device_id:
-                    placeholder.update({
-                        "neighbor_device_id": neighbor_device_id_text,
-                        "reason": "external-device-id",
-                    })
-                placeholder_neighbors.append(placeholder)
-                continue
-            if neighbor_ip == ip:
-                placeholder_neighbors.append({
-                    "from_ip": ip,
-                    "from_port": local_port_name,
-                    "neighbor_name": neighbor_name,
-                    "neighbor_port": remote_port_name,
-                    "neighbor_device_id": neighbor_device_id_text,
-                    "reason": "self-edge",
-                })
-                continue
-            if not interface_is_usable(device, local_ifindex):
-                continue
-            if remote and not interface_is_usable(remote, remote_ifindex):
-                continue
-            merge_edge(edges_by_key, {
-                "from_ip": ip,
-                "from_sysname": device.get("sysname"),
-                "from_port": local_port_name,
-                "from_ifindex": local_ifindex,
-                "to_ip": neighbor_ip,
-                "to_sysname": neighbor_name,
-                "to_port": remote_port_name,
-                "to_ifindex": remote_ifindex,
-            })
+    strong_conflicted_endpoints = set()
+    for endpoint in sorted(
+        strong_endpoint_claims, key=lambda item: (item[0], str(item[1]))
+    ):
+        claims = strong_endpoint_claims[endpoint]
+        remote_ips = sorted({claim["remote_ip"] for claim in claims})
+        strategies = {claim["strategy"] for claim in claims}
+        if len(remote_ips) < 2 or strategies != {
+            "librenms-device-id", "management-ip"
+        }:
+            continue
+        strong_conflicted_endpoints.add(endpoint)
+        ordered_claims = sorted(
+            claims,
+            key=lambda claim: (
+                claim["strategy"], claim["remote_ip"],
+                claim["neighbor_name"], str(claim["remote_port"] or ""),
+            ),
+        )
+        local_device = devices.get(endpoint[0]) or {}
+        local_port = local_device.get("ifname", {}).get(endpoint[1])
+        diagnostics.append({
+            "from_ip": endpoint[0],
+            "from_sysname": local_device.get("sysname") or "",
+            "from_port": local_port,
+            "from_ifindex": endpoint[1],
+            "protocol": "cross-protocol",
+            "raw_remote_identity": {"strong_claims": ordered_claims},
+            "raw_remote_port": None,
+            "resolution_state": "conflicting_identity",
+            "resolution_reason": "conflicting-strong-device-identity",
+            "candidate_devices": remote_ips,
+            "candidate_ports": sorted({
+                claim["remote_port"] for claim in claims
+                if claim["remote_port"]
+            }),
+            "evidence_seen_at": observed_at,
+        })
+        invalidation_hints.append({
+            "kind": "endpoint-candidates",
+            "local_ip": endpoint[0],
+            "local_ifindex": endpoint[1],
+            "local_port": local_port,
+            "remote_ips": remote_ips,
+        })
 
-    edges = dedupe_canonical_physical_edges(
-        resolve_endpoint_conflicts(list(edges_by_key.values()))
-    )
-    return enrich_aggregate_members(edges, devices), placeholder_neighbors
+    conflict_candidates = [
+        edge for edge in edges_by_key.values()
+        if not any(
+            (str(edge.get(f"{side}_ip") or ""), edge.get(f"{side}_ifindex"))
+            in strong_conflicted_endpoints
+            for side in ("from", "to")
+        )
+    ]
+    edges = dedupe_canonical_physical_edges(resolve_endpoint_conflicts(
+        conflict_candidates, diagnostics=diagnostics,
+        evidence_seen_at=observed_at,
+        invalidation_hints=invalidation_hints,
+    ))
+    return enrich_aggregate_members(edges, devices), diagnostics
 
 
 UNMATCHED_NEIGHBOR_CATEGORIES = (
@@ -1785,6 +2444,85 @@ def log_unmatched_neighbors(observations, stream=None,
             file=stream,
         )
     return counts
+
+
+TOPOLOGY_DIAGNOSTIC_SUMMARY_KEYS = (
+    "partial",
+    "ambiguous_device",
+    "ambiguous_port",
+    "conflicting_identity",
+    "endpoint_conflict",
+    "unknown_device",
+    "unknown_port",
+    "external_device",
+    "invalid_response",
+)
+TOPOLOGY_DIAGNOSTIC_RECORD_FIELDS = (
+    "from_ip",
+    "from_sysname",
+    "from_port",
+    "from_ifindex",
+    "protocol",
+    "raw_remote_identity",
+    "raw_remote_port",
+    "resolution_state",
+    "resolution_reason",
+    "candidate_devices",
+    "candidate_ports",
+    "evidence_seen_at",
+)
+
+
+def build_topology_diagnostics(records, generated_at=None):
+    """Build one deterministic, current-cycle-only diagnostics snapshot."""
+    generated_at = time.time() if generated_at is None else generated_at
+    summary = {key: 0 for key in TOPOLOGY_DIAGNOSTIC_SUMMARY_KEYS}
+    clean_records = []
+    for source in records or []:
+        if not isinstance(source, dict):
+            continue
+        if str(source.get("resolution_state") or "").lower() == "resolved":
+            continue
+        record = {
+            field: source.get(field)
+            for field in TOPOLOGY_DIAGNOSTIC_RECORD_FIELDS
+            if field in source
+        }
+        state = str(record.get("resolution_state") or "invalid_response")
+        if classify_unmatched_neighbor(source) == "invalid-response":
+            state = "invalid_response"
+            record["resolution_state"] = state
+        if state in summary:
+            summary[state] += 1
+        else:
+            summary["invalid_response"] += 1
+        if source.get("_partial_edge") and state != "partial":
+            summary["partial"] += 1
+        record["candidate_devices"] = sorted(
+            {str(value) for value in record.get("candidate_devices") or []},
+            key=str,
+        )
+        record["candidate_ports"] = sorted(
+            set(record.get("candidate_ports") or []), key=_candidate_sort_key
+        )
+        clean_records.append(record)
+    clean_records.sort(
+        key=lambda record: json.dumps(
+            record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    )
+    return {
+        "schema_version": 1,
+        "generated_at": generated_at,
+        "summary": summary,
+        "records": clean_records,
+    }
+
+
+def write_topology_diagnostics(path, records, generated_at=None):
+    payload = build_topology_diagnostics(records, generated_at=generated_at)
+    write_json_atomic(path, payload, sort_keys=False)
+    return payload
 
 
 def _env_target_ips(name):
@@ -2568,22 +3306,76 @@ def _active_aggregate_member_identities(edge, side, devices):
     return identities
 
 
-def _external_neighbor_identities(invalid_neighbors):
+def _external_neighbor_identities(invalidation_hints):
     """Return rejected LibreNMS neighbor identities safe for cache cleanup."""
     identities = set()
-    for neighbor in invalid_neighbors or []:
+    for hint in invalidation_hints or []:
         if (
-            not isinstance(neighbor, dict) or
-            neighbor.get("reason") != "external-device-id"
+            not isinstance(hint, dict) or
+            hint.get("kind") != "external-neighbor"
         ):
             continue
-        local_ip = str(neighbor.get("from_ip") or "").strip()
-        local_port = normalize_port_name(neighbor.get("from_port"))
-        remote_name = normalize_hostname(neighbor.get("neighbor_name"))
-        remote_port = normalize_port_name(neighbor.get("neighbor_port"))
+        local_ip = str(hint.get("local_ip") or "").strip()
+        local_port = normalize_port_name(hint.get("local_port"))
+        remote_name = normalize_hostname(hint.get("remote_name"))
+        remote_port = normalize_port_name(hint.get("remote_port"))
         if local_ip and local_port and remote_name and remote_port:
             identities.add((local_ip, local_port, remote_name, remote_port))
     return identities
+
+
+def _endpoint_invalidation_hints(invalidation_hints):
+    """Return only current-cycle, explicitly scoped cache invalidation hints."""
+    hints = []
+    for hint in invalidation_hints or []:
+        if (
+            not isinstance(hint, dict) or
+            hint.get("kind") != "endpoint-candidates"
+        ):
+            continue
+        local_ip = str(hint.get("local_ip") or "").strip()
+        local_ifindex = hint.get("local_ifindex")
+        local_port = normalize_port_name(hint.get("local_port"))
+        remote_ips = sorted({
+            str(ip).strip() for ip in hint.get("remote_ips", []) if str(ip).strip()
+        })
+        if not local_ip or (local_ifindex in (None, "") and not local_port):
+            continue
+        if not remote_ips:
+            continue
+        hints.append({
+            "local_ip": local_ip,
+            "local_ifindex": str(local_ifindex)
+            if local_ifindex not in (None, "") else "",
+            "local_port": local_port,
+            "remote_ips": remote_ips,
+        })
+    return sorted(
+        hints,
+        key=lambda item: (
+            item["local_ip"], item["local_ifindex"], item["local_port"],
+            tuple(item["remote_ips"]),
+        ),
+    )
+
+
+def _matches_cache_invalidation_hint(edge, hints):
+    for hint in hints:
+        for local_side, remote_side in (("from", "to"), ("to", "from")):
+            if str(edge.get(f"{local_side}_ip") or "").strip() != hint["local_ip"]:
+                continue
+            if str(edge.get(f"{remote_side}_ip") or "").strip() not in hint["remote_ips"]:
+                continue
+            if hint["local_ifindex"]:
+                if str(edge.get(f"{local_side}_ifindex") or "") == hint["local_ifindex"]:
+                    return True
+            elif (
+                hint["local_port"] and
+                normalize_port_name(edge.get(f"{local_side}_port")) ==
+                hint["local_port"]
+            ):
+                return True
+    return False
 
 
 def _matches_external_neighbor_identity(edge, identities):
@@ -2602,7 +3394,7 @@ def _matches_external_neighbor_identity(edge, identities):
 
 def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
                                 now=None, retention_seconds=24 * 60 * 60,
-                                devices=None, invalid_neighbors=None):
+                                devices=None, invalidation_hints=None):
     """Keep missing confirmed LLDP/CDP edges long enough to diagnose outages.
 
     Live observations replace matching cache entries. A cached edge is dropped
@@ -2616,7 +3408,10 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
     retention_seconds = max(0, int(retention_seconds))
     configured = set(configured_device_ips or [])
     external_neighbor_identities = _external_neighbor_identities(
-        invalid_neighbors
+        invalidation_hints
+    )
+    cache_invalidation_hints = _endpoint_invalidation_hints(
+        invalidation_hints
     )
     live_keys = {_edge_cache_key(edge) for edge in live_edges}
     live_endpoint_identities = set()
@@ -2628,6 +3423,7 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
         edge["last_seen"] = now
         edge["stale"] = False
         output.append(edge)
+        resolved_endpoints = []
         for side in ("from", "to"):
             live_endpoint_identities.update(_edge_endpoint_identities(edge, side))
             pair = frozenset((
@@ -2644,7 +3440,12 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
             ip = str(edge.get(f"{side}_ip") or "").strip()
             ifindex = edge.get(f"{side}_ifindex")
             if ip and ifindex not in (None, ""):
-                occupied.add((ip, str(ifindex)))
+                resolved_endpoints.append((ip, str(ifindex)))
+        # A partial edge cannot claim its one known port against every possible
+        # historical peer. Its diagnostics hint performs the narrower
+        # local-endpoint + candidate-remote invalidation instead.
+        if len(resolved_endpoints) == 2:
+            occupied.update(resolved_endpoints)
 
     for source in cached_edges or []:
         if not isinstance(source, dict) or source.get("source") == "fdb":
@@ -2658,6 +3459,8 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
         if _matches_external_neighbor_identity(
             source, external_neighbor_identities
         ):
+            continue
+        if _matches_cache_invalidation_hint(source, cache_invalidation_hints):
             continue
         if _edge_cache_key(source) in live_keys:
             continue
@@ -2976,12 +3779,18 @@ def _run_collection():
 
     edges_path = os.path.join(output_dir, "edges.json")
     attachments_path = os.path.join(output_dir, "server-attachments.json")
+    diagnostics_path = os.path.join(output_dir, "topology-diagnostics.json")
     cached_edges = load_cached_edges(edges_path)
     # Attachments have their own durable ledger.  edges.json is a live snapshot
     # and can legitimately be incomplete after a collector restart or a weak
     # SNMP cycle; it must not be the only memory of physical server ownership.
     name_index = build_name_index(devices)
-    edges, placeholders = build_edges(devices, name_index)
+    evidence_seen_at = time.time()
+    cache_invalidation_hints = []
+    edges, diagnostics_records = build_edges(
+        devices, name_index, evidence_seen_at=evidence_seen_at,
+        invalidation_hints=cache_invalidation_hints,
+    )
     loaded_attachments = load_cached_edges(attachments_path)
     cached_attachments = merge_cached_server_ledgers(
         loaded_attachments,
@@ -3053,10 +3862,21 @@ def _run_collection():
         device_ips,
         retention_seconds=edge_retention,
         devices=devices,
-        invalid_neighbors=placeholders,
+        invalidation_hints=cache_invalidation_hints,
     ) + server_edges
     write_json_atomic(edges_path, edges, sort_keys=True)
     write_json_atomic(attachments_path, confirmed_server_edges, sort_keys=True)
+    try:
+        write_topology_diagnostics(
+            diagnostics_path, diagnostics_records,
+            generated_at=evidence_seen_at,
+        )
+    except Exception as exc:
+        print(
+            f"[WARN] topology diagnostics write failed ({type(exc).__name__}); "
+            "production topology outputs remain valid",
+            file=sys.stderr,
+        )
 
     stats = collection_stats_snapshot()
     server_api_requests = (
@@ -3083,7 +3903,7 @@ def _run_collection():
         f"cycle={time.monotonic() - cycle_started:.1f}s",
         file=sys.stderr,
     )
-    log_unmatched_neighbors(placeholders)
+    log_unmatched_neighbors(diagnostics_records)
     return 0
 
 

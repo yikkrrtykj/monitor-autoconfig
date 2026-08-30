@@ -383,7 +383,7 @@ class TestBuildEdges:
         assert len(placeholders) == 1
         assert placeholders[0]["neighbor_name"] == "outsider"
 
-    def test_unresolved_mac_port_row_is_not_emitted_as_a_live_link(self):
+    def test_resolved_devices_with_unknown_ports_emit_device_level_partial_link(self):
         devices = self._devices()
         source = devices["10.0.0.1"]
         peer = devices["10.0.0.3"]
@@ -397,8 +397,13 @@ class TestBuildEdges:
             devices, gte.build_name_index(devices)
         )
 
-        assert edges == []
-        assert placeholders == []
+        assert len(edges) == 1
+        assert edges[0]["from_ifindex"] is None
+        assert edges[0]["to_ifindex"] is None
+        assert {item["resolution_state"] for item in placeholders} == {
+            "unknown_port"
+        }
+        assert all(item["_partial_edge"] is True for item in placeholders)
 
 
 class TestPortChannelEdges:
@@ -1411,3 +1416,474 @@ def test_cached_edge_cannot_overwrite_a_live_port_move():
     assert len(merged) == 1
     assert merged[0]["to_ip"] == "192.168.10.58"
     assert merged[0]["stale"] is False
+
+
+# ---- Topology V2 Phase 1 identity resolution ----
+
+def _identity_device(ip, sysname, device_id=None, ifname=None):
+    device = gte._empty_device(ip)
+    device.update({
+        "sysname": sysname,
+        "device_id": device_id,
+        "ifname": dict(ifname or {}),
+        "ifoper": {index: 1 for index in (ifname or {})},
+    })
+    return device
+
+
+def test_device_indexes_keep_duplicate_names_and_ids_as_sorted_candidates():
+    devices = {
+        "10.0.0.2": _identity_device("10.0.0.2", "edge.site-b", 7),
+        "10.0.0.1": _identity_device("10.0.0.1", "edge.site-a", 7),
+    }
+    indexes = gte.build_device_identity_indexes(devices)
+
+    assert indexes["by_device_id"]["7"] == {"10.0.0.1", "10.0.0.2"}
+    result = gte.resolve_device_identity(indexes, remote_device_id=7)
+    assert result["state"] == "ambiguous"
+    assert result["value"] is None
+    assert result["candidates"] == ["10.0.0.1", "10.0.0.2"]
+
+    result = gte.resolve_device_identity(indexes, name="edge.site-a")
+    assert result["state"] == "resolved"
+    assert result["strategy"] == "full-name"
+    assert result["value"] == "10.0.0.1"
+    assert gte.resolve_device_identity(indexes, name="edge")["state"] == "ambiguous"
+
+
+def test_strong_device_evidence_conflicts_and_never_falls_back_to_name():
+    devices = {
+        "10.0.0.1": _identity_device("10.0.0.1", "switch-a", 11),
+        "10.0.0.2": _identity_device("10.0.0.2", "switch-b", 22),
+    }
+    indexes = gte.build_device_identity_indexes(devices)
+
+    conflict = gte.resolve_device_identity(
+        indexes, remote_device_id=11, management_ip="10.0.0.2",
+        name="switch-a",
+    )
+    assert conflict["state"] == "conflict"
+    assert conflict["candidates"] == ["10.0.0.1", "10.0.0.2"]
+
+    external = gte.resolve_device_identity(
+        indexes, remote_device_id=99, name="switch-a"
+    )
+    assert external["state"] == "not_found"
+    assert external["reason"] == "external-device-id"
+    assert external["value"] is None
+
+
+def test_strong_device_id_wins_weak_name_mismatch_but_reports_it():
+    devices = {
+        "10.0.0.1": _identity_device("10.0.0.1", "switch-a", 11),
+        "10.0.0.2": _identity_device("10.0.0.2", "switch-b", 22),
+    }
+    result = gte.resolve_device_identity(
+        gte.build_device_identity_indexes(devices),
+        remote_device_id=11,
+        name="switch-b",
+    )
+
+    assert result["state"] == "resolved"
+    assert result["value"] == "10.0.0.1"
+    assert result["reason"] == "identity-name-mismatch"
+
+
+def test_strong_id_full_name_mismatch_is_not_masked_by_shared_short_alias():
+    first = _identity_device("10.0.0.1", "foo.site-a", 11)
+    second = _identity_device("10.0.0.2", "foo.site-b", 22)
+
+    def resolve(order, name):
+        devices = {device["ip"]: device for device in order}
+        return gte.resolve_device_identity(
+            gte.build_device_identity_indexes(devices),
+            remote_device_id=11,
+            name=name,
+        )
+
+    forward = resolve([first, second], "foo.site-b")
+    reverse = resolve([second, first], "foo.site-b")
+
+    assert forward == reverse
+    assert forward["state"] == "resolved"
+    assert forward["value"] == first["ip"]
+    assert forward["reason"] == "identity-name-mismatch"
+
+    consistent = resolve([second, first], "foo.site-a")
+    assert consistent["state"] == "resolved"
+    assert consistent["value"] == first["ip"]
+    assert consistent["reason"] == "unique-strong-device-identity"
+
+
+def test_duplicate_full_and_short_names_never_emit_first_wins_edges():
+    source = _identity_device("10.0.0.1", "source", 1, {1: "Gi1/0/1"})
+    source["loc_port_desc"] = {1: "Gi1/0/1"}
+    source["rem_sys"] = {(0, 1, 1): "duplicate.example"}
+    source["rem_port_desc"] = {(0, 1, 1): "Gi1/0/2"}
+    first = _identity_device(
+        "10.0.0.2", "duplicate.example", 2, {2: "Gi1/0/2"}
+    )
+    second = _identity_device(
+        "10.0.0.3", "duplicate.example", 3, {3: "Gi1/0/3"}
+    )
+
+    forward_devices = {
+        source["ip"]: source, first["ip"]: first, second["ip"]: second,
+    }
+    reverse_devices = {
+        source["ip"]: source, second["ip"]: second, first["ip"]: first,
+    }
+    forward = gte.build_edges(
+        forward_devices, gte.build_name_index(forward_devices),
+        evidence_seen_at=123.0,
+    )
+    reverse = gte.build_edges(
+        reverse_devices, gte.build_name_index(reverse_devices),
+        evidence_seen_at=123.0,
+    )
+
+    assert forward == reverse
+    assert forward[0] == []
+    assert forward[1][0]["resolution_state"] == "ambiguous_device"
+    assert forward[1][0]["candidate_devices"] == ["10.0.0.2", "10.0.0.3"]
+
+    source["rem_sys"] = {(0, 1, 1): "duplicate"}
+    first["sysname"] = "duplicate.site-a"
+    second["sysname"] = "duplicate.site-b"
+    short_alias_hints = []
+    short_alias = gte.build_edges(
+        forward_devices, gte.build_name_index(forward_devices),
+        evidence_seen_at=123.0,
+        invalidation_hints=short_alias_hints,
+    )
+    assert short_alias[0] == []
+    assert short_alias[1][0]["resolution_state"] == "ambiguous_device"
+
+    cached = [{
+        "from_ip": source["ip"], "from_port": "Gi1/0/1", "from_ifindex": 1,
+        "to_ip": first["ip"], "to_port": "Gi1/0/2", "to_ifindex": 2,
+        "last_seen": 100.0,
+    }]
+    assert gte.retain_cached_network_edges(
+        [], cached, list(forward_devices), now=200.0,
+        invalidation_hints=short_alias_hints,
+    ) == []
+
+
+def test_reciprocal_edge_orientation_uses_stable_numeric_ip_traversal():
+    low = _identity_device(
+        "10.0.0.2", "low", 2, {1: "Gi1/0/1"}
+    )
+    high = _identity_device(
+        "10.0.0.10", "high", 10, {2: "Gi1/0/2"}
+    )
+    low["loc_port_desc"] = {1: "Gi1/0/1"}
+    low["rem_sys"] = {(0, 1, 1): "high"}
+    low["rem_port_desc"] = {(0, 1, 1): "Gi1/0/2"}
+    high["loc_port_desc"] = {2: "Gi1/0/2"}
+    high["rem_sys"] = {(0, 2, 1): "low"}
+    high["rem_port_desc"] = {(0, 2, 1): "Gi1/0/1"}
+
+    forward_devices = {low["ip"]: low, high["ip"]: high}
+    reverse_devices = {high["ip"]: high, low["ip"]: low}
+    forward = gte.build_edges(
+        forward_devices, gte.build_name_index(forward_devices),
+        evidence_seen_at=123.0,
+    )
+    reverse = gte.build_edges(
+        reverse_devices, gte.build_name_index(reverse_devices),
+        evidence_seen_at=123.0,
+    )
+
+    assert forward == reverse
+    assert len(forward[0]) == 1
+    assert forward[0][0]["from_ip"] == "10.0.0.2"
+    assert forward[0][0]["to_ip"] == "10.0.0.10"
+
+
+def test_port_typed_ambiguity_stops_before_unique_exact_name():
+    device = _identity_device("10.0.0.1", "switch")
+    device["port_records"] = [
+        {"port_id": 1, "ifIndex": 101, "ifName": "Gi1/0/1"},
+        {"port_id": 2, "ifIndex": 102,
+         "ifName": "port-102", "ifDescr": "GigabitEthernet1/0/1"},
+    ]
+
+    result = gte.resolve_port_identity(device, port_name="Gi1/0/1")
+
+    assert result["state"] == "ambiguous"
+    assert result["strategy"] == "typed-canonical"
+    assert result["candidates"] == [101, 102]
+    assert gte.resolve_ifindex_by_name(
+        "Gi1/0/1", {101: "Gi1/0/1", 102: "GigabitEthernet1/0/1"}
+    ) is None
+
+
+def test_explicit_port_zero_match_falls_through_but_ambiguity_stops():
+    device = _identity_device("10.0.0.1", "switch")
+    device["port_records"] = [
+        {
+            "port_id": 1, "ifIndex": 101, "ifName": "Gi1/0/1",
+            "ifDescr": "physical-one",
+        },
+        {
+            "port_id": 2, "ifIndex": 102, "ifName": "vendor-two",
+            "ifDescr": "uplink-two",
+        },
+    ]
+
+    by_ifname = gte.resolve_port_identity(
+        device, port_id=999, port_name="Gi1/0/1"
+    )
+    assert by_ifname["state"] == "resolved"
+    assert by_ifname["value"] == 101
+    assert by_ifname["evidence"][0] == {
+        "kind": "librenms-port-id", "identity": "999", "candidates": [],
+    }
+
+    by_ifdescr = gte.resolve_port_identity(
+        device, port_id=999, port_name="uplink-two"
+    )
+    assert by_ifdescr["state"] == "resolved"
+    assert by_ifdescr["value"] == 102
+    assert by_ifdescr["strategy"] == "exact-ifname-or-ifdescr"
+
+    ambiguous = _identity_device("10.0.0.2", "switch")
+    ambiguous["port_records"] = [
+        {"port_id": 7, "ifIndex": 1, "ifName": "unique-name"},
+        {"port_id": 7, "ifIndex": 2, "ifName": "other-name"},
+    ]
+    result = gte.resolve_port_identity(
+        ambiguous, port_id=7, port_name="unique-name"
+    )
+    assert result["state"] == "ambiguous"
+    assert result["strategy"] == "librenms-port-id"
+    assert result["candidates"] == [1, 2]
+
+
+def test_port_ifdescr_safe_alias_and_slash_suffix_are_independent_layers():
+    ifdescr_device = _identity_device("10.0.0.1", "switch")
+    ifdescr_device["port_records"] = [{
+        "port_id": 1, "ifIndex": 41, "ifName": "vendor-port-a",
+        "ifDescr": "GigabitEthernet1/0/41", "ifAlias": "To core Gi1/0/9",
+    }]
+    assert gte.resolve_port_identity(
+        ifdescr_device, port_name="Gi1/0/41"
+    )["value"] == 41
+    assert gte.resolve_port_identity(
+        ifdescr_device, port_name="Gi1/0/9"
+    )["state"] == "not_found"
+
+    alias_device = _identity_device("10.0.0.2", "switch")
+    alias_device["port_records"] = [{
+        "port_id": 2, "ifIndex": 9, "ifName": "vendor-port-b",
+        "ifDescr": "vendor-port-b", "ifAlias": "Gi1/0/9",
+    }]
+    alias = gte.resolve_port_identity(alias_device, port_name="Gi1/0/9")
+    assert alias["state"] == "resolved"
+    assert alias["strategy"] == "safe-ifalias"
+
+    suffix_device = _identity_device(
+        "10.0.0.3", "switch", ifname={4: "ether4", 5: "ether4-Center"}
+    )
+    assert gte.resolve_port_identity(
+        suffix_device, port_name="bridge/ether4"
+    )["value"] == 4
+    assert gte.resolve_port_identity(
+        suffix_device, port_name="bridge-LAN/ether4-Center"
+    )["value"] == 5
+
+
+def test_duplicate_ifdescr_alias_and_final_suffix_stop_as_ambiguous():
+    unique_device = _identity_device(
+        "10.0.0.9", "switch", ifname={9: "Gi1/0/9"}
+    )
+    unique_ifname = gte.resolve_port_identity(
+        unique_device, port_name="Gi1/0/9"
+    )
+    assert unique_ifname["state"] == "resolved"
+    assert unique_ifname["value"] == 9
+
+    device = _identity_device("10.0.0.1", "switch")
+    device["port_records"] = [
+        {"port_id": 1, "ifIndex": 1, "ifName": "vendor-a",
+         "ifDescr": "uplink-port", "ifAlias": "Gi1/0/9"},
+        {"port_id": 2, "ifIndex": 2, "ifName": "vendor-b",
+         "ifDescr": "uplink-port", "ifAlias": "GigabitEthernet1/0/9"},
+    ]
+    by_ifdescr = gte.resolve_port_identity(device, port_name="uplink-port")
+    assert by_ifdescr["state"] == "ambiguous"
+    assert by_ifdescr["strategy"] == "exact-ifname-or-ifdescr"
+    assert by_ifdescr["candidates"] == [1, 2]
+
+    by_alias = gte.resolve_port_identity(device, port_name="Gi1/0/9")
+    assert by_alias["state"] == "ambiguous"
+    assert by_alias["strategy"] == "safe-ifalias"
+    assert by_alias["candidates"] == [1, 2]
+
+    suffix_device = _identity_device(
+        "10.0.0.2", "switch", ifname={4: "ether4", 5: "ether4"}
+    )
+    by_suffix = gte.resolve_port_identity(
+        suffix_device, port_name="bridge/ether4"
+    )
+    assert by_suffix["state"] == "ambiguous"
+    assert by_suffix["strategy"] == "unique-slash-suffix"
+    assert by_suffix["candidates"] == [4, 5]
+
+
+def _conflict_edge(remote_ip, remote_ifindex, observations):
+    return {
+        "from_ip": "10.0.0.1", "from_port": "Gi1/0/1", "from_ifindex": 1,
+        "to_ip": remote_ip, "to_port": "Gi1/0/2",
+        "to_ifindex": remote_ifindex, "_observations": observations,
+    }
+
+
+def test_stronger_endpoint_evidence_beats_single_weak_observation():
+    strong = _conflict_edge("10.0.0.2", 2, 2)
+    weak = _conflict_edge("10.0.0.3", 3, 1)
+
+    kept = gte.resolve_endpoint_conflicts([weak, strong])
+
+    assert len(kept) == 1
+    assert kept[0]["to_ip"] == "10.0.0.2"
+    assert "_observations" not in kept[0]
+
+
+def test_partial_edges_compete_for_each_resolved_physical_endpoint():
+    first = _conflict_edge("10.0.0.2", None, 1)
+    second = _conflict_edge("10.0.0.3", None, 1)
+
+    def resolve(order):
+        diagnostics = []
+        invalidation_hints = []
+        kept = gte.resolve_endpoint_conflicts(
+            order, diagnostics=diagnostics, evidence_seen_at=123.0,
+            invalidation_hints=invalidation_hints,
+        )
+        return kept, diagnostics, invalidation_hints
+
+    forward = resolve([first, second])
+    reverse = resolve([
+        _conflict_edge("10.0.0.3", None, 1),
+        _conflict_edge("10.0.0.2", None, 1),
+    ])
+
+    assert forward == reverse
+    assert forward[0] == []
+    assert len(forward[1]) == 1
+    assert forward[1][0]["resolution_state"] == "endpoint_conflict"
+    assert forward[2][0]["remote_ips"] == ["10.0.0.2", "10.0.0.3"]
+    assert "_cache_invalidation" not in forward[1][0]
+
+    strong = _conflict_edge("10.0.0.2", 2, 2)
+    weak_partial = _conflict_edge("10.0.0.3", None, 1)
+    kept = gte.resolve_endpoint_conflicts([weak_partial, strong])
+    assert len(kept) == 1
+    assert kept[0]["to_ip"] == "10.0.0.2"
+
+
+def test_equal_rank_endpoint_conflict_blocks_tied_and_lower_edges_deterministically():
+    def resolve(order):
+        diagnostics = []
+        kept = gte.resolve_endpoint_conflicts(
+            order, diagnostics=diagnostics, evidence_seen_at=123.0
+        )
+        return kept, gte.build_topology_diagnostics(
+            diagnostics, generated_at=123.0
+        )
+
+    first = _conflict_edge("10.0.0.2", 2, 2)
+    second = _conflict_edge("10.0.0.3", 3, 2)
+    lower = _conflict_edge("10.0.0.4", 4, 1)
+    forward = resolve([first, second, lower])
+    reverse = resolve([
+        _conflict_edge("10.0.0.4", 4, 1),
+        _conflict_edge("10.0.0.3", 3, 2),
+        _conflict_edge("10.0.0.2", 2, 2),
+    ])
+
+    assert forward == reverse
+    assert forward[0] == []
+    assert forward[1]["summary"]["endpoint_conflict"] == 1
+    record = forward[1]["records"][0]
+    assert record["candidate_devices"] == ["10.0.0.2", "10.0.0.3"]
+
+
+def test_contested_endpoint_invalidation_covers_lower_rank_without_widening():
+    diagnostics = []
+    invalidation_hints = []
+    live = gte.resolve_endpoint_conflicts(
+        [
+            _conflict_edge("10.0.0.2", 2, 2),
+            _conflict_edge("10.0.0.3", 3, 2),
+            _conflict_edge("10.0.0.4", 4, 1),
+        ],
+        diagnostics=diagnostics,
+        evidence_seen_at=123.0,
+        invalidation_hints=invalidation_hints,
+    )
+    blocked_lower = _conflict_edge("10.0.0.4", 4, 1)
+    blocked_lower.pop("_observations")
+    blocked_lower["last_seen"] = 100.0
+    unrelated = {
+        "from_ip": "10.0.0.1", "from_port": "Gi1/0/9", "from_ifindex": 9,
+        "to_ip": "10.0.0.4", "to_port": "Gi1/0/10", "to_ifindex": 10,
+        "last_seen": 100.0,
+    }
+
+    retained = gte.retain_cached_network_edges(
+        live, [blocked_lower, unrelated],
+        ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"],
+        now=200.0,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert live == []
+    assert invalidation_hints[0]["remote_ips"] == [
+        "10.0.0.2", "10.0.0.3", "10.0.0.4",
+    ]
+    assert len(retained) == 1
+    assert retained[0]["from_ifindex"] == 9
+    assert retained[0]["stale"] is True
+
+
+def test_ambiguous_device_cache_invalidation_is_candidate_scoped():
+    hint = {
+        "kind": "endpoint-candidates",
+        "local_ip": "10.0.0.1", "local_ifindex": 1,
+        "local_port": "Gi1/0/1",
+        "remote_ips": ["10.0.0.2", "10.0.0.3"],
+    }
+    cached = [
+        _conflict_edge("10.0.0.2", 2, 1),
+        _conflict_edge("10.0.0.4", 4, 1),
+    ]
+    for edge in cached:
+        edge.pop("_observations")
+        edge["last_seen"] = 100.0
+
+    retained = gte.retain_cached_network_edges(
+        [], cached, ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"],
+        now=200.0, invalidation_hints=[hint],
+    )
+
+    assert len(retained) == 1
+    assert retained[0]["to_ip"] == "10.0.0.4"
+    assert retained[0]["stale"] is True
+
+
+def test_not_found_diagnostic_does_not_invalidate_stale_cache():
+    diagnostic = {"resolution_state": "unknown_device", "from_ip": "10.0.0.1"}
+    cached = [_conflict_edge("10.0.0.2", 2, 1)]
+    cached[0].pop("_observations")
+    cached[0]["last_seen"] = 100.0
+
+    retained = gte.retain_cached_network_edges(
+        [], cached, ["10.0.0.1", "10.0.0.2"], now=200.0,
+        invalidation_hints=[diagnostic],
+    )
+
+    assert len(retained) == 1
+    assert retained[0]["stale"] is True
