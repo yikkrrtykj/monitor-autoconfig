@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import bridge_interconnect_watcher as interconnect
+
 # alertmanager-feishu-bridge.py is hyphenated; load it by path. Importing only
 # defines functions (the server starts under __main__), so this is side-effect free.
 _spec = importlib.util.spec_from_file_location(
@@ -10,6 +12,46 @@ _spec = importlib.util.spec_from_file_location(
 )
 bridge = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bridge)
+
+
+def interconnect_watcher_for_query(query, logs=None):
+    logs = logs if logs is not None else []
+    return interconnect.InterconnectWatcher(
+        enabled=True,
+        alert_for_seconds=5,
+        poll_interval=5,
+        jobs="infra-switch-ifmib",
+        port_filter=bridge.INTERCONNECT_PORT_FILTER,
+        state_file="unused.json",
+        prometheus_query=query,
+        fetch_name_cache=lambda: {},
+        load_topology_edges=lambda: [],
+        load_json_dict=lambda _path: {},
+        save_json_dict=lambda _path, _values: True,
+        as_float=bridge._as_float,
+        normalize_label=bridge._norm_label,
+        audit_port_key=bridge._audit_port_key,
+        build_card=bridge.build_interconnect_card,
+        send=lambda _card: True,
+        find_merge_candidate=lambda _event, _now: None,
+        complete_merge=lambda _event, _cause, _now: None,
+        mark_watcher_health=lambda *_args: None,
+        log=logs.append,
+    )
+
+
+def build_interconnect_peer_map(edges):
+    return interconnect.build_peer_map(edges, bridge._audit_port_key)
+
+
+def resolve_interconnect_peer(peer_map, ip, physical_ports, aggregate_port=""):
+    return interconnect.resolve_peer_switch(
+        peer_map,
+        ip,
+        physical_ports,
+        bridge._audit_port_key,
+        aggregate_port=aggregate_port,
+    )
 
 
 def test_recovery_waits_for_sustained_up():
@@ -272,23 +314,23 @@ def test_flap_restarts_the_stable_window():
 
 def test_classify_interconnect_distinguishes_degraded_from_down():
     # All members up -> nothing to report.
-    assert bridge.classify_interconnect(True, [True, True]) == "healthy"
+    assert interconnect.classify_interconnect(True, [True, True]) == "healthy"
     # Aggregate protocol/oper state down is a real failure even if every
     # physical member still has carrier (for example LACP negotiation failed).
-    assert bridge.classify_interconnect(False, [True, True]) == "down"
+    assert interconnect.classify_interconnect(False, [True, True]) == "down"
     # One member down while the bundle is still up -> the alertable case.
-    assert bridge.classify_interconnect(True, [True, False]) == "degraded"
+    assert interconnect.classify_interconnect(True, [True, False]) == "degraded"
     # Every member down -> bundle down and must be alerted directly.
-    assert bridge.classify_interconnect(False, [False, False]) == "down"
+    assert interconnect.classify_interconnect(False, [False, False]) == "down"
     # A single-member/down bundle is commonly an intentional dormant Cisco
     # channel-group. It has no redundancy to lose and must not alert on restart.
-    assert bridge.classify_interconnect(False, [False]) == "unknown"
+    assert interconnect.classify_interconnect(False, [False]) == "unknown"
     # No member visibility (no ifStackTable) -> nothing to say.
-    assert bridge.classify_interconnect(True, []) == "unknown"
-    assert bridge.classify_interconnect(False, []) == "unknown"
+    assert interconnect.classify_interconnect(True, []) == "unknown"
+    assert interconnect.classify_interconnect(False, []) == "unknown"
     # Missing physical ifOperStatus is not equivalent to an online member.
-    assert bridge.classify_interconnect(True, [True, None]) == "unknown"
-    assert bridge.classify_interconnect(False, [True, None]) == "unknown"
+    assert interconnect.classify_interconnect(True, [True, None]) == "unknown"
+    assert interconnect.classify_interconnect(False, [True, None]) == "unknown"
 
 
 def test_interconnect_fetch_skips_admin_down_bundle(monkeypatch):
@@ -316,9 +358,9 @@ def test_interconnect_fetch_skips_admin_down_bundle(monkeypatch):
             return []
         raise AssertionError(expr)
 
-    monkeypatch.setattr(bridge, "prometheus_query", query)
+    watcher = interconnect_watcher_for_query(query)
 
-    assert bridge.fetch_interconnect_ports("infra-switch-ifmib") == []
+    assert watcher.fetch_interconnect_ports("infra-switch-ifmib") == []
 
 
 def test_interconnect_card_names_the_down_physical_port_and_peer(monkeypatch):
@@ -346,13 +388,13 @@ def test_peer_switch_resolves_from_lldp_by_down_member_port():
         {"from_ip": "192.168.10.254", "from_port": "Gi1/0/4", "to_sysname": "douyucarnival-stage4"},
         {"from_ip": "192.168.10.254", "from_port": "Gi1/0/9", "to_sysname": "other"},
     ]
-    peer_map = bridge.build_peer_map(edges)
+    peer_map = build_interconnect_peer_map(edges)
     # The down member's LLDP neighbor is the peer switch.
-    assert bridge.resolve_peer_switch(
+    assert resolve_interconnect_peer(
         peer_map, "192.168.10.254", ["Gi1/0/4"], aggregate_port="Po4",
     ) == "douyucarnival-stage4"
     # Unknown ports -> "" (card falls back to the alias).
-    assert bridge.resolve_peer_switch(peer_map, "192.168.10.254", ["Po9"]) == ""
+    assert resolve_interconnect_peer(peer_map, "192.168.10.254", ["Po9"]) == ""
 
 
 def test_peer_switch_map_is_bidirectional_when_remote_port_is_known():
@@ -360,9 +402,9 @@ def test_peer_switch_map_is_bidirectional_when_remote_port_is_known():
         "from_ip": "10.0.0.1", "from_sysname": "core", "from_port": "Gi1/0/1",
         "to_ip": "10.0.0.2", "to_sysname": "stage", "to_port": "Gi1/0/48",
     }]
-    peer_map = bridge.build_peer_map(edges)
-    assert bridge.resolve_peer_switch(peer_map, "10.0.0.1", ["Gi1/0/1"]) == "stage"
-    assert bridge.resolve_peer_switch(peer_map, "10.0.0.2", ["Gi1/0/48"]) == "core"
+    peer_map = build_interconnect_peer_map(edges)
+    assert resolve_interconnect_peer(peer_map, "10.0.0.1", ["Gi1/0/1"]) == "stage"
+    assert resolve_interconnect_peer(peer_map, "10.0.0.2", ["Gi1/0/48"]) == "core"
 
 
 def test_peer_switch_uses_c1000_member_array_and_rejects_tied_conflicts():
@@ -372,49 +414,49 @@ def test_peer_switch_uses_c1000_member_array_and_rejects_tied_conflicts():
         "from_aggregate_port": "Po11",
         "to_ip": "192.168.10.254", "to_sysname": "core", "to_port": "Te1/0/1",
     }]
-    peer_map = bridge.build_peer_map(edges)
-    assert bridge.resolve_peer_switch(
+    peer_map = build_interconnect_peer_map(edges)
+    assert resolve_interconnect_peer(
         peer_map, "192.168.10.11", ["TenGigabitEthernet2/0/2", "Po11"],
     ) == "core"
 
-    conflicting = bridge.build_peer_map([
+    conflicting = build_interconnect_peer_map([
         {"from_ip": "10.0.0.1", "from_port": "Gi1/0/1", "to_sysname": "peer-a"},
         {"from_ip": "10.0.0.1", "from_port": "Gi1/0/2", "to_sysname": "peer-b"},
     ])
-    assert bridge.resolve_peer_switch(
+    assert resolve_interconnect_peer(
         conflicting, "10.0.0.1", ["Gi1/0/1", "Gi1/0/2"],
     ) == ""
 
 
 def test_physical_peer_wins_over_conflicting_aggregate_fallback():
-    peer_map = bridge.build_peer_map([
+    peer_map = build_interconnect_peer_map([
         {"from_ip": "10.0.0.1", "from_port": "Te1/0/4", "to_sysname": "PGS-stage1", "stale": True},
         {"from_ip": "10.0.0.1", "from_port": "Po2", "to_sysname": "Lan-Server"},
     ])
 
-    assert bridge.resolve_peer_switch(
+    assert resolve_interconnect_peer(
         peer_map, "10.0.0.1", ["Te1/0/4"], aggregate_port="Po2",
     ) == "PGS-stage1"
 
 
 def test_aggregate_peer_is_used_only_when_physical_members_have_no_candidates():
-    peer_map = bridge.build_peer_map([
+    peer_map = build_interconnect_peer_map([
         {"from_ip": "10.0.0.1", "from_port": "Po2", "to_sysname": "Lan-Server"},
     ])
 
-    assert bridge.resolve_peer_switch(
+    assert resolve_interconnect_peer(
         peer_map, "10.0.0.1", ["Te1/0/4"], aggregate_port="Po2",
     ) == "Lan-Server"
 
 
 def test_ambiguous_physical_peer_cannot_fall_back_to_aggregate():
-    peer_map = bridge.build_peer_map([
+    peer_map = build_interconnect_peer_map([
         {"from_ip": "10.0.0.1", "from_port": "Te1/0/4", "to_sysname": "stage-a"},
         {"from_ip": "10.0.0.1", "from_port": "Te1/0/4", "to_sysname": "stage-b"},
         {"from_ip": "10.0.0.1", "from_port": "Po2", "to_sysname": "Lan-Server"},
     ])
 
-    assert bridge.resolve_peer_switch(
+    assert resolve_interconnect_peer(
         peer_map, "10.0.0.1", ["Te1/0/4"], aggregate_port="Po2",
     ) == ""
 
@@ -625,8 +667,8 @@ def test_fetch_interconnect_members_maps_aggregate_to_member_ifindexes(monkeypat
         {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "0", "ifStackLowerLayer": "400"}, "value": [0, "1"]},
         {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "4", "ifStackLowerLayer": "0"}, "value": [0, "1"]},
     ]
-    monkeypatch.setattr(bridge, "prometheus_query", lambda q: stack_rows)
-    members = bridge.fetch_interconnect_members("infra-switch-ifmib")
+    watcher = interconnect_watcher_for_query(lambda _query: stack_rows)
+    members = watcher.fetch_interconnect_members("infra-switch-ifmib")
     assert members == {("10.0.0.1", "400"): ["4", "5"]}
 
 
@@ -635,9 +677,9 @@ def test_fetch_interconnect_members_ignores_inactive_relationships(monkeypatch):
         {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "400", "ifStackLowerLayer": "4"}, "value": [0, "1"]},
         {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "400", "ifStackLowerLayer": "5"}, "value": [0, "2"]},
     ]
-    monkeypatch.setattr(bridge, "prometheus_query", lambda q: stack_rows)
+    watcher = interconnect_watcher_for_query(lambda _query: stack_rows)
 
-    assert bridge.fetch_interconnect_members("infra-switch-ifmib") == {
+    assert watcher.fetch_interconnect_members("infra-switch-ifmib") == {
         ("10.0.0.1", "400"): ["4"],
     }
 
@@ -647,13 +689,12 @@ def test_fetch_interconnect_members_isolates_ambiguous_ifstack_without_authority
         {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "47", "ifStackLowerLayer": "10"}, "value": [0, "1"]},
         {"metric": {"target_ip": "10.0.0.1", "ifStackHigherLayer": "48", "ifStackLowerLayer": "10"}, "value": [0, "1"]},
     ]
-    monkeypatch.setattr(
-        bridge, "prometheus_query",
+    watcher = interconnect_watcher_for_query(
         lambda expr: rows if expr.startswith("ifStackStatus") else [],
     )
 
-    assert bridge.fetch_interconnect_members("infra-switch-ifmib") == {}
-    assert bridge.fetch_interconnect_members.last_conflicts["10.0.0.1"][10]["reason"] == "ambiguous-ifstack"
+    assert watcher.fetch_interconnect_members("infra-switch-ifmib") == {}
+    assert watcher._last_conflicts["10.0.0.1"][10]["reason"] == "ambiguous-ifstack"
 
 
 def test_36430_authoritative_ownership_pipeline_builds_only_the_real_po3_alert(monkeypatch):
@@ -702,27 +743,26 @@ def test_36430_authoritative_ownership_pipeline_builds_only_the_real_po3_alert(m
         "dot3adAggPortActorAdminKey": indexed("physicalIfIndex", ((11, 3), (30, 3))),
         "dot3adAggPortAttachedAggID": indexed("physicalIfIndex", ((11, 0), (30, 0))),
     }
-    monkeypatch.setattr(
-        bridge, "prometheus_query",
+    watcher = interconnect_watcher_for_query(
         lambda expr: next((values for name, values in metrics.items() if expr.startswith(name)), []),
     )
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#36430")
 
-    ports = bridge.fetch_interconnect_ports("infra-switch-ifmib")
+    ports = watcher.fetch_interconnect_ports("infra-switch-ifmib")
     po2 = next(port for port in ports if port["port"] == "Po2")
     po3 = next(port for port in ports if port["port"] == "Po3")
     assert [member["name"] for member in po2["members"]] == ["Te1/0/3", "Te2/0/3"]
     assert [member["name"] for member in po3["members"]] == ["Te1/0/4", "Te2/0/4"]
-    assert bridge.classify_interconnect(True, [True, True]) == "healthy"
-    assert bridge.classify_interconnect(False, [False, False]) == "down"
+    assert interconnect.classify_interconnect(True, [True, True]) == "healthy"
+    assert interconnect.classify_interconnect(False, [False, False]) == "down"
 
-    peer_map = bridge.build_peer_map([
+    peer_map = build_interconnect_peer_map([
         {"from_ip": ip, "from_port": "Te1/0/3", "from_aggregate_port": "Po2", "from_member_ports": ["Te1/0/3", "Te2/0/3"], "to_sysname": "Lan-Server"},
         {"from_ip": ip, "from_port": "Te1/0/4", "from_aggregate_port": "Po3", "from_member_ports": ["Te1/0/4", "Te2/0/4"], "to_sysname": "PGS-stage1", "stale": True},
     ])
     down_details = [member for member in po3["members"] if member["up"] is False]
     down_names = [member["name"] for member in down_details]
-    peer = bridge.resolve_peer_switch(peer_map, ip, down_names, aggregate_port="Po3")
+    peer = resolve_interconnect_peer(peer_map, ip, down_names, aggregate_port="Po3")
     card = bridge.build_interconnect_card({
         **po3, "status": "down", "duration": 6,
         "down_members": down_names, "down_member_details": down_details,

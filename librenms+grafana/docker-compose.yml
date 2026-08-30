@@ -139,6 +139,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./alertmanager-feishu-bridge.py:/app/bridge.py:ro
+      - ./bridge_interconnect_watcher.py:/app/bridge_interconnect_watcher.py:ro
       - ./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro
       - ./bridge_online_identity.py:/app/bridge_online_identity.py:ro
       - ./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro

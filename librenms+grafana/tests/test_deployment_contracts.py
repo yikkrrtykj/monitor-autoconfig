@@ -111,6 +111,7 @@ def test_alert_bridge_mounts_its_split_runtime_modules():
     bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split("  librenms:", 1)[0]
 
     assert "./alertmanager-feishu-bridge.py:/app/bridge.py:ro" in bridge_service
+    assert "./bridge_interconnect_watcher.py:/app/bridge_interconnect_watcher.py:ro" in bridge_service
     assert "./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro" in bridge_service
     assert "./bridge_online_identity.py:/app/bridge_online_identity.py:ro" in bridge_service
     assert "./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro" in bridge_service
@@ -121,6 +122,63 @@ def test_alert_bridge_mounts_its_split_runtime_modules():
     assert 'LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"' in bridge_service
     assert 'INTERCONNECT_STATE_FILE: "${INTERCONNECT_STATE_FILE:-}"' in bridge_service
     assert "- bridge-state:/bridge-state" in bridge_service
+
+
+def test_alert_bridge_delegates_interconnect_watching_without_moving_shared_domains():
+    bridge = read("alertmanager-feishu-bridge.py")
+    watcher = read("bridge_interconnect_watcher.py")
+
+    assert "from bridge_interconnect_watcher import InterconnectWatcher" in bridge
+    assert "_INTERCONNECT_WATCHER = InterconnectWatcher(" in bridge
+    assert "return _INTERCONNECT_WATCHER.run()" in bridge
+    assert 'start_watcher("interconnect", interconnect_watcher)' in bridge
+    assert "INTERCONNECT_ALERT_ENABLED =" in bridge
+    assert "INTERCONNECT_ALERT_FOR_SECONDS =" in bridge
+    assert "INTERCONNECT_ALERT_POLL_INTERVAL =" in bridge
+    assert "INTERCONNECT_ALERT_JOBS =" in bridge
+    assert "INTERCONNECT_PORT_FILTER =" in bridge
+    assert "INTERCONNECT_STATE_FILE =" in bridge
+    assert "LINK_ERRDISABLE_EVENTS = {}" in bridge
+    assert "LINK_AGGREGATE_EVENTS = {}" in bridge
+    assert "LINK_EVENT_MERGE_LOCK = threading.Lock()" in bridge
+    assert "def find_errdisable_merge_candidate(" in bridge
+    assert "def complete_interconnect_merge(" in bridge
+    assert "def load_topology_edges(" in bridge
+    assert "load_topology_edges=load_topology_edges" in bridge
+    assert "normalize_label=_norm_label" in bridge
+    assert "audit_port_key=_audit_port_key" in bridge
+    assert "find_merge_candidate=find_errdisable_merge_candidate" in bridge
+    assert "complete_merge=complete_interconnect_merge" in bridge
+    for helper in (
+        "build_topology_parents",
+        "is_down_symptom",
+        "count_down_descendants",
+        "recovery_ready",
+        "device_retirement_due",
+    ):
+        assert f"def {helper}(" in bridge
+        assert f"def {helper}(" not in watcher
+    assert "class InterconnectWatcher:" in watcher
+    assert "def load_interconnect_alert_states(" in watcher
+    assert "def save_interconnect_alert_states(" in watcher
+    assert "def classify_interconnect(" in watcher
+    assert "def build_peer_map(" in watcher
+    assert "def resolve_peer_switch(" in watcher
+    for helper in (
+        "load_interconnect_alert_states",
+        "save_interconnect_alert_states",
+        "classify_interconnect",
+        "fetch_interconnect_members",
+        "fetch_interconnect_ports",
+        "build_peer_map",
+        "resolve_peer_switch",
+    ):
+        assert f"def {helper}(" not in bridge
+    assert "watched aggregates total={len(ports)} degraded={degraded}" in watcher
+    assert "down={down}" not in watcher
+    assert "import alertmanager" not in watcher
+    assert "os.environ" not in watcher
+    assert "threading" not in watcher
 
 
 def test_alert_bridge_delegates_sysname_watching_to_its_split_runtime_module():

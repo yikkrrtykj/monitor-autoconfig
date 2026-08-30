@@ -102,11 +102,11 @@ import time
 from urllib import error, parse, request
 
 from bridge_isp_watcher import IspBandwidthWatcher
+from bridge_interconnect_watcher import InterconnectWatcher
 from bridge_online_identity import OnlineIdentityService
 from bridge_resource_watcher import ResourceWatcher
 from bridge_sysname_watcher import SysnameChangeWatcher
 from feishu_delivery import FeishuDelivery
-from lag_ownership import resolve_lag_ownership
 from librenms_client import LibreNMSClient
 from network_syslog import (
     MacFlapTracker,
@@ -421,42 +421,6 @@ def _load_json_dict(path):
 def _save_json_dict(path, values):
     payload = json.dumps(values, ensure_ascii=False, sort_keys=True)
     return _atomic_write_text(path, payload)
-
-
-def load_interconnect_alert_states():
-    loaded = {}
-    for key, value in _load_json_dict(INTERCONNECT_STATE_FILE).items():
-        if not key or not isinstance(value, dict) or not value.get("alerting"):
-            continue
-        down_members = value.get("down_members")
-        last_port = value.get("last_port")
-        loaded[str(key)] = {
-            "alerting": True,
-            "down_since": _as_float(value.get("down_since")),
-            "down_members": [str(item) for item in down_members]
-            if isinstance(down_members, list) else [],
-            "peer_switch": str(value.get("peer_switch") or ""),
-            "last_port": dict(last_port) if isinstance(last_port, dict) else {},
-            "handoff_logged": False,
-            "missing_since": None,
-        }
-    return loaded
-
-
-def save_interconnect_alert_states(states):
-    active = {}
-    for key, state in states.items():
-        if not state.get("alerting"):
-            continue
-        last_port = state.get("last_port")
-        active[str(key)] = {
-            "alerting": True,
-            "down_since": state.get("down_since"),
-            "down_members": list(state.get("down_members") or []),
-            "peer_switch": state.get("peer_switch") or "",
-            "last_port": dict(last_port) if isinstance(last_port, dict) else {},
-        }
-    return _save_json_dict(INTERCONNECT_STATE_FILE, active)
 
 
 def mark_device_online_notified(*values):
@@ -2549,65 +2513,6 @@ def _isp_target_names():
     return names
 
 
-def _interconnect_keywords():
-    return [part.strip().lower() for part in INTERCONNECT_PORT_FILTER.split(",") if part.strip()]
-
-
-def _port_label(metric):
-    for field in ("ifName", "ifDescr", "ifAlias"):
-        value = (metric.get(field) or "").strip()
-        if value:
-            return value
-    return metric.get("ifIndex") or "?"
-
-
-def _is_interconnect_port(metric):
-    fields = [
-        metric.get("ifName") or "",
-        metric.get("ifDescr") or "",
-        metric.get("ifAlias") or "",
-    ]
-    joined = " ".join(fields).lower()
-    norm = _norm_label(joined)
-    for keyword in _interconnect_keywords():
-        knorm = _norm_label(keyword)
-        if not knorm:
-            continue
-        if len(knorm) <= 3:
-            if norm.startswith(knorm):
-                return True
-            continue
-        if keyword in joined or norm.startswith(knorm):
-            return True
-    return False
-
-
-def _if_oper_is_up(metric, value):
-    status_label = (
-        metric.get("ifOperStatus")
-        or metric.get("ifOperStatus_label")
-        or metric.get("ifOperStatus_state")
-    )
-    if status_label:
-        if value < 0.5:
-            return None
-        return str(status_label).lower() == "up"
-    return int(value) == 1
-
-
-def _if_admin_is_up(metric, value):
-    status_label = (
-        metric.get("ifAdminStatus")
-        or metric.get("ifAdminStatus_label")
-        or metric.get("ifAdminStatus_state")
-    )
-    if status_label:
-        if value < 0.5:
-            return None
-        return str(status_label).lower() == "up"
-    return int(value) == 1
-
-
 def prometheus_query(query):
     url = f"{PROMETHEUS_URL}/api/v1/query?{parse.urlencode({'query': query})}"
     with request.urlopen(url, timeout=10) as resp:
@@ -2671,364 +2576,6 @@ def isp_bandwidth_watcher():
     return _ISP_BANDWIDTH_WATCHER.run()
 
 
-def classify_interconnect(lag_up, member_ups):
-    """Decide what an interconnect LAG's member states mean for alerting:
-
-      healthy  - every member up (nothing to report)
-      degraded - some members down but the bundle is still up (redundancy lost,
-                 traffic still flows -> this is the case worth alerting)
-      down     - aggregate protocol/oper state is down, or every member is down
-      unknown  - fewer than two visible members (missing ifStackTable or an
-                 intentional/single-member dormant bundle); nothing to say
-    """
-    # Without ifStack member visibility an administratively-up but unused LAG is
-    # indistinguishable from a failed interconnect. Alerting it produced false
-    # cards after every deployment whose online-member field was only "?".
-    if len(member_ups) < 2 or any(state is None for state in member_ups):
-        return "unknown"
-    if not lag_up:
-        return "down"
-    any_down = not all(member_ups)
-    any_up = any(member_ups)
-    if not any_down:
-        return "healthy"
-    if not any_up:
-        return "down"
-    return "degraded"
-
-
-def fetch_interconnect_members(jobs_regex):
-    """Resolve authoritative LAG ownership from the current SNMP metrics.
-
-    New Cisco/IEEE metrics take precedence. Deployments that have not rolled
-    out those metrics still use an unambiguous single-owner ifStack relation;
-    duplicate ifStack claims are isolated instead of being unioned.
-    """
-
-    def fetch(metric_name):
-        try:
-            return prometheus_query(f'{metric_name}{{job=~"{jobs_regex}"}}')
-        except Exception as exc:
-            log(f"[LINK] {metric_name} lookup failed: {exc}")
-            return []
-
-    def metric_ip(metric):
-        return metric.get("target_ip") or metric.get("instance") or ""
-
-    ifstack_by_ip = {}
-    for item in fetch("ifStackStatus"):
-        raw_value = (item.get("value") or [None, None])[-1]
-        try:
-            if float(raw_value) != 1.0:
-                continue
-        except (TypeError, ValueError):
-            continue
-        metric = item.get("metric") or {}
-        higher = metric.get("ifStackHigherLayer") or metric.get("ifStackHigherLayerIndex")
-        lower = metric.get("ifStackLowerLayer") or metric.get("ifStackLowerLayerIndex")
-        ip = metric_ip(metric)
-        # 0 marks the top/bottom sentinels of a stack; only real higher->lower rows pair an aggregate with a member.
-        if not higher or not lower or higher == "0" or lower == "0":
-            continue
-        bucket = ifstack_by_ip.setdefault(ip, {}).setdefault(higher, [])
-        if lower not in bucket:
-            bucket.append(lower)
-
-    def indexed_values(metric_name, index_label):
-        values = {}
-        for item in fetch(metric_name):
-            metric = item.get("metric") or {}
-            ip = metric_ip(metric)
-            index = metric.get(index_label)
-            try:
-                value = int(float((item.get("value") or [None, "nan"])[-1]))
-            except (TypeError, ValueError):
-                continue
-            if ip and index not in (None, ""):
-                values.setdefault(ip, {})[index] = value
-        return values
-
-    pagp_by_ip = indexed_values("pagpGroupIfIndex", "physicalIfIndex")
-    attached_by_ip = indexed_values("dot3adAggPortAttachedAggID", "physicalIfIndex")
-    aggregate_keys_by_ip = indexed_values("dot3adAggActorAdminKey", "aggregateIfIndex")
-    physical_keys_by_ip = indexed_values("dot3adAggPortActorAdminKey", "physicalIfIndex")
-
-    resolved_members = {}
-    conflicts = {}
-    device_ips = (
-        set(ifstack_by_ip) | set(pagp_by_ip) | set(attached_by_ip)
-        | set(aggregate_keys_by_ip) | set(physical_keys_by_ip)
-    )
-    for ip in sorted(device_ips):
-        resolution = resolve_lag_ownership(
-            ifstack_claims=ifstack_by_ip.get(ip),
-            pagp_group_ifindex=pagp_by_ip.get(ip),
-            attached_aggregate_id=attached_by_ip.get(ip),
-            aggregate_admin_keys=aggregate_keys_by_ip.get(ip),
-            physical_admin_keys=physical_keys_by_ip.get(ip),
-        )
-        for aggregate, member_indexes in resolution["members_by_aggregate"].items():
-            resolved_members[(ip, str(aggregate))] = [str(value) for value in member_indexes]
-        if resolution["conflicts"]:
-            conflicts[ip] = resolution["conflicts"]
-
-    previous_conflicts = getattr(fetch_interconnect_members, "last_conflicts", None)
-    if conflicts != previous_conflicts:
-        if conflicts:
-            log(f"[LINK] isolated ambiguous LAG ownership: {conflicts}")
-        fetch_interconnect_members.last_conflicts = conflicts
-    return resolved_members
-
-
-def fetch_interconnect_ports(jobs_regex):
-    results = prometheus_query(f'ifOperStatus{{job=~"{jobs_regex}"}}')
-    try:
-        admin_results = prometheus_query(f'ifAdminStatus{{job=~"{jobs_regex}"}}')
-    except Exception as exc:
-        log(f"[LINK] ifAdminStatus lookup failed; skipping admin-state filter: {exc}")
-        admin_results = []
-    admin_up = {}
-    for item in admin_results:
-        metric = item.get("metric") or {}
-        ip = metric.get("target_ip") or metric.get("instance") or ""
-        ifindex = metric.get("ifIndex")
-        if not (ip and ifindex):
-            continue
-        try:
-            value = float((item.get("value") or [None, "nan"])[1])
-        except (TypeError, ValueError):
-            continue
-        state = _if_admin_is_up(metric, value)
-        if state is not None:
-            admin_up[(ip, ifindex)] = state
-    # Per-interface name + up/down for every interface (physical members too), so
-    # an aggregate's member ifIndexes resolve to real port names and states.
-    index_meta = {}
-    index_up = {}
-    for item in results:
-        metric = item.get("metric") or {}
-        ip = metric.get("target_ip") or metric.get("instance") or ""
-        ifindex = metric.get("ifIndex")
-        if not (ip and ifindex):
-            continue
-        index_meta[(ip, ifindex)] = {
-            "name": _port_label(metric),
-            "alias": metric.get("ifAlias") or "",
-            "descr": metric.get("ifDescr") or "",
-        }
-        try:
-            value = float((item.get("value") or [None, "nan"])[1])
-        except (TypeError, ValueError):
-            continue
-        member_up = _if_oper_is_up(metric, value)
-        # Ignore inactive enum series; only the active status sample may update
-        # the member state. Missing samples still default to up below so they
-        # cannot manufacture a degraded alert.
-        if member_up is not None:
-            index_up[(ip, ifindex)] = bool(member_up)
-    members_map = fetch_interconnect_members(jobs_regex)
-
-    ports = []
-    for item in results:
-        metric = item.get("metric") or {}
-        if not _is_interconnect_port(metric):
-            continue
-        try:
-            value = float((item.get("value") or [None, "nan"])[1])
-        except (TypeError, ValueError):
-            continue
-        up = _if_oper_is_up(metric, value)
-        if up is None:
-            continue
-        ip = metric.get("target_ip") or metric.get("instance") or ""
-        port = _port_label(metric)
-        ifindex = metric.get("ifIndex")
-        # Administratively disabled or unused backup bundles are intentional,
-        # not outages. Only alert interfaces whose admin state is up/unknown.
-        if admin_up.get((ip, ifindex)) is False:
-            continue
-        members = []
-        for member_idx in members_map.get((ip, ifindex), []):
-            member_meta = index_meta.get((ip, member_idx)) or {}
-            name = member_meta.get("name")
-            if not name or name == port:
-                continue
-            members.append({
-                "name": name,
-                "ifindex": member_idx,
-                "up": index_up.get((ip, member_idx)),
-                "alias": member_meta.get("alias") or "",
-                "descr": member_meta.get("descr") or "",
-            })
-        ports.append({
-            "key": "|".join([metric.get("job", ""), ip, ifindex or port]),
-            "device": metric.get("display_name") or metric.get("instance") or ip or "?",
-            "ip": ip,
-            "port": port,
-            "ifindex": ifindex,
-            "alias": metric.get("ifAlias") or "",
-            "lag_up": bool(up),
-            "members": members,
-        })
-    return ports
-
-
-def interconnect_watcher():
-    if not INTERCONNECT_ALERT_ENABLED:
-        log("[LINK] interconnect watcher disabled")
-        return
-    jobs = [j.strip() for j in INTERCONNECT_ALERT_JOBS.split(",") if j.strip()]
-    safe_jobs = [j for j in jobs if re.match(r"^[A-Za-z0-9_:.-]+$", j)]
-    if not safe_jobs:
-        log("[LINK] no valid SNMP jobs configured, watcher disabled")
-        return
-
-    jobs_regex = "|".join(safe_jobs)
-    states = load_interconnect_alert_states()
-    last_status_log = 0.0
-    last_name_refresh = 0.0
-    librenms_names = {}
-    peer_map = {}
-    time.sleep(25)
-    log(
-        "[LINK] interconnect watcher enabled "
-        f"(jobs={','.join(safe_jobs)}, for={INTERCONNECT_ALERT_FOR_SECONDS}s, "
-        f"poll={INTERCONNECT_ALERT_POLL_INTERVAL}s, filter={INTERCONNECT_PORT_FILTER!r})"
-    )
-
-    while True:
-        now = time.time()
-        if now - last_name_refresh >= 60:
-            try:
-                librenms_names = fetch_librenms_name_cache()
-            except Exception as exc:
-                log(f"[LINK] LibreNMS name refresh failed: {exc}")
-            try:
-                peer_map = build_peer_map(load_topology_edges())
-            except Exception as exc:
-                log(f"[LINK] topology peer refresh failed: {exc}")
-            last_name_refresh = now
-
-        try:
-            ports = fetch_interconnect_ports(jobs_regex)
-        except Exception as exc:
-            mark_watcher_health("interconnect", False, exc)
-            log(f"[LINK] poll failed: {exc}")
-            time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
-            continue
-        mark_watcher_health("interconnect", True)
-
-        if now - last_status_log >= 60:
-            degraded = sum(1 for p in ports if classify_interconnect(p["lag_up"], [m["up"] for m in p["members"]]) == "degraded")
-            log(f"[LINK] watched aggregates total={len(ports)} degraded={degraded}")
-            last_status_log = now
-
-        seen_keys = set()
-        for port in ports:
-            seen_keys.add(port["key"])
-            ip = port.get("ip") or ""
-            if ip in librenms_names:
-                port["device"] = librenms_names[ip]
-            member_ups = [m["up"] for m in port["members"]]
-            status = classify_interconnect(port["lag_up"], member_ups)
-            state = states.setdefault(port["key"], {
-                "down_since": None,
-                "alerting": False,
-                "down_members": [],
-                "handoff_logged": False,
-                "missing_since": None,
-            })
-            state["last_port"] = dict(port)
-            state["missing_since"] = None
-
-            # Alert both reduced redundancy and a fully/protocol-down aggregate.
-            # The peer may remain reachable through another path, so handing the
-            # latter off to device-down can otherwise miss the failure entirely.
-            if status in ("degraded", "down"):
-                down_member_details = [
-                    dict(member) for member in port["members"]
-                    if member.get("up") is False
-                ]
-                down_members = [member["name"] for member in down_member_details]
-                if state["down_since"] is None:
-                    state["down_since"] = now
-                duration = max(0, now - state["down_since"])
-                state["down_members"] = down_members
-                if not state["alerting"] and duration >= INTERCONNECT_ALERT_FOR_SECONDS:
-                    # Physical members are authoritative peer evidence. The
-                    # aggregate is consulted only when no member has a topology
-                    # candidate at all; it never votes against a physical port.
-                    peer = resolve_peer_switch(
-                        peer_map, port["ip"], down_members,
-                        aggregate_port=port["port"],
-                    )
-                    state["peer_switch"] = peer
-                    event = dict(port)
-                    event["down_members"] = down_members
-                    event["down_member_details"] = down_member_details
-                    event["up_members"] = [
-                        m["name"] for m in port["members"] if m.get("up") is True
-                    ]
-                    event["peer_switch"] = peer
-                    event["duration"] = duration
-                    event["status"] = status
-                    cause = find_errdisable_merge_candidate(event, now)
-                    if cause:
-                        event["syslog_cause"] = cause
-                    log(f"[LINK] ALERT {event['device']} {event['port']} status={status}, down member(s)={down_members} peer={peer or '-'}")
-                    if send_feishu(build_interconnect_card(event, recovered=False)):
-                        complete_interconnect_merge(event, cause, now)
-                        state["alerting"] = True
-                        state["handoff_logged"] = False
-                        save_interconnect_alert_states(states)
-            else:
-                if state["alerting"]:
-                    if status == "healthy":
-                        event = dict(port)
-                        event["down_members"] = state.get("down_members") or []
-                        event["up_members"] = [m["name"] for m in port["members"]]
-                        event["peer_switch"] = state.get("peer_switch") or ""
-                        event["duration"] = max(0, now - (state["down_since"] or now))
-                        event["status"] = "healthy"
-                        log(f"[LINK] RECOVER {event['device']} {event['port']} members back up")
-                        if send_feishu(build_interconnect_card(event, recovered=True)):
-                            state["alerting"] = False
-                            state["down_since"] = None
-                            state["down_members"] = []
-                            state["handoff_logged"] = False
-                            save_interconnect_alert_states(states)
-                else:
-                    state["down_since"] = None
-                    state["down_members"] = []
-                    state["handoff_logged"] = False
-
-        # A removed/renamed/admin-shut aggregate disappears from the filtered
-        # series. Do not leave its old alert armed forever: after one alert
-        # hold interval, close it using the last observed labels.
-        for key, state in list(states.items()):
-            if key in seen_keys:
-                continue
-            if not state.get("alerting"):
-                states.pop(key, None)
-                continue
-            if state.get("missing_since") is None:
-                state["missing_since"] = now
-            if now - state["missing_since"] < INTERCONNECT_ALERT_FOR_SECONDS:
-                continue
-            event = dict(state.get("last_port") or {})
-            event["down_members"] = state.get("down_members") or []
-            event["up_members"] = []
-            event["peer_switch"] = state.get("peer_switch") or ""
-            event["duration"] = max(0, now - (state.get("down_since") or now))
-            event["status"] = "healthy"
-            log(f"[LINK] RECOVER vanished aggregate {event.get('device', '?')} {event.get('port', '?')}")
-            if send_feishu(build_interconnect_card(event, recovered=True)):
-                states.pop(key, None)
-                save_interconnect_alert_states(states)
-
-        time.sleep(INTERCONNECT_ALERT_POLL_INTERVAL)
-
-
 def build_topology_parents(edges, root_ip):
     """BFS from the core over LLDP adjacency -> {device_ip: uplink_parent_ip}.
 
@@ -3059,74 +2606,6 @@ def build_topology_parents(edges, root_ip):
             parents[neighbor] = current
             queue.append(neighbor)
     return parents
-
-
-def build_peer_map(edges):
-    """(device_ip, local_port) -> peer switch name, from the LLDP topology, so a
-    link alert can name the switch on the far end (not just the port alias).
-
-    Values retain scores instead of allowing JSON order to overwrite a port.
-    Live observations outrank 24-hour retained edges, while C1000 ifStack member
-    arrays let both physical legs vote for the same peer.
-    """
-    peers = {}
-
-    def add(ip, ports, peer, weight):
-        for port in ports:
-            key = (ip, _audit_port_key(port))
-            if not key[0] or not key[1] or not peer:
-                continue
-            scores = peers.setdefault(key, {})
-            scores[peer] = scores.get(peer, 0) + weight
-
-    for edge in edges or []:
-        ip = str(edge.get("from_ip") or "").strip()
-        port = str(edge.get("from_port") or "").strip()
-        peer = str(edge.get("to_sysname") or edge.get("to_ip") or "").strip()
-        weight = 1 if edge.get("stale") else 2
-        from_ports = [port]
-        from_ports.extend(edge.get("from_member_ports") or [])
-        from_ports.append(edge.get("from_aggregate_port") or "")
-        add(ip, from_ports, peer, weight)
-        reverse_ip = str(edge.get("to_ip") or "").strip()
-        reverse_port = str(edge.get("to_port") or "").strip()
-        reverse_peer = str(edge.get("from_sysname") or edge.get("from_ip") or "").strip()
-        reverse_ports = [reverse_port]
-        reverse_ports.extend(edge.get("to_member_ports") or [])
-        reverse_ports.append(edge.get("to_aggregate_port") or "")
-        add(reverse_ip, reverse_ports, reverse_peer, weight)
-    return peers
-
-
-def resolve_peer_switch(peer_map, ip, physical_ports, aggregate_port=""):
-    """Resolve physical peers first; use an aggregate only as a true fallback."""
-
-    def resolve_one(port):
-        scores = peer_map.get((ip, _audit_port_key(port))) or {}
-        if isinstance(scores, str):
-            scores = {scores: 1}
-        if not scores:
-            return "missing", ""
-        ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0].casefold()))
-        if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
-            return "ambiguous", ""
-        return "resolved", ranked[0][0]
-
-    resolved_physical = set()
-    for port in physical_ports or []:
-        status, peer = resolve_one(port)
-        if status == "ambiguous":
-            return ""
-        if status == "resolved":
-            resolved_physical.add(peer)
-    if len(resolved_physical) > 1:
-        return ""
-    if resolved_physical:
-        return next(iter(resolved_physical))
-    if aggregate_port:
-        status, peer = resolve_one(aggregate_port)
-        return peer if status == "resolved" else ""
-    return ""
 
 
 def is_down_symptom(ip, parents, unreachable):
@@ -4446,6 +3925,34 @@ def complete_interconnect_merge(event, cause=None, now=None):
         if cause and cause.get("id") in LINK_ERRDISABLE_EVENTS:
             LINK_ERRDISABLE_EVENTS[cause["id"]]["consumed"] = True
         LINK_AGGREGATE_EVENTS[aggregate_id] = aggregate
+
+
+_INTERCONNECT_WATCHER = InterconnectWatcher(
+    enabled=INTERCONNECT_ALERT_ENABLED,
+    alert_for_seconds=INTERCONNECT_ALERT_FOR_SECONDS,
+    poll_interval=INTERCONNECT_ALERT_POLL_INTERVAL,
+    jobs=INTERCONNECT_ALERT_JOBS,
+    port_filter=INTERCONNECT_PORT_FILTER,
+    state_file=INTERCONNECT_STATE_FILE,
+    prometheus_query=prometheus_query,
+    fetch_name_cache=fetch_librenms_name_cache,
+    load_topology_edges=load_topology_edges,
+    load_json_dict=_load_json_dict,
+    save_json_dict=_save_json_dict,
+    as_float=_as_float,
+    normalize_label=_norm_label,
+    audit_port_key=_audit_port_key,
+    build_card=build_interconnect_card,
+    send=send_feishu,
+    find_merge_candidate=find_errdisable_merge_candidate,
+    complete_merge=complete_interconnect_merge,
+    mark_watcher_health=mark_watcher_health,
+    log=log,
+)
+
+
+def interconnect_watcher():
+    return _INTERCONNECT_WATCHER.run()
 
 
 def errdisable_was_merged(event, now=None):
