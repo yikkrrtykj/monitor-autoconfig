@@ -2,7 +2,7 @@ import copy
 
 import pytest
 
-from bridge_isp_watcher import (
+from feishu_bridge.isp_watcher import (
     IspBandwidthWatcher,
     _bandwidth_for_label,
     _bandwidth_indexes,

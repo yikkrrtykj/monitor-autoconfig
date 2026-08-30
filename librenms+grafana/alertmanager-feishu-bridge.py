@@ -101,12 +101,12 @@ import threading
 import time
 from urllib import error, parse, request
 
-from bridge_isp_watcher import IspBandwidthWatcher
-from bridge_interconnect_watcher import InterconnectWatcher
-from bridge_online_identity import OnlineIdentityService
-from bridge_resource_watcher import ResourceWatcher
-from bridge_sysname_watcher import SysnameChangeWatcher
-from feishu_delivery import FeishuDelivery
+from feishu_bridge.delivery import FeishuDelivery
+from feishu_bridge.interconnect_watcher import InterconnectWatcher
+from feishu_bridge.isp_watcher import IspBandwidthWatcher
+from feishu_bridge.online_identity import OnlineIdentityService
+from feishu_bridge.resource_watcher import ResourceWatcher
+from feishu_bridge.sysname_watcher import SysnameChangeWatcher
 from librenms_client import LibreNMSClient
 from network_syslog import (
     MacFlapTracker,

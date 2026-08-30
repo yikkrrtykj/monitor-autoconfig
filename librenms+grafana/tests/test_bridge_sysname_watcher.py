@@ -3,7 +3,7 @@ import ipaddress
 
 import pytest
 
-from bridge_sysname_watcher import SysnameChangeWatcher
+from feishu_bridge.sysname_watcher import SysnameChangeWatcher
 
 
 class StopWatcher(BaseException):

@@ -1,6 +1,6 @@
 import threading
 
-from bridge_online_identity import OnlineIdentityService
+from feishu_bridge.online_identity import OnlineIdentityService
 
 
 def make_service(*, initial=(), save_results=(), send_results=(), send=None):

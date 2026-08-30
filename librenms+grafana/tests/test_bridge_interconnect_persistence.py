@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-import bridge_interconnect_watcher as interconnect
+from feishu_bridge import interconnect_watcher as interconnect
 
 
 class StopWatcher(BaseException):

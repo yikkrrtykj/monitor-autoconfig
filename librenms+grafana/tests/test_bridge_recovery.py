@@ -2,7 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-import bridge_interconnect_watcher as interconnect
+from feishu_bridge import interconnect_watcher as interconnect
 
 # alertmanager-feishu-bridge.py is hyphenated; load it by path. Importing only
 # defines functions (the server starts under __main__), so this is side-effect free.

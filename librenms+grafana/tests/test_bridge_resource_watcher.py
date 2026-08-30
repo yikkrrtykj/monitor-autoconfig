@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from bridge_resource_watcher import (
+from feishu_bridge.resource_watcher import (
     RESOURCE_QUERY,
     ResourceWatcher,
     evaluate_resource_alert_state,

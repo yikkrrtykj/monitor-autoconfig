@@ -5,8 +5,8 @@ from urllib import error
 
 import pytest
 
-import feishu_delivery
-from feishu_delivery import FeishuDelivery
+from feishu_bridge import delivery as feishu_delivery
+from feishu_bridge.delivery import FeishuDelivery
 
 
 class FakeResponse:

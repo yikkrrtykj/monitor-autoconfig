@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-import bridge_interconnect_watcher as interconnect
+from feishu_bridge import interconnect_watcher as interconnect
 
 
 class StopWatcher(BaseException):
@@ -185,7 +185,7 @@ def test_poll_exception_marks_health_false_and_retries_at_original_cadence():
 
 def test_module_has_no_bridge_import_thread_or_environment_parsing():
     source = (
-        Path(__file__).resolve().parent.parent / "bridge_interconnect_watcher.py"
+        Path(__file__).resolve().parent.parent / "feishu_bridge" / "interconnect_watcher.py"
     ).read_text(encoding="utf-8")
 
     assert "alertmanager-feishu-bridge" not in source

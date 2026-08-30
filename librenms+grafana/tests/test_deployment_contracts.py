@@ -111,24 +111,62 @@ def test_alert_bridge_mounts_its_split_runtime_modules():
     bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split("  librenms:", 1)[0]
 
     assert "./alertmanager-feishu-bridge.py:/app/bridge.py:ro" in bridge_service
-    assert "./bridge_interconnect_watcher.py:/app/bridge_interconnect_watcher.py:ro" in bridge_service
-    assert "./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro" in bridge_service
-    assert "./bridge_online_identity.py:/app/bridge_online_identity.py:ro" in bridge_service
-    assert "./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro" in bridge_service
-    assert "./bridge_sysname_watcher.py:/app/bridge_sysname_watcher.py:ro" in bridge_service
-    assert "./feishu_delivery.py:/app/feishu_delivery.py:ro" in bridge_service
+    assert "./feishu_bridge:/app/feishu_bridge:ro" in bridge_service
+    for old_mount in (
+        "./bridge_interconnect_watcher.py:/app/bridge_interconnect_watcher.py:ro",
+        "./bridge_isp_watcher.py:/app/bridge_isp_watcher.py:ro",
+        "./bridge_online_identity.py:/app/bridge_online_identity.py:ro",
+        "./bridge_resource_watcher.py:/app/bridge_resource_watcher.py:ro",
+        "./bridge_sysname_watcher.py:/app/bridge_sysname_watcher.py:ro",
+        "./feishu_delivery.py:/app/feishu_delivery.py:ro",
+    ):
+        assert old_mount not in bridge_service
     assert "./librenms_client.py:/app/librenms_client.py:ro" in bridge_service
     assert "./network_syslog.py:/app/network_syslog.py:ro" in bridge_service
+    assert "./lag_ownership.py:/app/lag_ownership.py:ro" in bridge_service
     assert 'LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"' in bridge_service
     assert 'INTERCONNECT_STATE_FILE: "${INTERCONNECT_STATE_FILE:-}"' in bridge_service
     assert "- bridge-state:/bridge-state" in bridge_service
 
 
+def test_alert_bridge_runtime_modules_are_packaged_without_legacy_roots():
+    package = ROOT / "feishu_bridge"
+    bridge = read("alertmanager-feishu-bridge.py")
+    expected_modules = {
+        "delivery.py": "from feishu_bridge.delivery import FeishuDelivery",
+        "interconnect_watcher.py": "from feishu_bridge.interconnect_watcher import InterconnectWatcher",
+        "isp_watcher.py": "from feishu_bridge.isp_watcher import IspBandwidthWatcher",
+        "online_identity.py": "from feishu_bridge.online_identity import OnlineIdentityService",
+        "resource_watcher.py": "from feishu_bridge.resource_watcher import ResourceWatcher",
+        "sysname_watcher.py": "from feishu_bridge.sysname_watcher import SysnameChangeWatcher",
+    }
+
+    assert package.is_dir()
+    assert (package / "__init__.py").is_file()
+    for module_name, import_line in expected_modules.items():
+        assert (package / module_name).is_file()
+        assert import_line in bridge
+
+    for old_name in (
+        "feishu_delivery.py",
+        "bridge_interconnect_watcher.py",
+        "bridge_isp_watcher.py",
+        "bridge_online_identity.py",
+        "bridge_resource_watcher.py",
+        "bridge_sysname_watcher.py",
+    ):
+        assert not (ROOT / old_name).exists()
+
+    for shared_name in ("network_syslog.py", "lag_ownership.py", "librenms_client.py"):
+        assert (ROOT / shared_name).is_file()
+        assert not (package / shared_name).exists()
+
+
 def test_alert_bridge_delegates_interconnect_watching_without_moving_shared_domains():
     bridge = read("alertmanager-feishu-bridge.py")
-    watcher = read("bridge_interconnect_watcher.py")
+    watcher = read("feishu_bridge/interconnect_watcher.py")
 
-    assert "from bridge_interconnect_watcher import InterconnectWatcher" in bridge
+    assert "from feishu_bridge.interconnect_watcher import InterconnectWatcher" in bridge
     assert "_INTERCONNECT_WATCHER = InterconnectWatcher(" in bridge
     assert "return _INTERCONNECT_WATCHER.run()" in bridge
     assert 'start_watcher("interconnect", interconnect_watcher)' in bridge
@@ -183,9 +221,9 @@ def test_alert_bridge_delegates_interconnect_watching_without_moving_shared_doma
 
 def test_alert_bridge_delegates_sysname_watching_to_its_split_runtime_module():
     bridge = read("alertmanager-feishu-bridge.py")
-    watcher = read("bridge_sysname_watcher.py")
+    watcher = read("feishu_bridge/sysname_watcher.py")
 
-    assert "from bridge_sysname_watcher import SysnameChangeWatcher" in bridge
+    assert "from feishu_bridge.sysname_watcher import SysnameChangeWatcher" in bridge
     assert "_SYSNAME_WATCHER = SysnameChangeWatcher(" in bridge
     assert "return _SYSNAME_WATCHER.run()" in bridge
     assert 'start_watcher("sysname-change", sysname_change_watcher)' in bridge
@@ -199,9 +237,9 @@ def test_alert_bridge_delegates_sysname_watching_to_its_split_runtime_module():
 
 def test_alert_bridge_delegates_online_identity_to_its_split_runtime_module():
     bridge = read("alertmanager-feishu-bridge.py")
-    service = read("bridge_online_identity.py")
+    service = read("feishu_bridge/online_identity.py")
 
-    assert "from bridge_online_identity import OnlineIdentityService" in bridge
+    assert "from feishu_bridge.online_identity import OnlineIdentityService" in bridge
     assert "_ONLINE_IDENTITY = OnlineIdentityService(" in bridge
     assert "state_file=DEVICE_ONLINE_STATE_FILE" in bridge
     assert "return _ONLINE_IDENTITY.mark_notified(*values)" in bridge
