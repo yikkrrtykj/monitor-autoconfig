@@ -1,43 +1,12 @@
-# TODO（功能与现场验收清单）
+# ACTIVE TODO
 
-更新时间：2026-08-03
+更新时间：2026-09-01
 
-状态说明：每项都有稳定编号，后续可以直接说编号。`[x]` 表示代码或现场证据已经通过；`[ ]` 表示仍需要真实设备、故障注入或全新服务器环境验证。
+## B. 现场复验
 
-## A. 本现场已完成
-
-- [x] **A-01 基础服务健康**：Compose 主服务运行；Prometheus、Grafana、LibreNMS dispatcher 和仓库 Dashboard 检查通过。
-- [x] **A-02 运行时版本**：生产容器已确认 Python 3.13.14、`telnetlib3` 4.0.5、iPerf3 3.18。
-- [x] **A-03 飞书基础投递**：飞书桥 `ready=true`、后台线程存活，测试卡已通过 Webhook 实际收到。
-- [x] **A-04 ISP 采集恢复**：`isp-bandwidth` 线程存活并持续输出流量，不再出现后台线程停止。
-- [x] **A-05 比赛机位**：已现场验证 64/64 个 `team X-Y` 机位生成并在线；非比赛期间 `player-ping=0` 属于正常状态。
-- [x] **A-06 服务器离线解释**：`server1`、`server2` 因设备未开机而离线，不是监控故障；开机后再纳入赛前在线检查。
-- [x] **A-07 C3850 DHCP 只读采集**：39 个地址池、10674 个总地址、171 个租约、636 个排除地址、0 冲突与设备原始输出一致，单次采集约 1.74 秒。
-- [x] **A-08 C3850 负荷**：最新现场输出为五秒 7%、一分钟 9%、五分钟 9%，未发现刷新造成的累计 CPU 上升。
-- [x] **A-09 Telnet 登录方式**：现场使用“登录密码 + Enable 密码”成功进入特权模式，DHCP 大屏可正常读取；当前项目不要求验证未使用的其它登录组合。
-- [x] **A-10 DHCP 型号范围**：C2960 不承担 DHCP 核心；当前不再要求补 C2960。C9300 性能不低于现有 C3850，本项目不设为阻塞验收项。
-- [x] **A-11 公共 iPerf3 节点**：当前配置节点已经现场测速通过。
-- [x] **A-12 光功率手动查询**：飞书已有“光功率巡检”，读取 LibreNMS 已采集的 Tx/Rx dBm，不额外轮询交换机，也不启用自动光功率告警。
-
-## B. 本分支已实现，部署后复验
-
-- [x] **B-01 飞书 HTTP 400 可诊断化**：保留飞书响应的业务 `code`/`msg`，为群读取权限、机器人能力和应用安装错误给出明确提示。
-- [x] **B-02 飞书通道可见性**：测试结果明确显示“自建应用”或“Webhook 回退”，不再把收到消息误判为应用链路成功。
 - [ ] **B-03 飞书应用现场复验**：部署后发送一次测试告警，目标为 `channel=app`、`appChatResolved=true`、`appError` 为空；失败时按 `docs/feishu-app-chat-troubleshooting.md` 的业务错误处理。
-- [x] **B-04 iPerf3 停止测速**：后端管理独立子进程，仅停止指定任务。
-- [x] **B-05 iPerf3 任务隔离**：每次测速生成任务编号，多页面按任务编号读取状态；平台仍只允许同时运行一个带宽测试。
-- [x] **B-06 iPerf3 历史**：只保留最近 5 条结果，服务重启后仍可打开历史结果。
-- [x] **B-07 iPerf3 节点配置**：公共节点已从主前端代码移到版本化 `iperf-servers.json`，包含最后核验日期和备用节点。
-- [x] **B-08 C3850 测试夹具**：已加入脱敏的地址池/统计/排除地址实机格式夹具；C2960 明确不作为 DHCP 核心测试目标。
-- [x] **B-09 Python 3.13 CI**：语法检查和 pytest 同时覆盖 Python 3.11、3.13。
-- [x] **B-10 Linux 轻量冒烟**：新增无侵入静态检查；可选在线模式检查服务健康、登录和 DHCP 配置读取，不连接交换机、不发飞书、不运行测速。
-- [x] **B-11 拓扑负荷控制**：只有核心/防火墙等指定三层设备读取 ARP；服务器优先用上次确认的交换机做一次精确 FDB 查询，未命中才全量回查；拓扑输出继续缓存。
-- [x] **B-12 源文件拆分**：iPerf3 配置、节点切换、结果与历史渲染已从 `app.js` 拆到独立模块；Cisco DHCP 纯解析已从 `platform-api.py` 拆出；网络 Syslog 解析、接口标准化和 MAC 漂移状态机已从飞书桥拆出。
-- [x] **B-13 前端行为测试**：新增节点切换、字段锁定、完成/取消结果、5 条历史和配置加载行为测试；不再只依赖源码字符串判断。
-- [x] **B-14 废弃入口清理**：旧运维面板残留命名和样式已删除，无对应路由或页面代码残留。
-- [x] **B-15 DHCP 采集耗时**：接口和页面显示本轮采集秒数，便于持续判断设备负荷。
 
-## C. 仍需真实现场故障注入
+## C. 真实现场故障注入
 
 - [ ] **C-01 防火墙单机掉线/恢复**：分别拔一台物理防火墙，确认只报物理机，VIP 不误报。
 - [ ] **C-02 HA 切换**：分别对实际使用的 Hillstone/WatchGuard HA 做主备切换，确认不产生虚假超大带宽。
@@ -46,39 +15,145 @@
 - [ ] **C-05 干净 Linux 部署恢复**：从仓库全新构建，验证 Docker 重启、配置/私密设置/状态保留，并完成一次离线包安装。
 - [ ] **C-06 运行数据恢复演练**：执行备份—重装—恢复并记录恢复时间与校验结果。
 
-## D. 架构决定与后续维护
+## D. 后续维护
 
-- [x] **D-01 告警队列评估**：队列化不会减少交换机轮询；轮询线程和告警发送已分离，网络发送也不持有设备状态锁。本次不为“降轮询”增加队列复杂度，真实出现飞书超时积压后再引入有上限的持久队列。
-- [x] **D-02 拓扑读取边界**：当前拓扑是 600 秒低频缓存任务，不在页面每次刷新时全量读取 FDB/ARP；接口详情后续必须按需查询并设短期缓存，方案见 `docs/topology-load-assessment.md`。
-- [x] **D-03 模块化边界**：本轮已按 DHCP、iPerf3 前端和网络 Syslog 三个独立行为边界拆分，并保留原接口与行为测试；后续仍遵循“小模块迁移后立即回归”，不做无行为保障的整文件重写。
 - [ ] **D-04 ShellCheck 收紧**：逐步清理现存 warning，再把 CI 从 error 提高到 warning。
 - [ ] **D-05 应用/树莓派机器人状态**：业务接口明确后再接入。
 - [ ] **D-06 组播业务检查**：只有项目需要时才启用，并先评估老交换机 CPU。
 
-## E. 固定设计约束
+## T. Topology Backlog
 
-- [x] **E-01 DHCP 架构**：Cisco 核心继续提供 DHCP，监控页面只读；不迁移 Kea/Stork。
-- [x] **E-02 iPerf3 安全**：不自动持续测速、不启用 UDP 打流、不把公共节点结果当运营商带宽验收的唯一依据。
-- [x] **E-03 光功率策略**：只允许人工查询，不做自动告警。
-- [x] **E-04 轮询控制**：不新增高频全量交换机轮询，旧设备尤其避免高频 FDB/ARP/接口表采集。
-- [x] **E-05 选手机位来源**：比赛大屏只认交换机接口 `description` 中的 `team X-Y`；非比赛期间不要求选手目标在线。
-- [x] **E-06 访问配置**：不恢复已移除的访问模式、外网访问和公网基础 URL 字段。
+### T-01 Port Panel / Inspector 数据源审计
 
-## F. 每次合并前固定检查
+- [ ] 审计现有 LibreNMS、Prometheus、SNMP Exporter、topology generator 和已有 API，确认是否已有：
+  - `ifName`
+  - `ifDescr`
+  - `ifAlias` / description
+  - `ifAdminStatus`
+  - `ifOperStatus`
+  - speed / `ifHighSpeed`
+  - RX/TX
+  - utilization
+  - errors
+  - discards
+  - access VLAN
+  - trunk/native/allowed VLAN
+  - stack member
+  - LAG members
+  - LLDP/CDP neighbor
+  - Hillstone HA state
+  - UniFi Controller/AP data
 
-- [x] **F-01 差异卫生**：`git diff --check` 无空白错误或冲突标记。
-- [x] **F-02 全量自动检查**：本机 Python 440 项、前端 11 组、Python/脚本语法和 Grafana JSON 已通过；PR #12 的 CI #452 也已通过 Compose、ShellCheck、Python 3.11/3.13 与 Linux 静态冒烟。
-- [x] **F-03 重复应用**：重复配置合并与生成测试通过，不产生重复注释块、服务、目标或配置漂移。
-- [x] **F-04 私密信息**：不提交 `.env`、密码、Webhook、运行状态卷或现场私密地址清单。
-- [x] **F-05 交付说明**：提交说明包含用户可见变化、部署步骤、回滚办法和仍需现场验证的编号。
+原则：优先复用已有监控数据，不得因为 Port Panel 新增第二套高频全量 SNMP polling。
 
-## G. 已完成的历史修复
+### T-02 Lightweight Node Inspector
 
-- [x] **G-01** 在线卡发送网络请求时不再持有设备在线状态锁。
-- [x] **G-02** syslog 失败事件有复检、次数上限、过期时间和恢复清理。
-- [x] **G-03** 聚合链路过滤管理关闭口，并处理旧聚合口消失后的恢复/清理。
-- [x] **G-04** 回滚 guard 快照不会再次成为普通回滚目标；快照、事务和 apply 状态都有保留上限。
-- [x] **G-05** 登录失败按 IP 和账号计数并进入锁定窗口。
-- [x] **G-06** ICMP 在线但 SNMP 暂时失败的交换机仍保留为占位监控目标。
-- [x] **G-07** 选手目标先做存活校验再最终座位去重，IP 变化时在线候选可替换旧地址。
-- [x] **G-08** Telnet 使用严格提示符、`terminal length 0` 和分页保护；DHCP 采集有并发锁且不定时读取完整 binding 表。
+- [ ] 保持现有 topology 不变，点击节点后在右侧显示轻量详情。
+
+Cisco：
+
+- hostname
+- management IP
+- model
+- online/latency
+- port up/down summary
+- uplink summary
+- warnings
+- 查看端口入口
+
+Hillstone：
+
+- management IP
+- online
+- HA state
+- interface summary
+
+UniFi AP：
+
+- IP
+- online
+- uplink
+- clients/radio summary
+
+### T-03 Cisco Full Port Panel
+
+- [ ] 显示所有端口，包括 DOWN。每个端口目标字段：
+  - `ifName`
+  - `ifAlias` / description
+  - stack member
+  - port number
+  - admin state
+  - oper state
+  - speed
+  - RX
+  - TX
+  - RX utilization
+  - TX utilization
+  - input/output errors
+  - input/output discards
+  - access VLAN
+  - trunk/native/allowed VLAN（数据可获得时）
+
+Cisco Stack 可以按 `Gi1/0/x`、`Gi2/0/x` 的 member 做 UI 分组，但只是 presentation，不新增 topology relation。
+
+点击端口以后才按需加载历史 traffic。
+
+### T-04 Hillstone Inspector
+
+- [ ] 只提供：
+  - interface
+  - up/down
+  - traffic
+  - IP
+  - HA state
+
+不扩展：
+
+- policy
+- NAT
+- session
+- IPS
+- security policy
+
+### T-05 UniFi AP topology integration
+
+- [ ] 允许 AP 进入现有单 topology，关系为：
+
+  ```text
+  Access Switch
+  ->
+  AP
+  ```
+
+无线客户端不进入 topology。
+
+提供 `Show APs`；开关状态可以持久化并记住上次选择。
+
+优先研究 UniFi Controller API，避免无意义增加 AP SNMP polling。
+
+### T-06 Link Inspector — OPTIONAL / LOW PRIORITY
+
+- [ ] 当前 topology 已经直接显示双端 physical port labels，因此 Link Inspector 暂时不是优先功能。只有以后能提供额外价值时再实现，例如：
+  - link traffic
+  - errors/discards
+  - VLAN
+  - LAG metadata
+  - evidence/stale
+
+不要为了重复展示两端端口而实现。
+
+## 固定架构约束
+
+- 保留现有单 topology。
+- 不恢复 Operations | Physical。
+- 不新增第二张 Physical View。
+- Phase 1 / Phase 2 保持冻结。
+- 主画布 LAG label 优先 physical member ports。
+- Po/Port-channel 是 aggregate metadata，只在没有可信 members 时作为 fallback。
+- 不猜测 LAG member pairing。
+- 不新增高频全量交换机 SNMP polling。
+- Port Panel 优先复用 LibreNMS / Prometheus 已采集数据。
+- 无线客户端不进入 topology。
+- Snapshot 当前不做。
+- generic Service Discovery 当前不做。
+- ELK 当前不引入。
