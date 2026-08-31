@@ -36,6 +36,7 @@
   const { createAuthController } = window.BSAuthController;
   const { createIncidentRegistry } = window.BSIncidentRegistry;
   const { createTopologyPanel } = window.BSTopologyPanel;
+  const { projectPhysicalTopology } = window.BSPhysicalTopology;
   const { createInfraController } = window.BSInfraController;
   const { buildInfrastructurePingPresentation } = window.BSPingTransform;
   const {
@@ -51,7 +52,8 @@
   } = window.BSApi;
   const {
     buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel,
-    topologyLatencyIp
+    topologyLatencyIp, physicalTopologyLayout, physicalTopologySignature,
+    renderPhysicalTopologySvg
   } = window.BSTopology;
   const {
     isGatewayAddress, buildPlayers, latencyLevel, playerStatusText
@@ -328,10 +330,14 @@
     buildTopologyLayers,
     topologyLayout,
     renderTopologySvg,
+    projectPhysicalTopology,
+    physicalTopologyLayout,
+    renderPhysicalTopologySvg,
     topologyNodeKindLabel,
     topologyLatencyIp,
     escapeHtml,
-    formatPingText
+    formatPingText,
+    onModeChange: handleTopologyModeChange
   });
   const dhcpPanel = createDhcpPanel({
     document,
@@ -912,12 +918,38 @@
   // ---- Network topology ----
 
   let topologyTimer = null;
+  let lastTopologySnapshot = null;
 
   function stopTopologyRefresh() {
     if (topologyTimer) {
       window.clearInterval(topologyTimer);
       topologyTimer = null;
     }
+  }
+
+  function renderTopologySnapshot(snapshot, force = false) {
+    if (!snapshot) return;
+    const { targets, edges } = snapshot;
+    const { layout, width } = topologyPanel.prepare(targets, edges);
+    const isPhysical = topologyPanel.getMode() === "physical";
+    const signatureKey = isPhysical ? "topology:physical" : "topology";
+    const signature = isPhysical
+      ? physicalTopologySignature(layout, width)
+      : topologySignature(layout, width, edges);
+    if (force) renderSignatures.delete(signatureKey);
+    if (shouldRender(signatureKey, signature)) {
+      topologyPanel.render({ layout, width });
+    } else {
+      // Same visual structure: update only live latency text in the existing SVG.
+      topologyPanel.updateLatency(layout.nodes);
+    }
+    topologyPanel.updateStatus(edges);
+  }
+
+  function handleTopologyModeChange() {
+    // Mode navigation is a pure re-projection of the latest polling snapshot.
+    // It must never create a second fetch or polling path.
+    renderTopologySnapshot(lastTopologySnapshot, true);
   }
 
   async function refreshTopology() {
@@ -935,21 +967,15 @@
       const targets = seenUp.size
         ? allTargets.filter((t) => t.job === "infra-fw-unit-snmp" || t.job === "infra-isp-ping" || seenUp.has(t.instance))
         : allTargets;
-      const { layout, width } = topologyPanel.prepare(targets, edges);
-      if (shouldRender("topology", topologySignature(layout, width, edges))) {
-        topologyPanel.render({ layout, width });
-      } else {
-        // Same structure and status levels: refresh only the latency readouts
-        // in place, keeping the pan/zoom view and skipping the SVG rebuild.
-        topologyPanel.updateLatency(layout.nodes);
-      }
-      topologyPanel.updateStatus(edges);
+      lastTopologySnapshot = { targets, edges };
+      renderTopologySnapshot(lastTopologySnapshot);
       lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== topologySeq) return;
       // The error message replaces the SVG, so the next success must rebuild
       // even when the data signature is unchanged.
       renderSignatures.delete("topology");
+      renderSignatures.delete("topology:physical");
       console.error("Topology fetch failed:", error);
       topologyPanel.showError(error.message || "");
     }
@@ -992,8 +1018,11 @@
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", true);
+    topologyPanel.setMode("operations", false);
     topologyPanel.clearDetail();
     topologyPanel.resetView();
+    renderSignatures.delete("topology");
+    if (lastTopologySnapshot) renderTopologySnapshot(lastTopologySnapshot, true);
     startTopologyRefresh();
   }
 

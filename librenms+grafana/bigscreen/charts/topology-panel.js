@@ -8,13 +8,19 @@
       buildTopologyLayers,
       topologyLayout,
       renderTopologySvg,
+      projectPhysicalTopology,
+      physicalTopologyLayout,
+      renderPhysicalTopologySvg,
       topologyNodeKindLabel,
       topologyLatencyIp,
       escapeHtml,
-      formatPingText
+      formatPingText,
+      onModeChange
     } = dependencies;
 
     let topologyNodes = [];
+    let topologyMode = "operations";
+    let physicalFactCount = 0;
     const topoView = { scale: 1, x: 0, y: 0 };
 
     const canvasElement = () => document.getElementById("topologyCanvas");
@@ -22,6 +28,50 @@
 
     function isAvailable() {
       return Boolean(canvasElement());
+    }
+
+    function updateModeControls() {
+      ["operations", "physical"].forEach((mode) => {
+        const button = document.getElementById(
+          mode === "operations" ? "topologyViewOperations" : "topologyViewPhysical"
+        );
+        if (!button) return;
+        button.setAttribute("aria-pressed", mode === topologyMode ? "true" : "false");
+      });
+      const canvas = canvasElement();
+      if (canvas) canvas.dataset.topologyView = topologyMode;
+    }
+
+    function getMode() {
+      return topologyMode;
+    }
+
+    function setMode(mode, notify = true) {
+      if (mode !== "operations" && mode !== "physical") return false;
+      if (mode === topologyMode) {
+        updateModeControls();
+        return false;
+      }
+      topologyMode = mode;
+      updateModeControls();
+      clearDetail();
+      resetView();
+      if (notify && typeof onModeChange === "function") onModeChange(mode);
+      return true;
+    }
+
+    function bindModeControls() {
+      const operations = document.getElementById("topologyViewOperations");
+      const physical = document.getElementById("topologyViewPhysical");
+      if (operations && operations.dataset.bound !== "1") {
+        operations.addEventListener("click", () => setMode("operations"));
+        operations.dataset.bound = "1";
+      }
+      if (physical && physical.dataset.bound !== "1") {
+        physical.addEventListener("click", () => setMode("physical"));
+        physical.dataset.bound = "1";
+      }
+      updateModeControls();
     }
 
     function bindTopologyNodeEvents() {
@@ -187,9 +237,16 @@
 
     function prepare(targets, edges) {
       const canvas = canvasElement();
-      const layers = buildTopologyLayers(targets);
       const containerWidth = Math.max(640, canvas.clientWidth || 1200);
       const height = Math.max(420, canvas.clientHeight || 680);
+      if (topologyMode === "physical") {
+        const projection = projectPhysicalTopology(edges);
+        physicalFactCount = projection.physicalLinks.length +
+          projection.bundles.length + projection.serverAttachments.length;
+        const layout = physicalTopologyLayout(projection, targets, containerWidth, height);
+        return { layout, width: layout.width || containerWidth };
+      }
+      const layers = buildTopologyLayers(targets);
       // Lay the graph out at its natural width so a long row of access switches
       // doesn't get squeezed/overlapped; pan & zoom let you explore the rest.
       const maxRow = Math.max(
@@ -208,7 +265,10 @@
     function render(frame) {
       const canvas = canvasElement();
       topologyNodes = frame.layout.nodes;
-      canvas.innerHTML = renderTopologySvg(frame.layout, frame.width);
+      canvas.dataset.topologyView = topologyMode;
+      canvas.innerHTML = topologyMode === "physical"
+        ? renderPhysicalTopologySvg(frame.layout, frame.width)
+        : renderTopologySvg(frame.layout, frame.width);
       bindTopologyNodeEvents();
       setupTopoPanZoom();
       applyTopoView();
@@ -228,6 +288,10 @@
     }
 
     function updateStatus(edges) {
+      if (topologyMode === "physical") {
+        document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · 拖动平移·滚轮缩放·双击复位${physicalFactCount ? ` · Physical ${physicalFactCount} 条链路` : " · No accepted physical topology"}`;
+        return;
+      }
       document.getElementById("topologyUpdated").textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · 拖动平移·滚轮缩放·双击复位${edges.length ? ` · LLDP ${edges.length} 条边` : " · LLDP 未发现邻居"}`;
     }
 
@@ -241,6 +305,8 @@
       detail.innerHTML = `<div class="topology-empty">点击任意节点查看详情</div>`;
     }
 
+    bindModeControls();
+
     return {
       isAvailable,
       prepare,
@@ -249,7 +315,9 @@
       updateStatus,
       showError,
       clearDetail,
-      resetView
+      resetView,
+      getMode,
+      setMode
     };
   }
 

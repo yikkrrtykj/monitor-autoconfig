@@ -1047,6 +1047,38 @@ body {
   color: #c9d4e8;
 }
 
+.topology-panel .topology-view-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid rgba(105, 160, 255, 0.28);
+  border-radius: 6px;
+  background: rgba(5, 10, 20, 0.72);
+}
+
+.topology-panel .topology-view-switch button {
+  min-width: 82px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #94a3b8;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.topology-panel .topology-view-switch button[aria-pressed="true"] {
+  background: rgba(105, 160, 255, 0.2);
+  color: #eaf2ff;
+  box-shadow: inset 0 0 0 1px rgba(105, 160, 255, 0.34);
+}
+
+.topology-panel .topology-view-switch button:focus-visible {
+  outline: 2px solid #69a0ff;
+  outline-offset: 2px;
+}
+
 .topology-legend { display: flex; gap: 14px; align-items: center; }
 .topology-legend .dot {
   display: inline-block;
@@ -1117,6 +1149,50 @@ body {
 .topology-link.link-warn { stroke: #fbbf24; opacity: 0.75; }
 .topology-link.link-bad  { stroke: #f87171; opacity: 0.92; stroke-dasharray: 5 4; animation: link-pulse 1.4s ease-in-out infinite; }
 .topology-link.link-none { stroke: #475569; opacity: 0.35; stroke-dasharray: 3 3; }
+
+.topology-canvas[data-topology-view="physical"] .topology-link--physical {
+  stroke: #69a0ff;
+  stroke-width: 2.4;
+  opacity: 0.82;
+}
+
+.topology-canvas[data-topology-view="physical"] .topology-link--bundle {
+  stroke: #a78bfa;
+  stroke-width: 6;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 4px rgba(167, 139, 250, 0.36));
+}
+
+.topology-canvas[data-topology-view="physical"] .topology-link--attachment {
+  stroke: #67e8f9;
+  stroke-width: 2;
+  stroke-dasharray: 3 5;
+  opacity: 0.72;
+}
+
+.topology-canvas[data-topology-view="physical"] .topology-link--stale {
+  stroke: #f87171;
+  stroke-dasharray: 6 5;
+  opacity: 0.72;
+}
+
+.topology-canvas[data-topology-view="physical"] .topology-link--partial-stale {
+  stroke: #fbbf24;
+  opacity: 0.82;
+}
+
+.topology-canvas[data-topology-view="physical"] .topology-link-label--physical {
+  fill: #dbeafe;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.topology-canvas[data-topology-view="physical"] .topology-physical-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
 
 @keyframes link-pulse {
   0%, 100% { opacity: 0.55; }

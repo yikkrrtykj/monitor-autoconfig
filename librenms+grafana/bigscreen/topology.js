@@ -16,6 +16,12 @@
 
   const config = (typeof window !== 'undefined' && window.BIGSCREEN_CONFIG) || {};
 
+  function stableTopologyCompare(left, right) {
+    const a = String(left || "");
+    const b = String(right || "");
+    return a < b ? -1 : (a > b ? 1 : 0);
+  }
+
   function topologyNodeLevel(node) {
     if (!node) return "none";
     if (!node.success) return "bad";
@@ -685,11 +691,267 @@
   }
 
   function topologyNodeIcon(kind) {
-    return { isp: "🌐", firewall: "🛡", core: "★", dist: "▦", server: "⚙" }[kind] || "?";
+    return { isp: "🌐", firewall: "🛡", core: "★", dist: "▦", infrastructure: "▣", server: "⚙" }[kind] || "?";
   }
 
   function topologyNodeKindLabel(kind) {
-    return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", server: "服务器" }[kind] || kind;
+    return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", infrastructure: "网络设备", server: "服务器" }[kind] || kind;
+  }
+
+  function physicalTargetIp(target) {
+    return String(target && (target.targetIp || target.ip || target.instance) || "").trim();
+  }
+
+  function physicalTargetKind(target, fallbackKind) {
+    if (fallbackKind === "server") return "server";
+    const job = String(target && target.job || "");
+    if (job === "infra-isp-ping") return "isp";
+    if (job === "infra-fw-unit-snmp" || job === "infra-fw-ping") return "firewall";
+    if (job === "infra-core-ping") return "core";
+    if (job === "infra-dist-ping") return "dist";
+    return "infrastructure";
+  }
+
+  function buildPhysicalTopologyNodes(projection, targets) {
+    const targetByIp = new Map();
+    (Array.isArray(targets) ? targets : []).slice().sort((a, b) => stableTopologyCompare(
+      `${physicalTargetIp(a)}|${a.job || ""}|${a.displayName || ""}|${a.instance || ""}`,
+      `${physicalTargetIp(b)}|${b.job || ""}|${b.displayName || ""}|${b.instance || ""}`
+    )).forEach((target) => {
+      const ip = physicalTargetIp(target);
+      if (ip && !targetByIp.has(ip)) targetByIp.set(ip, target);
+    });
+
+    const rank = { isp: 0, firewall: 1, core: 2, dist: 3, infrastructure: 4, server: 5 };
+    return (projection.devices || []).map((device) => {
+      const target = targetByIp.get(device.ip) || null;
+      const kind = physicalTargetKind(target, device.kind);
+      return {
+        kind,
+        name: target && target.displayName || device.sysname || device.ip,
+        ip: device.ip,
+        level: target ? topologyNodeLevel(target) : "none",
+        latency: target ? target.latency : null,
+        success: target ? target.success : undefined,
+        physicalKind: device.kind
+      };
+    }).sort((a, b) => (
+      (rank[a.kind] ?? rank.infrastructure) - (rank[b.kind] ?? rank.infrastructure) ||
+      stableTopologyCompare(a.name, b.name) ||
+      stableTopologyCompare(a.ip, b.ip)
+    ));
+  }
+
+  function physicalEndpointLabel(endpoint) {
+    if (!endpoint) return "";
+    const aggregatePort = endpoint.aggregatePort || "";
+    const port = endpoint.port || "";
+    if (aggregatePort && port) return `${aggregatePort} / ${port}`;
+    if (aggregatePort) return aggregatePort;
+    return port;
+  }
+
+  function physicalTopologyLayout(projection, targets, canvasWidth, canvasHeight) {
+    const NODE_W = 144;
+    const NODE_H = 58;
+    const H_GAP = 24;
+    const X_PAD = 24;
+    const Y_PAD = 24;
+    const nodes = buildPhysicalTopologyNodes(projection, targets);
+    const ranks = { isp: 0, firewall: 1, core: 2, dist: 3, infrastructure: 4, server: 5 };
+    const rows = new Map();
+    nodes.forEach((node) => {
+      const row = ranks[node.kind] ?? ranks.infrastructure;
+      if (!rows.has(row)) rows.set(row, []);
+      rows.get(row).push(node);
+    });
+    const rowKeys = Array.from(rows.keys()).sort((a, b) => a - b);
+    const maxRow = Math.max(1, ...Array.from(rows.values()).map((items) => items.length));
+    const width = Math.max(Number(canvasWidth) || 1200, maxRow * (NODE_W + H_GAP) + X_PAD * 2);
+    const minimumHeight = Math.max(420, Number(canvasHeight) || 680);
+    const rowGap = rowKeys.length > 1
+      ? Math.max(46, (minimumHeight - Y_PAD * 2 - NODE_H * rowKeys.length) / (rowKeys.length - 1))
+      : 0;
+    rowKeys.forEach((rowKey, rowIndex) => {
+      const row = rows.get(rowKey).sort((a, b) => (
+        stableTopologyCompare(a.name, b.name) || stableTopologyCompare(a.ip, b.ip)
+      ));
+      const rowWidth = row.length * NODE_W + Math.max(0, row.length - 1) * H_GAP;
+      const startX = Math.max(X_PAD, (width - rowWidth) / 2);
+      row.forEach((node, index) => {
+        node.x = startX + index * (NODE_W + H_GAP);
+        node.y = Y_PAD + rowIndex * (NODE_H + rowGap);
+        node.w = NODE_W;
+        node.h = NODE_H;
+      });
+    });
+
+    const nodeByIp = new Map(nodes.map((node) => [node.ip, node]));
+    const links = [];
+    const addLink = (item, kind, aEndpoint, bEndpoint) => {
+      const from = nodeByIp.get(aEndpoint.ip);
+      const to = nodeByIp.get(bEndpoint.ip);
+      if (!from || !to) return;
+      links.push({
+        id: item.id,
+        kind,
+        from,
+        to,
+        fromEndpoint: aEndpoint,
+        toEndpoint: bEndpoint,
+        labelLines: [physicalEndpointLabel(aEndpoint), physicalEndpointLabel(bEndpoint)],
+        stale: item.stale === true ? true : (item.stale === false ? false : null),
+        hasStaleMembers: item.hasStaleMembers === true,
+        protocols: Array.isArray(item.protocols) ? item.protocols.slice() : [],
+        lastSeen: item.lastSeen
+      });
+    };
+
+    (projection.physicalLinks || []).forEach((link) => addLink(link, "physical", link.a, link.b));
+    (projection.bundles || []).forEach((bundle) => addLink(bundle, "bundle", bundle.a, bundle.b));
+    (projection.serverAttachments || []).forEach((attachment) => addLink(
+      attachment,
+      "attachment",
+      attachment.switchEndpoint,
+      attachment.serverEndpoint
+    ));
+
+    links.sort((a, b) => stableTopologyCompare(a.id, b.id));
+    const parallelGroups = new Map();
+    links.forEach((link) => {
+      const pair = [link.from.ip, link.to.ip].sort(stableTopologyCompare).join("--");
+      if (!parallelGroups.has(pair)) parallelGroups.set(pair, []);
+      parallelGroups.get(pair).push(link);
+    });
+    parallelGroups.forEach((group) => {
+      group.sort((a, b) => stableTopologyCompare(a.id, b.id));
+      group.forEach((link, index) => {
+        link.parallelIndex = index;
+        link.parallelCount = group.length;
+        link.parallelOffset = (index - (group.length - 1) / 2) * 12;
+      });
+    });
+
+    return {
+      nodes,
+      links,
+      width,
+      height: Math.max(
+        minimumHeight,
+        nodes.reduce((maximum, node) => Math.max(maximum, node.y + node.h + Y_PAD), 0)
+      ),
+      compatibilityWarnings: (projection.compatibilityWarnings || []).slice()
+    };
+  }
+
+  function physicalEndpointSignature(endpoint) {
+    return [
+      endpoint && endpoint.ip || "",
+      endpoint && endpoint.ifindex === null ? "" : endpoint && endpoint.ifindex || "",
+      endpoint && endpoint.port || "",
+      endpoint && endpoint.aggregatePort || "",
+      endpoint && Array.isArray(endpoint.memberPorts) ? endpoint.memberPorts.join(",") : ""
+    ].join("|");
+  }
+
+  function physicalTopologySignature(layout, width) {
+    const nodesSig = (layout.nodes || []).map((node) => (
+      `${node.kind}|${node.ip || ""}|${node.name}|${node.level}`
+    )).join("#");
+    const linksSig = (layout.links || []).map((link) => [
+      link.id,
+      link.kind,
+      physicalEndpointSignature(link.fromEndpoint),
+      physicalEndpointSignature(link.toEndpoint),
+      link.stale === true ? "stale" : (link.stale === false ? "fresh" : "unknown"),
+      link.hasStaleMembers === true ? "partial-stale" : ""
+    ].join("|")).join("#");
+    return `${width}@${nodesSig}@@${linksSig}`;
+  }
+
+  function topologyTextWidth(text) {
+    let width = 0;
+    for (const character of String(text || "")) {
+      width += /[　-鿿＀-￯]/.test(character) ? 13 : 7.3;
+    }
+    return width;
+  }
+
+  function renderTopologyNodes(nodes) {
+    return (nodes || []).map((node, idx) => {
+      const latencyText = Number.isFinite(node.latency)
+        ? formatPingText(node.latency)
+        : (node.kind === "isp" && node.success === true ? "在线" : "");
+      const dataAttrs = `data-idx="${idx}" data-kind="${escapeHtml(node.kind)}" data-name="${escapeHtml(node.name)}" data-ip="${escapeHtml(node.ip || "")}" data-level="${escapeHtml(node.level)}"`;
+      const subline = node.ip
+        ? `<text class="topology-node-ip" x="14" y="${node.h - 8}">${escapeHtml(node.ip)}</text>`
+        : "";
+      const nodeName = String(node.name || "?");
+      const nameMaxW = node.w - 42;
+      const nameFitAttr = topologyTextWidth(nodeName) > nameMaxW
+        ? ` textLength="${nameMaxW}" lengthAdjust="spacingAndGlyphs"`
+        : "";
+      const nodeKindLabel = node.kind === "server" && node.unlocated
+        ? "服务器 · 未定位"
+        : topologyNodeKindLabel(node.kind);
+      return `
+        <g class="topology-node node-${node.level}${node.unlocated ? " node-unlocated" : ""}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
+          <rect width="${node.w}" height="${node.h}" rx="10" />
+          <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
+          <text class="topology-node-name" x="34" y="22"${nameFitAttr}>${escapeHtml(nodeName)}</text>
+          <text class="topology-node-kind" x="34" y="38">${escapeHtml(nodeKindLabel)}</text>
+          <text class="topology-node-latency" x="${node.w - 10}" y="38" text-anchor="end">${escapeHtml(latencyText)}</text>
+          ${subline}
+        </g>
+      `;
+    }).join("");
+  }
+
+  function renderPhysicalTopologySvg(layout, canvasWidth) {
+    if (!(layout.links || []).length) {
+      return `<div class="topology-empty topology-physical-empty">No accepted physical topology</div>`;
+    }
+    const center = (node) => ({ x: node.x + node.w / 2, y: node.y + node.h / 2 });
+    const linkPaths = layout.links.map((link) => {
+      const from = center(link.from);
+      const to = center(link.to);
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const normalX = -dy / length;
+      const normalY = dx / length;
+      const offset = link.parallelOffset || 0;
+      const controlX = (from.x + to.x) / 2 + normalX * offset;
+      const controlY = (from.y + to.y) / 2 + normalY * offset;
+      const path = offset
+        ? `M ${from.x} ${from.y} Q ${controlX} ${controlY} ${to.x} ${to.y}`
+        : `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
+      const classes = ["topology-link", `topology-link--${link.kind}`];
+      if (link.stale === true) classes.push("topology-link--stale");
+      if (link.kind === "bundle" && link.stale !== true && link.hasStaleMembers) {
+        classes.push("topology-link--partial-stale");
+      }
+      const labelAt = (ratio, text, endpoint) => {
+        if (!text) return "";
+        const x = from.x + dx * ratio + normalX * offset;
+        const y = from.y + dy * ratio + normalY * offset - 7;
+        return `<text class="topology-link-label topology-link-label--physical" data-endpoint="${endpoint}" x="${x}" y="${y}" text-anchor="middle">${escapeHtml(text)}</text>`;
+      };
+      return `
+        <g class="topology-physical-link-group" data-link-id="${escapeHtml(link.id)}" data-link-kind="${link.kind}">
+          <path class="${classes.join(" ")}" d="${path}" />
+          ${labelAt(0.2, link.labelLines[0], "a")}
+          ${labelAt(0.8, link.labelLines[1], "b")}
+        </g>
+      `;
+    }).join("");
+    const nodes = renderTopologyNodes(layout.nodes);
+    return `
+      <svg class="topology-svg topology-physical-svg" viewBox="0 0 ${canvasWidth} ${layout.height}" data-base-width="${canvasWidth}" data-base-height="${layout.height}" preserveAspectRatio="xMidYMid meet" focusable="false">
+        ${linkPaths}
+        ${nodes}
+      </svg>
+    `;
   }
 
   function renderTopologySvg(layout, canvasWidth) {
@@ -702,16 +964,6 @@
       const pad = 18;
       return node.x + pad + ((node.w - pad * 2) * slot) / (count - 1);
     };
-    // Estimate rendered title width (CJK glyphs are ~2x a Latin char) so an
-    // over-long switch name gets squeezed to fit the box instead of spilling out.
-    const estTextWidth = (text) => {
-      let w = 0;
-      for (const ch of String(text || "")) {
-        w += /[　-鿿＀-￯]/.test(ch) ? 13 : 7.3;
-      }
-      return w;
-    };
-
     const coreBus = layout.coreBus
       ? `<path class="topology-link topology-backbone link-${layout.coreBus.severity}" d="M ${layout.coreBus.coreX} ${layout.coreBus.coreY} L ${layout.coreBus.coreX} ${layout.coreBus.y} M ${layout.coreBus.x1} ${layout.coreBus.y} L ${layout.coreBus.x2} ${layout.coreBus.y}" />`
       : "";
@@ -859,33 +1111,7 @@
       `;
     }).join("");
 
-    const nodes = layout.nodes.map((node, idx) => {
-      const latencyText = Number.isFinite(node.latency)
-        ? formatPingText(node.latency)
-        : (node.kind === "isp" && node.success === true ? "在线" : "");
-      const dataAttrs = `data-idx="${idx}" data-kind="${escapeHtml(node.kind)}" data-name="${escapeHtml(node.name)}" data-ip="${escapeHtml(node.ip || "")}" data-level="${escapeHtml(node.level)}"`;
-      const subline = node.ip
-        ? `<text class="topology-node-ip" x="14" y="${node.h - 8}">${escapeHtml(node.ip)}</text>`
-        : "";
-      const nodeName = String(node.name || "?");
-      const nameMaxW = node.w - 42; // title starts at x=34, leave ~8px right padding
-      const nameFitAttr = estTextWidth(nodeName) > nameMaxW
-        ? ` textLength="${nameMaxW}" lengthAdjust="spacingAndGlyphs"`
-        : "";
-      const nodeKindLabel = node.kind === "server" && node.unlocated
-        ? "服务器 · 未定位"
-        : topologyNodeKindLabel(node.kind);
-      return `
-        <g class="topology-node node-${node.level}${node.unlocated ? " node-unlocated" : ""}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
-          <rect width="${node.w}" height="${node.h}" rx="10" />
-          <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
-          <text class="topology-node-name" x="34" y="22"${nameFitAttr}>${escapeHtml(nodeName)}</text>
-          <text class="topology-node-kind" x="34" y="38">${escapeHtml(nodeKindLabel)}</text>
-          <text class="topology-node-latency" x="${node.w - 10}" y="38" text-anchor="end">${escapeHtml(latencyText)}</text>
-          ${subline}
-        </g>
-      `;
-    }).join("");
+    const nodes = renderTopologyNodes(layout.nodes);
 
     const haBonds = (layout.haBonds || []).map((bond) => {
       const x1 = bond.from.x + bond.from.w;
@@ -925,7 +1151,11 @@
     topologyLayout,
     topologyNodeIcon,
     topologyNodeKindLabel,
-    renderTopologySvg
+    renderTopologySvg,
+    buildPhysicalTopologyNodes,
+    physicalTopologyLayout,
+    physicalTopologySignature,
+    renderPhysicalTopologySvg
   };
 
   if (typeof module !== 'undefined' && module.exports) {

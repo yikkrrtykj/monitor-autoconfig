@@ -247,6 +247,10 @@
       </section>
       <section class="topology-panel" id="topologyPanel" aria-label="网络拓扑" hidden>
         <div class="topology-toolbar">
+          <div class="topology-view-switch" role="group" aria-label="拓扑视图">
+            <button type="button" id="topologyViewOperations" aria-pressed="true">Operations</button>
+            <button type="button" id="topologyViewPhysical" aria-pressed="false">Physical</button>
+          </div>
           <span class="topology-legend">
             <i class="dot good"></i> 在线
             <i class="dot warn"></i> 高延迟
@@ -321,6 +325,7 @@
     <script src="./wireless/wireless-panel.js?v=20260827a"></script>
     <script src="./incident.js?v=20260803a"></script>
     <script src="./incident/incident-panel.js?v=20260827a"></script>
+    <script src="./physical-topology.js?v=20260831a"></script>
     <script src="./topology.js?v=20260809a"></script>
     <script src="./charts/topology-panel.js?v=20260826a"></script>
     <script src="./platform.js?v=20260627a"></script>
