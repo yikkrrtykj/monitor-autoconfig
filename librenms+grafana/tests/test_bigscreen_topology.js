@@ -1,5 +1,7 @@
 const assert = require("assert");
+const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 
 global.window = {
   BIGSCREEN_CONFIG: {
@@ -436,6 +438,32 @@ assert.ok(!attachedLayout.links.some((link) =>
   [link.from.ip, link.to.ip].includes("192.168.42.203") &&
   [link.from.ip, link.to.ip].includes("192.168.10.254")
 ));
+
+// Phase 2 metadata remains invisible to the current layout and render
+// signature until a later UI phase explicitly consumes it.
+const metadataAttachmentEdges = serverAttachmentEdges.map((edge) => ({
+  ...edge,
+  edge_type: edge.source === "fdb" ? "server_attachment" : "physical",
+  ...(edge.source === "fdb" ? {} : { protocols: ["cdp", "lldp"] })
+}));
+const metadataAttachedLayout = topologyLayout(
+  buildTopologyLayers(serverAttachmentTargets),
+  1365,
+  620,
+  metadataAttachmentEdges
+);
+assert.deepStrictEqual(metadataAttachedLayout, attachedLayout, "optional edge metadata does not change layout");
+const appSource = fs.readFileSync(path.resolve(__dirname, "../bigscreen/app.js"), "utf8");
+const topologySignatureSource = appSource.match(
+  /function topologySignature\(layout, width, edges\) \{[\s\S]*?\n  \}/
+);
+assert.ok(topologySignatureSource, "production topologySignature is discoverable");
+const topologySignature = vm.runInNewContext(`(${topologySignatureSource[0]})`);
+assert.strictEqual(
+  topologySignature(attachedLayout, 1365, serverAttachmentEdges),
+  topologySignature(metadataAttachedLayout, 1365, metadataAttachmentEdges),
+  "optional edge metadata does not change the existing render signature"
+);
 
 // A stale/weak server edge can arrive after the exact FDB edge. JSON order
 // must never move the server back beside the core or another switch.

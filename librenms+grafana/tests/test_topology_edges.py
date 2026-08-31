@@ -632,6 +632,8 @@ class TestServerAttachmentDiscovery:
         assert found[0]["from_port"] == "Gi1/0/10"
         assert found[0]["to_ip"] == "192.168.42.203"
         assert found[0]["source"] == "fdb"
+        assert found[0]["edge_type"] == "server_attachment"
+        assert "protocols" not in found[0]
         assert found[0]["server_mac"] == "00:11:22:aa:bb:cc"
         assert found[0]["server_vlan"] == 42
 
@@ -951,7 +953,10 @@ class TestServerAttachmentDiscovery:
             [], cached, {"192.168.42.203": "sdwan"},
         )
 
-        assert found == cached
+        assert found == [{
+            **cached[0], "edge_type": "server_attachment",
+        }]
+        assert "protocols" not in found[0]
 
     def test_cached_vlan_attachment_is_discarded(self):
         cached = [{
@@ -1014,9 +1019,13 @@ class TestServerAttachmentDiscovery:
             "source": "fdb",
         }]
 
-        assert gte.preserve_cached_server_edges(
+        found = gte.preserve_cached_server_edges(
             [], cached, {"192.168.42.203": "sdwan"},
-        ) == cached
+        )
+        assert found == [{
+            **cached[0], "edge_type": "server_attachment",
+        }]
+        assert "protocols" not in found[0]
 
     def test_confirmed_fdb_edge_replaces_weaker_server_edge(self):
         weak = [{
@@ -1599,6 +1608,8 @@ def test_reciprocal_edge_orientation_uses_stable_numeric_ip_traversal():
     assert len(forward[0]) == 1
     assert forward[0][0]["from_ip"] == "10.0.0.2"
     assert forward[0][0]["to_ip"] == "10.0.0.10"
+    assert forward[0][0]["edge_type"] == "physical"
+    assert forward[0][0]["protocols"] == ["lldp"]
 
 
 def test_port_typed_ambiguity_stops_before_unique_exact_name():
@@ -1887,3 +1898,139 @@ def test_not_found_diagnostic_does_not_invalidate_stale_cache():
 
     assert len(retained) == 1
     assert retained[0]["stale"] is True
+
+
+# ---- Topology V2 Phase 2 minimal edge metadata ----
+
+def _protocol_candidate(protocol):
+    return {
+        "from_ip": "10.0.0.1", "from_sysname": "left",
+        "from_port": "Gi1/0/1", "from_ifindex": 1,
+        "to_ip": "10.0.0.2", "to_sysname": "right",
+        "to_port": "Gi1/0/2", "to_ifindex": 2,
+        "_device_identity_resolved": True,
+        "_protocols": [protocol],
+    }
+
+
+def _public_protocol_edge(protocol_order):
+    merged = {}
+    for protocol in protocol_order:
+        gte.merge_edge(merged, _protocol_candidate(protocol))
+    resolved = gte.resolve_endpoint_conflicts(list(merged.values()))
+    deduped = gte.dedupe_canonical_physical_edges(resolved)
+    return gte.publish_physical_edge_metadata(deduped)
+
+
+def test_merge_edge_unions_normalized_protocols_without_duplicates():
+    merged = {}
+    for protocol in ("LLDP", "cdp", "lldp"):
+        gte.merge_edge(merged, _protocol_candidate(protocol))
+
+    edge = next(iter(merged.values()))
+    assert edge["_protocols"] == ["cdp", "lldp"]
+    assert edge["_observations"] == 3
+    assert "edge_type" not in edge
+    assert "protocols" not in edge
+
+
+def test_canonical_physical_dedupe_unions_protocols():
+    first = _protocol_candidate("lldp")
+    first.pop("_device_identity_resolved")
+    second = {
+        "from_ip": "10.0.0.2", "from_sysname": "right",
+        "from_port": "GigabitEthernet1/0/2", "from_ifindex": 2,
+        "to_ip": "10.0.0.1", "to_sysname": "left",
+        "to_port": "GigabitEthernet1/0/1", "to_ifindex": 1,
+        "_protocols": ["CDP", "lldp"],
+    }
+
+    deduped = gte.dedupe_canonical_physical_edges([first, second])
+
+    assert len(deduped) == 1
+    assert deduped[0]["_protocols"] == ["cdp", "lldp"]
+
+
+def test_protocol_metadata_is_deterministic_and_private_state_does_not_leak():
+    cdp_first = _public_protocol_edge(["cdp", "lldp"])
+    lldp_first = _public_protocol_edge(["lldp", "cdp"])
+
+    assert cdp_first == lldp_first
+    assert cdp_first[0]["edge_type"] == "physical"
+    assert cdp_first[0]["protocols"] == ["cdp", "lldp"]
+    assert not any(key.startswith("_") for key in cdp_first[0])
+
+
+def test_public_protocols_filter_untrusted_internal_values():
+    candidate = _protocol_candidate("lldp")
+    candidate["_protocols"] = ["lldp", "garbage"]
+
+    edge = gte.publish_physical_edge_metadata([candidate])[0]
+
+    assert edge["protocols"] == ["lldp"]
+    assert "garbage" not in edge["protocols"]
+    assert not any(key.startswith("_") for key in edge)
+
+
+def test_fresh_cycle_protocols_replace_cached_history_without_union():
+    # protocols describes the last successful fresh confirmation cycle, not
+    # the union of every protocol ever seen over the edge's cached lifetime.
+    cases = (
+        (["lldp"], ["cdp"], ["cdp"]),
+        (["cdp", "lldp"], ["lldp"], ["lldp"]),
+        (["cdp"], ["lldp", "cdp"], ["cdp", "lldp"]),
+    )
+    for cached_protocols, current_protocols, expected in cases:
+        current = _public_protocol_edge(current_protocols)[0]
+        cached = {
+            **current,
+            "protocols": cached_protocols,
+            "last_seen": 100.0,
+            "stale": True,
+        }
+
+        retained = gte.retain_cached_network_edges(
+            [current], [cached], ["10.0.0.1", "10.0.0.2"], now=200.0,
+        )
+
+        assert len(retained) == 1
+        assert retained[0]["stale"] is False
+        assert retained[0]["last_seen"] == 200.0
+        assert retained[0]["edge_type"] == "physical"
+        assert retained[0]["protocols"] == expected
+
+
+def test_phase2_metadata_survives_fresh_to_stale_retention():
+    physical = _public_protocol_edge(["lldp", "cdp"])[0]
+    fresh = gte.retain_cached_network_edges(
+        [physical], [], ["10.0.0.1", "10.0.0.2"], now=100.0,
+    )
+    stale = gte.retain_cached_network_edges(
+        [], fresh, ["10.0.0.1", "10.0.0.2"], now=200.0,
+    )
+
+    assert fresh[0]["stale"] is False
+    assert stale[0]["stale"] is True
+    assert stale[0]["last_seen"] == 100.0
+    assert stale[0]["edge_type"] == "physical"
+    assert stale[0]["protocols"] == ["cdp", "lldp"]
+    assert not any(key.startswith("_") for key in stale[0])
+
+
+def test_legacy_stale_edge_remains_valid_without_fabricated_metadata():
+    legacy = {
+        "from_ip": "10.0.0.1", "from_port": "Gi1/0/1",
+        "from_ifindex": 1, "to_ip": "10.0.0.2",
+        "to_port": "Gi1/0/2", "to_ifindex": 2,
+        "last_seen": 100.0,
+    }
+
+    retained = gte.retain_cached_network_edges(
+        [], [legacy], ["10.0.0.1", "10.0.0.2"], now=200.0,
+    )
+
+    assert len(retained) == 1
+    assert retained[0]["stale"] is True
+    assert "edge_type" not in retained[0]
+    assert "protocols" not in retained[0]
+    assert not any(key.startswith("_") for key in retained[0])

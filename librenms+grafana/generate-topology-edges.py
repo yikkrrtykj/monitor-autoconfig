@@ -1265,7 +1265,7 @@ def _librenms_neighbors(client, device, port_by_id):
                 "LibreNMS link local_port_id cannot be mapped to ifIndex"
             )
         neighbors.append({
-            "protocol": str(link.get("protocol") or "xdp").strip().lower(),
+            "protocol": normalize_topology_protocol(link.get("protocol")),
             "active": link.get("active"),
             "local_ifindex": local_ifindex,
             "local_port": str(
@@ -1620,6 +1620,36 @@ def configured_core_neighbor_ip(devices, neighbor_name):
     return sorted(candidates, key=str)[0] if len(candidates) == 1 else None
 
 
+TOPOLOGY_NEIGHBOR_PROTOCOLS = frozenset({"lldp", "cdp", "xdp"})
+
+
+def normalize_topology_protocol(value):
+    """Normalize untrusted neighbor protocol data at the producer boundary."""
+    protocol = str(value or "").strip().lower()
+    return protocol if protocol in TOPOLOGY_NEIGHBOR_PROTOCOLS else "xdp"
+
+
+def _normalize_edge_protocols(*values):
+    """Return a stable allowlisted accepted-observation protocol union."""
+    protocols = set()
+    for collection in values:
+        if isinstance(collection, str):
+            collection = [collection]
+        for value in collection or []:
+            protocol = str(value or "").strip().lower()
+            if protocol in TOPOLOGY_NEIGHBOR_PROTOCOLS:
+                protocols.add(protocol)
+    return sorted(protocols)
+
+
+def _public_edge_copy(edge):
+    """Copy an edge without transient merge/diagnostic state."""
+    return {
+        key: value for key, value in edge.items()
+        if not str(key).startswith("_")
+    }
+
+
 def canonical_edge_key(edge):
     a = (edge["from_ip"] or "", edge["from_ifindex"] or 0)
     b = (edge["to_ip"] or "", edge["to_ifindex"] or 0)
@@ -1637,6 +1667,11 @@ def merge_edge(edges_by_key, edge):
         for side in ("from", "to")
     ) and not device_level_identity:
         return
+    protocols = _normalize_edge_protocols(edge.get("_protocols"))
+    if protocols:
+        edge["_protocols"] = protocols
+    else:
+        edge.pop("_protocols", None)
     key = canonical_edge_key(edge)
     existing = edges_by_key.get(key)
     if existing is None:
@@ -1644,6 +1679,11 @@ def merge_edge(edges_by_key, edge):
         edges_by_key[key] = edge
         return
     existing["_observations"] = existing.get("_observations", 1) + 1
+    protocols = _normalize_edge_protocols(
+        existing.get("_protocols"), edge.get("_protocols")
+    )
+    if protocols:
+        existing["_protocols"] = protocols
     for field in ("from_port", "from_ifindex", "to_port", "to_ifindex"):
         if not existing.get(field) and edge.get(field):
             existing[field] = edge[field]
@@ -1826,6 +1866,11 @@ def dedupe_canonical_physical_edges(edges):
     positions = {}
     for source in edges:
         edge = dict(source)
+        protocols = _normalize_edge_protocols(edge.get("_protocols"))
+        if protocols:
+            edge["_protocols"] = protocols
+        else:
+            edge.pop("_protocols", None)
         for side in ("from", "to"):
             field = f"{side}_port"
             label = canonical_topology_port_label(edge.get(field))
@@ -1843,12 +1888,32 @@ def dedupe_canonical_physical_edges(edges):
 
         existing = output[position]
         incoming = _orient_edge_like(edge, existing)
+        protocols = _normalize_edge_protocols(
+            existing.get("_protocols"), incoming.get("_protocols")
+        )
+        if protocols:
+            existing["_protocols"] = protocols
         for field in (
             "from_sysname", "from_port", "from_ifindex",
             "to_sysname", "to_port", "to_ifindex",
         ):
             if not existing.get(field) and incoming.get(field):
                 existing[field] = incoming[field]
+    return output
+
+
+def publish_physical_edge_metadata(edges):
+    """Publish additive metadata after identity and winner selection finish."""
+    output = []
+    for source in edges:
+        protocols = _normalize_edge_protocols(source.get("_protocols"))
+        edge = _public_edge_copy(source)
+        edge["edge_type"] = "physical"
+        if protocols:
+            edge["protocols"] = protocols
+        else:
+            edge.pop("protocols", None)
+        output.append(edge)
     return output
 
 
@@ -2160,6 +2225,7 @@ def build_edges(devices, name_index, evidence_seen_at=None,
             "to_port": remote_port_name,
             "to_ifindex": remote_ifindex,
             "_device_identity_resolved": True,
+            "_protocols": [protocol],
         })
 
     for ip in device_ips:
@@ -2229,7 +2295,7 @@ def build_edges(devices, name_index, evidence_seen_at=None,
         for neighbor in device.get("neighbors", []):
             if _link_is_inactive(neighbor):
                 continue
-            protocol = str(neighbor.get("protocol") or "xdp").strip().lower()
+            protocol = normalize_topology_protocol(neighbor.get("protocol"))
             neighbor_name = str(neighbor.get("neighbor_name") or "").strip()
             neighbor_device_id = neighbor.get("neighbor_device_id")
             local_port_name = str(neighbor.get("local_port") or "").strip()
@@ -2328,7 +2394,8 @@ def build_edges(devices, name_index, evidence_seen_at=None,
         evidence_seen_at=observed_at,
         invalidation_hints=invalidation_hints,
     ))
-    return enrich_aggregate_members(edges, devices), diagnostics
+    edges = enrich_aggregate_members(edges, devices)
+    return publish_physical_edge_metadata(edges), diagnostics
 
 
 UNMATCHED_NEIGHBOR_CATEGORIES = (
@@ -2996,6 +3063,7 @@ def discover_server_edges_direct(devices, edges, servers, community, cached_edge
             "to_port": None,
             "to_ifindex": None,
             "source": "fdb",
+            "edge_type": "server_attachment",
             # The monitoring host can reach a directly attached server VLAN
             # without traversing the monitored core.  Persist the last
             # confirmed IP->MAC/VLAN observation so later topology cycles can
@@ -3025,6 +3093,7 @@ def _server_edge_from_candidate(devices, server_ip, server_name, candidate):
         "to_port": None,
         "to_ifindex": None,
         "source": "fdb",
+        "edge_type": "server_attachment",
         "server_mac": candidate["mac"],
         "server_vlan": candidate.get("vlan"),
     }
@@ -3419,7 +3488,7 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
     occupied = set()
     output = []
     for source in live_edges:
-        edge = dict(source)
+        edge = _public_edge_copy(source)
         edge["last_seen"] = now
         edge["stale"] = False
         output.append(edge)
@@ -3517,7 +3586,7 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
             last_seen = now
         if now - last_seen > retention_seconds:
             continue
-        edge = dict(source)
+        edge = _public_edge_copy(source)
         edge["last_seen"] = last_seen
         edge["stale"] = True
         output.append(edge)
@@ -3601,7 +3670,10 @@ def preserve_cached_server_edges(edges, cached_edges, servers):
                     file=sys.stderr,
                 )
                 continue
-            preserved.append(dict(edge))
+            preserved_edge = _public_edge_copy(edge)
+            preserved_edge["edge_type"] = "server_attachment"
+            preserved_edge.pop("protocols", None)
+            preserved.append(preserved_edge)
             linked_servers.add(server_ip)
             print(
                 f"[INFO] server {server_name} ({server_ip}): current ARP/FDB "

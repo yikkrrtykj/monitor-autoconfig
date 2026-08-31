@@ -116,9 +116,9 @@ def topology_device(ip, sysname, device_id, ifname):
 
 
 def unified_neighbor(local_ifindex, local_port, remote_name, remote_device_id,
-                     remote_port, remote_port_id=None):
+                     remote_port, remote_port_id=None, protocol="lldp"):
     return {
-        "protocol": "lldp",
+        "protocol": protocol,
         "active": 1,
         "local_ifindex": local_ifindex,
         "local_port": local_port,
@@ -190,6 +190,8 @@ def test_librenms_fixture_reaches_final_edge_without_adjacency_snmp(monkeypatch)
         "from_member_ports": ["Te1/0/2", "Te2/0/2"],
         "to_aggregate_port": "Po11",
         "to_member_ports": ["Gi1/0/24", "Gi2/0/24"],
+        "edge_type": "physical",
+        "protocols": ["cdp", "lldp"],
     }
     # Fixture IDs deliberately differ: LibreNMS port_id 1001/2001 maps to
     # IF-MIB ifIndex 400/500 and is never copied into the edge as ifIndex.
@@ -352,6 +354,85 @@ def test_configured_remote_device_id_still_builds_infrastructure_edge():
     assert (edges[0]["from_ip"], edges[0]["to_ip"]) == (
         "192.168.10.254", "192.168.10.49",
     )
+    assert edges[0]["edge_type"] == "physical"
+    assert edges[0]["protocols"] == ["lldp"]
+
+
+def test_explicit_xdp_observation_is_not_guessed_as_lldp_or_cdp():
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
+    )
+    remote = topology_device(
+        "192.168.10.2", "Remote", 2, {2: "Gi1/0/2"}
+    )
+    source["neighbors"] = [unified_neighbor(
+        1, "Gi1/0/1", "Remote", 2, "Gi1/0/2", protocol="xdp"
+    )]
+    devices = {source["ip"]: source, remote["ip"]: remote}
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices)
+    )
+
+    assert diagnostics == []
+    assert len(edges) == 1
+    assert edges[0]["edge_type"] == "physical"
+    assert edges[0]["protocols"] == ["xdp"]
+
+
+@pytest.mark.parametrize(
+    "raw_protocol",
+    [
+        "lldp", " LLDP ", "CDP", "xdp", "", None,
+        "librenms", "direct-snmp", "hybrid", "malformed-value",
+    ],
+)
+def test_librenms_protocol_trust_boundary_is_lldp_cdp_or_xdp(
+    monkeypatch, raw_protocol,
+):
+    client = FixtureClient()
+    for key in (
+        ("192.168.10.254", "links"),
+        ("192.168.10.45", "links"),
+    ):
+        client.payloads[key][0]["protocol"] = raw_protocol
+    devices = collect_fixture_devices(client, monkeypatch, mode="librenms")
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices)
+    )
+
+    expected = str(raw_protocol or "").strip().lower()
+    if expected not in {"lldp", "cdp", "xdp"}:
+        expected = "xdp"
+    assert diagnostics == []
+    assert len(edges) == 1
+    assert edges[0]["protocols"] == [expected]
+    assert {
+        neighbor["protocol"]
+        for device in devices.values()
+        for neighbor in device["neighbors"]
+    } == {expected}
+
+
+def test_configured_core_cdp_resolution_remains_physical(monkeypatch):
+    core = topology_device("10.0.0.1", "Core", 1, {1: "Gi1/0/1"})
+    access = topology_device("10.0.0.2", "Access", 2, {2: "Gi1/0/2"})
+    access["cdp_device_id"] = {(2, 1): "Core"}
+    access["cdp_device_port"] = {(2, 1): "Gi1/0/1"}
+    access["cdp_address"] = {(2, 1): "192.0.2.254"}
+    devices = {core["ip"]: core, access["ip"]: access}
+    monkeypatch.setenv("CORE_SWITCH_PING", "Core:10.0.0.1")
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices)
+    )
+
+    assert diagnostics == []
+    assert len(edges) == 1
+    assert edges[0]["edge_type"] == "physical"
+    assert edges[0]["protocols"] == ["cdp"]
+    assert all(edge["edge_type"] != "synthetic" for edge in edges)
 
 
 def test_missing_remote_device_id_keeps_legacy_hostname_fallback():
@@ -419,6 +500,8 @@ def test_ambiguous_remote_port_emits_partial_edge_and_invalidates_exact_cache():
     assert len(live) == 1
     assert live[0]["from_ifindex"] == 1
     assert live[0]["to_ifindex"] is None
+    assert live[0]["edge_type"] == "physical"
+    assert live[0]["protocols"] == ["lldp"]
     assert diagnostics[0]["resolution_state"] == "ambiguous_port"
     assert diagnostics[0]["candidate_ports"] == [21, 22]
     cached = [
@@ -714,6 +797,28 @@ def test_normal_core_ob_cdp_and_librenms_observations_still_dedupe():
     assert edges[0]["from_port"] == "Te1/0/6"
     assert edges[0]["to_ip"] == "192.168.10.49"
     assert edges[0]["to_port"] == "Gi1/0/49"
+    assert edges[0]["edge_type"] == "physical"
+    assert edges[0]["protocols"] == ["cdp", "lldp"]
+
+
+def test_reciprocal_cdp_observations_publish_one_protocol():
+    left = topology_device("10.0.0.1", "Left", 1, {1: "Gi1/0/1"})
+    right = topology_device("10.0.0.2", "Right", 2, {2: "Gi1/0/2"})
+    left["cdp_device_id"] = {(1, 1): "Right"}
+    left["cdp_device_port"] = {(1, 1): "Gi1/0/2"}
+    left["cdp_address"] = {(1, 1): right["ip"]}
+    right["cdp_device_id"] = {(2, 1): "Left"}
+    right["cdp_device_port"] = {(2, 1): "Gi1/0/1"}
+    right["cdp_address"] = {(2, 1): left["ip"]}
+    devices = {left["ip"]: left, right["ip"]: right}
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices)
+    )
+
+    assert diagnostics == []
+    assert len(edges) == 1
+    assert edges[0]["protocols"] == ["cdp"]
 
 
 @pytest.mark.parametrize(
@@ -1029,6 +1134,8 @@ def test_lldp_and_cdp_fixture_observations_dedupe_to_one_edge(monkeypatch):
     assert devices["192.168.10.45"]["neighbors"][0]["protocol"] == "cdp"
     edges, _ = gte.build_edges(devices, gte.build_name_index(devices))
     assert len(edges) == 1
+    assert edges[0]["edge_type"] == "physical"
+    assert edges[0]["protocols"] == ["cdp", "lldp"]
 
 
 def test_remote_port_name_fallback_uses_existing_endpoint_resolver(monkeypatch):
@@ -1409,12 +1516,17 @@ def test_full_librenms_cycle_reports_zero_adjacency_snmp_and_compatible_schema(
     edges = json.loads((tmp_path / "edges.json").read_text(encoding="utf-8"))
     assert len(edges) == 1
     assert "source" not in edges[0]
-    assert set(edges[0]) == {
+    old_required_fields = {
         "from_ip", "from_sysname", "from_port", "from_ifindex",
         "to_ip", "to_sysname", "to_port", "to_ifindex",
         "from_aggregate_port", "from_member_ports",
         "to_aggregate_port", "to_member_ports", "last_seen", "stale",
     }
+    allowed_additive_fields = {"edge_type", "protocols"}
+    assert old_required_fields <= set(edges[0])
+    assert set(edges[0]) == old_required_fields | allowed_additive_fields
+    assert edges[0]["edge_type"] == "physical"
+    assert edges[0]["protocols"] == ["cdp", "lldp"]
     diagnostics = json.loads(
         (tmp_path / "topology-diagnostics.json").read_text(encoding="utf-8")
     )

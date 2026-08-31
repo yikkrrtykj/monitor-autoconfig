@@ -523,6 +523,27 @@ def test_build_topology_parents_roots_at_core():
     assert bridge.build_topology_parents(_chain_edges(), root_ip="") == {}
 
 
+def test_phase2_metadata_does_not_change_bridge_adjacency_or_peer_mapping():
+    edges = [{
+        "from_ip": "10.0.0.1", "from_sysname": "core",
+        "from_port": "Te1/0/1", "from_ifindex": 1,
+        "to_ip": "10.0.0.2", "to_sysname": "access",
+        "to_port": "Gi1/0/2", "to_ifindex": 2,
+    }]
+    metadata_edges = [{
+        **edges[0], "edge_type": "physical", "protocols": ["cdp", "lldp"],
+    }]
+
+    assert bridge.build_topology_parents(
+        edges, root_ip="10.0.0.1"
+    ) == bridge.build_topology_parents(
+        metadata_edges, root_ip="10.0.0.1"
+    )
+    assert build_interconnect_peer_map(edges) == build_interconnect_peer_map(
+        metadata_edges
+    )
+
+
 def test_root_cause_vs_symptom_when_middle_switch_fails():
     parents = bridge.build_topology_parents(_chain_edges(), root_ip="10.0.0.1")
     # distA down takes its two access switches with it.

@@ -264,6 +264,12 @@ def test_uplink_audit_matches_lldp_physical_port_to_port_channel_members():
     assert row["aggregate"] == "Po1"
     assert row["members"] == ["Gi27", "Gi28"]
     assert row["redundant"] is True
+    metadata_edges = [{
+        **edges[0], "edge_type": "physical", "protocols": ["lldp"],
+    }]
+    assert bridge.audit_uplink_redundancy(
+        metadata_edges, {"10.0.0.2": "access-a"}, "10.0.0.1", aggregates,
+    ) == [row]
 
 
 def test_dbm_query_falls_back_to_device_health_when_global_sensor_page_is_incomplete(monkeypatch):

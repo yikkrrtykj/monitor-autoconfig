@@ -526,11 +526,17 @@ def test_librenms_only_uses_unique_candidate_and_rejects_ambiguity(two_switches,
         fdb_candidates={"fc:9d:05:1a:b5:41": [candidate]},
     )
     assert found[0]["from_ifindex"] == 10110
-    assert set(found[0]) == {
+    old_required_fields = {
         "from_ip", "from_sysname", "from_port", "from_ifindex",
         "to_ip", "to_sysname", "to_port", "to_ifindex", "source",
         "server_mac", "server_vlan",
     }
+    allowed_additive_fields = {"edge_type"}
+    assert old_required_fields <= set(found[0])
+    assert set(found[0]) == old_required_fields | allowed_additive_fields
+    assert found[0]["source"] == "fdb"
+    assert found[0]["edge_type"] == "server_attachment"
+    assert "protocols" not in found[0]
     assert gte.discover_server_edges(
         devices, edges, {server_ip: "server-1"}, "community", source="librenms",
         fdb_candidates={"fc:9d:05:1a:b5:41": [candidate, dict(candidate, ifindex=10111)]},
