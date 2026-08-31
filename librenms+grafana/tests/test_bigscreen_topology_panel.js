@@ -1,20 +1,6 @@
 const assert = require('assert');
 const topologyPanelModule = require('../bigscreen/charts/topology-panel.js');
 
-global.window = {
-  BIGSCREEN_CONFIG: {},
-  BIGSCREEN_QUERIES: {},
-  BIGSCREEN_PAGES: []
-};
-
-const { projectPhysicalTopology: projectPhysicalTopologyReal } = require(
-  '../bigscreen/physical-topology.js'
-);
-const {
-  physicalTopologyLayout: physicalTopologyLayoutReal,
-  renderPhysicalTopologySvg: renderPhysicalTopologySvgReal
-} = require('../bigscreen/topology.js');
-
 assert.deepStrictEqual(
   Object.keys(topologyPanelModule),
   ['createTopologyPanel'],
@@ -205,14 +191,10 @@ function escapeHtml(value) {
 const canvas = new FakeCanvas();
 const detail = new FakeElement();
 const updated = new FakeElement();
-const operationsButton = new FakeElement('BUTTON');
-const physicalButton = new FakeElement('BUTTON');
 const elements = {
   topologyCanvas: canvas,
   topologyDetail: detail,
-  topologyUpdated: updated,
-  topologyViewOperations: operationsButton,
-  topologyViewPhysical: physicalButton
+  topologyUpdated: updated
 };
 const document = {
   getElementById(id) {
@@ -248,60 +230,24 @@ const renderTopologySvg = (layout, width) => `
     ${layout.nodes.map((node, index) => `<g class="topology-node" data-idx="${index}"><text class="topology-node-latency">${Number.isFinite(node.latency) ? formatPingText(node.latency) : ''}</text></g>`).join('')}
   </svg>
 `;
-const physicalProjectionCalls = [];
-const physicalLayoutCalls = [];
-const physicalRenderCalls = [];
-const modeChanges = [];
-const projectPhysicalTopology = (edges) => {
-  physicalProjectionCalls.push(edges);
-  return {
-    devices: [],
-    physicalLinks: edges.map((edge, index) => ({ id: `physical-${index}`, edge })),
-    bundles: [],
-    serverAttachments: [],
-    compatibilityWarnings: []
-  };
-};
-const physicalTopologyLayout = (projection, targets, width, height) => {
-  physicalLayoutCalls.push({ projection, targets, width, height });
-  return { nodes: targets, links: projection.physicalLinks, width, height };
-};
-const renderPhysicalTopologySvg = (layout, width) => {
-  physicalRenderCalls.push({ layout, width });
-  return `
-    <svg class="topology-svg" data-base-width="${width}" data-base-height="${layout.height}">
-      ${layout.nodes.map((node, index) => `<g class="topology-node" data-idx="${index}"><text class="topology-node-latency">${Number.isFinite(node.latency) ? formatPingText(node.latency) : ''}</text></g>`).join('')}
-    </svg>
-  `;
-};
-
 const panel = topologyPanelModule.createTopologyPanel({
   document,
   location: { protocol: 'http:', hostname: 'bigscreen.local' },
   buildTopologyLayers,
   topologyLayout,
   renderTopologySvg,
-  projectPhysicalTopology,
-  physicalTopologyLayout,
-  renderPhysicalTopologySvg,
   topologyNodeKindLabel: (kind) => ({ core: '核心', isp: 'ISP' }[kind] || kind),
   topologyLatencyIp: (node) => node.kind === 'isp' ? (node.probeIp || node.ip || '') : (node.ip || ''),
   escapeHtml,
-  formatPingText,
-  onModeChange: (mode) => modeChanges.push(mode)
+  formatPingText
 });
 
 assert.deepStrictEqual(
   Object.keys(panel),
-  ['isAvailable', 'prepare', 'render', 'updateLatency', 'updateStatus', 'showError', 'clearDetail', 'resetView', 'getMode', 'setMode'],
+  ['isAvailable', 'prepare', 'render', 'updateLatency', 'updateStatus', 'showError', 'clearDetail', 'resetView'],
   'the controller API is explicit and contains no fetch, timer or cache methods'
 );
 assert.strictEqual(panel.isAvailable(), true, 'the panel owns the Topology canvas availability check');
-assert.strictEqual(panel.getMode(), 'operations', 'Operations is the explicit default mode');
-assert.strictEqual(operationsButton.getAttribute('aria-pressed'), 'true');
-assert.strictEqual(physicalButton.getAttribute('aria-pressed'), 'false');
-assert.strictEqual(operationsButton.listenerCount('click'), 1);
-assert.strictEqual(physicalButton.listenerCount('click'), 1);
 
 const nodes = [
   {
@@ -455,163 +401,5 @@ const wideTargets = Array.from({ length: 6 }, (_, index) => ({
 }));
 const wideFrame = panel.prepare(wideTargets, []);
 assert.strictEqual(wideFrame.width, 6 * 168 + 48, 'dist and server nodes retain the existing natural-width calculation');
-
-// Explicit mode navigation reuses the latest caller-owned data and resets view.
-physicalButton.dispatch('click');
-assert.strictEqual(panel.getMode(), 'physical');
-assert.deepStrictEqual(modeChanges, ['physical']);
-assert.strictEqual(operationsButton.getAttribute('aria-pressed'), 'false');
-assert.strictEqual(physicalButton.getAttribute('aria-pressed'), 'true');
-assert.strictEqual(canvas.svg.getAttribute('viewBox'), '0 0 800 500', 'mode change resets pan/zoom');
-
-const physicalEdges = [{ from_ip: '10.0.0.1', to_ip: '203.0.113.10' }];
-const physicalFrame = panel.prepare(nodes, physicalEdges);
-assert.strictEqual(physicalProjectionCalls.length, 1);
-assert.strictEqual(physicalProjectionCalls[0], physicalEdges, 'Physical mode consumes the shared edge snapshot');
-assert.strictEqual(physicalLayoutCalls.length, 1);
-assert.strictEqual(physicalLayoutCalls[0].targets, nodes, 'Physical nodes receive the shared target snapshot');
-panel.render(physicalFrame);
-assert.strictEqual(physicalRenderCalls.length, 1);
-assert.strictEqual(canvas.dataset.topologyView, 'physical');
-panel.updateStatus(physicalEdges);
-assert.ok(updated.textContent.endsWith('Physical 1 条链路'));
-
-operationsButton.dispatch('click');
-assert.strictEqual(panel.getMode(), 'operations');
-assert.deepStrictEqual(modeChanges, ['physical', 'operations']);
-assert.strictEqual(operationsButton.getAttribute('aria-pressed'), 'true');
-assert.strictEqual(physicalButton.getAttribute('aria-pressed'), 'false');
-assert.strictEqual(panel.setMode('unsupported'), false, 'unknown mode is rejected without changing state');
-const operationsFrameAgain = panel.prepare(nodes, edges);
-panel.render(operationsFrameAgain);
-assert.strictEqual(canvas.dataset.topologyView, 'operations');
-assert.ok(canvas.innerHTML.includes('class="topology-svg"'));
-
-// MULTI_MODE_SWITCHING / MODE_BUTTON_KEYBOARD: native Enter/Space activation
-// drives several complete cycles without duplicate listeners or render roots.
-let projectionCountBeforeKeyboard = physicalProjectionCalls.length;
-physicalButton.dispatch('keydown', { key: 'Enter' });
-assert.strictEqual(panel.getMode(), 'physical');
-assert.strictEqual(physicalButton.getAttribute('aria-pressed'), 'true');
-assert.strictEqual(operationsButton.getAttribute('aria-pressed'), 'false');
-assert.strictEqual(
-  physicalProjectionCalls.length,
-  projectionCountBeforeKeyboard,
-  'keyboard mode navigation itself does not fetch or prepare new data'
-);
-operationsButton.dispatch('keydown', { key: ' ' });
-assert.strictEqual(panel.getMode(), 'operations');
-assert.strictEqual(operationsButton.getAttribute('aria-pressed'), 'true');
-physicalButton.dispatch('keydown', { key: ' ' });
-assert.strictEqual(panel.getMode(), 'physical');
-assert.strictEqual(physicalButton.getAttribute('aria-pressed'), 'true');
-operationsButton.dispatch('keydown', { key: 'Enter' });
-assert.strictEqual(panel.getMode(), 'operations');
-assert.strictEqual(operationsButton.getAttribute('aria-pressed'), 'true');
-assert.strictEqual(physicalButton.getAttribute('aria-pressed'), 'false');
-assert.strictEqual(operationsButton.listenerCount('click'), 1);
-assert.strictEqual(physicalButton.listenerCount('click'), 1);
-assert.strictEqual(operationsButton.listenerCount('keydown'), 0, 'native button activation needs no custom key handler');
-assert.strictEqual(physicalButton.listenerCount('keydown'), 0, 'native button activation needs no custom key handler');
-assert.ok(canvas.svg, 'each mode owns exactly one current SVG root');
-
-// PHYSICAL_PAN_ZOOM_RESET and incremental raw latency update exercise the
-// shared interaction implementation while Physical is the active renderer.
-physicalButton.dispatch('click');
-const interactivePhysicalFrame = panel.prepare(nodes, physicalEdges);
-panel.render(interactivePhysicalFrame);
-assert.strictEqual(canvas.svg.getAttribute('viewBox'), '0 0 800 500');
-const physicalHtmlWrites = canvas.innerHTMLWrites;
-panel.updateLatency(interactivePhysicalFrame.layout.nodes.map((node) => ({
-  ...node,
-  latency: node.kind === 'core' ? 0.003 : node.latency
-})));
-assert.strictEqual(canvas.innerHTMLWrites, physicalHtmlWrites, 'Physical latency jitter is incremental');
-assert.strictEqual(canvas.nodes[0].latencyText.textContent, '3ms');
-canvas.dispatch('pointerdown', { clientX: 20, clientY: 20, pointerId: 12 });
-canvas.dispatch('pointermove', { clientX: 32, clientY: 20, pointerId: 12 });
-assert.notStrictEqual(canvas.svg.getAttribute('viewBox'), '0 0 800 500', 'Physical pan changes the view');
-canvas.dispatch('pointerup', { pointerId: 12 });
-panel.resetView();
-assert.strictEqual(canvas.svg.getAttribute('viewBox'), '0 0 800 500');
-canvas.dispatch('wheel', { clientX: 400, clientY: 250, deltaY: -1 });
-assert.notStrictEqual(canvas.svg.getAttribute('viewBox'), '0 0 800 500', 'Physical zoom changes the view');
-canvas.dispatch('dblclick');
-assert.strictEqual(canvas.svg.getAttribute('viewBox'), '0 0 800 500', 'Physical double-click reset restores the view');
-operationsButton.dispatch('click');
-const postPhysicalOperationsFrame = panel.prepare(nodes, edges);
-panel.render(postPhysicalOperationsFrame);
-assert.strictEqual(canvas.svg.getAttribute('viewBox'), '0 0 800 500', 'mode switch leaves no stale Physical transform');
-assert.strictEqual(canvas.listenerCount('pointerdown'), 1);
-assert.strictEqual(canvas.listenerCount('wheel'), 1);
-
-// BUNDLE_FULL_PANEL_INTEGRATION: raw Phase 2 rows traverse the real projector,
-// Physical layout and renderer through the panel controller without pairing
-// endpoint member arrays as cables.
-const bundleCanvas = new FakeCanvas();
-const bundleDetail = new FakeElement();
-const bundleUpdated = new FakeElement();
-const bundleOperationsButton = new FakeElement('BUTTON');
-const bundlePhysicalButton = new FakeElement('BUTTON');
-const bundleElements = {
-  topologyCanvas: bundleCanvas,
-  topologyDetail: bundleDetail,
-  topologyUpdated: bundleUpdated,
-  topologyViewOperations: bundleOperationsButton,
-  topologyViewPhysical: bundlePhysicalButton
-};
-const bundleDocument = {
-  getElementById(id) {
-    return bundleElements[id] || null;
-  },
-  querySelectorAll(selector) {
-    return bundleCanvas.querySelectorAll(selector);
-  }
-};
-const bundlePanel = topologyPanelModule.createTopologyPanel({
-  document: bundleDocument,
-  location: { protocol: 'http:', hostname: 'bigscreen.local' },
-  buildTopologyLayers,
-  topologyLayout,
-  renderTopologySvg,
-  projectPhysicalTopology: projectPhysicalTopologyReal,
-  physicalTopologyLayout: physicalTopologyLayoutReal,
-  renderPhysicalTopologySvg: renderPhysicalTopologySvgReal,
-  topologyNodeKindLabel: (kind) => kind,
-  topologyLatencyIp: (node) => node.ip || '',
-  escapeHtml,
-  formatPingText,
-  onModeChange: () => {}
-});
-const bundleRows = [
-  {
-    edge_type: 'physical',
-    from_ip: '10.0.0.1', from_sysname: 'A', from_port: 'Te1/0/2', from_ifindex: 102,
-    from_aggregate_port: 'Po11', from_member_ports: ['Te1/0/2', 'Te2/0/2'],
-    to_ip: '10.0.0.2', to_sysname: 'B', to_port: 'Te1/0/1', to_ifindex: 101,
-    to_aggregate_port: 'Po11', to_member_ports: ['Te1/0/1', 'Te2/0/1'],
-    protocols: ['lldp'], stale: true
-  },
-  {
-    edge_type: 'physical',
-    from_ip: '10.0.0.1', from_sysname: 'A', from_port: 'Te2/0/2', from_ifindex: 202,
-    from_aggregate_port: 'Po11', from_member_ports: ['Te1/0/2', 'Te2/0/2'],
-    to_ip: '10.0.0.2', to_sysname: 'B', to_port: 'Te2/0/1', to_ifindex: 201,
-    to_aggregate_port: 'Po11', to_member_ports: ['Te1/0/1', 'Te2/0/1'],
-    protocols: ['cdp'], stale: false
-  }
-];
-bundlePanel.setMode('physical', false);
-const bundleProjection = projectPhysicalTopologyReal(bundleRows);
-const bundleFrame = bundlePanel.prepare([], bundleRows);
-bundlePanel.render(bundleFrame);
-assert.strictEqual(bundleProjection.bundles.length, 1);
-assert.strictEqual(bundleFrame.layout.links.filter((link) => link.kind === 'bundle').length, 1);
-assert.strictEqual((bundleCanvas.innerHTML.match(/topology-link--bundle/g) || []).length, 1);
-for (const member of ['Te1/0/2', 'Te2/0/2', 'Te1/0/1', 'Te2/0/1']) {
-  assert.ok(!bundleCanvas.innerHTML.includes(`>${member}<`));
-}
-assert.ok(!bundleCanvas.innerHTML.includes('memberPairs'));
-assert.ok(!bundleCanvas.innerHTML.includes('cablePairs'));
 
 console.log('bigscreen Topology panel tests passed');

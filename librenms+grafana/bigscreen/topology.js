@@ -464,6 +464,25 @@
       const selected = physical.length ? physical.slice(0, maxPhysical) : aggregate.slice(0, Math.max(1, maxPhysical));
       return selected.length ? selected : unique.slice(0, Math.max(1, maxPhysical));
     };
+    const selectEndpointDisplayPorts = (
+      memberPorts,
+      ordinaryPorts,
+      aggregatePorts,
+      maxPhysical = Infinity
+    ) => {
+      const memberPhysical = selectDisplayPorts(memberPorts, maxPhysical)
+        .filter((port) => !isAggPortName(port));
+      if (memberPhysical.length) return memberPhysical;
+
+      const ordinaryPhysical = selectDisplayPorts(ordinaryPorts, maxPhysical)
+        .filter((port) => !isAggPortName(port));
+      if (ordinaryPhysical.length) return ordinaryPhysical;
+
+      return cleanPortNames([...aggregatePorts, ...ordinaryPorts])
+        .filter(isAggPortName)
+        .sort(stableTopologyCompare)
+        .slice(0, 1);
+    };
     const portDetail = (fromPorts, toPorts, maxPhysical = Infinity) => {
       const fromSelected = selectDisplayPorts(fromPorts, maxPhysical);
       const toSelected = selectDisplayPorts(toPorts, maxPhysical);
@@ -489,27 +508,40 @@
         const orientToPort = orientFrom === fromNode ? edge.to_port : edge.from_port;
         const orientFromMembers = orientFrom === fromNode ? edge.from_member_ports : edge.to_member_ports;
         const orientToMembers = orientFrom === fromNode ? edge.to_member_ports : edge.from_member_ports;
+        const orientFromAggregate = orientFrom === fromNode ? edge.from_aggregate_port : edge.to_aggregate_port;
+        const orientToAggregate = orientFrom === fromNode ? edge.to_aggregate_port : edge.from_aggregate_port;
         const pairKey = pairKeyFor(orientFrom, orientTo);
         const group = groupedEdges.get(pairKey) || {
           from: orientFrom,
           to: orientTo,
+          fromMemberPorts: [],
+          toMemberPorts: [],
           fromPorts: [],
           toPorts: [],
+          fromAggregatePorts: [],
+          toAggregatePorts: [],
           count: 0,
           liveCount: 0,
           staleCount: 0,
-          strongStale: false
+          strongStale: false,
+          serverAttachment: false
         };
-        group.fromPorts.push(...(
-          Array.isArray(orientFromMembers) && orientFromMembers.length
-            ? orientFromMembers
-            : [orientFromPort]
-        ));
-        group.toPorts.push(...(
-          Array.isArray(orientToMembers) && orientToMembers.length
-            ? orientToMembers
-            : [orientToPort]
-        ));
+        if (Array.isArray(orientFromMembers)) {
+          group.fromMemberPorts.push(...orientFromMembers);
+        }
+        if (Array.isArray(orientToMembers)) {
+          group.toMemberPorts.push(...orientToMembers);
+        }
+        group.fromPorts.push(orientFromPort);
+        group.toPorts.push(orientToPort);
+        group.fromAggregatePorts.push(orientFromAggregate);
+        group.toAggregatePorts.push(orientToAggregate);
+        const isServerLink = orientFrom.kind === "server" || orientTo.kind === "server";
+        group.serverAttachment = group.serverAttachment || (
+          isServerLink && (
+            edge.edge_type === "server_attachment" || edge.source === "fdb"
+          )
+        );
         group.count += 1;
         if (edge.stale === true) {
           group.staleCount += 1;
@@ -541,7 +573,28 @@
           (group.from.kind === "core" && group.to.kind === "dist") ||
           (group.from.kind === "dist" && group.to.kind === "core")
         );
-        const detail = portDetail(group.fromPorts, group.toPorts, isCoreDist ? 2 : Infinity);
+        const fromAggregatePorts = cleanPortNames(group.fromAggregatePorts)
+          .filter(isAggPortName)
+          .sort(stableTopologyCompare);
+        const toAggregatePorts = cleanPortNames(group.toAggregatePorts)
+          .filter(isAggPortName)
+          .sort(stableTopologyCompare);
+        const maxPhysical = isCoreDist ? 2 : Infinity;
+        const fromDisplayPorts = selectEndpointDisplayPorts(
+          group.fromMemberPorts,
+          group.fromPorts,
+          fromAggregatePorts,
+          maxPhysical
+        );
+        const toDisplayPorts = selectEndpointDisplayPorts(
+          group.toMemberPorts,
+          group.toPorts,
+          toAggregatePorts,
+          maxPhysical
+        );
+        const detail = portDetail(fromDisplayPorts, toDisplayPorts, maxPhysical);
+        detail.aggregated = detail.aggregated ||
+          fromAggregatePorts.length > 0 || toAggregatePorts.length > 0;
         const endpointLevels = [group.from.level || "good", group.to.level || "good"];
         const staleWarning = group.strongStale || (
           group.staleCount > 0 && group.liveCount === 0
@@ -557,7 +610,8 @@
           labelLines: detail.lines,
           severity,
           logical: true,
-          aggregated: detail.aggregated
+          aggregated: detail.aggregated,
+          serverAttachment: group.serverAttachment
         });
         lldpCoveredPairs.add(pairKey);
       });
@@ -691,182 +745,11 @@
   }
 
   function topologyNodeIcon(kind) {
-    return { isp: "🌐", firewall: "🛡", core: "★", dist: "▦", infrastructure: "▣", server: "⚙" }[kind] || "?";
+    return { isp: "🌐", firewall: "🛡", core: "★", dist: "▦", server: "⚙" }[kind] || "?";
   }
 
   function topologyNodeKindLabel(kind) {
-    return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", infrastructure: "网络设备", server: "服务器" }[kind] || kind;
-  }
-
-  function physicalTargetIp(target) {
-    return String(target && (target.targetIp || target.ip || target.instance) || "").trim();
-  }
-
-  function physicalTargetKind(target, fallbackKind) {
-    if (fallbackKind === "server") return "server";
-    const job = String(target && target.job || "");
-    if (job === "infra-isp-ping") return "isp";
-    if (job === "infra-fw-unit-snmp" || job === "infra-fw-ping") return "firewall";
-    if (job === "infra-core-ping") return "core";
-    if (job === "infra-dist-ping") return "dist";
-    return "infrastructure";
-  }
-
-  function buildPhysicalTopologyNodes(projection, targets) {
-    const targetByIp = new Map();
-    (Array.isArray(targets) ? targets : []).slice().sort((a, b) => stableTopologyCompare(
-      `${physicalTargetIp(a)}|${a.job || ""}|${a.displayName || ""}|${a.instance || ""}`,
-      `${physicalTargetIp(b)}|${b.job || ""}|${b.displayName || ""}|${b.instance || ""}`
-    )).forEach((target) => {
-      const ip = physicalTargetIp(target);
-      if (ip && !targetByIp.has(ip)) targetByIp.set(ip, target);
-    });
-
-    const rank = { isp: 0, firewall: 1, core: 2, dist: 3, infrastructure: 4, server: 5 };
-    return (projection.devices || []).map((device) => {
-      const target = targetByIp.get(device.ip) || null;
-      const kind = physicalTargetKind(target, device.kind);
-      return {
-        kind,
-        name: target && target.displayName || device.sysname || device.ip,
-        ip: device.ip,
-        level: target ? topologyNodeLevel(target) : "none",
-        latency: target ? target.latency : null,
-        success: target ? target.success : undefined,
-        physicalKind: device.kind
-      };
-    }).sort((a, b) => (
-      (rank[a.kind] ?? rank.infrastructure) - (rank[b.kind] ?? rank.infrastructure) ||
-      stableTopologyCompare(a.name, b.name) ||
-      stableTopologyCompare(a.ip, b.ip)
-    ));
-  }
-
-  function physicalEndpointLabel(endpoint) {
-    if (!endpoint) return "";
-    const aggregatePort = endpoint.aggregatePort || "";
-    const port = endpoint.port || "";
-    if (aggregatePort && port) return `${aggregatePort} / ${port}`;
-    if (aggregatePort) return aggregatePort;
-    return port;
-  }
-
-  function physicalTopologyLayout(projection, targets, canvasWidth, canvasHeight) {
-    const NODE_W = 144;
-    const NODE_H = 58;
-    const H_GAP = 24;
-    const X_PAD = 24;
-    const Y_PAD = 24;
-    const nodes = buildPhysicalTopologyNodes(projection, targets);
-    const ranks = { isp: 0, firewall: 1, core: 2, dist: 3, infrastructure: 4, server: 5 };
-    const rows = new Map();
-    nodes.forEach((node) => {
-      const row = ranks[node.kind] ?? ranks.infrastructure;
-      if (!rows.has(row)) rows.set(row, []);
-      rows.get(row).push(node);
-    });
-    const rowKeys = Array.from(rows.keys()).sort((a, b) => a - b);
-    const maxRow = Math.max(1, ...Array.from(rows.values()).map((items) => items.length));
-    const width = Math.max(Number(canvasWidth) || 1200, maxRow * (NODE_W + H_GAP) + X_PAD * 2);
-    const minimumHeight = Math.max(420, Number(canvasHeight) || 680);
-    const rowGap = rowKeys.length > 1
-      ? Math.max(46, (minimumHeight - Y_PAD * 2 - NODE_H * rowKeys.length) / (rowKeys.length - 1))
-      : 0;
-    rowKeys.forEach((rowKey, rowIndex) => {
-      const row = rows.get(rowKey).sort((a, b) => (
-        stableTopologyCompare(a.name, b.name) || stableTopologyCompare(a.ip, b.ip)
-      ));
-      const rowWidth = row.length * NODE_W + Math.max(0, row.length - 1) * H_GAP;
-      const startX = Math.max(X_PAD, (width - rowWidth) / 2);
-      row.forEach((node, index) => {
-        node.x = startX + index * (NODE_W + H_GAP);
-        node.y = Y_PAD + rowIndex * (NODE_H + rowGap);
-        node.w = NODE_W;
-        node.h = NODE_H;
-      });
-    });
-
-    const nodeByIp = new Map(nodes.map((node) => [node.ip, node]));
-    const links = [];
-    const addLink = (item, kind, aEndpoint, bEndpoint) => {
-      const from = nodeByIp.get(aEndpoint.ip);
-      const to = nodeByIp.get(bEndpoint.ip);
-      if (!from || !to) return;
-      links.push({
-        id: item.id,
-        kind,
-        from,
-        to,
-        fromEndpoint: aEndpoint,
-        toEndpoint: bEndpoint,
-        labelLines: [physicalEndpointLabel(aEndpoint), physicalEndpointLabel(bEndpoint)],
-        stale: item.stale === true ? true : (item.stale === false ? false : null),
-        hasStaleMembers: item.hasStaleMembers === true,
-        protocols: Array.isArray(item.protocols) ? item.protocols.slice() : [],
-        lastSeen: item.lastSeen
-      });
-    };
-
-    (projection.physicalLinks || []).forEach((link) => addLink(link, "physical", link.a, link.b));
-    (projection.bundles || []).forEach((bundle) => addLink(bundle, "bundle", bundle.a, bundle.b));
-    (projection.serverAttachments || []).forEach((attachment) => addLink(
-      attachment,
-      "attachment",
-      attachment.switchEndpoint,
-      attachment.serverEndpoint
-    ));
-
-    links.sort((a, b) => stableTopologyCompare(a.id, b.id));
-    const parallelGroups = new Map();
-    links.forEach((link) => {
-      const pair = [link.from.ip, link.to.ip].sort(stableTopologyCompare).join("--");
-      if (!parallelGroups.has(pair)) parallelGroups.set(pair, []);
-      parallelGroups.get(pair).push(link);
-    });
-    parallelGroups.forEach((group) => {
-      group.sort((a, b) => stableTopologyCompare(a.id, b.id));
-      group.forEach((link, index) => {
-        link.parallelIndex = index;
-        link.parallelCount = group.length;
-        link.parallelOffset = (index - (group.length - 1) / 2) * 12;
-      });
-    });
-
-    return {
-      nodes,
-      links,
-      width,
-      height: Math.max(
-        minimumHeight,
-        nodes.reduce((maximum, node) => Math.max(maximum, node.y + node.h + Y_PAD), 0)
-      ),
-      compatibilityWarnings: (projection.compatibilityWarnings || []).slice()
-    };
-  }
-
-  function physicalEndpointSignature(endpoint) {
-    return [
-      endpoint && endpoint.ip || "",
-      endpoint && endpoint.ifindex === null ? "" : endpoint && endpoint.ifindex || "",
-      endpoint && endpoint.port || "",
-      endpoint && endpoint.aggregatePort || "",
-      endpoint && Array.isArray(endpoint.memberPorts) ? endpoint.memberPorts.join(",") : ""
-    ].join("|");
-  }
-
-  function physicalTopologySignature(layout, width) {
-    const nodesSig = (layout.nodes || []).map((node) => (
-      `${node.kind}|${node.ip || ""}|${node.name}|${node.level}`
-    )).join("#");
-    const linksSig = (layout.links || []).map((link) => [
-      link.id,
-      link.kind,
-      physicalEndpointSignature(link.fromEndpoint),
-      physicalEndpointSignature(link.toEndpoint),
-      link.stale === true ? "stale" : (link.stale === false ? "fresh" : "unknown"),
-      link.hasStaleMembers === true ? "partial-stale" : ""
-    ].join("|")).join("#");
-    return `${width}@${nodesSig}@@${linksSig}`;
+    return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", server: "服务器" }[kind] || kind;
   }
 
   function topologyTextWidth(text) {
@@ -905,53 +788,6 @@
         </g>
       `;
     }).join("");
-  }
-
-  function renderPhysicalTopologySvg(layout, canvasWidth) {
-    if (!(layout.links || []).length) {
-      return `<div class="topology-empty topology-physical-empty">No accepted physical topology</div>`;
-    }
-    const center = (node) => ({ x: node.x + node.w / 2, y: node.y + node.h / 2 });
-    const linkPaths = layout.links.map((link) => {
-      const from = center(link.from);
-      const to = center(link.to);
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-      const normalX = -dy / length;
-      const normalY = dx / length;
-      const offset = link.parallelOffset || 0;
-      const controlX = (from.x + to.x) / 2 + normalX * offset;
-      const controlY = (from.y + to.y) / 2 + normalY * offset;
-      const path = offset
-        ? `M ${from.x} ${from.y} Q ${controlX} ${controlY} ${to.x} ${to.y}`
-        : `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
-      const classes = ["topology-link", `topology-link--${link.kind}`];
-      if (link.stale === true) classes.push("topology-link--stale");
-      if (link.kind === "bundle" && link.stale !== true && link.hasStaleMembers) {
-        classes.push("topology-link--partial-stale");
-      }
-      const labelAt = (ratio, text, endpoint) => {
-        if (!text) return "";
-        const x = from.x + dx * ratio + normalX * offset;
-        const y = from.y + dy * ratio + normalY * offset - 7;
-        return `<text class="topology-link-label topology-link-label--physical" data-endpoint="${endpoint}" x="${x}" y="${y}" text-anchor="middle">${escapeHtml(text)}</text>`;
-      };
-      return `
-        <g class="topology-physical-link-group" data-link-id="${escapeHtml(link.id)}" data-link-kind="${link.kind}">
-          <path class="${classes.join(" ")}" d="${path}" />
-          ${labelAt(0.2, link.labelLines[0], "a")}
-          ${labelAt(0.8, link.labelLines[1], "b")}
-        </g>
-      `;
-    }).join("");
-    const nodes = renderTopologyNodes(layout.nodes);
-    return `
-      <svg class="topology-svg topology-physical-svg" viewBox="0 0 ${canvasWidth} ${layout.height}" data-base-width="${canvasWidth}" data-base-height="${layout.height}" preserveAspectRatio="xMidYMid meet" focusable="false">
-        ${linkPaths}
-        ${nodes}
-      </svg>
-    `;
   }
 
   function renderTopologySvg(layout, canvasWidth) {
@@ -1102,7 +938,7 @@
       const linkLabel = positionedLabels || (labelLines.length
         ? `<text class="topology-link-label${labelLines.length > 1 ? " topology-link-label-stack" : ""}" x="${labelX}" y="${labelY}" text-anchor="${labelAnchor}">${labelLines.map((line, idx) => `<tspan x="${labelX}" dy="${idx ? 12 : 0}">${escapeHtml(line)}</tspan>`).join("")}</text>`
         : "");
-      const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}${link.aggregated ? " link-aggregated" : ""}`;
+      const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}${link.aggregated ? " link-aggregated" : ""}${link.serverAttachment ? " link-attachment" : ""}`;
       return `
         <g class="topology-link-group">
           <path class="${linkClass}" d="${d}" />
@@ -1151,11 +987,7 @@
     topologyLayout,
     topologyNodeIcon,
     topologyNodeKindLabel,
-    renderTopologySvg,
-    buildPhysicalTopologyNodes,
-    physicalTopologyLayout,
-    physicalTopologySignature,
-    renderPhysicalTopologySvg
+    renderTopologySvg
   };
 
   if (typeof module !== 'undefined' && module.exports) {
