@@ -14,11 +14,11 @@
 
 | 服务 | 默认账号 |
 |---|---|
-| Grafana | `admin / root` |
-| LibreNMS | `admin / librenms123` |
-| 赛事控制台 | `admin / global`，首次登录后必须改密码 |
+| Grafana | `admin / global123!@#` |
+| LibreNMS | `admin / global123!@#` |
+| 赛事控制台 | `admin / global123!@#` |
 
-正式使用前请修改 `.env` 里的 `GRAFANA_PASSWORD`、`LIBRENMS_ADMIN_PASSWORD`、`SNMP_COMMUNITY`。8088 控制台有登录，但仍建议只在内网或 VPN 后访问。
+该 appliance 面向受信任内网的赛事现场快速部署，三个入口可直接使用以上默认账号。需要自定义时可修改 `.env` 里的 `GRAFANA_PASSWORD`、`LIBRENMS_ADMIN_PASSWORD` 和 `PLATFORM_ADMIN_PASSWORD`；`SNMP_COMMUNITY` 是独立的设备采集凭据。即使启用了 8088 控制台登录，也仍不建议把 appliance 直接暴露到公网。
 
 ## 部署
 
@@ -119,7 +119,7 @@ docker compose ps
 ./pre-match-check.sh
 ```
 
-浏览器打开 `http://服务器IP:8088/control`，用 `admin / global` 登录（首次登录强制改密码），在“基础配置”里填核心 IP、普通交换机自动发现范围、赛事交换机 IP 和 SNMP Community，点“应用配置”。
+浏览器打开 `http://服务器IP:8088/control`，用 `admin / global123!@#` 登录后直接进入控制台，在“基础配置”里填核心 IP、普通交换机自动发现范围、赛事交换机 IP 和 SNMP Community，点“应用配置”。
 
 ### 6. 端口放行
 

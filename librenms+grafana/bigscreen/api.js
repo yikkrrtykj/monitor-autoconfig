@@ -593,13 +593,6 @@
     });
   }
 
-  function changePlatformPassword(currentPassword, newPassword, confirmPassword) {
-    return platformApi("/auth/change-password", {
-      method: "POST",
-      body: JSON.stringify({ currentPassword, newPassword, confirmPassword })
-    });
-  }
-
   function logoutPlatformAuth() {
     return platformApi("/auth/logout", { method: "POST", body: JSON.stringify({}) });
   }
@@ -734,7 +727,6 @@
     fetchRuntimeStatus,
     fetchPlatformAuthStatus,
     loginPlatformAuth,
-    changePlatformPassword,
     logoutPlatformAuth,
     fetchPlatformConfig,
     fetchPlatformVersion,

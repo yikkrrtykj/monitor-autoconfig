@@ -31,7 +31,7 @@ class AuthContext:
     auth_path: Path
     enabled: bool = True
     admin_user: str = "admin"
-    default_password: str = "global"
+    default_password: str = "global123!@#"
     cookie_name: str = "platform_session"
     cookie_secure: bool = False
     session_seconds: int = 8 * 3600
@@ -84,7 +84,6 @@ def ensure_auth_store(context: AuthContext) -> None:
     write_json_file(context.auth_path, {
         "username": context.admin_user,
         "passwordHash": hash_password(context.default_password),
-        "mustChangePassword": True,
         "createdAt": int(time.time()),
         "passwordChangedAt": None,
     })
@@ -97,10 +96,15 @@ def read_auth_store(context: AuthContext) -> dict:
         store = {
             "username": context.admin_user,
             "passwordHash": hash_password(context.default_password),
-            "mustChangePassword": True,
             "createdAt": int(time.time()),
             "passwordChangedAt": None,
         }
+        write_json_file(context.auth_path, store)
+    elif "mustChangePassword" in store:
+        # Older appliances persisted this first-login gate. Authentication now
+        # depends only on the stored password hash and a valid session, so
+        # migrate the obsolete field without resetting operator credentials.
+        store.pop("mustChangePassword", None)
         write_json_file(context.auth_path, store)
     return store
 
@@ -211,7 +215,7 @@ def auth_status(context: AuthContext, handler: Any) -> dict:
         "authenticated": authenticated,
         "username": store.get("username", context.admin_user) if authenticated else "",
         "defaultUser": store.get("username", context.admin_user),
-        "mustChangePassword": bool(store.get("mustChangePassword")) if authenticated else False,
+        "mustChangePassword": False,
         "sessionExpiresAt": int(session.get("expires", 0)) if session else 0,
     }
 
@@ -219,7 +223,6 @@ def auth_status(context: AuthContext, handler: Any) -> dict:
 def require_auth(
     context: AuthContext,
     handler: Any,
-    allow_must_change: bool = False,
 ) -> dict:
     if not context.enabled:
         return {"username": "local"}
@@ -228,11 +231,6 @@ def require_auth(
     if not session:
         raise AuthError(
             HTTPStatus.UNAUTHORIZED, "需要登录", authenticated=False,
-        )
-    if store.get("mustChangePassword") and not allow_must_change:
-        raise AuthError(
-            HTTPStatus.FORBIDDEN, "需要先修改默认密码", authenticated=True,
-            mustChangePassword=True,
         )
     return {
         "username": session.get("username") or store.get("username")
@@ -350,7 +348,7 @@ def login_auth(
         "ok": True,
         "authenticated": True,
         "username": store["username"],
-        "mustChangePassword": bool(store.get("mustChangePassword")),
+        "mustChangePassword": False,
         "sessionExpiresAt": int(context.sessions[token]["expires"]),
     }, session_cookie(context, token)
 
@@ -360,7 +358,7 @@ def change_password_auth(
     handler: Any,
     data: dict,
 ) -> tuple[dict, str]:
-    authenticated = require_auth(context, handler, allow_must_change=True)
+    authenticated = require_auth(context, handler)
     current_password = str(data.get("currentPassword") or "")
     new_password = str(data.get("newPassword") or "")
     confirm_password = str(data.get("confirmPassword") or new_password)
@@ -368,7 +366,7 @@ def change_password_auth(
     if not verify_password(current_password, store.get("passwordHash", "")):
         raise AuthError(
             HTTPStatus.FORBIDDEN, "当前密码不正确", authenticated=True,
-            mustChangePassword=bool(store.get("mustChangePassword")),
+            mustChangePassword=False,
         )
     if new_password != confirm_password:
         raise AuthError(
@@ -380,7 +378,6 @@ def change_password_auth(
             HTTPStatus.BAD_REQUEST, strength_error, authenticated=True,
         )
     store["passwordHash"] = hash_password(new_password)
-    store["mustChangePassword"] = False
     store["passwordChangedAt"] = int(time.time())
     write_auth_store(context, store)
     context.sessions.clear()

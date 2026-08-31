@@ -36,6 +36,43 @@ def test_release_images_are_pinned_and_defaults_are_consistent():
     assert "monitor-platform-api:local" in compose
 
 
+def test_user_facing_default_password_is_exact_across_deployment_sources():
+    password = "global123!@#"
+    compose = read("docker-compose.yml")
+    example = read(".env.example")
+    platform_auth = read("platform_api/auth.py")
+    platform_settings = read("platform_api/settings.py")
+    librenms_setup = read("librenms-auto-config.sh")
+    grafana_setup = read("grafana-setup.sh")
+    pre_match = read("pre-match-check.sh")
+    readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
+
+    for key in (
+        "GRAFANA_PASSWORD",
+        "LIBRENMS_ADMIN_PASSWORD",
+        "PLATFORM_ADMIN_PASSWORD",
+    ):
+        assert f"{key}={password}\n" in example
+    assert compose.count("${GRAFANA_PASSWORD:-global123!@#}") == 2
+    assert compose.count("${LIBRENMS_ADMIN_PASSWORD:-global123!@#}") == 2
+    assert compose.count("${PLATFORM_ADMIN_PASSWORD:-global123!@#}") == 1
+    assert 'default_password: str = "global123!@#"' in platform_auth
+    assert '"PLATFORM_ADMIN_PASSWORD", "global123!@#",' in platform_settings
+    assert 'LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-global123!@#}"' in librenms_setup
+    assert "$password = getenv('LIBRENMS_ADMIN_PASSWORD') ?: 'global123!@#';" in librenms_setup
+    assert 'GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-global123!@#}"' in grafana_setup
+    assert 'GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-global123!@#}"' in pre_match
+    for product in ("Grafana", "LibreNMS", "赛事控制台"):
+        assert f"| {product} | `admin / {password}` |" in readme
+
+    # User-facing password convergence must not change internal MariaDB or SNMP credentials.
+    assert "SNMP_COMMUNITY=global\n" in example
+    assert "MYSQL_ROOT_PASSWORD: librenms_root" in compose
+    assert "GRAFANA_PASSWORD=root" not in example
+    assert "LIBRENMS_ADMIN_PASSWORD=librenms123" not in example
+    assert "PLATFORM_ADMIN_PASSWORD=global\n" not in example
+
+
 def test_player_target_generator_streams_and_refreshes_stage_fdb():
     compose = read("docker-compose.yml")
     example = read(".env.example")
@@ -874,6 +911,7 @@ def test_delivery_panel_owns_operator_actions_and_mounts_existing_iperf_controll
 
 def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache():
     app = read("bigscreen/app.js")
+    api = read("bigscreen/api.js")
     controller = read("bigscreen/control/auth-controller.js")
     index = read("bigscreen/index.html")
 
@@ -890,16 +928,13 @@ def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache(
         "function renderAuth(",
         "async function ensureAuthenticated(",
         "async function submitLogin(",
-        "async function submitPasswordChange(",
         "async function logout(",
         'document.getElementById("controlAuth")',
         'document.getElementById("controlShell")',
         'document.getElementById("controlLoginForm")',
-        'document.getElementById("controlPasswordForm")',
         'document.getElementById("controlLogout")',
         "status && status.transient && lastControlAuth && lastControlAuth.authenticated",
         "loginForm.addEventListener(\"submit\", submitLogin)",
-        "passwordForm.addEventListener(\"submit\", submitPasswordChange)",
         "logoutBtn.addEventListener(\"click\", logout)",
     ):
         assert token in controller
@@ -918,6 +953,21 @@ def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache(
     ):
         assert app_token in app
         assert app_token not in controller
+    for removed_token in (
+        "controlPasswordForm",
+        "controlCurrentPassword",
+        "controlNewPassword",
+        "controlConfirmPassword",
+        "submitPasswordChange",
+        "changePlatformPassword",
+        "mustChangePassword",
+        "首次登录需要修改密码",
+        "默认密码只能用于首次进入",
+    ):
+        assert removed_token not in controller
+        assert removed_token not in index
+        assert removed_token not in app
+        assert removed_token not in api
     assert "control/auth-controller.js?v=20260828a" in index
     assert index.index("control/auth-controller.js?v=20260828a") < index.index("app.js?v=20260828f")
 

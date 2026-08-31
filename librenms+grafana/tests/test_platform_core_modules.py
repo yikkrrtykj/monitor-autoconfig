@@ -75,6 +75,7 @@ def test_core_settings_preserve_timeout_limit_and_path_calculation(tmp_path):
     assert loaded.auth_session_seconds == 600
     assert loaded.transaction_retention == 5
     assert loaded.apply_status_retention == 10
+    assert loaded.auth_default_password == "global123!@#"
 
 
 def test_atomic_text_and_json_writes_create_parents(tmp_path):
@@ -132,7 +133,7 @@ def test_password_hash_and_auth_store_round_trip(tmp_path):
     auth.ensure_auth_store(context)
     persisted = json.loads(context.auth_path.read_text(encoding="utf-8"))
     assert persisted["username"] == "admin"
-    assert persisted["mustChangePassword"] is True
+    assert "mustChangePassword" not in persisted
     assert persisted["passwordChangedAt"] is None
     assert auth.verify_password("FixtureDefault2026", persisted["passwordHash"])
 

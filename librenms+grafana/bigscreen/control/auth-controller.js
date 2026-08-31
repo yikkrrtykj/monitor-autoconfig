@@ -6,7 +6,6 @@
       document,
       fetchPlatformAuthStatus,
       loginPlatformAuth,
-      changePlatformPassword,
       logoutPlatformAuth,
       onAuthenticated,
       onLoggedOut
@@ -25,15 +24,13 @@
       const authPanel = document.getElementById("controlAuth");
       const shell = document.getElementById("controlShell");
       const loginForm = document.getElementById("controlLoginForm");
-      const passwordForm = document.getElementById("controlPasswordForm");
       const userInput = document.getElementById("controlLoginUser");
       const title = document.getElementById("controlAuthTitle");
       const hint = document.getElementById("controlAuthHint");
       const authenticated = status && status.authenticated;
-      const mustChange = authenticated && status.mustChangePassword;
 
       if (!authPanel || !shell) return true;
-      if (authenticated && !mustChange) {
+      if (authenticated) {
         authPanel.hidden = true;
         shell.hidden = false;
         setAuthMessage("");
@@ -42,19 +39,12 @@
 
       shell.hidden = true;
       authPanel.hidden = false;
-      if (loginForm) loginForm.hidden = Boolean(authenticated);
-      if (passwordForm) passwordForm.hidden = !mustChange;
+      if (loginForm) loginForm.hidden = false;
       if (userInput && status && status.defaultUser && !userInput.value) userInput.value = status.defaultUser;
-      if (title) title.textContent = mustChange ? "首次登录需要修改密码" : "赛事控制台登录";
-      if (hint) {
-        hint.textContent = mustChange
-          ? "默认密码只能用于首次进入，请设置一个新的控制台密码。"
-          : "输入控制台账号密码后继续。";
-      }
+      if (title) title.textContent = "赛事控制台登录";
+      if (hint) hint.textContent = "输入控制台账号密码后继续。";
       if (status && status.error) {
         setAuthMessage(status.error, "bad");
-      } else if (mustChange) {
-        setAuthMessage("新密码至少 10 位，并包含字母和数字。", "");
       } else {
         setAuthMessage("");
       }
@@ -84,35 +74,11 @@
         lastControlAuth = await loginPlatformAuth(username.trim(), password);
         if (passwordInput) passwordInput.value = "";
         renderAuth(lastControlAuth);
-        if (lastControlAuth.authenticated && !lastControlAuth.mustChangePassword) {
+        if (lastControlAuth.authenticated) {
           onAuthenticated();
         }
       } catch (error) {
         setAuthMessage(error.message || "登录失败", "bad");
-      }
-    }
-
-    async function submitPasswordChange(event) {
-      event.preventDefault();
-      const currentInput = document.getElementById("controlCurrentPassword");
-      const nextInput = document.getElementById("controlNewPassword");
-      const confirmInput = document.getElementById("controlConfirmPassword");
-      const currentPassword = currentInput ? currentInput.value : "";
-      const newPassword = nextInput ? nextInput.value : "";
-      const confirmPassword = confirmInput ? confirmInput.value : "";
-      if (newPassword !== confirmPassword) {
-        setAuthMessage("两次输入的新密码不一致", "bad");
-        return;
-      }
-      setAuthMessage("正在修改密码...");
-      try {
-        lastControlAuth = await changePlatformPassword(currentPassword, newPassword, confirmPassword);
-        [currentInput, nextInput, confirmInput].forEach((input) => { if (input) input.value = ""; });
-        setAuthMessage("密码已修改", "good");
-        renderAuth(lastControlAuth);
-        onAuthenticated();
-      } catch (error) {
-        setAuthMessage(error.message || "修改密码失败", "bad");
       }
     }
 
@@ -132,11 +98,6 @@
       if (loginForm && !loginForm.dataset.bound) {
         loginForm.addEventListener("submit", submitLogin);
         loginForm.dataset.bound = "1";
-      }
-      const passwordForm = document.getElementById("controlPasswordForm");
-      if (passwordForm && !passwordForm.dataset.bound) {
-        passwordForm.addEventListener("submit", submitPasswordChange);
-        passwordForm.dataset.bound = "1";
       }
       const logoutBtn = document.getElementById("controlLogout");
       if (logoutBtn && !logoutBtn.dataset.bound) {

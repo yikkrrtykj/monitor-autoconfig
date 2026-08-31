@@ -39,7 +39,7 @@ UPLINK_IF_FILTER="${UPLINK_IF_FILTER:-to-stage,to-core,to-dist,uplink}"
 LIBRENMS_SUPPRESS_STP_EVENTS="${LIBRENMS_SUPPRESS_STP_EVENTS:-true}"
 LIBRENMS_API_TOKEN="${LIBRENMS_API_TOKEN:-}"
 LIBRENMS_ADMIN_USER="${LIBRENMS_ADMIN_USER:-admin}"
-LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-admin123}"
+LIBRENMS_ADMIN_PASSWORD="${LIBRENMS_ADMIN_PASSWORD:-global123!@#}"
 LIBRENMS_ADMIN_EMAIL="${LIBRENMS_ADMIN_EMAIL:-admin@example.com}"
 LIBRENMS_BASE_URL="${LIBRENMS_BASE_URL:-}"
 LIBRENMS_FORCE_BASE_URL="${LIBRENMS_FORCE_BASE_URL:-false}"
@@ -99,7 +99,7 @@ upsert_admin_user() {
 <?php
 try {
     $username = getenv('LIBRENMS_ADMIN_USER') ?: 'admin';
-    $password = getenv('LIBRENMS_ADMIN_PASSWORD') ?: 'admin123';
+    $password = getenv('LIBRENMS_ADMIN_PASSWORD') ?: 'global123!@#';
     $email = getenv('LIBRENMS_ADMIN_EMAIL') ?: 'admin@example.com';
     $host = getenv('DB_HOST') ?: 'librenms-db';
     $database = getenv('DB_NAME') ?: 'librenms';
@@ -2279,7 +2279,7 @@ echo "  Core IP:           $CORE_IP"
 echo "  SNMP Community:    $SNMP_COMMUNITY"
 echo ""
 echo "  下一步:"
-echo "  1. 登录 LibreNMS 修改默认密码"
+echo "  1. 登录 LibreNMS 验证管理员访问"
 echo "  2. 确认发现到的设备已开始采集（约 5 分钟后自动发现）"
 echo "  3. 添加 UniFi AP 或调整 LIBRENMS_DISCOVERY_TARGETS / FIREWALL_DISCOVERY_RANGE"
 if [ -z "$FEISHU_ROBOT_TOKEN" ]; then

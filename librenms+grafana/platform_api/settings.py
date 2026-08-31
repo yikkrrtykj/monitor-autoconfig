@@ -114,7 +114,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> CoreSettings:
         ),
         auth_enabled=env_bool("PLATFORM_AUTH_ENABLED", True, source),
         auth_admin_user=source.get("PLATFORM_ADMIN_USER", "admin"),
-        auth_default_password=source.get("PLATFORM_ADMIN_PASSWORD", "global"),
+        auth_default_password=source.get(
+            "PLATFORM_ADMIN_PASSWORD", "global123!@#",
+        ),
         auth_cookie_name=source.get("PLATFORM_SESSION_COOKIE", "platform_session"),
         auth_cookie_secure=env_bool("PLATFORM_COOKIE_SECURE", False, source),
         auth_session_seconds=max(

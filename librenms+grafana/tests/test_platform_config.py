@@ -582,6 +582,14 @@ def test_env_round_trip_preserves_spaces_hash_quotes_and_backslashes(tmp_path):
     assert platform_config.read_env(env_path) == values
 
 
+def test_default_login_passwords_parse_with_exact_special_characters():
+    parsed = platform_config.read_env(ROOT / ".env.example")
+    assert parsed["GRAFANA_PASSWORD"] == "global123!@#"
+    assert parsed["LIBRENMS_ADMIN_PASSWORD"] == "global123!@#"
+    assert parsed["PLATFORM_ADMIN_PASSWORD"] == "global123!@#"
+    assert parsed["SNMP_COMMUNITY"] == "global"
+
+
 def test_validation_rejects_invalid_network_and_numeric_values():
     config = platform_config.parse_simple_yaml("""
 devices:

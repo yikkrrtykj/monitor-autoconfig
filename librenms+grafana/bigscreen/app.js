@@ -45,7 +45,7 @@
     fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
-    fetchPlatformAuthStatus, loginPlatformAuth, changePlatformPassword, logoutPlatformAuth,
+    fetchPlatformAuthStatus, loginPlatformAuth, logoutPlatformAuth,
     fetchPlatformConfig, fetchPlatformVersion, fetchApplyStatus, postPlatform, fetchRetirePending, patchPlatform, fetchIncidents,
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
@@ -307,7 +307,6 @@
     document,
     fetchPlatformAuthStatus,
     loginPlatformAuth,
-    changePlatformPassword,
     logoutPlatformAuth,
     onAuthenticated: () => refreshControlPanel(),
     onLoggedOut: () => { lastControlReport = null; }

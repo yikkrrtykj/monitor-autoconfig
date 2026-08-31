@@ -30,7 +30,7 @@ def load_platform_api(state_dir: Path):
         "EVENT_CONFIG_EXAMPLE": str(workdir / "event-config.example.yml"),
         "ENV_FILE": str(workdir / ".env"),
         "PLATFORM_ADMIN_USER": "admin",
-        "PLATFORM_ADMIN_PASSWORD": "global",
+        "PLATFORM_ADMIN_PASSWORD": "global123!@#",
         "PLATFORM_AUTH_ENABLED": "true",
     })
     spec = importlib.util.spec_from_file_location("platform_api_auth_test", MODULE_PATH)
@@ -47,10 +47,10 @@ def test_auth_store_defaults_and_password_change_rules():
         context = api.AUTH_CONTEXT
         store = auth.read_auth_store(context)
         assert store["username"] == "admin"
-        assert store["mustChangePassword"] is True
-        assert auth.verify_password("global", store["passwordHash"])
+        assert "mustChangePassword" not in store
+        assert auth.verify_password("global123!@#", store["passwordHash"])
         assert auth.password_strength_error(context, "short")
-        assert auth.password_strength_error(context, "global")
+        assert auth.password_strength_error(context, "global123!@#")
         assert auth.password_strength_error(context, "NoDigitsHere")
         assert auth.password_strength_error(context, "StrongPass2026") is None
 
@@ -92,7 +92,7 @@ def test_login_failures_lock_both_ip_and_account():
             raise AssertionError("third failed login must lock the source")
 
         try:
-            auth.login_auth(context, "admin", "global", "192.0.2.11")
+            auth.login_auth(context, "admin", "global123!@#", "192.0.2.11")
         except auth.AuthError as exc:
             assert exc.status == 429  # account-wide lock also applies
         else:
@@ -142,25 +142,16 @@ def test_auth_status_valid_invalid_and_permission_flows():
         payload, cookie = auth.login_auth(
             context,
             "admin",
-            "global",
+            "global123!@#",
             "192.0.2.20",
         )
         assert payload["authenticated"] is True
+        assert payload["mustChangePassword"] is False
         authenticated = Handler(cookie.split(";", 1)[0])
-        assert auth.auth_status(context, authenticated)["authenticated"] is True
-        try:
-            auth.require_auth(context, authenticated)
-        except auth.AuthError as exc:
-            assert exc.status == 403
-            assert exc.payload["mustChangePassword"] is True
-        else:
-            raise AssertionError("default password must keep writes blocked")
-
-        assert auth.require_auth(
-            context,
-            authenticated,
-            allow_must_change=True,
-        ) == {"username": "admin"}
+        status = auth.auth_status(context, authenticated)
+        assert status["authenticated"] is True
+        assert status["mustChangePassword"] is False
+        assert auth.require_auth(context, authenticated) == {"username": "admin"}
 
 
 def test_entrypoint_uses_one_auth_context_without_compatibility_wrappers():
@@ -276,18 +267,18 @@ def test_http_auth_flow():
 
             status, headers, payload = request_json(f"{base_url}/auth/login", {
                 "username": "admin",
-                "password": "global",
+                "password": "global123!@#",
             })
             assert status == 200
-            assert payload["mustChangePassword"] is True
+            assert payload["mustChangePassword"] is False
             cookie = headers["Set-Cookie"].split(";", 1)[0]
 
             status, _, payload = request_json(f"{base_url}/config", cookie=cookie)
-            assert status == 403
-            assert payload["mustChangePassword"] is True
+            assert status == 200
+            assert payload["ok"] is True
 
             status, headers, payload = request_json(f"{base_url}/auth/change-password", {
-                "currentPassword": "global",
+                "currentPassword": "global123!@#",
                 "newPassword": "StrongPass2026",
                 "confirmPassword": "StrongPass2026",
             }, cookie=cookie)
@@ -408,15 +399,8 @@ def test_dhcp_get_preserves_diagnostic_http_status():
 
                 status, headers, _ = request_json(f"{base_url}/auth/login", {
                     "username": "admin",
-                    "password": "global",
+                    "password": "global123!@#",
                 })
-                assert status == 200
-                cookie = headers["Set-Cookie"].split(";", 1)[0]
-                status, headers, _ = request_json(f"{base_url}/auth/change-password", {
-                    "currentPassword": "global",
-                    "newPassword": "StrongPass2026",
-                    "confirmPassword": "StrongPass2026",
-                }, cookie=cookie)
                 assert status == 200
                 cookie = headers["Set-Cookie"].split(";", 1)[0]
 
@@ -429,6 +413,49 @@ def test_dhcp_get_preserves_diagnostic_http_status():
                 thread.join(timeout=5)
 
 
+def test_legacy_must_change_store_logs_in_and_migrates_without_blocking_api():
+    with tempfile.TemporaryDirectory() as tmp:
+        api = load_platform_api(Path(tmp))
+        api.ensure_dirs()
+        auth.write_auth_store(api.AUTH_CONTEXT, {
+            "username": "admin",
+            "passwordHash": auth.hash_password("global"),
+            "mustChangePassword": True,
+            "createdAt": 1,
+            "passwordChangedAt": None,
+        })
+        api.CONFIG_PATH = Path(tmp) / "event-config.yml"
+        api.CONFIG_PATH.write_text(
+            "devices:\n  core:\n    ip: 192.168.10.254\n",
+            encoding="utf-8",
+        )
+
+        server = HTTPServer(("127.0.0.1", 0), api.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        try:
+            status, headers, payload = request_json(f"{base_url}/auth/login", {
+                "username": "admin",
+                "password": "global",
+            })
+            assert status == 200
+            assert payload["authenticated"] is True
+            assert payload["mustChangePassword"] is False
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+
+            status, _, payload = request_json(f"{base_url}/config", cookie=cookie)
+            assert status == 200
+            assert payload["ok"] is True
+
+            migrated = json.loads(api.AUTH_CONTEXT.auth_path.read_text(encoding="utf-8"))
+            assert "mustChangePassword" not in migrated
+            assert auth.verify_password("global", migrated["passwordHash"])
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
 if __name__ == "__main__":
     test_auth_store_defaults_and_password_change_rules()
     test_session_lifecycle()
@@ -437,4 +464,5 @@ if __name__ == "__main__":
     test_entrypoint_uses_one_auth_context_without_compatibility_wrappers()
     test_http_auth_flow()
     test_dhcp_get_preserves_diagnostic_http_status()
+    test_legacy_must_change_store_logs_in_and_migrates_without_blocking_api()
     print("platform auth tests passed")

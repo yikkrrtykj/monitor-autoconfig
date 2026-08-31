@@ -388,12 +388,12 @@ def test_unauthenticated_write_routes_and_login_http_contract(tmp_path):
 
         status, headers, payload = request_raw(
             f"{base_url}/auth/login",
-            b'{"username":"admin","password":"global"}',
+            b'{"username":"admin","password":"global123!@#"}',
         )
         assert status == 200
         assert payload["ok"] is True
         assert payload["authenticated"] is True
-        assert payload["mustChangePassword"] is True
+        assert payload["mustChangePassword"] is False
         assert "HttpOnly" in headers["Set-Cookie"]
     finally:
         server.shutdown()
