@@ -2195,11 +2195,14 @@ def build_retire_confirm_card(state, key, interactive):
     offline = format_duration(max(0, time.time() - (_as_float(state.get("down_since")) or time.time())))
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
-        f"🖥 设备：{dev}",
-        f"⏳ 已离线：{offline}",
-        "❓ 是否删除它在 LibreNMS 的记录？删除后若再次上线将按新设备重新纳管。",
-        "🔒 不确认就一直保留，不会自动删除。",
-        f"⏰ 时间：{ts}",
+        "⚠️ 设备已连续离线 48 小时，已进入待退役确认。",
+        "",
+        f"💻 设备：{name}",
+        f"🌐 IP：{ip or '?'}",
+        f"🔴 状态：连续离线 {offline}",
+        f"🕒 时间：{ts}",
+        "",
+        "📝 请确认是否从 LibreNMS 移除此设备。",
     ]
     extra = None
     if interactive:
@@ -2221,14 +2224,14 @@ def build_retire_confirm_card(state, key, interactive):
                 }],
             }
         extra = [
-            _button("确认删除", "danger", "retire_delete"),
-            _button("保留设备", "default", "retire_keep"),
+            _button("删除设备", "danger", "retire_delete"),
+            _button("继续保留", "default", "retire_keep"),
         ]
     else:
         lines.append("👉 请到赛事控制台『待删除设备』面板确认删除或保留。")
     title = state.get("pending_event_title") or next_event_title()
     state["pending_event_title"] = title
-    return _make_card(title, "🟠 设备待删除确认", "orange", "\n".join(lines), extra_elements=extra)
+    return _make_card(title, "⚠️ 设备持续离线｜需要确认", "orange", "\n".join(lines), extra_elements=extra)
 
 
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):

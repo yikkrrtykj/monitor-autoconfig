@@ -187,7 +187,7 @@ def test_bot_pending_delete_command_returns_interactive_cards(monkeypatch):
     assert len(result["cards"]) == 1
     elements = result["cards"][0]["card"]["body"]["elements"]
     buttons = [item for item in elements if item.get("tag") == "button"]
-    assert [item["text"]["content"] for item in buttons] == ["确认删除", "保留设备"]
+    assert [item["text"]["content"] for item in buttons] == ["删除设备", "继续保留"]
     assert buttons[0]["behaviors"][0]["value"]["token"] == "token-81"
     bridge.DEVICE_DOWN_STATES.clear()
 

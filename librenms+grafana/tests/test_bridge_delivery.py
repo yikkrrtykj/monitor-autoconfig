@@ -744,7 +744,8 @@ def test_bridge_health_reports_missing_token_and_dead_watcher(monkeypatch):
     assert health["deadWatchers"] == ["device-down"]
 
 
-def test_retire_confirm_card_has_buttons_only_when_app_configured():
+def test_retire_confirm_card_has_buttons_only_when_app_configured(monkeypatch):
+    monkeypatch.setattr(bridge.time, "time", lambda: 100.0 + 48 * 60 * 60 + 90)
     state = {
         "name": "access-7", "ip": "192.168.10.27", "job": "infra-dist-ping",
         "down_since": 100.0, "pending_token": "tok-9",
@@ -758,8 +759,18 @@ def test_retire_confirm_card_has_buttons_only_when_app_configured():
     assert actions == {"retire_delete", "retire_keep"}
     assert all(b["behaviors"][0]["value"]["token"] == "tok-9" for b in buttons)
     assert all(b["behaviors"][0]["type"] == "callback" for b in buttons)
-    assert interactive["card"]["header"]["title"]["content"].endswith("🟠 设备待删除确认")
+    assert interactive["card"]["header"]["title"]["content"].endswith("⚠️ 设备持续离线｜需要确认")
+    assert interactive["card"]["header"]["template"] == "orange"
     assert "subtitle" not in interactive["card"]["header"]
+    body = interactive["card"]["body"]["elements"][0]["content"]
+    assert "⚠️ 设备已连续离线 48 小时，已进入待退役确认。" in body
+    assert "💻 设备：access-7" in body
+    assert "🌐 IP：192.168.10.27" in body
+    assert "🔴 状态：连续离线 48 小时 1 分" in body
+    assert "🕒 时间：" in body
+    assert "📝 请确认是否从 LibreNMS 移除此设备。" in body
+    assert [b["text"]["content"] for b in buttons] == ["删除设备", "继续保留"]
+    assert [b["type"] for b in buttons] == ["danger", "default"]
     values = [b["behaviors"][0]["value"] for b in buttons]
     assert values == [
         {
@@ -805,6 +816,11 @@ def test_pending_delete_notify_downgrades_to_webhook_when_app_send_fails(monkeyp
     assert len(webhook_calls) == 1
     assert event_titles == ["#77"]
     assert webhook_calls[0]["card"]["header"]["title"]["content"].startswith("#77 ")
+    assert not [
+        element
+        for element in webhook_calls[0]["card"]["body"]["elements"]
+        if element.get("tag") == "button"
+    ]
 
     # Webhook 已告知后不会重复刷屏，应用卡在重试间隔到达后仍会补发按钮。
     monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_REALERT_SECONDS", 0)
