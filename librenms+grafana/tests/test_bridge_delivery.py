@@ -26,6 +26,7 @@ def test_every_outgoing_card_is_prefixed_with_event_name(monkeypatch):
 
 def test_event_scoped_help_teaches_shared_group_commands(monkeypatch):
     monkeypatch.setattr(bridge, "EVENT_NAME", "Singapore")
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
 
     result = bridge.handle_bot_query("帮助")
 
@@ -35,6 +36,18 @@ def test_event_scoped_help_teaches_shared_group_commands(monkeypatch):
     assert "@机器人 Singapore 待删除设备" in result["text"]
     assert "@机器人 Singapore 光功率巡检" in result["text"]
     assert "@机器人 Singapore 上联冗余巡检" in result["text"]
+
+
+def test_tournament_help_omits_pending_delete_command(monkeypatch):
+    monkeypatch.setattr(bridge, "EVENT_NAME", "Singapore")
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", False)
+
+    result = bridge.handle_bot_query("帮助")
+
+    assert result["ok"] is True
+    assert "@机器人 Singapore 网络巡检" in result["text"]
+    assert "@机器人 Singapore 光功率巡检" in result["text"]
+    assert "待删除设备" not in result["text"]
 
 
 def test_bridge_delivery_wrappers_decorate_then_delegate(monkeypatch):
@@ -757,7 +770,8 @@ def test_bridge_health_reports_missing_token_and_dead_watcher(monkeypatch):
     assert health["deadWatchers"] == ["device-down"]
 
 
-def test_retire_confirm_card_is_notification_only_and_points_to_vm_console(monkeypatch):
+def test_company_retire_card_has_buttons_and_plain_console_fallback(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
     monkeypatch.setattr(bridge.time, "time", lambda: 100.0 + 48 * 60 * 60 + 90)
     monkeypatch.setattr(bridge, "SERVER_IP", "192.168.16.20")
     monkeypatch.setattr(bridge, "BIGSCREEN_PORT", "8088")
@@ -765,10 +779,21 @@ def test_retire_confirm_card_is_notification_only_and_points_to_vm_console(monke
         "name": "access-7", "ip": "192.168.10.27", "job": "infra-dist-ping",
         "down_since": 100.0, "pending_token": "tok-9",
     }
-    notification = bridge.build_retire_confirm_card(state)
+    notification = bridge.build_retire_confirm_card(
+        state,
+        "infra-dist-ping|192.168.10.27",
+        True,
+    )
     elements = notification["card"]["body"]["elements"]
     buttons = [e for e in elements if e.get("tag") == "button"]
-    assert buttons == []
+    assert [button["text"]["content"] for button in buttons] == ["确认删除", "保留"]
+    assert {
+        button["behaviors"][0]["value"]["action"] for button in buttons
+    } == {"retire_delete", "retire_keep"}
+    assert all(
+        button["behaviors"][0]["value"]["token"] == "tok-9"
+        for button in buttons
+    )
     assert notification["card"]["header"]["title"]["content"].endswith("⚠️ 设备持续离线｜需要确认")
     assert notification["card"]["header"]["template"] == "orange"
     assert "subtitle" not in notification["card"]["header"]
@@ -779,13 +804,98 @@ def test_retire_confirm_card_is_notification_only_and_points_to_vm_console(monke
     assert "🔴 状态：连续离线 48 小时 1 分" in body
     assert "🕒 时间：" in body
     assert "设备已离线满 48 小时，等待人工处理。" in body
-    assert "请进入对应赛事监控控制台确认删除或保留：" in body
+    assert "请进入对应监控控制台确认删除或保留：" in body
     assert "http://192.168.16.20:8088/control" in body
-    assert "tok-9" not in json.dumps(notification, ensure_ascii=False)
-    assert "callback" not in json.dumps(notification, ensure_ascii=False)
+    plain = bridge.build_retire_confirm_card(
+        state,
+        "infra-dist-ping|192.168.10.27",
+        False,
+    )
+    assert not [
+        element for element in plain["card"]["body"]["elements"]
+        if element.get("tag") == "button"
+    ]
+    assert "tok-9" not in json.dumps(plain, ensure_ascii=False)
+    assert "callback" not in json.dumps(plain, ensure_ascii=False)
+
+
+def test_company_pending_notification_prefers_interactive_app_card(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
+    monkeypatch.setattr(bridge, "feishu_app_configured", lambda: True)
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#company")
+    key = "infra-dist-ping|192.168.10.27"
+    states = {key: {
+        "name": "access-7",
+        "ip": "192.168.10.27",
+        "job": "infra-dist-ping",
+        "down_since": 100.0,
+        "pending_delete": True,
+        "pending_token": "tok-company",
+        "pending_notified": False,
+        "pending_last_notified": None,
+    }}
+    app_cards = []
+    monkeypatch.setattr(
+        bridge,
+        "send_feishu_app_card",
+        lambda card: app_cards.append(card) or True,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "send_feishu",
+        lambda _card: (_ for _ in ()).throw(AssertionError("unexpected fallback")),
+    )
+
+    assert bridge.notify_pending_delete_states(states, 1000.0) is True
+    assert states[key]["pending_notified"] is True
+    assert len(app_cards) == 1
+    buttons = [
+        element for element in app_cards[0]["card"]["body"]["elements"]
+        if element.get("tag") == "button"
+    ]
+    assert [button["text"]["content"] for button in buttons] == ["确认删除", "保留"]
+    assert all(
+        button["behaviors"][0]["value"]["token"] == "tok-company"
+        for button in buttons
+    )
+
+
+def test_company_pending_notification_falls_back_to_plain_webhook(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
+    monkeypatch.setattr(bridge, "feishu_app_configured", lambda: True)
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#fallback")
+    key = "infra-dist-ping|192.168.10.27"
+    states = {key: {
+        "name": "access-7",
+        "ip": "192.168.10.27",
+        "job": "infra-dist-ping",
+        "down_since": 100.0,
+        "pending_delete": True,
+        "pending_token": "tok-fallback",
+        "pending_notified": False,
+    }}
+    monkeypatch.setattr(bridge, "send_feishu_app_card", lambda _card: False)
+    webhook_cards = []
+    monkeypatch.setattr(
+        bridge,
+        "_send_feishu_webhook",
+        lambda card: webhook_cards.append(card) or True,
+    )
+
+    assert bridge.notify_pending_delete_states(states, 1000.0) is True
+    assert len(webhook_cards) == 1
+    serialized = json.dumps(webhook_cards[0], ensure_ascii=False)
+    assert "tok-fallback" not in serialized
+    assert "callback" not in serialized
+    assert not [
+        element for element in webhook_cards[0]["card"]["body"]["elements"]
+        if element.get("tag") == "button"
+    ]
 
 
 def test_pending_delete_notify_uses_normal_delivery_without_interaction(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
+    monkeypatch.setattr(bridge, "feishu_app_configured", lambda: False)
     key = "infra-dist-ping|192.168.10.27"
     states = {key: {
         "name": "access-7", "ip": "192.168.10.27", "job": "infra-dist-ping",
@@ -819,6 +929,8 @@ def test_pending_delete_notify_uses_normal_delivery_without_interaction(monkeypa
 
 
 def test_pending_delete_notify_not_committed_when_all_sends_fail(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
+    monkeypatch.setattr(bridge, "feishu_app_configured", lambda: False)
     key = "infra-dist-ping|192.168.10.27"
     states = {key: {
         "name": "access-7", "ip": "192.168.10.27", "job": "infra-dist-ping",

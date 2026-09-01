@@ -647,7 +647,7 @@
     try {
       return await platformApi("/network/retire/pending", { timeoutMs: 10000 });
     } catch (error) {
-      return { ok: false, pending: [], error: error.message || "待删除列表不可用" };
+      return { ok: false, enabled: false, pending: [], error: error.message || "待删除列表不可用" };
     }
   }
 

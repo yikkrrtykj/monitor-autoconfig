@@ -14,7 +14,12 @@ def bridge_retire_pending(bridge_url: str) -> dict:
         ) as resp:
             return json.loads(resp.read().decode("utf-8") or "{}")
     except Exception as exc:
-        return {"ok": False, "error": f"无法连接告警服务：{exc}", "pending": []}
+        return {
+            "ok": False,
+            "enabled": False,
+            "error": f"无法连接告警服务：{exc}",
+            "pending": [],
+        }
 
 
 def bridge_retire_resolve(bridge_url: str, data: dict) -> dict:

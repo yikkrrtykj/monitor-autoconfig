@@ -194,6 +194,7 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_
         "bridge_retire_pending",
         lambda _bridge_url: {
             "ok": True,
+            "enabled": True,
             "pending": [{"key": "switch-1"}],
         },
     )
@@ -240,6 +241,7 @@ def test_protected_read_routes_keep_paths_queries_and_payloads(monkeypatch, tmp_
             },
             "/network/retire/pending": {
                 "ok": True,
+                "enabled": True,
                 "pending": [{"key": "switch-1"}],
             },
             "/network/dhcp?force=yes": {"ok": True, "force": True},

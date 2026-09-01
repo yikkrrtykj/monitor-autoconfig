@@ -133,7 +133,7 @@ def test_incident_transaction_and_retire_reads_delegate_to_domains(
         "bridge_retire_pending",
         lambda bridge_url: (
             calls.append(("retire", bridge_url))
-            or {"ok": True, "pending": []}
+            or {"ok": True, "enabled": True, "pending": []}
         ),
     )
     handler = Handler()
@@ -149,7 +149,7 @@ def test_incident_transaction_and_retire_reads_delegate_to_domains(
     assert handler.json_responses == [
         (200, {"ok": True, "incidents": [{"id": 7}]}),
         (200, {"ok": True, "operationId": "apply-123"}),
-        (200, {"ok": True, "pending": []}),
+        (200, {"ok": True, "enabled": True, "pending": []}),
     ]
     assert calls == [
         ("incidents", context.incident_context),

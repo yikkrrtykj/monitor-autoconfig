@@ -2,13 +2,14 @@
 """Feishu client for EVENT_NAME-scoped group @ query commands.
 
 The sidecar keeps an outbound long connection for legacy message delivery and
-polls the configured group for reliable shared-app command routing. Stateful
-pending-delete decisions remain on each monitoring VM's control console.
+polls the configured group for reliable shared-app command routing. Long-lived
+company monitors may also receive token-guarded pending-delete card callbacks.
 
 Env:
   FEISHU_APP_ID / FEISHU_APP_SECRET  self-built app credentials (required)
   FEISHU_CHAT_ID the shared command/alert group name or oc_ chat id
   EVENT_NAME     local company/event name shown before every result
+  DEVICE_PENDING_DELETE_ENABLED register pending-delete callbacks (default false)
   BRIDGE_URL   bridge base URL (default http://alertmanager-feishu-bridge:5005)
 
 Feishu console prerequisites (one-time, see .env.example):
@@ -16,6 +17,7 @@ Feishu console prerequisites (one-time, see .env.example):
   订阅接收消息(im.message.receive_v1) -> 把应用机器人加进告警群。
   Shared-group routing additionally requires application permissions im:chat,
   im:message:readonly and im:message.group_msg for history polling.
+  Company-mode buttons additionally require card.action.trigger.
 """
 from __future__ import annotations
 
@@ -36,6 +38,9 @@ CHAT_TARGET = os.environ.get("FEISHU_CHAT_ID", "").strip()
 EVENT_NAME = os.environ.get("EVENT_NAME", "").strip()
 POLL_SECONDS = max(2.0, float(os.environ.get("FEISHU_COMMAND_POLL_SECONDS", "5") or 5))
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
+DEVICE_PENDING_DELETE_ENABLED = os.environ.get(
+    "DEVICE_PENDING_DELETE_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes", "on")
 _TENANT_TOKEN = {"value": "", "expires_at": 0.0}
 _TOKEN_LOCK = threading.Lock()
 _SEEN_MESSAGES: dict[str, float] = {}
@@ -47,6 +52,87 @@ _DEGRADED_WARNING_EMITTED = False
 
 def log(message: str) -> None:
     print(f"[feishu-ws] {message}", file=sys.stderr, flush=True)
+
+
+def resolve_via_bridge(value: dict) -> dict:
+    """Forward a company-mode card decision to the state-owning bridge."""
+    if not DEVICE_PENDING_DELETE_ENABLED:
+        return {"ok": False, "enabled": False, "error": "当前部署未启用待删除设备功能"}
+    payload = json.dumps({
+        "key": str(value.get("key") or ""),
+        "action": "delete" if value.get("action") == "retire_delete" else "keep",
+        "token": str(value.get("token") or ""),
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{BRIDGE_URL}/retire/resolve", data=payload,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            return json.loads(exc.read().decode("utf-8", errors="replace") or "{}")
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"告警服务返回 HTTP {exc.code}"}
+    except Exception as exc:  # noqa: BLE001 - surfaced to the operator as a toast
+        return {"ok": False, "error": f"无法连接告警服务：{exc}"}
+
+
+def build_response(value: dict, result: dict):
+    """Return a toast and replace the acted-on card with its final outcome."""
+    from lark_oapi.event.callback.model.p2_card_action_trigger import (
+        P2CardActionTriggerResponse,
+    )
+    ok = bool(result.get("ok"))
+    message = str(result.get("message") or result.get("error") or ("已处理" if ok else "处理失败"))
+    device = str(value.get("device") or "")
+    if ok and result.get("action") == "delete":
+        status_line = f"✅ 已确认删除：{device}"
+        template = "green"
+    elif ok:
+        status_line = f"🟢 已保留：{device}，继续监控"
+        template = "green"
+    else:
+        status_line = f"⚠️ {message}"
+        template = "orange"
+    card = {
+        "type": "raw",
+        "data": {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "设备待删除确认"},
+                "subtitle": {"tag": "plain_text", "content": "已处理" if ok else "处理失败"},
+                "template": template,
+            },
+            "body": {
+                "direction": "vertical",
+                "elements": [{
+                    "tag": "markdown",
+                    "content": f"{status_line}\n处理时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
+                }],
+            },
+        },
+    }
+    return P2CardActionTriggerResponse({
+        "toast": {"type": "success" if ok else "error", "content": message},
+        "card": card,
+    })
+
+
+def on_card_action(data):
+    if not DEVICE_PENDING_DELETE_ENABLED:
+        return None
+    action = getattr(getattr(data, "event", None), "action", None)
+    value = dict(getattr(action, "value", None) or {})
+    if value.get("action") not in ("retire_delete", "retire_keep"):
+        return None
+    operator = getattr(getattr(data, "event", None), "operator", None)
+    who = getattr(operator, "open_id", "") or getattr(operator, "user_id", "") or "?"
+    log(f"card action {value.get('action')} key={value.get('key')} by={who}")
+    result = resolve_via_bridge(value)
+    log(f"bridge result: {json.dumps(result, ensure_ascii=False)[:200]}")
+    return build_response(value, result)
 
 
 def query_via_bridge(text: str) -> dict:
@@ -415,6 +501,18 @@ def on_message(data):
     return None
 
 
+def build_event_handler(lark):
+    """Register ordinary messages in all modes and card callbacks in company mode."""
+    handler_builder = (
+        lark.EventDispatcherHandler.builder("", "")
+        .register_p2_im_message_receive_v1(on_message)
+    )
+    if DEVICE_PENDING_DELETE_ENABLED:
+        handler_builder = handler_builder.register_p2_card_action_trigger(on_card_action)
+        log("pending-delete card callback enabled")
+    return handler_builder.build()
+
+
 def main() -> None:
     if not APP_ID or not APP_SECRET:
         log("FEISHU_APP_ID/FEISHU_APP_SECRET not configured; sleeping. "
@@ -431,11 +529,7 @@ def main() -> None:
             name="feishu-site-command-poller",
         ).start()
 
-    handler = (
-        lark.EventDispatcherHandler.builder("", "")
-        .register_p2_im_message_receive_v1(on_message)
-        .build()
-    )
+    handler = build_event_handler(lark)
     while True:
         try:
             log("starting long-connection client")

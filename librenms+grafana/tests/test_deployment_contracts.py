@@ -138,8 +138,9 @@ def test_feishu_ws_sidecar_is_profile_gated_and_optional():
     assert "docker/feishu-ws" not in feishu_service
     assert "pull_policy: never" in feishu_service
     assert "lark-oapi==1.7.1" in platform_dockerfile
-    # Confirmation must be documented as working without the app (console panel).
-    assert "待删除设备" in env or "控制台" in env
+    assert "DEVICE_PENDING_DELETE_ENABLED=false" in env
+    assert "公司长期 Monitoring VM" in env
+    assert "card.action.trigger" in env
     assert "FEISHU_APP_ID=" in env
 
 
@@ -550,9 +551,10 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert "app.js?v=20260828f" in html
 
 
-def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
+def test_pending_delete_is_deployment_gated_without_hiding_feishu_app_config():
     config_editor = read("bigscreen/config/config-editor.js")
 
+    assert 'configInput("alerts.feishu_robot_token", "飞书机器人 Token"' in config_editor
     assert 'configInput("alerts.feishu_app_id", "飞书应用 App ID"' in config_editor
     assert 'configInput("alerts.feishu_app_secret", "飞书应用 App Secret"' in config_editor
     assert 'configInput("alerts.feishu_chat_id", "告警及巡检群名称或 Chat ID"' in config_editor
@@ -566,25 +568,35 @@ def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
     assert "def route_event_command(" in ws
     assert "shared-group event routing is degraded" in ws
     assert ".register_p2_im_message_receive_v1(on_message)" in ws
-    assert "register_p2_card_action_trigger" not in ws
-    assert "def on_card_action(" not in ws
-    assert "def resolve_via_bridge(" not in ws
+    assert "if DEVICE_PENDING_DELETE_ENABLED:" in ws
+    assert ".register_p2_card_action_trigger(on_card_action)" in ws
+    assert "def on_card_action(" in ws
+    assert "def resolve_via_bridge(" in ws
 
     compose = read("docker-compose.yml")
     feishu_service = compose.split("  feishu-ws:", 1)[1].split("  player-targets:", 1)[0]
     assert 'FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"' in feishu_service
     assert 'EVENT_NAME: "${EVENT_NAME:-}"' in feishu_service
+    assert 'DEVICE_PENDING_DELETE_ENABLED: "${DEVICE_PENDING_DELETE_ENABLED:-false}"' in feishu_service
     bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split("  librenms:", 1)[0]
+    assert 'DEVICE_PENDING_DELETE_ENABLED: "${DEVICE_PENDING_DELETE_ENABLED:-false}"' in bridge_service
     assert 'SERVER_IP: "${SERVER_IP:-}"' in bridge_service
     assert 'BIGSCREEN_PORT: "${BIGSCREEN_PORT:-8088}"' in bridge_service
     assert "DEVICE_PENDING_DELETE_APP_RETRY_SECONDS" not in compose
 
     bridge = read("alertmanager-feishu-bridge.py")
+    assert '"DEVICE_PENDING_DELETE_ENABLED", "false"' in bridge
+    assert "and job in jobs" in bridge
     assert "def control_console_url(" in bridge
     assert 'f"http://{SERVER_IP or \'VM-IP\'}:{BIGSCREEN_PORT}/control"' in bridge
     assert 'def resolve_pending_delete(' in bridge
     assert '"/retire/resolve"' in bridge
     assert "pending_interactive_notified" not in bridge
+
+    readme = read("../README.md")
+    assert "DEVICE_PENDING_DELETE_ENABLED=false" in readme
+    assert "DEVICE_PENDING_DELETE_ENABLED=true" in readme
+    assert "公司服务器升级前必须补上" in readme
 
 
 def test_retired_isp_history_is_filtered_by_current_prometheus_targets():
@@ -906,6 +918,7 @@ def test_delivery_panel_owns_operator_actions_and_mounts_existing_iperf_controll
         'postPlatform("/test-alert", {})',
         'postPlatform("/network/retire/resolve", {',
         "fetchRetirePending()",
+        "initial.enabled !== true",
         "iperfController.ensureMounted(element)",
     ):
         assert token in panel

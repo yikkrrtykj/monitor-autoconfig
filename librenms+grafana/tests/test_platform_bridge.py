@@ -47,7 +47,7 @@ def test_bridge_module_and_entrypoint_dependency_assembly(tmp_path):
 
 def test_retire_pending_keeps_url_timeout_and_json_response(monkeypatch):
     calls = []
-    expected = {"ok": True, "pending": [{"key": "switch-1"}]}
+    expected = {"ok": True, "enabled": True, "pending": [{"key": "switch-1"}]}
 
     def urlopen(url, timeout):
         calls.append((url, timeout))
@@ -70,6 +70,7 @@ def test_retire_pending_keeps_network_error_payload(monkeypatch):
 
     assert bridge.bridge_retire_pending(BRIDGE_URL) == {
         "ok": False,
+        "enabled": False,
         "error": "无法连接告警服务：fixture offline",
         "pending": [],
     }

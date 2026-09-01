@@ -24,6 +24,102 @@ def _message(text, *, mentions=True, chat_type="group", message_id="om_123"):
     )
 
 
+def _card_action(value):
+    return SimpleNamespace(event=SimpleNamespace(
+        action=SimpleNamespace(value=value),
+        operator=SimpleNamespace(open_id="ou_operator"),
+    ))
+
+
+def test_event_handler_registers_pending_callback_only_in_company_mode(monkeypatch):
+    class Builder:
+        def __init__(self):
+            self.calls = []
+
+        def register_p2_im_message_receive_v1(self, handler):
+            self.calls.append(("message", handler))
+            return self
+
+        def register_p2_card_action_trigger(self, handler):
+            self.calls.append(("card", handler))
+            return self
+
+        def build(self):
+            return self.calls
+
+    class Dispatcher:
+        @staticmethod
+        def builder(_verification_token, _encrypt_key):
+            return Builder()
+
+    fake_lark = SimpleNamespace(EventDispatcherHandler=Dispatcher)
+
+    monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", False)
+    assert [name for name, _handler in client.build_event_handler(fake_lark)] == ["message"]
+
+    monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", True)
+    assert [name for name, _handler in client.build_event_handler(fake_lark)] == [
+        "message",
+        "card",
+    ]
+
+
+def test_tournament_mode_does_not_forward_pending_card_actions(monkeypatch):
+    monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", False)
+    monkeypatch.setattr(
+        client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected request")),
+    )
+    value = {"action": "retire_delete", "key": "switch-1", "token": "tok"}
+    assert client.resolve_via_bridge(value)["enabled"] is False
+    assert client.on_card_action(_card_action(value)) is None
+
+
+def test_company_mode_forwards_token_guarded_card_action(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return b'{"ok":true,"action":"delete"}'
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", True)
+    monkeypatch.setattr(client.urllib.request, "urlopen", fake_urlopen)
+    value = {
+        "action": "retire_delete",
+        "key": "infra-dist-ping|192.168.10.27",
+        "token": "tok-company",
+    }
+
+    assert client.resolve_via_bridge(value) == {"ok": True, "action": "delete"}
+    request, timeout = requests[0]
+    assert request.full_url == f"{client.BRIDGE_URL}/retire/resolve"
+    assert request.get_method() == "POST"
+    assert json.loads(request.data.decode("utf-8")) == {
+        "key": "infra-dist-ping|192.168.10.27",
+        "action": "delete",
+        "token": "tok-company",
+    }
+    assert timeout == 20
+
+    monkeypatch.setattr(client, "resolve_via_bridge", lambda received: {"ok": True, "action": "keep"})
+    monkeypatch.setattr(client, "build_response", lambda received, result: (received, result))
+    response = client.on_card_action(_card_action({**value, "action": "retire_keep"}))
+    assert response[0]["token"] == "tok-company"
+    assert response[1] == {"ok": True, "action": "keep"}
+
+
 def test_extracts_command_after_robot_mention():
     message = _message("@_user_1  查光功率 192.168.10.31 Gi1/0/1")
     assert client.should_handle_message(message) is True

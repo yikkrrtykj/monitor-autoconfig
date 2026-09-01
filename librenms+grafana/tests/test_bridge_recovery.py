@@ -14,6 +14,10 @@ bridge = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bridge)
 
 
+def enable_pending_delete(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
+
+
 def interconnect_watcher_for_query(query, logs=None):
     logs = logs if logs is not None else []
     return interconnect.InterconnectWatcher(
@@ -71,7 +75,115 @@ def test_recovery_immediate_when_stable_seconds_zero():
     assert bridge.recovery_ready(state, now=100, sample_ts=100, recover_stable=0) is True
 
 
+def test_tournament_mode_disables_pending_lifecycle_and_sanitizes_legacy_state(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", False)
+    state_file = tmp_path / "device-down.json"
+    monkeypatch.setattr(bridge, "DEVICE_DOWN_STATE_FILE", str(state_file))
+    key = "infra-dist-ping|192.168.10.27"
+    state_file.write_text(json.dumps({
+        key: {
+            "alerting": True,
+            "down_since": 100,
+            "seen_up": True,
+            "name": "access-7",
+            "ip": "192.168.10.27",
+            "job": "infra-dist-ping",
+            "pending_delete": True,
+            "pending_token": "legacy-token",
+            "pending_notified": True,
+        },
+        "retired-device": {
+            "alerting": False,
+            "retired": True,
+            "librenms_deleted": True,
+        },
+    }), encoding="utf-8")
+
+    restored = bridge.load_device_down_states()
+    assert set(restored) == {key}
+    assert restored[key]["alerting"] is True
+    assert not any(
+        field.startswith("pending_") or field.startswith("librenms_") or field == "retired"
+        for field in restored[key]
+    )
+    bridge.save_device_down_states(restored)
+    persisted = json.loads(state_file.read_text(encoding="utf-8"))
+    assert set(persisted) == {key}
+    assert "pending_delete" not in persisted[key]
+
+    assert bridge.device_retirement_due(restored[key], "infra-dist-ping", 999999) is False
+    assert bridge.mark_pending_delete_states(restored, 999999) == []
+    sent = []
+    monkeypatch.setattr(bridge, "send_feishu", lambda card: sent.append(card) or True)
+    assert bridge.notify_pending_delete_states({key: {"pending_delete": True}}, 999999) is False
+    assert sent == []
+
+    deleted = []
+    monkeypatch.setattr(bridge, "delete_librenms_device", lambda ip: deleted.append(ip) or "deleted")
+    bridge.DEVICE_DOWN_STATES.clear()
+    bridge.DEVICE_DOWN_STATES[key] = {
+        "pending_delete": True,
+        "pending_token": "legacy-token",
+        "ip": "192.168.10.27",
+    }
+    assert bridge.list_pending_delete_devices() == []
+    result = bridge.resolve_pending_delete(key, "delete", "legacy-token")
+    assert result == {
+        "ok": False,
+        "enabled": False,
+        "error": "当前部署未启用待删除设备功能",
+    }
+    assert deleted == []
+    assert bridge.handle_bot_query("待删除设备")["text"].startswith("未识别命令")
+    assert "待删除设备" not in bridge.build_bot_help_text("Singapore")
+    bridge.DEVICE_DOWN_STATES.clear()
+
+
+def test_pending_list_http_contract_is_feature_gated(monkeypatch):
+    key = "infra-dist-ping|192.168.10.27"
+    bridge.DEVICE_DOWN_STATES.clear()
+    bridge.DEVICE_DOWN_STATES[key] = {
+        "pending_delete": True,
+        "pending_since": 200,
+        "pending_token": "tok-company",
+        "down_since": 100,
+        "name": "access-7",
+        "ip": "192.168.10.27",
+        "job": "infra-dist-ping",
+    }
+    handler = object.__new__(bridge.Handler)
+    handler.path = "/retire/pending"
+    handler._send = lambda status, body=b"OK", content_type="text/plain": (
+        status,
+        json.loads(body),
+    )
+
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", False)
+    status, payload = handler.do_GET()
+    assert status == 200
+    assert payload == {"ok": True, "enabled": False, "pending": []}
+
+    monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
+    status, payload = handler.do_GET()
+    assert status == 200
+    assert payload["enabled"] is True
+    assert payload["pending"] == [{
+        "key": key,
+        "name": "access-7",
+        "ip": "192.168.10.27",
+        "job": "infra-dist-ping",
+        "downSince": 100.0,
+        "pendingSince": 200.0,
+        "token": "tok-company",
+    }]
+    bridge.DEVICE_DOWN_STATES.clear()
+
+
 def test_temporary_device_retires_at_48_hour_boundary(monkeypatch):
+    enable_pending_delete(monkeypatch)
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_JOBS", "infra-dist-ping")
     state = {"alerting": True, "down_since": 100}
@@ -82,6 +194,7 @@ def test_temporary_device_retires_at_48_hour_boundary(monkeypatch):
 
 
 def test_root_cause_suppressed_device_is_not_asked_for_deletion(monkeypatch):
+    enable_pending_delete(monkeypatch)
     # 根因抑制的下游"受害者"（alerting=False）可能只是上游断了——绝不进入
     # 待删除流程，避免误删仍在使用的设备
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
@@ -97,6 +210,7 @@ def test_root_cause_suppressed_device_is_not_asked_for_deletion(monkeypatch):
 
 
 def test_48_hour_outage_marks_pending_delete_instead_of_deleting(monkeypatch):
+    enable_pending_delete(monkeypatch)
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_JOBS", "infra-dist-ping")
     key = "infra-dist-ping|192.168.10.27"
@@ -118,6 +232,7 @@ def test_48_hour_outage_marks_pending_delete_instead_of_deleting(monkeypatch):
 
 
 def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
+    enable_pending_delete(monkeypatch)
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)
     key = "infra-dist-ping|192.168.10.27"
 
@@ -170,7 +285,9 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
     assert state.get("retired") is not True
 
 
-def test_bot_pending_delete_command_returns_console_directed_notifications(monkeypatch):
+def test_company_bot_pending_delete_command_returns_interactive_cards(monkeypatch):
+    enable_pending_delete(monkeypatch)
+    monkeypatch.setattr(bridge, "feishu_app_configured", lambda: True)
     monkeypatch.setattr(bridge, "SERVER_IP", "10.20.30.40")
     monkeypatch.setattr(bridge, "BIGSCREEN_PORT", "8088")
     key = "infra-dist-ping|192.168.10.81"
@@ -189,7 +306,10 @@ def test_bot_pending_delete_command_returns_console_directed_notifications(monke
     assert len(result["cards"]) == 1
     elements = result["cards"][0]["card"]["body"]["elements"]
     buttons = [item for item in elements if item.get("tag") == "button"]
-    assert buttons == []
+    assert [button["text"]["content"] for button in buttons] == ["确认删除", "保留"]
+    actions = {button["behaviors"][0]["value"]["action"] for button in buttons}
+    assert actions == {"retire_delete", "retire_keep"}
+    assert all(button["behaviors"][0]["value"]["token"] == "token-81" for button in buttons)
     content = elements[0]["content"]
     assert "设备已离线满 48 小时，等待人工处理。" in content
     assert "http://10.20.30.40:8088/control" in content
@@ -198,6 +318,7 @@ def test_bot_pending_delete_command_returns_console_directed_notifications(monke
 
 
 def test_reenrolled_device_sends_new_online_card_and_clears_old_outage(monkeypatch):
+    enable_pending_delete(monkeypatch)
     state = {
         "alerting": False,
         "retired": True,
@@ -224,6 +345,7 @@ def test_reenrolled_device_sends_new_online_card_and_clears_old_outage(monkeypat
 
 
 def test_reenroll_waits_for_online_card_delivery(monkeypatch):
+    enable_pending_delete(monkeypatch)
     state = {"alerting": False, "retired": True, "retired_at": 100, "down_since": None, "seen_up": True}
     monkeypatch.setattr(bridge, "send_device_online_new_lifecycle", lambda card, *identity: False)
     assert bridge.notify_device_reenrolled(state, "access-7", "192.168.10.27") is False
@@ -232,6 +354,7 @@ def test_reenroll_waits_for_online_card_delivery(monkeypatch):
 
 
 def test_returned_device_reenrolls_even_without_prior_librenms_delete(monkeypatch):
+    enable_pending_delete(monkeypatch)
     # 确认制下删除只发生在人工确认里；设备自己回来时 LibreNMS 记录还在，
     # re-add 返回 exists 直接复用——不再卡在"必须先删除成功"的悬空状态
     monkeypatch.setattr(bridge, "DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", 60)
@@ -251,6 +374,7 @@ def test_returned_device_reenrolls_even_without_prior_librenms_delete(monkeypatc
 
 
 def test_reenrolled_device_is_readded_with_bounded_retry(monkeypatch):
+    enable_pending_delete(monkeypatch)
     monkeypatch.setattr(bridge, "DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", 60)
     outcomes = iter(["", "added"])
     calls = []
@@ -277,6 +401,7 @@ def test_reenrolled_device_is_readded_with_bounded_retry(monkeypatch):
 
 
 def test_reenroll_age_survives_bridge_restart(monkeypatch, tmp_path):
+    enable_pending_delete(monkeypatch)
     state_file = tmp_path / "device-down.json"
     monkeypatch.setattr(bridge, "DEVICE_DOWN_STATE_FILE", str(state_file))
     monkeypatch.setattr(bridge, "DEVICE_REENROLL_AFTER_SECONDS", 48 * 60 * 60)

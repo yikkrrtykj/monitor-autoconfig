@@ -54,6 +54,8 @@ Env:
   DEVICE_DOWN_SAMPLE_WINDOW_SECONDS recent probe window to catch short flaps (default 5)
   DEVICE_DOWN_JOBS        comma list of Prometheus ping jobs to watch for down
   DEVICE_DOWN_STATE_FILE  persisted active down alerts (default /bridge-state/device-down-alerts.json)
+  DEVICE_PENDING_DELETE_ENABLED true = enable the long-lived company VM retirement workflow
+                                (default false for tournament appliances)
   DEVICE_REENROLL_AFTER_SECONDS offline age at which selected devices auto-retire (default 172800)
   DEVICE_REENROLL_JOBS    comma list of temporary-device jobs (default infra-dist-ping)
   DEVICE_LIBRENMS_SYNC_RETRY_SECONDS retry interval for retire/delete/re-add API calls (default 60)
@@ -214,21 +216,19 @@ DEVICE_DOWN_JOBS = os.environ.get(
     "DEVICE_DOWN_JOBS",
     "infra-core-ping,infra-dist-ping,infra-fw-ping,infra-fw-unit-ping,infra-isp-ping,infra-srv-ping",
 )
-# Event access/distribution switches are often deployed for only a few days.
-# At 48 hours offline, ASK a human before touching anything: mark the device
-# pending-delete and push a Feishu notification. LibreNMS records are only
-# deleted after explicit confirmation in that VM's control console — never
-# automatically, so a self-healed device,
-# a suppressed downstream victim, or a transient API error can't lose data.
-# If the device comes back before anyone confirms, it starts a fresh lifecycle
-# (new-device card, no stale recovery card) and keeps its LibreNMS history.
+DEVICE_PENDING_DELETE_ENABLED = os.environ.get(
+    "DEVICE_PENDING_DELETE_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes", "on")
+# Long-lived company monitors may opt into the 48-hour human-confirmed device
+# retirement workflow. Tournament appliances default to the normal outage
+# lifecycle only and never generate pending-delete state.
 DEVICE_REENROLL_AFTER_SECONDS = int(os.environ.get("DEVICE_REENROLL_AFTER_SECONDS", "172800"))
 DEVICE_REENROLL_JOBS = os.environ.get("DEVICE_REENROLL_JOBS", "infra-dist-ping")
 DEVICE_LIBRENMS_SYNC_RETRY_SECONDS = int(os.environ.get("DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", "60"))
 # 待删除通知卡的重发间隔；0 = 只发一次，之后一直安静等控制台处理。
 DEVICE_PENDING_DELETE_REALERT_SECONDS = int(os.environ.get("DEVICE_PENDING_DELETE_REALERT_SECONDS", "0"))
-# 飞书自建应用（推荐）：配置后普通告警优先由应用发送；待删除卡只负责
-# 通知，确认删除/保留统一在对应赛事监控 VM 的控制台完成。
+# 飞书自建应用（推荐）：配置后普通告警优先由应用发送；公司模式下也承载
+# 待删除卡片按钮。控制台始终保留同等的确认/保留入口。
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
 FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "").strip()
@@ -442,6 +442,24 @@ def load_device_down_states():
     for key, value in raw.items():
         if not key or not isinstance(value, dict):
             continue
+        if not DEVICE_PENDING_DELETE_ENABLED:
+            # Tournament mode intentionally ignores legacy pending/retired
+            # lifecycle fields. Preserve only a currently active outage so an
+            # upgrade cannot crash, repeat the down alert, or lose recovery.
+            if not value.get("alerting"):
+                continue
+            loaded[str(key)] = {
+                "down_since": _as_float(value.get("down_since")),
+                "alerting": True,
+                "seen_up": bool(value.get("seen_up", True)),
+                "ignored_initial_down": False,
+                "last_up_at": _as_float(value.get("last_up_at")),
+                "online_sent": bool(value.get("online_sent", False)),
+                "name": str(value.get("name") or ""),
+                "ip": str(value.get("ip") or ""),
+                "job": str(value.get("job") or ""),
+            }
+            continue
         loaded[str(key)] = {
             "down_since": _as_float(value.get("down_since")),
             "alerting": bool(value.get("alerting", not value.get("retired"))),
@@ -473,6 +491,20 @@ def load_device_down_states():
 def save_device_down_states(states):
     active_or_retired = {}
     for key, state in states.items():
+        if not DEVICE_PENDING_DELETE_ENABLED:
+            if not state.get("alerting"):
+                continue
+            active_or_retired[str(key)] = {
+                "down_since": state.get("down_since"),
+                "last_up_at": state.get("last_up_at"),
+                "seen_up": bool(state.get("seen_up", True)),
+                "online_sent": bool(state.get("online_sent", False)),
+                "name": state.get("name") or "",
+                "ip": state.get("ip") or "",
+                "job": state.get("job") or "",
+                "alerting": True,
+            }
+            continue
         if not state.get("alerting") and not state.get("retired") and not state.get("pending_delete"):
             continue
         active_or_retired[str(key)] = {
@@ -694,14 +726,20 @@ def build_bot_help_text(event_name=""):
     event = " ".join(str(event_name or "").split())
     scope = f"{event} " if event else ""
     heading = f"【{event}】\n" if event else ""
-    return (
-        f"{heading}运维查询与巡检：\n"
-        f"• @机器人 {scope}网络巡检 — 全网在线/离线汇总，并检查思科堆叠成员、角色和版本状态\n"
-        f"• @机器人 {scope}待删除设备 — 展示待处理设备；确认删除/保留请进入对应 VM 控制台\n"
-        f"• @机器人 {scope}光功率巡检 — 全网 dBm 汇总，异常时附明细\n"
-        f"• @机器人 {scope}上联冗余巡检 — 结合 LLDP/CDP 和 Port-Channel 成员检查冗余\n"
-        "巡检读取 LibreNMS 和已经采集的拓扑，不会修改交换机配置。"
-    )
+    lines = [
+        f"{heading}运维查询与巡检：",
+        f"• @机器人 {scope}网络巡检 — 全网在线/离线汇总，并检查思科堆叠成员、角色和版本状态",
+    ]
+    if DEVICE_PENDING_DELETE_ENABLED:
+        lines.append(
+            f"• @机器人 {scope}待删除设备 — 展示待处理设备，并支持确认删除/保留"
+        )
+    lines.extend([
+        f"• @机器人 {scope}光功率巡检 — 全网 dBm 汇总，异常时附明细",
+        f"• @机器人 {scope}上联冗余巡检 — 结合 LLDP/CDP 和 Port-Channel 成员检查冗余",
+        "巡检读取 LibreNMS 和已经采集的拓扑，不会修改交换机配置。",
+    ])
+    return "\n".join(lines)
 
 
 BOT_HELP_TEXT = build_bot_help_text()
@@ -1161,6 +1199,8 @@ def build_uplink_audit_cards():
 
 
 def build_pending_delete_query_cards():
+    if not DEVICE_PENDING_DELETE_ENABLED:
+        return []
     assigned_title = False
     with RETIRE_LOCK:
         states = []
@@ -1174,7 +1214,10 @@ def build_pending_delete_query_cards():
     if assigned_title:
         save_device_down_states(DEVICE_DOWN_STATES)
     states.sort(key=lambda item: _as_float(item[1].get("pending_since")) or 0)
-    return [build_retire_confirm_card(state) for _key, state in states[:20]]
+    return [
+        build_retire_confirm_card(state, key)
+        for key, state in states[:20]
+    ]
 
 
 def _device_is_online(device):
@@ -1511,7 +1554,10 @@ def handle_bot_query(text):
         "网络巡检", "网络状态", "状态", "总览", "离线设备", "离线", "掉线设备",
         "check_network", "check network",
     }
-    pending_cmd = folded in {"待删除设备", "待删除", "测试删除", "pending delete"}
+    pending_cmd = (
+        DEVICE_PENDING_DELETE_ENABLED
+        and folded in {"待删除设备", "待删除", "测试删除", "pending delete"}
+    )
     fiber_audit_cmd = folded in {"光功率巡检", "光模块巡检", "全网光功率", "check_fiber", "check fiber"}
     uplink_audit_cmd = folded in {"上联冗余巡检", "上联巡检", "冗余巡检", "check_uplinks", "check uplinks"}
     if pending_cmd:
@@ -2190,12 +2236,17 @@ def control_console_url():
     return f"http://{SERVER_IP or 'VM-IP'}:{BIGSCREEN_PORT}/control"
 
 
-def build_retire_confirm_card(state):
-    """离线满 48h 的通知卡；有状态操作只在本机控制台完成。"""
+def build_retire_confirm_card(state, key="", interactive=None):
+    """Build the company-mode 48h confirmation card.
+
+    App delivery includes token-guarded confirm/keep callbacks. The webhook
+    fallback remains notification-only and directs operators to the console.
+    """
     name = state.get("name") or state.get("ip") or "?"
     ip = state.get("ip") or ""
     offline = format_duration(max(0, time.time() - (_as_float(state.get("down_since")) or time.time())))
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    dev = f"{name} ({ip})" if ip and ip != name else name
     lines = [
         "⚠️ 设备已连续离线 48 小时，已进入待退役确认。",
         "",
@@ -2206,12 +2257,48 @@ def build_retire_confirm_card(state):
         "",
         "📝 设备已离线满 48 小时，等待人工处理。",
         "",
-        "请进入对应赛事监控控制台确认删除或保留：",
+        "请进入对应监控控制台确认删除或保留：",
         control_console_url(),
     ]
+    requested_interaction = feishu_app_configured() if interactive is None else bool(interactive)
+    use_interaction = bool(
+        DEVICE_PENDING_DELETE_ENABLED
+        and requested_interaction
+        and key
+        and state.get("pending_token")
+    )
+    extra_elements = None
+    if use_interaction:
+        def _button(text, style, action):
+            return {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": text},
+                "type": style,
+                "width": "default",
+                "margin": "8px 8px 0px 0px",
+                "behaviors": [{
+                    "type": "callback",
+                    "value": {
+                        "action": action,
+                        "key": key,
+                        "token": state.get("pending_token") or "",
+                        "device": dev,
+                    },
+                }],
+            }
+        extra_elements = [
+            _button("确认删除", "danger", "retire_delete"),
+            _button("保留", "default", "retire_keep"),
+        ]
     title = state.get("pending_event_title") or next_event_title()
     state["pending_event_title"] = title
-    return _make_card(title, "⚠️ 设备持续离线｜需要确认", "orange", "\n".join(lines))
+    return _make_card(
+        title,
+        "⚠️ 设备持续离线｜需要确认",
+        "orange",
+        "\n".join(lines),
+        extra_elements=extra_elements,
+    )
 
 
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
@@ -2666,7 +2753,8 @@ def device_retirement_due(state, job, now):
     down_since = _as_float(state.get("down_since"))
     snoozed_until = _as_float(state.get("pending_snoozed_until")) or 0
     return bool(
-        job in jobs
+        DEVICE_PENDING_DELETE_ENABLED
+        and job in jobs
         and DEVICE_REENROLL_AFTER_SECONDS > 0
         and down_since is not None
         and state.get("alerting")
@@ -2685,6 +2773,8 @@ RETIRE_LOCK = threading.Lock()
 
 def mark_pending_delete_states(states, now):
     """Flag 48h-old alerted outages as pending-delete. Never deletes anything."""
+    if not DEVICE_PENDING_DELETE_ENABLED:
+        return []
     marked = []
     with RETIRE_LOCK:
         for key, state in states.items():
@@ -2701,9 +2791,11 @@ def mark_pending_delete_states(states, now):
 
 
 def notify_pending_delete_states(states, now):
-    """Send (or re-send) console-directed notices, delivery-confirmed."""
+    """Send company-mode confirmation cards, with a plain webhook fallback."""
+    if not DEVICE_PENDING_DELETE_ENABLED:
+        return False
     changed = False
-    for state in states.values():
+    for key, state in states.items():
         if not state.get("pending_delete"):
             continue
         plain_due = not state.get("pending_notified")
@@ -2712,7 +2804,17 @@ def notify_pending_delete_states(states, now):
             plain_due = now - last >= DEVICE_PENDING_DELETE_REALERT_SECONDS
         if not plain_due:
             continue
-        delivered = send_feishu(build_retire_confirm_card(state))
+        interactive = feishu_app_configured()
+        delivered = (
+            send_feishu_app_card(build_retire_confirm_card(state, key, True))
+            if interactive else False
+        )
+        if not delivered:
+            plain_card = build_retire_confirm_card(state, key, False)
+            delivered = (
+                _send_feishu_webhook(plain_card)
+                if interactive else send_feishu(plain_card)
+            )
         if delivered:
             state["pending_notified"] = True
             state["pending_last_notified"] = now
@@ -2751,6 +2853,8 @@ def _target_currently_up(job, ip):
 
 
 def list_pending_delete_devices():
+    if not DEVICE_PENDING_DELETE_ENABLED:
+        return []
     with RETIRE_LOCK:
         pending = []
         for key, state in DEVICE_DOWN_STATES.items():
@@ -2776,6 +2880,12 @@ def resolve_pending_delete(key, action, token):
     LibreNMS 记录并转入"已退役"生命周期（回来按新设备处理）。
     keep：清除待删除标记，继续监控；48 小时后仍离线才会再次询问。
     """
+    if not DEVICE_PENDING_DELETE_ENABLED:
+        return {
+            "ok": False,
+            "enabled": False,
+            "error": "当前部署未启用待删除设备功能",
+        }
     with RETIRE_LOCK:
         state = DEVICE_DOWN_STATES.get(str(key or ""))
         if not state or not state.get("pending_delete"):
@@ -3032,7 +3142,7 @@ def device_down_watcher():
                             save_device_down_states(states)
             else:
                 previous_down_since = state.get("down_since")
-                if state.get("pending_delete"):
+                if DEVICE_PENDING_DELETE_ENABLED and state.get("pending_delete"):
                     # 待确认期间设备自己回来了：撤销待删除，按“新生命周期”走
                     # （发新设备上线卡，而不是一张 48h+ 的陈旧恢复卡）。
                     # LibreNMS 记录从未被删，历史保留。
@@ -3048,7 +3158,9 @@ def device_down_watcher():
                         state["librenms_sync_last_attempt"] = 0
                     log(f"[DOWN] PENDING-DELETE cancelled, device returned: {job} {name} ({ip})")
                     save_device_down_states(states)
-                was_retired = bool(state.get("retired"))
+                was_retired = (
+                    DEVICE_PENDING_DELETE_ENABLED and bool(state.get("retired"))
+                )
                 state["last_up_at"] = sample_ts or now
                 first_up_after_candidate_down = (not state["seen_up"] and state.get("ignored_initial_down"))
                 if not state["seen_up"]:
@@ -3111,17 +3223,18 @@ def device_down_watcher():
 
         # 48h 待删除标记放在样本处理之后：本轮已经 UP 的设备先清掉了状态，
         # 桥接重启后残留的陈旧 down_since 不会在设备实际在线时误发确认卡。
-        # 标记只发通知卡，删除永远等对应赛事控制台人工确认。
-        marked_keys = mark_pending_delete_states(states, now)
-        for marked_key in marked_keys:
-            marked = states[marked_key]
-            log(
-                f"[DOWN] PENDING-DELETE {marked.get('job')} "
-                f"{marked.get('name')} ({marked.get('ip')}) offline 48h+, waiting for confirmation"
-            )
-        notified = notify_pending_delete_states(states, now)
-        if marked_keys or notified:
-            save_device_down_states(states)
+        # 标记只发通知卡，删除永远等对应监控控制台人工确认。
+        if DEVICE_PENDING_DELETE_ENABLED:
+            marked_keys = mark_pending_delete_states(states, now)
+            for marked_key in marked_keys:
+                marked = states[marked_key]
+                log(
+                    f"[DOWN] PENDING-DELETE {marked.get('job')} "
+                    f"{marked.get('name')} ({marked.get('ip')}) offline 48h+, waiting for confirmation"
+                )
+            notified = notify_pending_delete_states(states, now)
+            if marked_keys or notified:
+                save_device_down_states(states)
 
         time.sleep(DEVICE_DOWN_POLL_INTERVAL)
 
@@ -4549,7 +4662,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(status, body, "application/json; charset=utf-8")
         if self.path == "/retire/pending":
             body = json.dumps(
-                {"ok": True, "pending": list_pending_delete_devices()},
+                {
+                    "ok": True,
+                    "enabled": DEVICE_PENDING_DELETE_ENABLED,
+                    "pending": list_pending_delete_devices(),
+                },
                 ensure_ascii=False,
             ).encode("utf-8")
             return self._send(200, body, "application/json; charset=utf-8")
@@ -4560,7 +4677,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    log(f"listening on 0.0.0.0:{PORT}  dry_run={DRY_RUN}  token_set={bool(TOKEN)}")
+    log(
+        f"listening on 0.0.0.0:{PORT}  dry_run={DRY_RUN}  "
+        f"token_set={bool(TOKEN)}  pending_delete={DEVICE_PENDING_DELETE_ENABLED}"
+    )
     if not TOKEN and not DRY_RUN:
         log("[WARN] no FEISHU_ROBOT_TOKEN set; LibreNMS alerts will not be forwarded")
 

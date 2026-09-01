@@ -132,7 +132,7 @@ function createHarness(options = {}) {
     if (path === '/test-alert') return { ok: true, channel: 'app' };
     return { ok: true };
   });
-  const retireSource = options.fetchRetirePending || [{ ok: true, pending: [] }];
+  const retireSource = options.fetchRetirePending || [{ ok: true, enabled: true, pending: [] }];
   const iperfController = options.iperfController || {
     ensureMounted(container) {
       iperfMountCalls += 1;
@@ -184,6 +184,7 @@ async function main() {
   const initial = createHarness({
     fetchRetirePending: [{
       ok: true,
+      enabled: true,
       pending: [{
         key: 'core-<1>',
         token: 'tok-"1"',
@@ -213,6 +214,21 @@ async function main() {
   assert.match(pendingMarkup, /data-key="core-&lt;1&gt;"/);
   assert.match(pendingMarkup, /data-token="tok-&quot;1&quot;"/);
   assert.ok(!pendingMarkup.includes('<Core & One>'));
+
+  // Tournament mode is the default product surface: no pending-delete section,
+  // buttons, counters, or listeners are mounted when the bridge says disabled.
+  const tournament = createHarness({
+    fetchRetirePending: [{ ok: true, enabled: false, pending: [] }]
+  });
+  tournament.panel.render();
+  await settle();
+  const tournamentShell = tournament.document.getElementById('controlDelivery');
+  assert.match(tournamentShell.innerHTML, /id="preCheckBtn"/);
+  assert.match(tournamentShell.innerHTML, /id="iperfFixture"/);
+  assert.ok(!tournamentShell.innerHTML.includes('待删除设备'));
+  assert.strictEqual(tournament.document.getElementById('retirePendingRefreshBtn'), null);
+  assert.strictEqual(tournament.document.getElementById('retirePendingList'), null);
+  assert.strictEqual(tournament.retireFetchCalls.length, 1);
 
   // A ten-second Control snapshot render is a no-op for an already built
   // Delivery panel: listeners, operator output, and active iPerf DOM survive.
@@ -305,9 +321,9 @@ async function main() {
   // panel. A successful keep action retains the exact request and refreshes.
   const retire = createHarness({
     fetchRetirePending: [
-      { ok: true, pending: [{ key: 'dist-1', token: 'tok-1', name: 'Stage 1', ip: '10.0.1.1' }] },
-      { ok: true, pending: [{ key: 'dist-2', token: 'tok-2', name: 'Stage 2', ip: '10.0.1.2' }] },
-      { ok: true, pending: [] }
+      { ok: true, enabled: true, pending: [{ key: 'dist-1', token: 'tok-1', name: 'Stage 1', ip: '10.0.1.1' }] },
+      { ok: true, enabled: true, pending: [{ key: 'dist-2', token: 'tok-2', name: 'Stage 2', ip: '10.0.1.2' }] },
+      { ok: true, enabled: true, pending: [] }
     ],
     postPlatform: { ok: true }
   });
@@ -331,7 +347,7 @@ async function main() {
   // Delete keeps the current two-click arm, five-second disarm timer, failure
   // message, and delayed 1.5-second list recovery.
   const retireFailure = createHarness({
-    fetchRetirePending: [{ ok: true, pending: [{ key: 'core-1', token: 'tok-x', name: 'Core' }] }],
+    fetchRetirePending: [{ ok: true, enabled: true, pending: [{ key: 'core-1', token: 'tok-x', name: 'Core' }] }],
     postPlatform: { ok: false, error: 'token expired' }
   });
   retireFailure.panel.render();
@@ -355,7 +371,7 @@ async function main() {
   assert.strictEqual(deleteButton.disabled, false);
 
   const retireError = createHarness({
-    fetchRetirePending: [{ ok: true, pending: [{ key: 'fw-1', token: 'tok-f', name: 'Firewall' }] }],
+    fetchRetirePending: [{ ok: true, enabled: true, pending: [{ key: 'fw-1', token: 'tok-f', name: 'Firewall' }] }],
     postPlatform: () => { throw new Error('resolve timeout'); }
   });
   retireError.panel.render();

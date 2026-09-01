@@ -264,11 +264,21 @@ cd librenms+grafana
 `shared-group event routing is degraded`，不能把多个长连接客户端当作可靠广播总线。
 自建应用群解析的错误码、直接 Chat ID 配置和现场验证方法见
 [`librenms+grafana/docs/feishu-app-chat-troubleshooting.md`](librenms+grafana/docs/feishu-app-chat-troubleshooting.md)。
-支持 `网络巡检`、`待删除设备`、`光功率巡检`、`上联冗余巡检` 和 `帮助`。
+所有部署支持 `网络巡检`、`光功率巡检`、`上联冗余巡检` 和 `帮助`；公司模式另外支持
+`待删除设备`。
 光功率读取 LibreNMS 已采集的 dBm 传感器及阈值，不会额外轮询交换机。
 `im.message.receive_v1` 是在“事件与回调”里添加的事件类型，不是权限管理页里的权限名。
-设备离线满 48 小时后飞书只发送通知；确认删除或保留必须进入通知所指向的对应 VM
-`http://VM-IP:8088/control`，控制台继续执行在线复核、口令校验和设备生命周期处理。
+
+Pending Delete 是部署级可选能力，同一套代码不区分分支：
+
+- 比赛 Golden VM / appliance 保持 `DEVICE_PENDING_DELETE_ENABLED=false`（默认），不生成
+  48 小时待删除状态、飞书卡片、查询命令或控制台面板；比赛结束直接撤掉整台 VM。
+- 公司长期 Monitoring VM 如需原有设备生命周期管理，必须在 `.env` 明确设置
+  `DEVICE_PENDING_DELETE_ENABLED=true`。此时 48 小时检测、持久化状态、飞书确认删除/保留
+  按钮和控制台入口均启用；删除仍需人工确认，并继续执行在线复核与 token 校验。
+
+旧安装无法仅凭遗留参数可靠判断用途；公司服务器升级前必须补上上述 `true`，已有
+bridge-state 会继续沿用。公司模式的飞书按钮还需订阅 `card.action.trigger`。
 
 ## 交换机侧配置
 

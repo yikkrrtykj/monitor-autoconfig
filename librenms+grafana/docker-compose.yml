@@ -186,6 +186,7 @@ services:
       DEVICE_DOWN_POLL_INTERVAL: "${DEVICE_DOWN_POLL_INTERVAL:-1}"
       DEVICE_DOWN_SAMPLE_WINDOW_SECONDS: "${DEVICE_DOWN_SAMPLE_WINDOW_SECONDS:-5}"
       DEVICE_DOWN_JOBS: "${DEVICE_DOWN_JOBS:-infra-core-ping,infra-dist-ping,infra-fw-ping,infra-fw-unit-ping,infra-isp-ping,infra-srv-ping}"
+      DEVICE_PENDING_DELETE_ENABLED: "${DEVICE_PENDING_DELETE_ENABLED:-false}"
       DEVICE_REENROLL_AFTER_SECONDS: "${DEVICE_REENROLL_AFTER_SECONDS:-172800}"
       DEVICE_REENROLL_JOBS: "${DEVICE_REENROLL_JOBS:-infra-dist-ping}"
       DEVICE_LIBRENMS_SYNC_RETRY_SECONDS: "${DEVICE_LIBRENMS_SYNC_RETRY_SECONDS:-60}"
@@ -202,7 +203,7 @@ services:
       SYSNAME_CHANGE_ALERT_ENABLED: "${SYSNAME_CHANGE_ALERT_ENABLED:-true}"
       SYSNAME_CHANGE_POLL_INTERVAL: "${SYSNAME_CHANGE_POLL_INTERVAL:-60}"
       SYSNAME_CHANGE_CONFIRM_POLLS: "${SYSNAME_CHANGE_CONFIRM_POLLS:-2}"
-      # 飞书自建应用：普通告警优先走应用；feishu-ws 负责共享群命令，待删除操作在控制台完成。
+      # 飞书自建应用：普通告警优先走应用；feishu-ws 负责共享群命令及公司模式的卡片回传。
       FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
       FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"
@@ -537,7 +538,7 @@ services:
 
   # 飞书命令边车：轮询共享群并接收长连接消息，再按 EVENT_NAME 只把本站命令
   # 转给告警桥。主动外连飞书云端，内网无需公网/端口映射；仅在配置自建应用时启动。
-  # 待删除卡只发通知，删除/保留始终在对应 VM 的控制台完成。
+  # 公司模式可同时处理待删除卡片按钮；比赛模式不注册这条 callback。
   feishu-ws:
     # Reuse the platform image: deploy.sh always builds it, and it already
     # carries the small lark-oapi dependency.  This keeps console-side apply
@@ -557,6 +558,7 @@ services:
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
       FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"
       EVENT_NAME: "${EVENT_NAME:-}"
+      DEVICE_PENDING_DELETE_ENABLED: "${DEVICE_PENDING_DELETE_ENABLED:-false}"
       BRIDGE_URL: "http://alertmanager-feishu-bridge:5005"
     entrypoint: ["python3", "/feishu-ws-client.py"]
     depends_on:
