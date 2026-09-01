@@ -468,20 +468,13 @@
         </section>
         <section class="config-section">
           <h3>告警</h3>
-          <p class="config-section-note">所有监控可共用同一个飞书应用，但每台物理监控填写各自的“赛事名称”和“告警及巡检群名称”。现有长连接权限可继续使用；多套物理监控共用应用并要求严格按群处理时，再增加 im:chat、im:message:readonly 和 im:message.group_msg。</p>
+          <p class="config-section-note">一场比赛使用一台监控 VM。多个独立赛事 VM 可共用同一个飞书应用和群，但每台必须填写唯一“赛事名称”；共享群命令请带赛事名称。可靠路由需要 im:chat、im:message:readonly 和 im:message.group_msg。</p>
           <div class="config-fields">
             ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
             ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
             ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
-            ${configInput("alerts.feishu_chat_id", "告警及巡检群名称或 Chat ID", { placeholder: "唯一群名，或 oc_ 开头的 Chat ID" })}
-            ${configInput("alerts.gateway_macs", "关键网关 MAC（逗号分隔）", { placeholder: "例如：0000.5e00.0101,0000.5e00.0201" })}
-            ${configInput("alerts.gateway_uplink_ports", "网关正常上联接口（逗号分隔）", { placeholder: "例如：Po1,Po10" })}
-            ${configInput("alerts.mac_flap_window_seconds", "MAC 漂移统计窗口（秒）", { number: true })}
-            ${configInput("alerts.mac_flap_threshold", "普通 MAC 告警次数", { number: true })}
-            ${configInput("alerts.cpu_alert_percent", "交换机 CPU 告警阈值（%）", { number: true })}
-            ${configInput("alerts.memory_alert_percent", "交换机内存告警阈值（%）", { number: true })}
+            ${configInput("alerts.feishu_chat_id", "告警及巡检群名称或 Chat ID", { placeholder: "共享群名，或 oc_ 开头的 Chat ID" })}
           </div>
-          <p class="config-section-note">关键网关 MAC 在正常上联与其他接口间移动时立即告警；普通 MAC 默认 60 秒内出现 3 次才告警。Cisco 日志不提供可靠的原/新方向，因此未配置正常上联时只显示两个涉及接口。CPU 达到阈值持续 5 分钟才告警，内存持续 10 分钟才告警；分别低于阈值 10% 并稳定 2 分钟后恢复。默认 70% / 80%，40% 不会告警。</p>
         </section>
         <section class="config-section">
           <h3>安全</h3>

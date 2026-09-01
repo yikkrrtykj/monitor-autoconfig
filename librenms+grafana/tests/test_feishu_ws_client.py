@@ -14,9 +14,9 @@ assert _spec.loader
 _spec.loader.exec_module(client)
 
 
-def _message(text, *, mentions=True, chat_type="group"):
+def _message(text, *, mentions=True, chat_type="group", message_id="om_123"):
     return SimpleNamespace(
-        message_id="om_123",
+        message_id=message_id,
         message_type="text",
         chat_type=chat_type,
         content=json.dumps({"text": text}, ensure_ascii=False),
@@ -28,6 +28,30 @@ def test_extracts_command_after_robot_mention():
     message = _message("@_user_1  查光功率 192.168.10.31 Gi1/0/1")
     assert client.should_handle_message(message) is True
     assert client.extract_command(message) == "查光功率 192.168.10.31 Gi1/0/1"
+
+
+def test_event_command_routing_handles_scope_case_boundary_and_multi_word_names():
+    assert client.route_event_command("网络巡检", "") == "网络巡检"
+    assert client.route_event_command("Singapore 网络巡检", "Singapore") == "网络巡检"
+    assert client.route_event_command("singapore 帮助", "Singapore") == "帮助"
+    assert client.route_event_command("Singapore 光功率巡检", "Singapore") == "光功率巡检"
+    assert client.route_event_command("Singapore: 上联冗余巡检", "Singapore") == "上联冗余巡检"
+    assert client.route_event_command("Singapore：待删除设备", "Singapore") == "待删除设备"
+    assert client.route_event_command("Singapore - 网络巡检", "Singapore") == "网络巡检"
+    assert client.route_event_command("Shanghai 网络巡检", "Singapore") is None
+    assert client.route_event_command("网络巡检", "Singapore") is None
+    assert client.route_event_command("SG2 网络巡检", "SG") is None
+    assert client.route_event_command("IEM Chengdu 网络巡检", "IEM Chengdu") == "网络巡检"
+    assert client.route_event_command("IEM Cologne 网络巡检", "IEM Chengdu") is None
+
+
+def test_multi_instance_routing_is_mutually_exclusive():
+    singapore_command = "Singapore 网络巡检"
+    shanghai_command = "Shanghai 网络巡检"
+    assert client.route_event_command(singapore_command, "Singapore") == "网络巡检"
+    assert client.route_event_command(shanghai_command, "Singapore") is None
+    assert client.route_event_command(singapore_command, "Shanghai") is None
+    assert client.route_event_command(shanghai_command, "Shanghai") == "网络巡检"
 
 
 def test_ignores_ordinary_group_chatter_even_with_sensitive_permission():
@@ -115,6 +139,8 @@ def test_long_connection_message_remains_fallback_until_polling_is_ready(monkeyp
             calls.append(self.args)
 
     client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "EVENT_NAME", "")
+    monkeypatch.setattr(client, "CHAT_TARGET", "")
     monkeypatch.setattr(client, "_POLL_READY", False)
     monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
     client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message("@_user_1 帮助"))))
@@ -125,6 +151,40 @@ def test_long_connection_message_remains_fallback_until_polling_is_ready(monkeyp
     monkeypatch.setattr(client, "_POLL_READY", True)
     client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message("@_user_1 帮助"))))
     assert calls == []
+
+
+def test_long_connection_fallback_routes_scope_and_warns_only_once(monkeypatch):
+    calls = []
+    logs = []
+
+    class ImmediateThread:
+        def __init__(self, target, args, **_kwargs):
+            self.target, self.args = target, args
+
+        def start(self):
+            calls.append(self.args)
+
+    client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "EVENT_NAME", "Singapore")
+    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
+    monkeypatch.setattr(client, "_POLL_READY", False)
+    monkeypatch.setattr(client, "_DEGRADED_WARNING_EMITTED", False)
+    monkeypatch.setattr(client, "log", logs.append)
+    monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
+
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 Shanghai 网络巡检", message_id="om_wrong",
+    ))))
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 网络巡检", message_id="om_unscoped",
+    ))))
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 Singapore 网络巡检", message_id="om_right",
+    ))))
+
+    assert calls == [("om_right", "网络巡检")]
+    assert {"om_wrong", "om_unscoped", "om_right"}.issubset(client._SEEN_MESSAGES)
+    assert sum("shared-group event routing is degraded" in item for item in logs) == 1
 
 
 def test_site_polling_baselines_old_messages_then_handles_new_once(monkeypatch):
@@ -148,8 +208,43 @@ def test_site_polling_baselines_old_messages_then_handles_new_once(monkeypatch):
             calls.append(self.args)
 
     client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "EVENT_NAME", "")
     monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
     assert client.process_polled_messages([old], baseline=True) == 0
     assert client.process_polled_messages([old, new]) == 1
     assert client.process_polled_messages([new]) == 0
     assert calls == [("om_new", "光功率巡检")]
+
+
+def test_site_polling_reserves_and_silently_ignores_other_events(monkeypatch):
+    def history(message_id, text, created):
+        return {
+            "message_id": message_id,
+            "message_type": "text",
+            "chat_type": "group",
+            "create_time": str(created),
+            "body": {"content": json.dumps({"text": f"@_user_1 {text}"}, ensure_ascii=False)},
+            "mentions": [{"key": "@_user_1"}],
+            "sender": {"sender_type": "user"},
+        }
+
+    calls = []
+
+    class ImmediateThread:
+        def __init__(self, target, args, **_kwargs):
+            self.args = args
+
+        def start(self):
+            calls.append(self.args)
+
+    singapore = history("om_sg", "Singapore 网络巡检", 100)
+    shanghai = history("om_sh", "Shanghai 网络巡检", 101)
+    unscoped = history("om_plain", "帮助", 102)
+    client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "EVENT_NAME", "Singapore")
+    monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
+
+    assert client.process_polled_messages([singapore, shanghai, unscoped]) == 1
+    assert calls == [("om_sg", "网络巡检")]
+    assert {"om_sg", "om_sh", "om_plain"}.issubset(client._SEEN_MESSAGES)
+    assert client.process_polled_messages([singapore, shanghai, unscoped]) == 0

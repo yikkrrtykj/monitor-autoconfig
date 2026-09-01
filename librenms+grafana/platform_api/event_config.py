@@ -18,6 +18,16 @@ from platform_config import (
 )
 
 
+_HIDDEN_ALERT_ENV_FIELDS = (
+    ("gateway_macs", "SYSLOG_GATEWAY_MACS", False),
+    ("gateway_uplink_ports", "SYSLOG_GATEWAY_UPLINK_PORTS", False),
+    ("mac_flap_window_seconds", "SYSLOG_MAC_FLAP_WINDOW_SECONDS", True),
+    ("mac_flap_threshold", "SYSLOG_MAC_FLAP_THRESHOLD", True),
+    ("cpu_alert_percent", "DEVICE_CPU_ALERT_PERCENT", True),
+    ("memory_alert_percent", "DEVICE_MEMORY_ALERT_PERCENT", True),
+)
+
+
 @dataclass(frozen=True)
 class EventConfigContext:
     config_path: Path
@@ -84,6 +94,61 @@ def current_config_write_guard(context: EventConfigContext) -> dict | None:
     return None
 
 
+def _current_alert_values(context: EventConfigContext) -> dict:
+    if not context.config_path.exists():
+        return {}
+    try:
+        current = migrate_config(parse_config_text(
+            context.config_path.read_text(encoding="utf-8")
+        ))
+    except (OSError, ValueError, ConfigSchemaError):
+        return {}
+    alerts = current.get("alerts")
+    return alerts if isinstance(alerts, dict) else {}
+
+
+def _coerce_hidden_alert_value(value: str, numeric: bool):
+    if not numeric:
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    return int(number) if number.is_integer() else number
+
+
+def _preserve_hidden_alert_values(
+    context: EventConfigContext,
+    config: dict,
+    existing_env: dict[str, str],
+    *,
+    editing_existing: bool,
+) -> None:
+    """Keep advanced alert values that the normal UI intentionally omits.
+
+    Existing YAML remains authoritative. Older installations may have these
+    settings only in .env, so missing keys inherit that value. Submitted
+    configurations also inherit missing keys from the current on-disk config;
+    an explicitly supplied blank/value is never overwritten.
+    """
+    alerts = config.get("alerts")
+    if alerts is not None and not isinstance(alerts, dict):
+        return
+    current_alerts = (alerts or {}) if editing_existing else _current_alert_values(context)
+    preserved = {}
+    for config_key, env_key, numeric in _HIDDEN_ALERT_ENV_FIELDS:
+        if isinstance(alerts, dict) and config_key in alerts:
+            continue
+        if config_key in current_alerts:
+            preserved[config_key] = current_alerts[config_key]
+        elif env_key in existing_env:
+            preserved[config_key] = _coerce_hidden_alert_value(
+                existing_env[env_key], numeric,
+            )
+    if preserved:
+        config.setdefault("alerts", {}).update(preserved)
+
+
 def config_payload(context: EventConfigContext, text: str | None = None) -> dict:
     editing_existing = text is None
     text = read_config_text(context) if editing_existing else text
@@ -120,6 +185,9 @@ def config_payload(context: EventConfigContext, text: str | None = None) -> dict
 
     config = migrate_config(config)
     existing_env = read_env(context.env_path)
+    _preserve_hidden_alert_values(
+        context, config, existing_env, editing_existing=editing_existing,
+    )
     # Migrate legacy .env-only application credentials into the authenticated
     # editor model.  They are then visible beside the old webhook token and are
     # persisted to event-config.yml on the next save/apply.  Do not do this for

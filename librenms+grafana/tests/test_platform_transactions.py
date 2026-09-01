@@ -163,6 +163,75 @@ def test_successful_apply_has_durable_success_record(monkeypatch, tmp_path):
     assert read_apply_status(api, "apply-test-0002")["state"] == "succeeded"
 
 
+ADVANCED_ALERT_ENV = (
+    "CUSTOM=keep\n"
+    "SYSLOG_GATEWAY_MACS=0000.5e00.0101\n"
+    "SYSLOG_GATEWAY_UPLINK_PORTS=Po1,Po10\n"
+    "SYSLOG_MAC_FLAP_WINDOW_SECONDS=120\n"
+    "SYSLOG_MAC_FLAP_THRESHOLD=5\n"
+    "DEVICE_CPU_ALERT_PERCENT=75\n"
+    "DEVICE_MEMORY_ALERT_PERCENT=85\n"
+)
+EXPECTED_ADVANCED_ALERTS = {
+    "gateway_macs": "0000.5e00.0101",
+    "gateway_uplink_ports": "Po1,Po10",
+    "mac_flap_window_seconds": 120,
+    "mac_flap_threshold": 5,
+    "cpu_alert_percent": 75,
+    "memory_alert_percent": 85,
+}
+
+
+def test_hidden_advanced_values_survive_unrelated_save(tmp_path):
+    api = load_api(tmp_path)
+    seed(api, env=ADVANCED_ALERT_ENV)
+
+    result = save_config(api, config_text("saved-event"), "admin", "save")
+
+    assert result["ok"] is True
+    assert result["config"]["alerts"] == {
+        "mode": "match", **EXPECTED_ADVANCED_ALERTS,
+    }
+    persisted = api.platform_event_config.parse_config_text(
+        api.CONFIG_PATH.read_text(encoding="utf-8")
+    )
+    assert persisted["alerts"] == {"mode": "match", **EXPECTED_ADVANCED_ALERTS}
+    assert api.ENV_PATH.read_text(encoding="utf-8") == ADVANCED_ALERT_ENV
+
+
+def test_hidden_advanced_values_survive_unrelated_apply(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    seed(api, env=ADVANCED_ALERT_ENV)
+    monkeypatch.setattr(
+        api.platform_apply_runtime,
+        "run_apply_command",
+        lambda _context: {
+            "applied": True,
+            "needsRedeploy": False,
+            "applyOutput": "ok",
+        },
+    )
+
+    result = apply_config(
+        api, config_text("applied-event"), "admin", "apply",
+        "apply-hidden-advanced",
+    )
+
+    assert result["ok"] is True
+    persisted = api.platform_event_config.parse_config_text(
+        api.CONFIG_PATH.read_text(encoding="utf-8")
+    )
+    assert persisted["alerts"] == {"mode": "match", **EXPECTED_ADVANCED_ALERTS}
+    rendered = api.read_env(api.ENV_PATH)
+    assert rendered["SYSLOG_GATEWAY_MACS"] == "0000.5e00.0101"
+    assert rendered["SYSLOG_GATEWAY_UPLINK_PORTS"] == "Po1,Po10"
+    assert rendered["SYSLOG_MAC_FLAP_WINDOW_SECONDS"] == "120"
+    assert rendered["SYSLOG_MAC_FLAP_THRESHOLD"] == "5"
+    assert rendered["DEVICE_CPU_ALERT_PERCENT"] == "75"
+    assert rendered["DEVICE_MEMORY_ALERT_PERCENT"] == "85"
+    assert rendered["CUSTOM"] == "keep"
+
+
 @pytest.mark.parametrize(
     ("stdout", "stderr", "expected"),
     [

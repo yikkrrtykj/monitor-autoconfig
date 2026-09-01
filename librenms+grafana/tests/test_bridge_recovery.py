@@ -170,7 +170,9 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
     assert state.get("retired") is not True
 
 
-def test_bot_pending_delete_command_returns_interactive_cards(monkeypatch):
+def test_bot_pending_delete_command_returns_console_directed_notifications(monkeypatch):
+    monkeypatch.setattr(bridge, "SERVER_IP", "10.20.30.40")
+    monkeypatch.setattr(bridge, "BIGSCREEN_PORT", "8088")
     key = "infra-dist-ping|192.168.10.81"
     bridge.DEVICE_DOWN_STATES.clear()
     bridge.DEVICE_DOWN_STATES[key] = {
@@ -187,8 +189,11 @@ def test_bot_pending_delete_command_returns_interactive_cards(monkeypatch):
     assert len(result["cards"]) == 1
     elements = result["cards"][0]["card"]["body"]["elements"]
     buttons = [item for item in elements if item.get("tag") == "button"]
-    assert [item["text"]["content"] for item in buttons] == ["删除设备", "继续保留"]
-    assert buttons[0]["behaviors"][0]["value"]["token"] == "token-81"
+    assert buttons == []
+    content = elements[0]["content"]
+    assert "设备已离线满 48 小时，等待人工处理。" in content
+    assert "http://10.20.30.40:8088/control" in content
+    assert "token-81" not in content
     bridge.DEVICE_DOWN_STATES.clear()
 
 

@@ -533,6 +533,41 @@ async function testConfigActionsAndStickyResult() {
     .forEach((id) => assert.strictEqual(schema.document.getElementById(id).disabled, true, `${id} is blocked for a newer schema`));
 }
 
+async function testHiddenAdvancedFieldsRoundTrip() {
+  const advancedAlerts = {
+    gateway_macs: '0000.5e00.0101',
+    gateway_uplink_ports: 'Po1,Po10',
+    mac_flap_window_seconds: 120,
+    mac_flap_threshold: 5,
+    cpu_alert_percent: 75,
+    memory_alert_percent: 85
+  };
+  const harness = createHarness();
+  harness.editor.bind();
+  harness.editor.render(platformPayload(configFixture({ alerts: advancedAlerts })), dhcpPayload());
+
+  Object.keys(advancedAlerts).forEach((key) => {
+    assert.strictEqual(byPath(harness, `alerts.${key}`), null, `${key} is hidden from the normal UI`);
+  });
+  for (const label of [
+    '关键网关 MAC',
+    '网关正常上联接口',
+    'MAC 漂移统计窗口',
+    '普通 MAC 告警次数',
+    '交换机 CPU 告警阈值',
+    '交换机内存告警阈值'
+  ]) {
+    assert.ok(!harness.form.innerHTML.includes(label), `${label} is absent from rendered markup`);
+  }
+
+  byPath(harness, 'event.name').value = 'Updated Finals';
+  await clickAction(harness, 'controlConfigSave');
+  const submitted = parsedPayload(configPosts(harness, '/config/save')[0]);
+  Object.entries(advancedAlerts).forEach(([key, value]) => {
+    assert.deepStrictEqual(submitted.alerts[key], value, `${key} survives an unrelated save`);
+  });
+}
+
 async function testApplyRollbackAndRecovery() {
   const pendingApply = deferred();
   const apply = createHarness({ postPlatform: (_path) => pendingApply.promise });
@@ -736,6 +771,7 @@ async function testDhcpPartialSuccess() {
   await testRenderAndBinding();
   await testDirtyLifecycle();
   await testConfigActionsAndStickyResult();
+  await testHiddenAdvancedFieldsRoundTrip();
   await testApplyRollbackAndRecovery();
   await testImport();
   await testDynamicListsAndTeamOrder();

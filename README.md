@@ -247,23 +247,28 @@ cd librenms+grafana
 | UniFi | 使用 UniFi AP 时填控制器地址和只读账号 |
 | 飞书机器人 Token | 留空则不推飞书；多台监控可以复用同一个 token，但会推到同一个群且可能重复告警 |
 | 飞书应用 App ID / App Secret | 审批通过的企业自建应用凭据；普通告警优先使用应用机器人，旧 Token 作为失败回退 |
-| 告警及巡检群名称或 Chat ID | 公司和每个比赛现场分别填写自己的唯一群名称；也可填写 `oc_` 开头的 Chat ID，跳过群列表解析 |
+| 告警及巡检群名称或 Chat ID | 多个独立赛事 VM 可以填写同一个群名称；也可填写 `oc_` 开头的 Chat ID，跳过群列表解析 |
 
 飞书企业自建应用审批通过后，在 `/control` 的“告警”区填写 App ID、App Secret，
 把应用机器人加入告警群，再点“应用配置”。旧版只写在 `.env` 的凭据会自动带入
-后台输入框。公司和每个比赛现场可使用同一 App ID、App Secret，但各自填写不同的
-“赛事名称”和群名称。应用机器人加入所有这些群；每套物理监控只读取自己群里的
-`@机器人` 命令、查询自己的本地数据，并在回复标题前显示赛事名称，不会与其它现场串群。
-现有长连接 `@机器人` 权限仍可使用；多套物理监控共用应用并要求严格按各自群处理时，
-增加 `im:chat:read`、`im:message:readonly` 和 `im:message.group_msg`；主动发卡片还需
-`im:message:send_as_bot`。读取权限未开通时，
-程序自动退回原来的长连接事件方式。
+后台输入框。正式模型是“一场比赛 = 一台 Monitoring VM = 一套独立现场网络”；不在
+不同 VM 间共享告警状态或重复监控同一批设备。多个赛事 VM 可以共用 App ID、App Secret
+和 Chat ID，但每台必须配置唯一“赛事名称”（`EVENT_NAME`），例如 `Singapore`、
+`Shanghai`、`IEM Chengdu`。普通告警标题会自动带 `【EVENT_NAME】` 前缀。
+
+共享群命令必须带赛事名称，例如 `@机器人 Singapore 网络巡检`、
+`@机器人 Shanghai 网络巡检`、`@机器人 IEM Chengdu 网络巡检`。每台 VM 只执行与自己
+赛事名称匹配的命令，其它赛事及未带赛事名称的群命令会静默忽略。可靠的共享群命令路由
+依赖 `im:chat`、`im:message:readonly` 和 `im:message.group_msg` 的消息轮询；主动发消息还需
+`im:message:send_as_bot`。权限不足时保留长连接 fallback，但日志会明确提示
+`shared-group event routing is degraded`，不能把多个长连接客户端当作可靠广播总线。
 自建应用群解析的错误码、直接 Chat ID 配置和现场验证方法见
 [`librenms+grafana/docs/feishu-app-chat-troubleshooting.md`](librenms+grafana/docs/feishu-app-chat-troubleshooting.md)。
 支持 `网络巡检`、`待删除设备`、`光功率巡检`、`上联冗余巡检` 和 `帮助`。
 光功率读取 LibreNMS 已采集的 dBm 传感器及阈值，不会额外轮询交换机。
-`im.message.receive_v1` 和 `card.action.trigger` 都是在“事件与回调”里添加的事件类型，
-不是权限管理页里的权限名；待删除卡片按钮必须配置 `card.action.trigger` 才能点击处理。
+`im.message.receive_v1` 是在“事件与回调”里添加的事件类型，不是权限管理页里的权限名。
+设备离线满 48 小时后飞书只发送通知；确认删除或保留必须进入通知所指向的对应 VM
+`http://VM-IP:8088/control`，控制台继续执行在线复核、口令校验和设备生命周期处理。
 
 ## 交换机侧配置
 

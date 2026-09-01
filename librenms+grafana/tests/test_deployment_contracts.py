@@ -563,11 +563,28 @@ def test_control_exposes_feishu_app_credentials_and_directional_isp_hint():
     assert "poll_site_group_commands" in ws
     assert "/open-apis/im/v1/messages?" in ws
     assert 'f"{BRIDGE_URL}/bot/query"' in ws
+    assert "def route_event_command(" in ws
+    assert "shared-group event routing is degraded" in ws
+    assert ".register_p2_im_message_receive_v1(on_message)" in ws
+    assert "register_p2_card_action_trigger" not in ws
+    assert "def on_card_action(" not in ws
+    assert "def resolve_via_bridge(" not in ws
 
     compose = read("docker-compose.yml")
     feishu_service = compose.split("  feishu-ws:", 1)[1].split("  player-targets:", 1)[0]
     assert 'FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"' in feishu_service
     assert 'EVENT_NAME: "${EVENT_NAME:-}"' in feishu_service
+    bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split("  librenms:", 1)[0]
+    assert 'SERVER_IP: "${SERVER_IP:-}"' in bridge_service
+    assert 'BIGSCREEN_PORT: "${BIGSCREEN_PORT:-8088}"' in bridge_service
+    assert "DEVICE_PENDING_DELETE_APP_RETRY_SECONDS" not in compose
+
+    bridge = read("alertmanager-feishu-bridge.py")
+    assert "def control_console_url(" in bridge
+    assert 'f"http://{SERVER_IP or \'VM-IP\'}:{BIGSCREEN_PORT}/control"' in bridge
+    assert 'def resolve_pending_delete(' in bridge
+    assert '"/retire/resolve"' in bridge
+    assert "pending_interactive_notified" not in bridge
 
 
 def test_retired_isp_history_is_filtered_by_current_prometheus_targets():
@@ -1507,7 +1524,7 @@ def test_interconnect_job_collects_port_channel_member_relationships():
     assert "timeout: 2s" in snmp
 
 
-def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_thresholds():
+def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_hidden_thresholds():
     compose = read("docker-compose.yml")
     prometheus = read("prometheus-gen-config.sh")
     config_editor = read("bigscreen/config/config-editor.js")
@@ -1520,8 +1537,10 @@ def test_cisco_resource_alert_uses_small_low_frequency_snmp_module_and_console_t
     assert 'write_snmp_job "infra-switch-resources"' in prometheus
     assert '"cisco_resources" "$SWITCH_RESOURCE_SCRAPE_INTERVAL"' in prometheus
     assert "SWITCH_RESOURCE_SCRAPE_INTERVAL=120s" in env
-    assert 'configInput("alerts.cpu_alert_percent", "交换机 CPU 告警阈值（%）"' in config_editor
-    assert 'configInput("alerts.memory_alert_percent", "交换机内存告警阈值（%）"' in config_editor
+    assert 'configInput("alerts.cpu_alert_percent"' not in config_editor
+    assert 'configInput("alerts.memory_alert_percent"' not in config_editor
+    assert "DEVICE_CPU_ALERT_PERCENT=70" in env
+    assert "DEVICE_MEMORY_ALERT_PERCENT=80" in env
 
 
 def test_poll_pressure_defaults_and_existing_env_are_migrated():
@@ -1558,6 +1577,8 @@ def test_poll_pressure_defaults_and_existing_env_are_migrated():
 def test_gateway_mac_flap_alert_is_configurable_and_enabled_by_default():
     compose = read("docker-compose.yml")
     config_editor = read("bigscreen/config/config-editor.js")
+    platform_config = read("platform_config.py")
+    event_config = read("platform_api/event_config.py")
     env = read(".env.example")
 
     assert "native_vlan_mismatch,mac_flap,errdisable,bpduguard,loopback" in compose
@@ -1565,10 +1586,22 @@ def test_gateway_mac_flap_alert_is_configurable_and_enabled_by_default():
     assert "SYSLOG_GATEWAY_UPLINK_PORTS" in compose
     assert "SYSLOG_MAC_FLAP_WINDOW_SECONDS" in compose
     assert "SYSLOG_MAC_FLAP_THRESHOLD" in compose
-    assert 'configInput("alerts.gateway_macs", "关键网关 MAC（逗号分隔）"' in config_editor
-    assert 'configInput("alerts.gateway_uplink_ports", "网关正常上联接口（逗号分隔）"' in config_editor
-    assert 'configInput("alerts.mac_flap_window_seconds", "MAC 漂移统计窗口（秒）"' in config_editor
-    assert 'configInput("alerts.mac_flap_threshold", "普通 MAC 告警次数"' in config_editor
+    for path, label in (
+        ("alerts.gateway_macs", "关键网关 MAC"),
+        ("alerts.gateway_uplink_ports", "网关正常上联接口"),
+        ("alerts.mac_flap_window_seconds", "MAC 漂移统计窗口"),
+        ("alerts.mac_flap_threshold", "普通 MAC 告警次数"),
+        ("alerts.cpu_alert_percent", "交换机 CPU 告警阈值"),
+        ("alerts.memory_alert_percent", "交换机内存告警阈值"),
+    ):
+        assert f'configInput("{path}"' not in config_editor
+        assert label not in config_editor
+    for field in (
+        "gateway_macs", "gateway_uplink_ports", "mac_flap_window_seconds",
+        "mac_flap_threshold", "cpu_alert_percent", "memory_alert_percent",
+    ):
+        assert field in platform_config
+        assert field in event_config
     assert "SYSLOG_MAC_FLAP_WINDOW_SECONDS=60" in env
     assert "SYSLOG_MAC_FLAP_THRESHOLD=3" in env
 

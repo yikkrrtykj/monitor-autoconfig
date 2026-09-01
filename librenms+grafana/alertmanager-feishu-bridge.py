@@ -216,29 +216,25 @@ DEVICE_DOWN_JOBS = os.environ.get(
 )
 # Event access/distribution switches are often deployed for only a few days.
 # At 48 hours offline, ASK a human before touching anything: mark the device
-# pending-delete and push a Feishu confirm card. LibreNMS records are only
-# deleted after explicit confirmation (console panel, or in-card buttons when
-# a Feishu app is configured) — never automatically, so a self-healed device,
+# pending-delete and push a Feishu notification. LibreNMS records are only
+# deleted after explicit confirmation in that VM's control console — never
+# automatically, so a self-healed device,
 # a suppressed downstream victim, or a transient API error can't lose data.
 # If the device comes back before anyone confirms, it starts a fresh lifecycle
 # (new-device card, no stale recovery card) and keeps its LibreNMS history.
 DEVICE_REENROLL_AFTER_SECONDS = int(os.environ.get("DEVICE_REENROLL_AFTER_SECONDS", "172800"))
 DEVICE_REENROLL_JOBS = os.environ.get("DEVICE_REENROLL_JOBS", "infra-dist-ping")
 DEVICE_LIBRENMS_SYNC_RETRY_SECONDS = int(os.environ.get("DEVICE_LIBRENMS_SYNC_RETRY_SECONDS", "60"))
-# 待删除确认卡的重发间隔；0 = 只发一次，之后一直安静等确认。
+# 待删除通知卡的重发间隔；0 = 只发一次，之后一直安静等控制台处理。
 DEVICE_PENDING_DELETE_REALERT_SECONDS = int(os.environ.get("DEVICE_PENDING_DELETE_REALERT_SECONDS", "0"))
-# 应用卡片发送失败时仍可先用 Webhook 告知，但不能把带按钮的确认卡永久
-# 判定为已送达。低频重试应用卡，权限、群名或临时 API 故障恢复后自动补发。
-DEVICE_PENDING_DELETE_APP_RETRY_SECONDS = int(
-    os.environ.get("DEVICE_PENDING_DELETE_APP_RETRY_SECONDS", "60")
-)
-# 飞书自建应用（推荐）：配置后普通告警优先由应用发送，待删除确认卡还带
-# “确认删除/保留”回传按钮；feishu-ws 长连接让外网用户也能直接确认。
-# 留空则使用群机器人 Webhook，确认动作在赛事控制台完成。
+# 飞书自建应用（推荐）：配置后普通告警优先由应用发送；待删除卡只负责
+# 通知，确认删除/保留统一在对应赛事监控 VM 的控制台完成。
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
 FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "").strip()
 EVENT_NAME = os.environ.get("EVENT_NAME", "").strip()
+SERVER_IP = os.environ.get("SERVER_IP", "").strip()
+BIGSCREEN_PORT = os.environ.get("BIGSCREEN_PORT", "8088").strip() or "8088"
 DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "false").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_FROM_PING = os.environ.get("DEVICE_AUTO_ADD_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-core-ping,infra-dist-ping")
@@ -468,8 +464,6 @@ def load_device_down_states():
             "pending_token": str(value.get("pending_token") or ""),
             "pending_notified": bool(value.get("pending_notified", False)),
             "pending_last_notified": _as_float(value.get("pending_last_notified")),
-            "pending_interactive_notified": bool(value.get("pending_interactive_notified", False)),
-            "pending_interactive_last_attempt": _as_float(value.get("pending_interactive_last_attempt")),
             "pending_snoozed_until": _as_float(value.get("pending_snoozed_until")),
             "pending_event_title": str(value.get("pending_event_title") or ""),
         }
@@ -500,8 +494,6 @@ def save_device_down_states(states):
             "pending_token": state.get("pending_token") or "",
             "pending_notified": bool(state.get("pending_notified", False)),
             "pending_last_notified": state.get("pending_last_notified"),
-            "pending_interactive_notified": bool(state.get("pending_interactive_notified", False)),
-            "pending_interactive_last_attempt": state.get("pending_interactive_last_attempt"),
             "pending_snoozed_until": state.get("pending_snoozed_until"),
             "pending_event_title": state.get("pending_event_title") or "",
         }
@@ -698,14 +690,21 @@ def _librenms_get_json(token, path, timeout=15):
     return _librenms_client(token, timeout=timeout).get_json(path)
 
 
-BOT_HELP_TEXT = (
-    "运维查询与巡检：\n"
-    "• 网络巡检 — 全网在线/离线汇总，并检查思科堆叠成员、角色和版本状态\n"
-    "• 待删除设备 — 在当前飞书会话发确认删除/保留卡片\n"
-    "• 光功率巡检 — 全网 dBm 汇总，异常时附明细\n"
-    "• 上联冗余巡检 — 结合 LLDP/CDP 和 Port-Channel 成员检查冗余\n"
-    "巡检读取 LibreNMS 和已经采集的拓扑，不会修改交换机配置。"
-)
+def build_bot_help_text(event_name=""):
+    event = " ".join(str(event_name or "").split())
+    scope = f"{event} " if event else ""
+    heading = f"【{event}】\n" if event else ""
+    return (
+        f"{heading}运维查询与巡检：\n"
+        f"• @机器人 {scope}网络巡检 — 全网在线/离线汇总，并检查思科堆叠成员、角色和版本状态\n"
+        f"• @机器人 {scope}待删除设备 — 展示待处理设备；确认删除/保留请进入对应 VM 控制台\n"
+        f"• @机器人 {scope}光功率巡检 — 全网 dBm 汇总，异常时附明细\n"
+        f"• @机器人 {scope}上联冗余巡检 — 结合 LLDP/CDP 和 Port-Channel 成员检查冗余\n"
+        "巡检读取 LibreNMS 和已经采集的拓扑，不会修改交换机配置。"
+    )
+
+
+BOT_HELP_TEXT = build_bot_help_text()
 
 
 def _device_ip(device):
@@ -1175,7 +1174,7 @@ def build_pending_delete_query_cards():
     if assigned_title:
         save_device_down_states(DEVICE_DOWN_STATES)
     states.sort(key=lambda item: _as_float(item[1].get("pending_since")) or 0)
-    return [build_retire_confirm_card(state, key, True) for key, state in states[:20]]
+    return [build_retire_confirm_card(state) for _key, state in states[:20]]
 
 
 def _device_is_online(device):
@@ -1503,8 +1502,9 @@ def build_cisco_stackwise_audit_cards(devices):
 def handle_bot_query(text):
     """Execute a Feishu query/audit command against already-polled data."""
     command = re.sub(r"\s+", " ", str(text or "")).strip()
+    help_text = build_bot_help_text(EVENT_NAME)
     if not command or command.casefold() in {"帮助", "help", "?", "命令"}:
-        return {"ok": True, "text": BOT_HELP_TEXT}
+        return {"ok": True, "text": help_text}
 
     folded = command.casefold()
     network_audit_cmd = folded in {
@@ -1526,7 +1526,7 @@ def handle_bot_query(text):
     if uplink_audit_cmd:
         return {"ok": True, "text": "上联冗余巡检完成。", "cards": build_uplink_audit_cards()}
     if not network_audit_cmd and not fiber_audit_cmd:
-        return {"ok": True, "text": f"未识别命令。\n{BOT_HELP_TEXT}"}
+        return {"ok": True, "text": f"未识别命令。\n{help_text}"}
 
     token = _librenms_token()
     if not token or not LIBRENMS_URL:
@@ -2186,12 +2186,14 @@ def build_isp_data_missing_card(missing_seconds, recovered=False):
     return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
 
-def build_retire_confirm_card(state, key, interactive):
-    """离线满 48h 的确认卡。interactive=True（配了自建应用）带回传按钮；
-    否则给出到控制台处理的提示。删除永远只在人工确认后发生。"""
+def control_console_url():
+    return f"http://{SERVER_IP or 'VM-IP'}:{BIGSCREEN_PORT}/control"
+
+
+def build_retire_confirm_card(state):
+    """离线满 48h 的通知卡；有状态操作只在本机控制台完成。"""
     name = state.get("name") or state.get("ip") or "?"
     ip = state.get("ip") or ""
-    dev = f"{name} ({ip})" if ip and ip != name else name
     offline = format_duration(max(0, time.time() - (_as_float(state.get("down_since")) or time.time())))
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
@@ -2202,36 +2204,14 @@ def build_retire_confirm_card(state, key, interactive):
         f"🔴 状态：连续离线 {offline}",
         f"🕒 时间：{ts}",
         "",
-        "📝 请确认是否从 LibreNMS 移除此设备。",
+        "📝 设备已离线满 48 小时，等待人工处理。",
+        "",
+        "请进入对应赛事监控控制台确认删除或保留：",
+        control_console_url(),
     ]
-    extra = None
-    if interactive:
-        def _button(text, style, action):
-            return {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": text},
-                "type": style,
-                "width": "default",
-                "margin": "8px 8px 0px 0px",
-                "behaviors": [{
-                    "type": "callback",
-                    "value": {
-                        "action": action,
-                        "key": key,
-                        "token": state.get("pending_token") or "",
-                        "device": dev,
-                    },
-                }],
-            }
-        extra = [
-            _button("删除设备", "danger", "retire_delete"),
-            _button("继续保留", "default", "retire_keep"),
-        ]
-    else:
-        lines.append("👉 请到赛事控制台『待删除设备』面板确认删除或保留。")
     title = state.get("pending_event_title") or next_event_title()
     state["pending_event_title"] = title
-    return _make_card(title, "⚠️ 设备持续离线｜需要确认", "orange", "\n".join(lines), extra_elements=extra)
+    return _make_card(title, "⚠️ 设备持续离线｜需要确认", "orange", "\n".join(lines))
 
 
 def build_device_down_card(name, ip, recovered, offline_seconds=0, job="", downstream=0):
@@ -2676,11 +2656,11 @@ def recovery_ready(state, now, sample_ts, recover_stable):
 
 
 def device_retirement_due(state, job, now):
-    """True when an outage has aged past 48h and deserves a HUMAN confirm card.
+    """True when an outage has aged past 48h and needs human console review.
 
     只有真正告警过的离线（alerting）才进入待删除——根因抑制下的下游"受害者"
     (alerting=False) 和从未见过 UP 的候选设备不问、不删。到点也只是标记 +
-    发确认卡，任何删除都等人工点确认。
+    发通知卡，任何删除都等人工在对应 VM 控制台确认。
     """
     jobs = {item.strip() for item in DEVICE_REENROLL_JOBS.split(",") if item.strip()}
     down_since = _as_float(state.get("down_since"))
@@ -2697,8 +2677,8 @@ def device_retirement_due(state, job, now):
     )
 
 
-# 待删除状态的跨线程共享：watcher 线程标记/清除，HTTP 线程（控制台代理、
-# 飞书长连接边车回调）确认删除或保留。只锁小段状态修改，网络调用都在锁外。
+# 待删除状态的跨线程共享：watcher 线程标记/清除，HTTP 线程通过控制台代理
+# 确认删除或保留。只锁小段状态修改，网络调用都在锁外。
 DEVICE_DOWN_STATES = {}
 RETIRE_LOCK = threading.Lock()
 
@@ -2715,50 +2695,24 @@ def mark_pending_delete_states(states, now):
             state["pending_token"] = secrets.token_urlsafe(16)
             state["pending_notified"] = False
             state["pending_last_notified"] = None
-            state["pending_interactive_notified"] = False
-            state["pending_interactive_last_attempt"] = None
             state["pending_event_title"] = next_event_title()
             marked.append(key)
     return marked
 
 
 def notify_pending_delete_states(states, now):
-    """Send (or re-send) confirm cards for pending devices, delivery-confirmed."""
+    """Send (or re-send) console-directed notices, delivery-confirmed."""
     changed = False
-    for key, state in states.items():
+    for state in states.values():
         if not state.get("pending_delete"):
             continue
         plain_due = not state.get("pending_notified")
         if not plain_due and DEVICE_PENDING_DELETE_REALERT_SECONDS > 0:
             last = _as_float(state.get("pending_last_notified")) or 0
             plain_due = now - last >= DEVICE_PENDING_DELETE_REALERT_SECONDS
-        interactive = feishu_app_configured()
-        app_delivered = False
-        if interactive and not state.get("pending_interactive_notified"):
-            # Existing state files predate the interactive-delivery fields.
-            # Materialize the default so a failed first retry is persisted and
-            # the next loop observes a stable, explicit delivery state.
-            state.setdefault("pending_interactive_notified", False)
-            last_attempt = _as_float(state.get("pending_interactive_last_attempt")) or 0
-            app_due = now - last_attempt >= max(1, DEVICE_PENDING_DELETE_APP_RETRY_SECONDS)
-            if app_due:
-                state["pending_interactive_last_attempt"] = now
-                changed = True
-                app_delivered = send_feishu_app_card(build_retire_confirm_card(state, key, True))
-                if app_delivered:
-                    state["pending_interactive_notified"] = True
-                    state["pending_notified"] = True
-                    state["pending_last_notified"] = now
-                    log(
-                        f"[DOWN] interactive PENDING-DELETE card sent for "
-                        f"{state.get('name')} ({state.get('ip')})"
-                    )
-        if app_delivered or not plain_due:
+        if not plain_due:
             continue
-
-        # 应用卡失败时 Webhook 只负责告知；以后仍会重试真正带回传按钮的应用卡。
-        fallback_card = build_retire_confirm_card(state, key, False)
-        delivered = _send_feishu_webhook(fallback_card) if interactive else send_feishu(fallback_card)
+        delivered = send_feishu(build_retire_confirm_card(state))
         if delivered:
             state["pending_notified"] = True
             state["pending_last_notified"] = now
@@ -2773,8 +2727,6 @@ def _clear_pending_fields(state):
     state["pending_token"] = ""
     state["pending_notified"] = False
     state["pending_last_notified"] = None
-    state["pending_interactive_notified"] = False
-    state["pending_interactive_last_attempt"] = None
     state["pending_event_title"] = ""
 
 
@@ -3159,7 +3111,7 @@ def device_down_watcher():
 
         # 48h 待删除标记放在样本处理之后：本轮已经 UP 的设备先清掉了状态，
         # 桥接重启后残留的陈旧 down_since 不会在设备实际在线时误发确认卡。
-        # 标记只发确认卡，删除永远等人工确认（控制台或飞书卡片按钮）。
+        # 标记只发通知卡，删除永远等对应赛事控制台人工确认。
         marked_keys = mark_pending_delete_states(states, now)
         for marked_key in marked_keys:
             marked = states[marked_key]
