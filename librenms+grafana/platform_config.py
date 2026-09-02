@@ -13,6 +13,7 @@ import json
 import ipaddress
 import os
 import re
+import shlex
 import stat
 import sys
 import tempfile
@@ -850,6 +851,16 @@ def read_env(path: Path) -> dict[str, str]:
     return env
 
 
+def shell_env_exports(path: Path, keys: list[str]) -> str:
+    invalid_keys = [key for key in keys if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key)]
+    if invalid_keys:
+        raise ValueError(f"invalid environment key: {invalid_keys[0]}")
+    values = read_env(path)
+    return "\n".join(
+        f"export {key}={shlex.quote(values[key])}" for key in keys if key in values
+    )
+
+
 def env_value(value: str) -> str:
     if value == "":
         return ""
@@ -959,6 +970,11 @@ if __name__ == "__main__":
         if key not in values:
             raise SystemExit(1)
         sys.stdout.write(values[key])
+    elif len(sys.argv) >= 4 and sys.argv[1] == "env-export-shell":
+        try:
+            sys.stdout.write(shell_env_exports(Path(sys.argv[2]), sys.argv[3:]))
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     elif len(sys.argv) in (3, 4) and sys.argv[1] == "migrate":
         if len(sys.argv) == 4 and sys.argv[3] != "--write":
             raise SystemExit("usage: platform_config.py migrate EVENT_CONFIG [--write]")
@@ -966,5 +982,6 @@ if __name__ == "__main__":
     else:
         raise SystemExit(
             "usage: platform_config.py env-get ENV_FILE KEY\n"
+            "       platform_config.py env-export-shell ENV_FILE KEY [KEY ...]\n"
             "       platform_config.py migrate EVENT_CONFIG [--write]"
         )

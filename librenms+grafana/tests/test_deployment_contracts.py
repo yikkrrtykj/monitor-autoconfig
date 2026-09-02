@@ -1,5 +1,6 @@
 import ast
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -95,12 +96,13 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     player_service = compose.split("  player-targets:", 1)[1].split("  topology-collector:", 1)[0]
     assert "./target_utils.py:/target_utils.py:ro" in player_service
     assert 'EVENT_NAME: "${EVENT_NAME:-}"' in player_service
-    assert "for key in EVENT_NAME TOURNAMENT_SWITCHES" in player_service
+    assert "env-export-shell /config/.env" in player_service
+    assert "EVENT_NAME TOURNAMENT_SWITCHES" in player_service
     assert "SWITCH_DISCOVERY_RANGE" not in player_service
     assert 'export PLAYER_SWITCH_FORCE_FULL_SCAN=true' in compose
 
 
-def test_runtime_env_get_dependencies_are_complete_for_container_consumers(tmp_path):
+def test_runtime_env_batch_load_is_safe_and_complete_for_container_consumers(tmp_path):
     compose = read("docker-compose.yml")
     platform_config_path = ROOT / "platform_config.py"
     platform_config_tree = ast.parse(platform_config_path.read_text(encoding="utf-8"))
@@ -125,9 +127,15 @@ def test_runtime_env_get_dependencies_are_complete_for_container_consumers(tmp_p
             "  bigscreen:", 1
         )[0],
     }
+    assert compose.count("python3 /platform_config.py env-export-shell /config/.env") == 2
 
     for service_name, service_block in service_blocks.items():
-        assert "python3 /platform_config.py env-get /config/.env" in service_block
+        assert service_block.count("python3 /platform_config.py env-export-shell") == 1
+        assert "python3 /platform_config.py env-get" not in service_block
+        assert "load_env_key()" not in service_block
+        assert "for key in" not in service_block
+        assert 'eval "$$runtime_env_exports"' in service_block
+        assert "source /config/.env" not in service_block
         assert "./platform_config.py:/platform_config.py:ro" in service_block
         for dependency in local_dependencies:
             assert f"./{dependency}.py:/{dependency}.py:ro" in service_block
@@ -138,42 +146,68 @@ def test_runtime_env_get_dependencies_are_complete_for_container_consumers(tmp_p
         for dependency in local_dependencies:
             shutil.copy2(ROOT / f"{dependency}.py", runtime_root / f"{dependency}.py")
 
+        def run_cli(*arguments):
+            return subprocess.run(
+                [sys.executable, str(runtime_root / "platform_config.py"), *arguments],
+                cwd=runtime_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
         env_file = runtime_root / ".env"
         env_file.write_text("EVENT_NAME=\n", encoding="utf-8")
-        empty_result = subprocess.run(
-            [
-                sys.executable,
-                str(runtime_root / "platform_config.py"),
-                "env-get",
-                str(env_file),
-                "EVENT_NAME",
-            ],
-            cwd=runtime_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        empty_result = run_cli("env-get", str(env_file), "EVENT_NAME")
         assert empty_result.returncode == 0
         assert empty_result.stdout == ""
         assert empty_result.stderr == ""
 
         env_file.write_text("EVENT_NAME=Singapore\n", encoding="utf-8")
-        populated_result = subprocess.run(
-            [
-                sys.executable,
-                str(runtime_root / "platform_config.py"),
-                "env-get",
-                str(env_file),
-                "EVENT_NAME",
-            ],
-            cwd=runtime_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        populated_result = run_cli("env-get", str(env_file), "EVENT_NAME")
         assert populated_result.returncode == 0
         assert populated_result.stdout == "Singapore"
         assert populated_result.stderr == ""
+
+        missing_result = run_cli("env-get", str(env_file), "MISSING_VALUE")
+        assert missing_result.returncode != 0
+        assert missing_result.stdout == ""
+
+        expected_values = {
+            "EVENT_NAME": "",
+            "PASSWORD": "global123!@#",
+            "JSON": '{"a":"b c"}',
+            "TEXT": "hello world",
+            "DOLLAR": "$HOME $(printf unsafe)",
+            "QUOTE": 'it\'s "quoted"',
+        }
+        env_file.write_text(
+            "\n".join(f"{key}={value}" for key, value in expected_values.items()) + "\n",
+            encoding="utf-8",
+        )
+        batch_result = run_cli(
+            "env-export-shell",
+            str(env_file),
+            *expected_values,
+            "MISSING_VALUE",
+        )
+        assert batch_result.returncode == 0
+        assert batch_result.stderr == ""
+
+        exported_values = {}
+        for line in batch_result.stdout.splitlines():
+            command, assignment = shlex.split(line, posix=True)
+            key, value = assignment.split("=", 1)
+            assert command == "export"
+            exported_values[key] = value
+        assert exported_values == expected_values
+        assert "MISSING_VALUE" not in batch_result.stdout
+
+        invalid_key_result = run_cli(
+            "env-export-shell", str(env_file), "EVENT_NAME;printf unsafe"
+        )
+        assert invalid_key_result.returncode != 0
+        assert invalid_key_result.stdout == ""
+        assert "invalid environment key" in invalid_key_result.stderr
 
 
 def test_fresh_appliance_has_no_implicit_network_scan_targets():
