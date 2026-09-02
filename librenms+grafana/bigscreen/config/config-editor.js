@@ -403,7 +403,7 @@
             ${configInput("networks.wireless_subnets", "无线网段", { type: "textarea", compact: true, rows: 1, placeholder: "192.168.41.0/24" })}
             ${configInput("networks.player_gateways", "选手网关（可选）", { type: "textarea", compact: true, rows: 1, placeholder: "留空默认用核心交换机 IP" })}
             ${configInput("networks.switch_management_ranges", "普通交换机自动发现范围", { type: "textarea", compact: true, rows: 1, placeholder: "例如 192.168.10.1-100 或 192.168.10.0/24；只进入通用监控和拓扑，不参与赛事座位识别" })}
-            ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "默认 192.168.9.0/24；支持范围或单 IP" })}
+            ${configInput("networks.firewall_management_ranges", "防火墙管理网段", { type: "textarea", compact: true, rows: 1, placeholder: "例如 192.168.9.0/24；支持范围或单 IP" })}
           </div>
         </section>
         <section class="config-section">

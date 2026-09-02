@@ -127,6 +127,39 @@ def test_event_config_example_renders_topology_defaults():
     assert env["TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS"] == "28800"
 
 
+def test_event_config_example_renders_inert_fresh_appliance_targets():
+    config = platform_config.parse_simple_yaml(
+        (ROOT / "event-config.example.yml").read_text(encoding="utf-8")
+    )
+    env = platform_config.render_env(config)
+
+    expected_empty = (
+        "LIBRENMS_DISCOVERY_TARGETS",
+        "FIREWALL_DISCOVERY_RANGE",
+        "SWITCH_DISCOVERY_RANGE",
+        "PLAYER_SUBNETS",
+        "WIRELESS_SUBNETS",
+        "TOURNAMENT_SWITCHES",
+        "PLAYER_GATEWAYS",
+        "CORE_SWITCH_PING",
+        "DIST_SWITCH_PING",
+        "FIREWALL_PING",
+        "LIBRENMS_CORE_IP",
+    )
+    assert {key: env[key] for key in expected_empty} == {
+        key: "" for key in expected_empty
+    }
+    assert env["PLAYER_VLAN_IDS"] == "40"
+    active_targets = ",".join(env[key] for key in expected_empty)
+    for example_network in (
+        "192.168.10.",
+        "192.168.9.",
+        "192.168.40.",
+        "192.168.41.",
+    ):
+        assert example_network not in active_targets
+
+
 def test_team_order_renders_for_bigscreen_and_requires_all_teams_once():
     config = platform_config.parse_simple_yaml("""
 event:

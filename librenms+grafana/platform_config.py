@@ -426,7 +426,10 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(event.get("team_orders", {}), dict):
         event["team_orders"] = {}
     networks = config["networks"]
-    if not networks.get("firewall_management_ranges"):
+    # Preserve the historical fallback only for legacy configs that predate
+    # this key. An explicit blank is the safe fresh-appliance setting and must
+    # not silently activate a management subnet scan.
+    if "firewall_management_ranges" not in networks:
         networks["firewall_management_ranges"] = "192.168.9.0/24"
     devices = config["devices"]
     for key in ("switches", "stage_switches", "access_switches", "servers"):

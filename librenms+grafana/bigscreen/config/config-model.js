@@ -42,10 +42,7 @@
     if (String(value.event.name || "").trim() === "武汉斗鱼嘉年华") {
       value.event.name = "";
     }
-    value.networks = { player_vlan: 40, wireless_vlan: 41, firewall_management_ranges: "192.168.9.0/24", ...(value.networks || {}) };
-    if (!configScalar(value.networks.firewall_management_ranges)) {
-      value.networks.firewall_management_ranges = "192.168.9.0/24";
-    }
+    value.networks = { player_vlan: 40, wireless_vlan: 41, firewall_management_ranges: "", ...(value.networks || {}) };
     value.snmp = { community: "global", ...(value.snmp || {}) };
     value.devices = { switches: [], servers: [], ...(value.devices || {}) };
     value.devices.core = { ...(value.devices.core || {}) };

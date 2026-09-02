@@ -11,17 +11,18 @@ SNMP_TIMEOUT="${SNMP_TIMEOUT:-1}"
 SNMP_RETRIES="${SNMP_RETRIES:-0}"
 LIBRENMS_DISCOVERY_PING_TIMEOUT_MS="${LIBRENMS_DISCOVERY_PING_TIMEOUT_MS:-500}"
 CORE_SWITCH_PING="${CORE_SWITCH_PING:-}"
-# 核心 IP：优先 LIBRENMS_CORE_IP；留空则取 CORE_SWITCH_PING 第一条的 IP（去掉 "名称:" 前缀和 "-范围"）；都空兜底 .254
+# 核心 IP：优先 LIBRENMS_CORE_IP；留空则取 CORE_SWITCH_PING 第一条的 IP
+#（去掉 "名称:" 前缀和 "-范围"）；都空则保持空，不探测示例地址。
 if [ -n "${LIBRENMS_CORE_IP:-}" ]; then
   CORE_IP="$LIBRENMS_CORE_IP"
 else
   _core="${CORE_SWITCH_PING%%,*}"
   _core="${_core##*:}"
   _core="${_core%%-*}"
-  CORE_IP="${_core:-192.168.10.254}"
+  CORE_IP="${_core:-}"
 fi
-DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}"
-FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-192.168.9.0/24}"
+DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-}"
+FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"
 FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-global}}"
 FEISHU_ROBOT_TOKEN="${FEISHU_ROBOT_TOKEN:-}"
 ISP_PING="${ISP_PING:-}"
@@ -487,7 +488,7 @@ configure_runtime() {
   run_lnms config:set service_discovery_workers "${LIBRENMS_DISCOVERY_WORKERS:-2}" >/dev/null 2>&1 || true
 
   # --- 持续自动发现：网段扫描 ---
-  # 把 "192.168.10.1-100,192.168.10.254" 和防火墙范围转成 CIDR 列表写入 nets[]
+  # 把明确配置的交换机与防火墙范围转成 CIDR 列表写入 nets[]。
   configure_nets() {
     idx=0
     seen_cidrs=""

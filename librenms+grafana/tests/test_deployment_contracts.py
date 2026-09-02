@@ -97,6 +97,41 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     assert 'export PLAYER_SWITCH_FORCE_FULL_SCAN=true' in compose
 
 
+def test_fresh_appliance_has_no_implicit_network_scan_targets():
+    compose = read("docker-compose.yml")
+    example = read(".env.example")
+    auto_config = read("librenms-auto-config.sh")
+
+    for key in (
+        "LIBRENMS_DISCOVERY_TARGETS",
+        "FIREWALL_DISCOVERY_RANGE",
+        "CORE_SWITCH_PING",
+        "DIST_SWITCH_PING",
+        "TOURNAMENT_SWITCHES",
+        "PLAYER_SUBNETS",
+        "WIRELESS_SUBNETS",
+        "PLAYER_GATEWAYS",
+    ):
+        assert f"{key}=\n" in example
+
+    assert 'LIBRENMS_CORE_IP: "${LIBRENMS_CORE_IP:-}"' in compose
+    assert compose.count(
+        'LIBRENMS_DISCOVERY_TARGETS: "${LIBRENMS_DISCOVERY_TARGETS:-}"'
+    ) == 2
+    assert 'FIREWALL_DISCOVERY_RANGE: "${FIREWALL_DISCOVERY_RANGE:-}"' in compose
+    assert 'CORE_IP="${_core:-}"' in auto_config
+    assert 'DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-}"' in auto_config
+    assert 'FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"' in auto_config
+    for unsafe_default in (
+        '${LIBRENMS_CORE_IP:-192.168.10.254}',
+        '${LIBRENMS_DISCOVERY_TARGETS:-192.168.10.1-100,192.168.10.254}',
+        '${FIREWALL_DISCOVERY_RANGE:-192.168.9.0/24}',
+        'CORE_IP="${_core:-192.168.10.254}"',
+    ):
+        assert unsafe_default not in compose
+        assert unsafe_default not in auto_config
+
+
 def test_sysname_changes_are_confirmed_before_notification():
     compose = read("docker-compose.yml")
     example = read(".env.example")

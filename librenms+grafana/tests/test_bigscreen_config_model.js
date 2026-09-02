@@ -39,7 +39,7 @@ assert.deepStrictEqual(emptyDefaults, {
   networks: {
     player_vlan: 40,
     wireless_vlan: 41,
-    firewall_management_ranges: '192.168.9.0/24',
+    firewall_management_ranges: '',
     player_gateways: ''
   },
   snmp: { community: 'global' },

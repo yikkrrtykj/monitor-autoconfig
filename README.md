@@ -110,6 +110,8 @@ chmod +x *.sh
 
 `deploy.sh` 会自动：探测本机 IP 写入 `SERVER_IP`、逐个拉镜像并自动重试、渲染 Grafana 配置、重新构建本地工具镜像并启动全部服务。仓库里的 Dockerfile 更新后不需要手工执行构建命令。
 
+全新示例配置默认不包含任何管理网段、设备或选手网段；首次启动可以安全完成，但在进入 `8088/control` 明确填写现场网络前不会主动扫描示例地址。
+
 拉镜像日志里 `monitor-rsyslog:local`、`monitor-player-tools:local`、`monitor-platform-api:local`、`monitor-grafana-setup:local` 这些镜像报 403/pull access denied 是正常的：它们是本地构建镜像，仓库里本来就没有，部署脚本会用仓库里的 Dockerfile 自动构建。
 
 ### 5. 启动后检查
