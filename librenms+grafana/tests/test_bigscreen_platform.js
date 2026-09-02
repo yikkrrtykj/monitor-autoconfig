@@ -6,6 +6,10 @@ const {
   summarizePlayers,
   summarizeTargets,
   summarizeServices,
+  buildControlStatusRows,
+  buildConfigRisks,
+  playerTargetPresentation,
+  serviceHealthPresentation,
   buildReadinessChecks,
   lintSwitchConfig,
   lintSwitchPair,
@@ -47,6 +51,92 @@ const checks = buildReadinessChecks({ seatSummary, targetSummary, serviceSummary
 const score = readinessScore(checks);
 assert.strictEqual(score.level, "bad");
 assert.ok(score.score < 100);
+
+const healthyRuntime = {
+  ok: true,
+  targets: { total: 0, wired: 0, wireless: 0 },
+  updated_at: 1_700_000_000
+};
+const noPlayerSource = {
+  ok: true,
+  config: { devices: { stage_switches: [] }, networks: { wireless_subnets: "" } },
+  env: { TOURNAMENT_SWITCHES: "", WIRELESS_SUBNETS: "", PLAYER_STATIC_TARGETS: "" }
+};
+const healthyServices = [
+  { job: "prometheus", total: 1, up: 1 },
+  // A disabled optional profile is not expected to run and must not degrade status.
+  { job: "unifi", total: 1, up: 0, enabled: false }
+];
+const normalRows = buildControlStatusRows({
+  config: { ispAutoDiscovery: "true" },
+  runtimeStatus: healthyRuntime,
+  services: healthyServices,
+  platformConfig: noPlayerSource,
+  versionInfo: {
+    platform_version: "2026.08.1",
+    git_commit: "internal-only",
+    config_schema_original: 1
+  }
+});
+assert.deepStrictEqual(normalRows.map((row) => row.label), [
+  "平台版本", "运行状态", "ISP", "选手探测目标"
+]);
+assert.strictEqual(normalRows.find((row) => row.label === "平台版本").value, "2026.08.1");
+assert.strictEqual(normalRows.find((row) => row.label === "运行状态").value, "正常");
+assert.deepStrictEqual(
+  normalRows.find((row) => row.label === "选手探测目标"),
+  { label: "选手探测目标", value: "0 个", note: "尚未配置选手目标" }
+);
+assert.ok(!normalRows.some((row) => ["Git Commit", "配置版本", "平台 API", "采集任务"].includes(row.label)));
+assert.ok(!JSON.stringify(normalRows).includes("1700000000"), "player target generation timestamp stays diagnostic-only");
+const optionalChecks = buildReadinessChecks({
+  seatSummary: summarizePlayers([], 0),
+  targetSummary: summarizeTargets([]),
+  serviceSummary: healthyServices,
+  configRisks: [],
+  topologyFindings: []
+});
+assert.strictEqual(
+  optionalChecks.find((item) => item.label === "采集任务异常").level,
+  "good",
+  "disabled optional services stay out of the problem area"
+);
+
+const oneFailed = serviceHealthPresentation([
+  { job: "prometheus", total: 1, up: 1 },
+  { job: "snmp", total: 2, up: 1 }
+], healthyRuntime);
+assert.strictEqual(oneFailed.value, "⚠ 1 项异常");
+assert.strictEqual(oneFailed.failedCount, 1);
+
+const configuredZero = playerTargetPresentation(healthyRuntime, {
+  ok: true,
+  env: { TOURNAMENT_SWITCHES: "stage-1:192.0.2.10" }
+});
+assert.deepStrictEqual(configuredZero, {
+  value: "0 个",
+  note: "暂未扫描到选手",
+  level: "neutral",
+  failed: false
+});
+const healthyZeroRisks = buildConfigRisks(
+  { ispAutoDiscovery: "true", ispMaxBandwidthMbps: "1000" },
+  healthyRuntime
+);
+assert.ok(!healthyZeroRisks.some((item) => item.label === "选手目标"), "zero targets alone are not a risk");
+
+const failedRuntime = { ok: false, error: "targets file not found" };
+const generatorFailure = playerTargetPresentation(failedRuntime, noPlayerSource);
+assert.strictEqual(generatorFailure.value, "异常");
+assert.strictEqual(generatorFailure.note, "选手目标生成失败");
+assert.strictEqual(serviceHealthPresentation(healthyServices, failedRuntime).value, "⚠ 1 项异常");
+const failedRisks = buildConfigRisks(
+  { ispAutoDiscovery: "true", ispMaxBandwidthMbps: "1000" },
+  failedRuntime
+);
+assert.strictEqual(failedRisks.length, 1);
+assert.strictEqual(failedRisks[0].label, "选手目标");
+assert.ok(failedRisks[0].note.includes("选手目标生成失败"));
 
 const riskyConfig = `
 logging host 192.168.41.253

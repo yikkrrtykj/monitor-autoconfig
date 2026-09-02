@@ -1627,12 +1627,14 @@ def test_apply_failure_does_not_mass_delete_services():
     assert "PLATFORM_API_SELF_APPLY" in script
 
 
-def test_platform_version_and_config_schema_are_wired_into_runtime_and_console():
+def test_platform_diagnostics_remain_wired_but_normal_console_summary_is_simple():
     compose = read("docker-compose.yml")
     deploy = read("deploy.sh")
     example = read("event-config.example.yml")
     api = read("bigscreen/api.js")
     app = read("bigscreen/app.js")
+    platform = read("bigscreen/platform.js")
+    config_editor = read("bigscreen/config/config-editor.js")
 
     assert (ROOT.parent / "VERSION").read_text(encoding="utf-8").strip()
     assert example.startswith("schema_version: 1\n")
@@ -1641,10 +1643,12 @@ def test_platform_version_and_config_schema_are_wired_into_runtime_and_console()
     assert 'PLATFORM_GIT_COMMIT: "${PLATFORM_GIT_COMMIT:-unknown}"' in compose
     assert 'export PLATFORM_GIT_COMMIT="$platform_git_commit"' in deploy
     assert 'platformApi("/version"' in api
-    assert '{ label: "平台版本"' in app
-    assert '{ label: "Git Commit"' in app
-    assert '{ label: "配置版本"' in app
-    assert "保存或应用时升级" in app
+    assert 'label: "平台版本"' in platform
+    assert "buildControlStatusRows" in app
+    assert 'label: "Git Commit"' not in app
+    assert 'label: "配置版本"' not in app
+    assert 'label: "平台 API"' not in app
+    assert "configTooNew" in config_editor
 
 
 def test_abandoned_offline_bundle_workflow_is_not_shipped():

@@ -59,7 +59,7 @@
   const {
     readinessScore,
     summarizePlayers, summarizeTargets, summarizeServices,
-    buildConfigRisks, buildTopologyFindings, buildReadinessChecks,
+    buildControlStatusRows, buildConfigRisks, buildTopologyFindings, buildReadinessChecks,
     lintSwitchScene,
     APPLY_REQUEST_TIMEOUT_MS,
     waitForApplyRecovery,
@@ -505,31 +505,13 @@
 
   function renderControlConfig(context) {
     const { runtimeStatus, configRisks, services, platformConfig, versionInfo } = context;
-    const targetStatus = runtimeStatus && runtimeStatus.targets ? runtimeStatus.targets : null;
-    const updated = runtimeStatus && runtimeStatus.updated_at ? formatTimestampFull(runtimeStatus.updated_at) : "-";
-    const apiState = platformConfig && platformConfig.ok
-      ? (platformConfig.writeEnabled === false ? "只读" : "可写")
-      : "不可用";
-    let schemaValue = "-";
-    let schemaNote = "";
-    if (versionInfo && versionInfo.config_schema_original != null) {
-      schemaValue = String(versionInfo.config_schema_original);
-      if (versionInfo.migration_required) {
-        schemaValue = `${versionInfo.config_schema_original} → ${versionInfo.config_schema_current}`;
-        schemaNote = "保存或应用时升级";
-      } else if (versionInfo.config_too_new) {
-        schemaNote = `当前软件最高支持 ${versionInfo.config_schema_supported}，请先升级平台`;
-      }
-    }
-    const rows = [
-      { label: "平台版本", value: versionInfo && versionInfo.platform_version ? versionInfo.platform_version : "unknown" },
-      { label: "Git Commit", value: versionInfo && versionInfo.git_commit ? versionInfo.git_commit : "unknown" },
-      { label: "配置版本", value: schemaValue, note: schemaNote },
-      { label: "ISP", value: config.ispAutoDiscovery === "true" ? "自动发现" : (config.ispNames || "默认") },
-      { label: "选手探测目标", value: targetStatus ? `${targetStatus.total} 个` : "-", note: targetStatus ? `player-targets 生成：有线 ${targetStatus.wired} / 无线 ${targetStatus.wireless} / ${updated}` : "" },
-      { label: "采集任务", value: `${services.filter((item) => item.up === item.total).length}/${services.length}` },
-      { label: "平台 API", value: apiState, note: platformConfig && platformConfig.error ? platformConfig.error : "" }
-    ];
+    const rows = buildControlStatusRows({
+      config,
+      runtimeStatus,
+      services,
+      platformConfig,
+      versionInfo
+    });
     const configRows = rows.map((row) => `
       <div class="config-row">
         <span>${escapeHtml(row.label)}</span>

@@ -157,6 +157,101 @@
     return Array.from(jobs.values()).sort((a, b) => a.job.localeCompare(b.job));
   }
 
+  function runtimeStatusFailed(runtimeStatus) {
+    return Boolean(
+      !runtimeStatus ||
+      runtimeStatus.ok === false ||
+      runtimeStatus.error ||
+      !runtimeStatus.targets ||
+      !Number.isFinite(Number(runtimeStatus.targets.total))
+    );
+  }
+
+  function playerTargetSourceConfigured(platformConfig) {
+    const env = (platformConfig && platformConfig.env) || {};
+    const platform = (platformConfig && platformConfig.config) || {};
+    const devices = platform.devices || {};
+    const networks = platform.networks || {};
+    const stageSwitches = devices.stage_switches || devices.switches || [];
+    const hasStageSwitch = Array.isArray(stageSwitches)
+      ? stageSwitches.some((item) => String((item && item.ip) || item || "").trim())
+      : Boolean(String(stageSwitches || "").trim());
+    const configuredValues = [
+      env.TOURNAMENT_SWITCHES,
+      env.PLAYER_STATIC_TARGETS,
+      env.WIRELESS_SUBNETS,
+      networks.wireless_subnets
+    ];
+    return hasStageSwitch || configuredValues.some((value) => String(value || "").trim());
+  }
+
+  function playerTargetPresentation(runtimeStatus, platformConfig) {
+    if (runtimeStatusFailed(runtimeStatus)) {
+      return {
+        value: "异常",
+        note: "选手目标生成失败",
+        level: "bad",
+        failed: true
+      };
+    }
+    const total = Number(runtimeStatus.targets.total);
+    if (total > 0) {
+      return { value: `${total} 个`, note: "", level: "good", failed: false };
+    }
+    return {
+      value: "0 个",
+      note: playerTargetSourceConfigured(platformConfig)
+        ? "暂未扫描到选手"
+        : "尚未配置选手目标",
+      level: "neutral",
+      failed: false
+    };
+  }
+
+  function expectedServiceJobs(services) {
+    return (services || []).filter((item) => (
+      item &&
+      item.expected !== false &&
+      item.enabled !== false &&
+      item.applicable !== false &&
+      Number(item.total) > 0
+    ));
+  }
+
+  function serviceHealthPresentation(services, runtimeStatus) {
+    // Disabled optional profiles do not emit `up` series. Explicit flags are
+    // also honoured for fixtures/future sources that do include such rows.
+    const expected = expectedServiceJobs(services);
+    const failedJobs = expected.filter((item) => Number(item.up) < Number(item.total));
+    const failedCount = failedJobs.length + (runtimeStatusFailed(runtimeStatus) ? 1 : 0);
+    return {
+      value: failedCount ? `⚠ ${failedCount} 项异常` : "正常",
+      level: failedCount ? "warn" : "good",
+      failedCount,
+      failedJobs
+    };
+  }
+
+  function buildControlStatusRows(input) {
+    const config = input.config || {};
+    const playerTargets = playerTargetPresentation(input.runtimeStatus, input.platformConfig);
+    const serviceHealth = serviceHealthPresentation(input.services, input.runtimeStatus);
+    return [
+      {
+        label: "平台版本",
+        value: input.versionInfo && input.versionInfo.platform_version
+          ? input.versionInfo.platform_version
+          : "unknown"
+      },
+      { label: "运行状态", value: serviceHealth.value },
+      {
+        label: "ISP",
+        value: config.ispAutoDiscovery === "true" ? "自动发现" : (config.ispNames || "默认")
+      },
+      { label: "选手探测目标", value: playerTargets.value, note: playerTargets.note }
+    ];
+  }
+
   function buildConfigRisks(config, runtimeStatus) {
     const risks = [];
     const ispNames = String(config.ispNames || "").split(",").map((item) => item.trim()).filter(Boolean);
@@ -168,11 +263,13 @@
     if (!String(config.ispMaxBandwidthMbps || "").trim()) {
       risks.push({ level: "warn", label: "ISP 带宽", value: "未设置", note: "饱和判断会退回默认 1000 Mbps" });
     }
-    if (runtimeStatus && runtimeStatus.error) {
-      risks.push({ level: "warn", label: "运行状态接口", value: "不可用", note: runtimeStatus.error });
-    }
-    if (runtimeStatus && runtimeStatus.targets && runtimeStatus.targets.total === 0) {
-      risks.push({ level: "warn", label: "选手目标", value: "0", note: "player-targets 未生成目标或还未扫描到选手" });
+    if (runtimeStatus && runtimeStatusFailed(runtimeStatus)) {
+      risks.push({
+        level: "bad",
+        label: "选手目标",
+        value: "异常",
+        note: `选手目标生成失败${runtimeStatus.error ? `：${runtimeStatus.error}` : ""}`
+      });
     }
     return risks;
   }
@@ -239,7 +336,8 @@
       value: String(target.offline.length),
       note: target.offline.length ? target.offline.slice(0, 3).map((item) => item.displayName || item.instance || item.targetIp).join("、") : "无离线"
     });
-    const downJobs = services.filter((job) => job.up < job.total);
+    const downJobs = expectedServiceJobs(services)
+      .filter((job) => Number(job.up) < Number(job.total));
     checks.push({
       section: "采集",
       label: "采集任务异常",
@@ -557,6 +655,12 @@
     summarizePlayers,
     summarizeTargets,
     summarizeServices,
+    runtimeStatusFailed,
+    playerTargetSourceConfigured,
+    playerTargetPresentation,
+    expectedServiceJobs,
+    serviceHealthPresentation,
+    buildControlStatusRows,
     buildConfigRisks,
     buildTopologyFindings,
     buildReadinessChecks,
