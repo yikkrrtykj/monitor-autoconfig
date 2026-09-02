@@ -829,6 +829,27 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
     return {key: "" if value is None else str(value) for key, value in env.items()}
 
 
+def _strip_env_inline_comment(value: str) -> str:
+    quote = ""
+    escaped = False
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if quote and character == "\\":
+            escaped = True
+            continue
+        if quote:
+            if character == quote:
+                quote = ""
+            continue
+        if character in ('"', "'"):
+            quote = character
+        elif character == "#" and index > 0 and value[index - 1].isspace():
+            return value[:index].strip()
+    return value.strip()
+
+
 def read_env(path: Path) -> dict[str, str]:
     env: dict[str, str] = {}
     if not path.exists():
@@ -837,7 +858,7 @@ def read_env(path: Path) -> dict[str, str]:
         if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        value = value.strip()
+        value = _strip_env_inline_comment(value)
         if value.startswith('"') and value.endswith('"'):
             try:
                 value = json.loads(value)

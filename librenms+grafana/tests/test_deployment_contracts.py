@@ -174,6 +174,7 @@ def test_runtime_env_batch_load_is_safe_and_complete_for_container_consumers(tmp
 
         expected_values = {
             "EVENT_NAME": "",
+            "SWITCH_DISCOVERY_RETENTION_SECONDS": "86400",
             "PASSWORD": "global123!@#",
             "JSON": '{"a":"b c"}',
             "TEXT": "hello world",
@@ -181,9 +182,21 @@ def test_runtime_env_batch_load_is_safe_and_complete_for_container_consumers(tmp
             "QUOTE": 'it\'s "quoted"',
         }
         env_file.write_text(
-            "\n".join(f"{key}={value}" for key, value in expected_values.items()) + "\n",
+            "SWITCH_DISCOVERY_RETENTION_SECONDS=86400  # keep offline devices for 24h\n"
+            + "\n".join(
+                f"{key}={value}"
+                for key, value in expected_values.items()
+                if key != "SWITCH_DISCOVERY_RETENTION_SECONDS"
+            )
+            + "\n",
             encoding="utf-8",
         )
+        retention_result = run_cli(
+            "env-get", str(env_file), "SWITCH_DISCOVERY_RETENTION_SECONDS"
+        )
+        assert retention_result.returncode == 0
+        assert retention_result.stdout == "86400"
+        assert retention_result.stderr == ""
         batch_result = run_cli(
             "env-export-shell",
             str(env_file),

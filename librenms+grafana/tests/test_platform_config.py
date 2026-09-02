@@ -623,6 +623,38 @@ def test_default_login_passwords_parse_with_exact_special_characters():
     assert parsed["SNMP_COMMUNITY"] == "global"
 
 
+def test_read_env_matches_compose_inline_comment_semantics(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        """RETENTION=86400  # comment
+TEXT=hello world # comment
+COMPACT=foo#bar
+PASSWORD=global123!@#
+DOUBLE="hello # world"
+SINGLE='hello # world'
+DOUBLE_COMMENT="hello # world" # outside comment
+SINGLE_COMMENT='hello # world' # outside comment
+EMPTY=
+""",
+        encoding="utf-8",
+    )
+
+    assert platform_config.read_env(env_path) == {
+        "RETENTION": "86400",
+        "TEXT": "hello world",
+        "COMPACT": "foo#bar",
+        "PASSWORD": "global123!@#",
+        "DOUBLE": "hello # world",
+        "SINGLE": "hello # world",
+        "DOUBLE_COMMENT": "hello # world",
+        "SINGLE_COMMENT": "hello # world",
+        "EMPTY": "",
+    }
+    assert platform_config.read_env(ROOT / ".env.example")[
+        "SWITCH_DISCOVERY_RETENTION_SECONDS"
+    ] == "86400"
+
+
 def test_validation_rejects_invalid_network_and_numeric_values():
     config = platform_config.parse_simple_yaml("""
 devices:

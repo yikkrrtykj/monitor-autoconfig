@@ -60,6 +60,8 @@ if [ "$1" = "inspect" ]; then
     *State.Status*)
       if [ "$service" = "${STUB_EXITED_SERVICE:-}" ]; then
         echo exited
+      elif [ "$service" = "${STUB_RESTARTING_SERVICE:-}" ]; then
+        echo restarting
       else
         echo running
       fi
@@ -262,6 +264,31 @@ def test_bootstrap_does_not_require_player_targets_or_core_switch(tmp_path):
     ids = checks_by_id(payload)
     assert "configured_core" not in ids
     assert "player_generator" not in ids
+    assert ids["topology_collector"]["status"] == "PASS"
+    assert ids["player_targets"]["status"] == "PASS"
+
+
+@pytest.mark.parametrize("mode", ["bootstrap", "configured"])
+@pytest.mark.parametrize(
+    ("service", "check_id"),
+    [
+        ("topology-collector", "topology_collector"),
+        ("player-targets", "player_targets"),
+    ],
+)
+def test_runtime_generator_restarting_fails_deploy_check(
+    tmp_path, mode, service, check_id
+):
+    completed, payload = run_check(
+        tmp_path,
+        mode=mode,
+        STUB_RESTARTING_SERVICE=service,
+    )
+    check = checks_by_id(payload)[check_id]
+
+    assert completed.returncode == 1
+    assert check["status"] == "FAIL"
+    assert "restarting" in check["message"]
 
 
 def test_disabled_optional_profiles_are_skipped(tmp_path):

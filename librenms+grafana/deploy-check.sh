@@ -486,6 +486,8 @@ fi
 for service_spec in \
   'prometheus|prometheus|Prometheus' \
   'grafana|grafana|Grafana' \
+  'topology_collector|topology-collector|Topology collector' \
+  'player_targets|player-targets|Player targets' \
   'bigscreen|bigscreen|Bigscreen' \
   'platform_api|platform-api|Platform API' \
   'blackbox_exporter|blackbox-exporter|Blackbox exporter' \
