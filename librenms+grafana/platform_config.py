@@ -956,7 +956,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "env-get":
         values = read_env(Path(sys.argv[2]))
         key = sys.argv[3]
-        if key not in values or values[key] == "":
+        if key not in values:
             raise SystemExit(1)
         sys.stdout.write(values[key])
     elif len(sys.argv) in (3, 4) and sys.argv[1] == "migrate":

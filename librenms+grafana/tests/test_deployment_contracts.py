@@ -1,5 +1,8 @@
+import ast
 import json
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -95,6 +98,82 @@ def test_player_target_generator_streams_and_refreshes_stage_fdb():
     assert "for key in EVENT_NAME TOURNAMENT_SWITCHES" in player_service
     assert "SWITCH_DISCOVERY_RANGE" not in player_service
     assert 'export PLAYER_SWITCH_FORCE_FULL_SCAN=true' in compose
+
+
+def test_runtime_env_get_dependencies_are_complete_for_container_consumers(tmp_path):
+    compose = read("docker-compose.yml")
+    platform_config_path = ROOT / "platform_config.py"
+    platform_config_tree = ast.parse(platform_config_path.read_text(encoding="utf-8"))
+    local_dependencies = set()
+    for node in ast.walk(platform_config_tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            module = node.module.split(".", 1)[0]
+            if (ROOT / f"{module}.py").is_file():
+                local_dependencies.add(module)
+        elif isinstance(node, ast.Import):
+            for imported in node.names:
+                module = imported.name.split(".", 1)[0]
+                if (ROOT / f"{module}.py").is_file():
+                    local_dependencies.add(module)
+
+    assert local_dependencies == {"version_info"}
+    service_blocks = {
+        "player-targets": compose.split("  player-targets:", 1)[1].split(
+            "  topology-collector:", 1
+        )[0],
+        "topology-collector": compose.split("  topology-collector:", 1)[1].split(
+            "  bigscreen:", 1
+        )[0],
+    }
+
+    for service_name, service_block in service_blocks.items():
+        assert "python3 /platform_config.py env-get /config/.env" in service_block
+        assert "./platform_config.py:/platform_config.py:ro" in service_block
+        for dependency in local_dependencies:
+            assert f"./{dependency}.py:/{dependency}.py:ro" in service_block
+
+        runtime_root = tmp_path / service_name
+        runtime_root.mkdir()
+        shutil.copy2(platform_config_path, runtime_root / "platform_config.py")
+        for dependency in local_dependencies:
+            shutil.copy2(ROOT / f"{dependency}.py", runtime_root / f"{dependency}.py")
+
+        env_file = runtime_root / ".env"
+        env_file.write_text("EVENT_NAME=\n", encoding="utf-8")
+        empty_result = subprocess.run(
+            [
+                sys.executable,
+                str(runtime_root / "platform_config.py"),
+                "env-get",
+                str(env_file),
+                "EVENT_NAME",
+            ],
+            cwd=runtime_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert empty_result.returncode == 0
+        assert empty_result.stdout == ""
+        assert empty_result.stderr == ""
+
+        env_file.write_text("EVENT_NAME=Singapore\n", encoding="utf-8")
+        populated_result = subprocess.run(
+            [
+                sys.executable,
+                str(runtime_root / "platform_config.py"),
+                "env-get",
+                str(env_file),
+                "EVENT_NAME",
+            ],
+            cwd=runtime_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert populated_result.returncode == 0
+        assert populated_result.stdout == "Singapore"
+        assert populated_result.stderr == ""
 
 
 def test_fresh_appliance_has_no_implicit_network_scan_targets():

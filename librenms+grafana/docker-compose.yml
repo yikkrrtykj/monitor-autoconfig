@@ -583,6 +583,7 @@ services:
       - ./target_utils.py:/target_utils.py:ro
       - ./rescan-server.py:/rescan-server.py:ro
       - ./platform_config.py:/platform_config.py:ro
+      - ./version_info.py:/version_info.py:ro
       - ./.env:/config/.env:ro
     environment:
       TZ: Asia/Shanghai
@@ -706,6 +707,7 @@ services:
       - ./librenms_client.py:/librenms_client.py:ro
       - ./target_utils.py:/target_utils.py:ro
       - ./platform_config.py:/platform_config.py:ro
+      - ./version_info.py:/version_info.py:ro
       - ./.env:/config/.env:ro
       # Firewall IP-MIB is hidden on some appliances. LibreNMS' discovered
       # interface inventory is the authoritative automatic fallback.
