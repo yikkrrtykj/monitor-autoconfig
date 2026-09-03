@@ -773,6 +773,7 @@ def test_device_auto_delete_defaults_are_safe_and_bridge_scoped():
         "DEVICE_AUTO_DELETE_AFTER_SECONDS": "604800",
         "DEVICE_AUTO_DELETE_CHECK_INTERVAL_SECONDS": "3600",
         "DEVICE_AUTO_DELETE_DRY_RUN": "true",
+        "DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY": "false",
     }
     for key, value in defaults.items():
         assert f"{key}={value}\n" in example
@@ -782,6 +783,7 @@ def test_device_auto_delete_defaults_are_safe_and_bridge_scoped():
         "alertmanager-feishu-bridge.py"
     )
     assert "DEVICE_AUTO_DELETE_DRY_RUN=true" in read("../README.md")
+    assert "DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY=true" in read("../README.md")
     assert "DEVICE_AUTO_DELETE_ENABLED=true" in read("../README.md")
     assert "DELETE FROM devices" not in read("alertmanager-feishu-bridge.py")
 

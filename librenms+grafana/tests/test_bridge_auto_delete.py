@@ -12,6 +12,7 @@ _spec = importlib.util.spec_from_file_location(
 bridge = importlib.util.module_from_spec(_spec)
 assert _spec.loader
 _spec.loader.exec_module(bridge)
+ORIGINAL_SEND_FEISHU = bridge.send_feishu
 
 NOW = 2_000_000_000
 WEEK = 604800
@@ -36,6 +37,8 @@ def safe_auto_delete_defaults(monkeypatch):
     monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_ENABLED", True)
     monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_AFTER_SECONDS", WEEK)
     monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN", True)
+    monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY", False)
+    monkeypatch.setattr(bridge, "send_feishu", lambda _card: True)
     for key in bridge.DEVICE_AUTO_DELETE_PROTECTION_KEYS:
         monkeypatch.delenv(key, raising=False)
     for key in (
@@ -248,6 +251,224 @@ def test_dry_run_logs_would_delete_without_calling_delete(capsys):
     output = capsys.readouterr().err
     assert "candidate" in output
     assert "DRY-RUN would delete" in output
+
+
+def test_dry_run_notification_is_disabled_by_default(monkeypatch):
+    notifications = []
+    monkeypatch.setattr(
+        bridge, "send_feishu", lambda card: notifications.append(card) or True
+    )
+
+    stats = bridge.run_device_auto_delete_cycle(
+        now=NOW,
+        devices=[device()],
+        token="token",
+        probe=lambda _ip: False,
+    )
+
+    assert stats["dry_run"] == 1
+    assert notifications == []
+
+
+def test_dry_run_twenty_candidates_send_one_bounded_summary(
+    monkeypatch, capsys
+):
+    notifications = []
+    monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY", True)
+    monkeypatch.setattr(
+        bridge, "send_feishu", lambda card: notifications.append(card) or True
+    )
+    devices = [
+        device(
+            f"192.0.2.{index}",
+            device_id=index,
+            hostname=f"old-switch-{index}",
+        )
+        for index in range(1, 21)
+    ]
+
+    stats = bridge.run_device_auto_delete_cycle(
+        now=NOW,
+        devices=devices,
+        token="token",
+        probe=lambda _ip: False,
+    )
+
+    assert stats["dry_run"] == 20
+    assert len(notifications) == 1
+    text = json.dumps(notifications[0], ensure_ascii=False)
+    assert "DRY RUN" in text
+    assert "候选设备：**20 台**" in text
+    assert "未执行任何删除" in text
+    assert "old-switch-10" in text
+    assert "old-switch-11" not in text
+    assert "另有 **10 台**" in text
+    assert "dry-run summary notification sent candidates=20" in capsys.readouterr().err
+
+
+def test_five_real_deletes_send_one_success_summary(monkeypatch, capsys):
+    notifications = []
+    monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN", False)
+    monkeypatch.setattr(
+        bridge, "send_feishu", lambda card: notifications.append(card) or True
+    )
+    devices = [
+        device(
+            f"192.0.2.{index}",
+            device_id=index,
+            hostname=f"retired-switch-{index}",
+        )
+        for index in range(1, 6)
+    ]
+
+    stats = bridge.run_device_auto_delete_cycle(
+        now=NOW,
+        devices=devices,
+        token="token",
+        probe=lambda _ip: False,
+        delete=lambda *_args: True,
+    )
+
+    assert stats["deleted"] == 5
+    assert len(notifications) == 1
+    text = json.dumps(notifications[0], ensure_ascii=False)
+    assert "LibreNMS 自动清理完成" in text
+    assert "删除成功：5 台" in text
+    assert "retired-switch-1" in text
+    assert "192.0.2.1" in text
+    assert "device_id=1" in text
+    assert "离线 7 天" in text
+    assert "Down 超过配置阈值" in text
+    assert "notification sent deleted=5 failed=0" in capsys.readouterr().err
+
+
+def test_delete_failures_send_one_retry_alert(monkeypatch):
+    notifications = []
+    monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN", False)
+    monkeypatch.setattr(
+        bridge, "send_feishu", lambda card: notifications.append(card) or True
+    )
+
+    stats = bridge.run_device_auto_delete_cycle(
+        now=NOW,
+        devices=[device("192.0.2.20", hostname="failed-switch")],
+        token="token",
+        probe=lambda _ip: False,
+        delete=lambda *_args: False,
+    )
+
+    assert stats["delete_failed"] == 1
+    assert len(notifications) == 1
+    text = json.dumps(notifications[0], ensure_ascii=False)
+    assert "LibreNMS 自动清理异常" in text
+    assert "删除失败：1 台" in text
+    assert "failed-switch" in text
+    assert "设备未从 LibreNMS 删除，将在后续检查中重试" in text
+
+
+def test_mixed_success_and_failure_stays_in_one_summary(monkeypatch):
+    notifications = []
+    monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN", False)
+    monkeypatch.setattr(
+        bridge, "send_feishu", lambda card: notifications.append(card) or True
+    )
+    devices = [
+        device(
+            f"192.0.2.{index}", device_id=index, hostname=f"mixed-{index}"
+        )
+        for index in range(1, 7)
+    ]
+
+    stats = bridge.run_device_auto_delete_cycle(
+        now=NOW,
+        devices=devices,
+        token="token",
+        probe=lambda _ip: False,
+        delete=lambda _token, item: int(item["device_id"]) <= 4,
+    )
+
+    assert stats["deleted"] == 4
+    assert stats["delete_failed"] == 2
+    assert len(notifications) == 1
+    text = json.dumps(notifications[0], ensure_ascii=False)
+    assert "自动清理结果（含异常）" in text
+    assert "删除成功：4 台" in text
+    assert "删除失败：2 台" in text
+
+
+def test_feishu_send_exception_does_not_fail_cleanup_cycle(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN", False)
+
+    def failed_notification(_card):
+        raise RuntimeError("delivery unavailable")
+
+    monkeypatch.setattr(bridge, "send_feishu", failed_notification)
+
+    stats = bridge.run_device_auto_delete_cycle(
+        now=NOW,
+        devices=[device()],
+        token="token",
+        probe=lambda _ip: False,
+        delete=lambda *_args: True,
+    )
+
+    assert stats["deleted"] == 1
+    assert "notification failed error=RuntimeError" in capsys.readouterr().err
+
+
+def test_event_name_is_applied_by_existing_delivery_path(monkeypatch):
+    notifications = []
+    monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN", False)
+    monkeypatch.setattr(bridge, "EVENT_NAME", "Singapore")
+    monkeypatch.setattr(bridge, "send_feishu", ORIGINAL_SEND_FEISHU)
+    monkeypatch.setattr(
+        bridge._FEISHU_DELIVERY,
+        "send",
+        lambda card: notifications.append(card) or True,
+    )
+
+    bridge.run_device_auto_delete_cycle(
+        now=NOW,
+        devices=[device()],
+        token="token",
+        probe=lambda _ip: False,
+        delete=lambda *_args: True,
+    )
+
+    assert len(notifications) == 1
+    title = notifications[0]["card"]["header"]["title"]["content"]
+    assert title == "【Singapore】 LibreNMS 自动清理完成"
+
+
+def test_delete_error_notification_and_logs_do_not_leak_secrets(
+    monkeypatch, capsys
+):
+    notifications = []
+    monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN", False)
+    monkeypatch.setattr(
+        bridge, "send_feishu", lambda card: notifications.append(card) or True
+    )
+
+    def secret_failure(*_args):
+        raise RuntimeError(
+            "token=super-secret password=hidden community=private-value"
+        )
+
+    stats = bridge.run_device_auto_delete_cycle(
+        now=NOW,
+        devices=[device()],
+        token="token",
+        probe=lambda _ip: False,
+        delete=secret_failure,
+    )
+
+    assert stats["delete_failed"] == 1
+    combined = json.dumps(notifications, ensure_ascii=False) + capsys.readouterr().err
+    for secret in ("super-secret", "hidden", "private-value"):
+        assert secret not in combined
+    assert "RuntimeError" in combined
 
 
 def test_real_delete_success_is_logged(monkeypatch, capsys):

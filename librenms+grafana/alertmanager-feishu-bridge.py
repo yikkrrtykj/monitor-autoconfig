@@ -61,6 +61,8 @@ Env:
   DEVICE_AUTO_DELETE_AFTER_SECONDS minimum offline age (default 604800)
   DEVICE_AUTO_DELETE_CHECK_INTERVAL_SECONDS cleanup interval (default 3600)
   DEVICE_AUTO_DELETE_DRY_RUN true = log eligible deletes without sending DELETE
+  DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY true = send at most one dry-run summary per
+                                cycle (default false)
   DEVICE_REENROLL_AFTER_SECONDS offline age at which selected devices auto-retire (default 172800)
   DEVICE_REENROLL_JOBS    comma list of temporary-device jobs (default infra-dist-ping)
   DEVICE_LIBRENMS_SYNC_RETRY_SECONDS retry interval for retire/delete/re-add API calls (default 60)
@@ -236,6 +238,9 @@ DEVICE_AUTO_DELETE_CHECK_INTERVAL_SECONDS = max(
 )
 DEVICE_AUTO_DELETE_DRY_RUN = os.environ.get(
     "DEVICE_AUTO_DELETE_DRY_RUN", "true"
+).strip().lower() in ("1", "true", "yes", "on")
+DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY = os.environ.get(
+    "DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_DELETE_PROTECTION_KEYS = (
     "LIBRENMS_CORE_IP",
@@ -1836,16 +1841,15 @@ def delete_librenms_device_record(token, device):
             if isinstance(item, dict)
         )
     except error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
         log(
             f"[device-auto-delete] DELETE HTTP {exc.code} hostname="
-            f"{device.get('hostname') or ip or '?'} device_id={device.get('device_id') or '?'}: "
-            f"{body[:160]}"
+            f"{device.get('hostname') or ip or '?'} device_id={device.get('device_id') or '?'}"
         )
     except Exception as exc:
         log(
             f"[device-auto-delete] DELETE failed hostname="
-            f"{device.get('hostname') or ip or '?'} device_id={device.get('device_id') or '?'}: {exc}"
+            f"{device.get('hostname') or ip or '?'} device_id={device.get('device_id') or '?'}: "
+            f"{type(exc).__name__}"
         )
     return False
 
@@ -3599,6 +3603,134 @@ def _device_is_explicitly_down(device):
     return value == 0 or str(value).strip() == "0"
 
 
+def _device_auto_delete_duration(seconds):
+    total = max(0, int(seconds or 0))
+    days, remainder = divmod(total, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = remainder // 60
+    if days:
+        return f"{days} 天 {hours} 小时"
+    if hours:
+        return f"{hours} 小时 {minutes} 分钟"
+    return f"{minutes} 分钟"
+
+
+def _device_auto_delete_notice_record(device, ip, offline_seconds, error_reason=""):
+    return {
+        "hostname": str(device.get("hostname") or ip or "?").strip(),
+        "ip": str(ip or "").strip(),
+        "device_id": str(device.get("device_id") or "?"),
+        "offline_seconds": max(0, int(offline_seconds or 0)),
+        "error": str(error_reason or "").strip(),
+    }
+
+
+def _device_auto_delete_record_lines(records, limit=10, include_error=False):
+    lines = []
+    for item in records[:limit]:
+        line = (
+            f"• **{item['hostname']}**（{item['ip']}） · device_id={item['device_id']} · "
+            f"离线 {_device_auto_delete_duration(item['offline_seconds'])}"
+        )
+        if include_error:
+            line += f" · 原因：{item['error'] or 'LibreNMS DELETE API 返回失败'}"
+        lines.append(line)
+    remaining = len(records) - min(len(records), limit)
+    if remaining:
+        lines.append(f"• 另有 **{remaining} 台**未展开")
+    return lines
+
+
+def build_device_auto_delete_summary_card(
+    *, dry_run_records=None, deleted_records=None, failed_records=None, now=None,
+):
+    dry_run_records = list(dry_run_records or [])
+    deleted_records = list(deleted_records or [])
+    failed_records = list(failed_records or [])
+    if dry_run_records:
+        body = [
+            "**DRY RUN — 未执行任何删除**",
+            f"候选设备：**{len(dry_run_records)} 台**",
+            "",
+            *_device_auto_delete_record_lines(dry_run_records, limit=10),
+            "",
+            "本轮仅验证条件，未向 LibreNMS 发送任何 DELETE 请求。",
+        ]
+        return _make_card("", "LibreNMS 自动清理 DRY RUN", "blue", "\n".join(body))
+
+    timestamp = time.time() if now is None else now
+    deleted_at = datetime.fromtimestamp(timestamp).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    body = [f"检查完成时间：{deleted_at}"]
+    if deleted_records:
+        body.extend([
+            "",
+            f"**删除成功：{len(deleted_records)} 台**",
+            "原因：LibreNMS Down 超过配置阈值，且删除前实时 ICMP 探测仍不可达。",
+            *_device_auto_delete_record_lines(deleted_records, limit=10),
+        ])
+    if failed_records:
+        body.extend([
+            "",
+            f"**删除失败：{len(failed_records)} 台**",
+            *_device_auto_delete_record_lines(
+                failed_records, limit=10, include_error=True
+            ),
+            "设备未从 LibreNMS 删除，将在后续检查中重试。",
+        ])
+    if failed_records and deleted_records:
+        subtitle = "LibreNMS 自动清理结果（含异常）"
+        color = "orange"
+    elif failed_records:
+        subtitle = "LibreNMS 自动清理异常"
+        color = "red"
+    else:
+        subtitle = "LibreNMS 自动清理完成"
+        color = "green"
+    return _make_card("", subtitle, color, "\n".join(body))
+
+
+def notify_device_auto_delete_summary(
+    *, dry_run_records=None, deleted_records=None, failed_records=None, now=None,
+):
+    dry_run_records = list(dry_run_records or [])
+    deleted_records = list(deleted_records or [])
+    failed_records = list(failed_records or [])
+    if dry_run_records:
+        if not DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY:
+            return False
+    elif not deleted_records and not failed_records:
+        return False
+
+    card = build_device_auto_delete_summary_card(
+        dry_run_records=dry_run_records,
+        deleted_records=deleted_records,
+        failed_records=failed_records,
+        now=now,
+    )
+    try:
+        sent = bool(send_feishu(card))
+    except Exception as exc:
+        log(
+            "[device-auto-delete] notification failed "
+            f"error={type(exc).__name__}"
+        )
+        return False
+    if not sent:
+        log("[device-auto-delete] notification failed delivery-returned-false")
+        return False
+    if dry_run_records:
+        log(
+            "[device-auto-delete] dry-run summary notification sent "
+            f"candidates={len(dry_run_records)}"
+        )
+    else:
+        log(
+            "[device-auto-delete] notification sent "
+            f"deleted={len(deleted_records)} failed={len(failed_records)}"
+        )
+    return True
+
+
 def run_device_auto_delete_cycle(
     *, now=None, devices=None, token=None, probe=None, delete=None,
 ):
@@ -3629,6 +3761,9 @@ def run_device_auto_delete_cycle(
     protected = device_auto_delete_protected_ips()
     probe_device = probe or _blackbox_icmp_probe
     delete_device = delete or delete_librenms_device_record
+    dry_run_records = []
+    deleted_records = []
+    failed_records = []
 
     for device in devices:
         if not isinstance(device, dict):
@@ -3703,6 +3838,9 @@ def run_device_auto_delete_cycle(
             continue
         if DEVICE_AUTO_DELETE_DRY_RUN:
             stats["dry_run"] += 1
+            dry_run_records.append(
+                _device_auto_delete_notice_record(device, ip, offline_seconds)
+            )
             log(
                 f"[device-auto-delete] DRY-RUN would delete hostname={hostname} "
                 f"ip={ip} device_id={device_id} offline_seconds={offline_seconds}"
@@ -3714,22 +3852,44 @@ def run_device_auto_delete_cycle(
         except Exception as exc:
             log(
                 f"[device-auto-delete] delete-failed hostname={hostname} ip={ip} "
-                f"device_id={device_id}: {exc}"
+                f"device_id={device_id}: {type(exc).__name__}"
             )
             stats["delete_failed"] += 1
+            failed_records.append(
+                _device_auto_delete_notice_record(
+                    device, ip, offline_seconds, type(exc).__name__
+                )
+            )
             continue
         if deleted:
             stats["deleted"] += 1
+            deleted_records.append(
+                _device_auto_delete_notice_record(device, ip, offline_seconds)
+            )
             log(
                 f"[device-auto-delete] deleted hostname={hostname} "
                 f"device_id={device_id} offline_seconds={offline_seconds}"
             )
         else:
             stats["delete_failed"] += 1
+            failed_records.append(
+                _device_auto_delete_notice_record(
+                    device,
+                    ip,
+                    offline_seconds,
+                    "LibreNMS DELETE API 返回失败",
+                )
+            )
             log(
                 f"[device-auto-delete] delete-failed hostname={hostname} ip={ip} "
                 f"device_id={device_id}; retry next cycle"
             )
+    notify_device_auto_delete_summary(
+        dry_run_records=dry_run_records,
+        deleted_records=deleted_records,
+        failed_records=failed_records,
+        now=current_time,
+    )
     return stats
 
 
