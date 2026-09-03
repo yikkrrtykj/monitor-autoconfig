@@ -109,6 +109,71 @@ def expand_ipv4_targets(raw: str, max_hosts: int = 4096) -> list[str]:
     return targets
 
 
+def ipv4_target_matches(raw: str, candidate: IPv4Address) -> bool:
+    """Match one IPv4 address against named, CIDR, or range target entries."""
+    for entry in re.split(r"[,\n]+", raw or ""):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "=" in entry:
+            entry = entry.split("=", 1)[1].strip()
+        if ":" in entry:
+            entry = entry.rsplit(":", 1)[1].strip()
+        try:
+            if "/" in entry:
+                if candidate in IPv4Network(entry, strict=False):
+                    return True
+                continue
+            if "-" in entry:
+                start_raw, end_raw = [part.strip() for part in entry.split("-", 1)]
+                start = IPv4Address(start_raw)
+                if "." not in end_raw:
+                    end_raw = f"{str(start).rsplit('.', 1)[0]}.{end_raw}"
+                end = IPv4Address(end_raw)
+                if int(start) <= int(candidate) <= int(end):
+                    return True
+                continue
+            if candidate == IPv4Address(entry):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def unmanaged_player_device_ips(
+    payload: Any, player_subnets: str, keep_targets: str,
+) -> list[str]:
+    """Return active LibreNMS device IPs that belong only to player networks."""
+    networks: list[IPv4Network] = []
+    for entry in re.split(r"[,\n]+", player_subnets or ""):
+        try:
+            networks.append(IPv4Network(entry.strip(), strict=False))
+        except ValueError:
+            continue
+    if not networks or not isinstance(payload, dict):
+        return []
+
+    retired: list[str] = []
+    devices = payload.get("devices", [])
+    if not isinstance(devices, list):
+        return retired
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        hostname = str(device.get("hostname") or "").strip()
+        try:
+            address = IPv4Address(hostname)
+        except ValueError:
+            continue
+        if (
+            any(address in network for network in networks)
+            and not ipv4_target_matches(keep_targets, address)
+            and not int(device.get("disabled") or 0)
+        ):
+            retired.append(hostname)
+    return retired
+
+
 def parse_named_ipv4_target_rows(raw: str) -> list[tuple[str, str]]:
     """Return ``(name, IP)`` rows for bare-IP and ``NAME:IP`` targets."""
     rows: list[tuple[str, str]] = []
@@ -139,7 +204,19 @@ def _main(argv: list[str]) -> int:
         for name, ip in parse_named_ipv4_target_rows(argv[2]):
             print(f"{name}|{ip}")
         return 0
-    print("usage: target_utils.py named-targets TARGETS", file=sys.stderr)
+    if len(argv) == 4 and argv[1] == "retire-player-candidates":
+        try:
+            payload = json.load(sys.stdin)
+        except (TypeError, ValueError):
+            return 0
+        for ip in unmanaged_player_device_ips(payload, argv[2], argv[3]):
+            print(ip)
+        return 0
+    print(
+        "usage: target_utils.py named-targets TARGETS | "
+        "retire-player-candidates PLAYER_SUBNETS KEEP_TARGETS",
+        file=sys.stderr,
+    )
     return 2
 
 

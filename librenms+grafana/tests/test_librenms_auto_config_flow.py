@@ -40,10 +40,45 @@ def _write_shell(path: Path, source: str) -> None:
     path.chmod(0o755)
 
 
-def _run_device_phase(tmp_path: Path, **environment):
+def _run_device_phase(tmp_path: Path, *, real_retire=False, **environment):
     source = AUTO_CONFIG.read_text(encoding="utf-8")
     flow_log = tmp_path / "flow.log"
     harness = tmp_path / "auto-config-device-phase.sh"
+    if real_retire:
+        retire_setup = f"""
+PLAYER_SUBNETS="${{PLAYER_SUBNETS:-}}"
+DISCOVERY_TARGETS="${{DISCOVERY_TARGETS:-}}"
+CORE_SWITCH_PING="${{CORE_SWITCH_PING:-}}"
+DIST_SWITCH_PING="${{DIST_SWITCH_PING:-}}"
+TOURNAMENT_SWITCHES="${{TOURNAMENT_SWITCHES:-}}"
+PLAYER_GATEWAYS="${{PLAYER_GATEWAYS:-}}"
+DEVICES_JSON="${{DEVICES_JSON:-{{\"devices\":[]}}}}"
+RETIRE_OUTPUT="${{RETIRE_OUTPUT:-}}"
+RETIRE_PYTHON_EXIT="${{RETIRE_PYTHON_EXIT:-0}}"
+
+curl() {{
+  printf '%s' "$DEVICES_JSON"
+}}
+
+python3() {{
+  printf 'retire-cli|%s\n' "$*" >> "$FLOW_LOG"
+  while IFS= read -r _line; do :; done
+  [ "$RETIRE_PYTHON_EXIT" -eq 0 ] || return "$RETIRE_PYTHON_EXIT"
+  [ -z "$RETIRE_OUTPUT" ] || printf '%s\n' "$RETIRE_OUTPUT"
+}}
+
+disable_librenms_device_api() {{
+  printf 'disable|%s\n' "$1" >> "$FLOW_LOG"
+  return 0
+}}
+
+{_extract_shell_function(source, "retire_unmanaged_player_devices")}
+"""
+    else:
+        retire_setup = (
+            "retire_unmanaged_player_devices() { "
+            "echo 'downstream|retire' >> \"$FLOW_LOG\"; }\n"
+        )
     harness_source = f"""#!/bin/sh
 set -e
 
@@ -84,7 +119,7 @@ add_device_api() {{
   return 0
 }}
 
-retire_unmanaged_player_devices() {{ echo 'downstream|retire' >> "$FLOW_LOG"; }}
+{retire_setup}
 discover_firewall_ports() {{ echo 'downstream|firewall-ports' >> "$FLOW_LOG"; }}
 configure_isp_port_speed_overrides() {{ echo 'downstream|isp-speed' >> "$FLOW_LOG"; }}
 configure_home_dashboard() {{ echo 'downstream|dashboard' >> "$FLOW_LOG"; }}
@@ -184,6 +219,42 @@ def test_ping_only_enrollment_deduplicates_by_ip_and_prefers_nonempty_name(
     assert completed.returncode == 0
     vip_calls = [line for line in log.splitlines() if line.endswith("|192.168.9.1")]
     assert vip_calls == ["ping|HA VIP|192.168.9.1"]
+
+
+def test_real_retire_path_disables_candidate_and_continues_through_ha_flow(
+    tmp_path,
+):
+    completed, log = _run_device_phase(
+        tmp_path,
+        real_retire=True,
+        PLAYER_SUBNETS="192.168.70.0/24",
+        RETIRE_OUTPUT="192.168.70.100",
+        FIREWALL_SNMP_TARGETS="192.168.9.1",
+        FIREWALL_UNIT_SNMP_TARGETS="192.168.9.11,192.168.9.12",
+        FIREWALL_SNMP_COMMUNITY="global",
+    )
+
+    assert completed.returncode == 0
+    assert "retire-cli|/target_utils.py retire-player-candidates" in log
+    assert "disable|192.168.70.100" in log
+    assert "snmp||192.168.9.11|global" in log
+    assert "snmp||192.168.9.12|global" in log
+    assert "[6/6] Setting up alert rules..." in completed.stdout
+
+
+def test_retire_python_failure_is_fatal_and_stops_later_configuration(tmp_path):
+    completed, log = _run_device_phase(
+        tmp_path,
+        real_retire=True,
+        PLAYER_SUBNETS="192.168.70.0/24",
+        RETIRE_PYTHON_EXIT="9",
+        FIREWALL_UNIT_SNMP_TARGETS="192.168.9.11,192.168.9.12",
+    )
+
+    assert completed.returncode == 9
+    assert "retire-cli|/target_utils.py retire-player-candidates" in log
+    assert "snmp|" not in log
+    assert "[6/6] Setting up alert rules..." not in completed.stdout
 
 
 def test_librenms_config_wrapper_propagates_fatal_auto_config_exit(tmp_path):

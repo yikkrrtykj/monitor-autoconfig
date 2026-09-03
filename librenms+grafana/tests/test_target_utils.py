@@ -54,6 +54,49 @@ def test_expand_ipv4_targets_supports_names_ranges_and_cidr():
     ]
 
 
+def test_retire_player_candidates_cli_executes_all_keep_target_formats():
+    payload = {
+        "devices": [
+            {"hostname": "192.168.70.100", "disabled": 0},
+            {"hostname": "192.168.70.101", "disabled": 0},
+            {"hostname": "192.168.70.102", "disabled": 0},
+            {"hostname": "192.168.70.103", "disabled": 0},
+            {"hostname": "192.168.70.104", "disabled": 0},
+            {"hostname": "192.168.70.105", "disabled": 0},
+            {"hostname": "192.168.70.6", "disabled": 0},
+            {"hostname": "192.168.70.7", "disabled": 0},
+            {"hostname": "192.168.70.108", "disabled": 1},
+            {"hostname": "192.168.71.100", "disabled": 0},
+            {"hostname": "not-an-ip", "disabled": 0},
+        ]
+    }
+    keep_targets = (
+        "192.168.70.101,"
+        "named:192.168.70.102,"
+        "192.168.70.103/32,"
+        "192.168.70.104-192.168.70.105,"
+        "192.168.70.1-7"
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "target_utils.py"),
+            "retire-player-candidates",
+            "192.168.70.0/24",
+            keep_targets,
+        ],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.splitlines() == ["192.168.70.100"]
+
+
 def test_real_display_name_wins_over_ip_placeholder():
     assert targets.merge_display_names(
         {"192.168.10.254": "192.168.10.254"},

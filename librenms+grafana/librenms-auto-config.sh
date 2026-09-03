@@ -899,62 +899,7 @@ retire_unmanaged_player_devices() {
   # device/RRD history and explicit targets are re-enabled by the sync helpers.
   keep_targets="${DISCOVERY_TARGETS},${CORE_SWITCH_PING},${DIST_SWITCH_PING:-},${TOURNAMENT_SWITCHES:-},${ISP_PING},${BIGSCREEN_ISP_IPS},${FIREWALL_PING},${FIREWALL_SNMP_TARGETS},${FIREWALL_UNIT_SNMP_TARGETS:-},${SERVER_PING},${PLAYER_GATEWAYS}"
   retired=$(printf '%s' "$devices" | \
-    PLAYER_SUBNETS="$PLAYER_SUBNETS" KEEP_TARGETS="$keep_targets" python3 -c '
-import ipaddress, json, os, sys
-
-def target_matcher(raw):
-    addresses = set()
-    networks = []
-    ranges = []
-    for token in (raw or "").split(","):
-        token = token.strip()
-        if not token:
-            continue
-        if "=" in token:
-            token = token.split("=", 1)[1]
-        if ":" in token:
-            token = token.rsplit(":", 1)[1]
-        try:
-            if "/" in token:
-                networks.append(ipaddress.ip_network(token, strict=False))
-            elif "-" in token:
-                start_raw, end_raw = token.split("-", 1)
-                start = ipaddress.ip_address(start_raw.strip())
-                if "." not in end_raw:
-                    end_raw = f"{str(start).rsplit('.', 1)[0]}.{end_raw.strip()}"
-                end = ipaddress.ip_address(end_raw.strip())
-                ranges.append((int(start), int(end)))
-            else:
-                addresses.add(str(ipaddress.ip_address(token)))
-        except ValueError:
-            continue
-    return lambda ip: (
-        str(ip) in addresses
-        or any(ip in network for network in networks)
-        or any(start <= int(ip) <= end for start, end in ranges)
-    )
-
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-
-nets = []
-for token in os.environ.get("PLAYER_SUBNETS", "").split(","):
-    try:
-        nets.append(ipaddress.ip_network(token.strip(), strict=False))
-    except ValueError:
-        pass
-is_kept = target_matcher(os.environ.get("KEEP_TARGETS", ""))
-for device in payload.get("devices", []):
-    hostname = str(device.get("hostname") or "").strip()
-    try:
-        ip = ipaddress.ip_address(hostname)
-    except ValueError:
-        continue
-    if any(ip in net for net in nets) and not is_kept(ip) and not int(device.get("disabled") or 0):
-        print(hostname)
-')
+    python3 /target_utils.py retire-player-candidates "$PLAYER_SUBNETS" "$keep_targets")
 
   [ -n "$retired" ] || return 0
   echo ""
