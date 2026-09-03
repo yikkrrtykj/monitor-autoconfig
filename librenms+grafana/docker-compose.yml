@@ -1112,9 +1112,14 @@ services:
         echo "Waiting for LibreNMS to fully initialize..."
         sleep 30
         echo "Running LibreNMS auto-configuration..."
-        /bin/sh /librenms-auto-config.sh
-        echo ""
-        echo "UniFi APs: optional via unpoller/controller API; bridge can auto-add online APs to LibreNMS by SNMP"
+        if /bin/sh /librenms-auto-config.sh; then
+          echo ""
+          echo "UniFi APs: optional via unpoller/controller API; bridge can auto-add online APs to LibreNMS by SNMP"
+        else
+          rc=$$?
+          echo "ERROR: LibreNMS auto-configuration failed (exit=$$rc)" >&2
+          exit "$$rc"
+        fi
 
   grafana:
     image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.0}

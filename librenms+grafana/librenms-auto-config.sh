@@ -973,6 +973,39 @@ parse_named_targets() {
   python3 /target_utils.py named-targets "${1:-}"
 }
 
+add_optional_ping_devices() {
+  targets=$1
+  # One logical target may be listed by more than one source (for example the
+  # HA VIP in both FIREWALL_PING and FIREWALL_SNMP_TARGETS). Keep first-seen
+  # order, prefer a useful display name, and enroll each final IP only once.
+  parse_named_targets "$targets" |
+    awk -F '|' '
+      $2 != "" {
+        name = $1
+        ip = $2
+        if (!(ip in positions)) {
+          positions[ip] = ++count
+          order[count] = ip
+          names[ip] = name
+        } else if (names[ip] == "" && name != "") {
+          names[ip] = name
+        }
+      }
+      END {
+        for (row = 1; row <= count; row++) {
+          ip = order[row]
+          print names[ip] "|" ip
+        }
+      }
+    ' |
+    while IFS='|' read -r name ip; do
+      [ -n "$ip" ] || continue
+      if ! add_ping_device_api "$name" "$ip"; then
+        echo "  WARNING: optional ping-only device failed: ${name:-$ip} ($ip); continuing" >&2
+      fi
+    done
+}
+
 discover_firewall_ports() {
   [ -n "$FIREWALL_SNMP_TARGETS" ] || return 0
   [ -f /opt/librenms/discovery.php ] || return 0
@@ -2124,10 +2157,7 @@ echo "[4b/5] Adding ping-only devices (ISP / Firewall / Servers)..."
 # 单机场景：FIREWALL_UNIT_SNMP_TARGETS 未设 → 物理 IP 来自 FIREWALL_PING 加 ping-only，
 #           VIP 不单独在此 ping（后面 SNMP 块处理）。
 _fw_vip_ping="${FIREWALL_UNIT_SNMP_TARGETS:+${FIREWALL_SNMP_TARGETS}}"
-parse_named_targets "${ISP_PING}${ISP_PING:+,}${BIGSCREEN_ISP_IPS}${BIGSCREEN_ISP_IPS:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}" |
-  while IFS='|' read -r name ip; do
-    [ -n "$ip" ] && add_ping_device_api "$name" "$ip"
-  done
+add_optional_ping_devices "${ISP_PING}${ISP_PING:+,}${BIGSCREEN_ISP_IPS}${BIGSCREEN_ISP_IPS:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}"
 
 retire_unmanaged_player_devices
 
