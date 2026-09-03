@@ -1,6 +1,45 @@
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import target_utils as targets
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_named_target_rows_accept_bare_and_named_firewall_ips():
+    assert targets.parse_named_ipv4_target_rows("192.168.9.1") == [
+        ("", "192.168.9.1")
+    ]
+    assert targets.parse_named_ipv4_target_rows("FW:192.168.9.1") == [
+        ("FW", "192.168.9.1")
+    ]
+    assert targets.parse_named_ipv4_target_rows(
+        "192.168.9.11,192.168.9.12"
+    ) == [("", "192.168.9.11"), ("", "192.168.9.12")]
+    assert targets.parse_named_ipv4_target_rows(
+        "FW-A:192.168.9.11,FW-B:192.168.9.12"
+    ) == [("FW-A", "192.168.9.11"), ("FW-B", "192.168.9.12")]
+
+
+def test_named_target_cli_preserves_empty_name_for_librenms_shell_consumer():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "target_utils.py"),
+            "named-targets",
+            "192.168.9.11,FW-B:192.168.9.12",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.splitlines() == [
+        "|192.168.9.11",
+        "FW-B|192.168.9.12",
+    ]
 
 
 def test_expand_ipv4_targets_supports_names_ranges_and_cidr():

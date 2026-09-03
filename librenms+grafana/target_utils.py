@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from ipaddress import IPv4Address, IPv4Network
 from typing import Any
 
@@ -108,9 +109,9 @@ def expand_ipv4_targets(raw: str, max_hosts: int = 4096) -> list[str]:
     return targets
 
 
-def parse_named_ipv4_targets(raw: str) -> dict[str, str]:
-    """Return IP -> display name for comma-separated NAME:IP target syntax."""
-    targets: dict[str, str] = {}
+def parse_named_ipv4_target_rows(raw: str) -> list[tuple[str, str]]:
+    """Return ``(name, IP)`` rows for bare-IP and ``NAME:IP`` targets."""
+    rows: list[tuple[str, str]] = []
     for entry in re.split(r"[,\n]+", raw or ""):
         entry = entry.strip()
         if not entry:
@@ -118,14 +119,28 @@ def parse_named_ipv4_targets(raw: str) -> dict[str, str]:
         name = entry.split(":", 1)[0].strip() if ":" in entry else ""
         ips = expand_ipv4_entry(entry)
         for index, ip in enumerate(ips, start=1):
-            if not name or name == ip:
-                display_name = ip
-            elif len(ips) == 1:
-                display_name = name
-            else:
+            display_name = name
+            if name and len(ips) > 1:
                 display_name = f"{name}{index}"
-            targets[ip] = display_name
+            rows.append((display_name, ip))
+    return rows
+
+
+def parse_named_ipv4_targets(raw: str) -> dict[str, str]:
+    """Return IP -> display name for comma-separated NAME:IP target syntax."""
+    targets: dict[str, str] = {}
+    for name, ip in parse_named_ipv4_target_rows(raw):
+        targets[ip] = name if name and name != ip else ip
     return targets
+
+
+def _main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "named-targets":
+        for name, ip in parse_named_ipv4_target_rows(argv[2]):
+            print(f"{name}|{ip}")
+        return 0
+    print("usage: target_utils.py named-targets TARGETS", file=sys.stderr)
+    return 2
 
 
 def merge_display_names(base: dict[str, str], incoming: dict[str, str]) -> dict[str, str]:
@@ -178,3 +193,7 @@ def write_json_atomic(path: str, payload: Any, *, sort_keys: bool = False) -> No
     with open(temporary, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=sort_keys)
     os.replace(temporary, path)
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv))

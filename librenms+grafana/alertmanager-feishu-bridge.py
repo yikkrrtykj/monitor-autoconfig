@@ -56,6 +56,11 @@ Env:
   DEVICE_DOWN_STATE_FILE  persisted active down alerts (default /bridge-state/device-down-alerts.json)
   DEVICE_PENDING_DELETE_ENABLED true = enable the long-lived company VM retirement workflow
                                 (default false for tournament appliances)
+  DEVICE_AUTO_DELETE_ENABLED true = enable long-offline LibreNMS cleanup when
+                                pending-delete is also enabled (default false)
+  DEVICE_AUTO_DELETE_AFTER_SECONDS minimum offline age (default 604800)
+  DEVICE_AUTO_DELETE_CHECK_INTERVAL_SECONDS cleanup interval (default 3600)
+  DEVICE_AUTO_DELETE_DRY_RUN true = log eligible deletes without sending DELETE
   DEVICE_REENROLL_AFTER_SECONDS offline age at which selected devices auto-retire (default 172800)
   DEVICE_REENROLL_JOBS    comma list of temporary-device jobs (default infra-dist-ping)
   DEVICE_LIBRENMS_SYNC_RETRY_SECONDS retry interval for retire/delete/re-add API calls (default 60)
@@ -109,7 +114,7 @@ from feishu_bridge.isp_watcher import IspBandwidthWatcher
 from feishu_bridge.online_identity import OnlineIdentityService
 from feishu_bridge.resource_watcher import ResourceWatcher
 from feishu_bridge.sysname_watcher import SysnameChangeWatcher
-from librenms_client import LibreNMSClient
+from librenms_client import LibreNMSClient, age_seconds
 from network_syslog import (
     MacFlapTracker,
     is_bpdu_event as _is_bpdu_event,
@@ -119,6 +124,7 @@ from network_syslog import (
     parse_link_state_event,
     parse_network_syslog_event,
 )
+from target_utils import expand_ipv4_targets, is_ipv4
 
 PORT = int(os.environ.get("FEISHU_BRIDGE_PORT", "5005"))
 DRY_RUN = os.environ.get("FEISHU_BRIDGE_DRY_RUN", "").lower() in ("1", "true", "yes", "on")
@@ -219,6 +225,34 @@ DEVICE_DOWN_JOBS = os.environ.get(
 DEVICE_PENDING_DELETE_ENABLED = os.environ.get(
     "DEVICE_PENDING_DELETE_ENABLED", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
+DEVICE_AUTO_DELETE_ENABLED = os.environ.get(
+    "DEVICE_AUTO_DELETE_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes", "on")
+DEVICE_AUTO_DELETE_AFTER_SECONDS = max(
+    1, int(os.environ.get("DEVICE_AUTO_DELETE_AFTER_SECONDS", "604800"))
+)
+DEVICE_AUTO_DELETE_CHECK_INTERVAL_SECONDS = max(
+    1, int(os.environ.get("DEVICE_AUTO_DELETE_CHECK_INTERVAL_SECONDS", "3600"))
+)
+DEVICE_AUTO_DELETE_DRY_RUN = os.environ.get(
+    "DEVICE_AUTO_DELETE_DRY_RUN", "true"
+).strip().lower() in ("1", "true", "yes", "on")
+DEVICE_AUTO_DELETE_PROTECTION_KEYS = (
+    "LIBRENMS_CORE_IP",
+    "CORE_SWITCH_PING",
+    "DIST_SWITCH_PING",
+    "TOURNAMENT_SWITCHES",
+    "FIREWALL_PING",
+    "FIREWALL_SNMP_TARGETS",
+    "FIREWALL_UNIT_SNMP_TARGETS",
+    "SERVER_PING",
+    "ISP_PING",
+    "BIGSCREEN_ISP_IPS",
+    "PLAYER_GATEWAYS",
+    "INTERCONNECT_SNMP_TARGETS",
+    "TOPOLOGY_DEVICES",
+    "TOPOLOGY_ARP_DEVICES",
+)
 # Long-lived company monitors may opt into the 48-hour human-confirmed device
 # retirement workflow. Tournament appliances default to the normal outage
 # lifecycle only and never generate pending-delete state.
@@ -1774,6 +1808,46 @@ def delete_librenms_device(ip, log_prefix="[DOWN]"):
     except Exception as exc:
         log(f"{log_prefix} LibreNMS device deletion failed for {ip}: {exc}")
     return ""
+
+
+def delete_librenms_device_record(token, device):
+    """Delete one already-listed LibreNMS device without another inventory GET."""
+    ip = _device_ip(device)
+    device_ref = device.get("device_id") or device.get("hostname") or ip
+    if not token or not LIBRENMS_URL or not device_ref:
+        return False
+    encoded_ref = parse.quote(str(device_ref), safe="")
+    req = request.Request(
+        f"{LIBRENMS_URL}/api/v0/devices/{encoded_ref}",
+        headers={"X-Auth-Token": token},
+        method="DELETE",
+    )
+    try:
+        with request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        entries = data if isinstance(data, list) else [data]
+        return any(
+            str(item.get("status") or "").lower() == "ok"
+            for item in entries
+            if isinstance(item, dict)
+        )
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
+        log(
+            f"[device-auto-delete] DELETE HTTP {exc.code} hostname="
+            f"{device.get('hostname') or ip or '?'} device_id={device.get('device_id') or '?'}: "
+            f"{body[:160]}"
+        )
+    except Exception as exc:
+        log(
+            f"[device-auto-delete] DELETE failed hostname="
+            f"{device.get('hostname') or ip or '?'} device_id={device.get('device_id') or '?'}: {exc}"
+        )
+    return False
 
 
 def add_librenms_snmp_device(ip, name="", community=None, log_prefix="[WATCHER]"):
@@ -3507,6 +3581,175 @@ def _blackbox_icmp_probe(ip):
     return float(match.group(1)) >= 1
 
 
+def device_auto_delete_protected_ips(environment=None):
+    """Expand only explicitly configured infrastructure targets.
+
+    Discovery ranges are intentionally absent: being auto-discovered in a
+    broad range must not make a retired device permanent.
+    """
+    values = os.environ if environment is None else environment
+    protected = set()
+    for key in DEVICE_AUTO_DELETE_PROTECTION_KEYS:
+        protected.update(expand_ipv4_targets(values.get(key, "")))
+    return protected
+
+
+def _device_is_explicitly_down(device):
+    value = device.get("status")
+    return value == 0 or str(value).strip() == "0"
+
+
+def run_device_auto_delete_cycle(
+    *, now=None, devices=None, token=None, probe=None, delete=None,
+):
+    """Safely clean long-offline LibreNMS devices in one bounded API cycle."""
+    stats = {
+        "scanned": 0,
+        "candidates": 0,
+        "dry_run": 0,
+        "deleted": 0,
+        "delete_failed": 0,
+    }
+    if not (DEVICE_PENDING_DELETE_ENABLED and DEVICE_AUTO_DELETE_ENABLED):
+        return stats
+
+    if token is None:
+        token = _librenms_token()
+    if not token:
+        log("[device-auto-delete] skipped: LibreNMS API token unavailable")
+        return stats
+    if devices is None:
+        try:
+            devices = fetch_librenms_devices(token)
+        except Exception as exc:
+            log(f"[device-auto-delete] device inventory failed: {exc}")
+            return stats
+
+    current_time = time.time() if now is None else now
+    protected = device_auto_delete_protected_ips()
+    probe_device = probe or _blackbox_icmp_probe
+    delete_device = delete or delete_librenms_device_record
+
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        stats["scanned"] += 1
+        if not _device_is_explicitly_down(device):
+            continue
+
+        ip = _device_ip(device)
+        hostname = str(device.get("hostname") or ip or "?").strip()
+        device_id = device.get("device_id") or "?"
+        if not is_ipv4(ip):
+            log(
+                f"[device-auto-delete] invalid-target hostname={hostname} "
+                f"device_id={device_id}; skip"
+            )
+            continue
+        if ip in protected:
+            log(
+                f"[device-auto-delete] protected hostname={hostname} ip={ip} "
+                f"device_id={device_id}; skip"
+            )
+            continue
+
+        disabled = device.get("disabled")
+        if disabled not in (0, "0", False):
+            log(
+                f"[device-auto-delete] disabled hostname={hostname} ip={ip} "
+                f"device_id={device_id}; skip"
+            )
+            continue
+
+        offline_seconds = age_seconds(device.get("last_polled"), now=current_time)
+        if offline_seconds is None or offline_seconds < 0:
+            log(
+                f"[device-auto-delete] invalid-last-polled hostname={hostname} "
+                f"ip={ip} device_id={device_id}; skip"
+            )
+            continue
+        offline_seconds = int(offline_seconds)
+        if offline_seconds < DEVICE_AUTO_DELETE_AFTER_SECONDS:
+            log(
+                f"[device-auto-delete] recent hostname={hostname} ip={ip} "
+                f"device_id={device_id} offline_seconds={offline_seconds}; skip"
+            )
+            continue
+
+        stats["candidates"] += 1
+        log(
+            f"[device-auto-delete] candidate hostname={hostname} ip={ip} "
+            f"device_id={device_id} offline_seconds={offline_seconds}"
+        )
+        try:
+            reachable = probe_device(ip)
+        except Exception as exc:
+            log(
+                f"[device-auto-delete] probe-error hostname={hostname} ip={ip} "
+                f"device_id={device_id}: {exc}; skip"
+            )
+            continue
+        if reachable is True:
+            log(
+                f"[device-auto-delete] reachable-now hostname={hostname} ip={ip} "
+                f"device_id={device_id}; skip"
+            )
+            continue
+        if reachable is not False:
+            log(
+                f"[device-auto-delete] probe-error hostname={hostname} ip={ip} "
+                f"device_id={device_id}: indeterminate result; skip"
+            )
+            continue
+        if DEVICE_AUTO_DELETE_DRY_RUN:
+            stats["dry_run"] += 1
+            log(
+                f"[device-auto-delete] DRY-RUN would delete hostname={hostname} "
+                f"ip={ip} device_id={device_id} offline_seconds={offline_seconds}"
+            )
+            continue
+
+        try:
+            deleted = bool(delete_device(token, device))
+        except Exception as exc:
+            log(
+                f"[device-auto-delete] delete-failed hostname={hostname} ip={ip} "
+                f"device_id={device_id}: {exc}"
+            )
+            stats["delete_failed"] += 1
+            continue
+        if deleted:
+            stats["deleted"] += 1
+            log(
+                f"[device-auto-delete] deleted hostname={hostname} "
+                f"device_id={device_id} offline_seconds={offline_seconds}"
+            )
+        else:
+            stats["delete_failed"] += 1
+            log(
+                f"[device-auto-delete] delete-failed hostname={hostname} ip={ip} "
+                f"device_id={device_id}; retry next cycle"
+            )
+    return stats
+
+
+def device_auto_delete_watcher():
+    log(
+        "[device-auto-delete] watcher enabled "
+        f"after={DEVICE_AUTO_DELETE_AFTER_SECONDS}s "
+        f"interval={DEVICE_AUTO_DELETE_CHECK_INTERVAL_SECONDS}s "
+        f"dry_run={DEVICE_AUTO_DELETE_DRY_RUN}"
+    )
+    while True:
+        try:
+            run_device_auto_delete_cycle()
+            mark_watcher_health("device-auto-delete", True)
+        except Exception as exc:
+            mark_watcher_health("device-auto-delete", False, exc)
+            log(f"[device-auto-delete] cycle failed: {exc}")
+        time.sleep(DEVICE_AUTO_DELETE_CHECK_INTERVAL_SECONDS)
+
+
 def probe_unifi_ap_ips(known):
     """Probe each unique controller AP address; None means probe infrastructure failed."""
     global UNIFI_AP_PING_WARN_TS
@@ -4679,7 +4922,9 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     log(
         f"listening on 0.0.0.0:{PORT}  dry_run={DRY_RUN}  "
-        f"token_set={bool(TOKEN)}  pending_delete={DEVICE_PENDING_DELETE_ENABLED}"
+        f"token_set={bool(TOKEN)}  pending_delete={DEVICE_PENDING_DELETE_ENABLED} "
+        f"auto_delete={DEVICE_AUTO_DELETE_ENABLED} "
+        f"auto_delete_dry_run={DEVICE_AUTO_DELETE_DRY_RUN}"
     )
     if not TOKEN and not DRY_RUN:
         log("[WARN] no FEISHU_ROBOT_TOKEN set; LibreNMS alerts will not be forwarded")
@@ -4689,6 +4934,13 @@ def main():
         start_watcher("device-online", device_watcher)
         if SYSNAME_CHANGE_ALERT_ENABLED:
             start_watcher("sysname-change", sysname_change_watcher)
+        if DEVICE_PENDING_DELETE_ENABLED and DEVICE_AUTO_DELETE_ENABLED:
+            start_watcher("device-auto-delete", device_auto_delete_watcher)
+        elif DEVICE_AUTO_DELETE_ENABLED:
+            log(
+                "[device-auto-delete] disabled: "
+                "DEVICE_PENDING_DELETE_ENABLED must also be true"
+            )
     else:
         log("[WATCHER] LIBRENMS_URL not set, device watcher disabled")
 

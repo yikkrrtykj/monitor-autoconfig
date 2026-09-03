@@ -279,6 +279,13 @@ Pending Delete 是部署级可选能力，同一套代码不区分分支：
   `DEVICE_PENDING_DELETE_ENABLED=true`。此时 48 小时检测、持久化状态、飞书确认删除/保留
   按钮和控制台入口均启用；删除仍需人工确认，并继续执行在线复核与 token 校验。
 
+公司长期 Monitoring VM 还可选择清理 LibreNMS 中持续离线的历史设备。该能力只有
+`DEVICE_PENDING_DELETE_ENABLED=true` 和 `DEVICE_AUTO_DELETE_ENABLED=true` 同时成立才运行，
+默认阈值为 7 天、每小时检查一次，并保持 `DEVICE_AUTO_DELETE_DRY_RUN=true`。确认 DRY RUN
+日志无误后才可关闭 DRY RUN；删除前会重新通过 blackbox ICMP 确认，探测异常时一律跳过。
+核心、赛事交换机、防火墙 VIP/HA 物理节点、服务器、ISP 和选手网关等显式目标永久保护，
+但 discovery range 不会整体受保护。比赛 Golden VM 的 auto-delete 默认关闭。
+
 旧安装无法仅凭遗留参数可靠判断用途；公司服务器升级前必须补上上述 `true`，已有
 bridge-state 会继续沿用。公司模式的飞书按钮还需订阅 `card.action.trigger`。
 

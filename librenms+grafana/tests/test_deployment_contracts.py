@@ -760,6 +760,95 @@ def test_pending_delete_is_deployment_gated_without_hiding_feishu_app_config():
     assert "公司服务器升级前必须补上" in readme
 
 
+def test_device_auto_delete_defaults_are_safe_and_bridge_scoped():
+    compose = read("docker-compose.yml")
+    example = read(".env.example")
+    bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split(
+        "  snmp-exporter:", 1
+    )[0]
+
+    defaults = {
+        "DEVICE_PENDING_DELETE_ENABLED": "false",
+        "DEVICE_AUTO_DELETE_ENABLED": "false",
+        "DEVICE_AUTO_DELETE_AFTER_SECONDS": "604800",
+        "DEVICE_AUTO_DELETE_CHECK_INTERVAL_SECONDS": "3600",
+        "DEVICE_AUTO_DELETE_DRY_RUN": "true",
+    }
+    for key, value in defaults.items():
+        assert f"{key}={value}\n" in example
+        assert f'{key}: "${{{key}:-{value}}}"' in bridge_service
+
+    assert "DEVICE_PENDING_DELETE_ENABLED and DEVICE_AUTO_DELETE_ENABLED" in read(
+        "alertmanager-feishu-bridge.py"
+    )
+    assert "DEVICE_AUTO_DELETE_DRY_RUN=true" in read("../README.md")
+    assert "DEVICE_AUTO_DELETE_ENABLED=true" in read("../README.md")
+    assert "DELETE FROM devices" not in read("alertmanager-feishu-bridge.py")
+
+
+def test_bridge_auto_delete_receives_only_explicit_protection_targets():
+    compose = read("docker-compose.yml")
+    bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split(
+        "  snmp-exporter:", 1
+    )[0]
+    bridge = read("alertmanager-feishu-bridge.py")
+
+    for key in (
+        "LIBRENMS_CORE_IP",
+        "CORE_SWITCH_PING",
+        "DIST_SWITCH_PING",
+        "TOURNAMENT_SWITCHES",
+        "FIREWALL_PING",
+        "FIREWALL_SNMP_TARGETS",
+        "FIREWALL_UNIT_SNMP_TARGETS",
+        "SERVER_PING",
+        "ISP_PING",
+        "BIGSCREEN_ISP_IPS",
+        "PLAYER_GATEWAYS",
+        "INTERCONNECT_SNMP_TARGETS",
+        "TOPOLOGY_DEVICES",
+        "TOPOLOGY_ARP_DEVICES",
+    ):
+        assert f'{key}: "${{{key}:-}}"' in bridge_service
+        assert f'"{key}"' in bridge
+    for range_key in (
+        "LIBRENMS_DISCOVERY_TARGETS",
+        "FIREWALL_DISCOVERY_RANGE",
+        "SWITCH_DISCOVERY_RANGE",
+    ):
+        assert f"{range_key}:" not in bridge_service
+        assert f'"{range_key}"' not in bridge.split(
+            "DEVICE_AUTO_DELETE_PROTECTION_KEYS =", 1
+        )[1].split(")", 1)[0]
+    assert "./target_utils.py:/app/target_utils.py:ro" in bridge_service
+
+
+def test_ha_firewall_targets_reach_correct_runtime_consumers():
+    compose = read("docker-compose.yml")
+    auto_config = read("librenms-auto-config.sh")
+    librenms_config = compose.split("  librenms-config:", 1)[1].split(
+        "  grafana:", 1
+    )[0]
+    topology = compose.split("  topology-collector:", 1)[1].split(
+        "  bigscreen:", 1
+    )[0]
+
+    assert 'FIREWALL_UNIT_SNMP_TARGETS: "${FIREWALL_UNIT_SNMP_TARGETS:-}"' in librenms_config
+    assert "./target_utils.py:/target_utils.py:ro" in librenms_config
+    assert '_fw_librenms_snmp="${FIREWALL_UNIT_SNMP_TARGETS:-$FIREWALL_SNMP_TARGETS}"' in auto_config
+    assert 'parse_named_targets "$_fw_librenms_snmp"' in auto_config
+    assert 'add_device_api "$name" "$ip" "$FIREWALL_SNMP_COMMUNITY"' in auto_config
+    assert 'parse_named_targets "$FIREWALL_SNMP_TARGETS"' in auto_config
+    assert auto_config.count("if (str_contains($raw, ':'))") >= 2
+    assert auto_config.count("$ip = $raw;") >= 2
+    assert 'FIREWALL_UNIT_SNMP_TARGETS: "${FIREWALL_UNIT_SNMP_TARGETS:-}"' in topology
+    assert "FIREWALL_SNMP_TARGETS FIREWALL_UNIT_SNMP_TARGETS" in topology
+    # The ordinary immediate scan remains switch-only; firewall ranges stay in
+    # LibreNMS nets[] and explicit firewall add uses its own community.
+    assert 'expand_targets "$DISCOVERY_TARGETS"' in auto_config
+    assert 'expand_targets "${DISCOVERY_TARGETS},${FIREWALL_DISCOVERY_RANGE}"' not in auto_config
+
+
 def test_retired_isp_history_is_filtered_by_current_prometheus_targets():
     controller = read("bigscreen/infra/infra-controller.js")
     assert "infraCurrentTargets" in controller

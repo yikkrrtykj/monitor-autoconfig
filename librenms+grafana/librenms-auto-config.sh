@@ -24,6 +24,8 @@ fi
 DISCOVERY_TARGETS="${LIBRENMS_DISCOVERY_TARGETS:-}"
 FIREWALL_DISCOVERY_RANGE="${FIREWALL_DISCOVERY_RANGE:-}"
 FIREWALL_SNMP_COMMUNITY="${FIREWALL_SNMP_COMMUNITY:-${SNMP_COMMUNITY:-global}}"
+FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
+FIREWALL_UNIT_SNMP_TARGETS="${FIREWALL_UNIT_SNMP_TARGETS:-}"
 FEISHU_ROBOT_TOKEN="${FEISHU_ROBOT_TOKEN:-}"
 ISP_PING="${ISP_PING:-}"
 BIGSCREEN_ISP_IPS="${BIGSCREEN_ISP_IPS:-}"
@@ -967,15 +969,8 @@ for device in payload.get("devices", []):
   done
 }
 
-firewall_snmp_targets() {
-  for combined in $(echo "$FIREWALL_SNMP_TARGETS" | tr ',' '\n'); do
-    combined=$(echo "$combined" | tr -d '[:space:]')
-    [ -z "$combined" ] && continue
-    case "$combined" in
-      *:*) echo "${combined%%:*}|${combined#*:}" ;;
-      *) echo "|$combined" ;;
-    esac
-  done
+parse_named_targets() {
+  python3 /target_utils.py named-targets "${1:-}"
 }
 
 discover_firewall_ports() {
@@ -984,7 +979,7 @@ discover_firewall_ports() {
 
   echo ""
   echo "  Discovering firewall WAN ports..."
-  firewall_snmp_targets | while IFS='|' read -r name ip; do
+  parse_named_targets "$FIREWALL_SNMP_TARGETS" | while IFS='|' read -r name ip; do
     [ -n "$ip" ] || continue
     if php /opt/librenms/discovery.php -h "$ip" -m ports >/dev/null 2>&1; then
       echo "  ${name:-$ip} ($ip): ports discovered"
@@ -2129,16 +2124,10 @@ echo "[4b/5] Adding ping-only devices (ISP / Firewall / Servers)..."
 # 单机场景：FIREWALL_UNIT_SNMP_TARGETS 未设 → 物理 IP 来自 FIREWALL_PING 加 ping-only，
 #           VIP 不单独在此 ping（后面 SNMP 块处理）。
 _fw_vip_ping="${FIREWALL_UNIT_SNMP_TARGETS:+${FIREWALL_SNMP_TARGETS}}"
-for combined in $(echo "${ISP_PING}${ISP_PING:+,}${BIGSCREEN_ISP_IPS}${BIGSCREEN_ISP_IPS:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}" | tr ',' '\n'); do
-  combined=$(echo "$combined" | tr -d '[:space:]')
-  [ -z "$combined" ] && continue
-  case "$combined" in *:*)
-    name="${combined%%:*}"
-    ip_part="${combined#*:}"
-    ip="${ip_part%%-*}"
+parse_named_targets "${ISP_PING}${ISP_PING:+,}${BIGSCREEN_ISP_IPS}${BIGSCREEN_ISP_IPS:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}" |
+  while IFS='|' read -r name ip; do
     [ -n "$ip" ] && add_ping_device_api "$name" "$ip"
-  ;; esac
-done
+  done
 
 retire_unmanaged_player_devices
 
@@ -2149,14 +2138,9 @@ _fw_librenms_snmp="${FIREWALL_UNIT_SNMP_TARGETS:-$FIREWALL_SNMP_TARGETS}"
 if [ -n "$_fw_librenms_snmp" ] && [ -n "$API_TOKEN" ]; then
   echo ""
   echo "  Adding firewall SNMP devices to LibreNMS..."
-  for combined in $(echo "$_fw_librenms_snmp" | tr ',' '\n'); do
-    combined=$(echo "$combined" | tr -d '[:space:]')
-    [ -z "$combined" ] && continue
-    case "$combined" in *:*)
-      name="${combined%%:*}"
-      ip="${combined#*:}"
-      add_device_api "$name" "$ip" "$FIREWALL_SNMP_COMMUNITY" || true
-    ;; esac
+  parse_named_targets "$_fw_librenms_snmp" | while IFS='|' read -r name ip; do
+    [ -n "$ip" ] || continue
+    add_device_api "$name" "$ip" "$FIREWALL_SNMP_COMMUNITY" || true
   done
 fi
 

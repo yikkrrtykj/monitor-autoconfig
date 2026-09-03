@@ -23,6 +23,7 @@ those; discovery only ever adds targets.
 Env vars:
   ISP_GATEWAY_AUTO_DISCOVER   true = enabled (default true)
   FIREWALL_SNMP_TARGETS       firewall SNMP address(es), NAME:IP comma list
+  FIREWALL_UNIT_SNMP_TARGETS  non-empty marks HA physical-unit mode
   FIREWALL_SNMP_COMMUNITY     community (falls back to SNMP_COMMUNITY)
   FIREWALL_WAN_IF_FILTER      WAN interface keywords (same as the bridge)
   BIGSCREEN_ISP_NAMES         console ISP row names, applied in ifIndex order
@@ -45,7 +46,11 @@ import subprocess
 import sys
 
 from librenms_client import LibreNMSClient, LibreNMSError, age_seconds
-from target_utils import is_ipv4 as looks_like_ip, write_json_atomic as write_file_sd
+from target_utils import (
+    expand_ipv4_targets,
+    is_ipv4 as looks_like_ip,
+    write_json_atomic as write_file_sd,
+)
 
 OID_IF_DESCR = ".1.3.6.1.2.1.2.2.1.2"
 OID_IF_NAME = ".1.3.6.1.2.1.31.1.1.1.1"
@@ -156,16 +161,7 @@ def same_subnet(ip_a: str, ip_b: str, mask: str) -> bool:
 
 
 def target_ips(raw: str) -> list[str]:
-    out = []
-    for part in re.split(r"[,\n]+", raw or ""):
-        part = part.strip()
-        if not part:
-            continue
-        if ":" in part:
-            part = part.split(":", 1)[1].strip()
-        if looks_like_ip(part):
-            out.append(part)
-    return out
+    return expand_ipv4_targets(raw)
 
 
 def _public_wan_address(value: str) -> bool:
@@ -623,6 +619,8 @@ def main() -> None:
     enabled = os.environ.get("ISP_GATEWAY_AUTO_DISCOVER", "true").lower() in ("1", "true", "yes", "on")
     mode = isp_discovery_source()
     firewall_targets = target_ips(os.environ.get("FIREWALL_SNMP_TARGETS", ""))
+    ha_mode = bool(os.environ.get("FIREWALL_UNIT_SNMP_TARGETS", "").strip())
+    ha_vip_hybrid = ha_mode and mode == "hybrid"
     community = (
         os.environ.get("FIREWALL_SNMP_COMMUNITY", "").strip()
         or os.environ.get("SNMP_COMMUNITY", "global")
@@ -658,7 +656,7 @@ def main() -> None:
 
     client = None
     librenms_ready = False
-    if mode != "direct-snmp":
+    if mode != "direct-snmp" and not ha_vip_hybrid:
         client = LibreNMSClient()
         try:
             client.list_devices()
@@ -687,6 +685,23 @@ def main() -> None:
             if current:
                 per_device_results.append(current)
                 break
+    elif ha_vip_hybrid:
+        # HA physical nodes are the full LibreNMS devices, while these targets
+        # are logical business VIPs. Querying LibreNMS for a VIP inventory is
+        # both inapplicable and noisy, so hybrid deliberately uses the VIP's
+        # live SNMP inventory and routing data without making an API request.
+        for ip in firewall_targets:
+            current = collect(
+                ip, community, keywords, timeout,
+                configured_names=configured_names,
+            )
+            print(
+                f"[isp-discovery] source=hybrid device={ip} mode=ha-vip "
+                "inventory=direct-snmp gateway=direct-snmp",
+                file=sys.stderr,
+            )
+            if current:
+                per_device_results.append(current)
     else:
         for ip in firewall_targets:
             current = []

@@ -604,10 +604,54 @@ def _main_env(monkeypatch, tmp_path, source, targets="192.0.2.10"):
     monkeypatch.setenv("ISP_GATEWAY_AUTO_DISCOVER", "true")
     monkeypatch.setenv("ISP_DISCOVERY_SOURCE", source)
     monkeypatch.setenv("FIREWALL_SNMP_TARGETS", targets)
+    monkeypatch.setenv("FIREWALL_UNIT_SNMP_TARGETS", "")
     monkeypatch.setenv("FIREWALL_SNMP_COMMUNITY", "private-do-not-log")
     monkeypatch.setenv("FIREWALL_WAN_IF_FILTER", "wan")
     monkeypatch.setenv("BIGSCREEN_ISP_NAMES", "")
     monkeypatch.setenv("ISP_PING", "")
+
+
+def test_main_ha_hybrid_uses_only_logical_vip_direct_snmp(
+    monkeypatch, tmp_path, capsys
+):
+    _main_env(monkeypatch, tmp_path, "hybrid", targets="192.168.9.1")
+    monkeypatch.setenv(
+        "FIREWALL_UNIT_SNMP_TARGETS", "192.168.9.11,192.168.9.12"
+    )
+    direct_calls = []
+    written = []
+    monkeypatch.setattr(
+        disco,
+        "LibreNMSClient",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("HA VIP hybrid mode must not call LibreNMS")
+        ),
+    )
+    monkeypatch.setattr(
+        disco,
+        "collect",
+        lambda ip, *_args, **_kwargs: direct_calls.append(ip) or [{
+            "gateway": "8.8.8.9",
+            "name": "WAN",
+            "wan_ip": "8.8.8.10",
+            "source": "gateway",
+        }],
+    )
+    monkeypatch.setattr(
+        disco, "write_file_sd", lambda _path, payload: written.append(payload)
+    )
+
+    disco.main()
+
+    assert direct_calls == ["192.168.9.1"]
+    assert written[0][0]["targets"] == ["8.8.8.9"]
+    log = capsys.readouterr().err
+    assert (
+        "source=hybrid device=192.168.9.1 mode=ha-vip "
+        "inventory=direct-snmp gateway=direct-snmp"
+    ) in log
+    assert "collection stats: api_requests=0" in log
+    assert "LibreNMS WAN inventory failed" not in log
 
 
 def test_main_librenms_only_never_calls_snmp_and_keeps_output_schema(
