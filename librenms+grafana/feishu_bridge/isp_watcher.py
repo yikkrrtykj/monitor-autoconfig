@@ -8,7 +8,7 @@ import re
 import time
 
 
-def _parse_bandwidth_config(raw, normalize_label):
+def _parse_bandwidth_config(raw, _normalize_label=None):
     raw = str(raw or "").strip()
     cfg = {"default": None, "per": []}
     if not raw:
@@ -39,7 +39,6 @@ def _parse_bandwidth_config(raw, normalize_label):
             continue
         cfg["per"].append({
             "label": label.lower(),
-            "norm": normalize_label(label),
             "down": down,
             "up": up,
         })
@@ -66,19 +65,20 @@ def _is_wan_port(label, wan_filter):
     return False
 
 
-def _bandwidth_for_label(label, direction, cfg, normalize_label, index=None):
+def _bandwidth_entry_for_label(label, cfg, identity_ambiguous=False):
+    if identity_ambiguous:
+        return None
     lower = label.lower()
-    norm = normalize_label(label)
-    # Prefer the most specific label. 电信2 must beat the earlier 电信 fallback.
-    best = None
     for entry in cfg["per"]:
-        if (entry["label"] and entry["label"] in lower) or (entry["norm"] and entry["norm"] in norm):
-            if best is None or len(entry["norm"]) > len(best["norm"]):
-                best = entry
-    if best is not None:
-        return best["down"] if direction == "in" else best["up"]
-    if isinstance(index, int) and 0 <= index < len(cfg["per"]):
-        entry = cfg["per"][index]
+        if entry["label"] == lower:
+            return entry
+    return None
+
+
+def _bandwidth_for_label(label, direction, cfg, _normalize_label=None,
+                         identity_ambiguous=False):
+    entry = _bandwidth_entry_for_label(label, cfg, identity_ambiguous)
+    if entry is not None:
         return entry["down"] if direction == "in" else entry["up"]
     default = cfg["default"] or {"down": 1000.0, "up": 1000.0}
     return default["down"] if direction == "in" else default["up"]
@@ -98,7 +98,12 @@ def _counter_glitch_limit_bps(capacity_mbps, factor):
 
 
 def _dedupe_wan_labels(results):
-    """Suffix duplicate WAN names by ifIndex, with stable directional fallback."""
+    """Keep native labels and isolate duplicate-series state without renaming.
+
+    ifIndex is useful for distinguishing simultaneous Prometheus series, but it
+    is not stable identity evidence and must never manufacture the label used
+    to bind per-ISP bandwidth metadata.
+    """
     occ = {}
     for sample in results:
         try:
@@ -113,31 +118,19 @@ def _dedupe_wan_labels(results):
     idents = {}
     for sample in results:
         idents.setdefault(sample["label"], set()).add(sample["_line"])
-    ranks = {
-        label: {ident: pos + 1 for pos, ident in enumerate(sorted(values))}
-        for label, values in idents.items()
-        if len(values) > 1
-    }
     for sample in results:
         label = sample["label"]
-        if label in ranks:
-            sample["label"] = f"{label}-{ranks[label][sample['_line']]}"
-        sample["key"] = f"{sample['label']}|{sample['direction']}"
+        ambiguous = len(idents[label]) > 1
+        if ambiguous:
+            sample["_identity_ambiguous"] = True
+            target = sample.get("target_ip") or "unknown-target"
+            sample["key"] = (
+                f"{label}|{target}|{sample['_line']}|{sample['direction']}"
+            )
+        else:
+            sample["key"] = f"{label}|{sample['direction']}"
         sample.pop("_line", None)
     return results
-
-
-def _bandwidth_indexes(rates):
-    ports = {}
-    for sample in rates:
-        label = sample["label"]
-        try:
-            if_index = int(sample.get("if_index"))
-        except (TypeError, ValueError):
-            if_index = 2**31
-        ports[label] = min(if_index, ports.get(label, 2**31))
-    ordered = sorted(ports, key=lambda label: (ports[label], label.lower()))
-    return {label: index for index, label in enumerate(ordered)}
 
 
 class IspBandwidthWatcher:
@@ -227,11 +220,11 @@ class IspBandwidthWatcher:
             return
 
         rows = []
-        indexes = _bandwidth_indexes(rates)
         for sample in sorted(rates, key=lambda item: item["value_bps"], reverse=True)[:6]:
             capacity_mbps = _bandwidth_for_label(
                 sample["label"], sample["direction"], bandwidth_cfg,
-                self.normalize_label, indexes.get(sample["label"]),
+                self.normalize_label,
+                sample.get("_identity_ambiguous", False),
             )
             threshold_bps = capacity_mbps * 1000000 * (self.saturation_percent / 100.0)
             rows.append(
@@ -251,6 +244,7 @@ class IspBandwidthWatcher:
         data_missing_since = None
         data_missing_alerting = False
         states = {}
+        warned_unmatched_bandwidth = set()
         self.log(
             "[ISP] realtime bandwidth watcher enabled "
             f"(threshold={self.saturation_percent:g}%, for={self.alert_for_seconds}s, "
@@ -301,12 +295,25 @@ class IspBandwidthWatcher:
                 last_status_log = now
 
             seen = set()
-            indexes = _bandwidth_indexes(rates)
             for sample in rates:
                 seen.add(sample["key"])
+                if (
+                    bandwidth_cfg["per"]
+                    and _bandwidth_entry_for_label(
+                        sample["label"], bandwidth_cfg,
+                        sample.get("_identity_ambiguous", False),
+                    ) is None
+                    and sample["label"].lower() not in warned_unmatched_bandwidth
+                ):
+                    warned_unmatched_bandwidth.add(sample["label"].lower())
+                    self.log(
+                        f"[ISP] WARNING no exact bandwidth metadata match for "
+                        f"{sample['label']}; using global fallback"
+                    )
                 capacity_mbps = _bandwidth_for_label(
                     sample["label"], sample["direction"], bandwidth_cfg,
-                    self.normalize_label, indexes.get(sample["label"]),
+                    self.normalize_label,
+                    sample.get("_identity_ambiguous", False),
                 )
                 glitch_limit = _counter_glitch_limit_bps(
                     capacity_mbps, self.spike_ignore_factor,

@@ -402,8 +402,7 @@
     return uniqueNames(String(config.ispNames || "")
       .split(",")
       .map((name) => name.trim())
-      .filter(Boolean))
-      .slice(0, 4);
+      .filter(Boolean));
   }
 
   // 非自动发现 / 兜底时使用：有显式名字用显式的，否则回退 ISP1,ISP2 默认（保持旧行为）。
@@ -433,8 +432,9 @@
       const targets = entry && Array.isArray(entry.targets) ? entry.targets : [];
       const name = String(labels.display_name || "").trim();
       const gateway = String(targets[0] || "").trim();
-      if (!name || !gateway || seen.has(name)) return;
-      seen.add(name);
+      const identity = name.toLocaleLowerCase();
+      if (!name || !gateway || seen.has(identity)) return;
+      seen.add(identity);
       inventory.push({
         name,
         gateway,
@@ -461,9 +461,10 @@
 
   async function fetchIspInventory() {
     const configured = manualIspInventory();
-    if (configured.length) return configured;
     if (!isIspAutoDiscoveryEnabled()) {
-      return getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
+      return configured.length
+        ? configured
+        : getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
     }
 
     const now = Date.now();
@@ -474,8 +475,10 @@
     try {
       const response = await fetchWithTimeout("/topology/isp_targets.json", { cache: "no-store" });
       if (!response.ok) throw new Error(`ISP inventory HTTP ${response.status}`);
-      const inventory = parseIspTargetInventory(await response.json());
-      if (!inventory.length) throw new Error("ISP inventory is empty or malformed");
+      const payload = await response.json();
+      if (!Array.isArray(payload)) throw new Error("ISP inventory is not an array");
+      const inventory = parseIspTargetInventory(payload);
+      if (inventory.length !== payload.length) throw new Error("ISP inventory is malformed");
       ispInventoryCache = inventory;
       ispInventoryCachedAt = now;
       return ispInventoryCache;
@@ -485,12 +488,16 @@
         const inventory = await prometheusIspInventory();
         ispInventoryCache = inventory.length
           ? inventory
-          : getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
+          : (configured.length ? configured : getIspNames().map((name) => ({
+            name, gateway: "", wanIp: "", discoverySource: "default"
+          })));
         ispInventoryCachedAt = now;
         return ispInventoryCache;
       } catch (error) {
         console.warn("ISP discovery failed", error);
-        return getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
+        return configured.length
+          ? configured
+          : getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
       }
     }
   }
@@ -524,15 +531,23 @@
     }));
   }
 
-  function ispCapacityBps(name, direction, index = -1) {
+  const warnedIspBandwidthNames = new Set();
+
+  function ispCapacityBps(name, direction) {
     const cfg = parseIspBandwidthConfig(config.ispMaxBandwidthMbps);
-    const entry = cfg.perIsp[name] || cfg.ordered[index] || cfg.default;
+    const configuredName = Object.keys(cfg.perIsp)
+      .find((item) => item.toLocaleLowerCase() === String(name || "").toLocaleLowerCase());
+    if (!configuredName && Object.keys(cfg.perIsp).length && !warnedIspBandwidthNames.has(name)) {
+      warnedIspBandwidthNames.add(name);
+      console.warn(`No exact bandwidth metadata match for ISP ${name}; using global fallback`);
+    }
+    const entry = (configuredName && cfg.perIsp[configuredName]) || cfg.default;
     const mbps = direction === "in" ? entry.down : entry.up;
     return Math.max(1, Number(mbps) || 1000) * 1000 * 1000;
   }
 
-  function ispChartMaxBps(name, index = -1) {
-    return Math.max(ispCapacityBps(name, "in", index), ispCapacityBps(name, "out", index));
+  function ispChartMaxBps(name) {
+    return Math.max(ispCapacityBps(name, "in"), ispCapacityBps(name, "out"));
   }
 
   async function fetchTopologyTargets() {

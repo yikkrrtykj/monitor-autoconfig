@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -130,6 +131,16 @@ case "$url" in
       printf '{"ok":true,"targets":{"total":0}}\n'
     fi
     ;;
+  */topology/isp_targets.json)
+    printf '%s\n' "${STUB_ISP_INVENTORY_JSON:-[]}"
+    ;;
+  */topology/isp-discovery-state.json)
+    if [ -n "${STUB_ISP_STATE_JSON:-}" ]; then
+      printf '%s\n' "$STUB_ISP_STATE_JSON"
+    else
+      printf '{"status":"ok","last_success_at":%s,"last_error_at":null,"count":0}\n' "$(date +%s)"
+    fi
+    ;;
   *) printf '{}\n' ;;
 esac
 """
@@ -141,11 +152,23 @@ CORE_SWITCH_PING=
 TOURNAMENT_SWITCHES=
 FIREWALL_PING=
 FIREWALL_SNMP_TARGETS=
+BIGSCREEN_ISP_AUTO_DISCOVER=false
+ISP_GATEWAY_AUTO_DISCOVER=false
 ISP_PING=
 BIGSCREEN_ISP_NAMES=
 BIGSCREEN_ISP_IPS=
+BIGSCREEN_ISP_MAX_BANDWIDTH=1000
+ISP_DISCOVERY_REFRESH_INTERVAL=60
 PLAYER_SUBNETS=
 """
+
+AUTO_FIREWALL_TARGETS = json.dumps({
+    "status": "success",
+    "data": {"activeTargets": [{
+        "labels": {"job": "infra-fw-ping"},
+        "discoveredLabels": {"__address__": "192.168.9.1"},
+    }]},
+})
 
 
 def _write_executable(path: Path, text: str) -> None:
@@ -194,6 +217,14 @@ if [ "${{1:-}}" = "-c" ]; then
         */metrics) echo "prometheus_config_last_reload_successful ${{STUB_RELOAD_SUCCESS:-1}}" ;;
         */api/v1/targets*) printf '%s\n' "${{STUB_TARGETS_JSON:-{{\"status\":\"success\",\"data\":{{\"activeTargets\":[]}}}}}}" ;;
         */player-targets/status) printf '%s\n' "${{STUB_PLAYER_STATUS:-{{\"ok\":true,\"targets\":{{\"total\":0}}}}}}" ;;
+        */topology/isp_targets.json) printf '%s\n' "${{STUB_ISP_INVENTORY_JSON:-[]}}" ;;
+        */topology/isp-discovery-state.json)
+          if [ -n "${{STUB_ISP_STATE_JSON:-}}" ]; then
+            printf '%s\n' "$STUB_ISP_STATE_JSON"
+          else
+            printf '{{\"status\":\"ok\",\"last_success_at\":%s,\"last_error_at\":null,\"count\":0}}\n' "$(date +%s)"
+          fi
+          ;;
         *) printf '{{"ok":true}}\n' ;;
       esac
       exit 0
@@ -364,6 +395,144 @@ def test_configured_checks_only_components_that_are_actually_configured(tmp_path
     assert checks["configured_firewall"]["status"] == "SKIP"
     assert checks["configured_isp"]["status"] == "SKIP"
     assert checks["player_generator"]["status"] == "SKIP"
+
+
+def _auto_isp_env(manual_names=""):
+    return BASE_ENV.replace(
+        "FIREWALL_SNMP_TARGETS=",
+        "FIREWALL_SNMP_TARGETS=firewall:192.168.9.1",
+    ).replace(
+        "BIGSCREEN_ISP_AUTO_DISCOVER=false",
+        "BIGSCREEN_ISP_AUTO_DISCOVER=true",
+    ).replace(
+        "ISP_GATEWAY_AUTO_DISCOVER=false",
+        "ISP_GATEWAY_AUTO_DISCOVER=true",
+    ).replace(
+        "BIGSCREEN_ISP_NAMES=",
+        f"BIGSCREEN_ISP_NAMES={manual_names}",
+    )
+
+
+def _isp_state(count, *, status="ok", age=0):
+    return json.dumps({
+        "status": status,
+        "last_success_at": int(time.time()) - age,
+        "last_error_at": None,
+        "count": count,
+    })
+
+
+def _production_isp_inventory():
+    return json.loads(
+        (ROOT / "tests" / "fixtures" / "isp" / "production-ha-inventory.json")
+        .read_text(encoding="utf-8")
+    )
+
+
+def test_configured_auto_isp_accepts_five_inventory_with_four_manual_metadata(tmp_path):
+    inventory = _production_isp_inventory()
+    manual = "telcom-100M-长期,telcom-1000M,unicom-1000M,MLBB-telcom-300M"
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=_auto_isp_env(manual),
+        STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
+        STUB_ISP_INVENTORY_JSON=json.dumps(inventory, ensure_ascii=False),
+        STUB_ISP_STATE_JSON=_isp_state(5),
+    )
+
+    check = checks_by_id(payload)["configured_isp"]
+    assert completed.returncode == 0
+    assert check["status"] == "PASS"
+    assert "validated 5 fresh ISP target(s)" in check["message"]
+
+
+@pytest.mark.parametrize(
+    ("inventory", "state", "message"),
+    [
+        ("{broken", _isp_state(5), "Expecting property name"),
+        (
+            json.dumps([
+                {"targets": ["8.8.8.1"], "labels": {"display_name": "same"}},
+                {"targets": ["1.1.1.1"], "labels": {"display_name": "same"}},
+            ]),
+            _isp_state(2),
+            "duplicate display_name",
+        ),
+        (
+            json.dumps([{"targets": ["not-an-ip"], "labels": {"display_name": "ISP-A"}}]),
+            _isp_state(1),
+            "invalid gateway",
+        ),
+        (
+            json.dumps([{"targets": ["8.8.8.1"], "labels": {"display_name": "ISP-A"}}]),
+            _isp_state(1, age=10_000),
+            "inventory is stale",
+        ),
+    ],
+)
+def test_configured_auto_isp_rejects_invalid_duplicate_gateway_or_stale_inventory(
+    tmp_path, inventory, state, message
+):
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=_auto_isp_env(),
+        STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
+        STUB_ISP_INVENTORY_JSON=inventory,
+        STUB_ISP_STATE_JSON=state,
+    )
+
+    check = checks_by_id(payload)["configured_isp"]
+    assert completed.returncode == 1
+    assert check["status"] == "FAIL"
+    assert message in check["message"]
+
+
+def test_configured_auto_isp_rejects_unmatched_identity_or_bandwidth_override(tmp_path):
+    inventory = _production_isp_inventory()
+    env_text = _auto_isp_env("missing-carrier").replace(
+        "BIGSCREEN_ISP_MAX_BANDWIDTH=1000",
+        "BIGSCREEN_ISP_MAX_BANDWIDTH=*:1000,missing-carrier:200",
+    )
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=env_text,
+        STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
+        STUB_ISP_INVENTORY_JSON=json.dumps(inventory, ensure_ascii=False),
+        STUB_ISP_STATE_JSON=_isp_state(5),
+    )
+
+    check = checks_by_id(payload)["configured_isp"]
+    assert completed.returncode == 1
+    assert check["status"] == "FAIL"
+    assert "manual ISP metadata is not safely matched: missing-carrier" in check["message"]
+
+
+def test_configured_manual_isp_preserves_prometheus_target_check(tmp_path):
+    env_text = BASE_ENV.replace(
+        "ISP_PING=", "ISP_PING=manual-a:8.8.8.8,manual-b:1.1.1.1"
+    ).replace(
+        "BIGSCREEN_ISP_NAMES=", "BIGSCREEN_ISP_NAMES=manual-a,manual-b"
+    )
+    targets = json.dumps({
+        "status": "success",
+        "data": {"activeTargets": [{
+            "labels": {"job": "infra-isp-ping"},
+            "discoveredLabels": {"__address__": "8.8.8.8"},
+        }, {
+            "labels": {"job": "infra-isp-ping"},
+            "discoveredLabels": {"__address__": "1.1.1.1"},
+        }]},
+    })
+
+    completed, payload = run_check(
+        tmp_path, mode="configured", env_text=env_text, STUB_TARGETS_JSON=targets
+    )
+
+    assert completed.returncode == 0
+    assert checks_by_id(payload)["configured_isp"]["status"] == "PASS"
 
 
 def test_configured_player_generator_does_not_require_players_online(tmp_path):

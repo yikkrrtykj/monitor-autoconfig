@@ -15,8 +15,8 @@ const formatBits = (value) => `${value}bps`;
 const renderIspChart = ispChart.createIspChartRenderer({
   renderLineChart: (...args) => calls.push(args),
   formatBits,
-  ispChartMaxBps: (name, index) => {
-    capacityCalls.push([name, index]);
+  ispChartMaxBps: (name) => {
+    capacityCalls.push(name);
     return 800000000;
   }
 });
@@ -55,7 +55,7 @@ assert.deepStrictEqual(calls[0][2], {
   minMax: 1,
   calcs: ['last', 'max']
 }, 'normal ISP rendering preserves every line-chart option');
-assert.deepStrictEqual(capacityCalls, [['ISP A', 2]]);
+assert.deepStrictEqual(capacityCalls, ['ISP A']);
 assert.strictEqual(download.values[1].v, null, 'unknown samples pass through unchanged');
 
 renderIspChart({

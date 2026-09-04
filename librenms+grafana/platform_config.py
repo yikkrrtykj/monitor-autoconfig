@@ -378,12 +378,12 @@ def _bandwidth_text(value: Any) -> str:
 
 
 def isp_bandwidth_config(isp: dict[str, Any]) -> str:
-    """Render the global fallback plus ordered per-link bandwidth values.
+    """Render the global fallback plus safely named per-link bandwidth values.
 
-    Named links continue to match their discovered interface label.  Empty
-    names receive an internal placeholder; consumers then use list position as
-    a fallback so auto-discovered interfaces such as eth0/eth1 still get the
-    bandwidth entered for the corresponding form row.
+    Per-link limits are identity metadata: they can only follow an explicit
+    name that the discovery layer can bind to stable WAN evidence. Unnamed rows
+    deliberately fall back to the global limit instead of binding by list or
+    ifIndex position.
     """
     default = _bandwidth_text(isp.get("max_bandwidth_mbps")) or "1000"
     links = [item for item in (isp.get("links") or []) if isinstance(item, dict)]
@@ -391,8 +391,10 @@ def isp_bandwidth_config(isp: dict[str, Any]) -> str:
         return default
 
     entries = [f"*:{default}"]
-    for index, item in enumerate(links, start=1):
-        label = str(item.get("name") or "").strip() or f"__link_{index}"
+    for item in links:
+        label = str(item.get("name") or "").strip()
+        if not label:
+            continue
         bandwidth = _bandwidth_text(item.get("bandwidth_mbps")) or default
         entries.append(f"{label}:{bandwidth}")
     return ",".join(entries)
@@ -662,6 +664,16 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         check_ip(item.get("ping"), f"{path}.ping", "运营商探测 IP ")
         if item.get("bandwidth_mbps") not in (None, "") and not _bandwidth_text(item.get("bandwidth_mbps")):
             add("bad", f"{path}.bandwidth_mbps", "ISP 带宽必须为正数，或使用 下行/上行 格式")
+        elif (
+            isp_auto_discovery
+            and item.get("bandwidth_mbps") not in (None, "")
+            and not str(item.get("name") or "").strip()
+        ):
+            add(
+                "warn",
+                f"{path}.bandwidth_mbps",
+                "自动发现模式下未命名线路无法安全绑定独立带宽，将使用默认 ISP 带宽",
+            )
     if isp.get("max_bandwidth_mbps") not in (None, "") and not _bandwidth_text(isp.get("max_bandwidth_mbps")):
         add("bad", "isp.max_bandwidth_mbps", "默认 ISP 带宽必须为正数，或使用 下行/上行 格式")
     check_positive(isp.get("saturation_percent"), "isp.saturation_percent", "ISP 饱和阈值", 0, 100)

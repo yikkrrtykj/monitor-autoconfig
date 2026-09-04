@@ -5,7 +5,6 @@ import pytest
 from feishu_bridge.isp_watcher import (
     IspBandwidthWatcher,
     _bandwidth_for_label,
-    _bandwidth_indexes,
     _counter_glitch_limit_bps,
     _dedupe_wan_labels,
     _is_wan_port,
@@ -179,31 +178,29 @@ def test_wan_keyword_digit_suffix_requires_boundary():
     assert _is_wan_port("lan-port", wan_filter) is False
 
 
-def test_bandwidth_config_preserves_default_direction_and_position_fallbacks():
+def test_bandwidth_config_uses_exact_names_or_global_fallback():
     cfg = _parse_bandwidth_config(
         "*:1000/300,__link_1:200/100,__link_2:500/250", normalize_label,
     )
-    rates = [{"label": "eth1", "if_index": "3"}, {"label": "eth0", "if_index": "2"}]
-    indexes = _bandwidth_indexes(rates)
-
-    assert _bandwidth_for_label("eth0", "in", cfg, normalize_label, indexes["eth0"]) == 200
-    assert _bandwidth_for_label("eth0", "out", cfg, normalize_label, indexes["eth0"]) == 100
-    assert _bandwidth_for_label("eth1", "in", cfg, normalize_label, indexes["eth1"]) == 500
+    assert _bandwidth_for_label("__LINK_1", "in", cfg, normalize_label) == 200
+    assert _bandwidth_for_label("__LINK_1", "out", cfg, normalize_label) == 100
+    assert _bandwidth_for_label("eth0", "in", cfg, normalize_label) == 1000
+    assert _bandwidth_for_label("eth1", "out", cfg, normalize_label) == 300
     assert _bandwidth_for_label("unknown", "out", cfg, normalize_label) == 300
     single = _parse_bandwidth_config("800", normalize_label)
     assert _bandwidth_for_label("unknown", "in", single, normalize_label) == 800
 
 
-def test_most_specific_named_bandwidth_entry_wins():
+def test_bandwidth_names_do_not_use_substring_or_punctuation_fuzzy_matching():
     cfg = _parse_bandwidth_config("电信:500/100,电信2:200/50", normalize_label)
 
     assert _bandwidth_for_label("电信2", "in", cfg, normalize_label) == 200
     assert _bandwidth_for_label("电信2", "out", cfg, normalize_label) == 50
-    assert _bandwidth_for_label("电信1", "in", cfg, normalize_label) == 500
-    assert _bandwidth_for_label("电信-2", "in", cfg, normalize_label) == 200
+    assert _bandwidth_for_label("电信1", "in", cfg, normalize_label) == 1000
+    assert _bandwidth_for_label("电信-2", "in", cfg, normalize_label) == 1000
 
 
-def test_duplicate_wan_labels_use_ifindex_order_in_both_directions():
+def test_duplicate_wan_labels_do_not_manufacture_ifindex_ordered_identity():
     rates = _dedupe_wan_labels([
         rate(0, label="电信", if_index="7"),
         rate(0, label="电信", if_index="3"),
@@ -212,15 +209,13 @@ def test_duplicate_wan_labels_use_ifindex_order_in_both_directions():
         rate(0, label="联通", if_index="5"),
     ])
 
-    assert {item["key"] for item in rates} == {
-        "电信-1|in", "电信-2|in", "电信-1|out", "电信-2|out", "联通|in",
-    }
-    by_label = {item["label"]: item for item in rates if item["direction"] == "in"}
-    assert by_label["电信-1"]["if_index"] == "3"
-    assert by_label["电信-2"]["if_index"] == "7"
+    telecom = [item for item in rates if item["label"] == "电信"]
+    assert len({item["key"] for item in telecom}) == 4
+    assert all(item["_identity_ambiguous"] is True for item in telecom)
+    assert next(item for item in rates if item["label"] == "联通")["key"] == "联通|in"
 
 
-def test_duplicate_wan_labels_without_ifindex_use_directional_occurrence_order():
+def test_duplicate_wan_labels_without_ifindex_remain_distinct_but_ambiguous():
     rates = _dedupe_wan_labels([
         rate(0, label="电信", if_index=None),
         rate(0, label="电信", if_index=None),
@@ -228,9 +223,20 @@ def test_duplicate_wan_labels_without_ifindex_use_directional_occurrence_order()
         rate(0, label="电信", if_index=None, direction="out"),
     ])
 
-    assert sorted(item["key"] for item in rates) == [
-        "电信-1|in", "电信-1|out", "电信-2|in", "电信-2|out",
-    ]
+    assert len({item["key"] for item in rates}) == 4
+    assert {item["label"] for item in rates} == {"电信"}
+    assert all(item["_identity_ambiguous"] is True for item in rates)
+
+
+def test_ambiguous_duplicate_label_uses_global_bandwidth_not_named_override():
+    cfg = _parse_bandwidth_config("*:1000/300,电信:100/50", normalize_label)
+
+    assert _bandwidth_for_label(
+        "电信", "in", cfg, normalize_label, identity_ambiguous=True,
+    ) == 1000
+    assert _bandwidth_for_label(
+        "电信", "out", cfg, normalize_label, identity_ambiguous=True,
+    ) == 300
 
 
 def test_counter_glitch_limit_and_disabled_behavior():

@@ -48,7 +48,9 @@ DEADLINE=$((STARTED_AT + DEPLOY_CHECK_TIMEOUT))
 RESULTS_FILE=$(mktemp)
 HTTP_BODY=$(mktemp)
 HTTP_ERROR=$(mktemp)
-trap 'rm -f "$RESULTS_FILE" "$HTTP_BODY" "$HTTP_ERROR"' EXIT HUP INT TERM
+ISP_STATE_BODY=$(mktemp)
+ISP_VALIDATION=$(mktemp)
+trap 'rm -f "$RESULTS_FILE" "$HTTP_BODY" "$HTTP_ERROR" "$ISP_STATE_BODY" "$ISP_VALIDATION"' EXIT HUP INT TERM
 
 record() {
   status=$1
@@ -338,6 +340,118 @@ wait_for_player_generator() {
   done
 }
 
+wait_for_isp_inventory() {
+  check_id=configured_isp
+  names=$1
+  ips=$2
+  bandwidth=$3
+  refresh_seconds=$4
+  case "$refresh_seconds" in
+    ''|*[!0-9]*) refresh_seconds=60 ;;
+  esac
+  max_age=$((refresh_seconds * 3 + 60))
+  [ "$max_age" -ge 300 ] || max_age=300
+  last_state="inventory unavailable"
+
+  while :; do
+    if http_get "$BIGSCREEN_URL/topology/isp_targets.json" > "$HTTP_BODY" 2> "$HTTP_ERROR" \
+      && http_get "$BIGSCREEN_URL/topology/isp-discovery-state.json" > "$ISP_STATE_BODY" 2> "$HTTP_ERROR" \
+      && python3 - "$HTTP_BODY" "$ISP_STATE_BODY" "$names" "$ips" "$bandwidth" "$max_age" \
+        > "$ISP_VALIDATION" 2> "$HTTP_ERROR" <<'PY'
+import ipaddress
+import json
+import sys
+import time
+
+inventory_path, state_path, names_raw, ips_raw, bandwidth_raw, max_age_raw = sys.argv[1:]
+with open(inventory_path, encoding="utf-8") as handle:
+    inventory = json.load(handle)
+with open(state_path, encoding="utf-8") as handle:
+    state = json.load(handle)
+if not isinstance(inventory, list):
+    raise SystemExit("inventory is not an array")
+if not inventory:
+    raise SystemExit("inventory is empty")
+
+seen = set()
+rows = []
+for index, entry in enumerate(inventory):
+    labels = entry.get("labels") if isinstance(entry, dict) else None
+    targets = entry.get("targets") if isinstance(entry, dict) else None
+    if not isinstance(labels, dict) or not isinstance(targets, list) or len(targets) != 1:
+        raise SystemExit(f"entry {index} has invalid file_sd schema")
+    name = str(labels.get("display_name") or "").strip()
+    if not name:
+        raise SystemExit(f"entry {index} has no display_name")
+    key = name.casefold()
+    if key in seen:
+        raise SystemExit(f"duplicate display_name: {name}")
+    seen.add(key)
+    try:
+        gateway = str(ipaddress.IPv4Address(str(targets[0]).strip()))
+    except ipaddress.AddressValueError:
+        raise SystemExit(f"entry {index} has invalid gateway")
+    wan_ip = str(labels.get("wan_ip") or "").strip()
+    if wan_ip:
+        try:
+            wan_ip = str(ipaddress.IPv4Address(wan_ip))
+        except ipaddress.AddressValueError:
+            raise SystemExit(f"entry {index} has invalid wan_ip")
+    rows.append({"name": name, "gateway": gateway, "wan_ip": wan_ip})
+
+if not isinstance(state, dict) or state.get("status") != "ok":
+    raise SystemExit(f"discovery state is {state.get('status', 'invalid') if isinstance(state, dict) else 'invalid'}")
+last_success = state.get("last_success_at")
+if not isinstance(last_success, (int, float)):
+    raise SystemExit("discovery state has no valid last_success_at")
+age = time.time() - float(last_success)
+if age < -300 or age > int(max_age_raw):
+    raise SystemExit(f"inventory is stale ({max(0, int(age))}s old)")
+if state.get("count") != len(rows):
+    raise SystemExit("discovery state count does not match inventory")
+
+configured_ips = {}
+for item in ips_raw.replace("\n", ",").split(","):
+    name, separator, value = item.strip().partition(":")
+    if separator and name.strip() and value.strip():
+        configured_ips[name.strip().casefold()] = value.strip()
+
+metadata_names = [name.strip() for name in names_raw.split(",") if name.strip()]
+for item in bandwidth_raw.split(","):
+    name, separator, _value = item.strip().rpartition(":")
+    if separator and name.strip() and name.strip() != "*":
+        metadata_names.append(name.strip())
+for item in ips_raw.replace("\n", ",").split(","):
+    name, separator, _value = item.strip().partition(":")
+    if separator and name.strip():
+        metadata_names.append(name.strip())
+
+for name in dict.fromkeys(metadata_names):
+    matches = [row for row in rows if row["name"].casefold() == name.casefold()]
+    if len(matches) != 1:
+        raise SystemExit(f"manual ISP metadata is not safely matched: {name}")
+    configured_ip = configured_ips.get(name.casefold(), "")
+    if configured_ip and matches[0]["wan_ip"] != configured_ip:
+        raise SystemExit(f"manual ISP WAN IP does not match discovery: {name}")
+
+print(f"validated {len(rows)} fresh ISP target(s)")
+PY
+    then
+      validation=$(tr '\r\n' '  ' < "$ISP_VALIDATION" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
+      record PASS "$check_id" "Automatic ISP inventory is valid and fresh${validation:+ ($validation)}"
+      return 0
+    fi
+
+    last_state=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
+    [ -n "$last_state" ] || last_state="inventory or state endpoint unavailable"
+    if deadline_reached; then
+      record FAIL "$check_id" "Automatic ISP inventory validation failed (last state: $last_state)"
+      return 1
+    fi
+    wait_interval
+  done
+}
+
 finalize() {
   ended_at=$(now_seconds)
   duration=$((ended_at - STARTED_AT))
@@ -532,9 +646,14 @@ if [ "$MODE" = configured ]; then
   TOURNAMENT_SWITCHES_VALUE=$(env_value TOURNAMENT_SWITCHES 2>/dev/null || true)
   FIREWALL_VALUE=$(env_value FIREWALL_PING 2>/dev/null || true)
   FIREWALL_SNMP_VALUE=$(env_value FIREWALL_SNMP_TARGETS 2>/dev/null || true)
+  ISP_AUTO_VALUE=$(env_value BIGSCREEN_ISP_AUTO_DISCOVER 2>/dev/null || true)
+  [ -n "$ISP_AUTO_VALUE" ] || ISP_AUTO_VALUE=$(env_value ISP_GATEWAY_AUTO_DISCOVER 2>/dev/null || true)
+  ISP_AUTO_VALUE=$(printf '%s' "${ISP_AUTO_VALUE:-true}" | tr '[:upper:]' '[:lower:]')
   ISP_PING_VALUE=$(env_value ISP_PING 2>/dev/null || true)
   ISP_NAMES_VALUE=$(env_value BIGSCREEN_ISP_NAMES 2>/dev/null || true)
   ISP_IPS_VALUE=$(env_value BIGSCREEN_ISP_IPS 2>/dev/null || true)
+  ISP_BANDWIDTH_VALUE=$(env_value BIGSCREEN_ISP_MAX_BANDWIDTH 2>/dev/null || true)
+  ISP_REFRESH_VALUE=$(env_value ISP_DISCOVERY_REFRESH_INTERVAL 2>/dev/null || true)
   PLAYER_SUBNETS_VALUE=$(env_value PLAYER_SUBNETS 2>/dev/null || true)
 
   if [ -n "$CORE_SWITCH_VALUE" ]; then
@@ -552,7 +671,10 @@ if [ "$MODE" = configured ]; then
   else
     record SKIP configured_firewall "Firewall not configured"
   fi
-  if [ -n "$ISP_PING_VALUE$ISP_NAMES_VALUE$ISP_IPS_VALUE" ]; then
+  if [ "$ISP_AUTO_VALUE" = true ] && [ -n "$FIREWALL_SNMP_VALUE" ] && [ -z "$ISP_PING_VALUE" ]; then
+    wait_for_isp_inventory \
+      "$ISP_NAMES_VALUE" "$ISP_IPS_VALUE" "$ISP_BANDWIDTH_VALUE" "$ISP_REFRESH_VALUE" || true
+  elif [ -n "$ISP_PING_VALUE$ISP_NAMES_VALUE$ISP_IPS_VALUE" ]; then
     wait_for_prometheus_targets configured_isp "Configured ISP monitoring target is present" "$ISP_PING_VALUE" "infra-isp-ping" || true
   else
     record SKIP configured_isp "ISP not configured"

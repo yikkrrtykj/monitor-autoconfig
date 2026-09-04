@@ -404,7 +404,7 @@ unifi:
     assert env["UNIFI_CONTROLLER_VERIFY_SSL"] == "true"
 
 
-def test_per_link_bandwidth_is_rendered_in_form_order():
+def test_unnamed_per_link_bandwidth_uses_global_fallback_not_form_order():
     config = platform_config.parse_simple_yaml("""
 devices:
   core:
@@ -422,10 +422,15 @@ isp:
       bandwidth_mbps: 500
 """)
     env = platform_config.render_env(config)
-    assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "*:1000,__link_1:200,__link_2:500"
+    assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "*:1000"
+    issues = platform_config.validate_config(config)
+    assert sum(
+        item["level"] == "warn" and item["path"].endswith(".bandwidth_mbps")
+        for item in issues
+    ) == 2
 
 
-def test_missing_per_link_bandwidth_keeps_its_position_and_uses_global_default():
+def test_named_bandwidth_is_exact_and_unnamed_row_uses_global_default():
     config = platform_config.parse_simple_yaml("""
 devices:
   core:
@@ -440,7 +445,7 @@ isp:
       bandwidth_mbps: 500
 """)
     env = platform_config.render_env(config)
-    assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "*:800,telecom:800,__link_2:500"
+    assert env["BIGSCREEN_ISP_MAX_BANDWIDTH"] == "*:800,telecom:800"
 
 
 def test_empty_stage_switches_do_not_fall_back_to_legacy_switches():

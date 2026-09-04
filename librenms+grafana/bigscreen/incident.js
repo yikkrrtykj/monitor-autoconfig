@@ -150,7 +150,7 @@
       if (max === null) return;
       const ifAlias = series._ispName || series.metric.ifAlias;
       const direction = series._direction || (series.metric.direction || "in");
-      const capacityBps = ispCapacityBps(ifAlias, direction, series._ispIndex);
+      const capacityBps = ispCapacityBps(ifAlias, direction);
       ispEvents.push({
         ifAlias,
         direction,

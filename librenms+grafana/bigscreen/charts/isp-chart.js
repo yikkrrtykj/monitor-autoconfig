@@ -5,7 +5,7 @@
     const { renderLineChart, formatBits, ispChartMaxBps } = dependencies;
 
     return function renderIspChart(input) {
-      const { containerId, result, resultIndex, compactTournamentChart } = input;
+      const { containerId, result, compactTournamentChart } = input;
       renderLineChart(containerId, [result.download, result.upload], {
         axisFormatter: formatBits,
         valueFormatter: formatBits,
@@ -16,7 +16,7 @@
         axisPadBottom: compactTournamentChart ? 20 : undefined,
         fill: true,
         legend: "bottom",
-        maxY: ispChartMaxBps(result.name, resultIndex),
+        maxY: ispChartMaxBps(result.name),
         minMax: 1,
         calcs: ["last", "max"]
       });

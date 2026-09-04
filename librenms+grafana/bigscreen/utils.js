@@ -292,7 +292,7 @@
   }
 
   function parseIspBandwidthConfig(raw) {
-    const result = { default: { down: 1000, up: 1000 }, perIsp: {}, ordered: [] };
+    const result = { default: { down: 1000, up: 1000 }, perIsp: {} };
     if (raw === undefined || raw === null) return result;
     const text = String(raw).trim();
     if (!text) return result;
@@ -318,7 +318,6 @@
         return;
       }
       result.perIsp[name] = entry;
-      result.ordered.push(entry);
     });
     return result;
   }

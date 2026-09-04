@@ -903,19 +903,19 @@ def test_isp_and_evidence_use_business_specific_line_chart_facades():
     assert "renderEvidenceCharts({" not in app
     assert "renderEvidenceCharts({" in evidence_panel
     assert "createIspCarousel" not in isp_chart
-    assert "ispChartMaxBps(result.name, resultIndex)" in isp_chart
+    assert "ispChartMaxBps(result.name)" in isp_chart
     assert 'calcs: ["last", "max"]' in isp_chart
     assert "renderEvidenceSummary(summaryContainerId" in evidence_chart
     assert "const latencyGap = Math.max(5, estimateStepSeconds(latencySeries) * 3)" in evidence_chart
     assert "const successGap = Math.max(5, estimateStepSeconds(successSeries) * 3)" in evidence_chart
     assert 'calcs: ["last", "min"]' in evidence_chart
     assert 'color: "#73d17a"' in evidence_chart
-    assert "charts/isp-chart.js?v=20260826a" in index
+    assert "charts/isp-chart.js?v=20260904a" in index
     assert "charts/evidence-chart.js?v=20260826a" in index
     assert "evidence/evidence-panel.js?v=20260827a" in index
-    assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/isp-chart.js?v=20260826a")
+    assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/isp-chart.js?v=20260904a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/evidence-chart.js?v=20260826a")
-    assert index.index("charts/isp-chart.js?v=20260826a") < index.index("app.js?v=20260828f")
+    assert index.index("charts/isp-chart.js?v=20260904a") < index.index("app.js?v=20260828f")
     assert index.index("charts/evidence-chart.js?v=20260826a") < index.index("evidence/evidence-panel.js?v=20260827a")
     assert index.index("evidence/evidence-panel.js?v=20260827a") < index.index("app.js?v=20260828f")
 
@@ -957,10 +957,10 @@ def test_incident_panel_owns_form_queries_rendering_and_request_lifecycle():
     assert "function setupIncidentPanel(" not in app
     assert "function readUrlIntoForm(" in panel
     assert "function bind(" in panel
-    assert "incident.js?v=20260803a" in index
-    assert "incident/incident-panel.js?v=20260827a" in index
-    assert index.index("incident.js?v=20260803a") < index.index("incident/incident-panel.js?v=20260827a")
-    assert index.index("incident/incident-panel.js?v=20260827a") < index.index("app.js?v=20260828f")
+    assert "incident.js?v=20260904a" in index
+    assert "incident/incident-panel.js?v=20260904a" in index
+    assert index.index("incident.js?v=20260904a") < index.index("incident/incident-panel.js?v=20260904a")
+    assert index.index("incident/incident-panel.js?v=20260904a") < index.index("app.js?v=20260828f")
 
 
 def test_wireless_panel_is_loaded_after_players_and_owns_page_controller():
@@ -1543,13 +1543,13 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert pages.count("[30s]") == 3
     assert "pages.js?v=20260826a" in index
     assert "players.js?v=20260802a" in index
-    assert "api.js?v=20260810a" in index
+    assert "api.js?v=20260904a" in index
     assert "app.js?v=20260828f" in index
-    assert "utils.js?v=20260825a" in index
+    assert "utils.js?v=20260904a" in index
     assert "charts/line-chart.js?v=20260826a" in index
     assert "charts/ping-chart.js?v=20260826a" in index
     assert "metrics/ping-transform.js?v=20260826b" in index
-    assert index.index("utils.js?v=20260825a") < index.index("charts/line-chart.js?v=20260826a")
+    assert index.index("utils.js?v=20260904a") < index.index("charts/line-chart.js?v=20260826a")
     assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/ping-chart.js?v=20260826a")
     assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260828f")
     assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260828f")
@@ -1607,7 +1607,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'label: "--"' in utils
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
     assert "style.css?v=20260825a" in index
-    assert "utils.js?v=20260825a" in index
+    assert "utils.js?v=20260904a" in index
     assert "app.js?v=20260828f" in index
 
 
@@ -1648,6 +1648,9 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert 'ISP_DISCOVERY_SOURCE: "${ISP_DISCOVERY_SOURCE:-hybrid}"' in topology
     assert 'ISP_LIBRENMS_POLL_MAX_AGE_SECONDS: "${ISP_LIBRENMS_POLL_MAX_AGE_SECONDS:-600}"' in topology
     assert "ISP_GATEWAY_AUTO_DISCOVER ISP_DISCOVERY_SOURCE ISP_LIBRENMS_POLL_MAX_AGE_SECONDS" in topology
+    assert 'ISP_DISCOVERY_STATE_FILE: "/targets/isp-discovery-state.json"' in topology
+    assert 'BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"' in topology
+    assert "FIREWALL_WAN_IF_FILTER BIGSCREEN_ISP_NAMES BIGSCREEN_ISP_IPS ISP_PING" in topology
     assert 'TOPOLOGY_DATA_SOURCE: "${TOPOLOGY_DATA_SOURCE:-hybrid}"' in topology
     assert 'TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS: "${TOPOLOGY_LIBRENMS_POLL_MAX_AGE_SECONDS:-600}"' in topology
     assert 'TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS: "${TOPOLOGY_LIBRENMS_DISCOVERY_MAX_AGE_SECONDS:-28800}"' in topology

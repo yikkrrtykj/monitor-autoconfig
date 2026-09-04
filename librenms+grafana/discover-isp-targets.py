@@ -7,8 +7,9 @@ gateway evidence (IP-FORWARD-MIB ipCidrRouteTable, falling back to the RFC1213
 ipRouteTable), or as a per-device compatibility fallback. WAN aliases remain
 useful hints, but generic names such as ethernet0/0 also work when the route
 ifIndex points at a public interface.
-Discovered gateways are written to a Prometheus file_sd; console ISP row names
-are applied in interface order so ping, bandwidth, alerts and topology agree.
+Discovered gateways are written to a Prometheus file_sd. Console ISP metadata
+is applied only when its public WAN IP or an IF-MIB label matches exactly, so
+ifIndex changes cannot move a name or bandwidth limit onto another carrier.
 Some firewalls do not expose either standard route table over SNMP.  In that
 case the public address and subnet on each WAN interface are used to derive the
 usual first-host carrier gateway, so topology keeps the current WAN address
@@ -26,7 +27,8 @@ Env vars:
   FIREWALL_UNIT_SNMP_TARGETS  non-empty marks HA physical-unit mode
   FIREWALL_SNMP_COMMUNITY     community (falls back to SNMP_COMMUNITY)
   FIREWALL_WAN_IF_FILTER      WAN interface keywords (same as the bridge)
-  BIGSCREEN_ISP_NAMES         console ISP row names, applied in ifIndex order
+  BIGSCREEN_ISP_NAMES         console ISP metadata names
+  BIGSCREEN_ISP_IPS           NAME:public-IP metadata used for stable matching
   ISP_PING                    manual targets, their IPs are excluded here
   ISP_TARGETS_FILE            output path (default /targets/isp_targets.json)
   ISP_DISCOVERY_SNMP_TIMEOUT  per-walk SNMP timeout seconds (default 2)
@@ -40,17 +42,22 @@ Env vars:
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import re
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 from librenms_client import LibreNMSClient, LibreNMSError, age_seconds
 from target_utils import (
     expand_ipv4_targets,
     is_ipv4 as looks_like_ip,
-    write_json_atomic as write_file_sd,
+    write_json_atomic,
 )
+
+write_file_sd = write_json_atomic
 
 OID_IF_DESCR = ".1.3.6.1.2.1.2.2.1.2"
 OID_IF_NAME = ".1.3.6.1.2.1.31.1.1.1.1"
@@ -68,7 +75,14 @@ OID_ROUTE_DEFAULT_IFINDEX = ".1.3.6.1.2.1.4.21.1.2.0.0.0.0"
 _WALK_LINE = re.compile(r"^(\.[\d.]+)\s*=\s*(?:[A-Za-z0-9-]+:\s*)?(.*)$")
 ISP_DISCOVERY_SOURCES = frozenset({"hybrid", "librenms", "direct-snmp"})
 DEFAULT_ISP_LIBRENMS_POLL_MAX_AGE_SECONDS = 600
-_collection_stats = {"snmp_walks": 0, "snmp_gets": 0}
+_collection_stats = {
+    "snmp_walks": 0,
+    "snmp_gets": 0,
+    "snmp_successes": 0,
+    "snmp_failures": 0,
+    "snmp_label_successes": 0,
+    "snmp_address_successes": 0,
+}
 
 
 class ISPDataIncomplete(RuntimeError):
@@ -82,6 +96,17 @@ def reset_collection_stats() -> None:
 
 def collection_stats() -> dict[str, int]:
     return dict(_collection_stats)
+
+
+def direct_collection_succeeded(before: dict[str, int], results: list[dict]) -> bool:
+    """Require both IF-MIB identity and IP-MIB address responses for valid zero."""
+    if results:
+        return True
+    after = collection_stats()
+    return (
+        after["snmp_label_successes"] > before["snmp_label_successes"]
+        and after["snmp_address_successes"] > before["snmp_address_successes"]
+    )
 
 
 def isp_discovery_source() -> str:
@@ -164,6 +189,18 @@ def target_ips(raw: str) -> list[str]:
     return expand_ipv4_targets(raw)
 
 
+def named_ipv4_targets(raw: str) -> dict[str, str]:
+    """Parse explicit NAME:IPv4 rows without inventing positional identity."""
+    targets: dict[str, str] = {}
+    for entry in str(raw or "").replace("\n", ",").split(","):
+        name, separator, value = entry.strip().partition(":")
+        name = name.strip()
+        value = value.strip()
+        if separator and name and looks_like_ip(value):
+            targets[name] = value
+    return targets
+
+
 def _public_wan_address(value: str) -> bool:
     """True for a routable WAN address, false for LAN/link-local addresses.
 
@@ -196,15 +233,100 @@ def _subnet_gateway(wan_ip: str, mask: str) -> str:
     return ""
 
 
+def bind_manual_metadata(results: list[dict], configured_names: list[str] | None,
+                         configured_ips: dict[str, str] | None = None) -> set[str]:
+    """Apply manual display identity only through stable, unambiguous evidence.
+
+    Public WAN IP is authoritative when configured. Otherwise any exact,
+    case-insensitive IF-MIB alias/name/description match is accepted. The
+    return value contains metadata names that were safely bound.
+    """
+    names = list(dict.fromkeys(
+        str(name).strip() for name in (configured_names or []) if str(name).strip()
+    ))
+    ip_by_name = {
+        str(name).strip().casefold(): str(value).strip()
+        for name, value in (configured_ips or {}).items()
+        if str(name).strip() and looks_like_ip(str(value).strip())
+    }
+    claimed: set[int] = set()
+    matched: set[str] = set()
+    for name in names:
+        configured_ip = ip_by_name.get(name.casefold(), "")
+        if configured_ip:
+            candidates = [
+                index for index, item in enumerate(results)
+                if item.get("wan_ip") == configured_ip
+            ]
+            evidence = f"WAN IP {configured_ip}"
+        else:
+            key = name.casefold()
+            candidates = [
+                index for index, item in enumerate(results)
+                if key in {
+                    str(label).strip().casefold()
+                    for label in [item.get("name"), *(item.get("_labels") or [])]
+                    if str(label or "").strip()
+                }
+            ]
+            evidence = "IF-MIB label"
+
+        available = [index for index in candidates if index not in claimed]
+        if len(candidates) == 1 and len(available) == 1:
+            index = available[0]
+            results[index]["name"] = name
+            claimed.add(index)
+            matched.add(name)
+            continue
+
+        reason = "ambiguous" if len(candidates) > 1 or (candidates and not available) else "unmatched"
+        print(
+            f'[isp-discovery] WARNING: manual ISP metadata "{name}" {reason} '
+            f"by {evidence}; discovered interface kept with native identity",
+            file=sys.stderr,
+        )
+    return matched
+
+
+def finalize_discovered_results(results: list[dict], configured_names: list[str] | None,
+                                configured_ips: dict[str, str] | None = None) -> list[dict[str, str]]:
+    """Bind configured metadata, then assign deterministic native duplicate labels."""
+    bind_manual_metadata(results, configured_names, configured_ips)
+    groups: dict[str, list[dict]] = {}
+    for item in results:
+        groups.setdefault(item["name"].casefold(), []).append(item)
+    for items in groups.values():
+        if len(items) > 1:
+            # WAN IP/gateway are stable across ifIndex churn. They are only used
+            # to make otherwise identical native labels unique. Embedding that
+            # evidence avoids a numeric rank that could shift when a line is
+            # added or removed.
+            native_name = items[0]["name"]
+            for item in items:
+                stable_evidence = item.get("wan_ip") or item.get("gateway")
+                item["name"] = f"{native_name}@{stable_evidence}"
+    for item in results:
+        item.pop("_ifindex", None)
+        item.pop("_labels", None)
+    return sorted(results, key=lambda item: item["name"])
+
+
 def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str],
-                        configured_names: list[str] | None = None) -> list[dict[str, str]]:
+                        configured_names: list[str] | None = None,
+                        configured_ips: dict[str, str] | None = None) -> list[dict[str, str]]:
     """Pure mapping from raw SNMP walks to [{gateway, name, wan_ip}]."""
     labels: dict[int, str] = {}
+    all_labels: dict[int, list[str]] = {}
     for base in (OID_IF_ALIAS, OID_IF_NAME, OID_IF_DESCR):
         for oid, value in (walks.get(base) or {}).items():
             suffix = suffix_of(oid, base)
-            if suffix.isdigit() and value and int(suffix) not in labels:
-                labels[int(suffix)] = value
+            if not suffix.isdigit() or not value:
+                continue
+            index = int(suffix)
+            if value.casefold() not in {item.casefold() for item in all_labels.setdefault(index, [])}:
+                all_labels[index].append(value)
+            if index not in labels:
+                labels[index] = value
 
     wan_ifindexes = {index for index, label in labels.items() if is_wan_label(label, keywords)}
 
@@ -274,6 +396,7 @@ def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str],
             "name": labels.get(ifindex) or gateway,
             "wan_ip": interface_ips.get(ifindex, ""),
             "_ifindex": ifindex,
+            "_labels": all_labels.get(ifindex, []),
             "source": "gateway",
         })
 
@@ -293,32 +416,10 @@ def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str],
             "name": labels.get(ifindex) or wan_ip,
             "wan_ip": wan_ip,
             "_ifindex": ifindex,
+            "_labels": all_labels.get(ifindex, []),
             "source": "subnet_gateway",
         })
-
-    # The console's ISP rows are ordered to match the firewall WAN rows.  When
-    # names are supplied there, keep that same order for ping/topology labels;
-    # otherwise a generic ethernet0/x name cannot be associated with its
-    # configured bandwidth and site label.
-    clean_names = [str(name).strip() for name in (configured_names or []) if str(name).strip()]
-    if clean_names:
-        for position, item in enumerate(sorted(results, key=lambda x: x["_ifindex"])):
-            if position < len(clean_names):
-                item["name"] = clean_names[position]
-
-    # Two lines from one carrier can share an interface label; number them by
-    # ifIndex order (电信-1/电信-2) -- the same rule the bandwidth watcher uses,
-    # so ping cards and bandwidth cards for one line carry one name.
-    groups: dict[str, list[dict]] = {}
-    for item in results:
-        groups.setdefault(item["name"], []).append(item)
-    for name, items in groups.items():
-        if len(items) > 1:
-            for position, item in enumerate(sorted(items, key=lambda x: x["_ifindex"]), start=1):
-                item["name"] = f"{name}-{position}"
-    for item in results:
-        item.pop("_ifindex", None)
-    return sorted(results, key=lambda item: item["name"])
+    return finalize_discovered_results(results, configured_names, configured_ips)
 
 
 def snmp_walk(ip: str, community: str, oid: str, timeout: int = 2) -> dict[str, str]:
@@ -329,14 +430,22 @@ def snmp_walk(ip: str, community: str, oid: str, timeout: int = 2) -> dict[str, 
             capture_output=True, text=True, timeout=timeout * 4 + 5,
         )
     except Exception:
+        _collection_stats["snmp_failures"] += 1
         return {}
     if result.returncode != 0:
+        _collection_stats["snmp_failures"] += 1
         return {}
+    _collection_stats["snmp_successes"] += 1
+    if oid in (OID_IF_ALIAS, OID_IF_NAME, OID_IF_DESCR):
+        _collection_stats["snmp_label_successes"] += 1
+    elif oid in (OID_IP_AD_ENT_IFINDEX, OID_IP_AD_ENT_NETMASK):
+        _collection_stats["snmp_address_successes"] += 1
     return parse_walk(result.stdout)
 
 
 def collect(ip: str, community: str, keywords: list[str], timeout: int = 2,
-            walk=snmp_walk, configured_names: list[str] | None = None) -> list[dict[str, str]]:
+            walk=snmp_walk, configured_names: list[str] | None = None,
+            configured_ips: dict[str, str] | None = None) -> list[dict[str, str]]:
     walks = {}
     for oid in (
         OID_IF_ALIAS, OID_IF_NAME, OID_IF_DESCR,
@@ -347,7 +456,7 @@ def collect(ip: str, community: str, keywords: list[str], timeout: int = 2,
     if not (walks.get(OID_CIDR_DEFAULT_NEXTHOP) or {}):
         walks[OID_ROUTE_DEFAULT_NEXTHOP] = walk(ip, community, OID_ROUTE_DEFAULT_NEXTHOP, timeout)
         walks[OID_ROUTE_DEFAULT_IFINDEX] = walk(ip, community, OID_ROUTE_DEFAULT_IFINDEX, timeout)
-    return discover_from_walks(walks, keywords, configured_names)
+    return discover_from_walks(walks, keywords, configured_names, configured_ips)
 
 
 def collect_route_walks(ip: str, community: str, timeout: int = 2,
@@ -461,7 +570,8 @@ def _prefix_gateway(wan_ip: str, prefixlen: object) -> str:
 
 
 def discover_from_librenms(addresses: list[dict], ports: list[dict],
-                            configured_names: list[str] | None = None) -> list[dict[str, str]]:
+                            configured_names: list[str] | None = None,
+                            configured_ips: dict[str, str] | None = None) -> list[dict[str, str]]:
     """Map LibreNMS' device IP inventory to the same records as SNMP discovery.
 
     Hillstone can expose interface counters through SNMP while hiding both
@@ -500,24 +610,7 @@ def discover_from_librenms(addresses: list[dict], ports: list[dict],
             "source": "librenms_subnet_gateway" if gateway else "librenms_interface_only",
         })
 
-    rows.sort(key=lambda item: (item["_ifindex"], item["wan_ip"]))
-    clean_names = [str(name).strip() for name in (configured_names or []) if str(name).strip()]
-    unused_names = list(clean_names)
-    # Interface alias/name is the primary binding. This survives adding/removing
-    # a WAN port without shifting every later carrier row onto the wrong line.
-    for item in rows:
-        label_keys = {value.casefold() for value in item.pop("_labels", [])}
-        matched = next((name for name in unused_names if name.casefold() in label_keys), "")
-        if matched:
-            item["name"] = matched
-            unused_names.remove(matched)
-    # Backward-compatible fallback for generic ethernet0/x interfaces where the
-    # operator has not yet set aliases on the firewall.
-    for item in rows:
-        if unused_names and item["name"] not in clean_names:
-            item["name"] = unused_names.pop(0)
-        item.pop("_ifindex", None)
-    return rows
+    return finalize_discovered_results(rows, configured_names, configured_ips)
 
 
 def fetch_librenms_inventory(client: LibreNMSClient, target: str) -> tuple[dict, list[dict], list[dict]]:
@@ -539,11 +632,12 @@ def fetch_librenms_inventory(client: LibreNMSClient, target: str) -> tuple[dict,
 def collect_hybrid(ip: str, community: str, keywords: list[str], timeout: int,
                    addresses: list[dict], ports: list[dict],
                    configured_names: list[str] | None = None,
+                   configured_ips: dict[str, str] | None = None,
                    walk=snmp_walk) -> list[dict[str, str]]:
     """Use API inventory while retaining live standard-MIB route evidence."""
     walks = librenms_inventory_walks(addresses, ports)
     walks.update(collect_route_walks(ip, community, timeout, walk=walk))
-    results = discover_from_walks(walks, keywords, configured_names)
+    results = discover_from_walks(walks, keywords, configured_names, configured_ips)
     for item in results:
         if item.get("source") == "subnet_gateway":
             item["source"] = "librenms_subnet_gateway"
@@ -551,6 +645,7 @@ def collect_hybrid(ip: str, community: str, keywords: list[str], timeout: int,
 
 
 def collect_from_librenms(firewall_targets: list[str], configured_names: list[str] | None = None,
+                           configured_ips: dict[str, str] | None = None,
                            client: LibreNMSClient | None = None) -> list[dict[str, str]]:
     """Read the current WAN address inventory from LibreNMS' official API."""
     client = client or LibreNMSClient()
@@ -570,7 +665,9 @@ def collect_from_librenms(firewall_targets: list[str], configured_names: list[st
     for target in firewall_targets:
         try:
             _device, addresses, ports = fetch_librenms_inventory(client, target)
-            results = discover_from_librenms(addresses, ports, configured_names)
+            results = discover_from_librenms(
+                addresses, ports, configured_names, configured_ips
+            )
         except (LibreNMSError, ISPDataIncomplete) as exc:
             print(
                 f"[isp-discovery] LibreNMS WAN inventory failed for {target}: "
@@ -613,9 +710,89 @@ def build_file_sd(results: list[dict[str, str]], exclude: set[str]) -> list[dict
     return payload
 
 
+def discovery_state_path(target_path: str) -> str:
+    configured = os.environ.get("ISP_DISCOVERY_STATE_FILE", "").strip()
+    if configured:
+        return configured
+    return str(Path(target_path).with_name("isp-discovery-state.json"))
+
+
+def load_valid_file_sd(path: str) -> list[dict] | None:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, list):
+        return None
+    for entry in payload:
+        labels = entry.get("labels") if isinstance(entry, dict) else None
+        targets = entry.get("targets") if isinstance(entry, dict) else None
+        if (
+            not isinstance(labels, dict)
+            or not str(labels.get("display_name") or "").strip()
+            or not isinstance(targets, list)
+            or len(targets) != 1
+            or not looks_like_ip(str(targets[0]))
+        ):
+            return None
+    return payload
+
+
+def load_discovery_state(path: str) -> dict:
+    try:
+        state = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def write_discovery_state(path: str, status: str, count: int, *,
+                          last_success_at: int | None = None,
+                          last_error_at: int | None = None) -> None:
+    write_json_atomic(path, {
+        "status": status,
+        "last_success_at": last_success_at,
+        "last_error_at": last_error_at,
+        "count": count,
+    })
+
+
+def mark_collection_failure(out: str, state_path: str) -> None:
+    now = int(time.time())
+    previous = load_valid_file_sd(out)
+    state = load_discovery_state(state_path)
+    if previous is not None:
+        last_success = state.get("last_success_at")
+        if not isinstance(last_success, (int, float)):
+            try:
+                last_success = int(Path(out).stat().st_mtime)
+            except OSError:
+                last_success = None
+        write_discovery_state(
+            state_path, "stale", len(previous),
+            last_success_at=int(last_success) if last_success is not None else None,
+            last_error_at=now,
+        )
+        print(
+            f"[isp-discovery] WARNING: collection failed; preserving "
+            f"last-known-good inventory ({len(previous)} target(s))",
+            file=sys.stderr,
+        )
+    else:
+        write_discovery_state(
+            state_path, "error", 0, last_success_at=None, last_error_at=now
+        )
+        print(
+            "[isp-discovery] WARNING: collection failed and no valid "
+            "last-known-good inventory exists",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
     reset_collection_stats()
     out = os.environ.get("ISP_TARGETS_FILE", "/targets/isp_targets.json")
+    state_path = discovery_state_path(out)
     enabled = os.environ.get("ISP_GATEWAY_AUTO_DISCOVER", "true").lower() in ("1", "true", "yes", "on")
     mode = isp_discovery_source()
     firewall_targets = target_ips(os.environ.get("FIREWALL_SNMP_TARGETS", ""))
@@ -630,6 +807,7 @@ def main() -> None:
         item.strip() for item in os.environ.get("BIGSCREEN_ISP_NAMES", "").split(",")
         if item.strip()
     ]
+    configured_ips = named_ipv4_targets(os.environ.get("BIGSCREEN_ISP_IPS", ""))
     timeout = int(os.environ.get("ISP_DISCOVERY_SNMP_TIMEOUT", "2") or "2")
     manual = set(target_ips(os.environ.get("ISP_PING", "")))
 
@@ -638,6 +816,9 @@ def main() -> None:
     # empty and no device/API query is useful.
     if manual:
         write_file_sd(out, [])
+        write_discovery_state(
+            state_path, "disabled", 0, last_success_at=None, last_error_at=None
+        )
         print(
             "[isp-discovery] manual ISP_PING configured; skipped automatic discovery",
             file=sys.stderr,
@@ -650,6 +831,9 @@ def main() -> None:
 
     if not enabled or not firewall_targets:
         write_file_sd(out, [])
+        write_discovery_state(
+            state_path, "disabled", 0, last_success_at=None, last_error_at=None
+        )
         reason = "disabled" if not enabled else "no FIREWALL_SNMP_TARGETS"
         print(f"[isp-discovery] {reason}; wrote empty target file", file=sys.stderr)
         return
@@ -669,14 +853,19 @@ def main() -> None:
             )
 
     per_device_results = []
+    successful_sources = 0
     if mode == "direct-snmp":
         # Preserve the previous path exactly: the first firewall exposing ISP
         # data is authoritative in direct-only compatibility mode.
         for ip in firewall_targets:
+            stats_before = collection_stats()
             current = collect(
                 ip, community, keywords, timeout,
                 configured_names=configured_names,
+                configured_ips=configured_ips,
             )
+            if direct_collection_succeeded(stats_before, current):
+                successful_sources += 1
             print(
                 f"[isp-discovery] source=direct-snmp device={ip} "
                 "inventory=direct-snmp gateway=direct-snmp",
@@ -691,10 +880,14 @@ def main() -> None:
         # both inapplicable and noisy, so hybrid deliberately uses the VIP's
         # live SNMP inventory and routing data without making an API request.
         for ip in firewall_targets:
+            stats_before = collection_stats()
             current = collect(
                 ip, community, keywords, timeout,
                 configured_names=configured_names,
+                configured_ips=configured_ips,
             )
+            if direct_collection_succeeded(stats_before, current):
+                successful_sources += 1
             print(
                 f"[isp-discovery] source=hybrid device={ip} mode=ha-vip "
                 "inventory=direct-snmp gateway=direct-snmp",
@@ -705,16 +898,20 @@ def main() -> None:
     else:
         for ip in firewall_targets:
             current = []
+            inventory_succeeded = False
             inventory_source = "unavailable"
             gateway_source = "none"
             if librenms_ready:
                 try:
                     _metadata, addresses, ports = fetch_librenms_inventory(client, ip)
+                    inventory_succeeded = True
+                    successful_sources += 1
                     inventory_source = "librenms"
                     if mode == "hybrid":
                         current = collect_hybrid(
                             ip, community, keywords, timeout, addresses, ports,
                             configured_names=configured_names,
+                            configured_ips=configured_ips,
                         )
                         gateway_source = (
                             "direct-snmp"
@@ -723,7 +920,7 @@ def main() -> None:
                         )
                     else:
                         current = discover_from_librenms(
-                            addresses, ports, configured_names
+                            addresses, ports, configured_names, configured_ips
                         )
                         gateway_source = "librenms-subnet" if current else "none"
                 except (LibreNMSError, ISPDataIncomplete) as exc:
@@ -733,10 +930,17 @@ def main() -> None:
                         file=sys.stderr,
                     )
             if mode == "hybrid" and not current:
+                stats_before = collection_stats()
                 current = collect(
                     ip, community, keywords, timeout,
                     configured_names=configured_names,
+                    configured_ips=configured_ips,
                 )
+                if (
+                    not inventory_succeeded
+                    and direct_collection_succeeded(stats_before, current)
+                ):
+                    successful_sources += 1
                 inventory_source = "direct-snmp"
                 gateway_source = "direct-snmp"
             elif mode == "librenms" and not current:
@@ -755,7 +959,22 @@ def main() -> None:
 
     results = merge_device_results(per_device_results)
     payload = build_file_sd(results, manual)
+    if not results and successful_sources == 0:
+        mark_collection_failure(out, state_path)
+        stats = collection_stats()
+        api_requests = getattr(client, "request_count", 0) if client is not None else 0
+        print(
+            f"[isp-discovery] collection stats: api_requests={api_requests} "
+            f"snmp_walks={stats['snmp_walks']} snmp_gets={stats['snmp_gets']}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     write_file_sd(out, payload)
+    write_discovery_state(
+        state_path, "ok", len(payload),
+        last_success_at=int(time.time()), last_error_at=None,
+    )
     if results:
         summary = ", ".join(
             f"{item['name']}={item['gateway']}"
@@ -767,8 +986,10 @@ def main() -> None:
               f" ({len(results) - len(payload) - interface_only} already manual, "
               f"{interface_only} without a safe gateway target)", file=sys.stderr)
     else:
-        print("[isp-discovery] neither configured source exposed current public WAN "
-              "addresses; keep manual ISP_PING entries", file=sys.stderr)
+        print(
+            "[isp-discovery] discovery succeeded, 0 matching ISP interfaces",
+            file=sys.stderr,
+        )
     stats = collection_stats()
     api_requests = getattr(client, "request_count", 0) if client is not None else 0
     print(

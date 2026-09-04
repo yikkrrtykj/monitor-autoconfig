@@ -269,12 +269,12 @@ function createHarness(options = {}) {
   assert.strictEqual(normal.analyzeCalls[0].data.infraSuccess, normal.defaultSeries.infraSuccess);
   assert.strictEqual(normal.analyzeCalls[0].data.isp.length, 4);
   assert.deepStrictEqual(
-    normal.analyzeCalls[0].data.isp.map((series) => [series._ispName, series._ispIndex, series._direction]),
+    normal.analyzeCalls[0].data.isp.map((series) => [series._ispName, series._direction]),
     [
-      ['ISP-A', 0, 'in'],
-      ['ISP-A', 0, 'out'],
-      ['ISP-B', 1, 'in'],
-      ['ISP-B', 1, 'out']
+      ['ISP-A', 'in'],
+      ['ISP-A', 'out'],
+      ['ISP-B', 'in'],
+      ['ISP-B', 'out']
     ]
   );
   assert.ok(normal.replacements[0].value.startsWith('/incident?at=2023-12-31T16%3A00&window=10&threshold=0.03'));

@@ -10,6 +10,7 @@ from librenms_client import LibreNMSUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "librenms"
+ISP_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "isp"
 MODULE_PATH = ROOT / "discover-isp-targets.py"
 spec = importlib.util.spec_from_file_location("discover_isp_targets", MODULE_PATH)
 disco = importlib.util.module_from_spec(spec)
@@ -122,8 +123,8 @@ def test_manual_isp_ping_entries_take_precedence():
     assert payload[0]["labels"]["wan_ip"] == "100.65.1.2"
 
 
-def test_duplicate_carrier_lines_numbered_by_ifindex():
-    """双电信双联通:同名口按 ifIndex 升序编号,和带宽告警的去重规则一致。"""
+def test_duplicate_carrier_lines_use_stable_address_identity():
+    """同名线路使用 WAN IP，而不是会漂移的 ifIndex 排名区分。"""
     walks = {
         disco.OID_IF_ALIAS: {
             f"{disco.OID_IF_ALIAS}.4": "电信",
@@ -153,10 +154,10 @@ def test_duplicate_carrier_lines_numbered_by_ifindex():
     }
     results = disco.discover_from_walks(walks, disco.wan_keywords("电信,联通"))
     assert [(item["name"], item["gateway"]) for item in results] == [
-        ("电信-1", "100.64.1.1"),
-        ("电信-2", "100.64.2.1"),
-        ("联通-1", "100.65.1.1"),
-        ("联通-2", "100.65.2.1"),
+        ("电信@100.64.1.2", "100.64.1.1"),
+        ("电信@100.64.2.2", "100.64.2.1"),
+        ("联通@100.65.1.2", "100.65.1.1"),
+        ("联通@100.65.2.2", "100.65.2.1"),
     ]
 
 
@@ -185,8 +186,8 @@ def test_foreign_carrier_names_match_by_keyword():
     assert {item["name"] for item in results} == {"Vodafone-Line", "Singtel"}
 
 
-def test_generic_interface_names_use_public_default_routes_and_console_names():
-    """A firewall may expose only ethernet0/x while the console owns the labels."""
+def test_generic_interface_names_bind_console_metadata_by_public_ip():
+    """Generic ports may use manual labels only through explicit public IPs."""
     walks = {
         disco.OID_IF_ALIAS: {},
         disco.OID_IF_NAME: {
@@ -226,7 +227,15 @@ def test_generic_interface_names_use_public_default_routes_and_console_names():
         },
     }
     names = ["telcom-100M-长期", "telcom-1000M", "unicom-1000M", "telcom-100M"]
-    results = disco.discover_from_walks(walks, disco.wan_keywords("telecom,unicom,WAN"), names)
+    configured_ips = {
+        "telcom-100M-长期": "101.95.176.198",
+        "telcom-1000M": "116.238.242.155",
+        "unicom-1000M": "116.128.201.226",
+        "telcom-100M": "61.169.238.58",
+    }
+    results = disco.discover_from_walks(
+        walks, disco.wan_keywords("telecom,unicom,WAN"), names, configured_ips
+    )
     assert [(item["name"], item["wan_ip"], item["gateway"]) for item in results] == [
         ("telcom-1000M", "116.238.242.155", "116.238.242.153"),
         ("telcom-100M", "61.169.238.58", "61.169.238.57"),
@@ -242,7 +251,12 @@ def test_public_wan_addresses_survive_when_firewall_hides_route_table():
     walks[disco.OID_CIDR_DEFAULT_IFINDEX] = {}
     names = ["电信-100M", "联通-1000M"]
 
-    results = disco.discover_from_walks(walks, disco.wan_keywords("电信,联通"), names)
+    results = disco.discover_from_walks(
+        walks,
+        disco.wan_keywords("电信,联通"),
+        names,
+        {"电信-100M": "100.64.1.2", "联通-1000M": "100.65.1.2"},
+    )
 
     assert [(item["name"], item["wan_ip"], item["gateway"], item["source"]) for item in results] == [
         ("电信-100M", "100.64.1.2", "100.64.1.1", "subnet_gateway"),
@@ -271,13 +285,21 @@ def test_librenms_inventory_fallback_maps_current_public_addresses_and_prefixes(
         addresses,
         ports,
         ["telecom-100M-long", "telecom-1000M", "unicom-1000M", "telecom-100M"],
+        {
+            "telecom-100M-long": "101.95.176.198",
+            "telecom-1000M": "116.238.242.155",
+            "unicom-1000M": "116.128.201.226",
+            "telecom-100M": "61.169.238.58",
+        },
     )
-    assert [(item["name"], item["wan_ip"], item["gateway"]) for item in results] == [
-        ("telecom-100M-long", "101.95.176.198", "101.95.176.197"),
-        ("telecom-1000M", "116.238.242.155", "116.238.242.153"),
-        ("unicom-1000M", "116.128.201.226", "116.128.201.225"),
-        ("telecom-100M", "61.169.238.58", "61.169.238.57"),
-    ]
+    assert {
+        item["name"]: (item["wan_ip"], item["gateway"]) for item in results
+    } == {
+        "telecom-100M-long": ("101.95.176.198", "101.95.176.197"),
+        "telecom-1000M": ("116.238.242.155", "116.238.242.153"),
+        "unicom-1000M": ("116.128.201.226", "116.128.201.225"),
+        "telecom-100M": ("61.169.238.58", "61.169.238.57"),
+    }
     assert {item["source"] for item in results} == {"librenms_subnet_gateway"}
 
 
@@ -297,6 +319,97 @@ def test_librenms_inventory_binds_by_wan_alias_before_interface_order():
         ("telecom-100M", "61.169.238.58"),
         ("telecom-100M-long", "101.95.176.198"),
     ]
+
+
+def test_manual_name_never_falls_back_to_ifindex_position(capsys):
+    results = disco.discover_from_librenms(
+        [
+            {"ipv4_address": "8.8.8.10", "ipv4_prefixlen": 29, "port_id": "1"},
+            {"ipv4_address": "1.1.1.2", "ipv4_prefixlen": 30, "port_id": "2"},
+        ],
+        [
+            {"port_id": "1", "ifIndex": 10, "ifName": "ethernet0/0"},
+            {"port_id": "2", "ifIndex": 20, "ifName": "ethernet0/1"},
+        ],
+        ["ISP-A", "ISP-B"],
+    )
+
+    assert {item["name"] for item in results} == {"ethernet0/0", "ethernet0/1"}
+    warning = capsys.readouterr().err
+    assert 'manual ISP metadata "ISP-A" unmatched' in warning
+    assert 'manual ISP metadata "ISP-B" unmatched' in warning
+
+
+def test_identity_survives_ifindex_and_input_reorder():
+    addresses = [
+        {"ipv4_address": "8.8.8.10", "ipv4_prefixlen": 29, "port_id": "a"},
+        {"ipv4_address": "1.1.1.2", "ipv4_prefixlen": 30, "port_id": "b"},
+        {"ipv4_address": "9.9.9.10", "ipv4_prefixlen": 29, "port_id": "c"},
+    ]
+    first_ports = [
+        {"port_id": "a", "ifIndex": 10, "ifAlias": "ISP-A"},
+        {"port_id": "b", "ifIndex": 20, "ifAlias": "ISP-B"},
+        {"port_id": "c", "ifIndex": 30, "ifAlias": "ISP-C"},
+    ]
+    second_ports = [
+        {"port_id": "c", "ifIndex": 7, "ifAlias": "ISP-C"},
+        {"port_id": "a", "ifIndex": 31, "ifAlias": "ISP-A"},
+        {"port_id": "b", "ifIndex": 44, "ifAlias": "ISP-B"},
+    ]
+
+    first = disco.discover_from_librenms(addresses, first_ports, ["ISP-A", "ISP-B", "ISP-C"])
+    second = disco.discover_from_librenms(
+        list(reversed(addresses)), second_ports, ["ISP-A", "ISP-B", "ISP-C"]
+    )
+
+    identity = lambda rows: {item["wan_ip"]: item["name"] for item in rows}
+    assert identity(first) == identity(second) == {
+        "8.8.8.10": "ISP-A",
+        "1.1.1.2": "ISP-B",
+        "9.9.9.10": "ISP-C",
+    }
+
+
+def test_production_four_manual_metadata_rows_keep_five_discovered_isps():
+    payload = json.loads(
+        (ISP_FIXTURES / "production-ha-inventory.json").read_text(encoding="utf-8")
+    )
+    manual = [
+        "telcom-100M-长期", "telcom-1000M", "unicom-1000M", "MLBB-telcom-300M"
+    ]
+    results = [
+        {
+            "gateway": entry["targets"][0],
+            "name": entry["labels"]["display_name"],
+            "wan_ip": entry["labels"]["wan_ip"],
+            "source": entry["labels"]["discovery_source"],
+            "_labels": [entry["labels"]["display_name"]],
+        }
+        for entry in reversed(payload)
+    ]
+
+    finalized = disco.finalize_discovered_results(results, manual)
+
+    assert len(finalized) == 5
+    assert {item["name"] for item in finalized} == {
+        entry["labels"]["display_name"] for entry in payload
+    }
+    assert "MLBB-unicom-300M" in {item["name"] for item in finalized}
+
+
+def test_duplicate_stable_evidence_fails_safe_without_overwrite(capsys):
+    results = [
+        {"gateway": "8.8.8.9", "name": "WAN", "wan_ip": "8.8.8.10", "_labels": ["WAN"]},
+        {"gateway": "8.8.4.3", "name": "WAN", "wan_ip": "8.8.8.10", "_labels": ["WAN"]},
+    ]
+
+    matched = disco.bind_manual_metadata(
+        results, ["ISP-A"], {"ISP-A": "8.8.8.10"}
+    )
+
+    assert matched == set()
+    assert [item["name"] for item in results] == ["WAN", "WAN"]
+    assert "ambiguous by WAN IP" in capsys.readouterr().err
 
 
 def test_pppoe_slash31_and_slash32_are_inventory_only_not_fake_self_pings():
@@ -601,6 +714,7 @@ def test_main_manual_isp_ping_skips_all_automatic_collection(monkeypatch, tmp_pa
 
 def _main_env(monkeypatch, tmp_path, source, targets="192.0.2.10"):
     monkeypatch.setenv("ISP_TARGETS_FILE", str(tmp_path / "isp.json"))
+    monkeypatch.setenv("ISP_DISCOVERY_STATE_FILE", str(tmp_path / "isp-state.json"))
     monkeypatch.setenv("ISP_GATEWAY_AUTO_DISCOVER", "true")
     monkeypatch.setenv("ISP_DISCOVERY_SOURCE", source)
     monkeypatch.setenv("FIREWALL_SNMP_TARGETS", targets)
@@ -608,6 +722,7 @@ def _main_env(monkeypatch, tmp_path, source, targets="192.0.2.10"):
     monkeypatch.setenv("FIREWALL_SNMP_COMMUNITY", "private-do-not-log")
     monkeypatch.setenv("FIREWALL_WAN_IF_FILTER", "wan")
     monkeypatch.setenv("BIGSCREEN_ISP_NAMES", "")
+    monkeypatch.setenv("BIGSCREEN_ISP_IPS", "")
     monkeypatch.setenv("ISP_PING", "")
 
 
@@ -692,9 +807,9 @@ def test_main_hybrid_unknown_timestamp_uses_api_inventory_and_route_only(
     monkeypatch.setattr(
         disco, "collect_hybrid",
         lambda ip, community, keywords, timeout, addresses, ports,
-               configured_names=None: original(
+               configured_names=None, configured_ips=None: original(
                    ip, community, keywords, timeout, addresses, ports,
-                   configured_names, walk=route_walk(),
+                   configured_names, configured_ips, walk=route_walk(),
                ),
     )
     monkeypatch.setattr(
@@ -760,9 +875,9 @@ def test_main_multiple_firewalls_fall_back_per_device_without_secret_leak(
     monkeypatch.setattr(
         disco, "collect_hybrid",
         lambda ip, community, keywords, timeout, addresses, ports,
-               configured_names=None: original(
+               configured_names=None, configured_ips=None: original(
                    ip, community, keywords, timeout, addresses, ports,
-                   configured_names, walk=route_walk(),
+                   configured_names, configured_ips, walk=route_walk(),
                ),
     )
     monkeypatch.setattr(
@@ -832,10 +947,141 @@ def test_main_librenms_only_insufficient_inventory_skips_safely(
     )
     monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
 
+    with pytest.raises(SystemExit) as error:
+        disco.main()
+
+    assert error.value.code == 1
+    assert written == []
+    log = capsys.readouterr().err
+    assert "insufficient; skipping" in log
+    assert "no valid last-known-good inventory" in log
+
+
+def test_transient_failure_preserves_last_known_good_inventory(
+    monkeypatch, tmp_path, capsys
+):
+    _main_env(monkeypatch, tmp_path, "direct-snmp")
+    target_file = tmp_path / "isp.json"
+    prior = json.loads(
+        (ISP_FIXTURES / "production-ha-inventory.json").read_text(encoding="utf-8")
+    )
+    original = json.dumps(prior, ensure_ascii=False, indent=2) + "\n"
+    target_file.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: [])
+
+    with pytest.raises(SystemExit) as error:
+        disco.main()
+
+    assert error.value.code == 1
+    assert target_file.read_text(encoding="utf-8") == original
+    state = json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "stale"
+    assert state["count"] == 5
+    assert state["last_success_at"] == int(target_file.stat().st_mtime)
+    assert state["last_error_at"] is not None
+    assert "preserving last-known-good inventory (5 target(s))" in capsys.readouterr().err
+
+
+def test_malformed_sources_preserve_last_known_good_inventory(monkeypatch, tmp_path):
+    _main_env(monkeypatch, tmp_path, "hybrid")
+    target_file = tmp_path / "isp.json"
+    prior = json.loads(
+        (ISP_FIXTURES / "production-ha-inventory.json").read_text(encoding="utf-8")
+    )
+    target_file.write_text(json.dumps(prior), encoding="utf-8")
+    client = PolicyClient(
+        {"192.0.2.10": fixture_inventory()},
+        failures={("192.0.2.10", "ports"): LibreNMSUnavailable("malformed response")},
+    )
+    monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: [])
+
+    with pytest.raises(SystemExit):
+        disco.main()
+
+    assert json.loads(target_file.read_text(encoding="utf-8")) == prior
+    assert json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))["status"] == "stale"
+
+
+def test_successful_discovery_atomically_replaces_inventory_and_marks_ok(
+    monkeypatch, tmp_path
+):
+    _main_env(monkeypatch, tmp_path, "direct-snmp")
+    target_file = tmp_path / "isp.json"
+    target_file.write_text("[]\n", encoding="utf-8")
+    discovered = [
+        {
+            "gateway": f"8.8.{index}.1",
+            "name": f"ISP-{index}",
+            "wan_ip": f"8.8.{index}.2",
+            "source": "gateway",
+        }
+        for index in range(1, 7)
+    ]
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: discovered)
+
     disco.main()
 
-    assert written == [[]]
-    assert "insufficient; skipping" in capsys.readouterr().err
+    payload = json.loads(target_file.read_text(encoding="utf-8"))
+    state = json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))
+    assert len(payload) == 6
+    assert state["status"] == "ok"
+    assert state["count"] == 6
+    assert state["last_success_at"] is not None
+    assert state["last_error_at"] is None
+
+
+def test_disabled_discovery_clears_prior_inventory_without_inheriting_lkg(
+    monkeypatch, tmp_path
+):
+    _main_env(monkeypatch, tmp_path, "direct-snmp")
+    monkeypatch.setenv("ISP_GATEWAY_AUTO_DISCOVER", "false")
+    target_file = tmp_path / "isp.json"
+    target_file.write_text(
+        (ISP_FIXTURES / "production-ha-inventory.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    disco.main()
+
+    assert json.loads(target_file.read_text(encoding="utf-8")) == []
+    state = json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))
+    assert state == {
+        "status": "disabled", "last_success_at": None,
+        "last_error_at": None, "count": 0,
+    }
+
+
+def test_first_failure_is_error_and_does_not_create_empty_inventory(monkeypatch, tmp_path):
+    _main_env(monkeypatch, tmp_path, "direct-snmp")
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: [])
+
+    with pytest.raises(SystemExit):
+        disco.main()
+
+    assert not (tmp_path / "isp.json").exists()
+    state = json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "error"
+    assert state["last_success_at"] is None
+
+
+def test_successful_zero_is_distinct_from_collection_failure(monkeypatch, tmp_path, capsys):
+    _main_env(monkeypatch, tmp_path, "direct-snmp")
+
+    def valid_zero(*_args, **_kwargs):
+        disco._collection_stats["snmp_successes"] += 1
+        disco._collection_stats["snmp_label_successes"] += 1
+        disco._collection_stats["snmp_address_successes"] += 1
+        return []
+
+    monkeypatch.setattr(disco, "collect", valid_zero)
+    disco.main()
+
+    assert json.loads((tmp_path / "isp.json").read_text(encoding="utf-8")) == []
+    state = json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "ok"
+    assert state["count"] == 0
+    assert "discovery succeeded, 0 matching ISP interfaces" in capsys.readouterr().err
 
 
 def test_hybrid_route_walk_count_is_significantly_below_old_inventory_path():
@@ -879,7 +1125,7 @@ if __name__ == "__main__":
     test_rfc1213_fallback_single_default_route()
     test_lan_default_route_and_duplicates_are_dropped()
     test_manual_isp_ping_entries_take_precedence()
-    test_duplicate_carrier_lines_numbered_by_ifindex()
+    test_duplicate_carrier_lines_use_stable_address_identity()
     test_foreign_carrier_names_match_by_keyword()
     test_target_ips_parses_named_lists()
     print("ISP discovery tests passed")

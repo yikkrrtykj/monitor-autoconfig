@@ -5,47 +5,12 @@ const apiPath = path.resolve(__dirname, '../bigscreen/api.js');
 const realDateNow = Date.now;
 const realConsoleWarn = console.warn;
 
-const productionInventory = [
-  {
-    targets: ['58.40.218.213'],
-    labels: {
-      display_name: 'MLBB-telcom-300M',
-      wan_ip: '58.40.218.214',
-      discovery_source: 'subnet_gateway'
-    }
-  },
-  {
-    targets: ['210.22.142.9'],
-    labels: {
-      display_name: 'MLBB-unicom-300M',
-      wan_ip: '210.22.142.10',
-      discovery_source: 'subnet_gateway'
-    }
-  },
-  {
-    targets: ['116.238.242.153'],
-    labels: {
-      display_name: 'telcom-1000M',
-      wan_ip: '116.238.242.155',
-      discovery_source: 'subnet_gateway'
-    }
-  },
-  {
-    targets: ['101.95.176.197'],
-    labels: {
-      display_name: 'telcom-100M-长期',
-      wan_ip: '101.95.176.198',
-      discovery_source: 'subnet_gateway'
-    }
-  },
-  {
-    targets: ['116.128.201.225'],
-    labels: {
-      display_name: 'unicom-1000M',
-      wan_ip: '116.128.201.226',
-      discovery_source: 'subnet_gateway'
-    }
-  }
+const productionInventory = require('./fixtures/isp/production-ha-inventory.json');
+const productionManualNames = [
+  'telcom-100M-长期',
+  'telcom-1000M',
+  'unicom-1000M',
+  'MLBB-telcom-300M'
 ];
 
 function freshApi(config = {}) {
@@ -129,7 +94,6 @@ async function testTopologyFallbacks() {
   const failures = [
     () => response({}, { ok: false, status: 503 }),
     () => response(null, { jsonError: new SyntaxError('invalid JSON') }),
-    () => response([]),
     () => response([{ targets: [], labels: { display_name: 'malformed' } }])
   ];
 
@@ -148,18 +112,42 @@ async function testTopologyFallbacks() {
   }
 }
 
-async function testManualPriorityAndInventoryRefresh() {
+async function testSuccessfulEmptyTopologyInventoryIsAuthoritative() {
+  const api = freshApi({ ispNames: productionManualNames.join(',') });
+  let prometheusCalls = 0;
+  global.fetch = async (url) => {
+    if (isTopologyRequest(url)) return response([]);
+    prometheusCalls += 1;
+    return response(prometheusPayload(['should-not-be-used']));
+  };
+  assert.deepStrictEqual(await api.fetchIspInventory(), []);
+  assert.strictEqual(prometheusCalls, 0);
+}
+
+async function testAutoInventoryOverridesManualCountAndManualModeStaysAuthoritative() {
   let networkCalls = 0;
-  let api = freshApi({ ispNames: 'Manual WAN A,Manual WAN B' });
+  let api = freshApi({
+    ispAutoDiscovery: 'false',
+    ispNames: 'Manual WAN A,Manual WAN B,Manual WAN C,Manual WAN D,Manual WAN E'
+  });
   global.fetch = async () => {
     networkCalls += 1;
     throw new Error('manual inventory must not use discovery');
   };
   assert.deepStrictEqual(
     (await api.fetchIspInventory()).map((item) => item.name),
-    ['Manual WAN A', 'Manual WAN B']
+    ['Manual WAN A', 'Manual WAN B', 'Manual WAN C', 'Manual WAN D', 'Manual WAN E']
   );
   assert.strictEqual(networkCalls, 0);
+
+  api = freshApi({ ispNames: productionManualNames.join(',') });
+  global.fetch = async (url) => {
+    assert(isTopologyRequest(url));
+    return response(productionInventory);
+  };
+  const autoInventory = await api.fetchIspInventory();
+  assert.strictEqual(autoInventory.length, 5);
+  assert(autoInventory.some((item) => item.name === 'MLBB-unicom-300M'));
 
   let now = 1_000_000;
   Date.now = () => now;
@@ -179,6 +167,17 @@ async function testManualPriorityAndInventoryRefresh() {
   assert.strictEqual((await api.fetchIspInventory()).length, 5);
   assert.strictEqual(topologyCalls, 2, 'topology inventory refreshes without a page reload');
   Date.now = realDateNow;
+}
+
+async function testBothDiscoverySourcesFailToSafeManualFallback() {
+  const api = freshApi({ ispNames: productionManualNames.join(',') });
+  global.fetch = async (url) => {
+    if (isTopologyRequest(url)) return response({}, { ok: false, status: 503 });
+    throw new Error('Prometheus unavailable');
+  };
+  const inventory = await api.fetchIspInventory();
+  assert.deepStrictEqual(inventory.map((item) => item.name), productionManualNames);
+  assert(inventory.every((item) => item.discoverySource === 'manual'));
 }
 
 async function testRejectedTrafficDirectionsPreserveInventory() {
@@ -211,7 +210,9 @@ async function testRejectedTrafficDirectionsPreserveInventory() {
   console.warn = () => {};
   await testProductionInventoryAndMissingTraffic();
   await testTopologyFallbacks();
-  await testManualPriorityAndInventoryRefresh();
+  await testSuccessfulEmptyTopologyInventoryIsAuthoritative();
+  await testAutoInventoryOverridesManualCountAndManualModeStaysAuthoritative();
+  await testBothDiscoverySourcesFailToSafeManualFallback();
   await testRejectedTrafficDirectionsPreserveInventory();
   console.log('bigscreen ISP inventory tests passed');
 })().catch((error) => {
