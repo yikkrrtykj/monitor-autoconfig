@@ -189,12 +189,16 @@ function createHarness(options = {}) {
     formatPingText: utils.formatPingText,
     formatBits: (value) => `${value}bps`,
     dateTimeInputValue: () => '2024-01-01T08:00',
-    fetchIspNames() {
+    fetchIspInventory() {
       if (ispQueue.length) {
         const value = ispQueue.shift();
-        return typeof value === 'function' ? value() : value;
+        return Promise.resolve(typeof value === 'function' ? value() : value).then((items) => (
+          items.map((item) => typeof item === 'string' ? { name: item, metricName: item } : item)
+        ));
       }
-      return Promise.resolve(options.ispNames || ['ISP-A', 'ISP-B']);
+      return Promise.resolve(options.ispInventory || options.ispNames || ['ISP-A', 'ISP-B']).then((items) => (
+        items.map((item) => typeof item === 'string' ? { name: item, metricName: item } : item)
+      ));
     },
     ispTrafficQuery(metric, name) {
       return `isp:${metric}:${name}`;
@@ -229,6 +233,10 @@ function createHarness(options = {}) {
 (async () => {
   const normal = createHarness({
     search: '?at=2023-12-31T16%3A00&window=10&threshold=0.03',
+    ispInventory: [
+      { name: 'ISP-A', metricName: 'ethernet0/4' },
+      { name: 'ISP-B' }
+    ],
     result: populatedResult()
   });
   const initialQuery = normal.panel.start();
@@ -250,8 +258,8 @@ function createHarness(options = {}) {
   assert.deepStrictEqual(
     queryTexts.filter((query) => query.startsWith('isp:')),
     [
-      'isp:ifHCInOctets:ISP-A',
-      'isp:ifHCOutOctets:ISP-A',
+      'isp:ifHCInOctets:ethernet0/4',
+      'isp:ifHCOutOctets:ethernet0/4',
       'isp:ifHCInOctets:ISP-B',
       'isp:ifHCOutOctets:ISP-B'
     ]

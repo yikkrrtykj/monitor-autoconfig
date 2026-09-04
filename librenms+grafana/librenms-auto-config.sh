@@ -29,10 +29,23 @@ FIREWALL_UNIT_SNMP_TARGETS="${FIREWALL_UNIT_SNMP_TARGETS:-}"
 FEISHU_ROBOT_TOKEN="${FEISHU_ROBOT_TOKEN:-}"
 ISP_PING="${ISP_PING:-}"
 BIGSCREEN_ISP_IPS="${BIGSCREEN_ISP_IPS:-}"
+BIGSCREEN_ISP_AUTO_DISCOVER="${BIGSCREEN_ISP_AUTO_DISCOVER-${ISP_GATEWAY_AUTO_DISCOVER-true}}"
 FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
 PLAYER_SUBNETS="${PLAYER_SUBNETS:-}"
 PLAYER_GATEWAYS="${PLAYER_GATEWAYS:-}"
+
+is_true() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+MANUAL_ISP_IP_TARGETS=""
+if ! is_true "$BIGSCREEN_ISP_AUTO_DISCOVER"; then
+  MANUAL_ISP_IP_TARGETS="$BIGSCREEN_ISP_IPS"
+fi
 BIGSCREEN_ISP_MAX_BANDWIDTH="${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
 ISP_SATURATION_PERCENT="${ISP_SATURATION_PERCENT:-90}"
 FIREWALL_WAN_IF_FILTER="${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
@@ -897,7 +910,7 @@ retire_unmanaged_player_devices() {
   # retries it forever. Disable only IPs inside PLAYER_SUBNETS that are no
   # longer any explicitly configured infrastructure target. This preserves
   # device/RRD history and explicit targets are re-enabled by the sync helpers.
-  keep_targets="${DISCOVERY_TARGETS},${CORE_SWITCH_PING},${DIST_SWITCH_PING:-},${TOURNAMENT_SWITCHES:-},${ISP_PING},${BIGSCREEN_ISP_IPS},${FIREWALL_PING},${FIREWALL_SNMP_TARGETS},${FIREWALL_UNIT_SNMP_TARGETS:-},${SERVER_PING},${PLAYER_GATEWAYS}"
+  keep_targets="${DISCOVERY_TARGETS},${CORE_SWITCH_PING},${DIST_SWITCH_PING:-},${TOURNAMENT_SWITCHES:-},${ISP_PING},${MANUAL_ISP_IP_TARGETS},${FIREWALL_PING},${FIREWALL_SNMP_TARGETS},${FIREWALL_UNIT_SNMP_TARGETS:-},${SERVER_PING},${PLAYER_GATEWAYS}"
   retired=$(printf '%s' "$devices" | \
     python3 /target_utils.py retire-player-candidates "$PLAYER_SUBNETS" "$keep_targets")
 
@@ -2102,7 +2115,7 @@ echo "[4b/5] Adding ping-only devices (ISP / Firewall / Servers)..."
 # 单机场景：FIREWALL_UNIT_SNMP_TARGETS 未设 → 物理 IP 来自 FIREWALL_PING 加 ping-only，
 #           VIP 不单独在此 ping（后面 SNMP 块处理）。
 _fw_vip_ping="${FIREWALL_UNIT_SNMP_TARGETS:+${FIREWALL_SNMP_TARGETS}}"
-add_optional_ping_devices "${ISP_PING}${ISP_PING:+,}${BIGSCREEN_ISP_IPS}${BIGSCREEN_ISP_IPS:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}"
+add_optional_ping_devices "${ISP_PING}${ISP_PING:+,}${MANUAL_ISP_IP_TARGETS}${MANUAL_ISP_IP_TARGETS:+,}${FIREWALL_PING}${FIREWALL_PING:+,}${_fw_vip_ping}${_fw_vip_ping:+,}${SERVER_PING}"
 
 retire_unmanaged_player_devices
 

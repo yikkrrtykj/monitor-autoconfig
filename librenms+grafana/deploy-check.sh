@@ -78,6 +78,13 @@ env_value() {
   python3 "$SCRIPT_DIR/platform_config.py" env-get "$SCRIPT_DIR/.env" "$key"
 }
 
+is_true() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 COMPOSE_STYLE=""
 COMPOSE_BIN=""
 PROJECT_DIR=${DEPLOY_CHECK_HOST_PROJECT_DIR:-$SCRIPT_DIR}
@@ -646,9 +653,13 @@ if [ "$MODE" = configured ]; then
   TOURNAMENT_SWITCHES_VALUE=$(env_value TOURNAMENT_SWITCHES 2>/dev/null || true)
   FIREWALL_VALUE=$(env_value FIREWALL_PING 2>/dev/null || true)
   FIREWALL_SNMP_VALUE=$(env_value FIREWALL_SNMP_TARGETS 2>/dev/null || true)
-  ISP_AUTO_VALUE=$(env_value BIGSCREEN_ISP_AUTO_DISCOVER 2>/dev/null || true)
-  [ -n "$ISP_AUTO_VALUE" ] || ISP_AUTO_VALUE=$(env_value ISP_GATEWAY_AUTO_DISCOVER 2>/dev/null || true)
-  ISP_AUTO_VALUE=$(printf '%s' "${ISP_AUTO_VALUE:-true}" | tr '[:upper:]' '[:lower:]')
+  if ISP_AUTO_VALUE=$(env_value BIGSCREEN_ISP_AUTO_DISCOVER 2>/dev/null); then
+    : # An explicitly empty value is false, like every other non-truthy alias.
+  elif ISP_AUTO_VALUE=$(env_value ISP_GATEWAY_AUTO_DISCOVER 2>/dev/null); then
+    :
+  else
+    ISP_AUTO_VALUE=true
+  fi
   ISP_PING_VALUE=$(env_value ISP_PING 2>/dev/null || true)
   ISP_NAMES_VALUE=$(env_value BIGSCREEN_ISP_NAMES 2>/dev/null || true)
   ISP_IPS_VALUE=$(env_value BIGSCREEN_ISP_IPS 2>/dev/null || true)
@@ -671,11 +682,14 @@ if [ "$MODE" = configured ]; then
   else
     record SKIP configured_firewall "Firewall not configured"
   fi
-  if [ "$ISP_AUTO_VALUE" = true ] && [ -n "$FIREWALL_SNMP_VALUE" ] && [ -z "$ISP_PING_VALUE" ]; then
+  if is_true "$ISP_AUTO_VALUE" && [ -n "$FIREWALL_SNMP_VALUE" ] && [ -z "$ISP_PING_VALUE" ]; then
     wait_for_isp_inventory \
       "$ISP_NAMES_VALUE" "$ISP_IPS_VALUE" "$ISP_BANDWIDTH_VALUE" "$ISP_REFRESH_VALUE" || true
-  elif [ -n "$ISP_PING_VALUE$ISP_NAMES_VALUE$ISP_IPS_VALUE" ]; then
-    wait_for_prometheus_targets configured_isp "Configured ISP monitoring target is present" "$ISP_PING_VALUE" "infra-isp-ping" || true
+  elif [ -n "$ISP_PING_VALUE" ] \
+    || { ! is_true "$ISP_AUTO_VALUE" && [ -n "$ISP_IPS_VALUE" ]; }; then
+    ISP_MANUAL_TARGETS_VALUE=$ISP_PING_VALUE
+    [ -n "$ISP_MANUAL_TARGETS_VALUE" ] || ISP_MANUAL_TARGETS_VALUE=$ISP_IPS_VALUE
+    wait_for_prometheus_targets configured_isp "Configured ISP monitoring target is present" "$ISP_MANUAL_TARGETS_VALUE" "infra-isp-ping" || true
   else
     record SKIP configured_isp "ISP not configured"
   fi

@@ -85,6 +85,7 @@ set -e
 FLOW_LOG={shlex.quote(flow_log.as_posix())}
 ISP_PING="${{ISP_PING:-}}"
 BIGSCREEN_ISP_IPS="${{BIGSCREEN_ISP_IPS:-}}"
+BIGSCREEN_ISP_AUTO_DISCOVER="${{BIGSCREEN_ISP_AUTO_DISCOVER-${{ISP_GATEWAY_AUTO_DISCOVER-true}}}}"
 FIREWALL_PING="${{FIREWALL_PING:-}}"
 FIREWALL_SNMP_TARGETS="${{FIREWALL_SNMP_TARGETS:-}}"
 FIREWALL_UNIT_SNMP_TARGETS="${{FIREWALL_UNIT_SNMP_TARGETS:-}}"
@@ -92,6 +93,13 @@ FIREWALL_SNMP_COMMUNITY="${{FIREWALL_SNMP_COMMUNITY:-global}}"
 SERVER_PING="${{SERVER_PING:-}}"
 API_TOKEN="${{API_TOKEN:-test-token}}"
 FAIL_PING_IP="${{FAIL_PING_IP:-}}"
+
+{_extract_shell_function(source, "is_true")}
+
+MANUAL_ISP_IP_TARGETS=""
+if ! is_true "$BIGSCREEN_ISP_AUTO_DISCOVER"; then
+  MANUAL_ISP_IP_TARGETS="$BIGSCREEN_ISP_IPS"
+fi
 
 parse_named_targets() {{
   targets=${{1:-}}
@@ -242,6 +250,30 @@ def test_ping_only_enrollment_deduplicates_by_ip_and_prefers_nonempty_name(
     assert completed.returncode == 0
     vip_calls = [line for line in log.splitlines() if line.endswith("|192.168.9.1")]
     assert vip_calls == ["ping|HA VIP|192.168.9.1"]
+
+
+@pytest.mark.parametrize("enabled", ["true", "1", "yes", "on", "TRUE", "YES", "ON"])
+def test_auto_mode_does_not_enroll_isp_public_ip_metadata(tmp_path, enabled):
+    completed, log = _run_device_phase(
+        tmp_path,
+        BIGSCREEN_ISP_AUTO_DISCOVER=enabled,
+        BIGSCREEN_ISP_IPS="ISP-A:203.0.113.2",
+    )
+
+    assert completed.returncode == 0
+    assert "ping|ISP-A|203.0.113.2" not in log
+
+
+@pytest.mark.parametrize("disabled", ["false", "0", "no", "off", ""])
+def test_manual_mode_retains_isp_public_ip_ping_only_fallback(tmp_path, disabled):
+    completed, log = _run_device_phase(
+        tmp_path,
+        BIGSCREEN_ISP_AUTO_DISCOVER=disabled,
+        BIGSCREEN_ISP_IPS="ISP-A:203.0.113.2",
+    )
+
+    assert completed.returncode == 0
+    assert "ping|ISP-A|203.0.113.2" in log
 
 
 def test_real_retire_path_disables_candidate_and_continues_through_ha_flow(

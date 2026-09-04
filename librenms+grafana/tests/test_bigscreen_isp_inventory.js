@@ -72,6 +72,8 @@ async function testProductionInventoryAndMissingTraffic() {
   assert.strictEqual(inventory.length, 5);
   assert.deepStrictEqual(inventory[1], {
     name: 'MLBB-unicom-300M',
+    metricName: 'MLBB-unicom-300M',
+    metadataConflict: false,
     gateway: '210.22.142.9',
     wanIp: '210.22.142.10',
     discoverySource: 'subnet_gateway'
@@ -87,6 +89,59 @@ async function testProductionInventoryAndMissingTraffic() {
   assert.deepStrictEqual(noTraffic.upload.values, []);
   assert.strictEqual(results.filter((item) => item.hasTrafficData).length, 4);
   assert.strictEqual(topologyCalls, 1, 'inventory is shared and cached across names and traffic');
+}
+
+async function testMetricNameDrivesTrafficAndLegacyInventoryFallsBack() {
+  const payload = [{
+    targets: ['203.0.113.1'],
+    labels: {
+      display_name: 'ISP-A',
+      metric_name: 'ethernet0/4',
+      wan_ip: '203.0.113.2',
+      discovery_source: 'gateway'
+    }
+  }];
+  let queries = [];
+  let api = freshApi();
+  global.fetch = async (url) => {
+    if (isTopologyRequest(url)) return response(payload);
+    queries.push(new URL(String(url), 'http://localhost').searchParams.get('query'));
+    return response(prometheusPayload(['traffic'], true));
+  };
+  const results = await api.fetchIspTraffic();
+  assert.strictEqual(results[0].name, 'ISP-A');
+  assert.strictEqual(results[0].metricName, 'ethernet0/4');
+  assert(queries.every((query) => query.includes('ethernet0/4')));
+  assert(queries.every((query) => !query.includes('ifAlias="ISP-A"')));
+
+  api = freshApi();
+  const legacy = JSON.parse(JSON.stringify(payload));
+  delete legacy[0].labels.metric_name;
+  global.fetch = async (url) => {
+    if (isTopologyRequest(url)) return response(legacy);
+    return response(prometheusPayload([], true));
+  };
+  assert.strictEqual((await api.fetchIspInventory())[0].metricName, 'ISP-A');
+}
+
+async function testConflictingManualMetadataUsesOnlyGlobalBandwidth() {
+  const api = freshApi({ ispMaxBandwidthMbps: '*:1000,ISP-A:200' });
+  const payload = [{
+    targets: ['203.0.113.1'],
+    labels: {
+      display_name: 'ISP-A',
+      metric_name: 'ethernet0/4',
+      metadata_conflict: 'true'
+    }
+  }];
+  global.fetch = async (url) => {
+    if (isTopologyRequest(url)) return response(payload);
+    return response(prometheusPayload([], true));
+  };
+
+  const result = (await api.fetchIspTraffic())[0];
+  assert.strictEqual(result.metadataConflict, true);
+  assert.strictEqual(api.ispChartMaxBps(result.name, !result.metadataConflict), 1000 * 1000 * 1000);
 }
 
 async function testTopologyFallbacks() {
@@ -209,6 +264,8 @@ async function testRejectedTrafficDirectionsPreserveInventory() {
 (async () => {
   console.warn = () => {};
   await testProductionInventoryAndMissingTraffic();
+  await testMetricNameDrivesTrafficAndLegacyInventoryFallsBack();
+  await testConflictingManualMetadataUsesOnlyGlobalBandwidth();
   await testTopologyFallbacks();
   await testSuccessfulEmptyTopologyInventoryIsAuthoritative();
   await testAutoInventoryOverridesManualCountAndManualModeStaysAuthoritative();

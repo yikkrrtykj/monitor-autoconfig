@@ -1,4 +1,5 @@
 import copy
+import json
 
 import pytest
 
@@ -20,14 +21,15 @@ def normalize_label(value):
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
-def rate(value_bps, *, label="telecom", direction="in", if_index="1"):
+def rate(value_bps, *, label="telecom", direction="in", if_index="1",
+         target_ip="192.0.2.1"):
     return {
         "key": f"{label}|{direction}",
         "label": label,
         "direction": direction,
         "value_bps": value_bps,
         "if_index": if_index,
-        "target_ip": "192.0.2.1",
+        "target_ip": target_ip,
     }
 
 
@@ -159,10 +161,12 @@ def test_fetch_wan_rates_uses_exact_promql_and_extracts_both_directions():
         {
             "key": "WAN1|in", "label": "WAN1", "direction": "in",
             "value_bps": 123.5, "if_index": "7", "target_ip": "10.0.0.1",
+            "metric_name": "WAN1",
         },
         {
             "key": "eth1|out", "label": "eth1", "direction": "out",
             "value_bps": 456.0, "if_index": "8", "target_ip": "10.0.0.2",
+            "metric_name": "eth1",
         },
     ]
 
@@ -226,6 +230,117 @@ def test_duplicate_wan_labels_without_ifindex_remain_distinct_but_ambiguous():
     assert len({item["key"] for item in rates}) == 4
     assert {item["label"] for item in rates} == {"电信"}
     assert all(item["_identity_ambiguous"] is True for item in rates)
+
+
+def test_same_label_and_ifindex_on_different_targets_are_distinct_and_ambiguous():
+    rates = _dedupe_wan_labels([
+        rate(0, label="WAN", if_index="1", target_ip="192.0.2.1"),
+        rate(0, label="WAN", if_index="1", target_ip="192.0.2.2"),
+    ])
+
+    assert len({item["key"] for item in rates}) == 2
+    assert all(item["_identity_ambiguous"] is True for item in rates)
+
+
+def test_inventory_metric_name_maps_native_series_to_display_identity(tmp_path):
+    inventory = tmp_path / "isp.json"
+    inventory.write_text(json.dumps([{
+        "targets": ["203.0.113.1"],
+        "labels": {
+            "display_name": "ISP-A",
+            "metric_name": "eth1",
+            "wan_ip": "203.0.113.2",
+        },
+    }]), encoding="utf-8")
+
+    def prometheus_query(query):
+        direction = "in" if "ifHCInOctets" in query else "out"
+        return [{
+            "metric": {"ifName": "eth1", "ifIndex": "7", "target_ip": "192.0.2.1"},
+            "value": [1, "10" if direction == "in" else "20"],
+        }]
+
+    watcher, _logs, _health, _sent = make_watcher(
+        prometheus_query=prometheus_query,
+        inventory_file=str(inventory),
+        bandwidth_config="*:1000,ISP-A:200",
+    )
+    rates = watcher._fetch_wan_rates()
+
+    assert {item["label"] for item in rates} == {"ISP-A"}
+    assert {item["metric_name"] for item in rates} == {"eth1"}
+    assert _bandwidth_for_label("ISP-A", "in", _parse_bandwidth_config(
+        "*:1000,ISP-A:200"
+    )) == 200
+
+
+def test_multiple_native_lines_for_one_inventory_display_name_use_global_bandwidth(tmp_path):
+    inventory = tmp_path / "isp.json"
+    inventory.write_text(json.dumps([
+        {"targets": ["203.0.113.1"], "labels": {
+            "display_name": "ISP-A", "metric_name": "eth0",
+        }},
+        {"targets": ["203.0.113.9"], "labels": {
+            "display_name": "ISP-A", "metric_name": "eth1",
+        }},
+    ]), encoding="utf-8")
+
+    def prometheus_query(_query):
+        return [
+            {"metric": {"ifName": "eth0", "ifIndex": "1", "target_ip": "192.0.2.1"},
+             "value": [1, "10"]},
+            {"metric": {"ifName": "eth1", "ifIndex": "1", "target_ip": "192.0.2.2"},
+             "value": [1, "20"]},
+        ]
+
+    watcher, _logs, _health, _sent = make_watcher(
+        prometheus_query=prometheus_query,
+        inventory_file=str(inventory),
+        bandwidth_config="*:1000,ISP-A:200",
+    )
+    rates = watcher._fetch_wan_rates()
+    cfg = _parse_bandwidth_config("*:1000,ISP-A:200")
+
+    assert {item["label"] for item in rates} == {"ISP-A"}
+    assert all(item["_identity_ambiguous"] is True for item in rates)
+    assert all(
+        _bandwidth_for_label(
+            item["label"], item["direction"], cfg,
+            identity_ambiguous=item["_identity_ambiguous"],
+        ) == 1000
+        for item in rates
+    )
+
+
+def test_inventory_conflict_blocks_named_bandwidth_even_when_native_label_matches(tmp_path):
+    inventory = tmp_path / "isp.json"
+    inventory.write_text(json.dumps([{
+        "targets": ["203.0.113.1"],
+        "labels": {
+            "display_name": "ISP-A",
+            "metric_name": "ISP-A",
+            "metadata_conflict": "true",
+        },
+    }]), encoding="utf-8")
+
+    watcher, _logs, _health, _sent = make_watcher(
+        prometheus_query=lambda _query: [{
+            "metric": {"ifAlias": "ISP-A", "ifIndex": "1", "target_ip": "192.0.2.1"},
+            "value": [1, "10"],
+        }],
+        inventory_file=str(inventory),
+    )
+    rates = watcher._fetch_wan_rates()
+    cfg = _parse_bandwidth_config("*:1000,ISP-A:200")
+
+    assert all(item["_identity_ambiguous"] is True for item in rates)
+    assert all(
+        _bandwidth_for_label(
+            item["label"], item["direction"], cfg,
+            identity_ambiguous=item["_identity_ambiguous"],
+        ) == 1000
+        for item in rates
+    )
 
 
 def test_ambiguous_duplicate_label_uses_global_bandwidth_not_named_override():

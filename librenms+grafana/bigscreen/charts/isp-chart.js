@@ -16,7 +16,7 @@
         axisPadBottom: compactTournamentChart ? 20 : undefined,
         fill: true,
         legend: "bottom",
-        maxY: ispChartMaxBps(result.name),
+        maxY: ispChartMaxBps(result.name, !result.metadataConflict),
         minMax: 1,
         calcs: ["last", "max"]
       });

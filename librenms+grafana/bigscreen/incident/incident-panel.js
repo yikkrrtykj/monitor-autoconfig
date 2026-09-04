@@ -13,7 +13,7 @@
       formatPingText,
       formatBits,
       dateTimeInputValue,
-      fetchIspNames,
+      fetchIspInventory,
       ispTrafficQuery,
       prometheusRangeFor,
       analyzeIncident
@@ -45,10 +45,10 @@
       const infraLatencyQ = 'probe_icmp_duration_seconds{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping",phase="rtt"}';
       const infraSuccessQ = 'probe_success{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping"}';
 
-      const ispNames = await fetchIspNames();
-      const ispPromises = ispNames.flatMap((name) => [
-        prometheusRangeFor(ispTrafficQuery("ifHCInOctets", name), win).then((series) => series.map((s) => ({ ...s, _ispName: name, _direction: "in" }))),
-        prometheusRangeFor(ispTrafficQuery("ifHCOutOctets", name), win).then((series) => series.map((s) => ({ ...s, _ispName: name, _direction: "out" })))
+      const ispInventory = await fetchIspInventory();
+      const ispPromises = ispInventory.flatMap((item) => [
+        prometheusRangeFor(ispTrafficQuery("ifHCInOctets", item.metricName || item.name), win).then((series) => series.map((s) => ({ ...s, _ispName: item.name, _direction: "in" }))),
+        prometheusRangeFor(ispTrafficQuery("ifHCOutOctets", item.metricName || item.name), win).then((series) => series.map((s) => ({ ...s, _ispName: item.name, _direction: "out" })))
       ]);
 
       const [playerLatency, playerSuccess, infraLatency, infraSuccess, ...ispArrays] = await Promise.all([

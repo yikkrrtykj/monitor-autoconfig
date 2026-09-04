@@ -8,7 +8,9 @@ DIST_SWITCH_PING="${DIST_SWITCH_PING:-}"
 INTERCONNECT_SNMP_TARGETS="${INTERCONNECT_SNMP_TARGETS:-$CORE_SWITCH_PING}"
 FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
-ISP_PING="${ISP_PING:-${BIGSCREEN_ISP_IPS:-}}"
+ISP_PING="${ISP_PING:-}"
+BIGSCREEN_ISP_IPS="${BIGSCREEN_ISP_IPS:-}"
+BIGSCREEN_ISP_AUTO_DISCOVER="${BIGSCREEN_ISP_AUTO_DISCOVER-${ISP_GATEWAY_AUTO_DISCOVER-true}}"
 FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
 # Per-unit SNMP for HA firewall physical nodes (health/uptime per box).
 # Separate from FIREWALL_SNMP_TARGETS because WAN traffic data must come
@@ -38,6 +40,19 @@ INFRA_PING_SCRAPE_INTERVAL="${INFRA_PING_SCRAPE_INTERVAL:-2s}"
 # 外网 ISP 单独更密一些，方便抓“拔一下马上插回”的短闪断。
 ISP_PING_SCRAPE_INTERVAL="${ISP_PING_SCRAPE_INTERVAL:-1s}"
 RETENTION_TIME="${PROMETHEUS_RETENTION_TIME:-15d}"
+
+is_true() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# In automatic mode BIGSCREEN_ISP_IPS is identity metadata, not an active
+# probe list. Manual mode retains the legacy public-IP fallback.
+if ! is_true "$BIGSCREEN_ISP_AUTO_DISCOVER" && [ -z "$ISP_PING" ]; then
+  ISP_PING="$BIGSCREEN_ISP_IPS"
+fi
 # 交换机/防火墙 uptime（运行时长）SNMP 单独的采集间隔。运行时长显示的是"天"，
 # 不需要跟随全局 5-10s 高频采集；拉长可减轻 2960 等弱 CPU 交换机的控制平面负担，
 # 避免其管理口 ICMP 被周期性 SNMP GET 推迟而出现 ping 尖峰。

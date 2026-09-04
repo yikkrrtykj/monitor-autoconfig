@@ -397,16 +397,16 @@ def test_configured_checks_only_components_that_are_actually_configured(tmp_path
     assert checks["player_generator"]["status"] == "SKIP"
 
 
-def _auto_isp_env(manual_names=""):
+def _auto_isp_env(manual_names="", auto_value="true"):
     return BASE_ENV.replace(
         "FIREWALL_SNMP_TARGETS=",
         "FIREWALL_SNMP_TARGETS=firewall:192.168.9.1",
     ).replace(
         "BIGSCREEN_ISP_AUTO_DISCOVER=false",
-        "BIGSCREEN_ISP_AUTO_DISCOVER=true",
+        f"BIGSCREEN_ISP_AUTO_DISCOVER={auto_value}",
     ).replace(
         "ISP_GATEWAY_AUTO_DISCOVER=false",
-        "ISP_GATEWAY_AUTO_DISCOVER=true",
+        f"ISP_GATEWAY_AUTO_DISCOVER={auto_value}",
     ).replace(
         "BIGSCREEN_ISP_NAMES=",
         f"BIGSCREEN_ISP_NAMES={manual_names}",
@@ -445,6 +445,43 @@ def test_configured_auto_isp_accepts_five_inventory_with_four_manual_metadata(tm
     assert completed.returncode == 0
     assert check["status"] == "PASS"
     assert "validated 5 fresh ISP target(s)" in check["message"]
+
+
+@pytest.mark.parametrize("auto_value", ("true", "1", "yes", "on", "TRUE", "YES", "ON"))
+def test_configured_isp_truthy_aliases_run_auto_inventory_validation(tmp_path, auto_value):
+    inventory = _production_isp_inventory()
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=_auto_isp_env(auto_value=auto_value),
+        STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
+        STUB_ISP_INVENTORY_JSON=json.dumps(inventory, ensure_ascii=False),
+        STUB_ISP_STATE_JSON=_isp_state(5),
+    )
+
+    check = checks_by_id(payload)["configured_isp"]
+    assert completed.returncode == 0
+    assert check["status"] == "PASS"
+    assert "validated 5 fresh ISP target(s)" in check["message"]
+
+
+@pytest.mark.parametrize("auto_value", ("false", "0", "no", "off", ""))
+def test_configured_isp_false_aliases_use_inert_contract_without_manual_targets(
+    tmp_path, auto_value
+):
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=_auto_isp_env(auto_value=auto_value),
+        STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
+    )
+
+    check = checks_by_id(payload)["configured_isp"]
+    assert completed.returncode == 0
+    assert check["status"] == "SKIP"
+    assert "ISP not configured" in check["message"]
+    http_log = (tmp_path / "http.log").read_text(encoding="utf-8")
+    assert "/topology/isp_targets.json" not in http_log
 
 
 @pytest.mark.parametrize(
@@ -524,6 +561,29 @@ def test_configured_manual_isp_preserves_prometheus_target_check(tmp_path):
         }, {
             "labels": {"job": "infra-isp-ping"},
             "discoveredLabels": {"__address__": "1.1.1.1"},
+        }]},
+    })
+
+    completed, payload = run_check(
+        tmp_path, mode="configured", env_text=env_text, STUB_TARGETS_JSON=targets
+    )
+
+    assert completed.returncode == 0
+    assert checks_by_id(payload)["configured_isp"]["status"] == "PASS"
+
+
+@pytest.mark.parametrize("auto_value", ("false", "0", "no", "off", ""))
+def test_configured_manual_mode_uses_public_ip_metadata_fallback(tmp_path, auto_value):
+    env_text = _auto_isp_env(auto_value=auto_value).replace(
+        "BIGSCREEN_ISP_IPS=", "BIGSCREEN_ISP_IPS=manual-a:8.8.8.8"
+    ).replace(
+        "FIREWALL_SNMP_TARGETS=firewall:192.168.9.1", "FIREWALL_SNMP_TARGETS="
+    )
+    targets = json.dumps({
+        "status": "success",
+        "data": {"activeTargets": [{
+            "labels": {"job": "infra-isp-ping"},
+            "discoveredLabels": {"__address__": "8.8.8.8"},
         }]},
     })
 

@@ -49,6 +49,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 from librenms_client import LibreNMSClient, LibreNMSError, age_seconds
 from target_utils import (
@@ -89,6 +90,21 @@ class ISPDataIncomplete(RuntimeError):
     """LibreNMS inventory cannot safely drive the existing ISP mapping."""
 
 
+class WalkResult(NamedTuple):
+    """One SNMP walk, preserving success-empty separately from failure."""
+
+    ok: bool
+    values: dict[str, str]
+    error_type: str = ""
+
+
+class CollectionResult(NamedTuple):
+    """Direct-SNMP inventory plus whether the source was fully readable."""
+
+    complete: bool
+    items: list[dict[str, str]]
+
+
 def reset_collection_stats() -> None:
     for key in _collection_stats:
         _collection_stats[key] = 0
@@ -96,17 +112,6 @@ def reset_collection_stats() -> None:
 
 def collection_stats() -> dict[str, int]:
     return dict(_collection_stats)
-
-
-def direct_collection_succeeded(before: dict[str, int], results: list[dict]) -> bool:
-    """Require both IF-MIB identity and IP-MIB address responses for valid zero."""
-    if results:
-        return True
-    after = collection_stats()
-    return (
-        after["snmp_label_successes"] > before["snmp_label_successes"]
-        and after["snmp_address_successes"] > before["snmp_address_successes"]
-    )
 
 
 def isp_discovery_source() -> str:
@@ -237,8 +242,9 @@ def bind_manual_metadata(results: list[dict], configured_names: list[str] | None
                          configured_ips: dict[str, str] | None = None) -> set[str]:
     """Apply manual display identity only through stable, unambiguous evidence.
 
-    Public WAN IP is authoritative when configured. Otherwise any exact,
-    case-insensitive IF-MIB alias/name/description match is accepted. The
+    Every available stable evidence source is evaluated independently. A
+    unique WAN IP and a unique IF-MIB label must identify the same interface;
+    ambiguity or disagreement leaves all native identities untouched. The
     return value contains metadata names that were safely bound.
     """
     names = list(dict.fromkeys(
@@ -253,36 +259,44 @@ def bind_manual_metadata(results: list[dict], configured_names: list[str] | None
     matched: set[str] = set()
     for name in names:
         configured_ip = ip_by_name.get(name.casefold(), "")
-        if configured_ip:
-            candidates = [
-                index for index, item in enumerate(results)
-                if item.get("wan_ip") == configured_ip
-            ]
-            evidence = f"WAN IP {configured_ip}"
-        else:
-            key = name.casefold()
-            candidates = [
-                index for index, item in enumerate(results)
-                if key in {
-                    str(label).strip().casefold()
-                    for label in [item.get("name"), *(item.get("_labels") or [])]
-                    if str(label or "").strip()
-                }
-            ]
-            evidence = "IF-MIB label"
+        ip_candidates = [
+            index for index, item in enumerate(results)
+            if configured_ip and item.get("wan_ip") == configured_ip
+        ]
+        key = name.casefold()
+        label_candidates = [
+            index for index, item in enumerate(results)
+            if key in {
+                str(label).strip().casefold()
+                for label in [item.get("name"), *(item.get("_labels") or [])]
+                if str(label or "").strip()
+            }
+        ]
 
-        available = [index for index in candidates if index not in claimed]
-        if len(candidates) == 1 and len(available) == 1:
-            index = available[0]
-            results[index]["name"] = name
-            claimed.add(index)
+        evidence_sets = [candidates for candidates in (ip_candidates, label_candidates) if candidates]
+        unique_candidates = {candidates[0] for candidates in evidence_sets if len(candidates) == 1}
+        ambiguous = any(len(candidates) > 1 for candidates in evidence_sets)
+        conflict = len(unique_candidates) > 1
+        candidate = next(iter(unique_candidates), None) if not ambiguous and not conflict else None
+        already_claimed = candidate is not None and candidate in claimed
+        if candidate is not None and not already_claimed:
+            results[candidate]["name"] = name
+            claimed.add(candidate)
             matched.add(name)
             continue
 
-        reason = "ambiguous" if len(candidates) > 1 or (candidates and not available) else "unmatched"
+        if conflict or ambiguous:
+            for index in {item for candidates in evidence_sets for item in candidates}:
+                results[index]["_metadata_conflict"] = True
+        if conflict:
+            reason = "has conflicting identity evidence; override skipped"
+        elif ambiguous or already_claimed:
+            reason = "has ambiguous identity evidence; override skipped"
+        else:
+            reason = "could not be safely matched; override skipped"
         print(
-            f'[isp-discovery] WARNING: manual ISP metadata "{name}" {reason} '
-            f"by {evidence}; discovered interface kept with native identity",
+            f'[isp-discovery] WARNING: manual ISP metadata "{name}" {reason}; '
+            "discovered interface kept with native identity",
             file=sys.stderr,
         )
     return matched
@@ -394,6 +408,7 @@ def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str],
         results.append({
             "gateway": gateway,
             "name": labels.get(ifindex) or gateway,
+            "metric_name": labels.get(ifindex) or gateway,
             "wan_ip": interface_ips.get(ifindex, ""),
             "_ifindex": ifindex,
             "_labels": all_labels.get(ifindex, []),
@@ -414,6 +429,7 @@ def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str],
         results.append({
             "gateway": _subnet_gateway(wan_ip, addr_mask.get(wan_ip, "255.255.255.255")),
             "name": labels.get(ifindex) or wan_ip,
+            "metric_name": labels.get(ifindex) or wan_ip,
             "wan_ip": wan_ip,
             "_ifindex": ifindex,
             "_labels": all_labels.get(ifindex, []),
@@ -422,62 +438,113 @@ def discover_from_walks(walks: dict[str, dict[str, str]], keywords: list[str],
     return finalize_discovered_results(results, configured_names, configured_ips)
 
 
-def snmp_walk(ip: str, community: str, oid: str, timeout: int = 2) -> dict[str, str]:
+def _legitimate_empty_walk_output(text: str) -> bool:
+    """Accept empty/no-such output while rejecting an unparseable response."""
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if not lines:
+        return True
+    for line in lines:
+        if line.lower().startswith(("no such", "no more variables")):
+            continue
+        match = _WALK_LINE.match(line)
+        if not match or not match.group(2).strip().lower().startswith(("no such", "no more")):
+            return False
+    return True
+
+
+def snmp_walk(ip: str, community: str, oid: str, timeout: int = 2) -> WalkResult:
     _collection_stats["snmp_walks"] += 1
     try:
         result = subprocess.run(
             ["snmpwalk", "-v2c", "-c", community, "-On", "-t", str(timeout), "-r", "1", ip, oid],
             capture_output=True, text=True, timeout=timeout * 4 + 5,
         )
-    except Exception:
+    except Exception as exc:
         _collection_stats["snmp_failures"] += 1
-        return {}
+        return WalkResult(False, {}, type(exc).__name__)
     if result.returncode != 0:
         _collection_stats["snmp_failures"] += 1
-        return {}
+        return WalkResult(False, {}, "command_error")
+    values = parse_walk(result.stdout)
+    if not values and not _legitimate_empty_walk_output(result.stdout):
+        _collection_stats["snmp_failures"] += 1
+        return WalkResult(False, {}, "malformed_output")
     _collection_stats["snmp_successes"] += 1
     if oid in (OID_IF_ALIAS, OID_IF_NAME, OID_IF_DESCR):
         _collection_stats["snmp_label_successes"] += 1
     elif oid in (OID_IP_AD_ENT_IFINDEX, OID_IP_AD_ENT_NETMASK):
         _collection_stats["snmp_address_successes"] += 1
-    return parse_walk(result.stdout)
+    return WalkResult(True, values)
+
+
+def _walk_result(value) -> WalkResult:
+    """Normalize injected pure walk helpers without weakening production walks."""
+    if isinstance(value, WalkResult):
+        return value
+    if isinstance(value, dict):
+        return WalkResult(True, value)
+    return WalkResult(False, {}, "invalid_result")
+
+
+def _run_walk(walk, ip: str, community: str, oid: str, timeout: int) -> WalkResult:
+    return _walk_result(walk(ip, community, oid, timeout))
 
 
 def collect(ip: str, community: str, keywords: list[str], timeout: int = 2,
             walk=snmp_walk, configured_names: list[str] | None = None,
-            configured_ips: dict[str, str] | None = None) -> list[dict[str, str]]:
-    walks = {}
-    for oid in (
-        OID_IF_ALIAS, OID_IF_NAME, OID_IF_DESCR,
-        OID_IP_AD_ENT_IFINDEX, OID_IP_AD_ENT_NETMASK,
+            configured_ips: dict[str, str] | None = None) -> CollectionResult:
+    outcomes = {
+        oid: _run_walk(walk, ip, community, oid, timeout)
+        for oid in (
+            OID_IF_ALIAS, OID_IF_NAME, OID_IF_DESCR,
+            OID_IP_AD_ENT_IFINDEX, OID_IP_AD_ENT_NETMASK,
+            OID_CIDR_DEFAULT_NEXTHOP, OID_CIDR_DEFAULT_IFINDEX,
+        )
+    }
+    cidr_pair_ok = all(outcomes[oid].ok for oid in (
         OID_CIDR_DEFAULT_NEXTHOP, OID_CIDR_DEFAULT_IFINDEX,
-    ):
-        walks[oid] = walk(ip, community, oid, timeout)
-    if not (walks.get(OID_CIDR_DEFAULT_NEXTHOP) or {}):
-        walks[OID_ROUTE_DEFAULT_NEXTHOP] = walk(ip, community, OID_ROUTE_DEFAULT_NEXTHOP, timeout)
-        walks[OID_ROUTE_DEFAULT_IFINDEX] = walk(ip, community, OID_ROUTE_DEFAULT_IFINDEX, timeout)
-    return discover_from_walks(walks, keywords, configured_names, configured_ips)
+    ))
+    if not cidr_pair_ok or not outcomes[OID_CIDR_DEFAULT_NEXTHOP].values:
+        for oid in (OID_ROUTE_DEFAULT_NEXTHOP, OID_ROUTE_DEFAULT_IFINDEX):
+            outcomes[oid] = _run_walk(walk, ip, community, oid, timeout)
+
+    identity_complete = any(outcomes[oid].ok for oid in (
+        OID_IF_ALIAS, OID_IF_NAME, OID_IF_DESCR,
+    ))
+    address_complete = all(outcomes[oid].ok for oid in (
+        OID_IP_AD_ENT_IFINDEX, OID_IP_AD_ENT_NETMASK,
+    ))
+    if cidr_pair_ok and outcomes[OID_CIDR_DEFAULT_NEXTHOP].values:
+        route_complete = True
+    else:
+        route_complete = all(
+            outcomes.get(oid, WalkResult(False, {})).ok
+            for oid in (OID_ROUTE_DEFAULT_NEXTHOP, OID_ROUTE_DEFAULT_IFINDEX)
+        )
+    walks = {oid: outcome.values for oid, outcome in outcomes.items()}
+    items = discover_from_walks(walks, keywords, configured_names, configured_ips)
+    return CollectionResult(identity_complete and address_complete and route_complete, items)
 
 
 def collect_route_walks(ip: str, community: str, timeout: int = 2,
                         walk=snmp_walk) -> dict[str, dict[str, str]]:
     """Read only live default-route evidence, retaining both MIB fallbacks."""
-    walks = {
-        OID_CIDR_DEFAULT_NEXTHOP: walk(
-            ip, community, OID_CIDR_DEFAULT_NEXTHOP, timeout
+    outcomes = {
+        OID_CIDR_DEFAULT_NEXTHOP: _run_walk(
+            walk, ip, community, OID_CIDR_DEFAULT_NEXTHOP, timeout
         ),
-        OID_CIDR_DEFAULT_IFINDEX: walk(
-            ip, community, OID_CIDR_DEFAULT_IFINDEX, timeout
+        OID_CIDR_DEFAULT_IFINDEX: _run_walk(
+            walk, ip, community, OID_CIDR_DEFAULT_IFINDEX, timeout
         ),
     }
-    if not walks[OID_CIDR_DEFAULT_NEXTHOP]:
-        walks[OID_ROUTE_DEFAULT_NEXTHOP] = walk(
-            ip, community, OID_ROUTE_DEFAULT_NEXTHOP, timeout
+    if not outcomes[OID_CIDR_DEFAULT_NEXTHOP].values:
+        outcomes[OID_ROUTE_DEFAULT_NEXTHOP] = _run_walk(
+            walk, ip, community, OID_ROUTE_DEFAULT_NEXTHOP, timeout
         )
-        walks[OID_ROUTE_DEFAULT_IFINDEX] = walk(
-            ip, community, OID_ROUTE_DEFAULT_IFINDEX, timeout
+        outcomes[OID_ROUTE_DEFAULT_IFINDEX] = _run_walk(
+            walk, ip, community, OID_ROUTE_DEFAULT_IFINDEX, timeout
         )
-    return walks
+    return {oid: outcome.values for oid, outcome in outcomes.items()}
 
 
 def _known_down(value: object) -> bool:
@@ -604,6 +671,7 @@ def discover_from_librenms(addresses: list[dict], ports: list[dict],
         rows.append({
             "gateway": gateway,
             "name": label,
+            "metric_name": label,
             "wan_ip": wan_ip,
             "_ifindex": order,
             "_labels": labels,
@@ -702,6 +770,10 @@ def build_file_sd(results: list[dict[str, str]], exclude: set[str]) -> list[dict
         if item["gateway"] in exclude:
             continue  # already a manual ISP_PING target -- manual naming wins
         labels = {"display_name": item["name"]}
+        if item.get("metric_name"):
+            labels["metric_name"] = item["metric_name"]
+        if item.get("_metadata_conflict"):
+            labels["metadata_conflict"] = "true"
         if item.get("wan_ip"):
             labels["wan_ip"] = item["wan_ip"]
         if item.get("source"):
@@ -761,13 +833,20 @@ def mark_collection_failure(out: str, state_path: str) -> None:
     now = int(time.time())
     previous = load_valid_file_sd(out)
     state = load_discovery_state(state_path)
-    if previous is not None:
-        last_success = state.get("last_success_at")
-        if not isinstance(last_success, (int, float)):
-            try:
-                last_success = int(Path(out).stat().st_mtime)
-            except OSError:
-                last_success = None
+    last_success = state.get("last_success_at")
+    valid_state_lkg = (
+        previous is not None
+        and state.get("status") in {"ok", "stale"}
+        and isinstance(last_success, (int, float))
+    )
+    legacy_lkg = previous not in (None, []) and not state
+    if legacy_lkg:
+        try:
+            last_success = int(Path(out).stat().st_mtime)
+        except OSError:
+            last_success = None
+        legacy_lkg = last_success is not None
+    if valid_state_lkg or legacy_lkg:
         write_discovery_state(
             state_path, "stale", len(previous),
             last_success_at=int(last_success) if last_success is not None else None,
@@ -858,14 +937,19 @@ def main() -> None:
         # Preserve the previous path exactly: the first firewall exposing ISP
         # data is authoritative in direct-only compatibility mode.
         for ip in firewall_targets:
-            stats_before = collection_stats()
-            current = collect(
+            outcome = collect(
                 ip, community, keywords, timeout,
                 configured_names=configured_names,
                 configured_ips=configured_ips,
             )
-            if direct_collection_succeeded(stats_before, current):
+            current = outcome.items if outcome.complete else []
+            if outcome.complete:
                 successful_sources += 1
+            else:
+                print(
+                    f"[isp-discovery] WARNING: incomplete direct-SNMP collection for {ip}",
+                    file=sys.stderr,
+                )
             print(
                 f"[isp-discovery] source=direct-snmp device={ip} "
                 "inventory=direct-snmp gateway=direct-snmp",
@@ -880,14 +964,19 @@ def main() -> None:
         # both inapplicable and noisy, so hybrid deliberately uses the VIP's
         # live SNMP inventory and routing data without making an API request.
         for ip in firewall_targets:
-            stats_before = collection_stats()
-            current = collect(
+            outcome = collect(
                 ip, community, keywords, timeout,
                 configured_names=configured_names,
                 configured_ips=configured_ips,
             )
-            if direct_collection_succeeded(stats_before, current):
+            current = outcome.items if outcome.complete else []
+            if outcome.complete:
                 successful_sources += 1
+            else:
+                print(
+                    f"[isp-discovery] WARNING: incomplete direct-SNMP collection for {ip}",
+                    file=sys.stderr,
+                )
             print(
                 f"[isp-discovery] source=hybrid device={ip} mode=ha-vip "
                 "inventory=direct-snmp gateway=direct-snmp",
@@ -930,17 +1019,19 @@ def main() -> None:
                         file=sys.stderr,
                     )
             if mode == "hybrid" and not current:
-                stats_before = collection_stats()
-                current = collect(
+                outcome = collect(
                     ip, community, keywords, timeout,
                     configured_names=configured_names,
                     configured_ips=configured_ips,
                 )
-                if (
-                    not inventory_succeeded
-                    and direct_collection_succeeded(stats_before, current)
-                ):
+                current = outcome.items if outcome.complete else []
+                if not inventory_succeeded and outcome.complete:
                     successful_sources += 1
+                elif not outcome.complete:
+                    print(
+                        f"[isp-discovery] WARNING: incomplete direct-SNMP collection for {ip}",
+                        file=sys.stderr,
+                    )
                 inventory_source = "direct-snmp"
                 gateway_source = "direct-snmp"
             elif mode == "librenms" and not current:
@@ -970,7 +1061,15 @@ def main() -> None:
         )
         raise SystemExit(1)
 
-    write_file_sd(out, payload)
+    try:
+        write_file_sd(out, payload)
+    except Exception as exc:
+        print(
+            f"[isp-discovery] WARNING: inventory write failed: {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        mark_collection_failure(out, state_path)
+        raise SystemExit(1)
     write_discovery_state(
         state_path, "ok", len(payload),
         last_success_at=int(time.time()), last_error_at=None,

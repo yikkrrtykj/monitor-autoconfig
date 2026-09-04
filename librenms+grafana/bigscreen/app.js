@@ -42,7 +42,7 @@
     prometheusQuery, prometheusInstant, prometheusRangeFor,
     prometheusRangeCached, invalidateRangeCache,
     activeInfraPingQuery, activeSeriesNames,
-    fetchIspNames, ispTrafficQuery, fetchIspTraffic, ispChartMaxBps,
+    fetchIspInventory, ispTrafficQuery, fetchIspTraffic, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
     fetchPlatformAuthStatus, loginPlatformAuth, logoutPlatformAuth,
@@ -229,7 +229,7 @@
     formatPingText,
     formatBits,
     dateTimeInputValue,
-    fetchIspNames,
+    fetchIspInventory,
     ispTrafficQuery,
     prometheusRangeFor,
     analyzeIncident: window.BSIncident.analyzeIncident

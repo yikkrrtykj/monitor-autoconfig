@@ -34,6 +34,7 @@ Env:
   BIGSCREEN_ISP_MAX_BANDWIDTH ISP bandwidth Mbps config
   BIGSCREEN_ISP_IPS     optional ISP display names, NAME:IP comma list
   ISP_PING              ISP ping targets, NAME:IP comma list
+  ISP_TARGETS_FILE      discovered ISP identity file
   ISP_SATURATION_PERCENT  alert threshold percent of configured bandwidth
   SYSLOG_WATCH_ENABLED    true = watch syslog file for security events (default true)
   SYSLOG_FILE             path to syslog file from rsyslog (default /var/log/remote/syslog.log)
@@ -158,6 +159,9 @@ FIREWALL_WAN_IF_FILTER = os.environ.get("FIREWALL_WAN_IF_FILTER", "telecom,telco
 BIGSCREEN_ISP_MAX_BANDWIDTH = os.environ.get("BIGSCREEN_ISP_MAX_BANDWIDTH", "1000")
 BIGSCREEN_ISP_IPS = os.environ.get("BIGSCREEN_ISP_IPS", "")
 ISP_PING = os.environ.get("ISP_PING", "")
+ISP_TARGETS_FILE = os.environ.get(
+    "ISP_TARGETS_FILE", "/etc/prometheus/targets/topology/isp_targets.json"
+)
 ISP_SATURATION_PERCENT = float(os.environ.get("ISP_SATURATION_PERCENT", "90") or "90")
 SYSLOG_WATCH_ENABLED = os.environ.get("SYSLOG_WATCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYSLOG_FILE = os.environ.get("SYSLOG_FILE", "/var/log/remote/syslog.log")
@@ -2710,6 +2714,7 @@ _ISP_BANDWIDTH_WATCHER = IspBandwidthWatcher(
     saturation_percent=ISP_SATURATION_PERCENT,
     prometheus_url=PROMETHEUS_URL,
     prometheus_query=prometheus_query,
+    inventory_file=ISP_TARGETS_FILE,
     normalize_label=_norm_label,
     format_bps=format_bps,
     build_bandwidth_card=build_isp_bandwidth_card,

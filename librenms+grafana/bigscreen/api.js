@@ -417,6 +417,7 @@
   function manualIspInventory() {
     return getConfiguredIspNames().map((name) => ({
       name,
+      metricName: name,
       gateway: "",
       wanIp: "",
       discoverySource: "manual"
@@ -437,6 +438,8 @@
       seen.add(identity);
       inventory.push({
         name,
+        metricName: String(labels.metric_name || name).trim(),
+        metadataConflict: String(labels.metadata_conflict || "").trim().toLocaleLowerCase() === "true",
         gateway,
         wanIp: String(labels.wan_ip || "").trim(),
         discoverySource: String(labels.discovery_source || "").trim()
@@ -456,7 +459,7 @@
       return aName.localeCompare(bName, "zh-CN", { numeric: true });
     });
     return uniqueNames(discovered.map((item) => item.metric.ifAlias || item.metric.ifName || item.metric.ifDescr))
-      .map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "prometheus" }));
+      .map((name) => ({ name, metricName: name, gateway: "", wanIp: "", discoverySource: "prometheus" }));
   }
 
   async function fetchIspInventory() {
@@ -464,7 +467,7 @@
     if (!isIspAutoDiscoveryEnabled()) {
       return configured.length
         ? configured
-        : getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
+        : getIspNames().map((name) => ({ name, metricName: name, gateway: "", wanIp: "", discoverySource: "default" }));
     }
 
     const now = Date.now();
@@ -489,7 +492,7 @@
         ispInventoryCache = inventory.length
           ? inventory
           : (configured.length ? configured : getIspNames().map((name) => ({
-            name, gateway: "", wanIp: "", discoverySource: "default"
+            name, metricName: name, gateway: "", wanIp: "", discoverySource: "default"
           })));
         ispInventoryCachedAt = now;
         return ispInventoryCache;
@@ -497,7 +500,7 @@
         console.warn("ISP discovery failed", error);
         return configured.length
           ? configured
-          : getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
+          : getIspNames().map((name) => ({ name, metricName: name, gateway: "", wanIp: "", discoverySource: "default" }));
       }
     }
   }
@@ -515,8 +518,8 @@
     const inventory = await fetchIspInventory();
     return Promise.all(inventory.map(async (item) => {
       const [downloadResult, uploadResult] = await Promise.allSettled([
-        prometheusRangeCached(ispTrafficQuery("ifHCInOctets", item.name)),
-        prometheusRangeCached(ispTrafficQuery("ifHCOutOctets", item.name))
+        prometheusRangeCached(ispTrafficQuery("ifHCInOctets", item.metricName || item.name)),
+        prometheusRangeCached(ispTrafficQuery("ifHCOutOctets", item.metricName || item.name))
       ]);
       const download = downloadResult.status === "fulfilled" ? downloadResult.value : [];
       const upload = uploadResult.status === "fulfilled" ? uploadResult.value : [];
@@ -533,10 +536,12 @@
 
   const warnedIspBandwidthNames = new Set();
 
-  function ispCapacityBps(name, direction) {
+  function ispCapacityBps(name, direction, allowNamed = true) {
     const cfg = parseIspBandwidthConfig(config.ispMaxBandwidthMbps);
-    const configuredName = Object.keys(cfg.perIsp)
-      .find((item) => item.toLocaleLowerCase() === String(name || "").toLocaleLowerCase());
+    const configuredName = allowNamed
+      ? Object.keys(cfg.perIsp)
+        .find((item) => item.toLocaleLowerCase() === String(name || "").toLocaleLowerCase())
+      : null;
     if (!configuredName && Object.keys(cfg.perIsp).length && !warnedIspBandwidthNames.has(name)) {
       warnedIspBandwidthNames.add(name);
       console.warn(`No exact bandwidth metadata match for ISP ${name}; using global fallback`);
@@ -546,8 +551,11 @@
     return Math.max(1, Number(mbps) || 1000) * 1000 * 1000;
   }
 
-  function ispChartMaxBps(name) {
-    return Math.max(ispCapacityBps(name, "in"), ispCapacityBps(name, "out"));
+  function ispChartMaxBps(name, allowNamed = true) {
+    return Math.max(
+      ispCapacityBps(name, "in", allowNamed),
+      ispCapacityBps(name, "out", allowNamed)
+    );
   }
 
   async function fetchTopologyTargets() {

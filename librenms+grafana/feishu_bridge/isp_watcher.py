@@ -4,8 +4,10 @@ The bridge continues to own environment parsing, Prometheus transport, card
 presentation, Feishu delivery, watcher supervision, and shared health state.
 """
 
+import json
 import re
 import time
+from pathlib import Path
 
 
 def _parse_bandwidth_config(raw, _normalize_label=None):
@@ -110,17 +112,18 @@ def _dedupe_wan_labels(results):
             ifi = int(sample.get("if_index"))
         except (TypeError, ValueError):
             ifi = None
-        dir_key = (sample["label"], sample["direction"])
+        target = sample.get("target_ip") or "unknown-target"
+        dir_key = (sample["label"], target, sample["direction"])
         seq = occ.get(dir_key, 0)
         occ[dir_key] = seq + 1
-        sample["_line"] = (0, ifi) if ifi is not None else (1, seq)
+        sample["_line"] = (0, target, ifi) if ifi is not None else (1, target, seq)
 
     idents = {}
     for sample in results:
-        idents.setdefault(sample["label"], set()).add(sample["_line"])
+        idents.setdefault(sample["label"].casefold(), set()).add(sample["_line"])
     for sample in results:
         label = sample["label"]
-        ambiguous = len(idents[label]) > 1
+        ambiguous = len(idents[label.casefold()]) > 1
         if ambiguous:
             sample["_identity_ambiguous"] = True
             target = sample.get("target_ip") or "unknown-target"
@@ -130,6 +133,54 @@ def _dedupe_wan_labels(results):
         else:
             sample["key"] = f"{label}|{sample['direction']}"
         sample.pop("_line", None)
+    return results
+
+
+def _load_isp_identity_map(path):
+    """Return safe native mappings and native identities blocked by conflicts."""
+    if not path:
+        return {}, set()
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}, set()
+    if not isinstance(payload, list):
+        return {}, set()
+    candidates = {}
+    conflicts = set()
+    for entry in payload:
+        labels = entry.get("labels") if isinstance(entry, dict) else None
+        if not isinstance(labels, dict):
+            continue
+        metric_name = str(labels.get("metric_name") or "").strip()
+        display_name = str(labels.get("display_name") or "").strip()
+        if str(labels.get("metadata_conflict") or "").strip().casefold() == "true":
+            if metric_name:
+                conflicts.add(metric_name.casefold())
+            continue
+        if metric_name and display_name:
+            candidates.setdefault(metric_name.casefold(), set()).add(display_name)
+    conflicts.update(
+        metric_name for metric_name, display_names in candidates.items()
+        if len(display_names) != 1
+    )
+    return ({
+        metric_name: next(iter(display_names))
+        for metric_name, display_names in candidates.items()
+        if len(display_names) == 1
+    }, conflicts)
+
+
+def _apply_inventory_identity(results, identity_map, conflicts):
+    for sample in results:
+        native_name = sample["label"]
+        sample["metric_name"] = native_name
+        if native_name.casefold() in conflicts:
+            sample["_identity_ambiguous"] = True
+            continue
+        display_name = identity_map.get(native_name.casefold())
+        if display_name and not sample.get("_identity_ambiguous", False):
+            sample["label"] = display_name
     return results
 
 
@@ -152,6 +203,7 @@ class IspBandwidthWatcher:
         saturation_percent,
         prometheus_url,
         prometheus_query,
+        inventory_file=None,
         normalize_label,
         format_bps,
         build_bandwidth_card,
@@ -175,6 +227,7 @@ class IspBandwidthWatcher:
         self.saturation_percent = saturation_percent
         self.prometheus_url = prometheus_url
         self.prometheus_query = prometheus_query
+        self.inventory_file = inventory_file
         self.normalize_label = normalize_label
         self.format_bps = format_bps
         self.build_bandwidth_card = build_bandwidth_card
@@ -208,7 +261,13 @@ class IspBandwidthWatcher:
                     "if_index": metric_labels.get("ifIndex"),
                     "target_ip": metric_labels.get("target_ip") or metric_labels.get("instance") or "",
                 })
-        return _dedupe_wan_labels(results)
+        rates = _dedupe_wan_labels(results)
+        identity_map, conflicts = _load_isp_identity_map(self.inventory_file)
+        return _dedupe_wan_labels(
+            _apply_inventory_identity(
+                rates, identity_map, conflicts
+            )
+        )
 
     def _log_status(self, rates, bandwidth_cfg):
         if not rates:
