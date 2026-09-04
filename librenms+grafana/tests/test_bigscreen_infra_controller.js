@@ -533,11 +533,62 @@ async function testLatestChartRequestWins() {
   controller.stop();
 }
 
+async function testFiveIspPresentationUsesAllPanelsAndThreeTournamentPages() {
+  const harness = createHarness();
+  const { controller, document, calls, state } = harness;
+  const names = [
+    'MLBB-telcom-300M',
+    'MLBB-unicom-300M',
+    'telcom-1000M',
+    'telcom-100M-长期',
+    'unicom-1000M'
+  ];
+  state.ispTraffic = names.map((name, index) => ({
+    name,
+    download: index === 1 ? { name: '下载', values: [] } : series(`${name} download`, '', index + 1),
+    upload: index === 1 ? { name: '上传', values: [] } : series(`${name} upload`, '', index + 2),
+    hasTrafficData: index !== 1
+  }));
+
+  controller.start();
+  await settle();
+  const ispGrid = document.getElementById('ispGrid');
+  assert.deepStrictEqual(calls.isp.slice(-5).map((item) => item.result.name), names);
+  assert.strictEqual(ispGrid.styleValues.get('--isp-count'), '5');
+  assert.strictEqual(ispGrid.classList.contains('isp-paged'), false);
+  assert.strictEqual(ispGrid.children.length, 5, 'normal mode renders all five panels together');
+  assert(ispGrid.children[1].innerHTML.includes('MLBB-unicom-300M'));
+
+  document.screen.className = 'screen tournament-mode match-mode';
+  let callCount = calls.isp.length;
+  controller.enterTournamentMode();
+  assert.deepStrictEqual(calls.isp.slice(callCount).map((item) => item.result.name), names.slice(0, 2));
+  let pager = ispGrid.children.find((child) => child.className === 'isp-pager');
+  assert(pager.innerHTML.includes('1 / 3'));
+
+  callCount = calls.isp.length;
+  await pager.querySelector('.isp-page-next').dispatch('click');
+  assert.deepStrictEqual(calls.isp.slice(callCount).map((item) => item.result.name), names.slice(2, 4));
+  pager = ispGrid.children.find((child) => child.className === 'isp-pager');
+  assert(pager.innerHTML.includes('2 / 3'));
+
+  callCount = calls.isp.length;
+  await pager.querySelector('.isp-page-next').dispatch('click');
+  assert.deepStrictEqual(calls.isp.slice(callCount).map((item) => item.result.name), names.slice(4));
+  pager = ispGrid.children.find((child) => child.className === 'isp-pager');
+  assert(pager.innerHTML.includes('3 / 3'));
+  assert.strictEqual(ispGrid.styleValues.get('--isp-count'), '1');
+  assert.strictEqual(ispGrid.children.filter((child) => child.className === 'chart-panel isp-panel').length, 1);
+  assert(ispGrid.children.at(-1).innerHTML.includes('unicom-1000M'));
+  controller.stop();
+}
+
 (async () => {
   await testLifecycleTransformsAndModes();
   await testSeenFailureRetainsDeployedSets();
   await testFailuresAndEmptyFallbacks();
   await testLatestChartRequestWins();
+  await testFiveIspPresentationUsesAllPanelsAndThreeTournamentPages();
   console.log('bigscreen infra controller tests: ok');
 })().catch((error) => {
   console.error(error);

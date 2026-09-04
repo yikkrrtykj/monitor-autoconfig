@@ -412,40 +412,91 @@
     return configured.length ? configured : ["ISP1", "ISP2"];
   }
 
-  let ispNamesCache = null;
-  let ispNamesCachedAt = 0;
+  let ispInventoryCache = null;
+  let ispInventoryCachedAt = 0;
 
-  async function fetchIspNames() {
-    const configured = getConfiguredIspNames();
+  function manualIspInventory() {
+    return getConfiguredIspNames().map((name) => ({
+      name,
+      gateway: "",
+      wanIp: "",
+      discoverySource: "manual"
+    }));
+  }
+
+  function parseIspTargetInventory(payload) {
+    if (!Array.isArray(payload)) return [];
+    const inventory = [];
+    const seen = new Set();
+    payload.forEach((entry) => {
+      const labels = entry && typeof entry.labels === "object" ? entry.labels : {};
+      const targets = entry && Array.isArray(entry.targets) ? entry.targets : [];
+      const name = String(labels.display_name || "").trim();
+      const gateway = String(targets[0] || "").trim();
+      if (!name || !gateway || seen.has(name)) return;
+      seen.add(name);
+      inventory.push({
+        name,
+        gateway,
+        wanIp: String(labels.wan_ip || "").trim(),
+        discoverySource: String(labels.discovery_source || "").trim()
+      });
+    });
+    return inventory;
+  }
+
+  async function prometheusIspInventory() {
+    const discovered = await prometheusInstant(ispDiscoveryQuery());
+    discovered.sort((a, b) => {
+      const aIndex = Number(a.metric.ifIndex);
+      const bIndex = Number(b.metric.ifIndex);
+      if (Number.isFinite(aIndex) && Number.isFinite(bIndex) && aIndex !== bIndex) return aIndex - bIndex;
+      const aName = a.metric.ifAlias || a.metric.ifName || a.metric.ifDescr || "";
+      const bName = b.metric.ifAlias || b.metric.ifName || b.metric.ifDescr || "";
+      return aName.localeCompare(bName, "zh-CN", { numeric: true });
+    });
+    return uniqueNames(discovered.map((item) => item.metric.ifAlias || item.metric.ifName || item.metric.ifDescr))
+      .map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "prometheus" }));
+  }
+
+  async function fetchIspInventory() {
+    const configured = manualIspInventory();
+    if (configured.length) return configured;
     if (!isIspAutoDiscoveryEnabled()) {
-      return getIspNames();
+      return getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
     }
 
     const now = Date.now();
-    if (ispNamesCache && now - ispNamesCachedAt < 60000) {
-      return ispNamesCache;
+    if (ispInventoryCache && now - ispInventoryCachedAt < 60000) {
+      return ispInventoryCache;
     }
 
     try {
-      const discovered = await prometheusInstant(ispDiscoveryQuery());
-      discovered.sort((a, b) => {
-        const aIndex = Number(a.metric.ifIndex);
-        const bIndex = Number(b.metric.ifIndex);
-        if (Number.isFinite(aIndex) && Number.isFinite(bIndex) && aIndex !== bIndex) return aIndex - bIndex;
-        const aName = a.metric.ifAlias || a.metric.ifName || a.metric.ifDescr || "";
-        const bName = b.metric.ifAlias || b.metric.ifName || b.metric.ifDescr || "";
-        return aName.localeCompare(bName, "zh-CN", { numeric: true });
-      });
-      const discoveredNames = uniqueNames(discovered.map((item) => item.metric.ifAlias || item.metric.ifName || item.metric.ifDescr));
-      // 显式名字 + 发现到的口合并；没填显式名字就只显示发现到的（换场地零改配置）。
-      const names = uniqueNames([...configured, ...discoveredNames]).slice(0, 4);
-      ispNamesCache = names.length ? names : getIspNames();
-      ispNamesCachedAt = now;
-      return ispNamesCache;
-    } catch (error) {
-      console.warn("ISP discovery failed", error);
-      return getIspNames();
+      const response = await fetchWithTimeout("/topology/isp_targets.json", { cache: "no-store" });
+      if (!response.ok) throw new Error(`ISP inventory HTTP ${response.status}`);
+      const inventory = parseIspTargetInventory(await response.json());
+      if (!inventory.length) throw new Error("ISP inventory is empty or malformed");
+      ispInventoryCache = inventory;
+      ispInventoryCachedAt = now;
+      return ispInventoryCache;
+    } catch (topologyError) {
+      console.warn("ISP topology inventory failed; using Prometheus fallback", topologyError);
+      try {
+        const inventory = await prometheusIspInventory();
+        ispInventoryCache = inventory.length
+          ? inventory
+          : getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
+        ispInventoryCachedAt = now;
+        return ispInventoryCache;
+      } catch (error) {
+        console.warn("ISP discovery failed", error);
+        return getIspNames().map((name) => ({ name, gateway: "", wanIp: "", discoverySource: "default" }));
+      }
     }
+  }
+
+  async function fetchIspNames() {
+    return (await fetchIspInventory()).map((item) => item.name);
   }
 
   function ispTrafficQuery(metric, name) {
@@ -454,19 +505,23 @@
   }
 
   async function fetchIspTraffic() {
-    const names = await fetchIspNames();
-    const settled = await Promise.allSettled(names.map(async (name) => {
-      const [download, upload] = await Promise.all([
-        prometheusRangeCached(ispTrafficQuery("ifHCInOctets", name)),
-        prometheusRangeCached(ispTrafficQuery("ifHCOutOctets", name))
+    const inventory = await fetchIspInventory();
+    return Promise.all(inventory.map(async (item) => {
+      const [downloadResult, uploadResult] = await Promise.allSettled([
+        prometheusRangeCached(ispTrafficQuery("ifHCInOctets", item.name)),
+        prometheusRangeCached(ispTrafficQuery("ifHCOutOctets", item.name))
       ]);
+      const download = downloadResult.status === "fulfilled" ? downloadResult.value : [];
+      const upload = uploadResult.status === "fulfilled" ? uploadResult.value : [];
+      const downloadValues = download[0] ? download[0].values : [];
+      const uploadValues = upload[0] ? upload[0].values : [];
       return {
-        name,
-        download: { name: "下载", color: "#73d17a", values: download[0] ? download[0].values : [] },
-        upload: { name: "上传", color: "#5b8ff9", values: upload[0] ? upload[0].values : [] }
+        ...item,
+        download: { name: "下载", color: "#73d17a", values: downloadValues },
+        upload: { name: "上传", color: "#5b8ff9", values: uploadValues },
+        hasTrafficData: Boolean(downloadValues.length || uploadValues.length)
       };
     }));
-    return settled.filter((r) => r.status === "fulfilled").map((r) => r.value);
   }
 
   function ispCapacityBps(name, direction, index = -1) {
@@ -714,6 +769,8 @@
     ispDiscoveryQuery,
     getConfiguredIspNames,
     getIspNames,
+    parseIspTargetInventory,
+    fetchIspInventory,
     fetchIspNames,
     ispTrafficQuery,
     fetchIspTraffic,

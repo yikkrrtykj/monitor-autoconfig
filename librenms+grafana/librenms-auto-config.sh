@@ -2119,8 +2119,13 @@ if [ -n "$_fw_librenms_snmp" ] && [ -n "$API_TOKEN" ]; then
   done
 fi
 
-discover_firewall_ports
-configure_isp_port_speed_overrides
+if [ -n "$FIREWALL_UNIT_SNMP_TARGETS" ]; then
+  echo ""
+  echo "  HA mode: skipped LibreNMS VIP WAN port discovery/speed override; direct-SNMP ISP inventory is authoritative"
+else
+  discover_firewall_ports
+  configure_isp_port_speed_overrides
+fi
 configure_home_dashboard
 configure_down_port_ignores
 configure_stp_noise_suppression

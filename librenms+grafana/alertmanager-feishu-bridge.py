@@ -3615,6 +3615,13 @@ def _device_auto_delete_duration(seconds):
     return f"{minutes} 分钟"
 
 
+def _device_auto_delete_threshold():
+    seconds = max(0, int(DEVICE_AUTO_DELETE_AFTER_SECONDS or 0))
+    if seconds and seconds % 86400 == 0:
+        return f"{seconds // 86400} 天"
+    return _device_auto_delete_duration(seconds)
+
+
 def _device_auto_delete_notice_record(device, ip, offline_seconds, error_reason=""):
     return {
         "hostname": str(device.get("hostname") or ip or "?").strip(),
@@ -3628,16 +3635,23 @@ def _device_auto_delete_notice_record(device, ip, offline_seconds, error_reason=
 def _device_auto_delete_record_lines(records, limit=10, include_error=False):
     lines = []
     for item in records[:limit]:
-        line = (
-            f"• **{item['hostname']}**（{item['ip']}） · device_id={item['device_id']} · "
-            f"离线 {_device_auto_delete_duration(item['offline_seconds'])}"
-        )
+        hostname = item["hostname"]
+        ip = item["ip"]
+        item_lines = [f"• **{hostname}**"]
+        if ip and ip != hostname:
+            item_lines.append(f"  IP：{ip}")
+        item_lines.extend([
+            f"  device_id：{item['device_id']}",
+            f"  离线：{_device_auto_delete_duration(item['offline_seconds'])}",
+        ])
         if include_error:
-            line += f" · 原因：{item['error'] or 'LibreNMS DELETE API 返回失败'}"
-        lines.append(line)
+            item_lines.append(
+                f"  原因：{item['error'] or 'LibreNMS DELETE API 返回失败'}"
+            )
+        lines.append("\n".join(item_lines))
     remaining = len(records) - min(len(records), limit)
     if remaining:
-        lines.append(f"• 另有 **{remaining} 台**未展开")
+        lines.append(f"另有 {remaining} 台未展开")
     return lines
 
 
@@ -3647,46 +3661,69 @@ def build_device_auto_delete_summary_card(
     dry_run_records = list(dry_run_records or [])
     deleted_records = list(deleted_records or [])
     failed_records = list(failed_records or [])
+    timestamp = time.time() if now is None else now
+    completed_at = datetime.fromtimestamp(timestamp).astimezone().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    threshold = _device_auto_delete_threshold()
     if dry_run_records:
         body = [
-            "**DRY RUN — 未执行任何删除**",
-            f"候选设备：**{len(dry_run_records)} 台**",
+            "🧪 模式：DRY RUN",
+            f"📦 候选设备：{len(dry_run_records)} 台",
+            f"⏱ 清理阈值：离线 ≥ {threshold}",
+            "🛡 删除前检查：实时 ICMP 仍不可达",
+            f"🕐 时间：{completed_at}",
             "",
             *_device_auto_delete_record_lines(dry_run_records, limit=10),
             "",
-            "本轮仅验证条件，未向 LibreNMS 发送任何 DELETE 请求。",
+            "ℹ️ 本轮未执行任何删除。",
+            "未向 LibreNMS 发送 DELETE 请求。",
         ]
-        return _make_card("", "LibreNMS 自动清理 DRY RUN", "blue", "\n".join(body))
+        return _make_card(
+            next_event_title(),
+            "🔵 LibreNMS 自动清理预检",
+            "blue",
+            "\n".join(body),
+        )
 
-    timestamp = time.time() if now is None else now
-    deleted_at = datetime.fromtimestamp(timestamp).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    body = [f"检查完成时间：{deleted_at}"]
+    body = []
+    if deleted_records:
+        body.extend([
+            f"🗑 删除成功：{len(deleted_records)} 台",
+        ])
+    if failed_records:
+        body.append(f"⚠️ 删除失败：{len(failed_records)} 台")
+    body.extend([
+        f"⏱ 清理阈值：离线 ≥ {threshold}",
+        "🛡 删除条件：删除前实时 ICMP 仍不可达",
+        "📋 原因：LibreNMS Down 超过配置阈值，且删除前实时 ICMP 探测仍不可达",
+        f"🕐 时间：{completed_at}",
+    ])
     if deleted_records:
         body.extend([
             "",
-            f"**删除成功：{len(deleted_records)} 台**",
-            "原因：LibreNMS Down 超过配置阈值，且删除前实时 ICMP 探测仍不可达。",
+            "**成功：**" if failed_records else "**设备：**",
             *_device_auto_delete_record_lines(deleted_records, limit=10),
         ])
     if failed_records:
         body.extend([
             "",
-            f"**删除失败：{len(failed_records)} 台**",
+            "**失败：**" if deleted_records else "**设备：**",
             *_device_auto_delete_record_lines(
                 failed_records, limit=10, include_error=True
             ),
             "设备未从 LibreNMS 删除，将在后续检查中重试。",
         ])
     if failed_records and deleted_records:
-        subtitle = "LibreNMS 自动清理结果（含异常）"
+        subtitle = "🟠 LibreNMS 自动清理结果"
         color = "orange"
     elif failed_records:
-        subtitle = "LibreNMS 自动清理异常"
+        subtitle = "🔴 LibreNMS 自动清理异常"
         color = "red"
     else:
-        subtitle = "LibreNMS 自动清理完成"
+        subtitle = "🟢 LibreNMS 自动清理完成"
         color = "green"
-    return _make_card("", subtitle, color, "\n".join(body))
+    return _make_card(next_event_title(), subtitle, color, "\n".join(body))
 
 
 def notify_device_auto_delete_summary(
@@ -3701,13 +3738,13 @@ def notify_device_auto_delete_summary(
     elif not deleted_records and not failed_records:
         return False
 
-    card = build_device_auto_delete_summary_card(
-        dry_run_records=dry_run_records,
-        deleted_records=deleted_records,
-        failed_records=failed_records,
-        now=now,
-    )
     try:
+        card = build_device_auto_delete_summary_card(
+            dry_run_records=dry_run_records,
+            deleted_records=deleted_records,
+            failed_records=failed_records,
+            now=now,
+        )
         sent = bool(send_feishu(card))
     except Exception as exc:
         log(

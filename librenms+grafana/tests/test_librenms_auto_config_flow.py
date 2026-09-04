@@ -198,11 +198,34 @@ def test_optional_server_failure_does_not_block_ha_firewalls_or_later_steps(
     assert "snmp||192.168.9.11|global" in log
     assert "snmp||192.168.9.12|global" in log
     assert "downstream|retire" in log
-    assert "downstream|firewall-ports" in log
-    assert "downstream|isp-speed" in log
+    assert "downstream|firewall-ports" not in log
+    assert "downstream|isp-speed" not in log
+    skip_message = (
+        "HA mode: skipped LibreNMS VIP WAN port discovery/speed override; "
+        "direct-SNMP ISP inventory is authoritative"
+    )
+    assert completed.stdout.count(skip_message) == 1
+    assert "no WAN ports matched FIREWALL_WAN_IF_FILTER" not in completed.stdout
+    assert "no WAN ports matched FIREWALL_WAN_IF_FILTER" not in completed.stderr
     assert "downstream|dashboard" in log
     assert "downstream|down-port-ignores" in log
     assert "downstream|stp" in log
+    assert "[6/6] Setting up alert rules..." in completed.stdout
+
+
+def test_non_ha_keeps_librenms_wan_port_discovery_and_speed_overrides(tmp_path):
+    completed, log = _run_device_phase(
+        tmp_path,
+        FIREWALL_SNMP_TARGETS="standalone-fw:192.168.9.1",
+        FIREWALL_UNIT_SNMP_TARGETS="",
+        FIREWALL_SNMP_COMMUNITY="global",
+    )
+
+    assert completed.returncode == 0
+    assert "snmp|standalone-fw|192.168.9.1|global" in log
+    assert "downstream|firewall-ports" in log
+    assert "downstream|isp-speed" in log
+    assert "HA mode: skipped LibreNMS VIP WAN port discovery" not in completed.stdout
     assert "[6/6] Setting up alert rules..." in completed.stdout
 
 
@@ -239,6 +262,8 @@ def test_real_retire_path_disables_candidate_and_continues_through_ha_flow(
     assert "disable|192.168.70.100" in log
     assert "snmp||192.168.9.11|global" in log
     assert "snmp||192.168.9.12|global" in log
+    assert "downstream|firewall-ports" not in log
+    assert "downstream|isp-speed" not in log
     assert "[6/6] Setting up alert rules..." in completed.stdout
 
 
