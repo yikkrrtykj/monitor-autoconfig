@@ -389,12 +389,22 @@ else
   echo "[deploy] Local image missing or Dockerfile changed; building once (layers are cached)."
 fi
 
+# Run required one-shots separately so startup does not run them twice.
+. "$SCRIPT_DIR/deployment-tasks.sh"
+COMPOSE_CMD="docker compose"
+task_budget=${LIBRENMS_CONFIG_TIMEOUT:-180}
+check_budget=${DEPLOY_CHECK_TIMEOUT:-180}
+case "$task_budget:$check_budget" in
+  *[!0-9:]*|:*|*:) echo "[deploy] Invalid timeout budget." >&2; exit 1 ;;
+esac
 if [ "$needs_build" = true ]; then
   if ! pull_base_images; then
     exit 1
   fi
-  if ! docker compose up -d --remove-orphans --build; then
-    echo "[deploy] ERROR: docker compose up --build failed." >&2
+  # Prepare all enabled local images, including the one-shot image, before
+  # starting the runtime completion budget or any service containers.
+  if ! docker compose build; then
+    echo "[deploy] ERROR: docker compose build failed." >&2
     exit 1
   fi
   if [ -n "$image_hash" ]; then
@@ -402,17 +412,30 @@ if [ "$needs_build" = true ]; then
     printf '%s\n' "$image_hash" > "$stamp_tmp"
     mv "$stamp_tmp" "$image_stamp"
   fi
-else
-  if ! docker compose up -d --remove-orphans; then
-    echo "[deploy] ERROR: docker compose up failed." >&2
-    exit 1
-  fi
+fi
+
+# Image preparation is not configuration/health acceptance time. The helper
+# still clamps this runtime budget to any inherited absolute parent deadline.
+deployment_budget_init "$((task_budget + check_budget))"
+configured_services=$(deployment_compose config --services) || exit 1
+resident_services=""
+for service in $configured_services; do
+  case "$service" in librenms-config|grafana-setup) ;; *) resident_services="$resident_services $service" ;; esac
+done
+for task in librenms-config grafana-setup; do
+  printf '%s\n' "$configured_services" | grep -Fxq "$task" || {
+    echo "[deploy] Required task $task is not configured." >&2; exit 1;
+  }
+done
+if ! deployment_compose up -d --remove-orphans --no-build $resident_services; then
+  echo "[deploy] ERROR: docker compose up failed." >&2
+  exit 1
 fi
 
 # These services load bind-mounted source only when their process starts. A
 # normal `compose up` may keep an existing container when only source files
 # changed, leaving nginx's copied web files or Python's imported modules stale.
-configured_services=$(docker compose config --services) || {
+configured_services=$(deployment_compose config --services) || {
   echo "[deploy] ERROR: could not determine the enabled Compose services." >&2
   exit 1
 }
@@ -426,58 +449,14 @@ for service in bigscreen platform-api feishu-ws; do
     echo "[deploy] SKIP: restart $service (profile not enabled)."
     continue
   fi
-  docker compose restart "$service" || {
+  deployment_compose restart "$service" || {
     echo "[deploy] ERROR: restart $service failed." >&2
     restart_failed=true
     continue
   }
   echo "[deploy] Restarted $service."
 done
-# librenms-config is a one-shot container. Recreate it as well so source-only
-# auto-config fixes (including existing-device SNMP credential synchronization)
-# are applied by a normal deploy, not only after a console Apply operation.
-if ! docker compose up -d --force-recreate --no-deps librenms-config; then
-  echo "[deploy] ERROR: could not recreate librenms-config." >&2
-  exit 1
-fi
-
-LIBRENMS_CONFIG_TIMEOUT=${LIBRENMS_CONFIG_TIMEOUT:-180}
-LIBRENMS_CONFIG_INTERVAL=${LIBRENMS_CONFIG_INTERVAL:-2}
-config_started=$(date +%s)
-config_deadline=$((config_started + LIBRENMS_CONFIG_TIMEOUT))
-while :; do
-  config_id=$(docker compose ps -a -q librenms-config 2>/dev/null | sed -n '1p')
-  if [ -z "$config_id" ]; then
-    echo "[deploy] ERROR: librenms-config container does not exist after recreation." >&2
-    echo "[deploy] Diagnose with: docker compose logs --tail=100 librenms-config" >&2
-    exit 1
-  fi
-  config_state=$(docker inspect --format '{{.State.Status}}' "$config_id" 2>/dev/null || true)
-  case "$config_state" in
-    exited|dead)
-      config_exit=$(docker inspect --format '{{.State.ExitCode}}' "$config_id" 2>/dev/null || true)
-      if [ "$config_exit" = 0 ]; then
-        echo "[deploy] librenms-config completed successfully (exit 0)."
-        break
-      fi
-      echo "[deploy] ERROR: librenms-config failed (exit ${config_exit:-unknown})." >&2
-      echo "[deploy] Diagnose with: docker compose logs --tail=100 librenms-config" >&2
-      exit 1
-      ;;
-    running|created|restarting) : ;;
-    *)
-      echo "[deploy] ERROR: could not determine librenms-config state (${config_state:-unknown})." >&2
-      echo "[deploy] Diagnose with: docker compose logs --tail=100 librenms-config" >&2
-      exit 1
-      ;;
-  esac
-  if [ "$(date +%s)" -ge "$config_deadline" ]; then
-    echo "[deploy] ERROR: librenms-config did not finish within ${LIBRENMS_CONFIG_TIMEOUT}s (last state: $config_state)." >&2
-    echo "[deploy] Diagnose with: docker compose logs --tail=100 librenms-config" >&2
-    exit 1
-  fi
-  sleep "$LIBRENMS_CONFIG_INTERVAL"
-done
+run_required_tasks || exit 1
 
 # librenms-config may create or rotate /data/librenms-api-token. Restart only
 # the long-running consumers that can have begun a collection cycle with the
@@ -487,7 +466,7 @@ for service in topology-collector alertmanager-feishu-bridge; do
     echo "[deploy] SKIP: restart $service (profile not enabled)."
     continue
   fi
-  docker compose restart "$service" || {
+  deployment_compose restart "$service" || {
     echo "[deploy] ERROR: restart $service failed." >&2
     restart_failed=true
     continue
@@ -503,7 +482,7 @@ fi
 echo "[deploy] Current service status:"
 docker compose ps
 
-if ! "$SCRIPT_DIR/deploy-check.sh" bootstrap; then
+if ! "$SCRIPT_DIR/deploy-check.sh" bootstrap </dev/null; then
   echo "[deploy] ERROR: platform bootstrap verification failed." >&2
   exit 1
 fi

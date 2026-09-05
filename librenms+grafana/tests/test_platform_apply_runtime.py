@@ -39,7 +39,8 @@ class Response:
     def read(self, limit=-1):
         if self.reads is not None:
             self.reads.append(limit)
-        return b"ok"
+        return (b'{"ok":true,"ready":false,"dryRun":false,"tokenConfigured":false,'
+                b'"appConfigured":false,"deadWatchers":[],"watchers":{"device-online":{"alive":true}}}')
 
 
 def test_context_is_explicit_and_immutable(tmp_path):
@@ -143,6 +144,7 @@ def test_command_success_preserves_subprocess_arguments_and_payload(
 ):
     context = make_context(tmp_path)
     observed = {}
+    monkeypatch.setattr(apply_runtime.time, "time", lambda: 1000)
     verification = {"ok": True, "services": ["Grafana"]}
 
     def run(args, **kwargs):
@@ -169,6 +171,7 @@ def test_command_success_preserves_subprocess_arguments_and_payload(
     assert observed["kwargs"] == {
         "cwd": str(tmp_path),
         "env": apply_runtime.host_exec_env(context),
+        "stdin": subprocess.DEVNULL,
         "capture_output": True,
         "text": True,
         "timeout": 300,
@@ -271,14 +274,14 @@ def test_verify_success_preserves_check_order_timeout_and_read_limit(
         ("http://alertmanager-feishu-bridge:5005/health", 5),
         ("http://bigscreen/", 5),
     ]
-    assert reads == [4096, 4096, 4096, 4096]
+    assert reads == [4096, 4096, 65537, 4096]
 
 
 def test_verify_failure_preserves_last_errors_sleep_and_return_shape(
     monkeypatch, tmp_path,
 ):
     context = make_context(tmp_path, verify_timeout=10)
-    ticks = iter([0, 0, 10])
+    ticks = [0]
     sleeps = []
 
     def unavailable(url, timeout):
@@ -286,8 +289,11 @@ def test_verify_failure_preserves_last_errors_sleep_and_return_shape(
         raise OSError(f"offline {url}")
 
     monkeypatch.setattr(apply_runtime.urllib.request, "urlopen", unavailable)
-    monkeypatch.setattr(apply_runtime.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(apply_runtime.time, "sleep", sleeps.append)
+    monkeypatch.setattr(apply_runtime.time, "monotonic", lambda: ticks[0])
+    def sleep(seconds):
+        sleeps.append(seconds)
+        ticks[0] += 10
+    monkeypatch.setattr(apply_runtime.time, "sleep", sleep)
 
     result = apply_runtime.verify_runtime_after_apply(context)
 
@@ -305,14 +311,14 @@ def test_verify_failure_preserves_last_errors_sleep_and_return_shape(
 
 def test_verify_non_success_status_keeps_http_reason(monkeypatch, tmp_path):
     context = make_context(tmp_path, verify_timeout=1)
-    ticks = iter([0, 0, 1])
+    ticks = [0]
     monkeypatch.setattr(
         apply_runtime.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: Response(status=503),
     )
-    monkeypatch.setattr(apply_runtime.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(apply_runtime.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(apply_runtime.time, "monotonic", lambda: ticks[0])
+    monkeypatch.setattr(apply_runtime.time, "sleep", lambda seconds: ticks.__setitem__(0, ticks[0] + seconds))
 
     result = apply_runtime.verify_runtime_after_apply(context)
 

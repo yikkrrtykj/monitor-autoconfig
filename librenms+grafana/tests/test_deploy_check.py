@@ -38,8 +38,19 @@ if [ "$1" = "compose" ]; then
       ;;
     exec)
       [ "${1:-}" = "-T" ] && shift
+      if [ "${1:-}" = "-w" ]; then
+        [ "${2:-}" = /app ] || exit 1
+        shift 2
+      fi
       service=${1:-}
       [ "$#" -eq 0 ] || shift
+      if [ "$service" = alertmanager-feishu-bridge ]; then
+        [ "${STUB_BRIDGE_FAIL:-false}" != true ] || exit 1
+        if [ -n "${STUB_BRIDGE_HEALTH:-}" ]; then printf '%s\n' "$STUB_BRIDGE_HEALTH"; else
+          printf '%s\n' '{"health":{"ok":true,"ready":false,"dryRun":false,"tokenConfigured":false,"appConfigured":false,"deadWatchers":[],"watchers":{"device-online":{"alive":true}}},"librenmsTokenAvailable":true}'
+        fi
+        exit 0
+      fi
       if [ "$service" = platform-api ]; then
         if [ "${STUB_PLATFORM_API_INTERNAL_HEALTH:-ok}" = fail ]; then
           echo "Platform API container health request failed" >&2
@@ -181,6 +192,10 @@ def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json"
     project = tmp_path / "project"
     project.mkdir()
     shutil.copy2(ROOT / "deploy-check.sh", project / "deploy-check.sh")
+    health_helper = ROOT / "platform_api" / "deployment_health.py"
+    if health_helper.exists():
+        (project / "platform_api").mkdir()
+        shutil.copy2(health_helper, project / "platform_api" / health_helper.name)
     shutil.copy2(ROOT / "platform_config.py", project / "platform_config.py")
     shutil.copy2(ROOT / "version_info.py", project / "version_info.py")
     (project / "docker-compose.yml").write_text(
@@ -333,7 +348,12 @@ def test_disabled_optional_profiles_are_skipped(tmp_path):
 
 def test_enabled_optional_profiles_are_checked(tmp_path):
     env_text = BASE_ENV.replace("COMPOSE_PROFILES=", "COMPOSE_PROFILES=unifi,feishu")
-    completed, payload = run_check(tmp_path, env_text=env_text)
+    completed, payload = run_check(tmp_path, env_text=env_text, STUB_BRIDGE_HEALTH=json.dumps({
+        "health": {"ok": True, "ready": True, "dryRun": False,
+                   "tokenConfigured": False, "appConfigured": True,
+                   "deadWatchers": [], "watchers": {"device-online": {"alive": True}}},
+        "librenmsTokenAvailable": True,
+    }))
     checks = checks_by_id(payload)
 
     assert completed.returncode == 0

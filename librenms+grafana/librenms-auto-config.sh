@@ -2183,90 +2183,98 @@ echo ""
 echo "[6/6] Setting up alert rules..."
 cleanup_legacy_alert_rules
 
-rule_id_by_name() {
-  echo "$EXISTING_RULES" | python3 -c "
-import sys, json
+# Only the documented API success envelope is accepted. Never print raw
+# responses: even an API error can echo operator credentials.
+alert_rules_request() {
+  request_method=$1
+  request_path=$2
+  request_result=$(curl -sS --connect-timeout 5 --max-time 15 \
+    -X "$request_method" -H "X-Auth-Token: $API_TOKEN" \
+    -w '\n%{http_code}' "$LIBRENMS_URL/api/v0/$request_path" </dev/null 2>/dev/null) || return 1
+  printf '%s' "$request_result" | python3 -c '
+import json, sys
 try:
-    data = json.load(sys.stdin)
-    rules = data if isinstance(data, list) else data.get('rules', [])
-    for rule in rules:
-        if rule.get('name') == sys.argv[1]:
-            print(rule.get('id') or rule.get('rule_id') or '')
-            break
-except Exception:
-    pass
-" "$1" 2>/dev/null || true
+    body, code = sys.stdin.read().rsplit("\n", 1)
+    if sys.argv[1] == "DELETE" and code == "404":
+        raise SystemExit(4)
+    if not (code.isascii() and code.isdigit() and 200 <= int(code) < 300):
+        raise ValueError()
+    data = json.loads(body)
+    if not isinstance(data, dict) or data.get("status") != "ok":
+        raise ValueError()
+    if sys.argv[1] == "GET":
+        rules = data.get("rules")
+        if not isinstance(rules, list):
+            raise ValueError()
+        for rule in rules:
+            if not isinstance(rule, dict) or not isinstance(rule.get("name"), str):
+                raise ValueError()
+            identity = rule.get("id") or rule.get("rule_id")
+            if isinstance(identity, bool) or not str(identity).isascii() or not str(identity).isdigit() or int(identity) <= 0:
+                raise ValueError()
+        print(json.dumps(data))
+except (ValueError, TypeError, KeyError):
+    raise SystemExit(1)
+' "$request_method" 2>/dev/null
 }
 
+rule_id_by_name() {
+  printf '%s' "$EXISTING_RULES" | python3 -c '
+import sys, json
+for rule in json.load(sys.stdin)["rules"]:
+    if rule["name"] == sys.argv[1]:
+        print(rule.get("id") or rule.get("rule_id"))
+        break
+' "$1" 2>/dev/null
+}
+
+remove_legacy_rule() {
+  legacy_name=$1
+  legacy_reason=$2
+  legacy_id=$(rule_id_by_name "$legacy_name") || return 1
+  if [ -z "$legacy_id" ]; then
+    echo "  Alert rule: $legacy_name - already absent ($legacy_reason)"
+    return 0
+  fi
+  if alert_rules_request DELETE "rules/$legacy_id" >/dev/null; then
+    echo "  Alert rule: $legacy_name - removed ($legacy_reason)"
+    return 0
+  else
+    delete_status=$?
+  fi
+  # A bare 404 is not proof of absence (proxy/routing errors also use it).
+  # Re-list successfully and verify the precise id AND name are absent.
+  if [ "$delete_status" = 4 ]; then
+    refreshed_rules=$(alert_rules_request GET rules) || return 1
+    if printf '%s' "$refreshed_rules" | python3 -c '
+import json, sys
+rules = json.load(sys.stdin)["rules"]
+raise SystemExit(any(str(r.get("id") or r.get("rule_id")) == sys.argv[1] or r["name"] == sys.argv[2] for r in rules))
+' "$legacy_id" "$legacy_name" 2>/dev/null; then
+      echo "  Alert rule: $legacy_name - already absent (verified after DELETE 404)"
+      return 0
+    fi
+  fi
+  echo "  Alert rule cleanup failed; no successful removal confirmed." >&2
+  return 1
+}
 
 if [ -n "$API_TOKEN" ]; then
-  EXISTING_RULES=$(curl -s -H "X-Auth-Token: $API_TOKEN" "$LIBRENMS_URL/api/v0/rules" 2>/dev/null || echo '{"rules":[]}')
-
-  # 设备离线改由 bridge 的实时 device-down watcher 处理（blackbox 每 5s ping，
-  # ~10s 告警，飞书卡片显示 名字(IP) + 离线时长），比 LibreNMS 分钟级轮询快得多。
-  down_rule_id="$(rule_id_by_name "设备离线告警")"
-  if [ -n "$down_rule_id" ]; then
-    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$down_rule_id" \
-      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
-    echo "  Alert rule: 设备离线告警 - removed (handled by realtime device-down watcher)"
-  else
-    echo "  Alert rule: 设备离线告警 - handled by realtime device-down watcher"
-  fi
-
-  # 高丢包告警：device_perf 表已被 LibreNMS 上游移除（2024-04），这条规则永远不会触发；
-  # 丢包/掉线改由 bridge 的实时 blackbox watcher 负责。这里只做一次性清理——老部署里若还
-  # 残留这条死规则就删掉，正常新部署本就没有、静默跳过（不再打印误导性的 "disabled"）。
-  loss_rule_id="$(rule_id_by_name "高丢包告警")"
-  if [ -n "$loss_rule_id" ]; then
-    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$loss_rule_id" \
-      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
-    echo "  Alert rule: 高丢包告警 - removed (legacy dead rule; loss handled by realtime watcher)"
-  fi
-
-  isp_rule_id="$(rule_id_by_name "ISP 带宽饱和告警")"
-  if [ -n "$isp_rule_id" ]; then
-    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$isp_rule_id" \
-      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
-    echo "  Alert rule: ISP 带宽饱和告警 - removed (handled by realtime Feishu bridge)"
-  else
-    echo "  Alert rule: ISP 带宽饱和告警 - handled by realtime Feishu bridge"
-  fi
-
-  # 老版本里可能残留接口错误/丢弃规则。不同 LibreNMS 版本的 ports *_rate 字段
-  # schema 不一致，字段不存在时会每 5 分钟写 SQL 错误日志；这里先清掉，避免误导。
-  for legacy_rule in "接口错误告警" "接口丢弃告警"; do
-    legacy_rule_id="$(rule_id_by_name "$legacy_rule")"
-    if [ -n "$legacy_rule_id" ]; then
-      curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$legacy_rule_id" \
-        -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
-      echo "  Alert rule: $legacy_rule - removed (legacy schema-dependent rule)"
-    fi
-  done
-
-  # 互联口断链由 bridge 直接看 Prometheus ifOperStatus，按每个 Port-channel/LAG 单独告警。
-  # 删除旧 LibreNMS 设备级规则，避免重复推送且缺少具体接口。
-  interconnect_rule_id="$(rule_id_by_name "互联口断链告警")"
-  if [ -n "$interconnect_rule_id" ]; then
-    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$interconnect_rule_id" \
-      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
-    echo "  Alert rule: 互联口断链告警 - removed (handled per port-channel by realtime Feishu bridge)"
-  else
-    echo "  Alert rule: 互联口断链告警 - handled per port-channel by realtime Feishu bridge"
-  fi
-
-  # sysName 变更告警改由 bridge 自己轮询 /api/v0/devices 对比 sysName 实现，
-  # 卡片能显示 旧→新（webhook 只带当前值，做不到）。LibreNMS 告警规则也没有可靠的
-  # "changed" 算子。这里清理早期版本可能创建的该规则，避免重复/失效告警。
-  sysname_rule_id="$(rule_id_by_name "sysName 变更告警")"
-  if [ -n "$sysname_rule_id" ]; then
-    curl -s -X DELETE "$LIBRENMS_URL/api/v0/rules/$sysname_rule_id" \
-      -H "X-Auth-Token: $API_TOKEN" >/dev/null 2>&1 || true
-    echo "  Alert rule: sysName 变更告警 - removed (handled by realtime sysName watcher in Feishu bridge)"
-  else
-    echo "  Alert rule: sysName 变更告警 - handled by realtime sysName watcher in Feishu bridge"
-  fi
+  EXISTING_RULES=$(alert_rules_request GET rules) || {
+    echo "  Alert rule cleanup failed: could not obtain a valid rule list." >&2
+    exit 1
+  }
+  # Keep the original exact names and first matched id; no fuzzy matching.
+  remove_legacy_rule "设备离线告警" "handled by realtime device-down watcher" || exit 1
+  remove_legacy_rule "高丢包告警" "legacy dead rule; loss handled by realtime watcher" || exit 1
+  remove_legacy_rule "ISP 带宽饱和告警" "handled by realtime Feishu bridge" || exit 1
+  remove_legacy_rule "接口错误告警" "legacy schema-dependent rule" || exit 1
+  remove_legacy_rule "接口丢弃告警" "legacy schema-dependent rule" || exit 1
+  remove_legacy_rule "互联口断链告警" "handled per port-channel by realtime Feishu bridge" || exit 1
+  remove_legacy_rule "sysName 变更告警" "handled by realtime sysName watcher in Feishu bridge" || exit 1
+else
+  echo "  SKIP: API alert-rule cleanup (LibreNMS API token unavailable)."
 fi
-
 echo ""
 echo "============================================"
 echo "  LibreNMS Discovery Complete!"

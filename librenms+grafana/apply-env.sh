@@ -217,20 +217,20 @@ if ! render_grafana_provisioning; then
   exit 1
 fi
 
+# Deployment completion budget is shared by startup, tasks and final checks.
+. "$SCRIPT_DIR/deployment-tasks.sh"
+deployment_budget_init "${DEPLOY_CHECK_TIMEOUT:-180}"
+
 SERVICES="
   prometheus
   snmp-exporter
   player-targets
-  topology-collector
   blackbox-exporter
-  alertmanager-feishu-bridge
   rsyslog
   librenms
   librenms-dispatcher
-  librenms-config
   bigscreen
   grafana
-  grafana-setup
 "
 
 # A host-side apply must refresh platform-api too so changes to its auth/apply
@@ -273,7 +273,10 @@ case ",${COMPOSE_PROFILES_VALUE}," in
 esac
 
 compose_up() {
-  compose up -d --force-recreate $SERVICES
+  # This is an existing stack. In particular Bigscreen depends on platform-api
+  # and feishu-ws depends on Bridge: implicit dependency recreation would kill
+  # self-apply or refresh a token consumer before the configuration task.
+  deployment_compose up -d --force-recreate --no-deps $SERVICES
 }
 
 echo "[apply-env] Recreating services that read .env..."
@@ -281,6 +284,15 @@ if ! compose_up; then
   echo "[apply-env] ERROR: service recreation failed; containers were left intact for diagnosis/rollback." >&2
   exit 1
 fi
+
+run_required_tasks || exit 1
+# Refresh token consumers only after both required tasks completed this run.
+deployment_compose up -d --force-recreate --no-deps topology-collector alertmanager-feishu-bridge || exit 1
+
+case ",${COMPOSE_PROFILES_VALUE}," in
+  *,feishu,*) : ;;
+  *) cleanup_disabled_feishu || exit 1 ;;
+esac
 
 if [ "$REMOVE_UNPOLLER" = "true" ]; then
   echo "[apply-env] UniFi profile disabled; removing the existing unpoller container."
@@ -290,12 +302,11 @@ fi
 if [ -n "$HOST_PROJECT_DIR" ]; then
   export DEPLOY_CHECK_HOST_PROJECT_DIR="$HOST_PROJECT_DIR"
 fi
-if ! "$SCRIPT_DIR/deploy-check.sh" configured; then
+if ! "$SCRIPT_DIR/deploy-check.sh" configured </dev/null; then
   echo "[apply-env] ERROR: 配置已经写入，但运行状态验证失败。" >&2
   echo "[apply-env] Existing transaction and rollback records were preserved." >&2
   exit 1
 fi
 
 echo "[apply-env] Configuration applied and runtime verification passed."
-echo "[apply-env] Watch LibreNMS config progress with:"
-echo "  docker logs -f librenms-config"
+echo "[apply-env] Required LibreNMS and Grafana setup tasks completed successfully."

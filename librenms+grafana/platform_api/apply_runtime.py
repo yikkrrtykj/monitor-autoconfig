@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import subprocess
 import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+from .deployment_health import BRIDGE_HEALTH_MAX_BYTES, notification_requirements, validate_bridge_health
 
 
 APPLY_CHILD_TIMEOUT_MARGIN_SECONDS = 30
@@ -35,6 +38,11 @@ def host_exec_env(context: ApplyRuntimeContext) -> dict:
     # caller here would kill it before the durable operation result is written.
     # A direct host apply does not set this flag and therefore refreshes the API.
     env["PLATFORM_API_SELF_APPLY"] = "true"
+    # Covers config rendering as well as the child completion stages. Recovery
+    # gets its own new deadline through the existing second run_apply_command.
+    env["DEPLOY_CHECK_DEADLINE"] = str(int(time.time()) + max(
+        0, context.apply_timeout - APPLY_CHILD_TIMEOUT_MARGIN_SECONDS,
+    ))
     requested_check_timeout = env.get("DEPLOY_CHECK_TIMEOUT", "180")
     try:
         requested_check_seconds = max(0, int(requested_check_timeout))
@@ -70,20 +78,36 @@ def verify_runtime_after_apply(context: ApplyRuntimeContext) -> dict:
         "大屏": f"{context.bigscreen_url}/",
     }
     deadline = time.monotonic() + context.verify_timeout
+    from platform_config import read_env
+    try:
+        requirements = notification_requirements(read_env(context.workdir / ".env"))
+    except (ValueError, OSError):
+        return {"ok": False, "errors": {"告警服务": "Cannot read notification requirements"}}
     last_errors: dict[str, str] = {}
     while time.monotonic() < deadline:
         last_errors = {}
         for name, url in checks.items():
             try:
-                with urllib.request.urlopen(url, timeout=5) as response:
-                    response.read(4096)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Verification budget exhausted")
+                with urllib.request.urlopen(url, timeout=min(5, remaining)) as response:
+                    body = response.read(BRIDGE_HEALTH_MAX_BYTES + 1 if name == "告警服务" else 4096)
                     if not 200 <= response.status < 400:
                         raise RuntimeError(f"HTTP {response.status}")
+                    if name == "告警服务":
+                        if len(body) > BRIDGE_HEALTH_MAX_BYTES:
+                            raise ValueError("Bridge health payload is too large")
+                        validate_bridge_health(json.loads(body), requirements)
             except Exception as exc:
                 last_errors[name] = str(exc)
-        if not last_errors:
+        if not last_errors and time.monotonic() <= deadline:
             return {"ok": True, "services": sorted(checks)}
-        time.sleep(2)
+        if not last_errors:
+            last_errors["运行验证"] = "Verification budget exhausted"
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(2, remaining))
     return {"ok": False, "errors": last_errors}
 
 
@@ -123,6 +147,7 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
             shlex.split(context.apply_command),
             cwd=str(context.workdir),
             env=env,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=context.apply_timeout,

@@ -3,6 +3,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
+import pytest
+
+from .test_librenms_auto_config_flow import _extract_shell_function
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,9 +16,17 @@ SH = shutil.which("sh") or r"C:\Program Files\Git\usr\bin\sh.exe"
 
 DOCKER_STUB = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$STUB_LOG"
+advance_clock() {
+  [ -n "${STUB_CLOCK:-}" ] || return 0
+  current=$(cat "$STUB_CLOCK")
+  printf '%s\n' "$((current + $1))" > "$STUB_CLOCK"
+}
 
 if [ "$1" = "compose" ]; then
   shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in --profile|-f|--env-file|--project-directory) shift 2 ;; *) break ;; esac
+  done
   command=${1:-}
   [ "$#" -eq 0 ] || shift
   case "$command" in
@@ -26,7 +38,17 @@ if [ "$1" = "compose" ]; then
           echo monitor-platform-api:local
           ;;
         --services)
-          printf '%s\n' bigscreen platform-api topology-collector alertmanager-feishu-bridge librenms-config
+          if [ "${STUB_SECOND_SERVICES_HANG:-false}" = true ]; then
+            if [ -f "$STUB_LOG.services-first" ]; then
+              printf '%s\n' "$DEPLOY_CHECK_DEADLINE" > "$STUB_LOG.services-deadline"
+              echo 'SECOND_SERVICES_BLOCKED' >> "$STUB_LOG"
+              # Real sleep, deliberately bypassing the fixture's no-op sleep.
+              /usr/bin/sleep 8
+              exit 42
+            fi
+            touch "$STUB_LOG.services-first"
+          fi
+          printf '%s\n' bigscreen platform-api topology-collector alertmanager-feishu-bridge librenms-config grafana-setup
           ;;
       esac
       exit 0
@@ -37,15 +59,37 @@ if [ "$1" = "compose" ]; then
       exit 0
       ;;
     rm) exit 0 ;;
+    build)
+      advance_clock "${STUB_BUILD_ADVANCE:-0}"
+      [ "${STUB_BUILD_FAIL:-false}" != true ] || exit 1
+      exit 0 ;;
     up)
+      no_deps=false
+      has_bigscreen=false
+      for argument in "$@"; do
+        if [ "$argument" = --build ]; then
+          advance_clock "${STUB_BUILD_ADVANCE:-0}"
+          [ "${STUB_BUILD_FAIL:-false}" != true ] || exit 1
+        fi
+        [ "$argument" != --no-deps ] || no_deps=true
+        [ "$argument" != bigscreen ] || has_bigscreen=true
+      done
+      if [ "${STUB_DEPENDENCY_CHECK:-false}" = true ] && [ "$no_deps" = false ] && [ "$has_bigscreen" = true ]; then
+        echo "IMPLICIT platform-api dependency" >> "$STUB_LOG"
+      fi
       is_config=false
       for argument in "$@"; do
         [ "$argument" = librenms-config ] && is_config=true
       done
       if [ "$is_config" = true ]; then
         [ "${STUB_LIBRENMS_CONFIG_CREATE_FAIL:-false}" = true ] && exit 1
+        [ "${STUB_STALE_TASKS:-false}" = true ] || touch "$STUB_LOG.created"
       elif [ "${STUB_COMPOSE_UP_FAIL:-false}" = true ]; then
         exit 1
+      fi
+      if [ "${STUB_SECOND_SERVICES_HANG:-false}" = true ]; then
+        /usr/bin/sleep 2
+        echo 'RESIDENT_START_SUCCEEDED' >> "$STUB_LOG"
       fi
       exit 0
       ;;
@@ -55,7 +99,19 @@ if [ "$1" = "compose" ]; then
       ;;
     ps)
       for argument in "$@"; do
-        [ "$argument" = librenms-config ] && { echo cid-librenms-config; exit 0; }
+        case "$argument" in
+          librenms-config|grafana-setup)
+            [ "${STUB_PS_FAIL:-false}" != true ] || exit 1
+            [ "$argument" != "${STUB_MISSING_TASK:-}" ] || exit 0
+            generation=old
+            [ ! -f "$STUB_LOG.created" ] || generation=new
+            echo "cid-$argument-$generation"; exit 0 ;;
+          prometheus) echo cid-prometheus; exit 0 ;;
+          feishu-ws)
+            [ ! -f "$STUB_LOG.removed" ] || exit 0
+            [ "${STUB_FEISHU_PRESENT:-false}" != true ] || echo cid-feishu
+            exit 0 ;;
+        esac
       done
       exit 0
       ;;
@@ -68,25 +124,58 @@ if [ "$1" = image ] && [ "$2" = inspect ]; then
   case "$image" in
     monitor-*:local) [ "${STUB_LOCAL_IMAGES_READY:-true}" = true ] ;;
     remote.example/platform:1) [ "${STUB_REMOTE_IMAGE_PRESENT:-true}" = true ] ;;
-    base.example/runtime:1) [ "${STUB_BASE_IMAGE_PRESENT:-true}" = true ] ;;
+    base.example/runtime:1) [ "${STUB_BASE_IMAGE_PRESENT:-true}" = true ] || [ -f "$STUB_LOG.base-pulled" ] ;;
     *) exit 1 ;;
   esac
   exit $?
 fi
 
 if [ "$1" = pull ]; then
+  advance_clock "${STUB_BASE_PULL_ADVANCE:-0}"
   [ "${STUB_BASE_PULL_FAIL:-false}" = true ] && exit 1
+  touch "$STUB_LOG.base-pulled"
   exit 0
 fi
 
 if [ "$1" = inspect ]; then
   format=$3
+  [ "${STUB_INSPECT_FAIL:-false}" != true ] || exit 1
   case "$format" in
-    *State.Status*) echo exited ;;
-    *State.ExitCode*) echo "${STUB_LIBRENMS_CONFIG_EXIT:-0}" ;;
+    *State.Status*State.ExitCode*)
+      if [ "${STUB_TRANSITION:-false}" = true ]; then
+        counter_file="$STUB_LOG.$4.polls"
+        counter=0
+        [ ! -f "$counter_file" ] || counter=$(cat "$counter_file")
+        printf '%s\n' "$((counter + 1))" > "$counter_file"
+        case "$counter" in 0) echo 'created 0' ;; 1) echo 'running 0' ;; 2) echo 'restarting 0' ;; *) echo 'exited 0' ;; esac
+        exit 0
+      fi
+      [ -z "${STUB_INSPECT_SLEEP:-}" ] || /usr/bin/sleep "$STUB_INSPECT_SLEEP"
+      case "$4" in
+        *grafana-setup*) echo "${STUB_GRAFANA_STATE:-exited} ${STUB_GRAFANA_EXIT:-0}" ;;
+        *) echo "${STUB_CONFIG_STATE:-exited} ${STUB_LIBRENMS_CONFIG_EXIT:-0}" ;;
+      esac ;;
+    *State.Status*)
+      case "$4" in
+        *grafana-setup*) echo "${STUB_GRAFANA_STATE:-exited}" ;;
+        *) echo "${STUB_CONFIG_STATE:-exited}" ;;
+      esac ;;
+    *State.ExitCode*)
+      case "$4" in
+        *grafana-setup*) echo "${STUB_GRAFANA_EXIT:-0}" ;;
+        *) echo "${STUB_LIBRENMS_CONFIG_EXIT:-0}" ;;
+      esac ;;
+    *com.docker.compose.project*)
+      if [ "$4" = cid-feishu ]; then echo "${STUB_FEISHU_PROJECT:-fixture}"; else echo fixture; fi ;;
+    *com.docker.compose.service*) echo "${STUB_FEISHU_SERVICE:-feishu-ws}" ;;
     *) exit 1 ;;
   esac
   exit 0
+fi
+
+if [ "$1" = rm ]; then
+  [ "${STUB_REMOVE_FAIL:-false}" != true ] || exit 1
+  touch "$STUB_LOG.removed"
 fi
 
 exit 0
@@ -105,10 +194,13 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
-def run_deploy(tmp_path: Path, unchanged=True, event_config=None, env_text=ENV_TEXT, **overrides):
+def run_deploy(tmp_path: Path, unchanged=True, event_config=None, env_text=ENV_TEXT,
+               fake_clock=False, check_script=None, **overrides):
     project = tmp_path / "project"
     project.mkdir()
     shutil.copy2(ROOT / "deploy.sh", project / "deploy.sh")
+    if (ROOT / "deployment-tasks.sh").exists():
+        shutil.copy2(ROOT / "deployment-tasks.sh", project / "deployment-tasks.sh")
     shutil.copy2(ROOT / "platform_config.py", project / "platform_config.py")
     shutil.copy2(ROOT / "version_info.py", project / "version_info.py")
     shutil.copy2(REPOSITORY / "VERSION", project / "VERSION")
@@ -123,7 +215,7 @@ def run_deploy(tmp_path: Path, unchanged=True, event_config=None, env_text=ENV_T
     _write_executable(project / "render-grafana-provisioning.sh", "#!/bin/sh\nexit 0\n")
     _write_executable(
         project / "deploy-check.sh",
-        '#!/bin/sh\nprintf "deploy-check %s\\n" "$*" >> "$STUB_LOG"\nexit "${STUB_DEPLOY_CHECK_EXIT:-0}"\n',
+        check_script or '#!/bin/sh\nprintf "deploy-check %s\\n" "$*" >> "$STUB_LOG"\nexit "${STUB_DEPLOY_CHECK_EXIT:-0}"\n',
     )
     if unchanged:
         (project / ".deploy-local-image.sha256").write_text("aggregatehash\n", encoding="utf-8")
@@ -131,7 +223,18 @@ def run_deploy(tmp_path: Path, unchanged=True, event_config=None, env_text=ENV_T
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
     _write_executable(stub_bin / "docker", DOCKER_STUB)
-    _write_executable(stub_bin / "sleep", "#!/bin/sh\nexit 0\n")
+    _write_executable(stub_bin / "sleep", '''#!/bin/sh
+if [ -n "${STUB_CLOCK:-}" ]; then
+  current=$(cat "$STUB_CLOCK")
+  printf '%s\n' "$((current + ${1:-0}))" > "$STUB_CLOCK"
+fi
+exit 0
+''')
+    if fake_clock:
+        (tmp_path / "clock").write_text("1000\n")
+        _write_executable(stub_bin / "date", '''#!/bin/sh
+if [ "${1:-}" = +%s ]; then cat "$STUB_CLOCK"; else exec /usr/bin/date "$@"; fi
+''')
     _write_executable(
         stub_bin / "sha256sum",
         "#!/bin/sh\nif [ \"$#\" -gt 0 ]; then echo \"filehash  $1\"; else cat >/dev/null; echo \"aggregatehash  -\"; fi\n",
@@ -148,6 +251,8 @@ def run_deploy(tmp_path: Path, unchanged=True, event_config=None, env_text=ENV_T
         "LIBRENMS_CONFIG_INTERVAL": "0",
     })
     env.update({key: str(value) for key, value in overrides.items()})
+    if fake_clock:
+        env["STUB_CLOCK"] = str(tmp_path / "clock")
     completed = subprocess.run(
         [SH, str(project / "deploy.sh")],
         cwd=project,
@@ -245,7 +350,8 @@ def test_required_rebuild_uses_cached_base_without_registry_pull(tmp_path):
     assert completed.returncode == 0
     assert "Base image base.example/runtime:1 already present" in completed.stdout
     assert "pull base.example/runtime:1" not in log
-    assert "up -d --remove-orphans --build" in log
+    assert log.splitlines().count("compose build") == 1
+    assert "up -d --remove-orphans --no-build" in log
 
 
 def test_required_rebuild_fails_when_base_image_is_unavailable(tmp_path):
@@ -334,3 +440,101 @@ def test_apply_entrypoint_runs_the_configured_runtime_check():
 
     assert '"$SCRIPT_DIR/deploy-check.sh" configured' in apply_env
     assert "配置已经写入，但运行状态验证失败" in apply_env
+
+
+@pytest.mark.parametrize("slow_phase", ["build", "base_pull"])
+def test_r2_image_preparation_does_not_spend_runtime_budget(tmp_path, slow_phase):
+    result, log = run_deploy(
+        tmp_path, unchanged=False, fake_clock=True,
+        LIBRENMS_CONFIG_TIMEOUT="1", DEPLOY_CHECK_TIMEOUT="1",
+        STUB_BUILD_ADVANCE="3" if slow_phase == "build" else "0",
+        STUB_BASE_PULL_ADVANCE="3" if slow_phase == "base_pull" else "0",
+        STUB_BASE_IMAGE_PRESENT="false" if slow_phase == "base_pull" else "true",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Platform bootstrap completed successfully" in result.stdout
+    assert (tmp_path / "clock").read_text().strip() == "1003"
+    builds = [line for line in log.splitlines() if line.startswith("compose build")]
+    assert builds == ["compose build"]
+    task_starts = [line for line in log.splitlines() if line.startswith("compose up") and "librenms-config" in line]
+    assert len(task_starts) == 1
+    assert task_starts[0].endswith("librenms-config grafana-setup")
+    assert log.index("compose build") < log.index("compose up")
+    assert "--build" not in log
+
+
+def test_r2_failed_build_never_starts_runtime_tasks(tmp_path):
+    result, log = run_deploy(tmp_path, unchanged=False, fake_clock=True, STUB_BUILD_FAIL="true")
+    assert result.returncode != 0
+    assert "compose up" not in log
+    assert "deploy-check bootstrap" not in log
+    assert "completed successfully" not in result.stdout
+
+
+def test_r2_cache_hit_skips_build_and_base_preparation(tmp_path):
+    result, log = run_deploy(tmp_path, fake_clock=True, STUB_BUILD_FAIL="true",
+                             STUB_BASE_PULL_FAIL="true", LIBRENMS_CONFIG_TIMEOUT="1",
+                             DEPLOY_CHECK_TIMEOUT="1")
+    assert result.returncode == 0, result.stderr
+    assert "compose build" not in log
+    assert "--build" not in log
+    assert "pull base.example" not in log
+
+
+def test_r2_stuck_task_after_slow_build_remains_bounded(tmp_path):
+    result, log = run_deploy(tmp_path, unchanged=False, fake_clock=True,
+                             STUB_BUILD_ADVANCE="3", STUB_CONFIG_STATE="running",
+                             LIBRENMS_CONFIG_TIMEOUT="1", LIBRENMS_CONFIG_INTERVAL="1",
+                             DEPLOY_CHECK_TIMEOUT="1")
+    assert result.returncode != 0
+    assert "--no-deps librenms-config grafana-setup" in log
+    assert "deploy-check bootstrap" not in log
+    assert "restart topology-collector" not in log
+    assert (tmp_path / "clock").read_text().strip() == "1004"
+
+
+def test_r2_final_health_timeout_after_slow_build_still_fails(tmp_path):
+    source = (ROOT / "deploy-check.sh").read_text(encoding="utf-8")
+    # Execute the actual health-wait loop with a clock-driven unavailable HTTP
+    # double; no real health endpoint or Docker daemon is involved.
+    script = '''#!/bin/sh
+DEPLOY_CHECK_INTERVAL=1
+DEADLINE=$(( $(date +%s) + DEPLOY_CHECK_TIMEOUT ))
+[ "$DEADLINE" -le "$DEPLOY_CHECK_DEADLINE" ] || DEADLINE=$DEPLOY_CHECK_DEADLINE
+HTTP_ERROR="$STUB_LOG.http-error"
+HTTP_BODY="$STUB_LOG.http-body"
+record() { printf '%s %s %s\n' "$1" "$2" "$3" >> "$STUB_LOG"; }
+http_get() { echo unavailable >&2; return 1; }
+'''
+    for name in ("now_seconds", "deadline_reached", "wait_interval", "wait_for_http"):
+        script += _extract_shell_function(source, name) + "\n"
+    script += 'wait_for_http final_health "Final health" "http://fixture.invalid"\n'
+    result, log = run_deploy(tmp_path, unchanged=False, fake_clock=True, check_script=script,
+                             STUB_BUILD_ADVANCE="3", LIBRENMS_CONFIG_TIMEOUT="1",
+                             DEPLOY_CHECK_TIMEOUT="1")
+    assert result.returncode != 0
+    assert "grafana-setup completed successfully" in result.stdout
+    assert "FAIL final_health Final health timed out after 1s" in log
+    assert "Platform bootstrap completed successfully" not in result.stdout
+    assert (tmp_path / "clock").read_text().strip() == "1004"
+
+
+def test_second_service_listing_hang_uses_remaining_shared_budget(tmp_path):
+    result, log = run_deploy(
+        tmp_path, STUB_SECOND_SERVICES_HANG="true",
+        LIBRENMS_CONFIG_TIMEOUT="4", DEPLOY_CHECK_TIMEOUT="2",
+    )
+    finished = time.time()
+    deadline = int((tmp_path / "docker.log.services-deadline").read_text())
+    assert (tmp_path / "docker.log.services-first").exists()
+    assert log.count("compose config --services") == 2
+    assert log.index("RESIDENT_START_SUCCEEDED") < log.index("SECOND_SERVICES_BLOCKED")
+    assert result.returncode != 0
+    assert "could not determine the enabled Compose services" in result.stderr
+    assert "compose restart" not in log
+    assert "--no-deps librenms-config grafana-setup" not in log
+    assert "deploy-check bootstrap" not in log
+    assert "Platform bootstrap completed successfully" not in result.stdout
+    # Compare with the actual inherited absolute deadline, not a fresh timeout
+    # starting at the second read. Allow process teardown/scheduler tolerance.
+    assert finished <= deadline + 1.5, (finished, deadline, result.stderr)

@@ -45,6 +45,10 @@ esac
 
 STARTED_AT=$(date +%s)
 DEADLINE=$((STARTED_AT + DEPLOY_CHECK_TIMEOUT))
+if [ -n "${DEPLOY_CHECK_DEADLINE:-}" ]; then
+  case "$DEPLOY_CHECK_DEADLINE" in *[!0-9]*) echo "Invalid deployment deadline" >&2; exit 1 ;; esac
+  [ "$DEADLINE" -le "$DEPLOY_CHECK_DEADLINE" ] || DEADLINE=$DEPLOY_CHECK_DEADLINE
+fi
 RESULTS_FILE=$(mktemp)
 HTTP_BODY=$(mktemp)
 HTTP_ERROR=$(mktemp)
@@ -68,7 +72,29 @@ deadline_reached() {
 }
 
 wait_interval() {
-  sleep "$DEPLOY_CHECK_INTERVAL"
+  pause=$DEPLOY_CHECK_INTERVAL
+  remaining=$((DEADLINE - $(now_seconds)))
+  [ "$remaining" -gt 0 ] || return 0
+  [ "$pause" -le "$remaining" ] || pause=$remaining
+  sleep "$pause"
+}
+
+probe_timeout() {
+  seconds=$DEPLOY_CHECK_HTTP_TIMEOUT
+  [ "$seconds" -gt 0 ] || seconds=1
+  # Standalone timeout=0 keeps the existing single-snapshot/no-wait mode.
+  # A deadline inherited from deploy/apply never gets this exception.
+  if [ "$DEPLOY_CHECK_TIMEOUT" != 0 ] || [ -n "${DEPLOY_CHECK_DEADLINE:-}" ]; then
+    remaining=$((DEADLINE - $(now_seconds)))
+    [ "$remaining" -gt 0 ] || return 1
+    [ "$seconds" -le "$remaining" ] || seconds=$remaining
+  fi
+  printf '%s' "$seconds"
+}
+
+probe_command() {
+  seconds=$(probe_timeout) || return 1
+  timeout --signal=TERM --kill-after=1 "$seconds" "$@" </dev/null
 }
 
 env_value() {
@@ -92,12 +118,12 @@ PROJECT_DIR=${DEPLOY_CHECK_HOST_PROJECT_DIR:-$SCRIPT_DIR}
 find_compose_v2() {
   if [ -n "${DEPLOY_CHECK_COMPOSE_BIN:-}" ] \
     && [ -x "$DEPLOY_CHECK_COMPOSE_BIN" ] \
-    && "$DEPLOY_CHECK_COMPOSE_BIN" version >/dev/null 2>&1; then
+    && probe_command "$DEPLOY_CHECK_COMPOSE_BIN" version >/dev/null 2>&1; then
     COMPOSE_STYLE=direct
     COMPOSE_BIN=$DEPLOY_CHECK_COMPOSE_BIN
     return 0
   fi
-  if docker compose version >/dev/null 2>&1; then
+  if probe_command docker compose version >/dev/null 2>&1; then
     COMPOSE_STYLE=docker
     return 0
   fi
@@ -109,7 +135,7 @@ find_compose_v2() {
     /usr/libexec/docker/cli-plugins/docker-compose \
     /usr/lib/docker/cli-plugins/docker-compose \
     /usr/local/lib/docker/cli-plugins/docker-compose; do
-    if [ -x "$candidate" ] && "$candidate" version >/dev/null 2>&1; then
+    if [ -x "$candidate" ] && probe_command "$candidate" version >/dev/null 2>&1; then
       COMPOSE_STYLE=direct
       COMPOSE_BIN=$candidate
       return 0
@@ -120,13 +146,13 @@ find_compose_v2() {
 
 compose() {
   if [ "$COMPOSE_STYLE" = docker ]; then
-    docker compose \
+    probe_command docker compose \
       -f "$SCRIPT_DIR/docker-compose.yml" \
       --env-file "$SCRIPT_DIR/.env" \
       --project-directory "$PROJECT_DIR" \
       "$@"
   else
-    "$COMPOSE_BIN" \
+    probe_command "$COMPOSE_BIN" \
       -f "$SCRIPT_DIR/docker-compose.yml" \
       --env-file "$SCRIPT_DIR/.env" \
       --project-directory "$PROJECT_DIR" \
@@ -136,18 +162,19 @@ compose() {
 
 http_get() {
   url=$1
+  http_timeout=$(probe_timeout) || return 1
   if [ "${PLATFORM_API_SELF_APPLY:-false}" = true ]; then
     # The platform container exposes host tools under /host/usr/bin so Docker
     # remains available. A host curl found there cannot load its host libcurl
     # inside python:slim; use the container's own Python for every self-apply
     # HTTP probe instead of treating command presence as runtime capability.
-    python3 -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=int(sys.argv[2])).read())' \
-      "$url" "$DEPLOY_CHECK_HTTP_TIMEOUT"
+    probe_command python3 -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=int(sys.argv[2])).read())' \
+      "$url" "$http_timeout" </dev/null
   elif command -v curl >/dev/null 2>&1; then
-    curl -fsS --max-time "$DEPLOY_CHECK_HTTP_TIMEOUT" "$url"
+    probe_command curl -fsS --max-time "$http_timeout" "$url"
   else
-    python3 -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=int(sys.argv[2])).read())' \
-      "$url" "$DEPLOY_CHECK_HTTP_TIMEOUT"
+    probe_command python3 -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=int(sys.argv[2])).read())' \
+      "$url" "$http_timeout" </dev/null
   fi
 }
 
@@ -162,8 +189,8 @@ wait_for_service() {
       record FAIL "$check_id" "$label container does not exist"
       return 1
     fi
-    state=$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)
-    health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || true)
+    state=$(probe_command docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)
+    health=$(probe_command docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || true)
     last_state=${state:-inspect-failed}
     [ -n "$health" ] && [ "$health" != none ] && last_state="$last_state/$health"
     case "$state:$health" in
@@ -178,7 +205,7 @@ wait_for_service() {
         return 1
         ;;
       exited:*|dead:*|removing:*|paused:*)
-        exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)
+        exit_code=$(probe_command docker inspect --format '{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)
         record FAIL "$check_id" "$label is $state${exit_code:+ (exit $exit_code)}"
         return 1
         ;;
@@ -235,7 +262,7 @@ with urllib.request.urlopen(
     response.read()
     if not 200 <= response.status < 300:
         raise SystemExit(1)
-' "$DEPLOY_CHECK_HTTP_TIMEOUT" > "$HTTP_BODY" 2> "$HTTP_ERROR"; then
+' "$DEPLOY_CHECK_HTTP_TIMEOUT" </dev/null > "$HTTP_BODY" 2> "$HTTP_ERROR"; then
       record PASS platform_api_http "Platform API reachable"
       return 0
     fi
@@ -243,6 +270,38 @@ with urllib.request.urlopen(
     [ -n "$last_error" ] || last_error="container health endpoint temporarily unreachable"
     if deadline_reached; then
       record FAIL platform_api_http "Platform API container /health timed out after ${DEPLOY_CHECK_TIMEOUT}s (last error: $last_error)"
+      return 1
+    fi
+    wait_interval
+  done
+}
+
+wait_for_bridge() {
+  while :; do
+    if compose exec -T -w /app alertmanager-feishu-bridge python -c '
+import json, os, sys, urllib.request
+from librenms_client import LibreNMSClient
+with urllib.request.urlopen("http://127.0.0.1:5005/health", timeout=int(sys.argv[1])) as response:
+    if response.status != 200:
+        raise SystemExit(1)
+    body = response.read(65537)
+    if len(body) > 65536:
+        raise SystemExit(1)
+    health = json.loads(body)
+# Constructor only resolves the existing token; it makes no HTTP requests.
+client = LibreNMSClient(
+    base_url=os.environ.get("LIBRENMS_URL", "http://librenms:8000"),
+    token_file=os.environ.get("LIBRENMS_TOKEN_FILE", "/librenms-data/librenms-api-token"),
+)
+print(json.dumps({"health": health, "librenmsTokenAvailable": bool(client.token)}))
+' "$DEPLOY_CHECK_HTTP_TIMEOUT" </dev/null > "$HTTP_BODY" 2> "$HTTP_ERROR" \
+      && bridge_checks=$(python3 "$SCRIPT_DIR/platform_api/deployment_health.py" "$HTTP_BODY" "$SCRIPT_DIR/.env" 2> "$HTTP_ERROR"); then
+      printf '%s\n' "$bridge_checks" >> "$RESULTS_FILE"
+      record PASS bridge_readiness "Bridge deployment readiness verified (read-only)"
+      return 0
+    fi
+    if deadline_reached; then
+      record FAIL bridge_readiness "Bridge health, enabled capabilities or LibreNMS token availability failed"
       return 1
     fi
     wait_interval
@@ -542,6 +601,12 @@ else
   exit $?
 fi
 
+if ! command -v timeout >/dev/null 2>&1; then
+  record FAIL probe_timeout "timeout utility required for bounded runtime probes"
+  finalize
+  exit $?
+fi
+
 if find_compose_v2; then
   record PASS compose_v2 "Docker Compose v2 available"
 else
@@ -635,6 +700,7 @@ else
 fi
 
 for service_spec in \
+  'bridge|alertmanager-feishu-bridge|Bridge' \
   'prometheus|prometheus|Prometheus' \
   'grafana|grafana|Grafana' \
   'topology_collector|topology-collector|Topology collector' \
@@ -671,6 +737,7 @@ wait_for_http grafana_http "Grafana API healthy" "$GRAFANA_URL/api/health" || tr
 wait_for_http librenms_http "LibreNMS reachable" "$LIBRENMS_URL/" || true
 wait_for_http bigscreen_http "Bigscreen reachable" "$BIGSCREEN_URL/" || true
 wait_for_platform_api || true
+wait_for_bridge || true
 wait_for_http blackbox_http "Blackbox exporter reachable" "$BLACKBOX_EXPORTER_URL/" || true
 wait_for_http snmp_http "SNMP exporter reachable" "$SNMP_EXPORTER_URL/" || true
 wait_for_prometheus_reload || true
