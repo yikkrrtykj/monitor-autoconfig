@@ -7,6 +7,9 @@ librenms-data/
 
 # 每台服务器配置不同，不要提交
 librenms+grafana/.env
+/librenms+grafana/event-config.yml
+/librenms+grafana/event-config.yml.bak.*
+/librenms+grafana/event-config.yml.before-*
 librenms+grafana/grafana-provisioning-rendered/
 librenms+grafana/.deploy-local-image.sha256
 

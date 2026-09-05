@@ -420,7 +420,7 @@ ensure_admin_user() {
   if ! has_lnms_cmd; then
     echo "  WARNING: lnms command not found, falling back to database admin user sync."
     for i in $(seq 1 20); do
-      if upsert_admin_user; then
+      if upsert_admin_user >/dev/null 2>&1; then
         echo "  Admin user '$LIBRENMS_ADMIN_USER' is ready; password synced from .env."
         return 0
       fi
@@ -443,7 +443,7 @@ ensure_admin_user() {
       }
 
     if echo "$output" | grep -qi "already"; then
-      if upsert_admin_user; then
+      if upsert_admin_user >/dev/null 2>&1; then
         assign_admin_role_lnms
         echo "  Admin user '$LIBRENMS_ADMIN_USER' already exists; password and admin role synced from .env."
         return 0
@@ -457,12 +457,12 @@ ensure_admin_user() {
     fi
 
     echo "  Waiting for LibreNMS database initialization... ($i/20)"
-    [ -n "$output" ] && echo "  Last output: $output"
+    [ -n "$output" ] && echo "  Admin initialization failed; diagnostic output masked."
     sleep 10
   done
 
   echo "  WARNING: Could not create admin user automatically."
-  echo "  Last output: $output"
+  echo "  Admin initialization diagnostic output masked."
   return 0
 }
 
@@ -811,7 +811,7 @@ add_device_api() {
   msg=$(printf '%s' "$result" | api_result_field message)
   status=$(printf '%s' "$result" | api_result_field status)
   if [ "$status" = "ok" ]; then
-    echo "  ${name:-$ip} ($ip): ${msg:-added}"
+    echo "  ${name:-$ip} ($ip): added; API diagnostic output masked"
     return 0
   fi
 
@@ -822,7 +822,7 @@ add_device_api() {
     echo "  ${name:-$ip} ($ip): existing device SNMP settings synchronized"
     return 0
   fi
-  echo "  ${name:-$ip} ($ip): ${msg:-add/update failed}"
+  echo "  ${name:-$ip} ($ip): add/update failed; API diagnostic output masked"
   # 与旧行为一致：单个可选 Ping 目标失败不能中止其余自动配置。
   return 0
 }
@@ -833,7 +833,7 @@ add_device_cli() {
   community=$3
 
   php /opt/librenms/addhost.php \
-    "$ip" "$SNMP_VERSION" "$community" 2>/dev/null && \
+    "$ip" "$SNMP_VERSION" "$community" >/dev/null 2>&1 && \
     echo "  ${name:-$ip} ($ip): Added via CLI" || \
     echo "  ${name:-$ip} ($ip): Already exists or failed"
 }
@@ -893,7 +893,7 @@ add_ping_device_api() {
   # 在保留 device_id/RRD/历史数据的同时，把旧记录迁移回 Ping-only。
   if sync_ping_device_api "$name" "$ip"; then
     if [ "$status" = "ok" ]; then
-      echo "  ${name:-$ip} ($ip): ${msg:-added}; ping-only settings synchronized"
+      echo "  ${name:-$ip} ($ip): added; ping-only settings synchronized"
     else
       echo "  ${name:-$ip} ($ip): existing device converted to ping-only"
     fi
@@ -901,10 +901,10 @@ add_ping_device_api() {
   fi
 
   if [ "$status" = "ok" ]; then
-    echo "  ${name:-$ip} ($ip): ${msg:-added}; ping-only verification failed"
+    echo "  ${name:-$ip} ($ip): added; ping-only verification failed"
     return 0
   fi
-  echo "  ${name:-$ip} ($ip): ${msg:-add/update failed}"
+  echo "  ${name:-$ip} ($ip): add/update failed; API diagnostic output masked"
   return 1
 }
 
@@ -2117,7 +2117,7 @@ PHP
 echo ""
 echo "[4/6] Discovering SNMP devices..."
 echo "  Targets: $DISCOVERY_TARGETS"
-echo "  SNMP Community: $SNMP_COMMUNITY"
+echo "  SNMP Community: configured (masked)"
 echo "  ICMP Gate: timeout ${LIBRENMS_DISCOVERY_PING_TIMEOUT_MS}ms"
 echo "  SNMP Probe: timeout ${SNMP_TIMEOUT}s, retries $SNMP_RETRIES"
 echo ""
@@ -2285,11 +2285,11 @@ else
   fi
 fi
 echo "  Username:  $LIBRENMS_ADMIN_USER"
-echo "  Password:  $LIBRENMS_ADMIN_PASSWORD"
+echo "  Password:  configured (masked)"
 echo ""
 echo "  Discovery targets: $DISCOVERY_TARGETS"
 echo "  Core IP:           $CORE_IP"
-echo "  SNMP Community:    $SNMP_COMMUNITY"
+echo "  SNMP Community:    configured (masked)"
 echo ""
 echo "  下一步:"
 echo "  1. 登录 LibreNMS 验证管理员访问"

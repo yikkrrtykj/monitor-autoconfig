@@ -251,7 +251,7 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
         return bridge.DEVICE_DOWN_STATES[key]
 
     monkeypatch.setattr(bridge, "save_device_down_states", lambda states: None)
-    monkeypatch.setattr(bridge, "_target_currently_up", lambda job, ip: False)
+    monkeypatch.setattr(bridge, "_pending_delete_target_status", lambda job, ip: "OFFLINE")
     deleted = []
     monkeypatch.setattr(bridge, "delete_librenms_device", lambda ip: deleted.append(ip) or "deleted")
 
@@ -278,7 +278,7 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
 
     # 设备当前在线：拒绝删除并撤销待删除
     state = fresh_state()
-    monkeypatch.setattr(bridge, "_target_currently_up", lambda job, ip: True)
+    monkeypatch.setattr(bridge, "_pending_delete_target_status", lambda job, ip: "ONLINE")
     result = bridge.resolve_pending_delete(key, "delete", "tok-1")
     assert result["ok"] is False
     assert state["pending_delete"] is False

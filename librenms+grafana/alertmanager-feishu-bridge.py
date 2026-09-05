@@ -98,6 +98,8 @@ Env:
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
+import ipaddress
+import math
 from datetime import datetime
 from http.cookiejar import CookieJar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2915,24 +2917,43 @@ def _clear_pending_fields(state):
     state["pending_event_title"] = ""
 
 
-def _target_currently_up(job, ip):
-    """删除前的最后一道防线：Prometheus 里这个目标现在是通的就拒绝删除。
-    序列不存在（目标已被移出配置）视为不在线，允许删。"""
-    if not job or not ip:
-        return False
+def _pending_delete_target_status(job, ip):
+    """Return ONLINE/OFFLINE/UNKNOWN from verified evidence in the last 30s."""
+    if not isinstance(job, str) or not re.fullmatch(r"[A-Za-z0-9_:.-]+", job):
+        return "UNKNOWN"
     try:
-        safe_job = job if re.match(r"^[A-Za-z0-9_:.-]+$", job) else ""
-        safe_ip = ip if re.match(r"^[0-9a-fA-F:.]+$", ip) else ""
-        if not safe_job or not safe_ip:
-            return False
-        query = f'max_over_time(probe_success{{job="{safe_job}",target_ip="{safe_ip}"}}[30s])'
-        for item in prometheus_query(query):
-            value = float((item.get("value") or [None, "0"])[1])
-            if value >= 1:
-                return True
+        if not isinstance(ip, str) or not re.fullmatch(r"[0-9a-fA-F:.]+", ip):
+            return "UNKNOWN"
+        ipaddress.ip_address(ip)
+        started = time.time()
+        query = f'max_over_time(probe_success{{job="{job}",target_ip="{ip}"}}[30s])'
+        samples = prometheus_query(query)
     except Exception as exc:
-        log(f"[DOWN] retire reachability check failed for {ip}: {exc} (treating as offline)")
-    return False
+        log(f"[DOWN] pending delete status unavailable: {type(exc).__name__}; deletion refused")
+        return "UNKNOWN"
+    if not isinstance(samples, list) or not samples:
+        return "UNKNOWN"
+    unknown = False
+    for item in samples:
+        try:
+            if not isinstance(item, dict) or not isinstance(item.get("metric"), dict):
+                raise ValueError("invalid sample")
+            labels = item["metric"]
+            if labels.get("job") != job or labels.get("target_ip") != ip:
+                raise ValueError("unverified identity")
+            pair = item.get("value")
+            if not isinstance(pair, list) or len(pair) != 2 or any(isinstance(v, bool) for v in pair):
+                raise ValueError("invalid value pair")
+            timestamp, value = map(float, pair)
+            if not math.isfinite(timestamp) or not started - 30 <= timestamp <= time.time():
+                raise ValueError("stale or invalid timestamp")
+            if not math.isfinite(value) or value not in (0, 1):
+                raise ValueError("invalid probe value")
+            if value == 1:
+                return "ONLINE"
+        except (TypeError, ValueError, OverflowError):
+            unknown = True
+    return "UNKNOWN" if unknown else "OFFLINE"
 
 
 def list_pending_delete_devices():
@@ -2991,12 +3012,15 @@ def resolve_pending_delete(key, action, token):
         return {"ok": False, "error": "action 必须是 delete 或 keep"}
 
     # 网络调用都在锁外
-    if _target_currently_up(job, ip):
+    target_status = _pending_delete_target_status(job, ip)
+    if target_status == "ONLINE":
         with RETIRE_LOCK:
             _clear_pending_fields(state)
         save_device_down_states(DEVICE_DOWN_STATES)
         log(f"[DOWN] PENDING-DELETE refused, target is back online: {name} ({ip})")
         return {"ok": False, "error": f"{name} 当前在线，已取消删除并恢复正常监控"}
+    if target_status != "OFFLINE":
+        return {"ok": False, "error": "无法确认设备当前状态，未执行删除；设备仍保留在待删除列表，请稍后重试。"}
     result = delete_librenms_device(ip)
     if result not in ("deleted", "missing"):
         return {"ok": False, "error": "LibreNMS 删除失败（API 不可达或未授权），设备保持待删除，请稍后重试"}
