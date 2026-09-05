@@ -161,12 +161,12 @@ def test_fetch_wan_rates_uses_exact_promql_and_extracts_both_directions():
         {
             "key": "WAN1|in", "label": "WAN1", "direction": "in",
             "value_bps": 123.5, "if_index": "7", "target_ip": "10.0.0.1",
-            "metric_name": "WAN1",
+            "metric_name": "WAN1", "_identity_ambiguous": False,
         },
         {
             "key": "eth1|out", "label": "eth1", "direction": "out",
             "value_bps": 456.0, "if_index": "8", "target_ip": "10.0.0.2",
-            "metric_name": "eth1",
+            "metric_name": "eth1", "_identity_ambiguous": False,
         },
     ]
 
@@ -272,6 +272,37 @@ def test_inventory_metric_name_maps_native_series_to_display_identity(tmp_path):
     assert _bandwidth_for_label("ISP-A", "in", _parse_bandwidth_config(
         "*:1000,ISP-A:200"
     )) == 200
+
+
+def test_inventory_target_and_ifindex_disambiguate_same_native_name(tmp_path):
+    inventory = tmp_path / "isp.json"
+    inventory.write_text(json.dumps([
+        {"targets": [], "labels": {
+            "display_name": "ISP-A", "metric_name": "WAN",
+            "metric_target": "192.0.2.1", "metric_ifindex": "7",
+        }},
+        {"targets": [], "labels": {
+            "display_name": "ISP-B", "metric_name": "WAN",
+            "metric_target": "192.0.2.2", "metric_ifindex": "7",
+        }},
+    ]), encoding="utf-8")
+
+    watcher, _logs, _health, _sent = make_watcher(
+        prometheus_query=lambda _query: [
+            {"metric": {
+                "ifAlias": "WAN", "ifIndex": "7", "instance": "192.0.2.1",
+            }, "value": [1, "10"]},
+            {"metric": {
+                "ifAlias": "WAN", "ifIndex": "7", "instance": "192.0.2.2",
+            }, "value": [1, "20"]},
+        ],
+        inventory_file=str(inventory),
+    )
+
+    rates = watcher._fetch_wan_rates()
+    assert {item["label"] for item in rates} == {"ISP-A", "ISP-B"}
+    assert all(item["metric_name"] == "WAN" for item in rates)
+    assert all(item["_identity_ambiguous"] is False for item in rates)
 
 
 def test_multiple_native_lines_for_one_inventory_display_name_use_global_bandwidth(tmp_path):

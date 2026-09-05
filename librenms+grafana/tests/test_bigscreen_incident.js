@@ -66,6 +66,19 @@ assert.strictEqual(result.verdict.text, "ISP 链路接近饱和");
 assert.strictEqual(result.ispEvents[0].capacityBps, 100 * 1000 * 1000, "capacity from BIGSCREEN_ISP_MAX_BANDWIDTH");
 assert.ok(result.ispEvents[0].utilization > 0.89 && result.ispEvents[0].utilization < 0.91);
 
+// Conflicted manual metadata cannot select the named 100 Mbps capacity.
+result = analyzeIncident({
+  ...emptyData,
+  isp: [{
+    metric: {},
+    _ispName: "ISP1",
+    _direction: "in",
+    _ispMetadataConflict: true,
+    values: [{ t: 1000, v: 90 * 1000 * 1000 }]
+  }]
+}, 0.02);
+assert.strictEqual(result.ispEvents[0].capacityBps, 1000 * 1000 * 1000, "conflict uses the global/default capacity");
+
 // ---- single player -> single-point suspicion ----
 result = analyzeIncident({
   ...emptyData,

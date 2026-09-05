@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -413,12 +414,25 @@ def _auto_isp_env(manual_names="", auto_value="true"):
     )
 
 
-def _isp_state(count, *, status="ok", age=0):
+def _isp_state(inventory, *, status="ok", age=0, count=None, inventory_hash=None):
+    inventory_text = inventory if isinstance(inventory, str) else json.dumps(
+        inventory, ensure_ascii=False
+    )
+    if count is None:
+        try:
+            count = len(json.loads(inventory_text))
+        except (TypeError, ValueError):
+            count = 0
     return json.dumps({
         "status": status,
         "last_success_at": int(time.time()) - age,
         "last_error_at": None,
         "count": count,
+        "inventory_count": count,
+        "inventory_sha256": inventory_hash or hashlib.sha256(
+            (inventory_text + "\n").encode("utf-8")
+        ).hexdigest(),
+        "generation_id": "test-generation",
     })
 
 
@@ -431,38 +445,118 @@ def _production_isp_inventory():
 
 def test_configured_auto_isp_accepts_five_inventory_with_four_manual_metadata(tmp_path):
     inventory = _production_isp_inventory()
+    inventory_text = json.dumps(inventory, ensure_ascii=False)
     manual = "telcom-100M-长期,telcom-1000M,unicom-1000M,MLBB-telcom-300M"
     completed, payload = run_check(
         tmp_path,
         mode="configured",
         env_text=_auto_isp_env(manual),
         STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
-        STUB_ISP_INVENTORY_JSON=json.dumps(inventory, ensure_ascii=False),
-        STUB_ISP_STATE_JSON=_isp_state(5),
+        STUB_ISP_INVENTORY_JSON=inventory_text,
+        STUB_ISP_STATE_JSON=_isp_state(inventory_text),
     )
 
     check = checks_by_id(payload)["configured_isp"]
     assert completed.returncode == 0
     assert check["status"] == "PASS"
-    assert "validated 5 fresh ISP target(s)" in check["message"]
+    assert "validated 5 fresh ISP(s), 5 availability target(s)" in check["message"]
+
+
+def test_configured_auto_isp_accepts_interface_without_gateway(tmp_path):
+    inventory = [{
+        "targets": [],
+        "labels": {
+            "display_name": "PPPoE WAN",
+            "metric_name": "ethernet0/8",
+            "metric_target": "192.0.2.1",
+            "metric_ifindex": "8",
+            "wan_ip": "203.0.113.2",
+            "discovery_source": "interface_only",
+        },
+    }]
+    inventory_text = json.dumps(inventory)
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=_auto_isp_env(),
+        STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
+        STUB_ISP_INVENTORY_JSON=inventory_text,
+        STUB_ISP_STATE_JSON=_isp_state(inventory_text),
+    )
+
+    check = checks_by_id(payload)["configured_isp"]
+    assert completed.returncode == 0
+    assert check["status"] == "PASS"
+    assert "validated 1 fresh ISP(s), 0 availability target(s)" in check["message"]
+
+
+@pytest.mark.parametrize(
+    ("state_update", "message"),
+    [
+        ({"count": 4, "inventory_count": 4}, "count does not match inventory"),
+        ({"inventory_sha256": "0" * 64}, "hash does not match inventory"),
+    ],
+)
+def test_configured_auto_isp_rejects_state_inventory_mismatch(
+    tmp_path, state_update, message
+):
+    inventory = _production_isp_inventory()
+    inventory_text = json.dumps(inventory, ensure_ascii=False)
+    state = json.loads(_isp_state(inventory_text))
+    state.update(state_update)
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=_auto_isp_env(),
+        STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
+        STUB_ISP_INVENTORY_JSON=inventory_text,
+        STUB_ISP_STATE_JSON=json.dumps(state),
+    )
+
+    check = checks_by_id(payload)["configured_isp"]
+    assert completed.returncode == 1
+    assert check["status"] == "FAIL"
+    assert message in check["message"]
+
+
+def test_configured_check_rejects_conflicting_auto_discovery_flags(tmp_path):
+    inventory = _production_isp_inventory()
+    inventory_text = json.dumps(inventory, ensure_ascii=False)
+    env_text = _auto_isp_env().replace(
+        "BIGSCREEN_ISP_AUTO_DISCOVER=true", "BIGSCREEN_ISP_AUTO_DISCOVER=false"
+    )
+    completed, payload = run_check(
+        tmp_path,
+        mode="configured",
+        env_text=env_text,
+        STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
+        STUB_ISP_INVENTORY_JSON=inventory_text,
+        STUB_ISP_STATE_JSON=_isp_state(inventory_text),
+    )
+
+    check = checks_by_id(payload)["configured_isp_auto_flags"]
+    assert completed.returncode == 1
+    assert check["status"] == "FAIL"
+    assert "flags disagree" in check["message"]
 
 
 @pytest.mark.parametrize("auto_value", ("true", "1", "yes", "on", "TRUE", "YES", "ON"))
 def test_configured_isp_truthy_aliases_run_auto_inventory_validation(tmp_path, auto_value):
     inventory = _production_isp_inventory()
+    inventory_text = json.dumps(inventory, ensure_ascii=False)
     completed, payload = run_check(
         tmp_path,
         mode="configured",
         env_text=_auto_isp_env(auto_value=auto_value),
         STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
-        STUB_ISP_INVENTORY_JSON=json.dumps(inventory, ensure_ascii=False),
-        STUB_ISP_STATE_JSON=_isp_state(5),
+        STUB_ISP_INVENTORY_JSON=inventory_text,
+        STUB_ISP_STATE_JSON=_isp_state(inventory_text),
     )
 
     check = checks_by_id(payload)["configured_isp"]
     assert completed.returncode == 0
     assert check["status"] == "PASS"
-    assert "validated 5 fresh ISP target(s)" in check["message"]
+    assert "validated 5 fresh ISP(s), 5 availability target(s)" in check["message"]
 
 
 @pytest.mark.parametrize("auto_value", ("false", "0", "no", "off", ""))
@@ -484,28 +578,37 @@ def test_configured_isp_false_aliases_use_inert_contract_without_manual_targets(
     assert "/topology/isp_targets.json" not in http_log
 
 
+_DUPLICATE_NAME_INVENTORY = json.dumps([
+    {"targets": ["8.8.8.1"], "labels": {
+        "display_name": "same", "metric_name": "wan-a",
+        "metric_target": "192.0.2.1", "metric_ifindex": "1",
+    }},
+    {"targets": ["1.1.1.1"], "labels": {
+        "display_name": "same", "metric_name": "wan-b",
+        "metric_target": "192.0.2.1", "metric_ifindex": "2",
+    }},
+])
+_INVALID_GATEWAY_INVENTORY = json.dumps([{
+    "targets": ["not-an-ip"], "labels": {
+        "display_name": "ISP-A", "metric_name": "wan-a",
+        "metric_target": "192.0.2.1", "metric_ifindex": "1",
+    },
+}])
+_STALE_INVENTORY = json.dumps([{
+    "targets": ["8.8.8.1"], "labels": {
+        "display_name": "ISP-A", "metric_name": "wan-a",
+        "metric_target": "192.0.2.1", "metric_ifindex": "1",
+    },
+}])
+
+
 @pytest.mark.parametrize(
     ("inventory", "state", "message"),
     [
-        ("{broken", _isp_state(5), "Expecting property name"),
-        (
-            json.dumps([
-                {"targets": ["8.8.8.1"], "labels": {"display_name": "same"}},
-                {"targets": ["1.1.1.1"], "labels": {"display_name": "same"}},
-            ]),
-            _isp_state(2),
-            "duplicate display_name",
-        ),
-        (
-            json.dumps([{"targets": ["not-an-ip"], "labels": {"display_name": "ISP-A"}}]),
-            _isp_state(1),
-            "invalid gateway",
-        ),
-        (
-            json.dumps([{"targets": ["8.8.8.1"], "labels": {"display_name": "ISP-A"}}]),
-            _isp_state(1, age=10_000),
-            "inventory is stale",
-        ),
+        ("{broken", _isp_state("{broken", count=5), "Expecting property name"),
+        (_DUPLICATE_NAME_INVENTORY, _isp_state(_DUPLICATE_NAME_INVENTORY), "duplicate display_name"),
+        (_INVALID_GATEWAY_INVENTORY, _isp_state(_INVALID_GATEWAY_INVENTORY), "invalid availability target"),
+        (_STALE_INVENTORY, _isp_state(_STALE_INVENTORY, age=10_000), "inventory is stale"),
     ],
 )
 def test_configured_auto_isp_rejects_invalid_duplicate_gateway_or_stale_inventory(
@@ -528,6 +631,7 @@ def test_configured_auto_isp_rejects_invalid_duplicate_gateway_or_stale_inventor
 
 def test_configured_auto_isp_rejects_unmatched_identity_or_bandwidth_override(tmp_path):
     inventory = _production_isp_inventory()
+    inventory_text = json.dumps(inventory, ensure_ascii=False)
     env_text = _auto_isp_env("missing-carrier").replace(
         "BIGSCREEN_ISP_MAX_BANDWIDTH=1000",
         "BIGSCREEN_ISP_MAX_BANDWIDTH=*:1000,missing-carrier:200",
@@ -537,8 +641,8 @@ def test_configured_auto_isp_rejects_unmatched_identity_or_bandwidth_override(tm
         mode="configured",
         env_text=env_text,
         STUB_TARGETS_JSON=AUTO_FIREWALL_TARGETS,
-        STUB_ISP_INVENTORY_JSON=json.dumps(inventory, ensure_ascii=False),
-        STUB_ISP_STATE_JSON=_isp_state(5),
+        STUB_ISP_INVENTORY_JSON=inventory_text,
+        STUB_ISP_STATE_JSON=_isp_state(inventory_text),
     )
 
     check = checks_by_id(payload)["configured_isp"]

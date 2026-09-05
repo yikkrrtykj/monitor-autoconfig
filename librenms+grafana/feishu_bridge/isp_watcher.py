@@ -124,8 +124,8 @@ def _dedupe_wan_labels(results):
     for sample in results:
         label = sample["label"]
         ambiguous = len(idents[label.casefold()]) > 1
+        sample["_identity_ambiguous"] = ambiguous
         if ambiguous:
-            sample["_identity_ambiguous"] = True
             target = sample.get("target_ip") or "unknown-target"
             sample["key"] = (
                 f"{label}|{target}|{sample['_line']}|{sample['direction']}"
@@ -137,7 +137,7 @@ def _dedupe_wan_labels(results):
 
 
 def _load_isp_identity_map(path):
-    """Return safe native mappings and native identities blocked by conflicts."""
+    """Return canonical target/ifIndex mappings plus legacy native mappings."""
     if not path:
         return {}, set()
     try:
@@ -153,13 +153,20 @@ def _load_isp_identity_map(path):
         if not isinstance(labels, dict):
             continue
         metric_name = str(labels.get("metric_name") or "").strip()
+        metric_target = str(labels.get("metric_target") or "").strip()
+        metric_ifindex = str(labels.get("metric_ifindex") or "").strip()
         display_name = str(labels.get("display_name") or "").strip()
+        identity = (
+            (metric_target, metric_ifindex)
+            if metric_target and metric_ifindex.isdigit() and int(metric_ifindex) > 0
+            else metric_name.casefold()
+        )
         if str(labels.get("metadata_conflict") or "").strip().casefold() == "true":
-            if metric_name:
-                conflicts.add(metric_name.casefold())
+            if identity:
+                conflicts.add(identity)
             continue
-        if metric_name and display_name:
-            candidates.setdefault(metric_name.casefold(), set()).add(display_name)
+        if identity and display_name:
+            candidates.setdefault(identity, set()).add(display_name)
     conflicts.update(
         metric_name for metric_name, display_names in candidates.items()
         if len(display_names) != 1
@@ -175,8 +182,16 @@ def _apply_inventory_identity(results, identity_map, conflicts):
     for sample in results:
         native_name = sample["label"]
         sample["metric_name"] = native_name
-        if native_name.casefold() in conflicts:
+        target = str(sample.get("target_ip") or "").strip()
+        ifindex = str(sample.get("if_index") or "").strip()
+        canonical_key = (target, ifindex) if target and ifindex else None
+        if canonical_key in conflicts or native_name.casefold() in conflicts:
             sample["_identity_ambiguous"] = True
+            continue
+        display_name = identity_map.get(canonical_key) if canonical_key else None
+        if display_name:
+            sample["label"] = display_name
+            sample["_identity_ambiguous"] = False
             continue
         display_name = identity_map.get(native_name.casefold())
         if display_name and not sample.get("_identity_ambiguous", False):

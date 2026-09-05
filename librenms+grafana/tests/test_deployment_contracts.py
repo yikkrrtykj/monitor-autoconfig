@@ -28,6 +28,7 @@ def _render_prometheus_config(tmp_path: Path, auto_value: str) -> str:
     harness.write_text(source, encoding="utf-8", newline="\n")
     output = tmp_path / "prometheus.yml"
     env = os.environ.copy()
+    env.pop("ISP_GATEWAY_AUTO_DISCOVER", None)
     env.update({
         "PATH": os.pathsep.join((str(Path(shell).parent), env.get("PATH", ""))),
         "PROMETHEUS_CONFIG_FILE": output.as_posix(),
@@ -63,6 +64,74 @@ def test_prometheus_manual_isp_retains_public_ip_fallback(tmp_path):
         assert "203.0.113.2" in rendered
 
 
+def test_every_runtime_resolver_rejects_conflicting_auto_flags(tmp_path):
+    shell = shutil.which("sh") or r"C:\Program Files\Git\usr\bin\sh.exe"
+    marker = 'ISP_AUTO_DISCOVERY="$(resolve_isp_auto_discovery)" || exit 1'
+    for script_name in (
+        "prometheus-gen-config.sh",
+        "librenms-auto-config.sh",
+        "render-grafana-provisioning.sh",
+    ):
+        source = read(script_name)
+        block = source[source.index("is_true() {"):source.index(marker) + len(marker)]
+        harness = tmp_path / script_name
+        harness.write_text(
+            "#!/bin/sh\nset -eu\n" + block + "\nprintf '%s' \"$ISP_AUTO_DISCOVERY\"\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        conflict_env = os.environ.copy()
+        conflict_env.update({
+            "PATH": os.pathsep.join((str(Path(shell).parent), conflict_env.get("PATH", ""))),
+            "ISP_GATEWAY_AUTO_DISCOVER": "true",
+            "BIGSCREEN_ISP_AUTO_DISCOVER": "false",
+        })
+        conflict = subprocess.run(
+            [shell, str(harness)], env=conflict_env,
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        assert conflict.returncode == 1
+        assert "flags disagree" in conflict.stderr
+
+        reverse_env = dict(conflict_env)
+        reverse_env.update({
+            "ISP_GATEWAY_AUTO_DISCOVER": "false",
+            "BIGSCREEN_ISP_AUTO_DISCOVER": "true",
+        })
+        reverse = subprocess.run(
+            [shell, str(harness)], env=reverse_env,
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        assert reverse.returncode == 1
+        assert "flags disagree" in reverse.stderr
+
+        equal_env = dict(conflict_env)
+        equal_env.update({
+            "ISP_GATEWAY_AUTO_DISCOVER": "yes",
+            "BIGSCREEN_ISP_AUTO_DISCOVER": "1",
+        })
+        equal = subprocess.run(
+            [shell, str(harness)], env=equal_env,
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        assert equal.returncode == 0
+        assert equal.stdout == "yes"
+
+        for legacy_value in ("true", "false"):
+            legacy_env = os.environ.copy()
+            legacy_env["PATH"] = os.pathsep.join((
+                str(Path(shell).parent), legacy_env.get("PATH", "")
+            ))
+            legacy_env.pop("ISP_GATEWAY_AUTO_DISCOVER", None)
+            legacy_env["BIGSCREEN_ISP_AUTO_DISCOVER"] = legacy_value
+            legacy = subprocess.run(
+                [shell, str(harness)], env=legacy_env,
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            assert legacy.returncode == 0
+            assert legacy.stdout == legacy_value
+
+
 def test_isp_auto_mode_and_native_inventory_are_wired_to_every_runtime_consumer():
     compose = read("docker-compose.yml")
     prometheus = compose.split("  prometheus:", 1)[1].split("  alertmanager:", 1)[0]
@@ -73,18 +142,33 @@ def test_isp_auto_mode_and_native_inventory_are_wired_to_every_runtime_consumer(
         "  grafana:", 1
     )[0]
 
-    auto_contract = (
-        'BIGSCREEN_ISP_AUTO_DISCOVER: '
-        '"${BIGSCREEN_ISP_AUTO_DISCOVER-${ISP_GATEWAY_AUTO_DISCOVER-true}}"'
+    canonical_contract = (
+        'ISP_GATEWAY_AUTO_DISCOVER: '
+        '"${ISP_GATEWAY_AUTO_DISCOVER-${BIGSCREEN_ISP_AUTO_DISCOVER-true}}"'
     )
-    assert auto_contract in prometheus
-    assert auto_contract in librenms_config
-    assert compose.count(
-        auto_contract
-    ) == 3
-    assert 'ISP_GATEWAY_AUTO_DISCOVER: "${ISP_GATEWAY_AUTO_DISCOVER-true}"' in compose
-    assert 'ISP_AUTO_DISCOVERY_B64="$$(b64 "$${BIGSCREEN_ISP_AUTO_DISCOVER-true}")"' in compose
+    legacy_contract = (
+        'BIGSCREEN_ISP_AUTO_DISCOVER: '
+        '"${ISP_GATEWAY_AUTO_DISCOVER-${BIGSCREEN_ISP_AUTO_DISCOVER-true}}"'
+    )
+    assert canonical_contract in prometheus
+    assert canonical_contract in librenms_config
+    assert legacy_contract in prometheus
+    assert legacy_contract in librenms_config
+    assert compose.count(canonical_contract) == 4
+    assert compose.count(legacy_contract) == 4
+    assert 'ISP_AUTO_DISCOVERY_B64="$$(b64 "$${ISP_GATEWAY_AUTO_DISCOVER-true}")"' in compose
     assert 'ISP_TARGETS_FILE: "/etc/prometheus/targets/topology/isp_targets.json"' in bridge
+
+
+def test_librenms_speed_overrides_use_the_exact_identity_resolver():
+    compose = read("docker-compose.yml")
+    auto_config = read("librenms-auto-config.sh")
+
+    assert "./isp-bandwidth-resolver.py:/isp-bandwidth-resolver.py:ro" in compose
+    assert "['python3', '/isp-bandwidth-resolver.py']" in auto_config
+    assert "'_resolver_ips'" in auto_config
+    assert "$portSpeed" not in auto_config
+    assert "$wanIndex" not in auto_config
 
 
 def test_deploy_entrypoint_is_executable_in_git():
@@ -1720,7 +1804,7 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert 'LIBRENMS_API_TIMEOUT: "${LIBRENMS_API_TIMEOUT:-5}"' in topology
     assert 'ISP_DISCOVERY_SOURCE: "${ISP_DISCOVERY_SOURCE:-hybrid}"' in topology
     assert 'ISP_LIBRENMS_POLL_MAX_AGE_SECONDS: "${ISP_LIBRENMS_POLL_MAX_AGE_SECONDS:-600}"' in topology
-    assert "ISP_GATEWAY_AUTO_DISCOVER ISP_DISCOVERY_SOURCE ISP_LIBRENMS_POLL_MAX_AGE_SECONDS" in topology
+    assert "ISP_GATEWAY_AUTO_DISCOVER BIGSCREEN_ISP_AUTO_DISCOVER ISP_DISCOVERY_SOURCE ISP_LIBRENMS_POLL_MAX_AGE_SECONDS" in topology
     assert 'ISP_DISCOVERY_STATE_FILE: "/targets/isp-discovery-state.json"' in topology
     assert 'BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"' in topology
     assert "FIREWALL_WAN_IF_FILTER BIGSCREEN_ISP_NAMES BIGSCREEN_ISP_IPS ISP_PING" in topology

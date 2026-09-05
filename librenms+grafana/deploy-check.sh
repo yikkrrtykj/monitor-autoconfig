@@ -365,10 +365,12 @@ wait_for_isp_inventory() {
       && http_get "$BIGSCREEN_URL/topology/isp-discovery-state.json" > "$ISP_STATE_BODY" 2> "$HTTP_ERROR" \
       && python3 - "$HTTP_BODY" "$ISP_STATE_BODY" "$names" "$ips" "$bandwidth" "$max_age" \
         > "$ISP_VALIDATION" 2> "$HTTP_ERROR" <<'PY'
+import hashlib
 import ipaddress
 import json
 import sys
 import time
+from pathlib import Path
 
 inventory_path, state_path, names_raw, ips_raw, bandwidth_raw, max_age_raw = sys.argv[1:]
 with open(inventory_path, encoding="utf-8") as handle:
@@ -377,15 +379,14 @@ with open(state_path, encoding="utf-8") as handle:
     state = json.load(handle)
 if not isinstance(inventory, list):
     raise SystemExit("inventory is not an array")
-if not inventory:
-    raise SystemExit("inventory is empty")
 
 seen = set()
 rows = []
+probeable_count = 0
 for index, entry in enumerate(inventory):
     labels = entry.get("labels") if isinstance(entry, dict) else None
     targets = entry.get("targets") if isinstance(entry, dict) else None
-    if not isinstance(labels, dict) or not isinstance(targets, list) or len(targets) != 1:
+    if not isinstance(labels, dict) or not isinstance(targets, list):
         raise SystemExit(f"entry {index} has invalid file_sd schema")
     name = str(labels.get("display_name") or "").strip()
     if not name:
@@ -394,17 +395,35 @@ for index, entry in enumerate(inventory):
     if key in seen:
         raise SystemExit(f"duplicate display_name: {name}")
     seen.add(key)
+    normalized_targets = []
+    for target in targets:
+        try:
+            normalized_targets.append(str(ipaddress.IPv4Address(str(target).strip())))
+        except ipaddress.AddressValueError:
+            raise SystemExit(f"entry {index} has invalid availability target")
+    probeable_count += len(normalized_targets)
+    metric_name = str(labels.get("metric_name") or "").strip()
+    metric_target = str(labels.get("metric_target") or "").strip()
+    metric_ifindex = str(labels.get("metric_ifindex") or "").strip()
+    if not metric_name:
+        raise SystemExit(f"entry {index} has no metric_name")
     try:
-        gateway = str(ipaddress.IPv4Address(str(targets[0]).strip()))
+        metric_target = str(ipaddress.IPv4Address(metric_target))
     except ipaddress.AddressValueError:
-        raise SystemExit(f"entry {index} has invalid gateway")
+        raise SystemExit(f"entry {index} has invalid metric_target")
+    if not metric_ifindex.isdigit() or int(metric_ifindex) <= 0:
+        raise SystemExit(f"entry {index} has invalid metric_ifindex")
     wan_ip = str(labels.get("wan_ip") or "").strip()
     if wan_ip:
         try:
             wan_ip = str(ipaddress.IPv4Address(wan_ip))
         except ipaddress.AddressValueError:
             raise SystemExit(f"entry {index} has invalid wan_ip")
-    rows.append({"name": name, "gateway": gateway, "wan_ip": wan_ip})
+    rows.append({
+        "name": name,
+        "gateway": normalized_targets[0] if normalized_targets else "",
+        "wan_ip": wan_ip,
+    })
 
 if not isinstance(state, dict) or state.get("status") != "ok":
     raise SystemExit(f"discovery state is {state.get('status', 'invalid') if isinstance(state, dict) else 'invalid'}")
@@ -416,6 +435,14 @@ if age < -300 or age > int(max_age_raw):
     raise SystemExit(f"inventory is stale ({max(0, int(age))}s old)")
 if state.get("count") != len(rows):
     raise SystemExit("discovery state count does not match inventory")
+if state.get("inventory_count") != len(rows):
+    raise SystemExit("discovery state inventory_count does not match inventory")
+generation_id = str(state.get("generation_id") or "").strip()
+if not generation_id:
+    raise SystemExit("discovery state has no generation_id")
+actual_hash = hashlib.sha256(Path(inventory_path).read_bytes()).hexdigest()
+if state.get("inventory_sha256") != actual_hash:
+    raise SystemExit("discovery state hash does not match inventory")
 
 configured_ips = {}
 for item in ips_raw.replace("\n", ",").split(","):
@@ -441,7 +468,10 @@ for name in dict.fromkeys(metadata_names):
     if configured_ip and matches[0]["wan_ip"] != configured_ip:
         raise SystemExit(f"manual ISP WAN IP does not match discovery: {name}")
 
-print(f"validated {len(rows)} fresh ISP target(s)")
+print(
+    f"validated {len(rows)} fresh ISP(s), "
+    f"{probeable_count} availability target(s)"
+)
 PY
     then
       validation=$(tr '\r\n' '  ' < "$ISP_VALIDATION" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
@@ -653,12 +683,40 @@ if [ "$MODE" = configured ]; then
   TOURNAMENT_SWITCHES_VALUE=$(env_value TOURNAMENT_SWITCHES 2>/dev/null || true)
   FIREWALL_VALUE=$(env_value FIREWALL_PING 2>/dev/null || true)
   FIREWALL_SNMP_VALUE=$(env_value FIREWALL_SNMP_TARGETS 2>/dev/null || true)
-  if ISP_AUTO_VALUE=$(env_value BIGSCREEN_ISP_AUTO_DISCOVER 2>/dev/null); then
-    : # An explicitly empty value is false, like every other non-truthy alias.
-  elif ISP_AUTO_VALUE=$(env_value ISP_GATEWAY_AUTO_DISCOVER 2>/dev/null); then
-    :
+  ISP_CANONICAL_SET=false
+  ISP_LEGACY_SET=false
+  if ISP_CANONICAL_VALUE=$(env_value ISP_GATEWAY_AUTO_DISCOVER 2>/dev/null); then
+    ISP_CANONICAL_SET=true
+  else
+    ISP_CANONICAL_VALUE=
+  fi
+  if ISP_LEGACY_VALUE=$(env_value BIGSCREEN_ISP_AUTO_DISCOVER 2>/dev/null); then
+    ISP_LEGACY_SET=true
+  else
+    ISP_LEGACY_VALUE=
+  fi
+  if [ "$ISP_CANONICAL_SET" = true ]; then
+    ISP_AUTO_VALUE=$ISP_CANONICAL_VALUE
+  elif [ "$ISP_LEGACY_SET" = true ]; then
+    ISP_AUTO_VALUE=$ISP_LEGACY_VALUE
   else
     ISP_AUTO_VALUE=true
+  fi
+  if [ "$ISP_CANONICAL_SET" = true ] && [ "$ISP_LEGACY_SET" = true ]; then
+    ISP_CANONICAL_BOOL=false
+    ISP_LEGACY_BOOL=false
+    is_true "$ISP_CANONICAL_VALUE" && ISP_CANONICAL_BOOL=true
+    is_true "$ISP_LEGACY_VALUE" && ISP_LEGACY_BOOL=true
+    if [ "$ISP_CANONICAL_BOOL" != "$ISP_LEGACY_BOOL" ]; then
+      record FAIL configured_isp_auto_flags \
+        "ISP auto-discovery flags disagree"
+    else
+      record PASS configured_isp_auto_flags \
+        "ISP auto-discovery flags agree"
+    fi
+  else
+    record PASS configured_isp_auto_flags \
+      "Canonical ISP auto-discovery flag resolved"
   fi
   ISP_PING_VALUE=$(env_value ISP_PING 2>/dev/null || true)
   ISP_NAMES_VALUE=$(env_value BIGSCREEN_ISP_NAMES 2>/dev/null || true)

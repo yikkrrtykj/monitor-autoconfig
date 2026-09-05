@@ -47,8 +47,8 @@
 
       const ispInventory = await fetchIspInventory();
       const ispPromises = ispInventory.flatMap((item) => [
-        prometheusRangeFor(ispTrafficQuery("ifHCInOctets", item.metricName || item.name), win).then((series) => series.map((s) => ({ ...s, _ispName: item.name, _direction: "in" }))),
-        prometheusRangeFor(ispTrafficQuery("ifHCOutOctets", item.metricName || item.name), win).then((series) => series.map((s) => ({ ...s, _ispName: item.name, _direction: "out" })))
+        prometheusRangeFor(ispTrafficQuery("ifHCInOctets", item), win).then((series) => series.map((s) => ({ ...s, _ispName: item.name, _direction: "in", _ispMetadataConflict: item.metadataConflict === true }))),
+        prometheusRangeFor(ispTrafficQuery("ifHCOutOctets", item), win).then((series) => series.map((s) => ({ ...s, _ispName: item.name, _direction: "out", _ispMetadataConflict: item.metadataConflict === true })))
       ]);
 
       const [playerLatency, playerSuccess, infraLatency, infraSuccess, ...ispArrays] = await Promise.all([

@@ -29,7 +29,6 @@ FIREWALL_UNIT_SNMP_TARGETS="${FIREWALL_UNIT_SNMP_TARGETS:-}"
 FEISHU_ROBOT_TOKEN="${FEISHU_ROBOT_TOKEN:-}"
 ISP_PING="${ISP_PING:-}"
 BIGSCREEN_ISP_IPS="${BIGSCREEN_ISP_IPS:-}"
-BIGSCREEN_ISP_AUTO_DISCOVER="${BIGSCREEN_ISP_AUTO_DISCOVER-${ISP_GATEWAY_AUTO_DISCOVER-true}}"
 FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
 PLAYER_SUBNETS="${PLAYER_SUBNETS:-}"
@@ -42,8 +41,32 @@ is_true() {
   esac
 }
 
+resolve_isp_auto_discovery() {
+  canonical_set=${ISP_GATEWAY_AUTO_DISCOVER+x}
+  legacy_set=${BIGSCREEN_ISP_AUTO_DISCOVER+x}
+  if [ -n "$canonical_set" ] && [ -n "$legacy_set" ]; then
+    canonical_bool=false
+    legacy_bool=false
+    is_true "$ISP_GATEWAY_AUTO_DISCOVER" && canonical_bool=true
+    is_true "$BIGSCREEN_ISP_AUTO_DISCOVER" && legacy_bool=true
+    if [ "$canonical_bool" != "$legacy_bool" ]; then
+      echo "ERROR: ISP auto-discovery flags disagree" >&2
+      return 1
+    fi
+  fi
+  if [ -n "$canonical_set" ]; then
+    printf '%s' "$ISP_GATEWAY_AUTO_DISCOVER"
+  elif [ -n "$legacy_set" ]; then
+    printf '%s' "$BIGSCREEN_ISP_AUTO_DISCOVER"
+  else
+    printf '%s' true
+  fi
+}
+
+ISP_AUTO_DISCOVERY="$(resolve_isp_auto_discovery)" || exit 1
+
 MANUAL_ISP_IP_TARGETS=""
-if ! is_true "$BIGSCREEN_ISP_AUTO_DISCOVER"; then
+if ! is_true "$ISP_AUTO_DISCOVERY"; then
   MANUAL_ISP_IP_TARGETS="$BIGSCREEN_ISP_IPS"
 fi
 BIGSCREEN_ISP_MAX_BANDWIDTH="${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
@@ -1047,42 +1070,6 @@ try {
         explode(',', getenv('FIREWALL_WAN_IF_FILTER') ?: 'telecom,telcom,unicom,isp,WAN')
     )));
 
-    $parseSpeed = function (string $raw): array {
-        $raw = trim($raw);
-        $cfg = ['default' => null, 'per' => []];
-        if ($raw === '') {
-            return $cfg;
-        }
-        if (preg_match('/^\d+(?:\.\d+)?$/', $raw)) {
-            $cfg['default'] = (float) $raw;
-            return $cfg;
-        }
-        foreach (explode(',', $raw) as $item) {
-            $item = trim($item);
-            if ($item === '' || ! str_contains($item, ':')) {
-                continue;
-            }
-            [$name, $bandwidth] = array_map('trim', explode(':', $item, 2));
-            $parts = array_map('trim', explode('/', $bandwidth));
-            $down = is_numeric($parts[0] ?? null) ? (float) $parts[0] : null;
-            if ($down === null) {
-                continue;
-            }
-            $up = is_numeric($parts[1] ?? null) ? (float) $parts[1] : $down;
-            if ($name === '*') {
-                $cfg['default'] = max($down, $up);
-                continue;
-            }
-            $cfg['per'][] = [
-                'label' => strtolower($name),
-                'norm' => preg_replace('/[^a-z0-9]+/', '', strtolower($name)),
-                'mbps' => max($down, $up),
-            ];
-        }
-        return $cfg;
-    };
-
-    $speedCfg = $parseSpeed(getenv('BIGSCREEN_ISP_MAX_BANDWIDTH') ?: '1000');
     if (empty($targets) || empty($keywords)) {
         echo "  WAN speed override skipped: missing FIREWALL_SNMP_TARGETS or FIREWALL_WAN_IF_FILTER\n";
         exit(0);
@@ -1090,6 +1077,7 @@ try {
 
     $devicesCols = $columns('devices');
     $portsCols = $columns('ports');
+    $ipv4Cols = $columns('ipv4_addresses');
     [$attribTable, $attribCols] = $findAttribTable();
     if (! $has($devicesCols, 'device_id') || ! $has($portsCols, 'port_id')) {
         echo "  WAN speed override skipped: unsupported LibreNMS schema\n";
@@ -1132,21 +1120,6 @@ try {
         return false;
     };
 
-    $portSpeed = function (string $text, int $index) use ($speedCfg): ?float {
-        $lower = strtolower($text);
-        $norm = preg_replace('/[^a-z0-9]+/', '', $lower);
-        foreach ($speedCfg['per'] as $entry) {
-            if (($entry['label'] !== '' && str_contains($lower, $entry['label'])) ||
-                ($entry['norm'] !== '' && str_contains($norm, $entry['norm']))) {
-                return $entry['mbps'];
-            }
-        }
-        if (isset($speedCfg['per'][$index])) {
-            return $speedCfg['per'][$index]['mbps'];
-        }
-        return $speedCfg['default'];
-    };
-
     $upsertAttrib = function (int $deviceId, string $type, string $value) use ($pdo, $quoteIdent, $attribTable, $attribCols, $has): void {
         if (! $attribTable || ! $has($attribCols, 'device_id') ||
             ! $has($attribCols, 'attrib_type') || ! $has($attribCols, 'attrib_value')) {
@@ -1181,25 +1154,90 @@ try {
         $orderBy = $has($portsCols, 'ifIndex') ? ' ORDER BY ifIndex, port_id' : ' ORDER BY port_id';
         $stmt = $pdo->prepare('SELECT * FROM ports WHERE ' . implode(' AND ', $where) . $orderBy);
         $stmt->execute($values);
-        $matched = 0;
-        $wanIndex = 0;
+        $wanPorts = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $port) {
             $labelParts = [];
             foreach (['ifAlias', 'ifName', 'ifDescr'] as $column) {
                 if ($has($portsCols, $column) && ! empty($port[$column])) {
-                    $labelParts[] = $port[$column];
+                    $labelParts[] = trim((string) $port[$column]);
                 }
             }
             $label = trim(implode(' ', $labelParts));
             if ($label === '' || ! $matchesWan($label)) {
                 continue;
             }
-            $mbps = $portSpeed($label, $wanIndex);
-            $wanIndex++;
-            if ($mbps === null || $mbps <= 0) {
-                echo "  {$target['name']} ({$target['ip']}): {$label} matched WAN, but no bandwidth entry matched\n";
+            $port['_resolver_labels'] = array_values(array_unique($labelParts));
+            $port['_resolver_ips'] = [];
+            $wanPorts[(string) $port['port_id']] = $port;
+        }
+        if (empty($wanPorts)) {
+            echo "  {$target['name']} ({$target['ip']}): no WAN ports matched FIREWALL_WAN_IF_FILTER\n";
+            continue;
+        }
+        if ($has($ipv4Cols, 'port_id') && $has($ipv4Cols, 'ipv4_address')) {
+            $portIds = array_keys($wanPorts);
+            $placeholders = implode(',', array_fill(0, count($portIds), '?'));
+            $addressStmt = $pdo->prepare(
+                "SELECT port_id, ipv4_address FROM ipv4_addresses WHERE port_id IN ({$placeholders})"
+            );
+            $addressStmt->execute($portIds);
+            foreach ($addressStmt->fetchAll(PDO::FETCH_ASSOC) as $address) {
+                $portId = (string) $address['port_id'];
+                if (isset($wanPorts[$portId]) && ! empty($address['ipv4_address'])) {
+                    $wanPorts[$portId]['_resolver_ips'][] = trim((string) $address['ipv4_address']);
+                }
+            }
+        }
+
+        $resolverPorts = [];
+        foreach ($wanPorts as $port) {
+            $resolverPorts[] = [
+                'port_id' => (int) $port['port_id'],
+                'labels' => $port['_resolver_labels'],
+                'ips' => array_values(array_unique($port['_resolver_ips'])),
+            ];
+        }
+        $resolverInput = json_encode([
+            'bandwidth' => getenv('BIGSCREEN_ISP_MAX_BANDWIDTH') ?: '1000',
+            'manual_ips' => getenv('BIGSCREEN_ISP_IPS') ?: '',
+            'ports' => $resolverPorts,
+        ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $pipes = [];
+        $process = proc_open(
+            ['python3', '/isp-bandwidth-resolver.py'],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes
+        );
+        if (! is_resource($process)) {
+            throw new RuntimeException('could not start ISP bandwidth resolver');
+        }
+        fwrite($pipes[0], $resolverInput);
+        fclose($pipes[0]);
+        $resolverOutput = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $resolverError = stream_get_contents($pipes[2]);
+        fclose($pipes[2]);
+        $resolverStatus = proc_close($process);
+        if ($resolverStatus !== 0) {
+            throw new RuntimeException(trim($resolverError) ?: 'ISP bandwidth resolver failed');
+        }
+        $resolved = json_decode($resolverOutput, true, 512, JSON_THROW_ON_ERROR);
+        foreach (($resolved['warnings'] ?? []) as $warning) {
+            echo "  WARNING: {$target['name']} ({$target['ip']}): {$warning}\n";
+        }
+        $decisions = [];
+        foreach (($resolved['decisions'] ?? []) as $decision) {
+            $decisions[(string) $decision['port_id']] = $decision;
+        }
+
+        $matched = 0;
+        foreach ($wanPorts as $portId => $port) {
+            $decision = $decisions[$portId] ?? null;
+            if (! $decision) {
                 continue;
             }
+            $mbps = (float) $decision['mbps'];
+            $label = trim(implode(' ', $port['_resolver_labels']));
             $bps = (string) (int) round($mbps * 1000000);
             $ifName = (string) ($port['ifName'] ?? '');
             if ($ifName !== '') {
@@ -1223,10 +1261,7 @@ try {
             }
             $matched++;
             $updated++;
-            echo "  {$target['name']} ({$target['ip']}): {$label} => {$mbps} Mbps\n";
-        }
-        if ($matched === 0) {
-            echo "  {$target['name']} ({$target['ip']}): no WAN ports matched FIREWALL_WAN_IF_FILTER\n";
+            echo "  {$target['name']} ({$target['ip']}): {$label} => {$mbps} Mbps ({$decision['source']})\n";
         }
     }
     if ($updated === 0) {

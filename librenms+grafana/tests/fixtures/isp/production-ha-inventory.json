@@ -4,6 +4,8 @@
     "labels": {
       "display_name": "MLBB-telcom-300M",
       "metric_name": "MLBB-telcom-300M",
+      "metric_target": "192.168.9.1",
+      "metric_ifindex": "1",
       "wan_ip": "58.40.218.214",
       "discovery_source": "subnet_gateway"
     }
@@ -13,6 +15,8 @@
     "labels": {
       "display_name": "MLBB-unicom-300M",
       "metric_name": "MLBB-unicom-300M",
+      "metric_target": "192.168.9.1",
+      "metric_ifindex": "2",
       "wan_ip": "210.22.142.10",
       "discovery_source": "subnet_gateway"
     }
@@ -22,6 +26,8 @@
     "labels": {
       "display_name": "telcom-1000M",
       "metric_name": "telcom-1000M",
+      "metric_target": "192.168.9.1",
+      "metric_ifindex": "3",
       "wan_ip": "116.238.242.155",
       "discovery_source": "subnet_gateway"
     }
@@ -31,6 +37,8 @@
     "labels": {
       "display_name": "telcom-100M-长期",
       "metric_name": "telcom-100M-长期",
+      "metric_target": "192.168.9.1",
+      "metric_ifindex": "4",
       "wan_ip": "101.95.176.198",
       "discovery_source": "subnet_gateway"
     }
@@ -40,6 +48,8 @@
     "labels": {
       "display_name": "unicom-1000M",
       "metric_name": "unicom-1000M",
+      "metric_target": "192.168.9.1",
+      "metric_ifindex": "5",
       "wan_ip": "116.128.201.226",
       "discovery_source": "subnet_gateway"
     }

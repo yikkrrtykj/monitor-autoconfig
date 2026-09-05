@@ -200,8 +200,11 @@ function createHarness(options = {}) {
         items.map((item) => typeof item === 'string' ? { name: item, metricName: item } : item)
       ));
     },
-    ispTrafficQuery(metric, name) {
-      return `isp:${metric}:${name}`;
+    ispTrafficQuery(metric, item) {
+      const identity = item.metricTarget && item.metricIfindex
+        ? `${item.metricTarget}:${item.metricIfindex}`
+        : (item.metricName || item.name);
+      return `isp:${metric}:${identity}`;
     },
     prometheusRangeFor(query, queryWindow) {
       rangeCalls.push({ query, queryWindow: { ...queryWindow } });
@@ -234,7 +237,9 @@ function createHarness(options = {}) {
   const normal = createHarness({
     search: '?at=2023-12-31T16%3A00&window=10&threshold=0.03',
     ispInventory: [
-      { name: 'ISP-A', metricName: 'ethernet0/4' },
+      {
+        name: 'ISP-A', metricName: 'ethernet0/4', metricTarget: '192.0.2.1', metricIfindex: '7', metadataConflict: true
+      },
       { name: 'ISP-B' }
     ],
     result: populatedResult()
@@ -258,8 +263,8 @@ function createHarness(options = {}) {
   assert.deepStrictEqual(
     queryTexts.filter((query) => query.startsWith('isp:')),
     [
-      'isp:ifHCInOctets:ethernet0/4',
-      'isp:ifHCOutOctets:ethernet0/4',
+      'isp:ifHCInOctets:192.0.2.1:7',
+      'isp:ifHCOutOctets:192.0.2.1:7',
       'isp:ifHCInOctets:ISP-B',
       'isp:ifHCOutOctets:ISP-B'
     ]
@@ -285,6 +290,10 @@ function createHarness(options = {}) {
       ['ISP-B', 'out']
     ]
   );
+  assert.deepStrictEqual(
+    normal.analyzeCalls[0].data.isp.map((series) => series._ispMetadataConflict),
+    [true, true, false, false]
+  );
   assert.ok(normal.replacements[0].value.startsWith('/incident?at=2023-12-31T16%3A00&window=10&threshold=0.03'));
 
   const verdict = normal.document.getElementById('incidentVerdict');
@@ -307,6 +316,24 @@ function createHarness(options = {}) {
   assert.ok(stages.includes('T&lt;team&gt;S1'));
   assert.ok(stages.includes('…'));
   assert.ok(stages.indexOf('&lt;large&gt;') < stages.indexOf('<strong>small</strong>'), 'stage rows remain sorted by player count');
+
+  const multiTarget = createHarness({
+    ispInventory: [
+      { name: 'WAN-A', metricName: 'WAN', metricTarget: '192.0.2.11', metricIfindex: '1' },
+      { name: 'WAN-B', metricName: 'WAN', metricTarget: '192.0.2.12', metricIfindex: '1' }
+    ],
+    result: emptyResult()
+  });
+  await multiTarget.panel.start();
+  assert.deepStrictEqual(
+    multiTarget.rangeCalls.map((call) => call.query).filter((query) => query.startsWith('isp:')),
+    [
+      'isp:ifHCInOctets:192.0.2.11:1',
+      'isp:ifHCOutOctets:192.0.2.11:1',
+      'isp:ifHCInOctets:192.0.2.12:1',
+      'isp:ifHCOutOctets:192.0.2.12:1'
+    ]
+  );
 
   const form = normal.document.getElementById('incidentForm');
   await normal.panel.start();

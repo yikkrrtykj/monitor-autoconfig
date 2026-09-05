@@ -23,8 +23,17 @@ def fixture(name):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def complete_collection(items=None):
-    return disco.CollectionResult(True, list(items or []))
+def complete_collection(items=None, target="192.0.2.10"):
+    enriched = []
+    for index, item in enumerate(items or [], start=1):
+        current = dict(item)
+        current.setdefault("metric_name", current.get("name", ""))
+        current.setdefault("metric_target", target)
+        current.setdefault("metric_ifindex", str(index))
+        current.setdefault("_ifindex", int(current["metric_ifindex"]))
+        current.setdefault("_labels", [current.get("metric_name", "")])
+        enriched.append(current)
+    return disco.CollectionResult(True, enriched)
 
 
 def failed_collection(items=None):
@@ -161,12 +170,14 @@ def test_lan_default_route_and_duplicates_are_dropped():
 
 
 def test_manual_isp_ping_entries_take_precedence():
-    results = disco.discover_from_walks(_hillstone_walks(), disco.wan_keywords("电信,联通"))
+    results = disco.discover_from_walks(
+        _hillstone_walks(), disco.wan_keywords("电信,联通"), metric_target="192.0.2.1"
+    )
     payload = disco.build_file_sd(results, exclude={"100.64.1.1"})
-    assert [entry["targets"][0] for entry in payload] == ["100.65.1.1"]
-    assert payload[0]["labels"]["display_name"] == "联通"
-    assert payload[0]["labels"]["metric_name"] == "联通"
-    assert payload[0]["labels"]["wan_ip"] == "100.65.1.2"
+    assert [entry["targets"][0] for entry in payload if entry["targets"]] == ["100.65.1.1"]
+    unicom = next(entry for entry in payload if entry["labels"]["display_name"] == "联通")
+    assert unicom["labels"]["metric_name"] == "联通"
+    assert unicom["labels"]["wan_ip"] == "100.65.1.2"
 
 
 def test_duplicate_carrier_lines_use_stable_address_identity():
@@ -305,6 +316,7 @@ def test_public_wan_addresses_survive_when_firewall_hides_route_table():
         disco.wan_keywords("电信,联通"),
         names,
         {"电信-100M": "100.64.1.2", "联通-1000M": "100.65.1.2"},
+        metric_target="192.0.2.1",
     )
 
     assert [(item["name"], item["wan_ip"], item["gateway"], item["source"]) for item in results] == [
@@ -469,11 +481,13 @@ def test_conflicting_ip_and_label_evidence_preserves_both_native_identities(caps
         {
             "gateway": "8.8.8.9", "name": "ISP-A", "metric_name": "ISP-A",
             "wan_ip": "8.8.8.10", "_labels": ["ISP-A"],
+            "metric_target": "192.0.2.1", "metric_ifindex": "1",
         },
         {
             "gateway": "1.1.1.1", "name": "ethernet0/4",
             "metric_name": "ethernet0/4", "wan_ip": "1.1.1.2",
             "_labels": ["ethernet0/4"],
+            "metric_target": "192.0.2.1", "metric_ifindex": "2",
         },
     ]
 
@@ -514,19 +528,22 @@ def test_identity_evidence_agreement_or_single_unique_source_enriches():
     ) == {"ISP-A"}
 
 
-def test_conflict_does_not_consume_candidate_needed_by_later_metadata(capsys):
+def test_duplicate_manual_wan_ip_is_order_independent_and_never_overrides(capsys):
     results = [
         {"gateway": "8.8.8.9", "name": "ISP-A", "wan_ip": "8.8.8.10", "_labels": ["ISP-A"]},
         {"gateway": "1.1.1.1", "name": "ISP-B", "wan_ip": "1.1.1.2", "_labels": ["ISP-B"]},
     ]
-    matched = disco.bind_manual_metadata(
-        results,
-        ["ISP-A", "ISP-B"],
-        {"ISP-A": "1.1.1.2", "ISP-B": "1.1.1.2"},
-    )
-    assert matched == {"ISP-B"}
-    assert [item["name"] for item in results] == ["ISP-A", "ISP-B"]
-    assert "conflicting identity evidence" in capsys.readouterr().err
+    for names in (["ISP-A", "ISP-B"], ["ISP-B", "ISP-A"]):
+        current = [dict(item, _labels=list(item["_labels"])) for item in results]
+        matched = disco.bind_manual_metadata(
+            current,
+            names,
+            {"ISP-A": "1.1.1.2", "ISP-B": "1.1.1.2"},
+        )
+        assert matched == set()
+        assert [item["name"] for item in current] == ["ISP-A", "ISP-B"]
+        assert all(item.get("_metadata_conflict") is True for item in current)
+    assert "duplicate manual WAN IP" in capsys.readouterr().err
 
 
 def test_pppoe_slash31_and_slash32_are_inventory_only_not_fake_self_pings():
@@ -535,10 +552,15 @@ def test_pppoe_slash31_and_slash32_are_inventory_only_not_fake_self_pings():
             [{"ipv4_address": "8.8.8.8", "ipv4_prefixlen": str(prefix), "port_id": "8"}],
             [{"port_id": "8", "ifIndex": "8", "ifAlias": "pppoe-telecom"}],
             ["pppoe-telecom"],
+            metric_target="192.0.2.1",
         )
         assert results[0]["gateway"] == ""
         assert results[0]["source"] == "librenms_interface_only"
-        assert disco.build_file_sd(results, set()) == []
+        payload = disco.build_file_sd(results, set())
+        assert len(payload) == 1
+        assert payload[0]["targets"] == []
+        assert payload[0]["labels"]["metric_target"] == "192.0.2.1"
+        assert payload[0]["labels"]["metric_ifindex"] == "8"
 
 
 class FakeLibreNMSClient:
@@ -660,6 +682,10 @@ def test_librenms_fallback_uses_shared_client_without_changing_wan_mapping():
         "name": "telecom",
         "metric_name": "telecom",
         "wan_ip": "8.8.8.10",
+        "_ifindex": 3,
+        "metric_target": "192.0.2.1",
+        "metric_ifindex": "3",
+        "_labels": ["telecom"],
         "source": "librenms_subnet_gateway",
     }]
 
@@ -763,9 +789,14 @@ def test_direct_walk_mapping_never_invents_slash31_or_slash32_gateway():
             disco.OID_CIDR_DEFAULT_NEXTHOP: {},
             disco.OID_CIDR_DEFAULT_IFINDEX: {},
         }
-        results = disco.discover_from_walks(walks, disco.wan_keywords("wan"))
+        results = disco.discover_from_walks(
+            walks, disco.wan_keywords("wan"), metric_target="192.0.2.1"
+        )
         assert results[0]["gateway"] == ""
-        assert disco.build_file_sd(results, set()) == []
+        payload = disco.build_file_sd(results, set())
+        assert len(payload) == 1
+        assert payload[0]["targets"] == []
+        assert payload[0]["labels"]["metric_ifindex"] == "7"
 
 
 def test_missing_public_port_mapping_is_incomplete_not_port_id_guessing():
@@ -791,17 +822,17 @@ def test_stale_inventory_is_rejected_but_unknown_timestamp_is_accepted(monkeypat
 
 
 def test_main_keeps_direct_snmp_before_librenms_fallback(monkeypatch, tmp_path):
-    written = []
     monkeypatch.setenv("ISP_TARGETS_FILE", str(tmp_path / "isp.json"))
+    monkeypatch.setenv("ISP_DISCOVERY_STATE_FILE", str(tmp_path / "isp-state.json"))
     monkeypatch.setenv("ISP_GATEWAY_AUTO_DISCOVER", "true")
+    monkeypatch.delenv("BIGSCREEN_ISP_AUTO_DISCOVER", raising=False)
     monkeypatch.setenv("FIREWALL_SNMP_TARGETS", "192.0.2.1")
     monkeypatch.setenv("BIGSCREEN_ISP_NAMES", "")
     monkeypatch.setenv("ISP_PING", "")
     monkeypatch.setenv("ISP_DISCOVERY_SOURCE", "direct-snmp")
-    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
     monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: complete_collection([{
         "gateway": "8.8.8.9", "name": "direct", "wan_ip": "8.8.8.10", "source": "gateway",
-    }]))
+    }], target="192.0.2.1"))
     monkeypatch.setattr(
         disco, "LibreNMSClient",
         lambda: (_ for _ in ()).throw(AssertionError("direct mode must not use API")),
@@ -809,31 +840,34 @@ def test_main_keeps_direct_snmp_before_librenms_fallback(monkeypatch, tmp_path):
 
     disco.main()
 
-    assert written[0][0]["labels"]["display_name"] == "direct"
+    payload = json.loads((tmp_path / "isp.json").read_text(encoding="utf-8"))
+    assert payload[0]["labels"]["display_name"] == "direct"
+    assert payload[0]["labels"]["metric_target"] == "192.0.2.1"
 
 
 def test_main_manual_isp_ping_skips_all_automatic_collection(monkeypatch, tmp_path):
-    written = []
     calls = []
     monkeypatch.setenv("ISP_TARGETS_FILE", str(tmp_path / "isp.json"))
+    monkeypatch.setenv("ISP_DISCOVERY_STATE_FILE", str(tmp_path / "isp-state.json"))
     monkeypatch.setenv("ISP_GATEWAY_AUTO_DISCOVER", "true")
+    monkeypatch.delenv("BIGSCREEN_ISP_AUTO_DISCOVER", raising=False)
     monkeypatch.setenv("FIREWALL_SNMP_TARGETS", "192.0.2.1")
     monkeypatch.setenv("BIGSCREEN_ISP_NAMES", "")
     monkeypatch.setenv("ISP_PING", "manual:8.8.8.8")
-    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
     monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: calls.append("snmp"))
     monkeypatch.setattr(disco, "LibreNMSClient", lambda: calls.append("api"))
 
     disco.main()
 
     assert calls == []
-    assert written == [[]]
+    assert json.loads((tmp_path / "isp.json").read_text(encoding="utf-8")) == []
 
 
 def _main_env(monkeypatch, tmp_path, source, targets="192.0.2.10"):
     monkeypatch.setenv("ISP_TARGETS_FILE", str(tmp_path / "isp.json"))
     monkeypatch.setenv("ISP_DISCOVERY_STATE_FILE", str(tmp_path / "isp-state.json"))
     monkeypatch.setenv("ISP_GATEWAY_AUTO_DISCOVER", "true")
+    monkeypatch.delenv("BIGSCREEN_ISP_AUTO_DISCOVER", raising=False)
     monkeypatch.setenv("ISP_DISCOVERY_SOURCE", source)
     monkeypatch.setenv("FIREWALL_SNMP_TARGETS", targets)
     monkeypatch.setenv("FIREWALL_UNIT_SNMP_TARGETS", "")
@@ -844,6 +878,124 @@ def _main_env(monkeypatch, tmp_path, source, targets="192.0.2.10"):
     monkeypatch.setenv("ISP_PING", "")
 
 
+def _write_ok_state(target_file, state_file, count, *, last_success=123456789):
+    state_file.write_text(json.dumps({
+        "status": "ok",
+        "last_success_at": last_success,
+        "last_error_at": None,
+        "count": count,
+        "inventory_count": count,
+        "inventory_sha256": disco.file_sha256(str(target_file)),
+        "generation_id": "known-generation",
+    }), encoding="utf-8")
+
+
+def _mock_items(prefix, count, target):
+    return complete_collection([
+        {
+            "gateway": f"8.{1 if prefix == 'A' else 2}.{index}.1",
+            "name": f"ISP-{prefix}-{index}",
+            "wan_ip": f"8.{1 if prefix == 'A' else 2}.{index}.2",
+            "source": "gateway",
+        }
+        for index in range(1, count + 1)
+    ], target=target)
+
+
+@pytest.mark.parametrize("successful_count", (0, 2))
+def test_multi_target_partial_collection_never_publishes_a_partial_inventory(
+    monkeypatch, tmp_path, successful_count
+):
+    _main_env(
+        monkeypatch, tmp_path, "direct-snmp", targets="192.0.2.10,192.0.2.20"
+    )
+    target_file = tmp_path / "isp.json"
+    state_file = tmp_path / "isp-state.json"
+    prior = (ISP_FIXTURES / "production-ha-inventory.json").read_text(encoding="utf-8")
+    target_file.write_text(prior, encoding="utf-8")
+    _write_ok_state(target_file, state_file, 5)
+
+    def collect(ip, *_args, **_kwargs):
+        if ip == "192.0.2.10":
+            return _mock_items("A", successful_count, ip)
+        return failed_collection([{
+            "gateway": "9.9.9.9", "name": "partial-B", "wan_ip": "9.9.9.10",
+        }])
+
+    monkeypatch.setattr(disco, "collect", collect)
+    with pytest.raises(SystemExit) as error:
+        disco.main()
+
+    assert error.value.code == 1
+    assert target_file.read_text(encoding="utf-8") == prior
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["status"] == "stale"
+    assert state["count"] == state["inventory_count"] == 5
+    assert state["last_success_at"] == 123456789
+
+
+def test_multi_target_complete_zero_is_authoritative(monkeypatch, tmp_path):
+    _main_env(
+        monkeypatch, tmp_path, "direct-snmp", targets="192.0.2.10,192.0.2.20"
+    )
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: complete_collection())
+
+    disco.main()
+
+    target_file = tmp_path / "isp.json"
+    assert json.loads(target_file.read_text(encoding="utf-8")) == []
+    state = json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "ok"
+    assert state["count"] == state["inventory_count"] == 0
+    assert state["inventory_sha256"] == disco.file_sha256(str(target_file))
+
+
+def test_complete_interface_only_wan_publishes_inventory_without_probe_target(
+    monkeypatch, tmp_path
+):
+    _main_env(monkeypatch, tmp_path, "direct-snmp")
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: complete_collection([{
+        "gateway": "",
+        "name": "PPPoE-A",
+        "metric_name": "pppoe0",
+        "wan_ip": "203.0.113.20",
+        "source": "interface_only",
+    }]))
+
+    disco.main()
+
+    target_file = tmp_path / "isp.json"
+    payload = json.loads(target_file.read_text(encoding="utf-8"))
+    assert len(payload) == 1
+    assert payload[0]["targets"] == []
+    assert payload[0]["labels"]["metric_name"] == "pppoe0"
+    state = json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "ok"
+    assert state["count"] == state["inventory_count"] == 1
+    assert state["inventory_sha256"] == disco.file_sha256(str(target_file))
+
+
+def test_multi_target_complete_results_merge_two_plus_three(monkeypatch, tmp_path):
+    _main_env(
+        monkeypatch, tmp_path, "direct-snmp", targets="192.0.2.10,192.0.2.20"
+    )
+    monkeypatch.setattr(
+        disco, "collect",
+        lambda ip, *_args, **_kwargs: _mock_items(
+            "A" if ip.endswith(".10") else "B", 2 if ip.endswith(".10") else 3, ip
+        ),
+    )
+
+    disco.main()
+
+    payload = json.loads((tmp_path / "isp.json").read_text(encoding="utf-8"))
+    assert len(payload) == 5
+    assert {entry["labels"]["metric_target"] for entry in payload} == {
+        "192.0.2.10", "192.0.2.20",
+    }
+    assert all(entry["labels"]["metric_ifindex"].isdigit() for entry in payload)
+
+
 def test_main_ha_hybrid_uses_only_logical_vip_direct_snmp(
     monkeypatch, tmp_path, capsys
 ):
@@ -852,7 +1004,6 @@ def test_main_ha_hybrid_uses_only_logical_vip_direct_snmp(
         "FIREWALL_UNIT_SNMP_TARGETS", "192.168.9.11,192.168.9.12"
     )
     direct_calls = []
-    written = []
     monkeypatch.setattr(
         disco,
         "LibreNMSClient",
@@ -868,16 +1019,14 @@ def test_main_ha_hybrid_uses_only_logical_vip_direct_snmp(
             "name": "WAN",
             "wan_ip": "8.8.8.10",
             "source": "gateway",
-        }]),
-    )
-    monkeypatch.setattr(
-        disco, "write_file_sd", lambda _path, payload: written.append(payload)
+        }], target=ip),
     )
 
     disco.main()
 
     assert direct_calls == ["192.168.9.1"]
-    assert written[0][0]["targets"] == ["8.8.8.9"]
+    payload = json.loads((tmp_path / "isp.json").read_text(encoding="utf-8"))
+    assert payload[0]["targets"] == ["8.8.8.9"]
     log = capsys.readouterr().err
     assert (
         "source=hybrid device=192.168.9.1 mode=ha-vip "
@@ -892,7 +1041,6 @@ def test_main_librenms_only_never_calls_snmp_and_keeps_output_schema(
 ):
     _main_env(monkeypatch, tmp_path, "librenms")
     client = PolicyClient({"192.0.2.10": fixture_inventory()})
-    written = []
     monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
     monkeypatch.setattr(
         disco, "collect",
@@ -902,13 +1050,14 @@ def test_main_librenms_only_never_calls_snmp_and_keeps_output_schema(
         disco, "collect_hybrid",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no route SNMP")),
     )
-    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
 
     disco.main()
 
-    assert {entry["targets"][0] for entry in written[0]} == {"8.8.8.9", "1.1.1.1"}
-    assert all(set(entry) == {"targets", "labels"} for entry in written[0])
-    assert all("display_name" in entry["labels"] for entry in written[0])
+    payload = json.loads((tmp_path / "isp.json").read_text(encoding="utf-8"))
+    assert {entry["targets"][0] for entry in payload if entry["targets"]} == {"8.8.8.9", "1.1.1.1"}
+    assert all(set(entry) == {"targets", "labels"} for entry in payload)
+    assert all("display_name" in entry["labels"] for entry in payload)
+    assert all(entry["labels"]["metric_target"] == "192.0.2.10" for entry in payload)
     log = capsys.readouterr().err
     assert "source=librenms" in log
     assert "collection stats: api_requests=3 snmp_walks=0 snmp_gets=0" in log
@@ -919,11 +1068,10 @@ def test_main_hybrid_unknown_timestamp_uses_api_inventory_and_route_only(
 ):
     _main_env(monkeypatch, tmp_path, "hybrid")
     client = PolicyClient({"192.0.2.10": fixture_inventory()})
-    written = []
-    original = disco.collect_hybrid
+    original = disco.collect_hybrid_result
     monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
     monkeypatch.setattr(
-        disco, "collect_hybrid",
+        disco, "collect_hybrid_result",
         lambda ip, community, keywords, timeout, addresses, ports,
                configured_names=None, configured_ips=None: original(
                    ip, community, keywords, timeout, addresses, ports,
@@ -936,11 +1084,11 @@ def test_main_hybrid_unknown_timestamp_uses_api_inventory_and_route_only(
             AssertionError("usable unknown-time API data must not fully fall back")
         ),
     )
-    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
 
     disco.main()
 
-    assert "8.8.8.14" in {entry["targets"][0] for entry in written[0]}
+    payload = json.loads((tmp_path / "isp.json").read_text(encoding="utf-8"))
+    assert "8.8.8.14" in {entry["targets"][0] for entry in payload if entry["targets"]}
     log = capsys.readouterr().err
     assert "inventory=librenms gateway=direct-snmp" in log
     assert "private-do-not-log" not in log
@@ -953,21 +1101,20 @@ def test_main_stale_librenms_inventory_falls_back_only_that_device(
     stale = (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()
     client = PolicyClient({"192.0.2.10": fixture_inventory(last_polled=stale)})
     direct_calls = []
-    written = []
     monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
     monkeypatch.setattr(
         disco, "collect",
         lambda ip, *_args, **_kwargs: direct_calls.append(ip) or complete_collection([{
             "gateway": "8.8.8.9", "name": "direct", "wan_ip": "8.8.8.10",
             "source": "gateway",
-        }]),
+        }], target=ip),
     )
-    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
 
     disco.main()
 
     assert direct_calls == ["192.0.2.10"]
-    assert written[0][0]["targets"] == ["8.8.8.9"]
+    payload = json.loads((tmp_path / "isp.json").read_text(encoding="utf-8"))
+    assert payload[0]["targets"] == ["8.8.8.9"]
 
 
 def test_main_multiple_firewalls_fall_back_per_device_without_secret_leak(
@@ -987,11 +1134,10 @@ def test_main_multiple_firewalls_fall_back_per_device_without_secret_leak(
         },
     )
     direct_calls = []
-    written = []
-    original = disco.collect_hybrid
+    original = disco.collect_hybrid_result
     monkeypatch.setattr(disco, "LibreNMSClient", lambda: client)
     monkeypatch.setattr(
-        disco, "collect_hybrid",
+        disco, "collect_hybrid_result",
         lambda ip, community, keywords, timeout, addresses, ports,
                configured_names=None, configured_ips=None: original(
                    ip, community, keywords, timeout, addresses, ports,
@@ -1003,14 +1149,14 @@ def test_main_multiple_firewalls_fall_back_per_device_without_secret_leak(
         lambda ip, *_args, **_kwargs: direct_calls.append(ip) or complete_collection([{
             "gateway": "9.9.9.9", "name": "fallback", "wan_ip": "9.9.9.10",
             "source": "gateway",
-        }]),
+        }], target=ip),
     )
-    monkeypatch.setattr(disco, "write_file_sd", lambda _path, payload: written.append(payload))
 
     disco.main()
 
     assert direct_calls == ["192.0.2.20"]
-    targets_written = {entry["targets"][0] for entry in written[0]}
+    payload = json.loads((tmp_path / "isp.json").read_text(encoding="utf-8"))
+    targets_written = {entry["targets"][0] for entry in payload if entry["targets"]}
     assert {"8.8.8.14", "9.9.9.9"}.issubset(targets_written)
     log = capsys.readouterr().err
     assert "LibreNMSUnavailable" in log
@@ -1039,9 +1185,8 @@ def test_main_hybrid_global_api_failure_falls_back_each_firewall(
         lambda ip, *_args, **_kwargs: direct_calls.append(ip) or complete_collection([{
             "gateway": "8.8.8.9" if ip.endswith(".10") else "1.1.1.1",
             "name": ip, "wan_ip": "8.8.8.10", "source": "gateway",
-        }]),
+        }], target=ip),
     )
-    monkeypatch.setattr(disco, "write_file_sd", lambda *_args: None)
 
     disco.main()
 
@@ -1097,6 +1242,9 @@ def test_transient_failure_preserves_last_known_good_inventory(
     assert state["count"] == 5
     assert state["last_success_at"] == int(target_file.stat().st_mtime)
     assert state["last_error_at"] is not None
+    assert state["inventory_count"] == 5
+    assert state["inventory_sha256"] == disco.file_sha256(str(target_file))
+    assert state["generation_id"].startswith("legacy-")
     assert "preserving last-known-good inventory (5 target(s))" in capsys.readouterr().err
 
 
@@ -1149,6 +1297,9 @@ def test_successful_discovery_atomically_replaces_inventory_and_marks_ok(
     assert state["count"] == 6
     assert state["last_success_at"] is not None
     assert state["last_error_at"] is None
+    assert state["inventory_count"] == 6
+    assert state["inventory_sha256"] == disco.file_sha256(str(target_file))
+    assert state["generation_id"]
 
 
 def test_disabled_discovery_clears_prior_inventory_without_inheriting_lkg(
@@ -1166,10 +1317,12 @@ def test_disabled_discovery_clears_prior_inventory_without_inheriting_lkg(
 
     assert json.loads(target_file.read_text(encoding="utf-8")) == []
     state = json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))
-    assert state == {
-        "status": "disabled", "last_success_at": None,
-        "last_error_at": None, "count": 0,
-    }
+    assert state["status"] == "disabled"
+    assert state["last_success_at"] is None
+    assert state["last_error_at"] is None
+    assert state["count"] == state["inventory_count"] == 0
+    assert state["inventory_sha256"] == disco.file_sha256(str(target_file))
+    assert state["generation_id"]
 
 
 def test_first_failure_is_error_and_does_not_create_empty_inventory(monkeypatch, tmp_path):
@@ -1204,7 +1357,9 @@ def test_partial_snmp_failure_preserves_lkg_and_true_last_success(
     target_file.write_text(original, encoding="utf-8")
     state_file.write_text(json.dumps({
         "status": "ok", "last_success_at": 123456789,
-        "last_error_at": None, "count": 5,
+        "last_error_at": None, "count": 5, "inventory_count": 5,
+        "inventory_sha256": disco.file_sha256(str(target_file)),
+        "generation_id": "known-generation",
     }), encoding="utf-8")
     responses = {
         disco.OID_IF_ALIAS: disco.WalkResult(True, {}),
@@ -1227,6 +1382,38 @@ def test_partial_snmp_failure_preserves_lkg_and_true_last_success(
     assert state["count"] == 5
     assert state["last_success_at"] == 123456789
     assert state["last_error_at"] is not None
+    assert state["inventory_sha256"] == disco.file_sha256(str(target_file))
+    assert state["generation_id"] == "known-generation"
+
+
+def test_partial_address_rows_are_incomplete_even_when_each_walk_command_succeeds():
+    responses = {
+        disco.OID_IF_ALIAS: disco.WalkResult(True, {
+            f"{disco.OID_IF_ALIAS}.1": "WAN-A",
+            f"{disco.OID_IF_ALIAS}.2": "WAN-B",
+        }),
+        disco.OID_IF_NAME: disco.WalkResult(True, {}),
+        disco.OID_IF_DESCR: disco.WalkResult(True, {}),
+        disco.OID_IP_AD_ENT_IFINDEX: disco.WalkResult(True, {
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.8.8.8.10": "1",
+            f"{disco.OID_IP_AD_ENT_IFINDEX}.1.1.1.2": "2",
+        }),
+        disco.OID_IP_AD_ENT_NETMASK: disco.WalkResult(True, {
+            f"{disco.OID_IP_AD_ENT_NETMASK}.8.8.8.10": "255.255.255.248",
+        }),
+        disco.OID_CIDR_DEFAULT_NEXTHOP: disco.WalkResult(True, {}),
+        disco.OID_CIDR_DEFAULT_IFINDEX: disco.WalkResult(True, {}),
+        disco.OID_ROUTE_DEFAULT_NEXTHOP: disco.WalkResult(True, {}),
+        disco.OID_ROUTE_DEFAULT_IFINDEX: disco.WalkResult(True, {}),
+    }
+
+    outcome = disco.collect(
+        "192.0.2.10", "community", disco.wan_keywords("wan"),
+        walk=_structured_walk(responses),
+    )
+
+    assert outcome.complete is False
+    assert len(outcome.items) == 2
 
 
 def test_complete_empty_walks_are_valid_zero_and_route_fallback_can_succeed():
@@ -1299,6 +1486,8 @@ def test_prior_success_then_disabled_then_enabled_failure_does_not_revive_histor
             "gateway": f"8.8.{index}.1",
             "name": f"ISP-{index}",
             "metric_name": f"ethernet0/{index}",
+            "metric_target": "192.0.2.10",
+            "metric_ifindex": str(index),
             "wan_ip": f"8.8.{index}.2",
             "source": "gateway",
         }
@@ -1338,16 +1527,55 @@ def test_legacy_empty_inventory_is_not_inferred_as_lkg(monkeypatch, tmp_path):
     assert state["last_success_at"] is None
 
 
+def test_corrupt_state_refuses_mtime_last_success_inference(monkeypatch, tmp_path):
+    _main_env(monkeypatch, tmp_path, "direct-snmp")
+    target_file = tmp_path / "isp.json"
+    target_file.write_text(
+        (ISP_FIXTURES / "production-ha-inventory.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "isp-state.json").write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: failed_collection())
+
+    with pytest.raises(SystemExit):
+        disco.main()
+
+    state = json.loads((tmp_path / "isp-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "error"
+    assert state["last_success_at"] is None
+    assert state["generation_id"] is None
+
+
+def test_conflicting_auto_flags_fail_before_inventory_mutation(monkeypatch, tmp_path):
+    _main_env(monkeypatch, tmp_path, "direct-snmp")
+    monkeypatch.setenv("BIGSCREEN_ISP_AUTO_DISCOVER", "false")
+    target_file = tmp_path / "isp.json"
+    original = '[{"sentinel": true}]\n'
+    target_file.write_text(original, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as error:
+        disco.main()
+
+    assert "flags disagree" in str(error.value)
+    assert target_file.read_text(encoding="utf-8") == original
+
+
 def test_inventory_write_failure_cannot_mark_discovery_ok(monkeypatch, tmp_path):
     _main_env(monkeypatch, tmp_path, "direct-snmp")
     target_file = tmp_path / "isp.json"
     state_file = tmp_path / "isp-state.json"
     target_file.write_text(json.dumps([{
-        "targets": ["8.8.8.9"], "labels": {"display_name": "old"},
+        "targets": ["8.8.8.9"],
+        "labels": {
+            "display_name": "old", "metric_name": "old",
+            "metric_target": "192.0.2.10", "metric_ifindex": "1",
+        },
     }]), encoding="utf-8")
     state_file.write_text(json.dumps({
         "status": "ok", "last_success_at": 456,
-        "last_error_at": None, "count": 1,
+        "last_error_at": None, "count": 1, "inventory_count": 1,
+        "inventory_sha256": disco.file_sha256(str(target_file)),
+        "generation_id": "old-generation",
     }), encoding="utf-8")
     monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: complete_collection([{
         "gateway": "1.1.1.1", "name": "new", "metric_name": "native-new",
@@ -1365,6 +1593,39 @@ def test_inventory_write_failure_cannot_mark_discovery_ok(monkeypatch, tmp_path)
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state["status"] == "stale"
     assert state["last_success_at"] == 456
+
+
+def test_state_write_failure_leaves_detectable_inventory_hash_mismatch(
+    monkeypatch, tmp_path
+):
+    _main_env(monkeypatch, tmp_path, "direct-snmp")
+    target_file = tmp_path / "isp.json"
+    state_file = tmp_path / "isp-state.json"
+    target_file.write_text(json.dumps([{
+        "targets": ["8.8.8.9"],
+        "labels": {
+            "display_name": "old", "metric_name": "old",
+            "metric_target": "192.0.2.10", "metric_ifindex": "1",
+        },
+    }]), encoding="utf-8")
+    _write_ok_state(target_file, state_file, 1)
+    old_state = state_file.read_text(encoding="utf-8")
+    monkeypatch.setattr(disco, "collect", lambda *_args, **_kwargs: complete_collection([{
+        "gateway": "1.1.1.1", "name": "new", "wan_ip": "1.1.1.2",
+        "source": "gateway",
+    }]))
+    monkeypatch.setattr(
+        disco, "write_discovery_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("state disk full")),
+    )
+
+    with pytest.raises(SystemExit) as error:
+        disco.main()
+
+    assert error.value.code == 1
+    assert state_file.read_text(encoding="utf-8") == old_state
+    state = json.loads(old_state)
+    assert state["inventory_sha256"] != disco.file_sha256(str(target_file))
 
 
 def test_successful_zero_is_distinct_from_collection_failure(monkeypatch, tmp_path, capsys):

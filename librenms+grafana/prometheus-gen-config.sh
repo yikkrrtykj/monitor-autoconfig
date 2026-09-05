@@ -10,7 +10,6 @@ FIREWALL_PING="${FIREWALL_PING:-}"
 SERVER_PING="${SERVER_PING:-}"
 ISP_PING="${ISP_PING:-}"
 BIGSCREEN_ISP_IPS="${BIGSCREEN_ISP_IPS:-}"
-BIGSCREEN_ISP_AUTO_DISCOVER="${BIGSCREEN_ISP_AUTO_DISCOVER-${ISP_GATEWAY_AUTO_DISCOVER-true}}"
 FIREWALL_SNMP_TARGETS="${FIREWALL_SNMP_TARGETS:-}"
 # Per-unit SNMP for HA firewall physical nodes (health/uptime per box).
 # Separate from FIREWALL_SNMP_TARGETS because WAN traffic data must come
@@ -48,9 +47,33 @@ is_true() {
   esac
 }
 
+resolve_isp_auto_discovery() {
+  canonical_set=${ISP_GATEWAY_AUTO_DISCOVER+x}
+  legacy_set=${BIGSCREEN_ISP_AUTO_DISCOVER+x}
+  if [ -n "$canonical_set" ] && [ -n "$legacy_set" ]; then
+    canonical_bool=false
+    legacy_bool=false
+    is_true "$ISP_GATEWAY_AUTO_DISCOVER" && canonical_bool=true
+    is_true "$BIGSCREEN_ISP_AUTO_DISCOVER" && legacy_bool=true
+    if [ "$canonical_bool" != "$legacy_bool" ]; then
+      echo "ERROR: ISP auto-discovery flags disagree" >&2
+      return 1
+    fi
+  fi
+  if [ -n "$canonical_set" ]; then
+    printf '%s' "$ISP_GATEWAY_AUTO_DISCOVER"
+  elif [ -n "$legacy_set" ]; then
+    printf '%s' "$BIGSCREEN_ISP_AUTO_DISCOVER"
+  else
+    printf '%s' true
+  fi
+}
+
+ISP_AUTO_DISCOVERY="$(resolve_isp_auto_discovery)" || exit 1
+
 # In automatic mode BIGSCREEN_ISP_IPS is identity metadata, not an active
 # probe list. Manual mode retains the legacy public-IP fallback.
-if ! is_true "$BIGSCREEN_ISP_AUTO_DISCOVER" && [ -z "$ISP_PING" ]; then
+if ! is_true "$ISP_AUTO_DISCOVERY" && [ -z "$ISP_PING" ]; then
   ISP_PING="$BIGSCREEN_ISP_IPS"
 fi
 # 交换机/防火墙 uptime（运行时长）SNMP 单独的采集间隔。运行时长显示的是"天"，

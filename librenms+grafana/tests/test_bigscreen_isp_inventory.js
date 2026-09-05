@@ -62,7 +62,7 @@ async function testProductionInventoryAndMissingTraffic() {
     }
     if (isRangeRequest(url)) {
       const query = new URL(String(url), 'http://localhost').searchParams.get('query');
-      const missing = query.includes('MLBB-unicom-300M');
+      const missing = query.includes('instance="192.168.9.1"') && query.includes('ifIndex="2"');
       return response(prometheusPayload(missing ? [] : ['traffic'], true));
     }
     throw new Error(`unexpected request: ${url}`);
@@ -73,6 +73,8 @@ async function testProductionInventoryAndMissingTraffic() {
   assert.deepStrictEqual(inventory[1], {
     name: 'MLBB-unicom-300M',
     metricName: 'MLBB-unicom-300M',
+    metricTarget: '192.168.9.1',
+    metricIfindex: '2',
     metadataConflict: false,
     gateway: '210.22.142.9',
     wanIp: '210.22.142.10',
@@ -97,6 +99,8 @@ async function testMetricNameDrivesTrafficAndLegacyInventoryFallsBack() {
     labels: {
       display_name: 'ISP-A',
       metric_name: 'ethernet0/4',
+      metric_target: '192.0.2.1',
+      metric_ifindex: '7',
       wan_ip: '203.0.113.2',
       discovery_source: 'gateway'
     }
@@ -111,17 +115,87 @@ async function testMetricNameDrivesTrafficAndLegacyInventoryFallsBack() {
   const results = await api.fetchIspTraffic();
   assert.strictEqual(results[0].name, 'ISP-A');
   assert.strictEqual(results[0].metricName, 'ethernet0/4');
-  assert(queries.every((query) => query.includes('ethernet0/4')));
-  assert(queries.every((query) => !query.includes('ifAlias="ISP-A"')));
+  assert(queries.every((query) => query.includes('instance="192.0.2.1"')));
+  assert(queries.every((query) => query.includes('ifIndex="7"')));
+  assert(queries.every((query) => !query.includes('ethernet0/4')));
 
   api = freshApi();
   const legacy = JSON.parse(JSON.stringify(payload));
   delete legacy[0].labels.metric_name;
+  delete legacy[0].labels.metric_target;
+  delete legacy[0].labels.metric_ifindex;
   global.fetch = async (url) => {
     if (isTopologyRequest(url)) return response(legacy);
     return response(prometheusPayload([], true));
   };
   assert.strictEqual((await api.fetchIspInventory())[0].metricName, 'ISP-A');
+}
+
+async function testInterfaceWithoutGatewayStillQueriesTraffic() {
+  const payload = [{
+    targets: [],
+    labels: {
+      display_name: 'WAN without gateway',
+      metric_name: 'ethernet0/8',
+      metric_target: '192.0.2.10',
+      metric_ifindex: '8',
+      wan_ip: '198.51.100.10',
+      discovery_source: 'interface_only'
+    }
+  }];
+  const queries = [];
+  const api = freshApi();
+  global.fetch = async (url) => {
+    if (isTopologyRequest(url)) return response(payload);
+    queries.push(new URL(String(url), 'http://localhost').searchParams.get('query'));
+    return response(prometheusPayload(['traffic'], true));
+  };
+
+  const inventory = await api.fetchIspInventory();
+  assert.strictEqual(inventory.length, 1);
+  assert.strictEqual(inventory[0].gateway, '');
+  const traffic = await api.fetchIspTraffic();
+  assert.strictEqual(traffic.length, 1);
+  assert.strictEqual(traffic[0].hasTrafficData, true);
+  assert(queries.every((query) => query.includes('instance="192.0.2.10"')));
+  assert(queries.every((query) => query.includes('ifIndex="8"')));
+}
+
+async function testSameInterfaceNameOnDifferentTargetsUsesDistinctQueries() {
+  const payload = [
+    {
+      targets: [],
+      labels: {
+        display_name: 'WAN-A', metric_name: 'wan', metric_target: '192.0.2.11', metric_ifindex: '1'
+      }
+    },
+    {
+      targets: [],
+      labels: {
+        display_name: 'WAN-B', metric_name: 'wan', metric_target: '192.0.2.12', metric_ifindex: '1'
+      }
+    }
+  ];
+  const queries = [];
+  const api = freshApi();
+  global.fetch = async (url) => {
+    if (isTopologyRequest(url)) return response(payload);
+    const query = new URL(String(url), 'http://localhost').searchParams.get('query');
+    queries.push(query);
+    const value = query.includes('instance="192.0.2.11"') ? '11' : '22';
+    return response({
+      status: 'success',
+      data: { result: [{ metric: { instance: 'traffic' }, values: [[2_000_000_000, value]] }] }
+    });
+  };
+
+  const traffic = await api.fetchIspTraffic();
+  assert.deepStrictEqual(traffic.map((item) => item.name), ['WAN-A', 'WAN-B']);
+  assert.strictEqual(queries.length, 4);
+  assert.strictEqual(queries.filter((query) => query.includes('instance="192.0.2.11"')).length, 2);
+  assert.strictEqual(queries.filter((query) => query.includes('instance="192.0.2.12"')).length, 2);
+  assert.strictEqual(traffic[0].download.values[0].v, 11);
+  assert.strictEqual(traffic[1].download.values[0].v, 22);
 }
 
 async function testConflictingManualMetadataUsesOnlyGlobalBandwidth() {
@@ -149,7 +223,7 @@ async function testTopologyFallbacks() {
   const failures = [
     () => response({}, { ok: false, status: 503 }),
     () => response(null, { jsonError: new SyntaxError('invalid JSON') }),
-    () => response([{ targets: [], labels: { display_name: 'malformed' } }])
+    () => response([{ targets: 'not-an-array', labels: { display_name: 'malformed' } }])
   ];
 
   for (const topologyResponse of failures) {
@@ -240,10 +314,10 @@ async function testRejectedTrafficDirectionsPreserveInventory() {
   global.fetch = async (url) => {
     if (isTopologyRequest(url)) return response(productionInventory);
     const query = new URL(String(url), 'http://localhost').searchParams.get('query');
-    if (query.includes('MLBB-telcom-300M') && query.includes('ifHCOutOctets')) {
+    if (query.includes('ifIndex="1"') && query.includes('ifHCOutOctets')) {
       return response({}, { ok: false, status: 500 });
     }
-    if (query.includes('MLBB-unicom-300M')) {
+    if (query.includes('ifIndex="2"')) {
       return response({}, { ok: false, status: 500 });
     }
     return response(prometheusPayload(['traffic'], true));
@@ -265,6 +339,8 @@ async function testRejectedTrafficDirectionsPreserveInventory() {
   console.warn = () => {};
   await testProductionInventoryAndMissingTraffic();
   await testMetricNameDrivesTrafficAndLegacyInventoryFallsBack();
+  await testInterfaceWithoutGatewayStillQueriesTraffic();
+  await testSameInterfaceNameOnDifferentTargetsUsesDistinctQueries();
   await testConflictingManualMetadataUsesOnlyGlobalBandwidth();
   await testTopologyFallbacks();
   await testSuccessfulEmptyTopologyInventoryIsAuthoritative();

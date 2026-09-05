@@ -434,11 +434,13 @@
       const name = String(labels.display_name || "").trim();
       const gateway = String(targets[0] || "").trim();
       const identity = name.toLocaleLowerCase();
-      if (!name || !gateway || seen.has(identity)) return;
+      if (!entry || !Array.isArray(entry.targets) || !name || seen.has(identity)) return;
       seen.add(identity);
       inventory.push({
         name,
         metricName: String(labels.metric_name || name).trim(),
+        metricTarget: String(labels.metric_target || "").trim(),
+        metricIfindex: String(labels.metric_ifindex || "").trim(),
         metadataConflict: String(labels.metadata_conflict || "").trim().toLocaleLowerCase() === "true",
         gateway,
         wanIp: String(labels.wan_ip || "").trim(),
@@ -509,7 +511,17 @@
     return (await fetchIspInventory()).map((item) => item.name);
   }
 
-  function ispTrafficQuery(metric, name) {
+  function ispTrafficQuery(metric, identity) {
+    if (identity && typeof identity === "object") {
+      const metricTarget = String(identity.metricTarget || "").trim();
+      const metricIfindex = String(identity.metricIfindex || "").trim();
+      if (metricTarget && /^\d+$/.test(metricIfindex) && Number(metricIfindex) > 0) {
+        return `sum(rate(${metric}{job="firewall-snmp",instance="${escapeLabel(metricTarget)}",ifIndex="${escapeLabel(metricIfindex)}"}[1m])) * 8`;
+      }
+    }
+    const name = typeof identity === "object"
+      ? (identity.metricName || identity.name)
+      : identity;
     const label = escapeLabel(name);
     return `sum(rate(${metric}{job="firewall-snmp",ifAlias="${label}"}[1m]) or rate(${metric}{job="firewall-snmp",ifAlias="",ifName="${label}"}[1m]) or rate(${metric}{job="firewall-snmp",ifAlias="",ifName="",ifDescr="${label}"}[1m])) * 8`;
   }
@@ -518,8 +530,8 @@
     const inventory = await fetchIspInventory();
     return Promise.all(inventory.map(async (item) => {
       const [downloadResult, uploadResult] = await Promise.allSettled([
-        prometheusRangeCached(ispTrafficQuery("ifHCInOctets", item.metricName || item.name)),
-        prometheusRangeCached(ispTrafficQuery("ifHCOutOctets", item.metricName || item.name))
+        prometheusRangeCached(ispTrafficQuery("ifHCInOctets", item)),
+        prometheusRangeCached(ispTrafficQuery("ifHCOutOctets", item))
       ]);
       const download = downloadResult.status === "fulfilled" ? downloadResult.value : [];
       const upload = uploadResult.status === "fulfilled" ? uploadResult.value : [];

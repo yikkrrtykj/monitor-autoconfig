@@ -32,6 +32,30 @@ is_true() {
   esac
 }
 
+resolve_isp_auto_discovery() {
+  canonical_set=${ISP_GATEWAY_AUTO_DISCOVER+x}
+  legacy_set=${BIGSCREEN_ISP_AUTO_DISCOVER+x}
+  if [ -n "$canonical_set" ] && [ -n "$legacy_set" ]; then
+    canonical_bool=false
+    legacy_bool=false
+    is_true "$ISP_GATEWAY_AUTO_DISCOVER" && canonical_bool=true
+    is_true "$BIGSCREEN_ISP_AUTO_DISCOVER" && legacy_bool=true
+    if [ "$canonical_bool" != "$legacy_bool" ]; then
+      echo "ERROR: ISP auto-discovery flags disagree" >&2
+      return 1
+    fi
+  fi
+  if [ -n "$canonical_set" ]; then
+    printf '%s' "$ISP_GATEWAY_AUTO_DISCOVER"
+  elif [ -n "$legacy_set" ]; then
+    printf '%s' "$BIGSCREEN_ISP_AUTO_DISCOVER"
+  else
+    printf '%s' true
+  fi
+}
+
+ISP_AUTO_DISCOVERY="$(resolve_isp_auto_discovery)" || exit 1
+
 # CSV 关键词 -> 正则（逐个转义元字符，用 | 连接）。
 # 以数字结尾的关键词按边界匹配（eth1 不命中 eth10~eth15），其它维持包含匹配。
 csv_to_regex() {
@@ -51,7 +75,7 @@ cp -R "$src"/. "$out"/
 
 dashboard_file="$out/dashboard-json/event-infra.json"
 if [ -f "$dashboard_file" ]; then
-  if is_true "${BIGSCREEN_ISP_AUTO_DISCOVER:-false}"; then
+  if is_true "$ISP_AUTO_DISCOVERY"; then
     wan_filter="$(csv_to_regex "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}")"
   else
     wan_filter="$(csv_to_regex "${BIGSCREEN_ISP_NAMES:-ISP1,ISP2}")"
