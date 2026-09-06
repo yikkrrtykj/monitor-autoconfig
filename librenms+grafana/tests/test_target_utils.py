@@ -54,6 +54,29 @@ def test_expand_ipv4_targets_supports_names_ranges_and_cidr():
     ]
 
 
+def test_expand_ipv4_entry_checks_cidr_size_before_iterating(monkeypatch):
+    class OversizedNetwork:
+        num_addresses = 1 << 24
+        prefixlen = 8
+
+        def hosts(self):
+            raise AssertionError("oversized network must not be iterated")
+
+    monkeypatch.setattr(targets, "IPv4Network", lambda *_args, **_kwargs: OversizedNetwork())
+    assert targets.expand_ipv4_entry("10.0.0.0/8", max_hosts=4096) == []
+
+
+def test_expand_ipv4_entry_preserves_cidr_edge_semantics():
+    slash24 = targets.expand_ipv4_entry("192.0.2.99/24")
+    assert len(slash24) == 254
+    assert slash24[0] == "192.0.2.1"
+    assert slash24[-1] == "192.0.2.254"
+    assert targets.expand_ipv4_entry("192.0.2.0/30") == ["192.0.2.1", "192.0.2.2"]
+    assert targets.expand_ipv4_entry("192.0.2.0/31") == ["192.0.2.0", "192.0.2.1"]
+    assert targets.expand_ipv4_entry("192.0.2.7/32") == ["192.0.2.7"]
+    assert targets.expand_ipv4_entry("host:192.0.2.7/24", max_hosts=10) == []
+
+
 def test_retire_player_candidates_cli_executes_all_keep_target_formats():
     payload = {
         "devices": [

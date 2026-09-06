@@ -281,6 +281,47 @@ class TestWirelessScanExclusions:
     def test_gateway_like_ips_keeps_tiny_subnets(self):
         assert gpt.gateway_like_ips([IPv4Network("172.16.40.0/30")]) == set()
 
+    def test_gateway_like_ips_handles_large_and_tiny_subnets_without_host_iteration(self):
+        class ArithmeticOnlyNetwork:
+            num_addresses = 1 << 24
+            prefixlen = 8
+            broadcast_address = IPv4Network("10.0.0.0/8").broadcast_address
+
+            def hosts(self):
+                raise AssertionError("gateway exclusion must not enumerate hosts")
+
+        assert gpt.gateway_like_ips([ArithmeticOnlyNetwork()]) == {"10.255.255.254"}
+        for cidr in ("192.0.2.0/30", "192.0.2.0/31", "192.0.2.7/32"):
+            assert gpt.gateway_like_ips([IPv4Network(cidr)]) == set()
+
+    def test_wireless_scan_excludes_before_limit_and_reads_one_extra(self, monkeypatch, capsys):
+        class BoundedHosts:
+            def __init__(self):
+                self.read = 0
+
+            def __str__(self):
+                return "fixture/huge"
+
+            def hosts(self):
+                for value in range(1, 1000):
+                    self.read += 1
+                    if self.read > 6:
+                        raise AssertionError("scan traversed beyond max_hosts + exclusions + overflow")
+                    yield gpt.IPv4Address(f"192.0.2.{value}")
+
+        net = BoundedHosts()
+        scanned = []
+        monkeypatch.setattr(gpt, "ping_host", lambda ip, _timeout=1: scanned.append(ip) or True)
+        result = gpt.discover_wireless_scan_ips(
+            [net], max_hosts=3, workers=1, excluded_ips={"192.0.2.1", "192.0.2.2"}
+        )
+        assert net.read == 6
+        assert scanned == ["192.0.2.3", "192.0.2.4", "192.0.2.5"]
+        assert result == scanned
+        warning = capsys.readouterr().err
+        assert "more than 3 eligible hosts; scanning first 3" in warning
+        assert "has 4 hosts" not in warning
+
 
 class TestExpandIpList:
     def test_expands_short_range_in_order(self):

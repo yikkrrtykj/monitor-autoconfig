@@ -73,10 +73,17 @@ def expand_ipv4_entry(item: str, max_hosts: int = 4096) -> list[str]:
         return []
     if "/" in item:
         try:
-            hosts = [str(ip) for ip in IPv4Network(item, strict=False).hosts()]
+            network = IPv4Network(item, strict=False)
         except ValueError:
             return []
-        return hosts if len(hosts) <= max_hosts else []
+        host_count = (
+            network.num_addresses
+            if network.prefixlen >= 31
+            else max(0, network.num_addresses - 2)
+        )
+        if host_count > max_hosts:
+            return []
+        return [str(ip) for ip in network.hosts()]
     if "-" not in item:
         try:
             return [str(IPv4Address(item))]

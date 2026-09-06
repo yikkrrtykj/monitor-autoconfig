@@ -626,9 +626,9 @@ def load_excluded_ips(env_var):
 def gateway_like_ips(subnets):
     excluded = set()
     for net in subnets:
-        hosts = list(net.hosts())
-        if len(hosts) > 2:
-            excluded.add(str(hosts[-1]))
+        host_count = net.num_addresses if net.prefixlen >= 31 else max(0, net.num_addresses - 2)
+        if host_count > 2:
+            excluded.add(str(net.broadcast_address - 1))
     return excluded
 
 
@@ -658,13 +658,20 @@ def discover_wireless_scan_ips(subnets, limit=0, timeout=1, workers=64, max_host
     excluded_ips = excluded_ips or set()
     candidates = []
     for net in subnets:
-        hosts = [ip for ip in net.hosts() if str(ip) not in excluded_ips]
-        if len(hosts) > max_hosts:
+        hosts = []
+        overflow = False
+        for ip in net.hosts():
+            if str(ip) in excluded_ips:
+                continue
+            if len(hosts) == max_hosts:
+                overflow = True
+                break
+            hosts.append(ip)
+        if overflow:
             print(
-                f"[WARN] wireless scan subnet {net} has {len(hosts)} hosts; scanning first {max_hosts}",
+                f"[WARN] wireless scan subnet {net} has more than {max_hosts} eligible hosts; scanning first {max_hosts}",
                 file=sys.stderr,
             )
-            hosts = hosts[:max_hosts]
         candidates.extend(str(ip) for ip in hosts)
 
     if not candidates:
