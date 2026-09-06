@@ -12,9 +12,10 @@
 | [DOCUMENTATION](DOCUMENTATION.md) | 文档分类、更新触发、证据和上下文持久化 |
 | [迭代模板](iterations/TEMPLATE.md) | 新批次的记录结构 |
 | [Batch 5.1](iterations/batch-5.1.md) | 控制台刷新生命周期修复，服务器与网页验收通过、已收口 |
-| [Batch 5.2 候选](iterations/batch-5.2-proposal.md) | 事故分析页请求乱序问题；已复现，仅分析、未实施 |
+| [Batch 5.2](iterations/batch-5.2-proposal.md) | 已正式收口；P3 直接刷新问题 DEFERRED |
+| [Feishu EVENT_NAME 隔离方案](iterations/feishu-event-name-isolation.md) | 已确认空名称路由缺口；最小实现、测试、部署与后续主线，尚未实施 |
 | [工程规范建设](iterations/2026-09-06-engineering-governance.md) | 本次规范和持久化建设记录 |
-| [公司部署与验收](runbooks/company-deployment.md) | Batch 5.1 完整服务器命令和网页验收 |
+| [公司部署与验收](runbooks/company-deployment.md) | 已收口 Batch 5.2 的历史部署参考，不能直接用作 Feishu 修复交付 |
 
 专题文档保留在既有位置，避免为了整理目录打断已有链接：
 

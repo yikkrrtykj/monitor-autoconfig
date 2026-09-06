@@ -1,7 +1,7 @@
 # Batch 5.2 — 事故分析页请求顺序
 
-维护日期：2026-09-06。状态：**本地实现与验证完成，待公司服务器部署及网页验收**。
-实现从 `main` 基线 `71bceff27f9c2cc2529e7cd9a214255334c0bc11` 开始；实现提交为包含本记录的提交，发布状态以 Git 实际查询为准。
+维护日期：2026-09-06。状态：**已正式收口（用户确认）**。
+实现从 `main` 基线 `71bceff27f9c2cc2529e7cd9a214255334c0bc11` 开始；实现提交 `d9da3865fad6b7b8bc8528c5ff44c32615c08561`，后续测试契约补丁 `ce36e96662987da690cd97d1472455b554261df5`。
 
 ## 目标与范围
 
@@ -59,6 +59,13 @@ git diff --check
 另执行 `test_bigscreen_incident.js` 和 `test_bigscreen_incident_registry.js`，均通过。未运行全量回归、Linux Node 20、浏览器自动化或 Bash 手册语法检查；本机没有 Bash。上述未测项按项目协议不单独阻止 push。未连接公司服务器，未部署，未修改生产配置，未执行 DELETE，未发送飞书。
 
 ## 生产验收
+
+### 最新收口结论（2026-09-06）
+
+用户明确确认：请求乱序修复 PASS、GitHub CI PASS、生产部署 PASS、服务器 39/39 PASS、实际页面从首页进入 PASS、Blocking finding NONE。上述结论来源为用户最新反馈，Agent 未独立连接服务器或重新核验该次 CI。
+此前仅显示 8135c85 的输出不能证明 Batch 5.2 已部署；保留该历史证据边界，以用户随后提供的最新完整验收结论收口，不再要求重跑。
+已知 P3 `/incident` 直接刷新问题明确 DEFERRED，不属于本批阻断，不继续扩展修复。
+下一步已转回 [Feishu EVENT_NAME 共享群隔离](feishu-event-name-isolation.md)，随后是 pre-refactor 只读审计。本批下述部署说明仅保留为历史交付参考。
 
 完整命令和网页步骤见 [公司服务器部署手册](../runbooks/company-deployment.md)。服务器需快进至交付回复中的完整目标 SHA，运行部署、configured、源码/容器/HTTP 一致性和三层四开关检查。
 

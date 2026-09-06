@@ -1,6 +1,7 @@
 # 公司服务器部署与 Batch 5.2 验收
 
 维护日期：2026-09-06。执行者：用户；Agent 不连接服务器。
+Batch 5.2 已由用户确认正式收口；P3 `/incident` 直接刷新问题 DEFERRED，以下命令仅保留为历史参考，无需重跑。当前主线见 [Feishu EVENT_NAME 隔离方案](../iterations/feishu-event-name-isolation.md)，本手册不是该修复的部署命令。
 本手册会快进服务器 `main` 并运行部署，可能重建或重启服务。运行前把 `target_commit` 替换为本次交付回复给出的完整 SHA；不可使用未核对的远端最新值。
 
 ## 停止条件

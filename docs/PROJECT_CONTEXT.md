@@ -72,8 +72,13 @@ mkdir/write/replace 的 OSError 转为安全错误，保留 `require_write()` �
 随后服务器 main 快进至测试补丁 `8135c8542bc7c98076961959aae00ff586fb2ca3`，没有运行代码变化，无需再部署；已有未跟踪生产文件保留。
 同日用户明确确认网页登录等待、退出等待后重登、页面切换、配置草稿、事故区域和五个 ISP 的检查全部通过，满足本批次收口条件。后续没有新证据不重新审计该批次。
 
-## 当前待生产验收
+## Batch 5.2 收口补充
 
 [Batch 5.2](iterations/batch-5.2-proposal.md) 已完成本地实现：事故分析面板使用页面生命周期代次和面板内请求序号共同控制 UI 提交权，同页只允许最新请求的成功或失败更新视图。旧请求不强制取消，可自然完成但不能进入分析、覆盖页面或展示错误。
 
-本地行为测试覆盖旧成功/失败与新成功/失败的乱序组合、最新请求等待状态、单个慢请求和原 stop/restart 契约；生产部署和网页验收待用户执行。这项修复不改变冻结 ISP 模型、事故持久化或 Batch 5.1 控制台认证刷新逻辑。
+本地行为测试覆盖旧成功/失败与新成功/失败的乱序组合、最新请求等待状态、单个慢请求和原 stop/restart 契约。用户于 2026-09-06 明确确认请求乱序修复、GitHub CI、生产部署、服务器 39/39、从首页进入实际页面均 PASS，Blocking finding NONE，Batch 5.2 正式收口。已知 P3 `/incident` 直接刷新问题 DEFERRED，不继续处理。
+
+## 当前主线
+
+按用户明确恢复的顺序：Feishu EVENT_NAME shared-group isolation → pre-refactor 只读审计 → 无剩余 P0/P1 blocker 后停止扩大 correctness 修复 → behavior-preserving refactor。
+在 ce36e96 上只读审计确认空 EVENT_NAME 仍会放行群命令；[最小隔离方案](iterations/feishu-event-name-isolation.md) 已形成，尚未实施。群轮询和长连接群消息需统一拒绝空名称，明确 p2p 路径保留既有兼容；不修改冻结 ISP、已收口批次、P3 刷新或设备删除逻辑。
