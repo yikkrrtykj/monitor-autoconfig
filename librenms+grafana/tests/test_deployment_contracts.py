@@ -1354,13 +1354,34 @@ def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache(
     controller = read("bigscreen/control/auth-controller.js")
     index = read("bigscreen/index.html")
 
-    assert "const { createAuthController } = window.BSAuthController;" in app
+    assert "const { createAuthController, createControlRefreshLifecycle } = window.BSAuthController;" in app
     assert "const authController = createAuthController({" in app
+    assert "const controlRefreshLifecycle = createControlRefreshLifecycle();" in app
     assert "authController.bind();" in app
     assert "await authController.ensureAuthenticated()" in app
-    assert "return { bind, ensureAuthenticated };" in controller
-    assert "onAuthenticated: () => refreshControlPanel()" in app
-    assert "onLoggedOut: () => { lastControlReport = null; }" in app
+    assert "return { bind, ensureAuthenticated, invalidate };" in controller
+    assert "return { start, stop, invalidate, execute };" in controller
+    assert "return controlRefreshLifecycle.execute(async (isCurrent) => {" in app
+    assert "if (!isCurrent()) return { discarded: true };" in app
+    assert "onApplyStart: invalidateControlRefresh," in app
+    assert "controlRefreshLifecycle.stop();" in app
+    assert "controlRefreshLifecycle.start();" in app
+    assert "function invalidateControlRefresh() {" in app
+    assert "controlRefreshLifecycle.invalidate();" in app
+    assert "authController.invalidate();" in app
+    assert """onAuthenticated: () => {
+      invalidateControlRefresh();
+      refreshControlPanel();
+    }""" in app
+    assert """onLoggedOut: () => {
+      invalidateControlRefresh();
+      lastControlReport = null;
+    }""" in app
+    assert "const token = beginAuthRequest(true);" in controller
+    assert "if (!commitAuthRequest(token)) return null;" in controller
+    logout_body = controller[controller.index("async function logout("):controller.index("function bind(")]
+    assert logout_body.index("invalidate();") < logout_body.index("renderAuth(lastControlAuth);")
+    assert logout_body.index("renderAuth(lastControlAuth);") < logout_body.index("await logoutPlatformAuth();")
     for token in (
         "let lastControlAuth = null;",
         "function setAuthMessage(",
