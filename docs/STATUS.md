@@ -7,7 +7,7 @@
 - 活跃业务批次：[Batch 5.1 — control refresh lifecycle correctness](iterations/batch-5.1.md)，**待公司服务器部署与网页验收**。
 - 已知实现 SHA：`675409458a02ac21d478aa01634d71b84f981dd5`。
 - 本轮启动核对的本地主检出 `main`：`8135c8542bc7c98076961959aae00ff586fb2ca3`，工作区和暂存区干净；该后续提交仅调整生命周期测试契约。
-- 当前工程治理记录：[2026-09-06 工程规范建设](iterations/2026-09-06-engineering-governance.md)。新增 Agent 协议、工程/Git/文档规范、编辑器约定及持久化交接，不更改业务代码。
+- 当前工程治理记录：[2026-09-06 工程规范建设](iterations/2026-09-06-engineering-governance.md)。规范已随 `7376319` 提交推送并核对远端；本地文档检查通过，CI 查询无运行记录，尚未确认 CI 通过。本次为发布结果追加记录，不更改业务代码。
 - 当前 Git HEAD、远端发布和 CI 以实际查询为准；不把旧 SHA 写成永远有效的“最新版本”。治理提交可通过其迭代文档的 Git 历史定位。
 
 ## 唯一下一步

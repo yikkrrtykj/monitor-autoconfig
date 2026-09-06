@@ -1,6 +1,6 @@
 # 2026-09-06 — 工程规范与持久化交接
 
-维护日期：2026-09-06（Asia/Shanghai）。状态：本地文档交付与验证完成；发布提交按下述 Git 证据定位和核对。
+维护日期：2026-09-06（Asia/Shanghai）。状态：工程规范已提交并推送；本地验证完成，CI 未确认通过。此追加记录保存发布核验结果。
 
 ## 目标与范围
 
@@ -33,7 +33,8 @@
 - 验证环境：Windows、本地 Node v24.13.0 和 Git Bash。12 个 Markdown 文件的 47 个本地链接及围栏检查通过；新文件 UTF-8/LF/末尾换行通过；部署外层和实际 Bash 正文均通过 `bash -n`。AGENTS.md 为 5744 字节。
 - 源码/容器路径、四开关及缓存头要求已对照 Compose 与既有交接核对；初次链接检查提示本轮迭代文档尚未创建，补齐后复查通过。未发现规则冲突或新增真实凭据；`git diff --check` 通过。
 - 只做文档与编辑器约定，因此不重跑业务测试；未执行 Linux Python 3.13/Node 20、Docker/服务器命令、浏览器自动化或生产验收。
-- 2026-09-06 查询基线 8135c85 的 GitHub workflow runs 返回空列表；不据此断言 CI 通过。本轮提交 CI 需要提交后另查。
+- 发布提交：`7376319170cb3cdee591814375ea702b1dfc4034`，`docs: establish engineering standards and persistent agent handoff`。2026-09-06 普通 push 成功，实时 `git ls-remote` 与本地 HEAD 一致，工作区和暂存区干净。
+- 2026-09-06 查询基线 8135c85 和发布提交 7376319 的 GitHub workflow runs 均返回空列表，未确认 CI 通过；后续如需部署仍应核对目标 SHA 的实际 CI。此记录追加提交的 CI 状态同样不能从前一提交推断。
 - 本记录自身提交 SHA 通过 `git log -1 --format="%H %s" -- docs/iterations/2026-09-06-engineering-governance.md` 定位，避免自引用循环；远端发布通过该提交与实时 origin/main 的关系核验。
 
 ## 下一步与交接
