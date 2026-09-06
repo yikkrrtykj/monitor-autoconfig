@@ -1089,7 +1089,28 @@ def test_incident_panel_owns_form_queries_rendering_and_request_lifecycle():
     assert "incidentPanel.start()" in app
     assert "incidentPanel.stop()" in app
     assert "return { start, stop };" in panel
-    assert "return active && generation === lifecycleGeneration;" in panel
+    assert "    let lifecycleGeneration = 0;\n    let requestSequence = 0;\n    let active = false;" in panel
+    assert (
+        "    function isCurrent(generation, requestId) {\n"
+        "      return active && generation === lifecycleGeneration && requestId === requestSequence;\n"
+        "    }"
+    ) in panel
+    assert (
+        "    async function runIncidentAnalysis() {\n"
+        "      const generation = lifecycleGeneration;\n"
+        "      const requestId = ++requestSequence;"
+    ) in panel
+    assert (
+        "        const data = await queryIncidentData(win);\n"
+        "        if (!isCurrent(generation, requestId)) return;\n"
+        "        const result = analyzeIncident(data, threshold);"
+    ) in panel
+    assert (
+        "      } catch (error) {\n"
+        "        if (!isCurrent(generation, requestId)) return;\n"
+        '        console.error("Incident analysis failed:", error);'
+    ) in panel
+    assert panel.count("if (!isCurrent(generation, requestId)) return;") == 2
     assert "const result = analyzeIncident(data, threshold);" in panel
     assert 'window.history.replaceState({}, "", `/incident?${params.toString()}`)' in panel
     assert 'probe_icmp_duration_seconds{role="player",network="wired",phase="rtt"}' in panel
