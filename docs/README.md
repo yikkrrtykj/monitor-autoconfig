@@ -11,7 +11,8 @@
 | [GIT_WORKFLOW](GIT_WORKFLOW.md) | main 串行提交、发布核验、失败与回退 |
 | [DOCUMENTATION](DOCUMENTATION.md) | 文档分类、更新触发、证据和上下文持久化 |
 | [迭代模板](iterations/TEMPLATE.md) | 新批次的记录结构 |
-| [Batch 5.1](iterations/batch-5.1.md) | 控制台刷新生命周期修复，生产待验收 |
+| [Batch 5.1](iterations/batch-5.1.md) | 控制台刷新生命周期修复，服务器与网页验收通过、已收口 |
+| [Batch 5.2 候选](iterations/batch-5.2-proposal.md) | 事故分析页请求乱序问题；已复现，仅分析、未实施 |
 | [工程规范建设](iterations/2026-09-06-engineering-governance.md) | 本次规范和持久化建设记录 |
 | [公司部署与验收](runbooks/company-deployment.md) | Batch 5.1 完整服务器命令和网页验收 |
 
