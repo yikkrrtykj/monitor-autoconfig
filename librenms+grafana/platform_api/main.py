@@ -474,6 +474,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(exc.payload, exc.status)
         except DiagnosticError as exc:
             self._send_json(exc.payload, exc.status)
+        except platform_incidents.IncidentError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, exc.status)
         except Exception as exc:
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -490,6 +492,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(exc.payload, exc.status)
         except DiagnosticError as exc:
             self._send_json(exc.payload, exc.status)
+        except platform_incidents.IncidentError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, exc.status)
         except PermissionError as exc:
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.FORBIDDEN)
         except Exception as exc:
@@ -504,6 +508,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         except platform_auth.AuthError as exc:
             self._send_json(exc.payload, exc.status)
+        except platform_incidents.IncidentError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, exc.status)
         except KeyError as exc:
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.NOT_FOUND)
         except Exception as exc:

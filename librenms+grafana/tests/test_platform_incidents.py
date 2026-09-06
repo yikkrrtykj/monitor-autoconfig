@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,7 @@ def test_incidents_module_imports_without_touching_storage(tmp_path):
     assert not context.incident_path.parent.exists()
 
 
-def test_empty_corrupt_and_legacy_incident_files_keep_read_behavior(tmp_path):
+def test_missing_file_is_empty_but_corrupt_or_non_list_storage_fails(tmp_path):
     context = incident_context(tmp_path)
 
     assert incidents.incident_list(context) == []
@@ -50,24 +51,78 @@ def test_empty_corrupt_and_legacy_incident_files_keep_read_behavior(tmp_path):
 
     seed_incidents(context, [])
     context.incident_path.write_text("{broken", encoding="utf-8")
-    assert incidents.incident_list(context) == []
+    with pytest.raises(incidents.IncidentStorageError, match="不是有效 JSON"):
+        incidents.incident_list(context)
 
     legacy_payload = {
         "legacy": True,
-        "note": "The existing reader does not coerce the JSON root shape.",
+        "note": "non-list roots are unsafe for incident operations",
     }
     seed_incidents(context, legacy_payload)
-    assert incidents.incident_list(context) == legacy_payload
+    with pytest.raises(incidents.IncidentStorageError, match="根节点必须是列表"):
+        incidents.incident_list(context)
 
 
 def test_incident_read_io_errors_still_propagate(monkeypatch, tmp_path):
     context = incident_context(tmp_path)
 
-    def fail_read(_path, _fallback):
-        raise OSError("fixture read failure")
+    def fail_open(*_args, **_kwargs):
+        raise OSError("fixture read failure with private path")
 
-    monkeypatch.setattr(incidents, "read_json_file", fail_read)
-    with pytest.raises(OSError, match="fixture read failure"):
+    monkeypatch.setattr(Path, "open", fail_open)
+    with pytest.raises(incidents.IncidentStorageError, match="事故存储不可读取") as caught:
+        incidents.incident_list(context)
+    assert "private path" not in str(caught.value)
+
+
+def test_incident_reader_is_byte_bounded_before_parse(monkeypatch, tmp_path):
+    context = incident_context(tmp_path)
+    context.incident_path.parent.mkdir(parents=True)
+    context.incident_path.write_bytes(b"[" + b" " * 8 + b"]")
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_FILE_BYTES", 8)
+
+    with pytest.raises(incidents.IncidentStorageError, match="超过 8 字节读取上限"):
+        incidents.incident_list(context)
+
+
+def test_incident_reader_requests_only_limit_plus_one_bytes(monkeypatch, tmp_path):
+    reads = []
+
+    class Handle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size):
+            reads.append(size)
+            return b"[]"
+
+    class IncidentPath:
+        def open(self, mode):
+            assert mode == "rb"
+            return Handle()
+
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_FILE_BYTES", 8)
+    context = incidents.IncidentContext(
+        incident_path=IncidentPath(), require_write=lambda: None, clock=lambda: FIXED_TIME,
+    )
+    assert incidents.incident_list(context) == []
+    assert reads == [9]
+
+
+@pytest.mark.parametrize("payload, message", [
+    (b'\xff', "不是有效 UTF-8"),
+    (b'[1]', "第 1 条记录不是对象"),
+    (b'[{"id":"bad"}]', "第 1 条记录 ID 无效"),
+    (b'[{"id":1,"events":{}}]', "第 1 条记录 events 不是列表"),
+])
+def test_incident_reader_rejects_unsafe_existing_records(tmp_path, payload, message):
+    context = incident_context(tmp_path)
+    context.incident_path.parent.mkdir(parents=True)
+    context.incident_path.write_bytes(payload)
+    with pytest.raises(incidents.IncidentStorageError, match=message):
         incidents.incident_list(context)
 
 
@@ -145,6 +200,52 @@ def test_create_keeps_id_order_fields_and_permissive_status(tmp_path):
     assert incidents.incident_list(context) == [created, *existing]
 
 
+def test_create_enforces_count_and_event_limits_without_overwriting(monkeypatch, tmp_path):
+    context = incident_context(tmp_path)
+    seed_incidents(context, [{"id": 1, "events": []}])
+    before = context.incident_path.read_bytes()
+    monkeypatch.setattr(incidents, "MAX_INCIDENTS", 1)
+    with pytest.raises(incidents.IncidentCapacityError, match="事故数量达到上限 1"):
+        incidents.new_incident(context, {})
+    assert context.incident_path.read_bytes() == before
+
+    empty_context = incident_context(tmp_path / "events")
+    monkeypatch.setattr(incidents, "MAX_INCIDENTS", 1000)
+    monkeypatch.setattr(incidents, "MAX_EVENTS_PER_INCIDENT", 2)
+    incidents.new_incident(empty_context, {"events": [{}, {}]})
+    before = empty_context.incident_path.read_bytes()
+    with pytest.raises(incidents.IncidentCapacityError, match="events 数量超过上限 2"):
+        incidents.new_incident(empty_context, {"events": [{}, {}, {}]})
+    assert empty_context.incident_path.read_bytes() == before
+
+
+def test_utf8_incident_and_file_byte_limits_are_exact(monkeypatch, tmp_path):
+    template_context = incident_context(tmp_path / "template")
+    template = incidents.new_incident(template_context, {"title": "中文事故"})
+    incident_bytes = len(json.dumps(template, ensure_ascii=False, indent=2).encode("utf-8"))
+    file_bytes = len(json.dumps([template], ensure_ascii=False, indent=2).encode("utf-8"))
+    assert len(json.dumps(template, ensure_ascii=False, indent=2)) < incident_bytes
+
+    exact_context = incident_context(tmp_path / "exact")
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_BYTES", incident_bytes)
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_FILE_BYTES", file_bytes)
+    assert incidents.new_incident(exact_context, {"title": "中文事故"}) == template
+    assert incidents.incident_list(exact_context) == [template]
+
+    incident_over = incident_context(tmp_path / "incident-over")
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_BYTES", incident_bytes - 1)
+    with pytest.raises(incidents.IncidentCapacityError, match="单条事故序列化字节数"):
+        incidents.new_incident(incident_over, {"title": "中文事故"})
+    assert not incident_over.incident_path.exists()
+
+    file_over = incident_context(tmp_path / "file-over")
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_BYTES", incident_bytes)
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_FILE_BYTES", file_bytes - 1)
+    with pytest.raises(incidents.IncidentCapacityError, match="候选文件序列化字节数"):
+        incidents.new_incident(file_over, {"title": "中文事故"})
+    assert not file_over.incident_path.exists()
+
+
 def test_update_keeps_order_allowed_fields_event_and_ignored_fields(tmp_path):
     context = incident_context(tmp_path)
     original = [
@@ -204,6 +305,85 @@ def test_update_keeps_order_allowed_fields_event_and_ignored_fields(tmp_path):
     persisted = incidents.incident_list(context)
     assert [item["id"] for item in persisted] == [9, 3]
     assert persisted[1] == updated
+
+
+def test_update_is_atomic_when_event_or_record_would_overflow(monkeypatch, tmp_path):
+    context = incident_context(tmp_path)
+    original = [{"id": 1, "status": "open", "title": "x", "events": [{}, {}]}]
+    seed_incidents(context, original)
+    before = context.incident_path.read_bytes()
+    monkeypatch.setattr(incidents, "MAX_EVENTS_PER_INCIDENT", 2)
+
+    with pytest.raises(incidents.IncidentCapacityError, match="events 数量超过上限 2"):
+        incidents.update_incident(context, 1, {"status": "closed", "event": "附带事件"})
+    assert context.incident_path.read_bytes() == before
+
+    monkeypatch.setattr(incidents, "MAX_EVENTS_PER_INCIDENT", 200)
+    current_size = len(json.dumps(original[0], ensure_ascii=False, indent=2).encode("utf-8"))
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_BYTES", current_size)
+    with pytest.raises(incidents.IncidentCapacityError, match="单条事故序列化字节数"):
+        incidents.update_incident(context, 1, {"title": "中文" * 100})
+    assert context.incident_path.read_bytes() == before
+
+
+def test_update_candidate_file_limit_has_no_partial_write(monkeypatch, tmp_path):
+    context = incident_context(tmp_path)
+    original = [{"id": 1, "title": "x", "status": "open", "events": []}]
+    seed_incidents(context, original)
+    before = context.incident_path.read_bytes()
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_FILE_BYTES", len(before) + 4)
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_BYTES", 1024 * 1024)
+
+    with pytest.raises(incidents.IncidentCapacityError, match="候选文件序列化字节数"):
+        incidents.update_incident(context, 1, {"status": "closed", "owner": "中文负责人"})
+    assert context.incident_path.read_bytes() == before
+
+
+def test_incident_capacity_constants_are_centralized():
+    assert incidents.MAX_INCIDENTS == 1000
+    assert incidents.MAX_EVENTS_PER_INCIDENT == 200
+    assert incidents.MAX_INCIDENT_BYTES == 64 * 1024
+    assert incidents.MAX_INCIDENT_FILE_BYTES == 16 * 1024 * 1024
+
+
+def test_legacy_over_limit_data_is_preserved_and_only_non_growth_updates_allowed(
+    monkeypatch, tmp_path,
+):
+    context = incident_context(tmp_path)
+    original = [
+        {"id": 3, "title": "legacy-large-title", "events": [{}, {}, {}], "unknown": "kept"},
+        {"id": 2, "title": "older", "events": []},
+        {"id": 1, "title": "oldest", "events": []},
+    ]
+    seed_incidents(context, original)
+    monkeypatch.setattr(incidents, "MAX_INCIDENTS", 2)
+    monkeypatch.setattr(incidents, "MAX_EVENTS_PER_INCIDENT", 2)
+    monkeypatch.setattr(incidents, "MAX_INCIDENT_BYTES", 80)
+
+    assert incidents.incident_list(context) == original
+    updated = incidents.update_incident(context, 3, {"title": "short"})
+    assert updated["events"] == [{}, {}, {}]
+    assert updated["unknown"] == "kept"
+    assert [item["id"] for item in incidents.incident_list(context)] == [3, 2, 1]
+    before = context.incident_path.read_bytes()
+    with pytest.raises(incidents.IncidentCapacityError, match="events 数量超过上限 2"):
+        incidents.update_incident(context, 3, {"event": "cannot grow"})
+    assert context.incident_path.read_bytes() == before
+    with pytest.raises(incidents.IncidentCapacityError, match="事故数量达到上限 2"):
+        incidents.new_incident(context, {})
+    assert context.incident_path.read_bytes() == before
+
+
+def test_corrupt_storage_cannot_be_overwritten_by_create_or_update(tmp_path):
+    context = incident_context(tmp_path)
+    context.incident_path.parent.mkdir(parents=True)
+    context.incident_path.write_bytes(b"{broken")
+    before = context.incident_path.read_bytes()
+    with pytest.raises(incidents.IncidentStorageError):
+        incidents.new_incident(context, {})
+    with pytest.raises(incidents.IncidentStorageError):
+        incidents.update_incident(context, 1, {"status": "closed"})
+    assert context.incident_path.read_bytes() == before
 
 
 def test_missing_update_malformed_input_and_write_guard_errors_are_unchanged(
@@ -346,6 +526,61 @@ def test_incident_http_auth_contract_is_unchanged(tmp_path):
             method="PATCH",
         )
         assert (status, payload) == (401, expected)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_incident_http_distinguishes_storage_and_capacity_errors(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    api.INCIDENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    api.INCIDENT_PATH.write_bytes(b"{broken")
+    server, thread, base_url = run_server(api)
+    try:
+        for method, path, body in (
+            ("GET", "/incidents", None),
+            ("POST", "/incidents", b"{}"),
+            ("PATCH", "/incidents/1", b"{}"),
+        ):
+            status, _, payload = request_raw(
+                f"{base_url}{path}", body, method=method,
+            )
+            assert status == 500
+            assert payload["ok"] is False
+            assert "事故存储损坏" in payload["error"]
+            assert str(api.INCIDENT_PATH) not in payload["error"]
+        assert api.INCIDENT_PATH.read_bytes() == b"{broken"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    api.INCIDENT_PATH.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(incidents, "MAX_INCIDENTS", 0)
+    server, thread, base_url = run_server(api)
+    try:
+        status, _, payload = request_raw(f"{base_url}/incidents", b"{}", method="POST")
+        assert status == 409
+        assert payload == {"ok": False, "error": "事故数量达到上限 0，无法新建事故"}
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_concurrent_http_creates_cannot_exceed_incident_limit(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    monkeypatch.setattr(incidents, "MAX_INCIDENTS", 1)
+    server, thread, base_url = run_server(api)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(
+                lambda title: request_json(f"{base_url}/incidents", {"title": title}),
+                ("first", "second"),
+            ))
+        assert sorted(status for status, _, _ in results) == [200, 409]
+        assert len(incidents.incident_list(api._incident_context())) == 1
+        failed = next(payload for status, _, payload in results if status == 409)
+        assert failed["ok"] is False
+        assert "事故数量达到上限 1" in failed["error"]
     finally:
         server.shutdown()
         thread.join(timeout=5)
