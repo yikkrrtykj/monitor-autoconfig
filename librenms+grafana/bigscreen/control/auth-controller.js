@@ -1,6 +1,71 @@
 ;(function () {
   'use strict';
 
+  function createControlRefreshLifecycle() {
+    let generation = 0;
+    let sequence = 0;
+    let committedSequence = 0;
+    let active = false;
+
+    function invalidate() {
+      generation += 1;
+      committedSequence = sequence;
+    }
+
+    function start() {
+      invalidate();
+      active = true;
+    }
+
+    function stop() {
+      invalidate();
+      active = false;
+    }
+
+    function isCurrent(token) {
+      return active
+        && token.generation === generation
+        && token.sequence > committedSequence;
+    }
+
+    function commit(token) {
+      if (!isCurrent(token)) return false;
+      committedSequence = token.sequence;
+      return true;
+    }
+
+    async function execute(task, onSuccess, onError) {
+      if (!active) return false;
+      const token = { generation, sequence: ++sequence };
+      let result;
+      try {
+        result = await task(() => isCurrent(token));
+      } catch (error) {
+        if (!commit(token)) return false;
+        try {
+          onError(error);
+        } catch (_renderError) {
+          // Timer-triggered refreshes must not create unhandled rejections.
+        }
+        return false;
+      }
+      if (!commit(token)) return false;
+      try {
+        onSuccess(result);
+        return true;
+      } catch (error) {
+        try {
+          onError(error);
+        } catch (_renderError) {
+          // Keep refresh failures inside this controlled path.
+        }
+        return false;
+      }
+    }
+
+    return { start, stop, invalidate, execute };
+  }
+
   function createAuthController(dependencies) {
     const {
       document,
@@ -12,6 +77,27 @@
     } = dependencies;
 
     let lastControlAuth = null;
+    let authGeneration = 0;
+    let authSequence = 0;
+    let committedAuthSequence = 0;
+
+    function invalidate() {
+      authGeneration += 1;
+      committedAuthSequence = authSequence;
+    }
+
+    function beginAuthRequest(newLifecycle = false) {
+      if (newLifecycle) invalidate();
+      return { generation: authGeneration, sequence: ++authSequence };
+    }
+
+    function commitAuthRequest(token) {
+      if (token.generation !== authGeneration || token.sequence <= committedAuthSequence) {
+        return false;
+      }
+      committedAuthSequence = token.sequence;
+      return true;
+    }
 
     function setAuthMessage(message, level = "") {
       const element = document.getElementById("controlAuthMessage");
@@ -52,7 +138,9 @@
     }
 
     async function ensureAuthenticated() {
+      const token = beginAuthRequest();
       const status = await fetchPlatformAuthStatus();
+      if (!commitAuthRequest(token)) return null;
       // During a transient proxy outage (bigscreen restarting on 应用配置) the
       // auth probe fails with no HTTP status. If we were already authenticated,
       // hold the console rather than tearing it down to the login screen -- the
@@ -66,31 +154,36 @@
 
     async function submitLogin(event) {
       event.preventDefault();
+      const token = beginAuthRequest(true);
       const username = (document.getElementById("controlLoginUser") || {}).value || "";
       const passwordInput = document.getElementById("controlLoginPassword");
       const password = passwordInput ? passwordInput.value : "";
       setAuthMessage("正在登录...");
       try {
-        lastControlAuth = await loginPlatformAuth(username.trim(), password);
+        const status = await loginPlatformAuth(username.trim(), password);
+        if (!commitAuthRequest(token)) return;
+        lastControlAuth = status;
         if (passwordInput) passwordInput.value = "";
         renderAuth(lastControlAuth);
         if (lastControlAuth.authenticated) {
           onAuthenticated();
         }
       } catch (error) {
+        if (!commitAuthRequest(token)) return;
         setAuthMessage(error.message || "登录失败", "bad");
       }
     }
 
     async function logout() {
+      invalidate();
+      lastControlAuth = { ok: true, enabled: true, authenticated: false };
+      onLoggedOut();
+      renderAuth(lastControlAuth);
       try {
         await logoutPlatformAuth();
       } catch (error) {
         // Logout is best effort; local UI should still return to the login screen.
       }
-      lastControlAuth = { ok: true, enabled: true, authenticated: false };
-      onLoggedOut();
-      renderAuth(lastControlAuth);
     }
 
     function bind() {
@@ -106,10 +199,10 @@
       }
     }
 
-    return { bind, ensureAuthenticated };
+    return { bind, ensureAuthenticated, invalidate };
   }
 
-  const ns = { createAuthController };
+  const ns = { createAuthController, createControlRefreshLifecycle };
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = ns;

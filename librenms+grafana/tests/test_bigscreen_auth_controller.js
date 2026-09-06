@@ -3,8 +3,8 @@ const authControllerModule = require('../bigscreen/control/auth-controller.js');
 
 assert.deepStrictEqual(
   Object.keys(authControllerModule),
-  ['createAuthController'],
-  'the auth controller exposes only its dependency-injected factory'
+  ['createAuthController', 'createControlRefreshLifecycle'],
+  'the auth controller exposes its dependency-injected factories'
 );
 
 class FakeElement {
@@ -84,6 +84,16 @@ function valueFrom(source, index, ...args) {
     : source;
   if (typeof entry === 'function') return entry(...args);
   return entry;
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function createHarness(options = {}) {
@@ -297,6 +307,168 @@ async function main() {
     fetchPlatformAuthStatus: { authenticated: false }
   });
   assert.strictEqual(await missingHosts.controller.ensureAuthenticated(), true);
+
+  // Refresh results commit in completion order only while their page lifecycle
+  // remains active. Starting a later request does not itself cancel a slow one.
+  const lifecycle = authControllerModule.createControlRefreshLifecycle();
+  lifecycle.start();
+  const first = deferred();
+  const second = deferred();
+  const rendered = [];
+  const errors = [];
+  const firstRun = lifecycle.execute(() => first.promise, (value) => rendered.push(value), (error) => errors.push(error.message));
+  const secondRun = lifecycle.execute(() => second.promise, (value) => rendered.push(value), (error) => errors.push(error.message));
+  second.resolve('newer');
+  await secondRun;
+  first.resolve('older');
+  await firstRun;
+  assert.deepStrictEqual(rendered, ['newer']);
+  assert.deepStrictEqual(errors, []);
+
+  const staleFailure = deferred();
+  const currentSuccess = deferred();
+  const staleFailureRun = lifecycle.execute(() => staleFailure.promise, (value) => rendered.push(value), (error) => errors.push(error.message));
+  const currentSuccessRun = lifecycle.execute(() => currentSuccess.promise, (value) => rendered.push(value), (error) => errors.push(error.message));
+  currentSuccess.resolve('current-success');
+  await currentSuccessRun;
+  staleFailure.reject(new Error('stale failure'));
+  await staleFailureRun;
+  assert.deepStrictEqual(rendered, ['newer', 'current-success']);
+  assert.deepStrictEqual(errors, []);
+
+  const currentFailure = deferred();
+  const currentFailureRun = lifecycle.execute(() => currentFailure.promise, (value) => rendered.push(value), (error) => errors.push(error.message));
+  currentFailure.reject(new Error('current failure'));
+  assert.strictEqual(await currentFailureRun, false);
+  assert.deepStrictEqual(errors, ['current failure']);
+
+  const stagedLifecycle = authControllerModule.createControlRefreshLifecycle();
+  stagedLifecycle.start();
+  const oldAuthStage = deferred();
+  const oldDataStage = deferred();
+  const stagedRendered = [];
+  const oldStagedRun = stagedLifecycle.execute(async () => {
+    await oldAuthStage.promise;
+    return oldDataStage.promise;
+  }, (value) => stagedRendered.push(value), () => {});
+  const newStagedRun = stagedLifecycle.execute(async () => {
+    await Promise.resolve('authenticated');
+    return 'new data';
+  }, (value) => stagedRendered.push(value), () => {});
+  await newStagedRun;
+  oldAuthStage.resolve('old authenticated');
+  oldDataStage.resolve('old data');
+  await oldStagedRun;
+  assert.deepStrictEqual(stagedRendered, ['new data']);
+
+  const slowLifecycle = authControllerModule.createControlRefreshLifecycle();
+  slowLifecycle.start();
+  const slow = deferred();
+  const nextInterval = deferred();
+  const slowRendered = [];
+  const slowRun = slowLifecycle.execute(() => slow.promise, (value) => slowRendered.push(value), () => {});
+  const intervalRun = slowLifecycle.execute(() => nextInterval.promise, (value) => slowRendered.push(value), () => {});
+  slow.resolve('slow-valid');
+  await slowRun;
+  assert.deepStrictEqual(slowRendered, ['slow-valid']);
+  nextInterval.resolve('next-valid');
+  await intervalRun;
+  assert.deepStrictEqual(slowRendered, ['slow-valid', 'next-valid']);
+
+  const pageLifecycle = authControllerModule.createControlRefreshLifecycle();
+  pageLifecycle.start();
+  const oldPageSuccess = deferred();
+  const oldPageFailure = deferred();
+  const pageRendered = [];
+  const pageErrors = [];
+  const oldSuccessRun = pageLifecycle.execute(() => oldPageSuccess.promise, (value) => pageRendered.push(value), (error) => pageErrors.push(error.message));
+  const oldFailureRun = pageLifecycle.execute(() => oldPageFailure.promise, (value) => pageRendered.push(value), (error) => pageErrors.push(error.message));
+  pageLifecycle.stop();
+  oldPageSuccess.resolve('hidden success');
+  oldPageFailure.reject(new Error('hidden failure'));
+  await Promise.all([oldSuccessRun, oldFailureRun]);
+  assert.deepStrictEqual(pageRendered, []);
+  assert.deepStrictEqual(pageErrors, []);
+
+  pageLifecycle.start();
+  const priorPage = deferred();
+  const priorRun = pageLifecycle.execute(() => priorPage.promise, (value) => pageRendered.push(value), () => {});
+  pageLifecycle.stop();
+  pageLifecycle.start();
+  const currentPage = deferred();
+  const currentRun = pageLifecycle.execute(() => currentPage.promise, (value) => pageRendered.push(value), () => {});
+  currentPage.resolve('current page');
+  await currentRun;
+  priorPage.resolve('prior page');
+  await priorRun;
+  assert.deepStrictEqual(pageRendered, ['current page']);
+
+  const applyLifecycle = authControllerModule.createControlRefreshLifecycle();
+  applyLifecycle.start();
+  const duringApply = deferred();
+  const afterApply = deferred();
+  const applyRendered = [];
+  const duringApplyRun = applyLifecycle.execute(() => duringApply.promise, (value) => applyRendered.push(value), () => {});
+  const afterApplyRun = applyLifecycle.execute(() => afterApply.promise, (value) => applyRendered.push(value), () => {});
+  applyLifecycle.invalidate();
+  duringApply.resolve('returned during apply');
+  await duringApplyRun;
+  const postApplyRun = applyLifecycle.execute(async () => 'post-apply result', (value) => applyRendered.push(value), () => {});
+  await postApplyRun;
+  afterApply.resolve('returned after apply');
+  await afterApplyRun;
+  assert.deepStrictEqual(applyRendered, ['post-apply result']);
+
+  // Logout invalidates probes and renders the logged-out state before the
+  // best-effort network request resolves.
+  const logoutProbe = deferred();
+  const logoutRequest = deferred();
+  const logoutRace = createHarness({
+    fetchPlatformAuthStatus: () => logoutProbe.promise,
+    logoutPlatformAuth: () => logoutRequest.promise
+  });
+  logoutRace.controller.bind();
+  const oldAuthenticatedProbe = logoutRace.controller.ensureAuthenticated();
+  const logoutDispatch = logoutRace.document.getElementById('controlLogout').dispatch('click');
+  assert.strictEqual(logoutRace.document.getElementById('controlAuth').hidden, false);
+  assert.strictEqual(logoutRace.document.getElementById('controlShell').hidden, true);
+  logoutProbe.resolve({ authenticated: true });
+  assert.strictEqual(await oldAuthenticatedProbe, null);
+  assert.strictEqual(logoutRace.document.getElementById('controlShell').hidden, true);
+  logoutRequest.resolve({ ok: true });
+  await logoutDispatch.promise;
+
+  const oldTransient = deferred();
+  const transientLogout = createHarness({
+    fetchPlatformAuthStatus: [
+      { authenticated: true },
+      () => oldTransient.promise
+    ]
+  });
+  assert.strictEqual(await transientLogout.controller.ensureAuthenticated(), true);
+  const transientProbe = transientLogout.controller.ensureAuthenticated();
+  transientLogout.controller.bind();
+  await transientLogout.document.getElementById('controlLogout').dispatch('click').promise;
+  oldTransient.resolve({ ok: false, authenticated: false, transient: true, error: 'old transient' });
+  assert.strictEqual(await transientProbe, null);
+  assert.strictEqual(transientLogout.document.getElementById('controlAuth').hidden, false);
+  assert.strictEqual(transientLogout.document.getElementById('controlShell').hidden, true);
+
+  // A new login lifecycle wins over an older unauthenticated probe.
+  const oldUnauthenticated = deferred();
+  const relogin = createHarness({
+    fetchPlatformAuthStatus: () => oldUnauthenticated.promise,
+    loginPlatformAuth: { authenticated: true }
+  });
+  relogin.controller.bind();
+  const oldUnauthenticatedProbe = relogin.controller.ensureAuthenticated();
+  relogin.document.getElementById('controlLoginUser').value = 'operator';
+  relogin.document.getElementById('controlLoginPassword').value = 'secret';
+  await relogin.document.getElementById('controlLoginForm').dispatch('submit').promise;
+  oldUnauthenticated.resolve({ authenticated: false, error: 'old session' });
+  assert.strictEqual(await oldUnauthenticatedProbe, null);
+  assert.strictEqual(relogin.document.getElementById('controlAuth').hidden, true);
+  assert.strictEqual(relogin.document.getElementById('controlShell').hidden, false);
 
   console.log('bigscreen auth controller tests passed');
 }

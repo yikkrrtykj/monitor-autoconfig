@@ -33,7 +33,7 @@
   const { createTournamentPanel } = window.BSTournamentPanel;
   const { createIperfController } = window.BSIperfController;
   const { createDeliveryPanel } = window.BSDeliveryPanel;
-  const { createAuthController } = window.BSAuthController;
+  const { createAuthController, createControlRefreshLifecycle } = window.BSAuthController;
   const { createIncidentRegistry } = window.BSIncidentRegistry;
   const { createTopologyPanel } = window.BSTopologyPanel;
   const { createInfraController } = window.BSInfraController;
@@ -73,6 +73,7 @@
   const renderSignatures = new Map();
   let lastDataSuccessAt = 0;
   let lastControlReport = null;
+  const controlRefreshLifecycle = createControlRefreshLifecycle();
   const DATA_STALE_AFTER_MS = 20000;
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
   function shouldRender(key, signature) {
@@ -308,8 +309,14 @@
     fetchPlatformAuthStatus,
     loginPlatformAuth,
     logoutPlatformAuth,
-    onAuthenticated: () => refreshControlPanel(),
-    onLoggedOut: () => { lastControlReport = null; }
+    onAuthenticated: () => {
+      invalidateControlRefresh();
+      refreshControlPanel();
+    },
+    onLoggedOut: () => {
+      invalidateControlRefresh();
+      lastControlReport = null;
+    }
   });
   const incidentRegistry = createIncidentRegistry({
     document,
@@ -361,6 +368,7 @@
     waitForApplyRecovery,
     applyRecoveryRenderPayload,
     applyRequestTimeoutMs: APPLY_REQUEST_TIMEOUT_MS,
+    onApplyStart: invalidateControlRefresh,
     onRefresh: refreshControlPanel
   });
 
@@ -638,24 +646,31 @@
     // While 应用配置 is restarting services, its own flow drives the UI and waits
     // for recovery -- don't let the periodic refresh fight it with failed fetches.
     if (configEditor.isApplyInProgress()) return;
-    if (!await authController.ensureAuthenticated()) {
-      lastControlReport = null;
-      return;
-    }
-    if (!lastControlReport) {
-      ["controlReadinessMissing", "controlTopology", "controlConfig", "controlIncidentFlow", "controlIncidentList", "controlDelivery"].forEach((id) => {
-        const element = document.getElementById(id);
-        if (element) element.innerHTML = `<div class="control-empty">加载中</div>`;
-      });
-    }
-    try {
-      const snapshot = await collectControlSnapshot();
-      renderControlPanel(snapshot);
-    } catch (error) {
+    return controlRefreshLifecycle.execute(async (isCurrent) => {
+      const authenticated = await authController.ensureAuthenticated();
+      if (!isCurrent()) return { discarded: true };
+      if (authenticated !== true) {
+        return { authenticated: false, discarded: authenticated === null };
+      }
+      if (!lastControlReport) {
+        ["controlReadinessMissing", "controlTopology", "controlConfig", "controlIncidentFlow", "controlIncidentList", "controlDelivery"].forEach((id) => {
+          const element = document.getElementById(id);
+          if (element) element.innerHTML = `<div class="control-empty">加载中</div>`;
+        });
+      }
+      return { authenticated: true, snapshot: await collectControlSnapshot() };
+    }, (result) => {
+      if (result.discarded) return;
+      if (!result.authenticated) {
+        lastControlReport = null;
+        return;
+      }
+      renderControlPanel(result.snapshot);
+    }, (error) => {
       console.error("Control panel failed:", error);
       const missingHost = document.getElementById("controlReadinessMissing");
       if (missingHost) missingHost.innerHTML = `<div class="control-empty bad">控制台加载失败</div>`;
-    }
+    });
   }
 
   function setupControlPanel() {
@@ -707,10 +722,18 @@
       window.clearInterval(controlTimer);
       controlTimer = null;
     }
+    controlRefreshLifecycle.stop();
+    authController.invalidate();
+  }
+
+  function invalidateControlRefresh() {
+    controlRefreshLifecycle.invalidate();
+    authController.invalidate();
   }
 
   function startControlRefresh() {
     stopControlRefresh();
+    controlRefreshLifecycle.start();
     setupControlPanel();
     refreshControlPanel();
     controlTimer = window.setInterval(refreshControlPanel, 10000);

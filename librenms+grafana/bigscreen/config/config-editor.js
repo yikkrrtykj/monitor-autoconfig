@@ -19,6 +19,7 @@
       waitForApplyRecovery,
       applyRecoveryRenderPayload,
       applyRequestTimeoutMs: APPLY_REQUEST_TIMEOUT_MS,
+      onApplyStart,
       onRefresh
     } = dependencies;
     const {
@@ -603,7 +604,10 @@
       const operationId = (action === "apply" || action === "rollback") ? configOperationId(action) : "";
       if (operationId) payload.operationId = operationId;
       configResultSticky = true;
-      if (action === "apply") applyInProgress = true;
+      if (action === "apply") {
+        applyInProgress = true;
+        if (onApplyStart) onApplyStart();
+      }
       setConfigButtonsBusy(true);
       renderConfigResult({
         pending: true,

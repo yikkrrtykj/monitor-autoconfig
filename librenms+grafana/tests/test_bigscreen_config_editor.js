@@ -292,6 +292,7 @@ function createHarness(options = {}) {
   document.createStatic('controlConfigImportFile', 'input');
   const calls = [];
   const refreshCalls = [];
+  const applyStartCalls = [];
   const confirmCalls = [];
   const browserWindow = {
     location: { hash: '' },
@@ -340,6 +341,10 @@ function createHarness(options = {}) {
     waitForApplyRecovery,
     applyRecoveryRenderPayload,
     applyRequestTimeoutMs: 180000,
+    onApplyStart: () => {
+      applyStartCalls.push(true);
+      if (options.onApplyStart) options.onApplyStart();
+    },
     onRefresh: () => refreshCalls.push(true)
   });
   return {
@@ -349,6 +354,7 @@ function createHarness(options = {}) {
     editor,
     calls,
     refreshCalls,
+    applyStartCalls,
     confirmCalls,
     browserWindow
   };
@@ -576,6 +582,7 @@ async function testApplyRollbackAndRecovery() {
   const applyClick = apply.document.getElementById('controlConfigApply').dispatch('click');
   await flushAsync();
   assert.strictEqual(apply.editor.isApplyInProgress(), true, 'apply protects the page refresh while its request is pending');
+  assert.strictEqual(apply.applyStartCalls.length, 1, 'apply invalidates prior refreshes immediately');
   assert.strictEqual(apply.document.getElementById('controlConfigValidate').disabled, true);
   pendingApply.resolve(platformPayload(configFixture(), { applied: true }));
   await applyClick;
@@ -591,6 +598,7 @@ async function testApplyRollbackAndRecovery() {
   const rollbackClick = rollback.document.getElementById('controlConfigRollback').dispatch('click');
   await flushAsync();
   assert.strictEqual(rollback.editor.isApplyInProgress(), false, 'rollback preserves its existing applyInProgress timing difference');
+  assert.strictEqual(rollback.applyStartCalls.length, 0, 'rollback keeps its existing lifecycle behavior');
   pendingRollback.resolve(platformPayload(configFixture(), { applied: true }));
   await rollbackClick;
   assert.strictEqual(rollback.refreshCalls.length, 1);
