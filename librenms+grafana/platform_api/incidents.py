@@ -107,10 +107,15 @@ def _validate_candidate(items: list[dict], incident: dict, previous: dict | None
 
 
 def save_incidents(context: IncidentContext, items: list[dict]) -> None:
-    context.incident_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = context.incident_path.with_suffix(context.incident_path.suffix + ".tmp")
-    temporary.write_bytes(_serialized(items).encode("utf-8"))
-    temporary.replace(context.incident_path)
+    try:
+        context.incident_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = context.incident_path.with_suffix(context.incident_path.suffix + ".tmp")
+        temporary.write_bytes(_serialized(items).encode("utf-8"))
+        temporary.replace(context.incident_path)
+    except OSError as exc:
+        raise IncidentStorageError(
+            "事故存储写入失败，原记录未更新，请检查存储状态"
+        ) from exc
 
 
 def new_incident(context: IncidentContext, data: dict) -> dict:

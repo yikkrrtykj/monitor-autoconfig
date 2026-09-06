@@ -386,6 +386,37 @@ def test_corrupt_storage_cannot_be_overwritten_by_create_or_update(tmp_path):
     assert context.incident_path.read_bytes() == before
 
 
+@pytest.mark.parametrize("operation", ["create", "update"])
+@pytest.mark.parametrize("failure", ["mkdir", "write", "replace"])
+def test_persistence_os_errors_are_sanitized_and_preserve_formal_file(
+    monkeypatch, tmp_path, operation, failure,
+):
+    context = incident_context(tmp_path)
+    seed_incidents(context, [{"id": 1, "title": "original", "events": []}])
+    before = context.incident_path.read_bytes()
+    private_detail = f"private path and content from {failure}"
+
+    def fail(*_args, **_kwargs):
+        raise OSError(private_detail)
+
+    if failure == "mkdir":
+        monkeypatch.setattr(Path, "mkdir", fail)
+    elif failure == "write":
+        monkeypatch.setattr(Path, "write_bytes", fail)
+    else:
+        monkeypatch.setattr(Path, "replace", fail)
+
+    if operation == "create":
+        action = lambda: incidents.new_incident(context, {"title": "new secret"})
+    else:
+        action = lambda: incidents.update_incident(context, 1, {"title": "updated secret"})
+    with pytest.raises(incidents.IncidentStorageError) as caught:
+        action()
+    assert str(caught.value) == "事故存储写入失败，原记录未更新，请检查存储状态"
+    assert private_detail not in str(caught.value)
+    assert context.incident_path.read_bytes() == before
+
+
 def test_missing_update_malformed_input_and_write_guard_errors_are_unchanged(
     tmp_path,
 ):
@@ -407,6 +438,8 @@ def test_missing_update_malformed_input_and_write_guard_errors_are_unchanged(
     disabled_context = incident_context(tmp_path, require_write=deny_write)
     with pytest.raises(PermissionError, match="write endpoints are disabled"):
         incidents.new_incident(disabled_context, {})
+    with pytest.raises(PermissionError, match="write endpoints are disabled"):
+        incidents.update_incident(disabled_context, 1, {"status": "closed"})
     assert context.incident_path.read_bytes() == before
 
 
@@ -581,6 +614,35 @@ def test_concurrent_http_creates_cannot_exceed_incident_limit(monkeypatch, tmp_p
         failed = next(payload for status, _, payload in results if status == 409)
         assert failed["ok"] is False
         assert "事故数量达到上限 1" in failed["error"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_incident_post_and_patch_sanitize_persistence_failures(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    seed_incidents(api._incident_context(), [{"id": 1, "title": "original", "events": []}])
+    before = api.INCIDENT_PATH.read_bytes()
+    server, thread, base_url = run_server(api)
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("private/server/incidents.json secret incident content")
+
+    monkeypatch.setattr(Path, "write_bytes", fail_write)
+    try:
+        for method, path, body in (
+            ("POST", "/incidents", b'{"title":"new secret"}'),
+            ("PATCH", "/incidents/1", b'{"title":"updated secret"}'),
+        ):
+            status, _, payload = request_raw(f"{base_url}{path}", body, method=method)
+            assert status == 500
+            assert payload == {
+                "ok": False,
+                "error": "事故存储写入失败，原记录未更新，请检查存储状态",
+            }
+            assert "incidents.json" not in payload["error"]
+            assert "secret" not in payload["error"]
+        assert api.INCIDENT_PATH.read_bytes() == before
     finally:
         server.shutdown()
         thread.join(timeout=5)
