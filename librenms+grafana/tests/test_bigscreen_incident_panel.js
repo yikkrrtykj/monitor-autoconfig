@@ -378,6 +378,88 @@ function createHarness(options = {}) {
   assert.strictEqual(failed.errors[0][0], 'Incident analysis failed:');
   assert.strictEqual(failed.errors[0][1], failureError);
 
+  const olderSuccess = deferred();
+  const newerSuccess = deferred();
+  const samePage = createHarness({
+    ispQueue: [olderSuccess.promise, newerSuccess.promise],
+    result: (data, threshold) => emptyResult({
+      verdict: { level: 'good', text: `threshold ${threshold}`, detail: 'same page' }
+    })
+  });
+  const olderSamePageQuery = samePage.panel.start();
+  samePage.document.getElementById('incidentThreshold').value = '0.08';
+  samePage.document.getElementById('incidentForm').dispatch('submit');
+  await settle();
+  olderSuccess.resolve([]);
+  await olderSamePageQuery;
+  assert.strictEqual(samePage.analyzeCalls.length, 0, 'an older result cannot render while newer conditions are loading');
+  assert.ok(samePage.document.getElementById('incidentVerdict').innerHTML.includes('加载中...'));
+  newerSuccess.resolve([]);
+  await settle();
+  assert.strictEqual(samePage.analyzeCalls.length, 1);
+  assert.strictEqual(samePage.analyzeCalls[0].threshold, 0.08);
+  assert.ok(samePage.document.getElementById('incidentVerdict').innerHTML.includes('threshold 0.08'));
+
+  const lateSuccess = deferred();
+  const newerFirst = createHarness({
+    ispQueue: [lateSuccess.promise, Promise.resolve([])],
+    result: (data, threshold) => emptyResult({
+      verdict: { level: 'good', text: `threshold ${threshold}`, detail: 'newer first' }
+    })
+  });
+  const lateSuccessQuery = newerFirst.panel.start();
+  newerFirst.document.getElementById('incidentThreshold').value = '0.08';
+  newerFirst.document.getElementById('incidentForm').dispatch('submit');
+  await settle();
+  assert.ok(newerFirst.document.getElementById('incidentVerdict').innerHTML.includes('threshold 0.08'));
+  lateSuccess.resolve([]);
+  await lateSuccessQuery;
+  assert.strictEqual(newerFirst.analyzeCalls.length, 1, 'a late older success cannot overwrite a newer success');
+  assert.ok(newerFirst.document.getElementById('incidentVerdict').innerHTML.includes('threshold 0.08'));
+
+  const lateFailure = deferred();
+  const failureAfterSuccess = createHarness({
+    ispQueue: [lateFailure.promise, Promise.resolve([])],
+    result: (data, threshold) => emptyResult({
+      verdict: { level: 'good', text: `threshold ${threshold}`, detail: 'newer success' }
+    })
+  });
+  const lateFailureQuery = failureAfterSuccess.panel.start();
+  failureAfterSuccess.document.getElementById('incidentThreshold').value = '0.08';
+  failureAfterSuccess.document.getElementById('incidentForm').dispatch('submit');
+  await settle();
+  lateFailure.reject(new Error('older failed'));
+  await lateFailureQuery;
+  assert.strictEqual(failureAfterSuccess.errors.length, 0, 'a late older failure is ignored');
+  assert.ok(failureAfterSuccess.document.getElementById('incidentVerdict').innerHTML.includes('threshold 0.08'));
+
+  const successAfterFailure = deferred();
+  const newerFailure = new Error('newer failed');
+  const failureWins = createHarness({
+    ispQueue: [successAfterFailure.promise, () => Promise.reject(newerFailure)]
+  });
+  const lateOlderSuccessQuery = failureWins.panel.start();
+  failureWins.document.getElementById('incidentThreshold').value = '0.08';
+  failureWins.document.getElementById('incidentForm').dispatch('submit');
+  await settle();
+  assert.ok(failureWins.document.getElementById('incidentVerdict').innerHTML.includes('newer failed'));
+  successAfterFailure.resolve([]);
+  await lateOlderSuccessQuery;
+  assert.strictEqual(failureWins.analyzeCalls.length, 0, 'a late older success cannot replace the newer failure');
+  assert.ok(failureWins.document.getElementById('incidentVerdict').innerHTML.includes('newer failed'));
+
+  const onlySlowRequest = deferred();
+  const slow = createHarness({
+    ispQueue: [onlySlowRequest.promise],
+    result: (data, threshold) => emptyResult({
+      verdict: { level: 'good', text: `threshold ${threshold}`, detail: 'slow request' }
+    })
+  });
+  const slowQuery = slow.panel.start();
+  onlySlowRequest.resolve([]);
+  await slowQuery;
+  assert.ok(slow.document.getElementById('incidentVerdict').innerHTML.includes('threshold 0.05'));
+
   const oldIsp = deferred();
   const stale = createHarness({
     ispQueue: [oldIsp.promise, Promise.resolve([])],

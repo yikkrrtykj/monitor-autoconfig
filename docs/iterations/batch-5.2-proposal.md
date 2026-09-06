@@ -1,74 +1,67 @@
-# Batch 5.2 候选 — 事故分析页请求顺序
+# Batch 5.2 — 事故分析页请求顺序
 
-维护日期：2026-09-06。状态：**限定分析完成，已本地复现，尚未实施**。
-来源：Batch 5.1 收口后按原交接要求分析下一批前端问题。本地 main 基线 b02bd5427aeb702e736b1d6888ed1965e8272748；不连接服务器，不代表已发生生产故障。
+维护日期：2026-09-06。状态：**本地实现与验证完成，待公司服务器部署及网页验收**。
+实现从 `main` 基线 `71bceff27f9c2cc2529e7cd9a214255334c0bc11` 开始；实现提交为包含本记录的提交，发布状态以 Git 实际查询为准。
 
-## 确认的问题（P2）
+## 目标与范围
 
-`librenms+grafana/bigscreen/incident/incident-panel.js` 的 `runIncidentAnalysis()`（当前第 166 行）只捕获页面 `lifecycleGeneration`；该代次只在 `stop()` 时递增，同一页每次提交没有独立请求序号。
-在 `/incident` 连续改变条件并提交 A、B 时，两次结果都满足 `isCurrent()`。如果 B 先成功、A 后成功，A 会覆盖 B，结果与表单和地址栏中的 B 条件不一致，可能误导事故判断。
-这与 Batch 5.1 的控制台认证/定时刷新是不同控制器，不是重新审查已经验收的实现。
+修复 `/incident` 同一页面连续提交分析条件时，较早请求的迟到成功或失败覆盖较新请求视图的问题。
+范围仅包括事故面板请求提交顺序、对应行为测试和交付文档。
 
-## 本地复现与验证
+本批不改变查询公式、ISP inventory/identity、阈值含义、事故持久化、控制台认证刷新、Apply 或配置草稿逻辑；不取消旧网络请求，继续使用现有超时机制。
 
-环境：Windows、Node v24.13.0。使用现有 `test_bigscreen_incident_panel.js` 中的 FakeDocument、deferred、createHarness，仅模拟请求和 DOM，不访问网络或设备。
+## 原因与实现
 
-1. 首次 start 使用阈值 0.05，挂起其 inventory Promise，形成旧请求 A。
-2. 保持页面不退出，将表单阈值改为 0.08，触发表单 submit，形成 B。
-3. 让 B 先完成，验证页面显示 0.08。
-4. 放行 A；实际页面被改成 0.05，而 URL 和表单仍为 0.08。
+旧实现只捕获页面 `lifecycleGeneration`。该代次在 `stop()` 时递增，却不能区分同一页面内连续发起的请求 A、B，因此两者都能提交 UI。
 
-本地执行成功复现上述不一致。既有 `node librenms+grafana/tests/test_bigscreen_incident_panel.js` 同时通过：现有用例覆盖 stop/restart 作废旧请求，未覆盖同页连续提交的乱序。
-复现代码可在仓库根目录使用 Node 执行（借用已有测试夹具；不修改文件）：
+面板现在维护单调递增的 `requestSequence`。每次分析开始时取得自己的请求号；异步成功或失败只有同时满足以下条件才可更新视图：
 
-```javascript
-const fs = require('fs');
-const path = require('path');
-const { createRequire } = require('module');
-const testPath = path.resolve('librenms+grafana/tests/test_bigscreen_incident_panel.js');
-const harness = fs.readFileSync(testPath, 'utf8').split('(async () => {')[0];
-const reproduction = `
-(async () => {
-  const old = deferred();
-  const h = createHarness({
-    ispQueue: [old.promise, Promise.resolve([])],
-    result: (data, threshold) => emptyResult({
-      verdict: { level: 'good', text: 'threshold ' + threshold, detail: 'result' }
-    })
-  });
-  const olderQuery = h.panel.start();
-  h.document.getElementById('incidentThreshold').value = '0.08';
-  h.document.getElementById('incidentForm').dispatch('submit');
-  await settle();
-  assert.ok(h.document.getElementById('incidentVerdict').innerHTML.includes('threshold 0.08'));
-  old.resolve([]);
-  await olderQuery;
-  assert.ok(h.document.getElementById('incidentVerdict').innerHTML.includes('threshold 0.05'));
-  assert.strictEqual(h.document.getElementById('incidentThreshold').value, '0.08');
-  assert.ok(h.window.location.search.includes('threshold=0.08'));
-  console.log('REPRODUCED: older result overwrites the newer conditions');
-})().catch(error => { console.error(error); process.exitCode = 1; });
-`;
-new Function('require', '__filename', '__dirname', harness + reproduction)(
-  createRequire(testPath), testPath, path.dirname(testPath)
-);
+- 页面仍处于 active 状态；
+- 页面生命周期代次仍相同；
+- 请求号仍是最新发起的请求。
+
+新请求开始后会立即拥有视图提交权。旧请求可自然完成，但其成功、失败、分析调用和错误展示都会被丢弃。`stop()` / restart 的原生命周期失效机制继续生效；没有后续提交的单个慢请求仍可正常完成。
+
+## 修改文件
+
+- `librenms+grafana/bigscreen/incident/incident-panel.js`
+- `librenms+grafana/tests/test_bigscreen_incident_panel.js`
+- `docs/STATUS.md`
+- `docs/PROJECT_CONTEXT.md`
+- `docs/iterations/batch-5.2-proposal.md`
+- `docs/runbooks/company-deployment.md`
+
+## 本地证据
+
+环境：Windows、Node v24.13.0。测试仅使用现有 FakeDocument 和 deferred 依赖，不访问网络、设备或事故数据。
+
+新增行为测试先在旧实现上失败：旧请求在新条件等待期间进入分析，断言得到 `1 !== 0`。最小修复后覆盖：
+
+- 新条件等待期间，旧成功不能退出 loading 或进入分析；
+- B 成功后，A 迟到成功不能覆盖 B；
+- B 成功后，A 迟到失败不能显示错误；
+- B 失败后，A 迟到成功不能替换失败结果；
+- 无后续提交的单个慢请求正常完成；
+- 原 stop/restart、URL、表单、查询和渲染契约继续通过。
+
+执行结果：
+
+```text
+node librenms+grafana/tests/test_bigscreen_incident_panel.js
+bigscreen Incident panel tests passed
+
+node --check librenms+grafana/bigscreen/incident/incident-panel.js
+node --check librenms+grafana/tests/test_bigscreen_incident_panel.js
+git diff --check
+均通过
 ```
 
-以上断言用于证明现有缺陷；修复时必须转换成“旧结果不能覆盖新结果”的回归测试，不能把缺陷现象固化为正确行为。
+另执行 `test_bigscreen_incident.js` 和 `test_bigscreen_incident_registry.js`，均通过。未运行全量回归、Linux Node 20、浏览器自动化或 Bash 手册语法检查；本机没有 Bash。上述未测项按项目协议不单独阻止 push。未连接公司服务器，未部署，未修改生产配置，未执行 DELETE，未发送飞书。
 
-## 建议的最小修复范围
+## 生产验收
 
-- 仅修改 `bigscreen/incident/incident-panel.js`、对应测试和文档；优先使用该面板内的请求序号，不引入跨控制器重构。
-- 用户主动提交新条件即代表新的分析意图：新请求开始后，只允许最新请求的成功或失败更新视图；页面 stop/restart 仍作废旧请求。
-- 不为了顺序正确性强制 abort 所有旧网络调用；保留请求超时机制，先保证过期响应不再提交 UI。
-- 不改变查询公式、ISP inventory/identity、阈值含义、事故持久化、控制台认证刷新、Apply 或配置草稿逻辑。
+完整命令和网页步骤见 [公司服务器部署手册](../runbooks/company-deployment.md)。服务器需快进至交付回复中的完整目标 SHA，运行部署、configured、源码/容器/HTTP 一致性和三层四开关检查。
 
-## 拟定验收条件与下一步
+网页重点检查 `/incident` 正常加载；同页快速提交两组不同条件后，最终表单与地址栏保持最新条件，较早请求迟到时不应让页面回退或出现旧错误。通过后由用户反馈，随后更新本记录和 STATUS 为已收口。
 
-- 同页 B 成功后 A 迟到成功/失败，均不覆盖 B；B 失败后 A 迟到成功也不能展示为 B 的结果。
-- 新条件等待期间旧结果不能冒充新条件的结果；单个慢请求无后续新提交时仍能正常完成。
-- stop/restart、原有 URL 参数、表单绑定、查询和渲染测试保持通过。
-- 修改后的 JS 语法、事故面板针对性测试通过；未运行全量或 Linux/浏览器验收时如实记录。
-- 下一轮明确继续该范围时，先新增失败的行为测试，再做最小修复；完成后一次交付完整部署与网页验收命令。当前仅完成分析，不需要部署或生产复现。
-
-交接已持久化；未执行客户端上下文压缩。
+交接已持久化；当前工具未提供客户端上下文压缩能力。

@@ -20,6 +20,7 @@
     } = dependencies;
 
     let lifecycleGeneration = 0;
+    let requestSequence = 0;
     let active = false;
 
     function incidentWindow() {
@@ -159,12 +160,13 @@
         `).join("");
     }
 
-    function isCurrent(generation) {
-      return active && generation === lifecycleGeneration;
+    function isCurrent(generation, requestId) {
+      return active && generation === lifecycleGeneration && requestId === requestSequence;
     }
 
     async function runIncidentAnalysis() {
       const generation = lifecycleGeneration;
+      const requestId = ++requestSequence;
       const win = incidentWindow();
       const threshold = Number(document.getElementById("incidentThreshold").value || 0.05);
 
@@ -181,7 +183,7 @@
 
       try {
         const data = await queryIncidentData(win);
-        if (!isCurrent(generation)) return;
+        if (!isCurrent(generation, requestId)) return;
         const result = analyzeIncident(data, threshold);
         renderIncidentVerdict(result.verdict);
         renderIncidentPlayers(result);
@@ -189,7 +191,7 @@
         renderIncidentIsp(result);
         renderIncidentStage(result);
       } catch (error) {
-        if (!isCurrent(generation)) return;
+        if (!isCurrent(generation, requestId)) return;
         console.error("Incident analysis failed:", error);
         document.getElementById("incidentVerdict").className = "incident-verdict bad";
         document.getElementById("incidentVerdict").innerHTML = `<strong>分析失败</strong><span>${escapeHtml(error.message || "")}</span>`;
