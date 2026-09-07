@@ -489,6 +489,7 @@ def test_alert_bridge_runtime_modules_are_packaged_without_legacy_roots():
     package = ROOT / "feishu_bridge"
     bridge = read("alertmanager-feishu-bridge.py")
     expected_modules = {
+        "alert_reason.py": "from feishu_bridge.alert_reason import (",
         "card_presentation.py": "from feishu_bridge.card_presentation import (",
         "delivery.py": "from feishu_bridge.delivery import FeishuDelivery",
         "device_model.py": "from feishu_bridge.device_model import (",
