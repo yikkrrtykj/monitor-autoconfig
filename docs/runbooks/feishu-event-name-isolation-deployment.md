@@ -30,7 +30,10 @@ echo "synced to $TARGET_SHA"
 
 ## 2. 部署前核对（只输出明确选取的非凭据字段）
 
-`.env` 中四个删除开关必须精确断言（`grep -qx` 整行匹配，缺失或不一致即停止）：
+`.env` 中四个删除开关必须精确断言（`grep -qx` 整行匹配，缺失或不一致即停止）。
+同时由执行人明确确认本批的**预期 EVENT_NAME** 并保存为独立快照：部署前 Compose 校验
+和部署后运行时校验都与同一份快照比较，防止部署前后实例身份漂移；**允许明确预期为空**
+（预期为空 = 该实例按隔离策略静默禁用群命令）：
 
 ```bash
 set -euo pipefail
@@ -40,17 +43,26 @@ grep -qx 'DEVICE_AUTO_DELETE_ENABLED=true' .env
 grep -qx 'DEVICE_AUTO_DELETE_DRY_RUN=true' .env
 grep -qx 'DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY=false' .env
 echo "env switches OK (true/true/true/false)"
-grep -E '^EVENT_NAME=' .env
+grep -E '^EVENT_NAME=' .env   # 当前 .env 值，供确认预期参考；权威校验见下
+
+# 预期 EVENT_NAME：执行人按本批部署预期明确填写；预期禁用群命令则留空（""）。
+# 不为通过验收而修改该值或生产配置；与实际不符时按下方说明处理。
+EXPECTED_EVENT_NAME="Singapore"
+printf '%s' "$EXPECTED_EVENT_NAME" > /tmp/feishu-expected-event-name.txt
+echo "expected EVENT_NAME: '$EXPECTED_EVENT_NAME'"
 ```
 
 Compose 渲染值同样必须断言。解析 Compose JSON，仅断言并打印 Bridge 四开关与
-feishu-ws 的 EVENT_NAME，不输出原始 JSON、相邻 YAML 或任何凭据字段：
+feishu-ws 的 EVENT_NAME（与快照比较），不输出原始 JSON、相邻 YAML 或任何凭据字段：
 
 ```bash
 set -euo pipefail
 cd /root/monitor-autoconfig/librenms+grafana
+EXPECTED_EVENT_NAME="$(cat /tmp/feishu-expected-event-name.txt)"
+export EXPECTED_EVENT_NAME
 python3 - <<'PY'
 import json
+import os
 import subprocess
 
 rendered = subprocess.run(
@@ -81,16 +93,23 @@ print("bridge compose switches OK:", actual)
 
 event = service_env("feishu-ws").get("EVENT_NAME")
 assert event is not None, "feishu-ws EVENT_NAME missing from compose"
-assert event.strip(), (
-    f"feishu-ws EVENT_NAME is blank: {event!r}; "
-    "blank silently drops all group commands - configure it in .env first"
+expected_event = " ".join(str(os.environ.get("EXPECTED_EVENT_NAME") or "").split())
+compose_event = " ".join(str(event or "").split())
+assert compose_event == expected_event, (
+    f"feishu-ws compose EVENT_NAME {event!r} does not match "
+    f"expected {os.environ.get('EXPECTED_EVENT_NAME')!r}"
 )
-print("feishu-ws EVENT_NAME:", event)
+if expected_event:
+    print("feishu-ws EVENT_NAME matches expected:", expected_event)
+else:
+    print("feishu-ws EVENT_NAME is empty as expected; group commands disabled by design")
 PY
 ```
 
-EVENT_NAME 为空或全空白属于预期拒绝状态：该实例静默丢弃所有群命令。如这不是预期，
-先在 `.env` 配置明确名称并重新执行本节，再部署；不修改代码绕过。
+预期 EVENT_NAME 为空仅当执行人明确确认为预期禁用状态，校验输出“按预期禁用群命令”。
+Compose 或运行时与快照不一致时立即停止：先核对 event-config.yml 与 `.env` 的实际来源，
+确属配置错误时按正常配置流程修正后重新执行本手册；不为通过验收临时改预期值或绕过校验。
+deploy.sh 会从 event-config.yml 同步 `.env`，因此部署后仍须完成第 3 节的运行时比对。
 
 ## 3. 部署
 
@@ -103,9 +122,9 @@ docker compose config --quiet
 ./deploy-check.sh configured </dev/null
 ```
 
-部署后在 Bridge 容器断言四个运行时开关、读取当前 `/health` 并断言 `ready is True`，
-并单独核对 feishu-ws 的 EVENT_NAME（feishu-ws 只注入 `DEVICE_PENDING_DELETE_ENABLED`，
-四个开关的运行时权威在 Bridge）：
+部署后在 Bridge 容器断言四个运行时开关、读取当前 `/health` 并断言 `ready is True`；
+feishu-ws 的 EVENT_NAME 单独与同一份快照比较（feishu-ws 只注入
+`DEVICE_PENDING_DELETE_ENABLED`，四个开关的运行时权威在 Bridge）：
 
 ```bash
 set -euo pipefail
@@ -132,7 +151,22 @@ payload = json.load(urllib.request.urlopen("http://127.0.0.1:5005/health", timeo
 assert payload.get("ready") is True, payload
 print("bridge /health ready OK")
 PY
-docker compose --profile feishu exec -T feishu-ws python3 -c 'import os; v = os.environ.get("EVENT_NAME"); assert v is not None and v.strip(), repr(v); print("feishu-ws EVENT_NAME:", v)'
+EXPECTED_EVENT_NAME="$(cat /tmp/feishu-expected-event-name.txt)"
+docker compose --profile feishu exec -T \
+  -e EXPECTED_EVENT_NAME="$EXPECTED_EVENT_NAME" feishu-ws python3 - <<'PY'
+import os
+
+expected = " ".join(str(os.environ.get("EXPECTED_EVENT_NAME") or "").split())
+actual = " ".join(str(os.environ.get("EVENT_NAME") or "").split())
+assert actual == expected, (
+    f"feishu-ws runtime EVENT_NAME {os.environ.get('EVENT_NAME')!r} does not "
+    f"match expected {os.environ.get('EXPECTED_EVENT_NAME')!r}"
+)
+if actual:
+    print("feishu-ws runtime EVENT_NAME matches expected:", actual)
+else:
+    print("feishu-ws runtime EVENT_NAME is empty as expected; group commands disabled by design")
+PY
 for s in alertmanager-feishu-bridge feishu-ws; do
   docker inspect "$(docker compose --profile feishu ps -q "$s")" --format "$s StartedAt: {{.State.StartedAt}}"
 done

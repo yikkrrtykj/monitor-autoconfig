@@ -1,7 +1,7 @@
 # Feishu 隔离实现提交独立审计
 
 日期：2026-09-07。被审提交：`7ad540cc75bd955a51656c618a2511163dc8271f`，父提交 `e44ca0e84449b2ea822e67147fb15a99d1c2751a`。
-状态：**隔离逻辑未发现阻断；9c78f1b 手册复核剩一项 EVENT_NAME 校验问题，未放行，本轮不 push**。
+状态：**隔离逻辑无阻断；R1～R4 已确认解决；R5 已修正待复核，未放行前不 push**。
 
 ## 范围与基线
 
@@ -61,10 +61,21 @@ R1～R4 已全部修正，运行代码、测试与隔离实现提交 7ad540c 均
 
 本地验证：内嵌 Python（JSON 解析、运行时开关断言、/health 断言、隔离纯函数检查）逐段语法检查通过；Bash 块未在本机执行（Windows 环境），未在生产执行，标记未测。
 
+## R5 修正（2026-09-07，追加提交）
+
+按复核最小修正要求重写手册第 2、3 节的 EVENT_NAME 校验，运行代码、测试与隔离实现提交 7ad540c 仍无改动：
+
+- 部署前由执行人明确确认预期 EVENT_NAME 并写入独立快照 `/tmp/feishu-expected-event-name.txt`；**允许明确预期为空**，不为通过验收修改该值或生产配置。
+- Compose 校验与部署后 feishu-ws 运行时校验均与同一份快照比较，均按与 `route_event_command` 相同的空白规范化规则处理；一致且非空时报告名称，一致且为空时报告“按预期禁用群命令”，不一致立即停止。
+- 保留字段存在性校验（Compose 缺 EVENT_NAME 字段仍拒绝）；删除两处仅检查非空的断言，未只删断言而不比较名称。
+- 快照不一致时的处理指引：核对 event-config.yml 与 .env 实际来源，确属配置错误按正常流程修正后重跑手册，不临时改预期绕过。
+
+本地验证（Windows）：8 个 Bash 块逐段静态检查、5 段内嵌 Python 逐段 compile、5 个改动文档本地链接、`git diff --check` 均通过；另用 mock subprocess/os.environ 实际执行手册两段校验逻辑，5 个场景全部符合预期：预期空（两段均 PASS，旧断言会拒绝——回归确认已消除）、预期一致 PASS、运行时漂移 FAIL、Compose 漂移 FAIL。未执行生产部署，仍标记未测。
+
 ## 下一步与发布门槛
 
 仅修正以上部署手册问题并同步 STATUS/本记录，**不重做隔离实现**。保留 7ad540c，另加普通 commit，不 amend/rebase/reset。
-9c78f1b 复核结果见下节。原修正已核实，当前只处理剩余的 EVENT_NAME 校验问题；通过后由用户普通 push，此后用户按修订手册部署验收。验收后返回 pre-refactor 只读审计主线，不扩大 correctness 修复范围。
+9c78f1b 复核结果见上节；R5 已按最小修正要求完成（见“R5 修正”节）。唯一下一步：独立复核确认 R5 已解决；通过后普通 push（含 7ad540c、a34f2c2、9c78f1b、d90dcf2 与本轮提交），此后用户按修订手册部署验收。验收后返回 pre-refactor 只读审计主线，不扩大 correctness 修复范围。
 
 ## 9c78f1b 独立复核（2026-09-07）
 
@@ -91,6 +102,8 @@ Compose 校验 `assert event.strip()`、运行时校验 `assert v is not None an
 - `git diff 9c78f1b^ 9c78f1b --check` 通过。原 NOT RUN 中“Bash 未在生产执行”继续成立；本轮补齐的是语法检查，不是生产验证。
 
 本轮仅追加复核结论和状态，不修改部署手册或实现，不 push。剩余一步：只修 R5，复核通过后由用户推送和部署；不再扩展其他 correctness 问题。
+
+R5 已于同日追加提交修正（见“R5 修正”节）；等待独立复核放行后推送。
 
 审计记录仅本地提交，不 push；首次审计检查了 62 个本地文档链接，本次复核检查了 5 个改动文档中的 29 个本地链接，均通过；Markdown 围栏及 `git diff --check` 也通过。自身提交用 `git log -1 --format="%H %s" -- docs/iterations/feishu-event-name-isolation-review.md` 定位。
 交接已持久化；无可调用的客户端压缩工具，未执行上下文压缩。
