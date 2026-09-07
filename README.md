@@ -262,9 +262,7 @@ cd librenms+grafana
 
 共享群命令必须带赛事名称，例如 `@机器人 Singapore 网络巡检`、
 `@机器人 Shanghai 网络巡检`、`@机器人 IEM Chengdu 网络巡检`。每台 VM 只执行与自己
-赛事名称匹配的命令，其它赛事及未带赛事名称的群命令会静默忽略。`EVENT_NAME` 为空或
-全空白的 VM 会静默丢弃所有群命令（含帮助及仅 @ 机器人），不会回复，恢复方式是配置明确
-名称并加前缀；仅明确的飞书私聊（p2p）保留无前缀兼容。可靠的共享群命令路由
+赛事名称匹配的命令，其它赛事及未带赛事名称的群命令会静默忽略。可靠的共享群命令路由
 依赖 `im:chat`、`im:message:readonly` 和 `im:message.group_msg` 的消息轮询；主动发消息还需
 `im:message:send_as_bot`。权限不足时保留长连接 fallback，但日志会明确提示
 `shared-group event routing is degraded`，不能把多个长连接客户端当作可靠广播总线。

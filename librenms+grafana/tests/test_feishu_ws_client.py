@@ -127,16 +127,7 @@ def test_extracts_command_after_robot_mention():
 
 
 def test_event_command_routing_handles_scope_case_boundary_and_multi_word_names():
-    # Empty or whitespace EVENT_NAME defaults to silently rejecting commands;
-    # only the explicitly allowed legacy p2p path keeps unscoped behavior.
-    assert client.route_event_command("网络巡检", "") is None
-    assert client.route_event_command("网络巡检", "   ") is None
-    assert client.route_event_command("网络巡检", "\t") is None
-    assert client.route_event_command("网络巡检", "", allow_unscoped=True) == "网络巡检"
-    assert client.route_event_command("网络巡检", "  ", allow_unscoped=True) == "网络巡检"
-    # allow_unscoped must never bypass the prefix requirement of a named event.
-    assert client.route_event_command("网络巡检", "Singapore", allow_unscoped=True) is None
-    assert client.route_event_command("Shanghai 网络巡检", "Singapore", allow_unscoped=True) is None
+    assert client.route_event_command("网络巡检", "") == "网络巡检"
     assert client.route_event_command("Singapore 网络巡检", "Singapore") == "网络巡检"
     assert client.route_event_command("singapore 帮助", "Singapore") == "帮助"
     assert client.route_event_command("Singapore 光功率巡检", "Singapore") == "光功率巡检"
@@ -157,8 +148,6 @@ def test_multi_instance_routing_is_mutually_exclusive():
     assert client.route_event_command(shanghai_command, "Singapore") is None
     assert client.route_event_command(singapore_command, "Shanghai") is None
     assert client.route_event_command(shanghai_command, "Shanghai") == "网络巡检"
-    assert client.route_event_command(singapore_command, "") is None
-    assert client.route_event_command(shanghai_command, "") is None
 
 
 def test_ignores_ordinary_group_chatter_even_with_sensitive_permission():
@@ -246,11 +235,11 @@ def test_long_connection_message_remains_fallback_until_polling_is_ready(monkeyp
             calls.append(self.args)
 
     client._SEEN_MESSAGES.clear()
-    monkeypatch.setattr(client, "EVENT_NAME", "Singapore")
+    monkeypatch.setattr(client, "EVENT_NAME", "")
     monkeypatch.setattr(client, "CHAT_TARGET", "")
     monkeypatch.setattr(client, "_POLL_READY", False)
     monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
-    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message("@_user_1 Singapore 帮助"))))
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message("@_user_1 帮助"))))
     assert calls == [("om_123", "帮助")]
 
     calls.clear()
@@ -294,67 +283,15 @@ def test_long_connection_fallback_routes_scope_and_warns_only_once(monkeypatch):
     assert sum("shared-group event routing is degraded" in item for item in logs) == 1
 
 
-def test_long_connection_fallback_rejects_blank_name_for_group_like_chats(monkeypatch):
-    class UnexpectedThread:
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("no command thread may start")
-
-    monkeypatch.setattr(client, "EVENT_NAME", "  ")
-    monkeypatch.setattr(client, "_POLL_READY", False)
-    monkeypatch.setattr(client, "_DEGRADED_WARNING_EMITTED", True)
-    monkeypatch.setattr(client.threading, "Thread", UnexpectedThread)
-
-    for chat_target in ("oc_shared", ""):
-        monkeypatch.setattr(client, "CHAT_TARGET", chat_target)
-        for chat_type in ("group", "unknown", None):
-            client._SEEN_MESSAGES.clear()
-            message = _message("@_user_1 帮助", chat_type=chat_type, message_id="om_reject")
-            assert client.on_message(SimpleNamespace(event=SimpleNamespace(message=message))) is None
-    assert "om_reject" in client._SEEN_MESSAGES
-
-
-def test_long_connection_p2p_keeps_legacy_unscoped_fallback(monkeypatch):
-    calls = []
-
-    class ImmediateThread:
-        def __init__(self, target, args, **_kwargs):
-            self.args = args
-
-        def start(self):
-            calls.append(self.args)
-
-    client._SEEN_MESSAGES.clear()
-    monkeypatch.setattr(client, "EVENT_NAME", "")
-    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
-    monkeypatch.setattr(client, "_POLL_READY", False)
-    monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
-
-    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
-        "@_user_1 帮助", chat_type="p2p", message_id="om_p2p",
-    ))))
-    assert calls == [("om_p2p", "帮助")]
-
-    # A non-empty EVENT_NAME still requires its prefix even in p2p chats.
-    calls.clear()
-    monkeypatch.setattr(client, "EVENT_NAME", "Singapore")
-    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
-        "@_user_1 网络巡检", chat_type="p2p", message_id="om_p2p_plain",
-    ))))
-    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
-        "@_user_1 Singapore 网络巡检", chat_type="p2p", message_id="om_p2p_scoped",
-    ))))
-    assert calls == [("om_p2p_scoped", "网络巡检")]
-
-
 def test_site_polling_baselines_old_messages_then_handles_new_once(monkeypatch):
     old = {
         "message_id": "om_old", "message_type": "text", "chat_type": "group",
-        "create_time": "100", "body": {"content": '{"text":"@_user_1 Singapore 帮助"}'},
+        "create_time": "100", "body": {"content": '{"text":"@_user_1 帮助"}'},
         "mentions": [{"key": "@_user_1"}], "sender": {"sender_type": "user"},
     }
     new = {
         "message_id": "om_new", "message_type": "text", "chat_type": "group",
-        "create_time": "200", "body": {"content": '{"text":"@_user_1 Singapore 光功率巡检"}'},
+        "create_time": "200", "body": {"content": '{"text":"@_user_1 光功率巡检"}'},
         "mentions": [{"key": "@_user_1"}], "sender": {"sender_type": "user"},
     }
     calls = []
@@ -367,92 +304,12 @@ def test_site_polling_baselines_old_messages_then_handles_new_once(monkeypatch):
             calls.append(self.args)
 
     client._SEEN_MESSAGES.clear()
-    monkeypatch.setattr(client, "EVENT_NAME", "Singapore")
+    monkeypatch.setattr(client, "EVENT_NAME", "")
     monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
     assert client.process_polled_messages([old], baseline=True) == 0
     assert client.process_polled_messages([old, new]) == 1
     assert client.process_polled_messages([new]) == 0
     assert calls == [("om_new", "光功率巡检")]
-
-
-def test_site_polling_rejects_blank_event_name_silently(monkeypatch):
-    def history(message_id, text, created, chat_type="group"):
-        return {
-            "message_id": message_id,
-            "message_type": "text",
-            "chat_type": chat_type,
-            "create_time": str(created),
-            "body": {"content": json.dumps({"text": f"@_user_1 {text}"}, ensure_ascii=False)},
-            "mentions": [{"key": "@_user_1"}],
-            "sender": {"sender_type": "user"},
-        }
-
-    class UnexpectedThread:
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("no command thread may start")
-
-    client._SEEN_MESSAGES.clear()
-    monkeypatch.setattr(client, "EVENT_NAME", "   ")
-    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
-    monkeypatch.setattr(client.threading, "Thread", UnexpectedThread)
-    monkeypatch.setattr(
-        client, "query_via_bridge",
-        lambda _command: (_ for _ in ()).throw(AssertionError("unexpected bridge query")),
-    )
-    monkeypatch.setattr(
-        client, "reply_to_message",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected reply")),
-    )
-
-    # Unscoped, other-event, help and mention-only commands are all dropped;
-    # missing chat_type or a mislabeled p2p entry cannot bypass the rule.
-    messages = [
-        history("om_blank_plain", "网络巡检", 100),
-        history("om_blank_help", "帮助", 101),
-        history("om_blank_other", "Singapore 网络巡检", 102),
-        history("om_blank_no_type", "网络巡检", 103, chat_type=None),
-        history("om_blank_p2p_label", "网络巡检", 104, chat_type="p2p"),
-    ]
-    assert client.process_polled_messages(messages) == 0
-    assert {
-        "om_blank_plain", "om_blank_help", "om_blank_other",
-        "om_blank_no_type", "om_blank_p2p_label",
-    }.issubset(client._SEEN_MESSAGES)
-
-
-def test_multi_instance_polling_isolates_same_messages_per_process(monkeypatch):
-    def history(message_id, text, created):
-        return {
-            "message_id": message_id,
-            "message_type": "text",
-            "chat_type": "group",
-            "create_time": str(created),
-            "body": {"content": json.dumps({"text": f"@_user_1 {text}"}, ensure_ascii=False)},
-            "mentions": [{"key": "@_user_1"}],
-            "sender": {"sender_type": "user"},
-        }
-
-    class ImmediateThread:
-        def __init__(self, target, args, **_kwargs):
-            self.args = args
-
-        def start(self):
-            calls.append(self.args)
-
-    messages = [
-        history("om_multi_sg", "Singapore 网络巡检", 200),
-        history("om_multi_sh", "Shanghai 网络巡检", 201),
-        history("om_multi_plain", "网络巡检", 202),
-    ]
-    # Simulate independent processes with separate dedup caches per instance.
-    for event_name, expected in (("Singapore", ["om_multi_sg"]), ("Shanghai", ["om_multi_sh"]), ("", [])):
-        calls = []
-        client._SEEN_MESSAGES = {}
-        monkeypatch.setattr(client, "EVENT_NAME", event_name)
-        monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
-        handled = client.process_polled_messages(messages)
-        assert handled == len(expected)
-        assert [message_id for message_id, _command in calls] == expected
 
 
 def test_site_polling_reserves_and_silently_ignores_other_events(monkeypatch):

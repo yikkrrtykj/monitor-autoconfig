@@ -298,22 +298,18 @@ def extract_command(message) -> str:
     return " ".join(text.split())
 
 
-def route_event_command(
-    command: str, event_name: str, *, allow_unscoped: bool = False,
-) -> str | None:
+def route_event_command(command: str, event_name: str) -> str | None:
     """Strip this VM's event scope, or silently reject another event.
 
-    An empty EVENT_NAME rejects every command by default; only callers that
-    explicitly allow unscoped commands (the legacy p2p long-connection path)
-    keep the original single-monitor behavior. Otherwise the normalized event
-    name must be the complete leading prefix, followed by whitespace or one
-    simple separator. This prevents SG from matching SG2 and supports
-    multi-word names such as "IEM Chengdu".
+    An empty EVENT_NAME retains the original single-monitor command behavior.
+    Otherwise the normalized event name must be the complete leading prefix,
+    followed by whitespace or one simple separator. This prevents SG from
+    matching SG2 and supports multi-word names such as "IEM Chengdu".
     """
     text = " ".join(str(command or "").split())
     event = " ".join(str(event_name or "").split())
     if not event:
-        return text if allow_unscoped else None
+        return text
     if not text.casefold().startswith(event.casefold()):
         return None
     remainder = text[len(event):]
@@ -435,8 +431,6 @@ def process_polled_messages(items: list[dict], *, baseline: bool = False) -> int
         if not _reserve_message(message_id):
             continue
         raw_command = extract_command(message) or "帮助"
-        # The polling source is the configured (possibly shared) group history:
-        # never allow unscoped commands, regardless of chat_type on the entry.
         command = route_event_command(raw_command, EVENT_NAME)
         if command is None:
             continue
@@ -493,10 +487,7 @@ def on_message(data):
     if not message_id or not _reserve_message(message_id):
         return None
     raw_command = extract_command(message) or "帮助"
-    # Only an explicitly typed p2p chat keeps the legacy unscoped fallback;
-    # group, missing and unknown chat types obey shared-group isolation.
-    allow_unscoped = str(_field(message, "chat_type", "") or "").lower() == "p2p"
-    command = route_event_command(raw_command, EVENT_NAME, allow_unscoped=allow_unscoped)
+    command = route_event_command(raw_command, EVENT_NAME)
     if command is None:
         return None
     command = command or "帮助"
