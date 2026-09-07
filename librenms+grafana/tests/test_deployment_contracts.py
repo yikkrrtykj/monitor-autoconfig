@@ -489,6 +489,7 @@ def test_alert_bridge_runtime_modules_are_packaged_without_legacy_roots():
     package = ROOT / "feishu_bridge"
     bridge = read("alertmanager-feishu-bridge.py")
     expected_modules = {
+        "card_presentation.py": "from feishu_bridge.card_presentation import (",
         "delivery.py": "from feishu_bridge.delivery import FeishuDelivery",
         "interconnect_watcher.py": "from feishu_bridge.interconnect_watcher import InterconnectWatcher",
         "isp_watcher.py": "from feishu_bridge.isp_watcher import IspBandwidthWatcher",
@@ -502,6 +503,20 @@ def test_alert_bridge_runtime_modules_are_packaged_without_legacy_roots():
     for module_name, import_line in expected_modules.items():
         assert (package / module_name).is_file()
         assert import_line in bridge
+
+    assert (
+        "def _card_preview_title(title, subtitle):\n"
+        "    return _presentation_card_preview_title(title, subtitle)"
+    ) in bridge
+    assert (
+        "def _make_card(title, subtitle, color, body_md, extra_elements=None):\n"
+        "    return _presentation_make_card(title, subtitle, color, body_md, extra_elements)"
+    ) in bridge
+    assert (
+        "def _with_event_name(card):\n"
+        '    \"\"\"Prefix every outgoing alert with this monitor\'s company/event name.\"\"\"\n'
+        "    return _presentation_with_event_name(card, EVENT_NAME)"
+    ) in bridge
 
     for old_name in (
         "feishu_delivery.py",
