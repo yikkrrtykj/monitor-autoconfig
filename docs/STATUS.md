@@ -1,6 +1,6 @@
 # 当前状态与恢复入口
 
-更新日期：2026-09-06（Asia/Shanghai）。维护者：当前迭代 Agent；生产结果由用户反馈。
+更新日期：2026-09-07（Asia/Shanghai）。维护者：当前迭代 Agent；生产结果由用户反馈。
 
 ## 当前结论
 
@@ -9,13 +9,13 @@
 - 用户回传日志确认：服务器先部署 `6754094` 并通过检查，随后快进至 `8135c8542bc7c98076961959aae00ff586fb2ca3`；后者仅调整测试契约，无需再次部署。已跟踪文件无修改，既有未跟踪生产文件保留。
 - [Batch 5.2 — 事故分析页请求顺序](iterations/batch-5.2-proposal.md) 已正式收口：用户明确确认修复、GitHub CI、部署、服务器 39/39、从首页进入实际页面均 PASS，Blocking finding NONE。已知 P3 `/incident` 直接刷新问题 DEFERRED，不继续处理。
 - Batch 5.2 实现为 d9da386，测试契约补丁为 ce36e96。本轮方案基线 `ce36e96662987da690cd97d1472455b554261df5`，开始时本地干净，实时远端 main 一致。
-- [Feishu EVENT_NAME 共享群隔离](iterations/feishu-event-name-isolation.md) **已实施，待独立审计与生产验收**：`route_event_command()` 新增 `allow_unscoped` 仅关键字参数，群轮询和长连接群消息默认拒绝空/空白 EVENT_NAME，仅明确 p2p 的长连接回退保留无前缀兼容；测试与文档已同步更新。
+- [Feishu EVENT_NAME 共享群隔离](iterations/feishu-event-name-isolation.md) **已实施，提交整体审计未通过，未 push**：实现提交 `7ad540cc75bd955a51656c618a2511163dc8271f`。隔离代码未见阻断，部署手册有四项必须修正的问题，详见 [独立审计](iterations/feishu-event-name-isolation-review.md)。不能重新按“尚未实施”状态重做代码。
 - 工程治理历史记录：[2026-09-06 工程规范建设](iterations/2026-09-06-engineering-governance.md)。规范已随 `7376319` 提交推送并核对远端；其发布结果由 b02bd54 追加记录，CI 当时查询无运行记录。
 - 当前 Git HEAD、远端发布和 CI 以实际查询为准；不把旧 SHA 写成永远有效的“最新版本”。治理提交可通过其迭代文档的 Git 历史定位。
 
 ## 唯一下一步
 
-本轮已在 e44ca0e 之上完成隔离最小实现并通过本地针对性测试（见迭代记录）。唯一下一步：独立代码审计确认后，按 [本批部署手册](runbooks/feishu-event-name-isolation-deployment.md) 由用户执行服务器部署与验收；不重做已确认的问题审计。
+仅按 [独立审计 R1～R4](iterations/feishu-event-name-isolation-review.md) 修正部署手册的凭据输出、容器路径、Bridge 四开关/健康检查和固定版本/失败停止规则。保留 7ad540c，追加补丁提交；复核通过后才 push，再由用户部署验收。当前手册不得直接执行。
 主线顺序固定：Feishu 隔离修复与验收 → pre-refactor 只读审计 → 无剩余 P0/P1 blocker 后停止扩大 correctness 修复 → behavior-preserving refactor。
 Pre-refactor 审计不得被 P2/P3 临时问题带离主线；进入实际重构前固定模块范围与验证清单。
 
@@ -25,7 +25,7 @@ Pre-refactor 审计不得被 P2/P3 临时问题带离主线；进入实际重构
 - 不自动连接公司服务器，不主动测试发飞书，不执行真实设备 DELETE。
 - 四个删除开关保持 `true / true / true / false`，详见 [项目约束](PROJECT_CONTEXT.md)。
 - main 串行普通提交和 push，无分支/PR/历史改写；保留服务器既有未跟踪生产文件。
-- 已验收 Batch 5.1/5.2 不重复部署、审计或验收。本轮仅方案和记录，无需服务重启；不修改生产配置或删除服务器既有未跟踪文件。
+- 已验收 Batch 5.1/5.2 不重复部署、审计或验收。本轮仅审计和记录，无需服务重启；Feishu 实现仍待修正手册后发布部署。
 
 ## 证据与未验证项
 
@@ -34,3 +34,4 @@ Pre-refactor 审计不得被 P2/P3 临时问题带离主线；进入实际重构
 - Batch 5.2 生产/CI 通过状态来源为用户最新确认，覆盖了此前待验收状态；Agent 未重新连接服务器。
 - Feishu 隔离修复本地验证（2026-09-07，Windows 本地 Python 3.14 环境）：`python -m pytest -q librenms+grafana/tests/test_feishu_ws_client.py` 20 passed；`python -m pytest -q librenms+grafana/tests/test_deployment_contracts.py -k feishu` 3 passed、68 deselected；`python -m py_compile librenms+grafana/feishu-ws-client.py` 通过；`git diff --check` 通过。生产部署与真实飞书投递未测，待用户按手册执行。
 - 工程治理的检查、发布结果及上下文压缩状态见其迭代记录；没有实际工具结果不得宣称客户端压缩已完成。
+- 2026-09-07 独立审计：188 个无网络模拟路由组合、Python 编译及提交 diff 检查通过；未复跑 pytest。实时远端 main 核对仍为 e44ca0e，7ad540c 未发布；本轮审计记录也不 push。

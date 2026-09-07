@@ -6,6 +6,7 @@
 |---|---|
 | [AGENTS.md](../AGENTS.md) | Agent 必须遵守的启动、实施、交付、压缩顺序 |
 | [STATUS](STATUS.md) | 当前进度、活跃批次、阻断与唯一下一步；恢复上下文首先读 |
+| [Feishu 实现独立审计](iterations/feishu-event-name-isolation-review.md) | 7ad540c 代码未见阻断；部署手册四项问题待修，未 push |
 | [PROJECT_CONTEXT](PROJECT_CONTEXT.md) | 长期业务约束、冻结边界、验收历史 |
 | [ENGINEERING](ENGINEERING.md) | 架构边界、代码、安全、测试与完成标准 |
 | [GIT_WORKFLOW](GIT_WORKFLOW.md) | main 串行提交、发布核验、失败与回退 |
