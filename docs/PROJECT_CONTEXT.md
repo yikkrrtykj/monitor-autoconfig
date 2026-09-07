@@ -81,4 +81,4 @@ mkdir/write/replace 的 OSError 转为安全错误，保留 `require_write()` �
 ## 当前主线
 
 按用户明确恢复的顺序：Feishu EVENT_NAME shared-group isolation → pre-refactor 只读审计 → 无剩余 P0/P1 blocker 后停止扩大 correctness 修复 → behavior-preserving refactor。
-Feishu 隔离最小修复已在 7ad540c 实施：空/空白 EVENT_NAME 的群轮询和长连接群消息统一静默拒绝，明确 p2p 的长连接回退保留既有兼容。2026-09-07 [独立审计](iterations/feishu-event-name-isolation-review.md) 未发现隔离代码阻断，但部署手册有四项必须修正的问题，提交整体未放行、未 push；只修手册并复核后发布，不重做实现。不修改冻结 ISP、已收口批次、P3 刷新或设备删除逻辑。
+Feishu 隔离最小修复已在 7ad540c 实施：空/空白 EVENT_NAME 的群轮询和长连接群消息统一静默拒绝，明确 p2p 的长连接回退保留既有兼容。2026-09-07 [独立复核](iterations/feishu-event-name-isolation-review.md) 确认 9c78f1b 已处理手册原 R1～R4，隔离代码无阻断；当前仅剩 R5：手册应比较预期 EVENT_NAME 且允许预期为空，不能只断言非空。只修该手册检查，复核通过后由用户 push 和部署；本轮未放行、未 push。不修改冻结 ISP、已收口批次、P3 刷新或设备删除逻辑。

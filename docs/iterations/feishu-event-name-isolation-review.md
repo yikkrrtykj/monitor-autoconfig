@@ -1,7 +1,7 @@
 # Feishu 隔离实现提交独立审计
 
 日期：2026-09-07。被审提交：`7ad540cc75bd955a51656c618a2511163dc8271f`，父提交 `e44ca0e84449b2ea822e67147fb15a99d1c2751a`。
-状态：**隔离逻辑未发现阻断；提交整体审计未通过，禁止本轮 push**。
+状态：**隔离逻辑未发现阻断；9c78f1b 手册复核剩一项 EVENT_NAME 校验问题，未放行，本轮不 push**。
 
 ## 范围与基线
 
@@ -64,7 +64,33 @@ R1～R4 已全部修正，运行代码、测试与隔离实现提交 7ad540c 均
 ## 下一步与发布门槛
 
 仅修正以上部署手册问题并同步 STATUS/本记录，**不重做隔离实现**。保留 7ad540c，另加普通 commit，不 amend/rebase/reset。
-手册修正已完成并追加提交；下一步由独立复核确认 R1～R4 已解决，通过后普通 push（含 7ad540c 与手册修正提交），此后用户按修订手册部署验收。验收后返回 pre-refactor 只读审计主线，不扩大 correctness 修复范围。
+9c78f1b 复核结果见下节。原修正已核实，当前只处理剩余的 EVENT_NAME 校验问题；通过后由用户普通 push，此后用户按修订手册部署验收。验收后返回 pre-refactor 只读审计主线，不扩大 correctness 修复范围。
 
-本次审计记录本地提交，不 push；62 个本地文档链接、Markdown 围栏及 `git diff --check` 检查通过。自身提交用 `git log -1 --format="%H %s" -- docs/iterations/feishu-event-name-isolation-review.md` 定位。
+## 9c78f1b 独立复核（2026-09-07）
+
+被审提交 `9c78f1b0adf9a32bfbb187879060d114afd8bc9f`。开始时工作区和暂存区干净，本地 main 领先三个提交；实时远端 main 仍为 e44ca0e。运行代码与测试自 7ad540c 起无改动，本轮不重复审计隔离实现。
+
+原发现核对：R1 已限定 JSON 字段输出，R2 路径已统一为真实挂载，R3 的三层四开关与当前 Bridge health 已正确改用权威服务，R4 已固定 SHA 并检查 main/干净状态/快进关系/部署前后 HEAD。以上修正不再要求重做。
+SHA 一致性和 StartedAt 与部署开始时间仍按手册文字要求人工比较；它们不是脚本自动断言，执行人必须完成比较才可报告通过，不将此再扩大为新修复范围。
+
+### R5 / P2 — 用非空校验替代预期 EVENT_NAME 一致性
+
+位置：9c78f1b 手册第 83～87 行，以及第 135 行。
+Compose 校验 `assert event.strip()`、运行时校验 `assert v is not None and v.strip()` 存在同一个契约错误：
+
+- 预期 EVENT_NAME 为空、按隔离策略静默拒绝群命令的部署被强制停止，并被引导修改 .env；这不是本轮修复要求，且与手册“空名称属于预期拒绝状态”的说明冲突。
+- 两处只检查非空，不保存或比较预期名称。模拟部署前 Singapore、运行时 Shanghai，两处均 PASS，不能证明部署后的实例身份仍正确。deploy.sh 会从 event-config.yml 同步 .env，不能假设部署前后配置必然相同。
+
+最小修正：保留字段存在性校验；在部署前明确确认预期 EVENT_NAME，保存为独立快照；Compose 和运行时分别与同一个预期值比较，按既定名称规范化规则处理，**允许明确预期为空**。不符时停止，符合且为空时报告“按预期禁用群命令”，不要要求为通过验收修改生产配置。不得只删除非空断言而仍不比较名称。
+
+验证证据（Windows、Git Bash、Python 3.12.14）：
+
+- 8 个 Bash 块逐段 `bash -n` 通过；仅解析，没有执行 shell 中的部署命令。
+- 5 段内嵌 Python 逐段 compile 通过。
+- 用 mock subprocess 返回 Compose JSON、mock os.environ 模拟运行时，实际执行手册两个名称校验片段：预期空名称被拒绝；Singapore → Shanghai 两段均通过。没有 Docker/服务器/网络调用，也没有真实配置内容。
+- `git diff 9c78f1b^ 9c78f1b --check` 通过。原 NOT RUN 中“Bash 未在生产执行”继续成立；本轮补齐的是语法检查，不是生产验证。
+
+本轮仅追加复核结论和状态，不修改部署手册或实现，不 push。剩余一步：只修 R5，复核通过后由用户推送和部署；不再扩展其他 correctness 问题。
+
+审计记录仅本地提交，不 push；首次审计检查了 62 个本地文档链接，本次复核检查了 5 个改动文档中的 29 个本地链接，均通过；Markdown 围栏及 `git diff --check` 也通过。自身提交用 `git log -1 --format="%H %s" -- docs/iterations/feishu-event-name-isolation-review.md` 定位。
 交接已持久化；无可调用的客户端压缩工具，未执行上下文压缩。

@@ -6,7 +6,7 @@
 |---|---|
 | [AGENTS.md](../AGENTS.md) | Agent 必须遵守的启动、实施、交付、压缩顺序 |
 | [STATUS](STATUS.md) | 当前进度、活跃批次、阻断与唯一下一步；恢复上下文首先读 |
-| [Feishu 实现独立审计](iterations/feishu-event-name-isolation-review.md) | 7ad540c 代码未见阻断；部署手册四项问题待修，未 push |
+| [Feishu 实现独立审计](iterations/feishu-event-name-isolation-review.md) | 原 R1～R4 已修；9c78f1b 手册复核剩 R5 名称一致性检查，未 push |
 | [PROJECT_CONTEXT](PROJECT_CONTEXT.md) | 长期业务约束、冻结边界、验收历史 |
 | [ENGINEERING](ENGINEERING.md) | 架构边界、代码、安全、测试与完成标准 |
 | [GIT_WORKFLOW](GIT_WORKFLOW.md) | main 串行提交、发布核验、失败与回退 |
@@ -14,7 +14,7 @@
 | [迭代模板](iterations/TEMPLATE.md) | 新批次的记录结构 |
 | [Batch 5.1](iterations/batch-5.1.md) | 控制台刷新生命周期修复，服务器与网页验收通过、已收口 |
 | [Batch 5.2](iterations/batch-5.2-proposal.md) | 已正式收口；P3 直接刷新问题 DEFERRED |
-| [Feishu EVENT_NAME 隔离方案](iterations/feishu-event-name-isolation.md) | 已实施隔离修复；待独立审计与生产验收，含部署手册链接 |
+| [Feishu EVENT_NAME 隔离方案](iterations/feishu-event-name-isolation.md) | 隔离实现审计无阻断；手册 R5 待修、尚未发布部署 |
 | [工程规范建设](iterations/2026-09-06-engineering-governance.md) | 本次规范和持久化建设记录 |
 | [公司部署与验收](runbooks/company-deployment.md) | 已收口 Batch 5.2 的历史部署参考，不能直接用作 Feishu 修复交付 |
 

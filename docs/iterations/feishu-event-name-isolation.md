@@ -104,7 +104,7 @@ Pre-refactor 审计只检查拟重构模块及其调用边界，输出基线、�
 
 ## 交付记录
 
-最新独立审计见 [7ad540c 审计记录](feishu-event-name-isolation-review.md)：隔离代码未发现阻断，188 个独立模拟路由组合通过；手册存在凭据邻近输出、错误路径、错误运行时检查对象及未固定部署版本问题。先只修手册并复核，不能直接 push 或要求用户执行原手册。以下保留实施轮记录。
+最新独立审计见 [审计及 9c78f1b 复核记录](feishu-event-name-isolation-review.md)：隔离代码未发现阻断，188 个独立模拟路由组合通过；手册原 R1～R4 已修，当前只剩 R5 预期 EVENT_NAME 一致性校验（允许预期为空）。只修手册该项，复核通过后由用户 push 和部署；以下保留实施轮记录。
 
 本节记录实施轮（2026-09-07）。实现改动严格限定在 `librenms+grafana/feishu-ws-client.py` 与
 `librenms+grafana/tests/test_feishu_ws_client.py`；`test_deployment_contracts.py` 无 stale 断言，未修改。
