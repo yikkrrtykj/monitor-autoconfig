@@ -9,13 +9,13 @@
 - 用户回传日志确认：服务器先部署 `6754094` 并通过检查，随后快进至 `8135c8542bc7c98076961959aae00ff586fb2ca3`；后者仅调整测试契约，无需再次部署。已跟踪文件无修改，既有未跟踪生产文件保留。
 - [Batch 5.2 — 事故分析页请求顺序](iterations/batch-5.2-proposal.md) 已正式收口：用户明确确认修复、GitHub CI、部署、服务器 39/39、从首页进入实际页面均 PASS，Blocking finding NONE。已知 P3 `/incident` 直接刷新问题 DEFERRED，不继续处理。
 - Batch 5.2 实现为 d9da386，测试契约补丁为 ce36e96。本轮方案基线 `ce36e96662987da690cd97d1472455b554261df5`，开始时本地干净，实时远端 main 一致。
-- [Feishu EVENT_NAME 共享群隔离](iterations/feishu-event-name-isolation.md) **已实施，代码审计无阻断；R1～R4 已确认解决，R5 已按复核要求修正，待复核放行后 push**：实现为 `7ad540cc75bd955a51656c618a2511163dc8271f`。R5 为预期 EVENT_NAME 快照一致性校验（允许明确预期为空），详见 [独立审计](iterations/feishu-event-name-isolation-review.md)。不重做实现。
+- [Feishu EVENT_NAME 共享群隔离](iterations/feishu-event-name-isolation.md) **已实施，代码与手册审计通过；1b57ed3 的 R5 已确认解决，待用户 push 和生产验收**：实现为 `7ad540cc75bd955a51656c618a2511163dc8271f`。R5 为预期 EVENT_NAME 快照一致性校验（允许明确预期为空），详见 [独立审计](iterations/feishu-event-name-isolation-review.md)。不重做实现。
 - 工程治理历史记录：[2026-09-06 工程规范建设](iterations/2026-09-06-engineering-governance.md)。规范已随 `7376319` 提交推送并核对远端；其发布结果由 b02bd54 追加记录，CI 当时查询无运行记录。
 - 当前 Git HEAD、远端发布和 CI 以实际查询为准；不把旧 SHA 写成永远有效的“最新版本”。治理提交可通过其迭代文档的 Git 历史定位。
 
 ## 唯一下一步
 
-R5 已按 [独立审计复核](iterations/feishu-event-name-isolation-review.md) 最小修正：部署前确认预期 EVENT_NAME 并存快照，Compose 与运行时均与同一快照比对（同一空白规范化规则），允许明确预期为空，不为验收改生产配置。唯一下一步：独立复核确认 R5 已解决，通过后普通 push，再由用户按修订手册部署验收。已确认解决的 R1～R4 不重复扩展。
+[1b57ed3 独立复核](iterations/feishu-event-name-isolation-review.md) 已通过，R1～R5 均已解决。唯一下一步：由用户普通 push（包括本轮放行记录），核验远端与 CI 后按[修订部署手册](runbooks/feishu-event-name-isolation-deployment.md)执行服务器验收。Agent 本轮不 push、不连接服务器；不再重复扩展手册审计。
 主线顺序固定：Feishu 隔离修复与验收 → pre-refactor 只读审计 → 无剩余 P0/P1 blocker 后停止扩大 correctness 修复 → behavior-preserving refactor。
 Pre-refactor 审计不得被 P2/P3 临时问题带离主线；进入实际重构前固定模块范围与验证清单。
 
@@ -25,7 +25,7 @@ Pre-refactor 审计不得被 P2/P3 临时问题带离主线；进入实际重构
 - 不自动连接公司服务器，不主动测试发飞书，不执行真实设备 DELETE。
 - 四个删除开关保持 `true / true / true / false`，详见 [项目约束](PROJECT_CONTEXT.md)。
 - main 串行普通提交和 push，无分支/PR/历史改写；保留服务器既有未跟踪生产文件。
-- 已验收 Batch 5.1/5.2 不重复部署、审计或验收。本轮仅审计和记录，无需服务重启；Feishu 实现仍待修正手册后发布部署。
+- 已验收 Batch 5.1/5.2 不重复部署、审计或验收。本轮仅审计和记录，无需服务重启；Feishu 实现与修订手册已放行，仍待发布部署。
 
 ## 证据与未验证项
 
@@ -37,3 +37,5 @@ Pre-refactor 审计不得被 P2/P3 临时问题带离主线；进入实际重构
 - 2026-09-07 独立审计：188 个无网络模拟路由组合、Python 编译及提交 diff 检查通过；未复跑 pytest。实时远端 main 核对仍为 e44ca0e，7ad540c 未发布；本轮审计记录也不 push。
 - 9c78f1b 复核：8 段 Bash 静态语法及 5 段 Python 编译通过，mock 验证确认 R5。服务器命令未执行；开始时本地领先远端三个提交，新增复核记录仍仅本地保存。
 - R5 修正轮验证：手册内嵌 Python 编译、Bash 块静态检查、链接与 `git diff --check` 通过；mock 执行两段校验逻辑验证 5 个场景（预期空/一致/Compose 漂移/运行时漂移/旧非空断言回归消除）全部符合预期。生产未执行，未测。
+- 1b57ed3 独立复核：8 段 Bash 静态语法、5 段 Python 编译、14 个名称模拟组合及 Compose 字段缺失检查均通过；运行代码和测试自 7ad540c 起无变化。本轮未复跑 pytest、未执行 Docker/服务器部署、未核验新 CI，放行仅表示审计通过。
+- 本轮实时远端查询因 GitHub 443 连接超时失败，不能确认当前远端 SHA；本地领先数量仅依据跟踪引用，用户 push 时须重新核验。

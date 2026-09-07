@@ -1,6 +1,6 @@
 # Feishu EVENT_NAME 共享群隔离方案
 
-维护日期：2026-09-07。状态：**最小修复已实施；独立审计发现部署手册阻断，未 push**。
+维护日期：2026-09-07。状态：**最小修复已实施；代码与手册审计通过，待用户 push 和生产验收**。
 审计基线（问题最初确认）：`ce36e96662987da690cd97d1472455b554261df5`。实施基线：`e44ca0e84449b2ea822e67147fb15a99d1c2751a`（独立审计 PLAN AUDIT 指定，未回退到 ce36e96）。实施开始时本地 main 工作区与暂存区干净。
 授权范围：按独立审计通过的方案实施最小修复；本轮不修改生产配置、不部署、不发送飞书消息。
 
@@ -104,7 +104,7 @@ Pre-refactor 审计只检查拟重构模块及其调用边界，输出基线、�
 
 ## 交付记录
 
-最新独立审计见 [审计及 9c78f1b 复核记录](feishu-event-name-isolation-review.md)：隔离代码未发现阻断，188 个独立模拟路由组合通过；手册原 R1～R4 已修，当前只剩 R5 预期 EVENT_NAME 一致性校验（允许预期为空）。只修手册该项，复核通过后由用户 push 和部署；以下保留实施轮记录。
+最新独立审计见 [审计及 1b57ed3 复核记录](feishu-event-name-isolation-review.md)：隔离代码未发现阻断，手册 R1～R5 已确认解决；预期空名称、一致名称、空白规范化与名称漂移的独立验证符合要求。当前已放行，待用户 push、核验远端和 CI 后部署；生产尚未验收，批次未收口。以下保留实施轮记录。
 
 本节记录实施轮（2026-09-07）。实现改动严格限定在 `librenms+grafana/feishu-ws-client.py` 与
 `librenms+grafana/tests/test_feishu_ws_client.py`；`test_deployment_contracts.py` 无 stale 断言，未修改。
