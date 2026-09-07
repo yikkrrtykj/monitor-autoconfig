@@ -50,11 +50,21 @@ Compose 第 572 行实际挂载 `/feishu-ws-client.py`，第 582 行用该路径
 手册直接 merge origin/main，没有锁定已审计的完整 SHA；main 后续追加提交时可能部署未经本轮审计的内容。git status 只打印，不执行分支/已跟踪差异断言；分段命令也没有统一的失败即停机制，前序失败后可能继续部署旧代码。
 修正：单个 Bash 块使用失败停止语义，断言 main、已跟踪工作区/暂存区干净；fetch 后验证固定目标在远端历史中并可从 HEAD 快进，只合并该目标，部署前后核对 HEAD。保留已有 untracked 文件，冲突立即停止。比较容器实际 StartedAt，不能把 ps 中 Up 时长当成未经计算的本轮启动时间证据。
 
+## 手册修正（2026-09-07，追加提交）
+
+R1～R4 已全部修正，运行代码、测试与隔离实现提交 7ad540c 均未改动：
+
+- R1：删 chasing `grep -A2 -B2 EVENT_NAME`；改为解析 `docker compose config --format json`，仅断言并输出 Bridge 四开关与 feishu-ws EVENT_NAME，不打印原始 JSON/相邻 YAML/凭据。
+- R2：容器内路径统一为实际挂载/入口 `/feishu-ws-client.py`（Compose 572/582 行）；移除按容器名重试的 fallback 与“先 ls /app 猜路径”指令，固定工作目录与服务名。
+- R3：部署前 `grep -qx` 精确断言 .env 四开关；Compose 渲染后断言 Bridge 四开关；部署后在 Bridge 容器断言四个运行时开关并请求本机 `/health` 断言 `ready is True`；feishu-ws 只单独核对 EVENT_NAME；用 `docker inspect StartedAt` 取实际启动时间。
+- R4：固定目标 SHA `7ad540cc75bd955a51656c618a2511163dc8271f`；断言 main 分支、已跟踪工作区/暂存区干净、目标在远端历史内且可从 HEAD 快进；每个代码块 `set -euo pipefail`，失败即停；部署前后均断言 HEAD。
+
+本地验证：内嵌 Python（JSON 解析、运行时开关断言、/health 断言、隔离纯函数检查）逐段语法检查通过；Bash 块未在本机执行（Windows 环境），未在生产执行，标记未测。
+
 ## 下一步与发布门槛
 
 仅修正以上部署手册问题并同步 STATUS/本记录，**不重做隔离实现**。保留 7ad540c，另加普通 commit，不 amend/rebase/reset。
-手册修正后核对 Compose 路径/服务/字段，并检查 Bash 及内嵌 Python 语法；未在生产执行的部分继续标记未测。
-全部发现解决且复核通过后才能普通 push；此后用户按修订手册部署验收。验收后返回 pre-refactor 只读审计主线，不扩大 correctness 修复范围。
+手册修正已完成并追加提交；下一步由独立复核确认 R1～R4 已解决，通过后普通 push（含 7ad540c 与手册修正提交），此后用户按修订手册部署验收。验收后返回 pre-refactor 只读审计主线，不扩大 correctness 修复范围。
 
 本次审计记录本地提交，不 push；62 个本地文档链接、Markdown 围栏及 `git diff --check` 检查通过。自身提交用 `git log -1 --format="%H %s" -- docs/iterations/feishu-event-name-isolation-review.md` 定位。
 交接已持久化；无可调用的客户端压缩工具，未执行上下文压缩。
