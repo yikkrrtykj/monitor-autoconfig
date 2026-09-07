@@ -1,8 +1,8 @@
 # Feishu EVENT_NAME 共享群隔离方案
 
-维护日期：2026-09-06。状态：**只读审计确认缺口，方案完成，尚未实施**。
-审计/方案基线：`ce36e96662987da690cd97d1472455b554261df5`。本轮开始时本地 main 工作区与暂存区干净，实时远端 main 与该 SHA 一致。
-授权范围：用户要求先核对问题是否存在，随后要求写方案。本轮只修改文档，不修改运行代码、生产配置或发送飞书消息。
+维护日期：2026-09-07。状态：**最小修复已实施，待独立审计与生产验收**。
+审计基线（问题最初确认）：`ce36e96662987da690cd97d1472455b554261df5`。实施基线：`e44ca0e84449b2ea822e67147fb15a99d1c2751a`（独立审计 PLAN AUDIT 指定，未回退到 ce36e96）。实施开始时本地 main 工作区与暂存区干净。
+授权范围：按独立审计通过的方案实施最小修复；本轮不修改生产配置、不部署、不发送飞书消息。
 
 ## 目标与结论
 
@@ -104,6 +104,34 @@ Pre-refactor 审计只检查拟重构模块及其调用边界，输出基线、�
 
 ## 交付记录
 
-本轮仅提交方案及交接文档。已核对源码位置和本地/远端基线，14 个 Markdown 文件的 57 个本地链接与代码围栏检查通过，`git diff --check` 通过；无运行代码或测试文件改动。方案不是已实施修复，不能标记隔离问题已解决。
-本记录自身 SHA 通过 `git log -1 --format="%H %s" -- docs/iterations/feishu-event-name-isolation.md` 定位。
+本节记录实施轮（2026-09-07）。实现改动严格限定在 `librenms+grafana/feishu-ws-client.py` 与
+`librenms+grafana/tests/test_feishu_ws_client.py`；`test_deployment_contracts.py` 无 stale 断言，未修改。
+文档仅做必要语义补充：根 README、`.env.example`（默认值不变）、飞书排障文档、STATUS、PROJECT_CONTEXT、
+docs/README、本记录，以及新增本批专用部署手册。
+
+关键实现点：
+
+- `route_event_command()` 新增仅关键字参数 `allow_unscoped=False`；空/空白 EVENT_NAME 默认返回 `None`，仅 `allow_unscoped=True` 时返回原文本；非空名称匹配逻辑不变。
+- 群轮询 `process_polled_messages()` 保持默认拒绝，不传 `allow_unscoped=True`，条目 chat_type 缺失或误标 p2p 均不绕过。
+- 长连接 `on_message()` 仅在消息 chat_type 小写规范化后明确为 `p2p` 时传 `allow_unscoped=True`；group/缺失/未知类型一律拒绝。
+- 两个入口在 `command is None` 时于启动命令线程前退出，消息 ID 预留与去重不变。
+- 审计修正项 5 已锁定：`route_event_command("网络巡检", "Singapore", allow_unscoped=True) is None`，即 allow_unscoped 不能绕过非空名称的前缀要求。
+- 原先用空名称验证 baseline/回退的正向测试改用具名消息（断言目的不变），新增空名称拒绝、p2p 兼容及多实例隔离负向测试。
+
+本地验证结果（Windows 本地 Python 3.14 环境）：
+
+```text
+python -m pytest -q librenms+grafana/tests/test_feishu_ws_client.py
+→ 20 passed, 1 warning（仅 pytest cache 目录写权限警告，与测试无关）
+python -m pytest -q librenms+grafana/tests/test_deployment_contracts.py -k feishu
+→ 3 passed, 68 deselected
+python -m py_compile librenms+grafana/feishu-ws-client.py
+→ 通过
+git diff --check
+→ 通过
+```
+
+未测项（NOT RUN）：真实飞书投递、生产部署、服务器运行时核对；待独立代码审计通过后按
+[部署手册](../runbooks/feishu-event-name-isolation-deployment.md) 由用户执行。
+实现提交不 amend/rebase/reset；本轮提交后暂不 push，待独立审计。
 交接已持久化；无可调用的客户端压缩工具，未执行上下文压缩。
