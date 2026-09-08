@@ -1369,8 +1369,8 @@ def test_delivery_panel_owns_operator_actions_and_mounts_existing_iperf_controll
         assert controller_token not in panel
     assert "control/delivery-panel.js?v=20260828a" in index
     assert index.index("control/iperf-controller.js?v=20260828a") < index.index("control/delivery-panel.js?v=20260828a")
-    assert index.index("control/delivery-panel.js?v=20260828a") < index.index("control/auth-controller.js?v=20260828a")
-    assert index.index("control/auth-controller.js?v=20260828a") < index.index("app.js?v=20260905a")
+    assert index.index("control/delivery-panel.js?v=20260828a") < index.index("control/auth-controller.js?v=20260908a")
+    assert index.index("control/auth-controller.js?v=20260908a") < index.index("app.js?v=20260905a")
 
 
 def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache():
@@ -1453,8 +1453,8 @@ def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache(
         assert removed_token not in index
         assert removed_token not in app
         assert removed_token not in api
-    assert "control/auth-controller.js?v=20260828a" in index
-    assert index.index("control/auth-controller.js?v=20260828a") < index.index("app.js?v=20260905a")
+    assert "control/auth-controller.js?v=20260908a" in index
+    assert index.index("control/auth-controller.js?v=20260908a") < index.index("app.js?v=20260905a")
 
 
 def test_incident_registry_owns_control_record_rendering_and_write_actions():
@@ -1492,7 +1492,7 @@ def test_incident_registry_owns_control_record_rendering_and_write_actions():
         assert app_token in app
         assert app_token not in registry
     assert "control/incident-registry.js?v=20260828a" in index
-    assert index.index("control/auth-controller.js?v=20260828a") < index.index("control/incident-registry.js?v=20260828a")
+    assert index.index("control/auth-controller.js?v=20260908a") < index.index("control/incident-registry.js?v=20260828a")
     assert index.index("control/incident-registry.js?v=20260828a") < index.index("app.js?v=20260905a")
 
 

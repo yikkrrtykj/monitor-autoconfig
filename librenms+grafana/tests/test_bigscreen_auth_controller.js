@@ -16,7 +16,10 @@ class FakeElement {
     this.className = '';
     this._textContent = '';
     this.textHistory = [];
-    this.value = '';
+    this._value = '';
+    this.valueWrites = 0;
+    this.selectionStart = 0;
+    this.selectionEnd = 0;
   }
 
   set textContent(value) {
@@ -28,6 +31,22 @@ class FakeElement {
     return this._textContent;
   }
 
+  set value(value) {
+    this._value = String(value);
+    this.valueWrites += 1;
+    this.selectionStart = this._value.length;
+    this.selectionEnd = this._value.length;
+  }
+
+  get value() {
+    return this._value;
+  }
+
+  setSelectionRange(start, end) {
+    this.selectionStart = start;
+    this.selectionEnd = end;
+  }
+
   addEventListener(type, handler) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
     this.listeners.get(type).push(handler);
@@ -37,12 +56,14 @@ class FakeElement {
     return (this.listeners.get(type) || []).length;
   }
 
-  dispatch(type) {
+  dispatch(type, init = {}) {
     const event = {
       type,
       target: this,
+      currentTarget: this,
       defaultPrevented: false,
-      preventDefault() { this.defaultPrevented = true; }
+      preventDefault() { this.defaultPrevented = true; },
+      ...init
     };
     const pending = (this.listeners.get(type) || []).map((handler) => handler(event));
     return {
@@ -237,7 +258,131 @@ async function main() {
   assert.strictEqual(bound.document.getElementById('controlLoginForm').listenerCount('submit'), 1);
   assert.strictEqual(bound.document.getElementById('controlPasswordForm'), null);
   assert.strictEqual(bound.document.getElementById('controlLogout').listenerCount('click'), 1);
+  assert.strictEqual(bound.document.getElementById('controlLoginPassword').listenerCount('input'), 1);
+  assert.strictEqual(bound.document.getElementById('controlLoginPassword').listenerCount('compositionstart'), 1);
+  assert.strictEqual(bound.document.getElementById('controlLoginPassword').listenerCount('compositionend'), 1);
   assert.strictEqual(bound.document.getElementById('controlLoginForm').dataset.bound, '1');
+
+  // Completed input removes non-ASCII without normalizing or rewriting valid
+  // ASCII. The cursor follows the retained prefix and the existing message UI
+  // reports the cleanup.
+  const characterInput = createHarness();
+  characterInput.controller.bind();
+  const characterPassword = characterInput.document.getElementById('controlLoginPassword');
+  characterPassword.value = ' pre-中ａｂｃ１２３，é🙂日本어-post ';
+  characterPassword.selectionStart = ' pre-中'.length;
+  characterPassword.selectionEnd = characterPassword.selectionStart;
+  characterPassword.valueWrites = 0;
+  characterPassword.dispatch('input');
+  assert.strictEqual(characterPassword.value, ' pre--post ');
+  assert.strictEqual(characterPassword.selectionStart, ' pre-'.length);
+  assert.strictEqual(characterPassword.selectionEnd, ' pre-'.length);
+  assert.strictEqual(characterPassword.valueWrites, 1);
+  assert.strictEqual(characterInput.document.getElementById('controlAuthMessage').textContent,
+    '密码仅支持英文半角字符，已移除不支持的字符。');
+  assert.strictEqual(characterInput.document.getElementById('controlAuthMessage').className, 'auth-message bad');
+  characterPassword.value = ' !"#$%&\'()*+,-./09:;<=>?@AZ[\\]^_`az{|}~\u0000\u007f ';
+  characterPassword.valueWrites = 0;
+  characterPassword.dispatch('input');
+  assert.strictEqual(characterPassword.valueWrites, 0);
+  assert.strictEqual(characterInput.document.getElementById('controlAuthMessage').textContent,
+    '密码仅支持英文半角字符，已移除不支持的字符。');
+  assert.deepStrictEqual(characterInput.loginCalls, []);
+
+  // IME candidates remain untouched during composition. Completion applies the
+  // same cleanup, while submit during composition is blocked without an API call.
+  const composition = createHarness();
+  composition.controller.bind();
+  const compositionPassword = composition.document.getElementById('controlLoginPassword');
+  compositionPassword.dispatch('compositionstart');
+  compositionPassword.value = 'abc中文';
+  compositionPassword.dispatch('input', { isComposing: true });
+  assert.strictEqual(compositionPassword.value, 'abc中文');
+  const composingSubmit = composition.document.getElementById('controlLoginForm').dispatch('submit');
+  await composingSubmit.promise;
+  assert.strictEqual(composingSubmit.event.defaultPrevented, true);
+  assert.strictEqual(composition.loginCalls.length, 0);
+  assert.strictEqual(compositionPassword.value, 'abc中文');
+  compositionPassword.dispatch('compositionend');
+  assert.strictEqual(compositionPassword.value, 'abc');
+  assert.strictEqual(composition.document.getElementById('controlAuthMessage').textContent,
+    '密码仅支持英文半角字符，已移除不支持的字符。');
+
+  // Submit performs an independent guard for autofill or programmatic writes
+  // that did not emit input. It cleans and rejects that attempt without using
+  // the cleaned value for authentication.
+  const guardedSubmit = createHarness();
+  guardedSubmit.controller.bind();
+  const guardedPassword = guardedSubmit.document.getElementById('controlLoginPassword');
+  guardedPassword.value = 'ＡＢＣsecret密码';
+  const rejectedSubmit = guardedSubmit.document.getElementById('controlLoginForm').dispatch('submit');
+  await rejectedSubmit.promise;
+  assert.strictEqual(rejectedSubmit.event.defaultPrevented, true);
+  assert.strictEqual(guardedPassword.value, 'secret');
+  assert.deepStrictEqual(guardedSubmit.loginCalls, []);
+
+  // A rejected newer submit still starts a new auth lifecycle. Older success
+  // and failure results must remain stale and cannot alter the warning or UI.
+  for (const outcome of ['success', 'failure']) {
+    const pending = deferred();
+    const race = createHarness({ loginPlatformAuth: () => pending.promise });
+    race.controller.bind();
+    const raceForm = race.document.getElementById('controlLoginForm');
+    const racePassword = race.document.getElementById('controlLoginPassword');
+    race.document.getElementById('controlAuth').hidden = false;
+    race.document.getElementById('controlShell').hidden = true;
+    racePassword.value = 'first-valid';
+    const older = raceForm.dispatch('submit');
+    assert.strictEqual(race.loginCalls.length, 1);
+    racePassword.value = 'newer非法';
+    const rejected = raceForm.dispatch('submit');
+    await rejected.promise;
+    assert.strictEqual(race.loginCalls.length, 1);
+    const warning = race.document.getElementById('controlAuthMessage').textContent;
+    if (outcome === 'success') pending.resolve({ authenticated: true });
+    else pending.reject(new Error('stale login failure'));
+    await older.promise;
+    assert.strictEqual(race.authenticatedCallbacks, 0);
+    assert.strictEqual(race.document.getElementById('controlAuth').hidden, false);
+    assert.strictEqual(race.document.getElementById('controlShell').hidden, true);
+    assert.strictEqual(race.document.getElementById('controlAuthMessage').textContent, warning);
+  }
+
+  // A submit rejected during composition has the same lifecycle semantics,
+  // and a later deliberate ASCII submit can still authenticate normally.
+  for (const outcome of ['success', 'failure']) {
+    const pending = deferred();
+    const compositionRace = createHarness({
+      loginPlatformAuth: [() => pending.promise, { authenticated: true }]
+    });
+    compositionRace.controller.bind();
+    const compositionRaceForm = compositionRace.document.getElementById('controlLoginForm');
+    const compositionRacePassword = compositionRace.document.getElementById('controlLoginPassword');
+    compositionRace.document.getElementById('controlAuth').hidden = false;
+    compositionRace.document.getElementById('controlShell').hidden = true;
+    compositionRacePassword.value = 'first-valid';
+    const older = compositionRaceForm.dispatch('submit');
+    compositionRacePassword.dispatch('compositionstart');
+    compositionRacePassword.value = '中文候选';
+    await compositionRaceForm.dispatch('submit').promise;
+    assert.strictEqual(compositionRace.loginCalls.length, 1);
+    assert.strictEqual(compositionRace.document.getElementById('controlAuthMessage').textContent,
+      '请先完成密码输入后再登录。');
+    if (outcome === 'success') pending.resolve({ authenticated: true });
+    else pending.reject(new Error('stale composition login failure'));
+    await older.promise;
+    assert.strictEqual(compositionRace.authenticatedCallbacks, 0);
+    assert.strictEqual(compositionRace.document.getElementById('controlAuth').hidden, false);
+    assert.strictEqual(compositionRace.document.getElementById('controlShell').hidden, true);
+    assert.strictEqual(compositionRace.document.getElementById('controlAuthMessage').textContent,
+      '请先完成密码输入后再登录。');
+    compositionRacePassword.dispatch('compositionend');
+    compositionRacePassword.value = 'later-valid';
+    await compositionRaceForm.dispatch('submit').promise;
+    assert.strictEqual(compositionRace.loginCalls.length, 2);
+    assert.strictEqual(compositionRace.authenticatedCallbacks, 1);
+    assert.strictEqual(compositionRace.document.getElementById('controlShell').hidden, false);
+  }
 
   // Login trims only the username, preserves the original password, clears it
   // after success, renders auth, and calls the existing Control refresh hook.
@@ -253,6 +398,14 @@ async function main() {
   assert.strictEqual(login.document.getElementById('controlLoginPassword').value, '');
   assert.strictEqual(login.document.getElementById('controlShell').hidden, false);
   assert.strictEqual(login.authenticatedCallbacks, 1);
+
+  const spacedPassword = createHarness();
+  spacedPassword.controller.bind();
+  spacedPassword.document.getElementById('controlLoginPassword').value = '  keep spaces !  ';
+  await spacedPassword.document.getElementById('controlLoginForm').dispatch('submit').promise;
+  assert.deepStrictEqual(spacedPassword.loginCalls, [
+    { username: '', password: '  keep spaces !  ' }
+  ]);
 
   const loginFailure = createHarness({
     loginPlatformAuth: () => { throw new Error('密码错误'); }

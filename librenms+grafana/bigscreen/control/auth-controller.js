@@ -80,6 +80,9 @@
     let authGeneration = 0;
     let authSequence = 0;
     let committedAuthSequence = 0;
+    let passwordCompositionActive = false;
+
+    const passwordAsciiWarning = "密码仅支持英文半角字符，已移除不支持的字符。";
 
     function invalidate() {
       authGeneration += 1;
@@ -104,6 +107,47 @@
       if (!element) return;
       element.className = `auth-message ${level || ""}`.trim();
       element.textContent = message || "";
+    }
+
+    function passwordHasNonAscii(value) {
+      return /[^\x00-\x7f]/.test(String(value));
+    }
+
+    function cleanPasswordInput(passwordInput) {
+      if (!passwordInput) return false;
+      const original = passwordInput.value;
+      const cleaned = original.replace(/[^\x00-\x7f]/g, "");
+      if (cleaned === original) return false;
+
+      const selectionStart = Number.isInteger(passwordInput.selectionStart)
+        ? passwordInput.selectionStart
+        : null;
+      const selectionEnd = Number.isInteger(passwordInput.selectionEnd)
+        ? passwordInput.selectionEnd
+        : null;
+      passwordInput.value = cleaned;
+      if (selectionStart !== null && selectionEnd !== null
+          && typeof passwordInput.setSelectionRange === "function") {
+        const cleanedStart = original.slice(0, selectionStart).replace(/[^\x00-\x7f]/g, "").length;
+        const cleanedEnd = original.slice(0, selectionEnd).replace(/[^\x00-\x7f]/g, "").length;
+        passwordInput.setSelectionRange(cleanedStart, cleanedEnd);
+      }
+      setAuthMessage(passwordAsciiWarning, "bad");
+      return true;
+    }
+
+    function handlePasswordInput(event) {
+      if (passwordCompositionActive || (event && event.isComposing)) return;
+      cleanPasswordInput(event && event.currentTarget);
+    }
+
+    function handlePasswordCompositionStart() {
+      passwordCompositionActive = true;
+    }
+
+    function handlePasswordCompositionEnd(event) {
+      passwordCompositionActive = false;
+      cleanPasswordInput(event && event.currentTarget);
     }
 
     function renderAuth(status) {
@@ -155,9 +199,17 @@
     async function submitLogin(event) {
       event.preventDefault();
       const token = beginAuthRequest(true);
-      const username = (document.getElementById("controlLoginUser") || {}).value || "";
       const passwordInput = document.getElementById("controlLoginPassword");
+      if (passwordCompositionActive) {
+        setAuthMessage("请先完成密码输入后再登录。", "bad");
+        return;
+      }
+      const username = (document.getElementById("controlLoginUser") || {}).value || "";
       const password = passwordInput ? passwordInput.value : "";
+      if (passwordHasNonAscii(password)) {
+        cleanPasswordInput(passwordInput);
+        return;
+      }
       setAuthMessage("正在登录...");
       try {
         const status = await loginPlatformAuth(username.trim(), password);
@@ -191,6 +243,13 @@
       if (loginForm && !loginForm.dataset.bound) {
         loginForm.addEventListener("submit", submitLogin);
         loginForm.dataset.bound = "1";
+      }
+      const passwordInput = document.getElementById("controlLoginPassword");
+      if (passwordInput && !passwordInput.dataset.asciiBound) {
+        passwordInput.addEventListener("input", handlePasswordInput);
+        passwordInput.addEventListener("compositionstart", handlePasswordCompositionStart);
+        passwordInput.addEventListener("compositionend", handlePasswordCompositionEnd);
+        passwordInput.dataset.asciiBound = "1";
       }
       const logoutBtn = document.getElementById("controlLogout");
       if (logoutBtn && !logoutBtn.dataset.bound) {
