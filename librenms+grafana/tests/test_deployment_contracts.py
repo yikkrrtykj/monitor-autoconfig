@@ -1809,7 +1809,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'label: "OFFLINE"' in utils
     assert 'label: "--"' in utils
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
-    assert "style.css?v=20260908a" in index
+    assert "style.css?v=20260908b" in index
     assert "utils.js?v=20260904a" in index
     assert "app.js?v=20260905a" in index
 
@@ -1881,7 +1881,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".compact-series .side-legend" in css
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
-    assert "style.css?v=20260908a" in index
+    assert "style.css?v=20260908b" in index
     assert "app.js?v=20260905a" in index
 
 

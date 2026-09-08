@@ -152,6 +152,12 @@ body {
   gap: clamp(6px, 0.55vh, 14px) clamp(8px, 0.55vw, 18px);
 }
 
+@media (min-width: 1201px) and (max-height: 850px) {
+  .screen.infra-mode .panel-grid {
+    grid-template-rows: 42fr 21fr 24fr;
+  }
+}
+
 .panel,
 .chart-panel,
 .isp-grid {
