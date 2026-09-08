@@ -129,6 +129,12 @@ from feishu_bridge.device_model import (
     clean_device_model as _device_model_clean,
     inventory_device_model as _device_model_inventory,
 )
+from feishu_bridge.device_name import (
+    first_non_ip as _device_name_first_non_ip,
+    looks_like_ip as _device_name_looks_like_ip,
+    meaningful_sysname as _device_name_meaningful_sysname,
+    sysname_changed as _device_name_sysname_changed,
+)
 from feishu_bridge.interconnect_watcher import InterconnectWatcher
 from feishu_bridge.isp_watcher import IspBandwidthWatcher
 from feishu_bridge.online_identity import OnlineIdentityService
@@ -810,27 +816,19 @@ def _device_ip(device):
 
 
 def _looks_like_ip(value):
-    return bool(re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", str(value or "")))
+    return _device_name_looks_like_ip(value)
 
 
 def _first_non_ip(*values):
-    for value in values:
-        value = str(value or "").strip()
-        if value and not _looks_like_ip(value) and not re.fullmatch(r"\d+", value):
-            return value
-    return ""
+    return _device_name_first_non_ip(*values)
 
 
 def _meaningful_sysname(value):
-    """Return a usable sysName or empty for numeric/IP poll artifacts."""
-    return _first_non_ip(value)
+    return _device_name_meaningful_sysname(value)
 
 
 def _sysname_changed(old_name, new_name):
-    """Compare only meaningful names, case-insensitively."""
-    old_name = _meaningful_sysname(old_name)
-    new_name = _meaningful_sysname(new_name)
-    return bool(old_name and new_name and old_name.casefold() != new_name.casefold())
+    return _device_name_sysname_changed(old_name, new_name)
 
 
 def _best_device_name(device, discovered_name=""):
