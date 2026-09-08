@@ -743,6 +743,7 @@ body {
   min-height: 0;
   overflow: hidden;
 }
+.ping-panel #serverGaugesWrap[hidden] { display: none; }
 .ping-panel #pingServerGaugeGrid { flex: 1 1 0; min-height: 0; overflow: hidden; }
 .ping-panel #pingServerGaugeGrid .gauge-visual { height: min(calc(100% - 16px), clamp(42px, 5vmin, 120px)); }
 .ping-panel #pingServerGaugeGrid .gauge-number strong { font-size: clamp(11px, 0.68vw, 17px); }
