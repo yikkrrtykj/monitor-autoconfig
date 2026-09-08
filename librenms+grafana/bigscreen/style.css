@@ -7,6 +7,10 @@
   --muted: #94a3b8;
   --line: #58d68d;
   --accent: #ff4da6;
+  --screen-header-height: clamp(96px, 9.6vh, 152px);
+  --screen-pad-x: clamp(10px, 1vw, 32px);
+  --screen-pad-y: clamp(10px, 0.8vh, 24px);
+  --screen-gap: clamp(8px, 0.7vh, 16px);
 }
 
 * {
@@ -26,30 +30,30 @@ body {
 
 .screen {
   display: grid;
-  grid-template-rows: 104px 1fr;
+  grid-template-rows: var(--screen-header-height) minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
-  padding: 14px 18px 18px;
-  gap: 12px;
+  padding: var(--screen-pad-y) var(--screen-pad-x) calc(var(--screen-pad-y) + 4px);
+  gap: var(--screen-gap);
   background: #000;
 }
 
 .topbar {
   display: grid;
-  grid-template-columns: 260px 1fr 260px;
+  grid-template-columns: clamp(190px, 17vw, 420px) minmax(0, 1fr) clamp(190px, 17vw, 420px);
   align-items: center;
   min-width: 0;
   border: 0;
   background: transparent;
   border-radius: 0;
-  padding: 14px 18px;
+  padding: clamp(8px, 0.7vh, 16px) clamp(10px, 1vw, 24px);
   box-shadow: none;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 13px;
+  gap: clamp(9px, 0.7vw, 18px);
   min-width: 0;
 }
 
@@ -61,12 +65,12 @@ body {
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 52px;
-  height: 52px;
+  width: clamp(44px, 3vw, 76px);
+  height: clamp(44px, 3vw, 76px);
   border: 2px solid rgba(88, 214, 141, 0.82);
   border-radius: 8px;
   color: var(--line);
-  font-size: 28px;
+  font-size: clamp(23px, 1.55vw, 38px);
   font-weight: 800;
   line-height: 1;
 }
@@ -74,7 +78,7 @@ body {
 .brand-text {
   overflow: hidden;
   color: var(--accent);
-  font-size: 27px;
+  font-size: clamp(20px, 1.45vw, 36px);
   font-weight: 800;
   letter-spacing: 0;
   text-overflow: ellipsis;
@@ -90,7 +94,7 @@ body {
   margin: 0;
   overflow: hidden;
   color: #b9d7ff;
-  font-size: 40px;
+  font-size: clamp(30px, 2.1vw, 58px);
   font-weight: 500;
   letter-spacing: 0;
   line-height: 1.14;
@@ -100,11 +104,11 @@ body {
 }
 
 .subtitle {
-  min-height: 20px;
-  margin-top: 6px;
+  min-height: clamp(18px, 1.5vh, 26px);
+  margin-top: clamp(3px, 0.35vh, 7px);
   overflow: hidden;
   color: var(--muted);
-  font-size: 17px;
+  font-size: clamp(14px, 0.9vw, 22px);
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -113,18 +117,18 @@ body {
 .clock {
   display: grid;
   justify-items: end;
-  gap: 4px;
+  gap: clamp(3px, 0.3vh, 6px);
   color: var(--text);
 }
 
 .clock span {
   color: #d9e6ff;
-  font-size: 21px;
+  font-size: clamp(16px, 1.05vw, 26px);
   font-weight: 600;
 }
 
 .clock strong {
-  font-size: 46px;
+  font-size: clamp(34px, 2.35vw, 62px);
   font-weight: 800;
   line-height: 1;
 }
@@ -145,7 +149,7 @@ body {
   min-height: 0;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   grid-template-rows: 35fr 24fr 28fr;
-  gap: 8px 10px;
+  gap: clamp(6px, 0.55vh, 14px) clamp(8px, 0.55vw, 18px);
 }
 
 .panel,
@@ -170,14 +174,14 @@ body {
 
 .custom-panel {
   display: grid;
-  grid-template-rows: 24px minmax(0, 1fr);
-  padding: 2px 6px 6px;
+  grid-template-rows: clamp(22px, 1.8vh, 34px) minmax(0, 1fr);
+  padding: clamp(2px, 0.2vh, 5px) clamp(4px, 0.35vw, 10px) clamp(4px, 0.4vh, 10px);
 }
 
 .chart-panel {
   display: grid;
-  grid-template-rows: 24px 1fr;
-  padding: 4px 6px 6px;
+  grid-template-rows: clamp(22px, 1.8vh, 34px) minmax(0, 1fr);
+  padding: clamp(3px, 0.25vh, 7px) clamp(4px, 0.35vw, 10px) clamp(4px, 0.4vh, 10px);
 }
 
 .custom-panel h2,
@@ -185,7 +189,7 @@ body {
   align-self: start;
   margin: 0;
   color: var(--text);
-  font-size: 14px;
+  font-size: clamp(13px, 0.75vw, 20px);
   font-weight: 700;
   line-height: 1.3;
 }
@@ -224,10 +228,10 @@ body {
 .gauge-visual {
   position: relative;
   flex: 0 1 auto;
-  width: 100%;
-  height: auto;
-  max-width: 130px; /* 给一个在 2K 缩放屏下最舒适的最大宽度上限 */
-  max-height: calc(100% - 18px);
+  width: auto;
+  height: min(calc(100% - 18px), clamp(62px, 10vmin, 240px));
+  max-width: 100%;
+  max-height: none;
   aspect-ratio: 220 / 150;
   margin: 0 auto -3px;
   filter: drop-shadow(0 14px 22px rgba(0, 0, 0, 0.48));
@@ -309,26 +313,26 @@ body {
 }
 
 .gauge-number strong {
-  font-size: clamp(14px, 1.2vw, 22px); 
+  font-size: clamp(14px, 1.2vw, 28px);
   font-weight: 600;
 }
 
 .gauge-number span {
-  font-size: 10px;
+  font-size: clamp(8px, 0.5vw, 13px);
 }
 
 .gauge-grid[data-rows="2"] .gauge-number strong {
-  font-size: clamp(13px, 0.9vw, 18px);
+  font-size: clamp(13px, 0.9vw, 24px);
 }
 
 .gauge-grid[data-rows="2"] .gauge-number span {
-  font-size: clamp(7px, 0.48vw, 9px);
+  font-size: clamp(7px, 0.48vw, 12px);
 }
 
 .gauge-name {
   width: 100%;
   flex-shrink: 0; /* 设备少、表盘变大时也不挤掉名字 */
-  font-size: clamp(11px, 0.8vw, 13px);
+  font-size: clamp(11px, 0.72vw, 18px);
   font-weight: 700;
   text-align: center;
   overflow: hidden;
@@ -338,16 +342,16 @@ body {
 }
 
 .gauge-grid[data-rows="3"] .gauge-number strong {
-  font-size: clamp(10px, 0.68vw, 14px);
+  font-size: clamp(10px, 0.68vw, 18px);
 }
 
 .gauge-grid[data-rows="3"] .gauge-number span {
-  font-size: clamp(6px, 0.4vw, 8px);
+  font-size: clamp(6px, 0.4vw, 10px);
 }
 
 .gauge-grid[data-rows="3"] .gauge-name {
-  max-width: 190px;
-  font-size: clamp(12px, 0.82vw, 16px);
+  max-width: clamp(150px, 12vw, 300px);
+  font-size: clamp(11px, 0.72vw, 18px);
 }
 
 /* Dense tier: many devices in one panel — smaller gauges so they fit cleanly. */
@@ -361,8 +365,8 @@ body {
   font-size: clamp(6px, 0.36vw, 7px);
 }
 .gauge-grid[data-rows="4"] .gauge-name {
-  max-width: 140px;
-  font-size: clamp(10px, 0.66vw, 13px);
+  max-width: clamp(120px, 9vw, 220px);
+  font-size: clamp(10px, 0.62vw, 15px);
 }
 
 .empty-state {
@@ -378,35 +382,45 @@ body {
 }
 
 .line-layout {
+  --line-axis-pad-left: clamp(64px, 4vw, 112px);
+  --line-axis-pad-right: clamp(30px, 2vw, 58px);
+  --line-axis-pad-top: clamp(10px, 0.8vh, 22px);
+  --line-axis-pad-bottom: clamp(26px, 2.4vh, 48px);
   display: grid;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
-  gap: 8px;
+  gap: clamp(6px, 0.5vw, 16px);
 }
 
 .side-layout {
-  grid-template-columns: minmax(0, 1fr) 220px;
+  grid-template-columns: minmax(0, 1fr) clamp(190px, 15vw, 360px);
 }
 
 .side-layout.dense-series {
-  grid-template-columns: minmax(0, 1fr) 190px;
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) clamp(170px, 13vw, 300px);
+  gap: clamp(5px, 0.4vw, 12px);
 }
 
 .side-layout.compact-series {
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 26vw);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) clamp(340px, 24vw, 620px);
+  gap: clamp(6px, 0.5vw, 16px);
 }
 
 .side-layout.ultra-series {
-  grid-template-columns: minmax(0, 1fr) minmax(480px, 34vw);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) clamp(480px, 32vw, 900px);
+  gap: clamp(6px, 0.5vw, 16px);
 }
 
 .bottom-layout {
-  grid-template-rows: minmax(0, 1fr) 32px;
+  grid-template-rows: minmax(0, 1fr) clamp(28px, 2.2vh, 44px);
+}
+
+.line-chart-slot {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .line-chart {
@@ -428,13 +442,13 @@ body {
 
 .chart-axis {
   fill: #b8c2d4;
-  font-size: 12px;
+  font-size: clamp(10px, 0.62vw, 17px);
   font-weight: 600;
 }
 
 .chart-line {
   fill: none;
-  stroke-width: 2.2;
+  stroke-width: clamp(2px, 0.12vw, 3.2px);
   stroke-linejoin: round;
   stroke-linecap: round;
 }
@@ -448,7 +462,7 @@ body {
   min-height: 0;
   overflow: hidden;
   color: #c7d0df;
-  font-size: 12px;
+  font-size: clamp(10px, 0.62vw, 17px);
 }
 
 .side-legend {
@@ -456,12 +470,12 @@ body {
 }
 
 .dense-series .chart-legend {
-  font-size: 11px;
+  font-size: clamp(9px, 0.56vw, 15px);
 }
 
 .compact-series .chart-legend,
 .ultra-series .chart-legend {
-  font-size: 10px;
+  font-size: clamp(8px, 0.5vw, 13px);
 }
 
 .compact-series .side-legend,
@@ -562,10 +576,10 @@ body {
 }
 
 .heatmap {
-  --heatmap-name-width: 150px;
-  --heatmap-gap: 8px;
+  --heatmap-name-width: clamp(112px, 8vw, 220px);
+  --heatmap-gap: clamp(5px, 0.45vw, 12px);
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 22px;
+  grid-template-rows: minmax(0, 1fr) clamp(19px, 1.6vh, 30px);
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -586,14 +600,14 @@ body {
 
 .heatmap-column {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 22px;
+  grid-template-rows: minmax(0, 1fr) clamp(19px, 1.6vh, 30px);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
 .heatmap.heatmap-split {
-  --heatmap-name-width: clamp(88px, 7vw, 145px);
+  --heatmap-name-width: clamp(88px, 7vw, 190px);
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: minmax(0, 1fr);
   gap: clamp(14px, 1.2vw, 26px);
@@ -611,7 +625,7 @@ body {
 .heatmap-name {
   overflow: hidden;
   color: #c6cfdd;
-  font-size: 13px;
+  font-size: clamp(11px, 0.68vw, 17px);
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -624,7 +638,7 @@ body {
   align-self: center;
   gap: 1px;
   min-width: 0;
-  height: min(14px, 100%);
+  height: min(clamp(10px, 0.8vh, 20px), 100%);
   min-height: 4px;
 }
 
@@ -652,7 +666,7 @@ body {
   align-items: end;
   gap: var(--heatmap-gap);
   color: #b8c2d4;
-  font-size: 12px;
+  font-size: clamp(10px, 0.62vw, 16px);
   font-weight: 600;
 }
 
@@ -721,13 +735,14 @@ body {
 /* Fixed share (not content height) so the gauges' 1fr rows have a definite
    height to fill; network grid above takes the rest. */
 .ping-panel #pingServerGaugeGrid { flex: 0 0 23%; min-height: 0; overflow: hidden; }
-.ping-panel #pingServerGaugeGrid .gauge-number strong { font-size: clamp(11px, 0.74vw, 15px); }
-.ping-panel #pingServerGaugeGrid .gauge-number span { font-size: clamp(8px, 0.44vw, 10px); }
-.ping-panel #pingServerGaugeGrid .gauge-name { font-size: clamp(10px, 0.6vw, 12px); }
+.ping-panel #pingServerGaugeGrid .gauge-visual { height: min(calc(100% - 16px), clamp(42px, 5vmin, 120px)); }
+.ping-panel #pingServerGaugeGrid .gauge-number strong { font-size: clamp(11px, 0.68vw, 17px); }
+.ping-panel #pingServerGaugeGrid .gauge-number span { font-size: clamp(7px, 0.4vw, 10px); }
+.ping-panel #pingServerGaugeGrid .gauge-name { font-size: clamp(10px, 0.56vw, 14px); }
 .gauge-subhead {
   flex: 0 0 auto;
   margin: 3px 0 0 2px;
-  font-size: 11px;
+  font-size: clamp(10px, 0.58vw, 15px);
   font-weight: 600;
   letter-spacing: 0.04em;
   color: #8aa0c0;
@@ -753,7 +768,7 @@ body {
   grid-column: 1 / 13;
   grid-row: 3;
   grid-template-columns: repeat(var(--isp-count, 2), minmax(0, 1fr));
-  gap: 10px;
+  gap: clamp(6px, 0.55vw, 18px);
 }
 
 /* UniFi AP 状态条（无线总览页顶部）。无 UniFi 时不渲染，零影响其它页。 */

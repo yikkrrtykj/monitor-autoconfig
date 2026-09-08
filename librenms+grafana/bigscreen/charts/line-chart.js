@@ -1,6 +1,13 @@
 ;(function () {
   'use strict';
 
+  function resolvedCssPixels(document, element, propertyName, fallback) {
+    const getComputedStyle = document.defaultView && document.defaultView.getComputedStyle;
+    if (typeof getComputedStyle !== "function") return fallback;
+    const value = Number.parseFloat(getComputedStyle.call(document.defaultView, element).getPropertyValue(propertyName));
+    return Number.isFinite(value) ? value : fallback;
+  }
+
   function createLineChartRenderer(dependencies) {
     const {
       document,
@@ -27,18 +34,47 @@
         return;
       }
 
-      const box = container.getBoundingClientRect();
+      const legendClass = options.legend === "bottom" ? "chart-legend bottom-legend" : "chart-legend side-legend";
+      const legendModeClass = options.legendNamesOnly ? "names-only-legend" : "";
+      const densityClass = series.length > 24
+        ? "ultra-series"
+        : series.length > 12
+          ? "compact-series"
+          : series.length > 8
+            ? "dense-series"
+            : "";
+      container.innerHTML = `
+        <div class="line-layout ${options.legend === "bottom" ? "bottom-layout" : "side-layout"} ${densityClass}" style="--series-count:${series.length}">
+          <div class="line-chart-slot"></div>
+          <div class="${legendClass} ${legendModeClass}"></div>
+        </div>
+      `;
+      const chartSlot = container.querySelector(".line-chart-slot");
+      const legendSlot = container.querySelector(`.${options.legend === "bottom" ? "bottom-legend" : "side-legend"}`);
+      const box = chartSlot.getBoundingClientRect();
       const minWidth = Number(options.minWidth) > 0 ? Number(options.minWidth) : 320;
       const minHeight = Number(options.minHeight) > 0 ? Number(options.minHeight) : 150;
-      const width = Math.max(minWidth, Math.round(box.width || container.clientWidth || 1000));
-      const height = Math.max(minHeight, Math.round(box.height || container.clientHeight || 260));
+      const width = box.width > 0
+        ? Math.max(1, Math.round(box.width))
+        : Math.max(minWidth, Math.round(chartSlot.clientWidth || container.clientWidth || 1000));
+      const height = box.height > 0
+        ? Math.max(1, Math.round(box.height))
+        : Math.max(minHeight, Math.round(chartSlot.clientHeight || container.clientHeight || 260));
       const pad = {
-        left: options.axisPadLeft || (width < 520 ? 64 : 76),
-        right: options.axisPadRight || 38,
-        top: Number.isFinite(Number(options.axisPadTop)) ? Number(options.axisPadTop) : 12,
+        left: options.axisPadLeft || resolvedCssPixels(
+          document, chartSlot, "--line-axis-pad-left", width < 520 ? 64 : 76
+        ),
+        right: options.axisPadRight || resolvedCssPixels(
+          document, chartSlot, "--line-axis-pad-right", 38
+        ),
+        top: Number.isFinite(Number(options.axisPadTop))
+          ? Number(options.axisPadTop)
+          : resolvedCssPixels(document, chartSlot, "--line-axis-pad-top", 12),
         bottom: Number.isFinite(Number(options.axisPadBottom))
           ? Number(options.axisPadBottom)
-          : (height < 190 ? 24 : 30)
+          : resolvedCssPixels(
+            document, chartSlot, "--line-axis-pad-bottom", height < 190 ? 24 : 30
+          )
       };
       const plotWidth = width - pad.left - pad.right;
       const plotHeight = height - pad.top - pad.bottom;
@@ -174,28 +210,16 @@
       const legendHeader = options.legendNamesOnly
         ? ""
         : `<div class="legend-row legend-head"><span></span><span>名称</span>${headerCells}</div>`;
-      const legendClass = options.legend === "bottom" ? "chart-legend bottom-legend" : "chart-legend side-legend";
-      const legendModeClass = options.legendNamesOnly ? "names-only-legend" : "";
-      const densityClass = series.length > 24
-        ? "ultra-series"
-        : series.length > 12
-          ? "compact-series"
-          : series.length > 8
-            ? "dense-series"
-            : "";
-
-      container.innerHTML = `
-        <div class="line-layout ${options.legend === "bottom" ? "bottom-layout" : "side-layout"} ${densityClass}" style="--series-count:${series.length}">
-          <svg class="line-chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" focusable="false">
-            ${timeGridLines}
-            ${gridLines}
-            ${paths}
-            ${failureMarkers}
-            ${timeLabels}
-          </svg>
-          <div class="${legendClass} ${legendModeClass}">${legendHeader}${legend}</div>
-        </div>
+      chartSlot.innerHTML = `
+        <svg class="line-chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" focusable="false">
+          ${timeGridLines}
+          ${gridLines}
+          ${paths}
+          ${failureMarkers}
+          ${timeLabels}
+        </svg>
       `;
+      legendSlot.innerHTML = `${legendHeader}${legend}`;
     };
   }
 

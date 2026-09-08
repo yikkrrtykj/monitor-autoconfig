@@ -869,7 +869,7 @@ def test_all_bigscreen_pages_have_mobile_layout_contracts():
     assert ".dhcp-toolbar .dhcp-actions" in css
     assert 'data-label="IP"' in wireless_panel
     assert 'window.scrollTo({ top: 0, left: 0, behavior: "auto" })' in app
-    assert "platform.css?v=20260803b" in html
+    assert "platform.css?v=20260908a" in html
     assert "app.js?v=20260905a" in html
 
 
@@ -1074,8 +1074,8 @@ def test_isp_and_evidence_use_business_specific_line_chart_facades():
     assert "charts/isp-chart.js?v=20260905a" in index
     assert "charts/evidence-chart.js?v=20260826a" in index
     assert "evidence/evidence-panel.js?v=20260827a" in index
-    assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/isp-chart.js?v=20260905a")
-    assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/evidence-chart.js?v=20260826a")
+    assert index.index("charts/line-chart.js?v=20260908a") < index.index("charts/isp-chart.js?v=20260905a")
+    assert index.index("charts/line-chart.js?v=20260908a") < index.index("charts/evidence-chart.js?v=20260826a")
     assert index.index("charts/isp-chart.js?v=20260905a") < index.index("app.js?v=20260905a")
     assert index.index("charts/evidence-chart.js?v=20260826a") < index.index("evidence/evidence-panel.js?v=20260827a")
     assert index.index("evidence/evidence-panel.js?v=20260827a") < index.index("app.js?v=20260905a")
@@ -1749,11 +1749,11 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert "api.js?v=20260905a" in index
     assert "app.js?v=20260905a" in index
     assert "utils.js?v=20260904a" in index
-    assert "charts/line-chart.js?v=20260826a" in index
+    assert "charts/line-chart.js?v=20260908a" in index
     assert "charts/ping-chart.js?v=20260826a" in index
     assert "metrics/ping-transform.js?v=20260826b" in index
-    assert index.index("utils.js?v=20260904a") < index.index("charts/line-chart.js?v=20260826a")
-    assert index.index("charts/line-chart.js?v=20260826a") < index.index("charts/ping-chart.js?v=20260826a")
+    assert index.index("utils.js?v=20260904a") < index.index("charts/line-chart.js?v=20260908a")
+    assert index.index("charts/line-chart.js?v=20260908a") < index.index("charts/ping-chart.js?v=20260826a")
     assert index.index("charts/ping-chart.js?v=20260826a") < index.index("app.js?v=20260905a")
     assert index.index("metrics/ping-transform.js?v=20260826b") < index.index("app.js?v=20260905a")
     assert "step: true" in evidence_chart
@@ -1809,7 +1809,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'label: "OFFLINE"' in utils
     assert 'label: "--"' in utils
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
-    assert "style.css?v=20260825a" in index
+    assert "style.css?v=20260908a" in index
     assert "utils.js?v=20260904a" in index
     assert "app.js?v=20260905a" in index
 
@@ -1836,7 +1836,7 @@ def test_tournament_isp_carousel_is_isolated_from_normal_infrastructure_view():
     assert 'screen.className = `screen tournament-mode' in app
     assert '.screen.tournament-mode .isp-grid.isp-paged' in css
     assert "isp-carousel.js?v=20260731a" in index
-    assert "platform.css?v=20260803b" in index
+    assert "platform.css?v=20260908a" in index
 
 
 def test_topology_isp_discovery_can_read_librenms_interface_inventory():
@@ -1881,7 +1881,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".compact-series .side-legend" in css
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
-    assert "style.css?v=20260825a" in index
+    assert "style.css?v=20260908a" in index
     assert "app.js?v=20260905a" in index
 
 

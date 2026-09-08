@@ -13,11 +13,11 @@
 }
 
 .screen {
-  grid-template-rows: 122px 1fr;
+  grid-template-rows: var(--screen-header-height) minmax(0, 1fr);
 }
 
 .screen.home-mode {
-  grid-template-rows: 92px 1fr;
+  grid-template-rows: var(--screen-header-height) minmax(0, 1fr);
   padding: 18px 24px 28px;
   background: var(--linear-canvas);
   color: var(--linear-ink);
@@ -731,11 +731,11 @@
 }
 
 .screen.infra-mode {
-  grid-template-rows: 104px 1fr;
+  grid-template-rows: var(--screen-header-height) minmax(0, 1fr);
 }
 
 .screen.evidence-mode {
-  grid-template-rows: 104px 1fr;
+  grid-template-rows: var(--screen-header-height) minmax(0, 1fr);
   background: var(--linear-canvas);
 }
 
@@ -746,7 +746,7 @@
 .screen.control-mode,
 .screen.incident-mode,
 .screen.topology-mode {
-  grid-template-rows: 104px 1fr;
+  grid-template-rows: var(--screen-header-height) minmax(0, 1fr);
   background: var(--linear-canvas);
 }
 
@@ -763,7 +763,7 @@
 }
 
 .screen.wireless-mode {
-  grid-template-rows: 104px 1fr;
+  grid-template-rows: var(--screen-header-height) minmax(0, 1fr);
   background: var(--linear-canvas);
 }
 
@@ -2659,7 +2659,7 @@
 
 .screen.tournament-mode {
   grid-template-columns: minmax(500px, 40vw) minmax(0, 1fr);
-  grid-template-rows: 104px 1fr;
+  grid-template-rows: var(--screen-header-height) minmax(0, 1fr);
   column-gap: 12px;
 }
 
