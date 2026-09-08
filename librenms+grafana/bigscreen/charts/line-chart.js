@@ -4,7 +4,29 @@
   function resolvedCssPixels(document, element, propertyName, fallback) {
     const getComputedStyle = document.defaultView && document.defaultView.getComputedStyle;
     if (typeof getComputedStyle !== "function") return fallback;
-    const value = Number.parseFloat(getComputedStyle.call(document.defaultView, element).getPropertyValue(propertyName));
+    const computedStyle = getComputedStyle.call(document.defaultView, element);
+    const expression = String(computedStyle.getPropertyValue(propertyName) || "").trim();
+    if (!expression) return fallback;
+    if (/^-?(?:\d+|\d*\.\d+)px$/i.test(expression)) {
+      const value = Number.parseFloat(expression);
+      return Number.isFinite(value) ? value : fallback;
+    }
+    if (typeof document.createElement !== "function" || typeof element.appendChild !== "function") {
+      return fallback;
+    }
+    const probe = document.createElement("span");
+    probe.style.cssText = [
+      "position:absolute",
+      "visibility:hidden",
+      "pointer-events:none",
+      "width:var(" + propertyName + ")",
+      "height:0",
+      "padding:0",
+      "border:0"
+    ].join(";");
+    element.appendChild(probe);
+    const value = Number.parseFloat(getComputedStyle.call(document.defaultView, probe).width);
+    probe.remove();
     return Number.isFinite(value) ? value : fallback;
   }
 
@@ -60,18 +82,21 @@
       const height = box.height > 0
         ? Math.max(1, Math.round(box.height))
         : Math.max(minHeight, Math.round(chartSlot.clientHeight || container.clientHeight || 260));
+      const explicitAxisScale = resolvedCssPixels(
+        document, chartSlot, "--line-explicit-axis-scale-unit", 1
+      );
       const pad = {
-        left: options.axisPadLeft || resolvedCssPixels(
-          document, chartSlot, "--line-axis-pad-left", width < 520 ? 64 : 76
-        ),
-        right: options.axisPadRight || resolvedCssPixels(
-          document, chartSlot, "--line-axis-pad-right", 38
-        ),
+        left: options.axisPadLeft
+          ? Number(options.axisPadLeft) * explicitAxisScale
+          : resolvedCssPixels(document, chartSlot, "--line-axis-pad-left", width < 520 ? 64 : 76),
+        right: options.axisPadRight
+          ? Number(options.axisPadRight) * explicitAxisScale
+          : resolvedCssPixels(document, chartSlot, "--line-axis-pad-right", 38),
         top: Number.isFinite(Number(options.axisPadTop))
-          ? Number(options.axisPadTop)
+          ? Number(options.axisPadTop) * explicitAxisScale
           : resolvedCssPixels(document, chartSlot, "--line-axis-pad-top", 12),
         bottom: Number.isFinite(Number(options.axisPadBottom))
-          ? Number(options.axisPadBottom)
+          ? Number(options.axisPadBottom) * explicitAxisScale
           : resolvedCssPixels(
             document, chartSlot, "--line-axis-pad-bottom", height < 190 ? 24 : 30
           )

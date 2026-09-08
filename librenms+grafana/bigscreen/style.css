@@ -359,10 +359,10 @@ body {
   gap: clamp(2px, 0.4vh, 5px) clamp(10px, 1.3vw, 20px);
 }
 .gauge-grid[data-rows="4"] .gauge-number strong {
-  font-size: clamp(9px, 0.58vw, 12px);
+  font-size: clamp(9px, 0.58vw, 18px);
 }
 .gauge-grid[data-rows="4"] .gauge-number span {
-  font-size: clamp(6px, 0.36vw, 7px);
+  font-size: clamp(6px, 0.36vw, 10px);
 }
 .gauge-grid[data-rows="4"] .gauge-name {
   max-width: clamp(120px, 9vw, 220px);
@@ -382,6 +382,7 @@ body {
 }
 
 .line-layout {
+  --line-explicit-axis-scale-unit: clamp(0.82px, 0.052083vw, 1.5px);
   --line-axis-pad-left: clamp(64px, 4vw, 112px);
   --line-axis-pad-right: clamp(30px, 2vw, 58px);
   --line-axis-pad-top: clamp(10px, 0.8vh, 22px);
@@ -424,6 +425,7 @@ body {
 }
 
 .line-chart {
+  display: block;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -686,11 +688,11 @@ body {
 
 .dense-heatmap .heatmap-name,
 .dense-heatmap .heatmap-axis {
-  font-size: 11px;
+  font-size: clamp(10px, 0.573vw, 15px);
 }
 
 .dense-heatmap .heatmap-cells {
-  height: min(11px, 100%);
+  height: min(clamp(8px, 1.02vh, 16px), 100%);
 }
 
 .compact-heatmap .heatmap-rows {
@@ -699,11 +701,11 @@ body {
 
 .compact-heatmap .heatmap-name,
 .compact-heatmap .heatmap-axis {
-  font-size: 10px;
+  font-size: clamp(8px, 0.52vw, 13px);
 }
 
 .compact-heatmap .heatmap-cells {
-  height: min(9px, 100%);
+  height: min(clamp(7px, 0.83vh, 14px), 100%);
 }
 
 @media (max-width: 1100px) {
@@ -732,9 +734,16 @@ body {
    label below); 服务器 is a compact, height-capped strip so it can never crowd
    the network grid out of the panel. */
 .ping-panel #pingGaugeGrid { flex: 1 1 0; min-height: 0; overflow: hidden; }
-/* Fixed share (not content height) so the gauges' 1fr rows have a definite
-   height to fill; network grid above takes the rest. */
-.ping-panel #pingServerGaugeGrid { flex: 0 0 23%; min-height: 0; overflow: hidden; }
+/* Give the wrapper itself a definite share so its label and gauge grid both
+   participate in the panel's flex height; network gauges keep the remainder. */
+.ping-panel #serverGaugesWrap {
+  display: flex;
+  flex: 0 1 clamp(58px, 23%, 170px);
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.ping-panel #pingServerGaugeGrid { flex: 1 1 0; min-height: 0; overflow: hidden; }
 .ping-panel #pingServerGaugeGrid .gauge-visual { height: min(calc(100% - 16px), clamp(42px, 5vmin, 120px)); }
 .ping-panel #pingServerGaugeGrid .gauge-number strong { font-size: clamp(11px, 0.68vw, 17px); }
 .ping-panel #pingServerGaugeGrid .gauge-number span { font-size: clamp(7px, 0.4vw, 10px); }

@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { createLineChartRenderer } = require('../bigscreen/charts/line-chart.js');
 
 class FakeSlot {
@@ -8,10 +10,15 @@ class FakeSlot {
     this.clientWidth = 0;
     this.clientHeight = 0;
     this.innerHTML = '';
+    this.children = [];
   }
 
   getBoundingClientRect() {
     return { width: this.width, height: this.height };
+  }
+
+  appendChild(child) {
+    this.children.push(child);
   }
 }
 
@@ -52,7 +59,21 @@ class FakeContainer {
 }
 
 const containers = new Map();
-const cssPixels = {
+const stylesheet = fs.readFileSync(path.join(__dirname, '../bigscreen/style.css'), 'utf8');
+const cssPixels = Object.fromEntries([
+  '--line-explicit-axis-scale-unit',
+  '--line-axis-pad-left',
+  '--line-axis-pad-right',
+  '--line-axis-pad-top',
+  '--line-axis-pad-bottom'
+].map((name) => {
+  const match = stylesheet.match(new RegExp(`${name}:\\s*([^;]+);`));
+  assert.ok(match, `missing ${name} in production stylesheet`);
+  assert.ok(match[1].trim().startsWith('clamp('), `${name} must exercise a real CSS expression`);
+  return [name, match[1].trim()];
+}));
+const resolvedWidths = {
+  '--line-explicit-axis-scale-unit': '1px',
   '--line-axis-pad-left': '80px',
   '--line-axis-pad-right': '40px',
   '--line-axis-pad-top': '16px',
@@ -60,9 +81,25 @@ const cssPixels = {
 };
 const document = {
   defaultView: {
-    getComputedStyle() {
+    getComputedStyle(element) {
+      if (element.probeProperty) {
+        return { width: resolvedWidths[element.probeProperty] || '' };
+      }
       return { getPropertyValue: (name) => cssPixels[name] || '' };
     }
+  },
+  createElement() {
+    const probe = {
+      probeProperty: '',
+      style: {
+        set cssText(value) {
+          const match = String(value).match(/width:var\((--[^)]+)\)/);
+          probe.probeProperty = match ? match[1] : '';
+        }
+      },
+      remove() {}
+    };
+    return probe;
   },
   getElementById(id) {
     return containers.get(id);
@@ -97,6 +134,28 @@ assert.match(sideContainer.chartSlot.innerHTML, /width="720" height="260" viewBo
 assert.ok(!sideContainer.chartSlot.innerHTML.includes('viewBox="0 0 1000 300"'));
 assert.match(sideContainer.chartSlot.innerHTML, /class="chart-grid-line" x1="80"[^>]+x2="680"/);
 assert.ok(sideContainer.legendSlot.innerHTML.includes('core-switch-with-a-long-name'));
+
+const explicitContainer = new FakeContainer(1000, 300, 720, 260);
+containers.set('explicitChart', explicitContainer);
+renderLineChart('explicitChart', [{ name: 'isp', values }], {
+  axisPadLeft: 92,
+  axisPadRight: 38,
+  axisPadTop: 12,
+  axisPadBottom: 20
+});
+assert.match(explicitContainer.chartSlot.innerHTML, /class="chart-grid-line" x1="92"[^>]+x2="682"/);
+
+resolvedWidths['--line-explicit-axis-scale-unit'] = '1.5px';
+const largeExplicitContainer = new FakeContainer(1800, 500, 1500, 460);
+containers.set('largeExplicitChart', largeExplicitContainer);
+renderLineChart('largeExplicitChart', [{ name: 'isp', values }], {
+  axisPadLeft: 92,
+  axisPadRight: 38,
+  axisPadTop: 12,
+  axisPadBottom: 20
+});
+assert.match(largeExplicitContainer.chartSlot.innerHTML, /class="chart-grid-line" x1="138"[^>]+x2="1443"/);
+resolvedWidths['--line-explicit-axis-scale-unit'] = '1px';
 
 const bottomContainer = new FakeContainer(900, 280, 900, 220);
 containers.set('bottomChart', bottomContainer);
