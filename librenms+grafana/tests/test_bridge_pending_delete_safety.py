@@ -145,7 +145,7 @@ def test_prometheus_online_wins_and_skips_later_stages(pending, monkeypatch, val
     state, calls = pending
     monkeypatch.setattr(
         bridge, "prometheus_query",
-        lambda query, timeout=10: [sample(value) for value in values],
+        lambda query, timeout=10, deadline=None: [sample(value) for value in values],
     )
     result = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
     assert result["ok"] is False and "当前在线" in result["error"]

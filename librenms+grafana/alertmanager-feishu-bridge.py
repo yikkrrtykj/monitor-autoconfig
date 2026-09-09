@@ -3345,8 +3345,11 @@ def _manual_delete_inventory(operation):
 def _manual_delete_exact_id(token, device_id, timeout, deadline=None):
     if not token or not device_id or timeout <= 0:
         raise _ManualDeleteNotDispatched("DELETE not dispatched")
-    deadline = time.monotonic() + timeout if deadline is None else deadline
-    remaining = deadline - time.monotonic()
+    if deadline is None:
+        deadline = time.monotonic() + timeout
+        remaining = timeout
+    else:
+        remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise _ManualDeleteNotDispatched("DELETE deadline expired")
     encoded_ref = parse.quote(str(device_id), safe="")
