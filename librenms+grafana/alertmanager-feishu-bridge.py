@@ -2642,10 +2642,17 @@ def _isp_target_names():
     return names
 
 
-def prometheus_query(query, timeout=10):
+def prometheus_query(query, timeout=10, deadline=None):
     url = f"{PROMETHEUS_URL}/api/v1/query?{parse.urlencode({'query': query})}"
     with request.urlopen(url, timeout=timeout) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+        raw = (
+            resp.read()
+            if deadline is None
+            else _read_response_before_deadline(
+                resp, min(deadline, time.monotonic() + timeout),
+            )
+        )
+        payload = json.loads(raw.decode("utf-8"))
     if payload.get("status") != "success":
         raise RuntimeError(payload.get("error") or "Prometheus query failed")
     return payload.get("data", {}).get("result", [])
@@ -2919,10 +2926,9 @@ def _persist_manual_delete_guard(guard):
 def _ensure_manual_delete_guard_dir():
     if os.path.islink(MANUAL_DELETE_GUARD_DIR):
         raise RuntimeError("manual delete guard directory must not be a symlink")
-    existed = os.path.isdir(MANUAL_DELETE_GUARD_DIR)
     os.makedirs(MANUAL_DELETE_GUARD_DIR, mode=0o700, exist_ok=True)
     os.chmod(MANUAL_DELETE_GUARD_DIR, 0o700)
-    if not existed and os.name != "nt":
+    if os.name != "nt":
         parent = os.path.dirname(MANUAL_DELETE_GUARD_DIR) or "."
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         parent_fd = os.open(parent, flags)
@@ -3154,7 +3160,7 @@ def _clear_pending_fields(state):
     state["pending_event_title"] = ""
 
 
-def _pending_delete_target_status(job, ip, timeout=10):
+def _pending_delete_target_status(job, ip, timeout=10, deadline=None):
     """Return ONLINE/OFFLINE/UNKNOWN from verified evidence in the last 30s."""
     if not isinstance(job, str) or not re.fullmatch(r"[A-Za-z0-9_:.-]+", job):
         return "UNKNOWN"
@@ -3164,7 +3170,7 @@ def _pending_delete_target_status(job, ip, timeout=10):
         ipaddress.ip_address(ip)
         started = time.time()
         query = f'max_over_time(probe_success{{job="{job}",target_ip="{ip}"}}[30s])'
-        samples = prometheus_query(query, timeout=timeout)
+        samples = prometheus_query(query, timeout=timeout, deadline=deadline)
     except Exception as exc:
         log(
             f"[DOWN] pending delete Prometheus evidence unavailable: "
@@ -3261,7 +3267,13 @@ def _read_response_before_deadline(response, deadline):
         if remaining <= 0:
             raise TimeoutError("response deadline exceeded")
         _set_response_read_timeout(response, remaining)
-        chunk = response.read(min(65536, MANUAL_DELETE_RESPONSE_MAX_BYTES + 1 - total))
+        remaining_bytes = MANUAL_DELETE_RESPONSE_MAX_BYTES + 1 - total
+        read1 = getattr(response, "read1", None)
+        chunk = (
+            read1(min(65536, remaining_bytes))
+            if callable(read1)
+            else response.read(min(1, remaining_bytes))
+        )
         if time.monotonic() > deadline:
             raise TimeoutError("response deadline exceeded")
         if not chunk:
@@ -3314,7 +3326,7 @@ def _manual_delete_inventory(operation):
     token = _librenms_token()
     if not token or not LIBRENMS_URL or timeout <= 0:
         raise RuntimeError("LibreNMS inventory unavailable")
-    devices = _strict_librenms_inventory(token, timeout, operation["deadline"])
+    devices = _strict_librenms_inventory(token, timeout, operation["commit_deadline"])
     matches = []
     for device in devices:
         candidate_ip = str(ipaddress.ip_address(_device_ip(device)))
@@ -3507,7 +3519,11 @@ def resolve_pending_delete(key, action, token):
         return {"ok": True, "action": "keep", "message": f"已保留 {name}，继续监控"}
 
     prom_timeout = _stage_timeout(operation, 2)
-    target_status = "UNKNOWN" if prom_timeout <= 0 else _pending_delete_target_status(job, ip, prom_timeout)
+    target_status = (
+        "UNKNOWN" if prom_timeout <= 0 else _pending_delete_target_status(
+            job, ip, prom_timeout, operation["commit_deadline"],
+        )
+    )
     if target_status == "ONLINE":
         with RETIRE_LOCK:
             current = DEVICE_DOWN_STATES.get(key)
@@ -3532,7 +3548,13 @@ def resolve_pending_delete(key, action, token):
 
     probe_timeout = _stage_timeout(operation, 3)
     try:
-        reachable = _blackbox_icmp_probe(operation["ip"], timeout=probe_timeout) if probe_timeout > 0 else None
+        reachable = (
+            _blackbox_icmp_probe(
+                operation["ip"], timeout=probe_timeout,
+                deadline=operation["commit_deadline"],
+            )
+            if probe_timeout > 0 else None
+        )
     except Exception as exc:
         reachable = None
         log(f"[DOWN] pending delete final probe unavailable: {type(exc).__name__}")
@@ -4335,14 +4357,21 @@ def _resolve_ap_online(key, metric, metric_online, controller_info=None):
     return True
 
 
-def _blackbox_icmp_probe(ip, timeout=None):
+def _blackbox_icmp_probe(ip, timeout=None, deadline=None):
     query = parse.urlencode({"target": ip, "module": "icmp"})
     req = request.Request(f"{BLACKBOX_EXPORTER_URL}/probe?{query}")
     effective_timeout = (
         UNIFI_AP_PING_HTTP_TIMEOUT_SECONDS if timeout is None else timeout
     )
     with request.urlopen(req, timeout=effective_timeout) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
+        raw = (
+            resp.read()
+            if deadline is None
+            else _read_response_before_deadline(
+                resp, min(deadline, time.monotonic() + effective_timeout),
+            )
+        )
+        body = raw.decode("utf-8", errors="replace")
     match = re.search(r"(?m)^probe_success\s+([01](?:\.0+)?)\s*$", body)
     if not match:
         raise RuntimeError("blackbox response has no probe_success")

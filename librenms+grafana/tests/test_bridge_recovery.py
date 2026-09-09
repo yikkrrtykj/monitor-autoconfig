@@ -267,7 +267,7 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
         bridge, "_manual_delete_inventory",
         lambda operation: ("secret", "42", {"device_id": 42, "ip": "192.168.10.27"}),
     )
-    monkeypatch.setattr(bridge, "_blackbox_icmp_probe", lambda ip, timeout=None: False)
+    monkeypatch.setattr(bridge, "_blackbox_icmp_probe", lambda ip, timeout=None, deadline=None: False)
     deleted = []
     monkeypatch.setattr(
         bridge, "_manual_delete_exact_id",

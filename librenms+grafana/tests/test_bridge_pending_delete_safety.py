@@ -52,7 +52,7 @@ def pending(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         bridge, "_blackbox_icmp_probe",
-        lambda ip, timeout=None: calls.append(("blackbox", ip)) or False,
+        lambda ip, timeout=None, deadline=None: calls.append(("blackbox", ip)) or False,
     )
     monkeypatch.setattr(
         bridge, "_manual_delete_exact_id",
@@ -67,7 +67,7 @@ def pending(monkeypatch, tmp_path):
         lambda states: calls.append(("state", copy.deepcopy(states))),
     )
     monkeypatch.setattr(bridge, "send_feishu", lambda *a, **k: pytest.fail("unexpected notification"))
-    monkeypatch.setattr(bridge, "prometheus_query", lambda query, timeout=10: [sample("0")])
+    monkeypatch.setattr(bridge, "prometheus_query", lambda query, timeout=10, deadline=None: [sample("0")])
     return state, calls
 
 
@@ -88,7 +88,7 @@ UNKNOWN_RESPONSES = [
 @pytest.mark.parametrize("response", UNKNOWN_RESPONSES)
 def test_unknown_prometheus_requires_blackbox_then_can_delete(pending, monkeypatch, response):
     state, calls = pending
-    monkeypatch.setattr(bridge, "prometheus_query", lambda query, timeout=10: response)
+    monkeypatch.setattr(bridge, "prometheus_query", lambda query, timeout=10, deadline=None: response)
     result = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
     assert result["ok"] is True
     stages = [(kind, value) for kind, value, *_ in calls if kind in {"inventory", "blackbox", "delete"}]
@@ -103,7 +103,7 @@ def test_unknown_prometheus_requires_blackbox_then_can_delete(pending, monkeypat
 def test_prometheus_failure_still_requires_final_blackbox(pending, monkeypatch, failure):
     state, calls = pending
 
-    def failed(query, timeout=10):
+    def failed(query, timeout=10, deadline=None):
         raise failure
 
     monkeypatch.setattr(bridge, "prometheus_query", failed)
@@ -118,7 +118,7 @@ def test_blackbox_online_or_malformed_preserves_pending(pending, monkeypatch, pr
     before = copy.deepcopy(state)
     monkeypatch.setattr(
         bridge, "_blackbox_icmp_probe",
-        lambda ip, timeout=None: calls.append(("blackbox", ip)) or probe,
+        lambda ip, timeout=None, deadline=None: calls.append(("blackbox", ip)) or probe,
     )
     result = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
     assert result["ok"] is False

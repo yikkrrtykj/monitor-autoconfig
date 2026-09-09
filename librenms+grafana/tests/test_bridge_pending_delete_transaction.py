@@ -353,7 +353,7 @@ class PendingDeleteTransactionTests(unittest.TestCase):
         )
 
     def test_generation_change_during_final_probe_prevents_commit(self):
-        def change_generation(_ip, timeout=None):
+        def change_generation(_ip, timeout=None, deadline=None):
             self.state["pending_token"] = "replacement-generation"
             return False
 
@@ -378,7 +378,7 @@ class PendingDeleteTransactionTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.setUp()
 
-                def final_probe(_ip, timeout=None):
+                def final_probe(_ip, timeout=None, deadline=None):
                     mutate()
                     return False
 
@@ -393,7 +393,7 @@ class PendingDeleteTransactionTests(unittest.TestCase):
                 remove.assert_not_called()
 
     def test_deadline_expiry_before_commit_means_zero_delete(self):
-        def expire(_ip, timeout=None):
+        def expire(_ip, timeout=None, deadline=None):
             operation = next(iter(bridge.MANUAL_DELETE_OPERATIONS.values()))
             operation["deadline"] = bridge.time.monotonic() - 1
             return False
@@ -647,8 +647,9 @@ class PendingDeleteTransactionTests(unittest.TestCase):
     def test_all_network_timeouts_use_stage_and_remaining_deadline(self):
         seen = {}
 
-        def status(job, ip, timeout):
+        def status(job, ip, timeout, deadline=None):
             seen["prometheus"] = timeout
+            seen["prometheus_deadline"] = deadline
             return "UNKNOWN"
 
         def inventory(token, timeout, deadline):
@@ -656,8 +657,9 @@ class PendingDeleteTransactionTests(unittest.TestCase):
             seen["inventory_deadline"] = deadline
             return [{"device_id": 42, "ip": "192.0.2.27"}]
 
-        def probe(ip, timeout=None):
+        def probe(ip, timeout=None, deadline=None):
             seen["blackbox"] = timeout
+            seen["blackbox_deadline"] = deadline
             return False
 
         def remove(token, device_id, timeout, deadline):
@@ -677,7 +679,12 @@ class PendingDeleteTransactionTests(unittest.TestCase):
         self.assertLessEqual(seen["inventory"], 3)
         self.assertLessEqual(seen["blackbox"], 3)
         self.assertLessEqual(seen["delete"], bridge.MANUAL_DELETE_DEADLINE_SECONDS)
-        self.assertEqual(seen["inventory_deadline"], seen["delete_deadline"])
+        self.assertEqual(seen["prometheus_deadline"], seen["blackbox_deadline"])
+        self.assertEqual(seen["inventory_deadline"], seen["prometheus_deadline"])
+        self.assertAlmostEqual(
+            seen["delete_deadline"] - seen["inventory_deadline"],
+            bridge.MANUAL_DELETE_DEADLINE_SECONDS - bridge.MANUAL_DELETE_COMMIT_SECONDS,
+        )
 
     def test_stage_budget_uses_one_controlled_monotonic_deadline(self):
         class Clock:
@@ -807,7 +814,7 @@ class PendingDeleteTransactionTests(unittest.TestCase):
 
         clock = Clock()
 
-        def final_probe(_ip, timeout=None):
+        def final_probe(_ip, timeout=None, deadline=None):
             clock.value = 110.0
             return False
 
@@ -831,28 +838,40 @@ class PendingDeleteTransactionTests(unittest.TestCase):
             def __call__(self):
                 return self.value
 
-        class SlowResponse(io.BytesIO):
+        class DripRaw(io.RawIOBase):
             def __init__(self, clock):
-                super().__init__(b'{"status":"ok"}')
+                super().__init__()
                 self.clock = clock
                 self.timeouts = []
+                self.reads = 0
+
+            def readable(self):
+                return True
 
             def settimeout(self, timeout):
                 self.timeouts.append(timeout)
 
-            def read(self, size=-1):
-                value = super().read(size)
-                self.clock.value = 2.0
-                return value
+            def readinto(self, target):
+                self.reads += 1
+                wait = 0.9
+                timeout = self.timeouts[-1]
+                if timeout < wait:
+                    self.clock.value += timeout
+                    raise TimeoutError("socket deadline")
+                self.clock.value += wait
+                target[0] = ord("x")
+                return 1
 
         clock = Clock()
-        response = SlowResponse(clock)
+        raw = DripRaw(clock)
+        response = io.BufferedReader(raw, buffer_size=65536)
         with mock.patch.object(bridge.time, "monotonic", side_effect=clock), \
-             mock.patch.object(bridge.request, "urlopen", return_value=response), \
              self.assertRaises(TimeoutError):
-            bridge._manual_delete_exact_id("secret", "42", 1, deadline=1)
-        self.assertTrue(response.timeouts)
-        self.assertLessEqual(response.timeouts[0], 1)
+            bridge._read_response_before_deadline(response, 1)
+        self.assertEqual(raw.reads, 2)
+        self.assertLessEqual(clock.value, 1.000001)
+        self.assertEqual(raw.timeouts[0], 1)
+        self.assertLess(raw.timeouts[1], raw.timeouts[0])
 
     def test_http_401_is_retryable_and_does_not_leave_unresolved_guard(self):
         def rejected(req, timeout):
@@ -893,6 +912,20 @@ class PendingDeleteTransactionTests(unittest.TestCase):
         self.assertEqual(opened.call_args.args[0], str(Path(self.temp.name)))
         self.assertLess(calls.index("mkdir"), calls.index(("fsync", 73)))
         self.assertLess(calls.index(("fsync", 73)), calls.index(("close", 73)))
+
+    def test_guard_parent_fsync_failure_is_retried_even_when_directory_remains(self):
+        with mock.patch.object(bridge.os.path, "islink", return_value=False), \
+             mock.patch.object(bridge.os, "makedirs"), \
+             mock.patch.object(bridge.os, "chmod"), \
+             mock.patch.object(bridge.os, "open", side_effect=[73, 74]) as opened, \
+             mock.patch.object(bridge.os, "fsync", side_effect=[OSError("fsync"), None]) as synced, \
+             mock.patch.object(bridge.os, "close"), \
+             mock.patch.object(bridge.os, "name", "posix"):
+            with self.assertRaises(OSError):
+                bridge._ensure_manual_delete_guard_dir()
+            bridge._ensure_manual_delete_guard_dir()
+        self.assertEqual(opened.call_count, 2)
+        self.assertEqual([item.args[0] for item in synced.call_args_list], [73, 74])
 
 
 if __name__ == "__main__":
