@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import tempfile
 import threading
@@ -45,6 +46,8 @@ class PendingDeleteTransactionTests(unittest.TestCase):
         bridge.MANUAL_DELETE_BY_KEY.clear()
         bridge.MANUAL_DELETE_BY_IP.clear()
         bridge.MANUAL_DELETE_GUARDS.clear()
+        bridge.AUTO_DELETE_BY_ID.clear()
+        bridge.AUTO_DELETE_BY_IP.clear()
 
     def run_delete(self, prom="UNKNOWN", probe=False, device_id="42", delete="deleted"):
         with mock.patch.object(bridge, "_pending_delete_target_status", return_value=prom), \
@@ -507,10 +510,8 @@ class PendingDeleteTransactionTests(unittest.TestCase):
             "failure_kind": "",
         }
         bridge.MANUAL_DELETE_GUARDS[guard["operation_id"]] = guard
-        client = mock.Mock()
-        client.list_devices.return_value = []
         with mock.patch.object(bridge, "_librenms_token", return_value="secret"), \
-             mock.patch.object(bridge, "_librenms_client", return_value=client), \
+             mock.patch.object(bridge, "_strict_librenms_inventory", return_value=[]), \
              mock.patch.object(bridge, "_manual_delete_exact_id") as remove:
             bridge.reconcile_manual_delete_guards()
         remove.assert_not_called()
@@ -543,10 +544,11 @@ class PendingDeleteTransactionTests(unittest.TestCase):
             "result": "", "state_applied": False, "failure_kind": "TimeoutError",
         }
         bridge.MANUAL_DELETE_GUARDS[guard["operation_id"]] = guard
-        client = mock.Mock()
-        client.list_devices.return_value = [{"device_id": 99, "ip": "192.0.2.27"}]
         with mock.patch.object(bridge, "_librenms_token", return_value="secret"), \
-             mock.patch.object(bridge, "_librenms_client", return_value=client):
+             mock.patch.object(
+                 bridge, "_strict_librenms_inventory",
+                 return_value=[{"device_id": 99, "ip": "192.0.2.27"}],
+             ):
             bridge.reconcile_manual_delete_guards()
         stored = bridge.MANUAL_DELETE_GUARDS[guard["operation_id"]]
         self.assertEqual(stored["result"], "superseded")
@@ -645,34 +647,27 @@ class PendingDeleteTransactionTests(unittest.TestCase):
     def test_all_network_timeouts_use_stage_and_remaining_deadline(self):
         seen = {}
 
-        class Client:
-            max_attempts = 7
-            retry_delay = 9
-
-            def list_devices(self):
-                seen["attempts"] = self.max_attempts
-                seen["retry_delay"] = self.retry_delay
-                return [{"device_id": 42, "ip": "192.0.2.27"}]
-
         def status(job, ip, timeout):
             seen["prometheus"] = timeout
             return "UNKNOWN"
 
-        def client(token, timeout):
+        def inventory(token, timeout, deadline):
             seen["inventory"] = timeout
-            return Client()
+            seen["inventory_deadline"] = deadline
+            return [{"device_id": 42, "ip": "192.0.2.27"}]
 
         def probe(ip, timeout=None):
             seen["blackbox"] = timeout
             return False
 
-        def remove(token, device_id, timeout):
+        def remove(token, device_id, timeout, deadline):
             seen["delete"] = timeout
+            seen["delete_deadline"] = deadline
             return "deleted"
 
         with mock.patch.object(bridge, "_pending_delete_target_status", side_effect=status), \
              mock.patch.object(bridge, "_librenms_token", return_value="secret"), \
-             mock.patch.object(bridge, "_librenms_client", side_effect=client), \
+             mock.patch.object(bridge, "_strict_librenms_inventory", side_effect=inventory), \
              mock.patch.object(bridge, "_blackbox_icmp_probe", side_effect=probe), \
              mock.patch.object(bridge, "_manual_delete_exact_id", side_effect=remove):
             result = bridge.resolve_pending_delete(self.key, "delete", self.state["pending_token"])
@@ -682,7 +677,7 @@ class PendingDeleteTransactionTests(unittest.TestCase):
         self.assertLessEqual(seen["inventory"], 3)
         self.assertLessEqual(seen["blackbox"], 3)
         self.assertLessEqual(seen["delete"], bridge.MANUAL_DELETE_DEADLINE_SECONDS)
-        self.assertEqual((seen["attempts"], seen["retry_delay"]), (1, 0))
+        self.assertEqual(seen["inventory_deadline"], seen["delete_deadline"])
 
     def test_stage_budget_uses_one_controlled_monotonic_deadline(self):
         class Clock:
@@ -698,11 +693,206 @@ class PendingDeleteTransactionTests(unittest.TestCase):
                     self.key, self.state, self.state["pending_token"],
                 )
             self.assertEqual(reason, "")
+            self.assertEqual(operation["commit_deadline"], 109.0)
             self.assertEqual(operation["deadline"], 112.0)
             clock.value = 111.5
             self.assertEqual(bridge._stage_timeout(operation, 3), 0.5)
             clock.value = 112.0
             self.assertEqual(bridge._stage_timeout(operation, 3), 0)
+
+    def test_strict_inventory_rejects_missing_or_incomplete_device_identity(self):
+        payloads = [
+            {"status": "ok"},
+            {"status": "ok", "devices": [None]},
+            {"status": "ok", "devices": [{"device_id": 42}]},
+            {"status": "ok", "devices": [{"ip": "192.0.2.27"}]},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload), mock.patch.object(
+                bridge.request, "urlopen",
+                return_value=io.BytesIO(json.dumps(payload).encode("utf-8")),
+            ), self.assertRaises(RuntimeError):
+                bridge._strict_librenms_inventory(
+                    "secret", 1, bridge.time.monotonic() + 1,
+                )
+
+    def test_malformed_inventory_never_becomes_authoritative_missing(self):
+        before = dict(self.state)
+        with mock.patch.object(bridge, "_pending_delete_target_status", return_value="OFFLINE"), \
+             mock.patch.object(bridge, "_librenms_token", return_value="secret"), \
+             mock.patch.object(
+                 bridge.request, "urlopen",
+                 return_value=io.BytesIO(b'{"status":"ok"}'),
+             ), mock.patch.object(bridge, "_blackbox_icmp_probe") as probe, \
+             mock.patch.object(bridge, "_manual_delete_exact_id") as remove:
+            result = bridge.resolve_pending_delete(
+                self.key, "delete", self.state["pending_token"],
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.state, before)
+        probe.assert_not_called()
+        remove.assert_not_called()
+
+    def test_malformed_reconciliation_inventory_keeps_guard_unresolved(self):
+        guard = {
+            "schema_version": 1, "operation_id": "f" * 32, "key": self.key,
+            "pending_generation": bridge._pending_generation(self.state["pending_token"]),
+            "ip": "192.0.2.27", "job": "infra-dist-ping", "device_id": "42",
+            "phase": "OUTCOME_UNKNOWN", "committed_at": 1.0, "updated_at": 1.0,
+            "result": "", "state_applied": False, "failure_kind": "TimeoutError",
+        }
+        bridge.MANUAL_DELETE_GUARDS[guard["operation_id"]] = guard
+        with mock.patch.object(bridge, "_librenms_token", return_value="secret"), \
+             mock.patch.object(
+                 bridge.request, "urlopen",
+                 return_value=io.BytesIO(b'{"status":"ok"}'),
+             ):
+            bridge.reconcile_manual_delete_guards()
+        stored = bridge.MANUAL_DELETE_GUARDS[guard["operation_id"]]
+        self.assertEqual(stored["phase"], "OUTCOME_UNKNOWN")
+        self.assertFalse(stored["state_applied"])
+        self.assertTrue(self.state["pending_delete"])
+
+    def test_auto_delete_lease_atomically_blocks_manual_delete_during_probe(self):
+        bridge.DEVICE_AUTO_DELETE_ENABLED = True
+        bridge.DEVICE_AUTO_DELETE_DRY_RUN = False
+        bridge.DEVICE_AUTO_DELETE_AFTER_SECONDS = 1
+        entered = threading.Event()
+        release = threading.Event()
+        deletes = []
+        device = {
+            "device_id": 42, "hostname": "192.0.2.27", "ip": "192.0.2.27",
+            "status": 0, "disabled": 0, "last_polled": "2000-01-01 00:00:00",
+        }
+
+        def probe(_ip):
+            entered.set()
+            release.wait(2)
+            return False
+
+        def run_auto():
+            with mock.patch.object(bridge, "device_auto_delete_protected_ips", return_value=set()), \
+                 mock.patch.object(bridge, "notify_device_auto_delete_summary", return_value=False):
+                bridge.run_device_auto_delete_cycle(
+                    now=2_000_000_000, devices=[device], token="secret", probe=probe,
+                    delete=lambda _token, item: deletes.append(item["device_id"]) or True,
+                )
+
+        thread = threading.Thread(target=run_auto)
+        thread.start()
+        self.assertTrue(entered.wait(1))
+        try:
+            with mock.patch.object(bridge, "_pending_delete_target_status") as status, \
+                 mock.patch.object(bridge, "_manual_delete_inventory") as inventory:
+                result = bridge.resolve_pending_delete(
+                    self.key, "delete", self.state["pending_token"],
+                )
+            self.assertFalse(result["ok"])
+            status.assert_not_called()
+            inventory.assert_not_called()
+        finally:
+            release.set()
+            thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(deletes, [42])
+        self.assertEqual(bridge.AUTO_DELETE_BY_ID, {})
+        self.assertEqual(bridge.AUTO_DELETE_BY_IP, {})
+
+    def test_ten_seconds_is_too_late_to_commit_or_delete(self):
+        class Clock:
+            value = 100.0
+
+            def __call__(self):
+                return self.value
+
+        clock = Clock()
+
+        def final_probe(_ip, timeout=None):
+            clock.value = 110.0
+            return False
+
+        with mock.patch.object(bridge.time, "monotonic", side_effect=clock), \
+             mock.patch.object(bridge, "_pending_delete_target_status", return_value="OFFLINE"), \
+             mock.patch.object(bridge, "_manual_delete_inventory", return_value=("secret", "42", {})), \
+             mock.patch.object(bridge, "_blackbox_icmp_probe", side_effect=final_probe), \
+             mock.patch.object(bridge, "_manual_delete_exact_id") as remove:
+            result = bridge.resolve_pending_delete(
+                self.key, "delete", self.state["pending_token"],
+            )
+        self.assertFalse(result["ok"])
+        remove.assert_not_called()
+        self.assertTrue(self.state["pending_delete"])
+        self.assertEqual(list(Path(bridge.MANUAL_DELETE_GUARD_DIR).glob("*.json")), [])
+
+    def test_delete_response_read_enforces_cumulative_deadline(self):
+        class Clock:
+            value = 0.0
+
+            def __call__(self):
+                return self.value
+
+        class SlowResponse(io.BytesIO):
+            def __init__(self, clock):
+                super().__init__(b'{"status":"ok"}')
+                self.clock = clock
+                self.timeouts = []
+
+            def settimeout(self, timeout):
+                self.timeouts.append(timeout)
+
+            def read(self, size=-1):
+                value = super().read(size)
+                self.clock.value = 2.0
+                return value
+
+        clock = Clock()
+        response = SlowResponse(clock)
+        with mock.patch.object(bridge.time, "monotonic", side_effect=clock), \
+             mock.patch.object(bridge.request, "urlopen", return_value=response), \
+             self.assertRaises(TimeoutError):
+            bridge._manual_delete_exact_id("secret", "42", 1, deadline=1)
+        self.assertTrue(response.timeouts)
+        self.assertLessEqual(response.timeouts[0], 1)
+
+    def test_http_401_is_retryable_and_does_not_leave_unresolved_guard(self):
+        def rejected(req, timeout):
+            raise HTTPError(req.full_url, 401, "unauthorized", {}, None)
+
+        with mock.patch.object(bridge, "_pending_delete_target_status", return_value="OFFLINE"), \
+             mock.patch.object(bridge, "_manual_delete_inventory", return_value=("secret", "42", {})), \
+             mock.patch.object(bridge, "_blackbox_icmp_probe", return_value=False), \
+             mock.patch.object(bridge.request, "urlopen", side_effect=rejected):
+            result = bridge.resolve_pending_delete(
+                self.key, "delete", self.state["pending_token"],
+            )
+        self.assertFalse(result["ok"])
+        self.assertIn("拒绝", result["error"])
+        self.assertTrue(self.state["pending_delete"])
+        guards = list(bridge.MANUAL_DELETE_GUARDS.values())
+        self.assertEqual(len(guards), 1)
+        self.assertEqual(guards[0]["phase"], "FAILED")
+        self.assertEqual(guards[0]["failure_kind"], "authorization-rejected")
+        self.assertFalse(bridge._guard_is_unresolved(guards[0]))
+        keep = bridge.resolve_pending_delete(
+            self.key, "keep", self.state["pending_token"],
+        )
+        self.assertTrue(keep["ok"])
+
+    def test_first_guard_directory_creation_fsyncs_parent_entry(self):
+        calls = []
+        with mock.patch.object(bridge.os.path, "islink", return_value=False), \
+             mock.patch.object(bridge.os.path, "isdir", return_value=False), \
+             mock.patch.object(bridge.os, "makedirs", side_effect=lambda *a, **k: calls.append("mkdir")), \
+             mock.patch.object(bridge.os, "chmod", side_effect=lambda *a, **k: calls.append("chmod")), \
+             mock.patch.object(bridge.os, "open", return_value=73) as opened, \
+             mock.patch.object(bridge.os, "fsync", side_effect=lambda fd: calls.append(("fsync", fd))), \
+             mock.patch.object(bridge.os, "close", side_effect=lambda fd: calls.append(("close", fd))), \
+             mock.patch.object(bridge.os, "name", "posix"):
+            bridge._ensure_manual_delete_guard_dir()
+        opened.assert_called_once()
+        self.assertEqual(opened.call_args.args[0], str(Path(self.temp.name)))
+        self.assertLess(calls.index("mkdir"), calls.index(("fsync", 73)))
+        self.assertLess(calls.index(("fsync", 73)), calls.index(("close", 73)))
 
 
 if __name__ == "__main__":

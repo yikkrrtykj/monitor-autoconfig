@@ -2833,10 +2833,14 @@ MANUAL_DELETE_OPERATIONS = {}
 MANUAL_DELETE_BY_KEY = {}
 MANUAL_DELETE_BY_IP = {}
 MANUAL_DELETE_GUARDS = {}
+AUTO_DELETE_BY_ID = {}
+AUTO_DELETE_BY_IP = {}
 MANUAL_DELETE_GUARDS_READY = not DEVICE_PENDING_DELETE_ENABLED
 DEVICE_DOWN_RUNTIME_LOADED = False
 MANUAL_DELETE_SCHEMA_VERSION = 1
+MANUAL_DELETE_COMMIT_SECONDS = 9.0
 MANUAL_DELETE_DEADLINE_SECONDS = 12.0
+MANUAL_DELETE_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 MANUAL_DELETE_PHASES = {
     "CHECKING", "CANCELLED", "COMMITTED", "DELETE_MAY_HAVE_BEEN_DISPATCHED",
     "SUCCEEDED", "FAILED", "FAILED_NOT_DISPATCHED", "OUTCOME_UNKNOWN",
@@ -2904,6 +2908,7 @@ def _validate_manual_delete_guard(value):
 
 
 def _persist_manual_delete_guard(guard):
+    _ensure_manual_delete_guard_dir()
     guard["updated_at"] = time.time()
     validated = _validate_manual_delete_guard(guard)
     _durable_write_json(_manual_delete_guard_path(validated["operation_id"]), validated)
@@ -2911,11 +2916,24 @@ def _persist_manual_delete_guard(guard):
         MANUAL_DELETE_GUARDS[validated["operation_id"]] = validated
 
 
-def _load_manual_delete_guards_strict():
+def _ensure_manual_delete_guard_dir():
     if os.path.islink(MANUAL_DELETE_GUARD_DIR):
         raise RuntimeError("manual delete guard directory must not be a symlink")
+    existed = os.path.isdir(MANUAL_DELETE_GUARD_DIR)
     os.makedirs(MANUAL_DELETE_GUARD_DIR, mode=0o700, exist_ok=True)
     os.chmod(MANUAL_DELETE_GUARD_DIR, 0o700)
+    if not existed and os.name != "nt":
+        parent = os.path.dirname(MANUAL_DELETE_GUARD_DIR) or "."
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        parent_fd = os.open(parent, flags)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+
+
+def _load_manual_delete_guards_strict():
+    _ensure_manual_delete_guard_dir()
     loaded = {}
     for name in os.listdir(MANUAL_DELETE_GUARD_DIR):
         if not name.endswith(".json"):
@@ -2942,13 +2960,10 @@ def _guard_is_unresolved(guard):
     } or (guard.get("phase") == "SUCCEEDED" and not guard.get("state_applied"))
 
 
-def _manual_delete_guard_blocks_device(device_id, ip):
+def _manual_delete_guard_blocks_device_locked(device_id, ip):
     wanted_id = str(device_id or "").strip()
     wanted_ip = str(ip or "").strip()
-    with RETIRE_LOCK:
-        guards = list(MANUAL_DELETE_GUARDS.values())
-        operations = list(MANUAL_DELETE_OPERATIONS.values())
-    for operation in operations:
+    for operation in MANUAL_DELETE_OPERATIONS.values():
         if operation.get("phase") not in {
             "CHECKING", "COMMITTED", "DELETE_MAY_HAVE_BEEN_DISPATCHED", "OUTCOME_UNKNOWN",
         }:
@@ -2959,7 +2974,7 @@ def _manual_delete_guard_blocks_device(device_id, ip):
                 return True
         elif wanted_ip and operation.get("ip") == wanted_ip:
             return True
-    for guard in guards:
+    for guard in MANUAL_DELETE_GUARDS.values():
         if not _guard_is_unresolved(guard):
             continue
         guarded_id = str(guard.get("device_id") or "").strip()
@@ -2969,6 +2984,36 @@ def _manual_delete_guard_blocks_device(device_id, ip):
         elif wanted_ip and guard.get("ip") == wanted_ip:
             return True
     return False
+
+
+def _manual_delete_guard_blocks_device(device_id, ip):
+    with RETIRE_LOCK:
+        return _manual_delete_guard_blocks_device_locked(device_id, ip)
+
+
+def _claim_auto_delete_target(device_id, ip):
+    wanted_id = str(device_id or "").strip()
+    wanted_ip = str(ip or "").strip()
+    with RETIRE_LOCK:
+        if _manual_delete_guard_blocks_device_locked(wanted_id, wanted_ip):
+            return ""
+        if (wanted_id and wanted_id in AUTO_DELETE_BY_ID) or wanted_ip in AUTO_DELETE_BY_IP:
+            return ""
+        owner = secrets.token_hex(16)
+        if wanted_id:
+            AUTO_DELETE_BY_ID[wanted_id] = owner
+        AUTO_DELETE_BY_IP[wanted_ip] = owner
+        return owner
+
+
+def _release_auto_delete_target(owner, device_id, ip):
+    wanted_id = str(device_id or "").strip()
+    wanted_ip = str(ip or "").strip()
+    with RETIRE_LOCK:
+        if wanted_id and AUTO_DELETE_BY_ID.get(wanted_id) == owner:
+            AUTO_DELETE_BY_ID.pop(wanted_id, None)
+        if AUTO_DELETE_BY_IP.get(wanted_ip) == owner:
+            AUTO_DELETE_BY_IP.pop(wanted_ip, None)
 
 
 def _operation_for_state_locked(key, state):
@@ -3176,9 +3221,92 @@ def _remaining_delete_time(operation):
     return operation["deadline"] - time.monotonic()
 
 
+def _remaining_commit_time(operation):
+    return min(operation["commit_deadline"], operation["deadline"]) - time.monotonic()
+
+
 def _stage_timeout(operation, maximum):
     remaining = _remaining_delete_time(operation)
     return min(float(maximum), remaining) if remaining > 0 else 0
+
+
+class _ManualDeleteNotDispatched(RuntimeError):
+    def __init__(self, message, failure_kind="not-dispatched"):
+        super().__init__(message)
+        self.failure_kind = failure_kind
+
+
+def _set_response_read_timeout(response, timeout):
+    candidates = [response]
+    for path in (("fp",), ("fp", "raw"), ("fp", "raw", "_sock"), ("raw",), ("_sock",)):
+        current = response
+        for name in path:
+            current = getattr(current, name, None)
+            if current is None:
+                break
+        if current is not None:
+            candidates.append(current)
+    for candidate in reversed(candidates):
+        setter = getattr(candidate, "settimeout", None)
+        if callable(setter):
+            setter(timeout)
+            return
+
+
+def _read_response_before_deadline(response, deadline):
+    chunks = []
+    total = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("response deadline exceeded")
+        _set_response_read_timeout(response, remaining)
+        chunk = response.read(min(65536, MANUAL_DELETE_RESPONSE_MAX_BYTES + 1 - total))
+        if time.monotonic() > deadline:
+            raise TimeoutError("response deadline exceeded")
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > MANUAL_DELETE_RESPONSE_MAX_BYTES:
+            raise RuntimeError("LibreNMS response exceeds safety limit")
+
+
+def _strict_librenms_inventory(token, timeout, deadline):
+    if not token or not LIBRENMS_URL or timeout <= 0:
+        raise RuntimeError("LibreNMS inventory unavailable")
+    req = request.Request(
+        f"{LIBRENMS_URL}/api/v0/devices",
+        headers={"Accept": "application/json", "X-Auth-Token": token},
+    )
+    response_deadline = min(deadline, time.monotonic() + timeout)
+    with request.urlopen(req, timeout=timeout) as resp:
+        raw = _read_response_before_deadline(resp, response_deadline)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("LibreNMS inventory malformed") from exc
+    if (
+        not isinstance(payload, dict)
+        or str(payload.get("status") or "").lower() != "ok"
+        or "devices" not in payload
+        or not isinstance(payload["devices"], list)
+    ):
+        raise RuntimeError("LibreNMS inventory malformed")
+    devices = payload["devices"]
+    device_ids = set()
+    for device in devices:
+        if not isinstance(device, dict):
+            raise RuntimeError("LibreNMS inventory contains invalid device")
+        device_id = str(device.get("device_id") or "").strip()
+        try:
+            candidate_ip = str(ipaddress.ip_address(_device_ip(device)))
+        except ValueError as exc:
+            raise RuntimeError("LibreNMS inventory contains incomplete identity") from exc
+        if not device_id or device_id in device_ids:
+            raise RuntimeError("LibreNMS inventory contains incomplete identity")
+        device_ids.add(device_id)
+    return devices
 
 
 def _manual_delete_inventory(operation):
@@ -3186,20 +3314,10 @@ def _manual_delete_inventory(operation):
     token = _librenms_token()
     if not token or not LIBRENMS_URL or timeout <= 0:
         raise RuntimeError("LibreNMS inventory unavailable")
-    client = _librenms_client(token, timeout=timeout)
-    client.max_attempts = 1
-    client.retry_delay = 0
-    devices = client.list_devices()
-    if not isinstance(devices, list):
-        raise RuntimeError("LibreNMS inventory malformed")
+    devices = _strict_librenms_inventory(token, timeout, operation["deadline"])
     matches = []
     for device in devices:
-        if not isinstance(device, dict):
-            continue
-        try:
-            candidate_ip = str(ipaddress.ip_address(_device_ip(device)))
-        except ValueError:
-            continue
+        candidate_ip = str(ipaddress.ip_address(_device_ip(device)))
         if candidate_ip == operation["ip"]:
             matches.append(device)
     if len(matches) > 1:
@@ -3212,9 +3330,13 @@ def _manual_delete_inventory(operation):
     return token, device_id, matches[0]
 
 
-def _manual_delete_exact_id(token, device_id, timeout):
+def _manual_delete_exact_id(token, device_id, timeout, deadline=None):
     if not token or not device_id or timeout <= 0:
-        raise RuntimeError("DELETE not dispatched")
+        raise _ManualDeleteNotDispatched("DELETE not dispatched")
+    deadline = time.monotonic() + timeout if deadline is None else deadline
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise _ManualDeleteNotDispatched("DELETE deadline expired")
     encoded_ref = parse.quote(str(device_id), safe="")
     req = request.Request(
         f"{LIBRENMS_URL}/api/v0/devices/{encoded_ref}",
@@ -3222,11 +3344,15 @@ def _manual_delete_exact_id(token, device_id, timeout):
         method="DELETE",
     )
     try:
-        with request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        with request.urlopen(req, timeout=min(timeout, remaining)) as resp:
+            raw = _read_response_before_deadline(resp, deadline).decode("utf-8", errors="replace")
     except error.HTTPError as exc:
         if exc.code == 404:
             return "missing"
+        if exc.code in (401, 403):
+            raise _ManualDeleteNotDispatched(
+                "LibreNMS rejected DELETE authorization", "authorization-rejected",
+            ) from exc
         raise
     data = json.loads(raw or "{}")
     entries = data if isinstance(data, list) else [data]
@@ -3301,6 +3427,8 @@ def _new_manual_delete_operation(key, state, token):
     if raw_ip != ip:
         return None, "设备地址未规范化，未执行删除"
     generation = _pending_generation(token)
+    if ip in AUTO_DELETE_BY_IP:
+        return None, "该设备正在执行自动清理检查，请稍后刷新"
     if key in MANUAL_DELETE_BY_KEY or ip in MANUAL_DELETE_BY_IP:
         return None, "该设备已有删除检查正在进行，请稍后刷新"
     for guard in MANUAL_DELETE_GUARDS.values():
@@ -3315,6 +3443,7 @@ def _new_manual_delete_operation(key, state, token):
         ):
             return None, "该确认代次已经处理，请刷新待删除列表"
     operation_id = secrets.token_hex(16)
+    started = time.monotonic()
     operation = {
         "operation_id": operation_id,
         "key": key,
@@ -3323,8 +3452,9 @@ def _new_manual_delete_operation(key, state, token):
         "ip": ip,
         "job": job,
         "phase": "CHECKING",
-        "started": time.monotonic(),
-        "deadline": time.monotonic() + MANUAL_DELETE_DEADLINE_SECONDS,
+        "started": started,
+        "commit_deadline": started + MANUAL_DELETE_COMMIT_SECONDS,
+        "deadline": started + MANUAL_DELETE_DEADLINE_SECONDS,
         "device_id": "",
         "committed_at": 0.0,
         "failure_kind": "",
@@ -3425,7 +3555,7 @@ def resolve_pending_delete(key, action, token):
             and str(state.get("ip") or "").strip() == operation["ip"]
             and str(state.get("job") or "") == operation["job"]
             and not _manual_delete_receipt_conflicts_locked(operation, device_id)
-            and _remaining_delete_time(operation) > 0
+            and _remaining_commit_time(operation) > 0
         )
         if not valid:
             _cancel_operation_locked(operation, "generation-changed")
@@ -3466,7 +3596,7 @@ def resolve_pending_delete(key, action, token):
             _operation_for_state_locked(key, state) is operation
             and operation.get("phase") == "COMMITTED"
             and MANUAL_DELETE_BY_IP.get(operation["ip"]) == operation["operation_id"]
-            and _remaining_delete_time(operation) > 0
+            and _remaining_commit_time(operation) > 0
         )
         if owns_commit:
             operation["phase"] = "DELETE_MAY_HAVE_BEEN_DISPATCHED"
@@ -3483,9 +3613,30 @@ def resolve_pending_delete(key, action, token):
             _release_operation_locked(operation)
         return {"ok": False, "error": "删除期限已到，未发送 DELETE 请求"}
     try:
-        result = _manual_delete_exact_id(libre_token, device_id, delete_timeout)
+        result = _manual_delete_exact_id(
+            libre_token, device_id, delete_timeout, operation["deadline"],
+        )
         guard.update({"phase": "SUCCEEDED", "result": result, "failure_kind": ""})
         _persist_manual_delete_guard(guard)
+    except _ManualDeleteNotDispatched as exc:
+        failed_phase = (
+            "FAILED" if exc.failure_kind == "authorization-rejected"
+            else "FAILED_NOT_DISPATCHED"
+        )
+        guard.update({"phase": failed_phase, "failure_kind": exc.failure_kind})
+        try:
+            _persist_manual_delete_guard(guard)
+        except Exception as persist_exc:
+            log(f"[DOWN] pending delete rejection receipt failed: {type(persist_exc).__name__}")
+            return {"ok": False, "error": "LibreNMS 已拒绝 DELETE，但安全记录状态未决；设备仍受保护"}
+        with RETIRE_LOCK:
+            operation["phase"] = failed_phase
+            operation["failure_kind"] = exc.failure_kind
+            _release_operation_locked(operation)
+        log(f"[DOWN] pending delete not executed device_id={device_id}: {exc.failure_kind}")
+        if exc.failure_kind == "authorization-rejected":
+            return {"ok": False, "error": "LibreNMS 拒绝了删除授权，未删除设备；修复凭据后可重试或保留"}
+        return {"ok": False, "error": "删除请求未发送；设备仍保留在待删除列表，可重试或保留"}
     except Exception as exc:
         guard.update({"phase": "OUTCOME_UNKNOWN", "failure_kind": type(exc).__name__})
         try:
@@ -3517,6 +3668,7 @@ def _operation_from_guard(guard, state):
         "job": guard["job"],
         "phase": guard["phase"],
         "started": time.monotonic(),
+        "commit_deadline": time.monotonic(),
         "deadline": time.monotonic(),
         "device_id": guard["device_id"],
         "committed_at": guard["committed_at"],
@@ -3571,24 +3723,14 @@ def reconcile_manual_delete_guards():
         if not token or not LIBRENMS_URL:
             continue
         try:
-            client = _librenms_client(token, timeout=3)
-            client.max_attempts = 1
-            client.retry_delay = 0
-            devices = client.list_devices()
-            if not isinstance(devices, list):
-                raise RuntimeError("malformed inventory")
+            deadline = time.monotonic() + 3
+            devices = _strict_librenms_inventory(token, 3, deadline)
             by_id = {}
             same_ip = []
             for device in devices:
-                if not isinstance(device, dict):
-                    continue
                 device_id = str(device.get("device_id") or "").strip()
-                if device_id:
-                    by_id[device_id] = device
-                try:
-                    candidate_ip = str(ipaddress.ip_address(_device_ip(device)))
-                except ValueError:
-                    continue
+                by_id[device_id] = device
+                candidate_ip = str(ipaddress.ip_address(_device_ip(device)))
                 if candidate_ip == guard["ip"]:
                     same_ip.append(device)
         except Exception as exc:
@@ -4470,86 +4612,90 @@ def run_device_auto_delete_cycle(
             )
             continue
 
-        if _manual_delete_guard_blocks_device(device.get("device_id"), ip):
+        auto_owner = _claim_auto_delete_target(device.get("device_id"), ip)
+        if not auto_owner:
             log(
                 f"[device-auto-delete] guarded/manual-delete-unresolved "
                 f"hostname={hostname} ip={ip} device_id={device_id}; skip"
             )
             continue
 
-        stats["candidates"] += 1
-        log(
-            f"[device-auto-delete] candidate hostname={hostname} ip={ip} "
-            f"device_id={device_id} offline_seconds={offline_seconds}"
-        )
         try:
-            reachable = probe_device(ip)
-        except Exception as exc:
+            stats["candidates"] += 1
             log(
-                f"[device-auto-delete] probe-error hostname={hostname} ip={ip} "
-                f"device_id={device_id}: {exc}; skip"
-            )
-            continue
-        if reachable is True:
-            log(
-                f"[device-auto-delete] reachable-now hostname={hostname} ip={ip} "
-                f"device_id={device_id}; skip"
-            )
-            continue
-        if reachable is not False:
-            log(
-                f"[device-auto-delete] probe-error hostname={hostname} ip={ip} "
-                f"device_id={device_id}: indeterminate result; skip"
-            )
-            continue
-        if DEVICE_AUTO_DELETE_DRY_RUN:
-            stats["dry_run"] += 1
-            dry_run_records.append(
-                _device_auto_delete_notice_record(device, ip, offline_seconds)
-            )
-            log(
-                f"[device-auto-delete] DRY-RUN would delete hostname={hostname} "
-                f"ip={ip} device_id={device_id} offline_seconds={offline_seconds}"
-            )
-            continue
-
-        try:
-            deleted = bool(delete_device(token, device))
-        except Exception as exc:
-            log(
-                f"[device-auto-delete] delete-failed hostname={hostname} ip={ip} "
-                f"device_id={device_id}: {type(exc).__name__}"
-            )
-            stats["delete_failed"] += 1
-            failed_records.append(
-                _device_auto_delete_notice_record(
-                    device, ip, offline_seconds, type(exc).__name__
-                )
-            )
-            continue
-        if deleted:
-            stats["deleted"] += 1
-            deleted_records.append(
-                _device_auto_delete_notice_record(device, ip, offline_seconds)
-            )
-            log(
-                f"[device-auto-delete] deleted hostname={hostname} "
+                f"[device-auto-delete] candidate hostname={hostname} ip={ip} "
                 f"device_id={device_id} offline_seconds={offline_seconds}"
             )
-        else:
-            stats["delete_failed"] += 1
-            failed_records.append(
-                _device_auto_delete_notice_record(
-                    device,
-                    ip,
-                    offline_seconds,
-                    "LibreNMS DELETE API 返回失败",
+            try:
+                reachable = probe_device(ip)
+            except Exception as exc:
+                log(
+                    f"[device-auto-delete] probe-error hostname={hostname} ip={ip} "
+                    f"device_id={device_id}: {exc}; skip"
                 )
-            )
-            log(
-                f"[device-auto-delete] delete-failed hostname={hostname} ip={ip} "
-                f"device_id={device_id}; retry next cycle"
-            )
+                continue
+            if reachable is True:
+                log(
+                    f"[device-auto-delete] reachable-now hostname={hostname} ip={ip} "
+                    f"device_id={device_id}; skip"
+                )
+                continue
+            if reachable is not False:
+                log(
+                    f"[device-auto-delete] probe-error hostname={hostname} ip={ip} "
+                    f"device_id={device_id}: indeterminate result; skip"
+                )
+                continue
+            if DEVICE_AUTO_DELETE_DRY_RUN:
+                stats["dry_run"] += 1
+                dry_run_records.append(
+                    _device_auto_delete_notice_record(device, ip, offline_seconds)
+                )
+                log(
+                    f"[device-auto-delete] DRY-RUN would delete hostname={hostname} "
+                    f"ip={ip} device_id={device_id} offline_seconds={offline_seconds}"
+                )
+                continue
+
+            try:
+                deleted = bool(delete_device(token, device))
+            except Exception as exc:
+                log(
+                    f"[device-auto-delete] delete-failed hostname={hostname} ip={ip} "
+                    f"device_id={device_id}: {type(exc).__name__}"
+                )
+                stats["delete_failed"] += 1
+                failed_records.append(
+                    _device_auto_delete_notice_record(
+                        device, ip, offline_seconds, type(exc).__name__
+                    )
+                )
+                continue
+            if deleted:
+                stats["deleted"] += 1
+                deleted_records.append(
+                    _device_auto_delete_notice_record(device, ip, offline_seconds)
+                )
+                log(
+                    f"[device-auto-delete] deleted hostname={hostname} "
+                    f"device_id={device_id} offline_seconds={offline_seconds}"
+                )
+            else:
+                stats["delete_failed"] += 1
+                failed_records.append(
+                    _device_auto_delete_notice_record(
+                        device,
+                        ip,
+                        offline_seconds,
+                        "LibreNMS DELETE API 返回失败",
+                    )
+                )
+                log(
+                    f"[device-auto-delete] delete-failed hostname={hostname} ip={ip} "
+                    f"device_id={device_id}; retry next cycle"
+                )
+        finally:
+            _release_auto_delete_target(auto_owner, device.get("device_id"), ip)
     notify_device_auto_delete_summary(
         dry_run_records=dry_run_records,
         deleted_records=deleted_records,

@@ -56,7 +56,7 @@ def pending(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         bridge, "_manual_delete_exact_id",
-        lambda token, device_id, timeout: calls.append(("delete", device_id)) or "deleted",
+        lambda token, device_id, timeout, deadline=None: calls.append(("delete", device_id)) or "deleted",
     )
     monkeypatch.setattr(
         bridge, "save_device_down_states_durable",

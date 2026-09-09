@@ -271,7 +271,7 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
     deleted = []
     monkeypatch.setattr(
         bridge, "_manual_delete_exact_id",
-        lambda token, device_id, timeout: deleted.append(device_id) or "deleted",
+        lambda token, device_id, timeout, deadline=None: deleted.append(device_id) or "deleted",
     )
 
     # 错口令拒绝，不删
