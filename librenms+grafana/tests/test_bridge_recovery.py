@@ -16,6 +16,11 @@ _spec.loader.exec_module(bridge)
 
 def enable_pending_delete(monkeypatch):
     monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
+    monkeypatch.setattr(bridge, "MANUAL_DELETE_GUARDS_READY", True)
+    bridge.MANUAL_DELETE_OPERATIONS.clear()
+    bridge.MANUAL_DELETE_BY_KEY.clear()
+    bridge.MANUAL_DELETE_BY_IP.clear()
+    bridge.MANUAL_DELETE_GUARDS.clear()
 
 
 def interconnect_watcher_for_query(query, logs=None):
@@ -237,6 +242,10 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
     key = "infra-dist-ping|192.168.10.27"
 
     def fresh_state():
+        bridge.MANUAL_DELETE_OPERATIONS.clear()
+        bridge.MANUAL_DELETE_BY_KEY.clear()
+        bridge.MANUAL_DELETE_BY_IP.clear()
+        bridge.MANUAL_DELETE_GUARDS.clear()
         bridge.DEVICE_DOWN_STATES.clear()
         bridge.DEVICE_DOWN_STATES[key] = {
             "alerting": True,
@@ -251,9 +260,19 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
         return bridge.DEVICE_DOWN_STATES[key]
 
     monkeypatch.setattr(bridge, "save_device_down_states", lambda states: None)
-    monkeypatch.setattr(bridge, "_pending_delete_target_status", lambda job, ip: "OFFLINE")
+    monkeypatch.setattr(bridge, "save_device_down_states_durable", lambda states: None)
+    monkeypatch.setattr(bridge, "_persist_manual_delete_guard", lambda guard: bridge.MANUAL_DELETE_GUARDS.update({guard["operation_id"]: dict(guard)}))
+    monkeypatch.setattr(bridge, "_pending_delete_target_status", lambda *args: "OFFLINE")
+    monkeypatch.setattr(
+        bridge, "_manual_delete_inventory",
+        lambda operation: ("secret", "42", {"device_id": 42, "ip": "192.168.10.27"}),
+    )
+    monkeypatch.setattr(bridge, "_blackbox_icmp_probe", lambda ip, timeout=None: False)
     deleted = []
-    monkeypatch.setattr(bridge, "delete_librenms_device", lambda ip: deleted.append(ip) or "deleted")
+    monkeypatch.setattr(
+        bridge, "_manual_delete_exact_id",
+        lambda token, device_id, timeout: deleted.append(device_id) or "deleted",
+    )
 
     # 错口令拒绝，不删
     state = fresh_state()
@@ -272,13 +291,13 @@ def test_resolve_pending_delete_confirm_keep_and_bad_token(monkeypatch):
     state = fresh_state()
     result = bridge.resolve_pending_delete(key, "delete", "tok-1")
     assert result["ok"] is True
-    assert deleted == ["192.168.10.27"]
+    assert deleted == ["42"]
     assert state["retired"] is True and state["librenms_deleted"] is True
     assert state["alerting"] is False and state["pending_delete"] is False
 
     # 设备当前在线：拒绝删除并撤销待删除
     state = fresh_state()
-    monkeypatch.setattr(bridge, "_pending_delete_target_status", lambda job, ip: "ONLINE")
+    monkeypatch.setattr(bridge, "_pending_delete_target_status", lambda *args: "ONLINE")
     result = bridge.resolve_pending_delete(key, "delete", "tok-1")
     assert result["ok"] is False
     assert state["pending_delete"] is False

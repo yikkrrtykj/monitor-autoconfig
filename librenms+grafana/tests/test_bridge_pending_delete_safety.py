@@ -22,30 +22,56 @@ NOW = time.time()
 
 
 def sample(value, **labels):
-    return {"metric": {"job": JOB, "target_ip": IP, **labels},
-            "value": [NOW, value]}
+    return {"metric": {"job": JOB, "target_ip": IP, **labels}, "value": [NOW, value]}
 
 
 @pytest.fixture
-def pending(monkeypatch):
-    state = {"job": JOB, "ip": IP, "name": "test-switch",
-             "pending_delete": True, "pending_token": "test-confirm",
-             "pending_since": 100, "down_since": 10, "alerting": True,
-             "retired": False, "seen_up": True}
+def pending(monkeypatch, tmp_path):
+    state = {
+        "job": JOB, "ip": IP, "name": "test-switch",
+        "pending_delete": True, "pending_token": "test-confirm",
+        "pending_since": 100, "down_since": 10, "alerting": True,
+        "retired": False, "seen_up": True,
+    }
     calls = []
     monkeypatch.setattr(bridge.time, "time", lambda: NOW)
     monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
+    monkeypatch.setattr(bridge, "MANUAL_DELETE_GUARDS_READY", True)
+    monkeypatch.setattr(bridge, "MANUAL_DELETE_GUARD_DIR", str(tmp_path / "guards"))
+    monkeypatch.setattr(bridge, "DEVICE_DOWN_STATE_FILE", str(tmp_path / "states.json"))
+    monkeypatch.setattr(bridge, "LIBRENMS_URL", "http://librenms.test")
     monkeypatch.setattr(bridge, "DEVICE_DOWN_STATES", {KEY: state})
-    monkeypatch.setattr(bridge, "delete_librenms_device",
-                        lambda ip: calls.append(("delete", ip)) or "deleted")
-    monkeypatch.setattr(bridge, "save_device_down_states",
-                        lambda states: calls.append(("save", copy.deepcopy(states))))
+    bridge.MANUAL_DELETE_OPERATIONS.clear()
+    bridge.MANUAL_DELETE_BY_KEY.clear()
+    bridge.MANUAL_DELETE_BY_IP.clear()
+    bridge.MANUAL_DELETE_GUARDS.clear()
+    monkeypatch.setattr(
+        bridge, "_manual_delete_inventory",
+        lambda operation: calls.append(("inventory", operation["ip"]))
+        or ("secret", "42", {"device_id": 42, "ip": IP}),
+    )
+    monkeypatch.setattr(
+        bridge, "_blackbox_icmp_probe",
+        lambda ip, timeout=None: calls.append(("blackbox", ip)) or False,
+    )
+    monkeypatch.setattr(
+        bridge, "_manual_delete_exact_id",
+        lambda token, device_id, timeout: calls.append(("delete", device_id)) or "deleted",
+    )
+    monkeypatch.setattr(
+        bridge, "save_device_down_states_durable",
+        lambda states: calls.append(("durable-state", copy.deepcopy(states))),
+    )
+    monkeypatch.setattr(
+        bridge, "save_device_down_states",
+        lambda states: calls.append(("state", copy.deepcopy(states))),
+    )
     monkeypatch.setattr(bridge, "send_feishu", lambda *a, **k: pytest.fail("unexpected notification"))
-    monkeypatch.setattr(bridge, "prometheus_query", lambda query: [sample("0")])
+    monkeypatch.setattr(bridge, "prometheus_query", lambda query, timeout=10: [sample("0")])
     return state, calls
 
 
-@pytest.mark.parametrize("response", [
+UNKNOWN_RESPONSES = [
     [], None, {}, [None], [False], [{"metric": {"job": JOB, "target_ip": IP}}],
     [sample("bad")], [sample("NaN")], [sample("Infinity")], [sample("-Infinity")],
     [sample("2")], [sample("-1")], [sample("0.5")], [sample(None)], [sample(True)],
@@ -56,80 +82,100 @@ def pending(monkeypatch):
     [sample("0"), sample("bad")], [sample("bad"), sample("0")],
     [{"metric": {"job": JOB, "target_ip": IP}, "value": ["NaN", "0"]}],
     [{"metric": {"job": JOB, "target_ip": IP}, "value": [NOW + 60, "0"]}],
-])
-def test_unknown_preserves_pending_and_never_deletes(pending, monkeypatch, response):
+]
+
+
+@pytest.mark.parametrize("response", UNKNOWN_RESPONSES)
+def test_unknown_prometheus_requires_blackbox_then_can_delete(pending, monkeypatch, response):
     state, calls = pending
-    before = copy.deepcopy(state)
-    monkeypatch.setattr(bridge, "prometheus_query", lambda query: response)
+    monkeypatch.setattr(bridge, "prometheus_query", lambda query, timeout=10: response)
     result = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
-    assert result["ok"] is False
-    assert "无法确认" in result["error"]
-    assert state == before
-    assert calls == []
-
-
-@pytest.mark.parametrize("error", [TimeoutError(), ConnectionError(),
-    URLError("test connection"), HTTPError("http://test", 500, "test", {}, None),
-    RuntimeError("API failure")])
-def test_query_failure_and_valid_retry(pending, monkeypatch, error):
-    state, calls = pending
-    before = copy.deepcopy(state)
-    def failed(query):
-        raise error
-    monkeypatch.setattr(bridge, "prometheus_query", failed)
-    assert bridge.resolve_pending_delete(KEY, "delete", "test-confirm")["ok"] is False
-    assert state == before and calls == []
-    monkeypatch.setattr(bridge, "prometheus_query", lambda query: [sample("0")])
-    assert bridge.resolve_pending_delete(KEY, "delete", "test-confirm")["ok"] is True
-    assert calls[0] == ("delete", IP)
+    assert result["ok"] is True
+    stages = [(kind, value) for kind, value, *_ in calls if kind in {"inventory", "blackbox", "delete"}]
+    assert stages == [("inventory", IP), ("blackbox", IP), ("delete", "42")]
     assert state["retired"] is True
 
 
-@pytest.mark.parametrize("field,value", [("job", ""), ("job", "bad job"),
-    ("ip", ""), ("ip", "999.999.999.999"), ("ip", "deadbeef")])
-def test_invalid_identity(pending, monkeypatch, field, value):
+@pytest.mark.parametrize("failure", [
+    TimeoutError(), ConnectionError(), URLError("connection"),
+    HTTPError("http://test", 500, "test", {}, None), RuntimeError("API failure"),
+])
+def test_prometheus_failure_still_requires_final_blackbox(pending, monkeypatch, failure):
+    state, calls = pending
+
+    def failed(query, timeout=10):
+        raise failure
+
+    monkeypatch.setattr(bridge, "prometheus_query", failed)
+    assert bridge.resolve_pending_delete(KEY, "delete", "test-confirm")["ok"] is True
+    assert ("blackbox", IP) in calls and ("delete", "42") in calls
+    assert state["retired"] is True
+
+
+@pytest.mark.parametrize("probe", [True, None, 0, 1, "0", {}, []])
+def test_blackbox_online_or_malformed_preserves_pending(pending, monkeypatch, probe):
+    state, calls = pending
+    before = copy.deepcopy(state)
+    monkeypatch.setattr(
+        bridge, "_blackbox_icmp_probe",
+        lambda ip, timeout=None: calls.append(("blackbox", ip)) or probe,
+    )
+    result = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
+    assert result["ok"] is False
+    assert state == before
+    assert not any(call[0] == "delete" for call in calls)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("job", ""), ("job", "bad job"), ("ip", ""),
+    ("ip", "999.999.999.999"), ("ip", "deadbeef"),
+])
+def test_invalid_identity_performs_no_evidence_or_delete_io(pending, monkeypatch, field, value):
     state, calls = pending
     state[field] = value
     before = copy.deepcopy(state)
-    monkeypatch.setattr(bridge, "prometheus_query", lambda query: pytest.fail("invalid target queried"))
-    assert bridge.resolve_pending_delete(KEY, "delete", "test-confirm")["ok"] is False
+    monkeypatch.setattr(bridge, "prometheus_query", lambda *a, **k: pytest.fail("queried"))
+    result = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
+    assert result["ok"] is False
     assert state == before and calls == []
 
 
-@pytest.mark.parametrize("values", [("1",), ("0", "1"), ("1", "0"),
-                                   ("bad", "1"), ("1", "bad")])
-def test_online_wins_independent_of_order(pending, monkeypatch, values):
+@pytest.mark.parametrize("values", [("1",), ("0", "1"), ("1", "0"), ("bad", "1"), ("1", "bad")])
+def test_prometheus_online_wins_and_skips_later_stages(pending, monkeypatch, values):
     state, calls = pending
-    monkeypatch.setattr(bridge, "prometheus_query", lambda query: [sample(v) for v in values])
+    monkeypatch.setattr(
+        bridge, "prometheus_query",
+        lambda query, timeout=10: [sample(value) for value in values],
+    )
     result = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
     assert result["ok"] is False and "当前在线" in result["error"]
     assert state["pending_delete"] is False
-    assert not any(call[0] == "delete" for call in calls)
+    assert not any(call[0] in {"inventory", "blackbox", "delete"} for call in calls)
 
 
-@pytest.mark.parametrize("result", ["deleted", "missing", "failed"])
-def test_offline_keeps_existing_delete_lifecycle(pending, monkeypatch, result):
+def test_missing_inventory_record_still_probes_then_succeeds_without_delete(pending, monkeypatch):
     state, calls = pending
-    before = copy.deepcopy(state)
-    monkeypatch.setattr(bridge, "delete_librenms_device", lambda ip: calls.append(("delete", ip)) or result)
-    response = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
-    assert calls[0] == ("delete", IP)
-    if result == "failed":
-        assert response["ok"] is False and state == before
-    else:
-        assert response["ok"] is True and state["retired"] is True
+    monkeypatch.setattr(
+        bridge, "_manual_delete_inventory",
+        lambda operation: calls.append(("inventory", operation["ip"])) or ("secret", "", None),
+    )
+    result = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
+    assert result["ok"] is True
+    assert ("blackbox", IP) in calls
+    assert not any(call[0] == "delete" for call in calls)
+    assert state["retired"] is True
 
 
-@pytest.mark.parametrize("action,token,enabled", [("delete", "wrong", True),
-    ("invalid", "test-confirm", True), ("delete", "test-confirm", False),
-    ("keep", "test-confirm", True)])
+@pytest.mark.parametrize("action,token,enabled", [
+    ("delete", "wrong", True), ("invalid", "test-confirm", True),
+    ("delete", "test-confirm", False), ("keep", "test-confirm", True),
+])
 def test_existing_guards_and_keep(pending, monkeypatch, action, token, enabled):
     state, calls = pending
     monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", enabled)
-    monkeypatch.setattr(bridge, "prometheus_query", lambda query: pytest.fail("unexpected query"))
     result = bridge.resolve_pending_delete(KEY, action, token)
     assert result["ok"] is (action == "keep")
-    assert not any(call[0] == "delete" for call in calls)
+    assert not any(call[0] in {"inventory", "blackbox", "delete"} for call in calls)
 
 
 @pytest.mark.parametrize("payload", [
@@ -138,14 +184,17 @@ def test_existing_guards_and_keep(pending, monkeypatch, action, token, enabled):
     {"status": "success", "data": {"result": [None]}},
     None,
 ])
-def test_real_query_adapter_rejects_invalid_api_response(pending, monkeypatch, payload):
+def test_real_query_adapter_unknown_falls_through_to_blackbox(pending, monkeypatch, payload):
     state, calls = pending
-    before = copy.deepcopy(state)
     monkeypatch.setattr(bridge, "prometheus_query", real_prometheus_query)
-    monkeypatch.setattr(bridge.request, "urlopen",
-                        lambda *a, **k: io.BytesIO(json.dumps(payload).encode()))
-    assert bridge.resolve_pending_delete(KEY, "delete", "test-confirm")["ok"] is False
-    assert state == before and calls == []
+    monkeypatch.setattr(
+        bridge.request, "urlopen",
+        lambda *a, **k: io.BytesIO(json.dumps(payload).encode()),
+    )
+    result = bridge.resolve_pending_delete(KEY, "delete", "test-confirm")
+    assert result["ok"] is True
+    assert ("blackbox", IP) in calls and ("delete", "42") in calls
+    assert state["retired"] is True
 
 
 real_prometheus_query = bridge.prometheus_query

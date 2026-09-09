@@ -98,6 +98,7 @@ Env:
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
+import hashlib
 import ipaddress
 import math
 from datetime import datetime
@@ -353,6 +354,7 @@ DEVICE_DOWN_STATE_FILE = os.environ.get(
     "DEVICE_DOWN_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "device-down-alerts.json"),
 )
+MANUAL_DELETE_GUARD_DIR = os.path.join(BRIDGE_STATE_DIR, "manual-delete-guards")
 DEVICE_ONLINE_STATE_FILE = os.environ.get(
     "DEVICE_ONLINE_STATE_FILE",
     os.path.join(BRIDGE_STATE_DIR, "notified-devices.json"),
@@ -451,6 +453,46 @@ def _atomic_write_text(path, text):
         return True
     except OSError:
         return False
+
+
+def _durable_write_text(path, text):
+    """Atomically persist safety-critical state and its directory entry."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
+    tmp = os.path.join(directory, f".{os.path.basename(path)}.{secrets.token_hex(8)}.tmp")
+    fd = None
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = None
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+        if os.name != "nt":
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            dir_fd = os.open(directory, flags)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _durable_write_json(path, value):
+    _durable_write_text(
+        path,
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )
 
 
 def _load_json_set(path):
@@ -554,7 +596,7 @@ def load_device_down_states():
     return loaded
 
 
-def save_device_down_states(states):
+def _device_down_state_payload(states):
     active_or_retired = {}
     for key, state in states.items():
         if not DEVICE_PENDING_DELETE_ENABLED:
@@ -595,8 +637,18 @@ def save_device_down_states(states):
             "pending_snoozed_until": state.get("pending_snoozed_until"),
             "pending_event_title": state.get("pending_event_title") or "",
         }
+    return active_or_retired
+
+
+def save_device_down_states(states):
     with DEVICE_DOWN_STATE_LOCK:
-        _save_json_dict(DEVICE_DOWN_STATE_FILE, active_or_retired)
+        _save_json_dict(DEVICE_DOWN_STATE_FILE, _device_down_state_payload(states))
+
+
+def save_device_down_states_durable(states):
+    payload = _device_down_state_payload(states)
+    with DEVICE_DOWN_STATE_LOCK:
+        _durable_write_json(DEVICE_DOWN_STATE_FILE, payload)
 
 
 def load_unifi_ap_states():
@@ -2590,9 +2642,9 @@ def _isp_target_names():
     return names
 
 
-def prometheus_query(query):
+def prometheus_query(query, timeout=10):
     url = f"{PROMETHEUS_URL}/api/v1/query?{parse.urlencode({'query': query})}"
-    with request.urlopen(url, timeout=10) as resp:
+    with request.urlopen(url, timeout=timeout) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     if payload.get("status") != "success":
         raise RuntimeError(payload.get("error") or "Prometheus query failed")
@@ -2777,6 +2829,209 @@ def device_retirement_due(state, job, now):
 # 确认删除或保留。只锁小段状态修改，网络调用都在锁外。
 DEVICE_DOWN_STATES = {}
 RETIRE_LOCK = threading.Lock()
+MANUAL_DELETE_OPERATIONS = {}
+MANUAL_DELETE_BY_KEY = {}
+MANUAL_DELETE_BY_IP = {}
+MANUAL_DELETE_GUARDS = {}
+MANUAL_DELETE_GUARDS_READY = not DEVICE_PENDING_DELETE_ENABLED
+DEVICE_DOWN_RUNTIME_LOADED = False
+MANUAL_DELETE_SCHEMA_VERSION = 1
+MANUAL_DELETE_DEADLINE_SECONDS = 12.0
+MANUAL_DELETE_PHASES = {
+    "CHECKING", "CANCELLED", "COMMITTED", "DELETE_MAY_HAVE_BEEN_DISPATCHED",
+    "SUCCEEDED", "FAILED", "FAILED_NOT_DISPATCHED", "OUTCOME_UNKNOWN",
+}
+
+
+def _pending_generation(token):
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _manual_delete_guard_path(operation_id):
+    return os.path.join(MANUAL_DELETE_GUARD_DIR, f"{operation_id}.json")
+
+
+def _validate_manual_delete_guard(value):
+    if not isinstance(value, dict) or value.get("schema_version") != MANUAL_DELETE_SCHEMA_VERSION:
+        raise RuntimeError("manual delete guard has unsupported schema")
+    allowed = {
+        "schema_version", "operation_id", "key", "pending_generation", "ip", "job",
+        "device_id", "phase", "committed_at", "updated_at", "result",
+        "state_applied", "failure_kind",
+    }
+    if set(value) != allowed:
+        raise RuntimeError("manual delete guard has unknown or missing fields")
+    required_strings = (
+        "operation_id", "key", "pending_generation", "ip", "job", "device_id",
+        "phase", "result", "failure_kind",
+    )
+    if any(not isinstance(value.get(field), str) for field in required_strings):
+        raise RuntimeError("manual delete guard has invalid fields")
+    if not re.fullmatch(r"[0-9a-f]{32}", value["operation_id"]):
+        raise RuntimeError("manual delete guard has invalid operation id")
+    if not re.fullmatch(r"[0-9a-f]{64}", value["pending_generation"]):
+        raise RuntimeError("manual delete guard has invalid generation")
+    if value["phase"] not in MANUAL_DELETE_PHASES - {"CHECKING", "CANCELLED"}:
+        raise RuntimeError("manual delete guard has invalid durable phase")
+    if value["result"] not in ("", "deleted", "missing", "superseded"):
+        raise RuntimeError("manual delete guard has invalid result")
+    if (value["phase"] == "SUCCEEDED") != bool(value["result"]):
+        raise RuntimeError("manual delete guard phase/result mismatch")
+    if not value["key"] or not re.fullmatch(r"[A-Za-z0-9_:.-]+", value["job"]):
+        raise RuntimeError("manual delete guard has invalid identity")
+    try:
+        if str(ipaddress.ip_address(value["ip"])) != value["ip"]:
+            raise ValueError("unnormalized")
+    except ValueError as exc:
+        raise RuntimeError("manual delete guard has invalid IP") from exc
+    if (
+        isinstance(value.get("committed_at"), bool)
+        or not isinstance(value.get("committed_at"), (int, float))
+        or not math.isfinite(value["committed_at"])
+    ):
+        raise RuntimeError("manual delete guard has invalid committed time")
+    if (
+        isinstance(value.get("updated_at"), bool)
+        or not isinstance(value.get("updated_at"), (int, float))
+        or not math.isfinite(value["updated_at"])
+    ):
+        raise RuntimeError("manual delete guard has invalid updated time")
+    if not isinstance(value.get("state_applied"), bool):
+        raise RuntimeError("manual delete guard has invalid state flag")
+    if value["state_applied"] and value["phase"] != "SUCCEEDED":
+        raise RuntimeError("manual delete guard applied flag is invalid")
+    return dict(value)
+
+
+def _persist_manual_delete_guard(guard):
+    guard["updated_at"] = time.time()
+    validated = _validate_manual_delete_guard(guard)
+    _durable_write_json(_manual_delete_guard_path(validated["operation_id"]), validated)
+    with RETIRE_LOCK:
+        MANUAL_DELETE_GUARDS[validated["operation_id"]] = validated
+
+
+def _load_manual_delete_guards_strict():
+    if os.path.islink(MANUAL_DELETE_GUARD_DIR):
+        raise RuntimeError("manual delete guard directory must not be a symlink")
+    os.makedirs(MANUAL_DELETE_GUARD_DIR, mode=0o700, exist_ok=True)
+    os.chmod(MANUAL_DELETE_GUARD_DIR, 0o700)
+    loaded = {}
+    for name in os.listdir(MANUAL_DELETE_GUARD_DIR):
+        if not name.endswith(".json"):
+            raise RuntimeError(f"unexpected file in manual delete guard store: {name}")
+        path = os.path.join(MANUAL_DELETE_GUARD_DIR, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            raise RuntimeError(f"unsafe manual delete guard entry: {name}")
+        os.chmod(path, 0o600)
+        try:
+            with open(path, encoding="utf-8") as stream:
+                value = json.load(stream)
+        except Exception as exc:
+            raise RuntimeError(f"manual delete guard unreadable: {name}") from exc
+        guard = _validate_manual_delete_guard(value)
+        if name != f"{guard['operation_id']}.json" or guard["operation_id"] in loaded:
+            raise RuntimeError("manual delete guard identity mismatch")
+        loaded[guard["operation_id"]] = guard
+    return loaded
+
+
+def _guard_is_unresolved(guard):
+    return guard.get("phase") in {
+        "COMMITTED", "DELETE_MAY_HAVE_BEEN_DISPATCHED", "OUTCOME_UNKNOWN",
+    } or (guard.get("phase") == "SUCCEEDED" and not guard.get("state_applied"))
+
+
+def _manual_delete_guard_blocks_device(device_id, ip):
+    wanted_id = str(device_id or "").strip()
+    wanted_ip = str(ip or "").strip()
+    with RETIRE_LOCK:
+        guards = list(MANUAL_DELETE_GUARDS.values())
+        operations = list(MANUAL_DELETE_OPERATIONS.values())
+    for operation in operations:
+        if operation.get("phase") not in {
+            "CHECKING", "COMMITTED", "DELETE_MAY_HAVE_BEEN_DISPATCHED", "OUTCOME_UNKNOWN",
+        }:
+            continue
+        operation_id = str(operation.get("device_id") or "").strip()
+        if operation_id:
+            if wanted_id and operation_id == wanted_id:
+                return True
+        elif wanted_ip and operation.get("ip") == wanted_ip:
+            return True
+    for guard in guards:
+        if not _guard_is_unresolved(guard):
+            continue
+        guarded_id = str(guard.get("device_id") or "").strip()
+        if guarded_id:
+            if wanted_id and guarded_id == wanted_id:
+                return True
+        elif wanted_ip and guard.get("ip") == wanted_ip:
+            return True
+    return False
+
+
+def _operation_for_state_locked(key, state):
+    operation_id = MANUAL_DELETE_BY_KEY.get(str(key))
+    operation = MANUAL_DELETE_OPERATIONS.get(operation_id)
+    if operation and operation.get("state_object") is state:
+        return operation
+    return None
+
+
+def _release_operation_locked(operation):
+    if MANUAL_DELETE_BY_KEY.get(operation["key"]) == operation["operation_id"]:
+        MANUAL_DELETE_BY_KEY.pop(operation["key"], None)
+    if MANUAL_DELETE_BY_IP.get(operation["ip"]) == operation["operation_id"]:
+        MANUAL_DELETE_BY_IP.pop(operation["ip"], None)
+
+
+def _cancel_operation_locked(operation, failure_kind=""):
+    if operation.get("phase") == "CHECKING":
+        operation["phase"] = "CANCELLED"
+        operation["failure_kind"] = failure_kind
+        _release_operation_locked(operation)
+
+
+def _manual_delete_state_is_protected_locked(key, state):
+    operation = _operation_for_state_locked(key, state)
+    if operation and operation.get("phase") in {
+        "COMMITTED", "DELETE_MAY_HAVE_BEEN_DISPATCHED", "OUTCOME_UNKNOWN",
+    }:
+        return True
+    generation = _pending_generation(state.get("pending_token"))
+    for guard in MANUAL_DELETE_GUARDS.values():
+        if (
+            _guard_is_unresolved(guard)
+            and guard.get("key") == str(key)
+            and guard.get("pending_generation") == generation
+        ):
+            return True
+    return False
+
+
+def _manual_delete_receipt_conflicts_locked(operation, device_id):
+    wanted_id = str(device_id or "").strip()
+    if not wanted_id:
+        return False
+    return any(
+        guard.get("phase") == "SUCCEEDED"
+        and guard.get("result") in ("deleted", "missing")
+        and str(guard.get("device_id") or "").strip() == wanted_id
+        and guard.get("operation_id") != operation.get("operation_id")
+        for guard in MANUAL_DELETE_GUARDS.values()
+    )
+
+
+def _cancel_checking_for_watcher_locked(key, state, ip, job, recovered):
+    operation = _operation_for_state_locked(key, state)
+    if operation and operation.get("phase") == "CHECKING":
+        identity_changed = operation.get("ip") != ip or operation.get("job") != job
+        if recovered or identity_changed:
+            _cancel_operation_locked(operation, "watcher-recovery" if recovered else "identity-changed")
+            return False
+        return True
+    return _manual_delete_state_is_protected_locked(key, state)
 
 
 def mark_pending_delete_states(states, now):
@@ -2786,6 +3041,8 @@ def mark_pending_delete_states(states, now):
     marked = []
     with RETIRE_LOCK:
         for key, state in states.items():
+            if _manual_delete_state_is_protected_locked(key, state):
+                continue
             if not device_retirement_due(state, state.get("job", ""), now):
                 continue
             state["pending_delete"] = True
@@ -2804,8 +3061,14 @@ def notify_pending_delete_states(states, now):
         return False
     changed = False
     for key, state in states.items():
-        if not state.get("pending_delete"):
-            continue
+        with RETIRE_LOCK:
+            operation = _operation_for_state_locked(key, state)
+            if (
+                not state.get("pending_delete")
+                or (operation and operation.get("phase") == "CHECKING")
+                or _manual_delete_state_is_protected_locked(key, state)
+            ):
+                continue
         plain_due = not state.get("pending_notified")
         if not plain_due and DEVICE_PENDING_DELETE_REALERT_SECONDS > 0:
             last = _as_float(state.get("pending_last_notified")) or 0
@@ -2824,10 +3087,16 @@ def notify_pending_delete_states(states, now):
                 if interactive else send_feishu(plain_card)
             )
         if delivered:
-            state["pending_notified"] = True
-            state["pending_last_notified"] = now
-            changed = True
-            log(f"[DOWN] PENDING-DELETE notice sent for {state.get('name')} ({state.get('ip')})")
+            with RETIRE_LOCK:
+                operation = _operation_for_state_locked(key, state)
+                if (
+                    not (operation and operation.get("phase") == "CHECKING")
+                    and not _manual_delete_state_is_protected_locked(key, state)
+                ):
+                    state["pending_notified"] = True
+                    state["pending_last_notified"] = now
+                    changed = True
+                    log(f"[DOWN] PENDING-DELETE notice sent for {state.get('name')} ({state.get('ip')})")
     return changed
 
 
@@ -2840,7 +3109,7 @@ def _clear_pending_fields(state):
     state["pending_event_title"] = ""
 
 
-def _pending_delete_target_status(job, ip):
+def _pending_delete_target_status(job, ip, timeout=10):
     """Return ONLINE/OFFLINE/UNKNOWN from verified evidence in the last 30s."""
     if not isinstance(job, str) or not re.fullmatch(r"[A-Za-z0-9_:.-]+", job):
         return "UNKNOWN"
@@ -2850,9 +3119,12 @@ def _pending_delete_target_status(job, ip):
         ipaddress.ip_address(ip)
         started = time.time()
         query = f'max_over_time(probe_success{{job="{job}",target_ip="{ip}"}}[30s])'
-        samples = prometheus_query(query)
+        samples = prometheus_query(query, timeout=timeout)
     except Exception as exc:
-        log(f"[DOWN] pending delete status unavailable: {type(exc).__name__}; deletion refused")
+        log(
+            f"[DOWN] pending delete Prometheus evidence unavailable: "
+            f"{type(exc).__name__}; final probe required"
+        )
         return "UNKNOWN"
     if not isinstance(samples, list) or not samples:
         return "UNKNOWN"
@@ -2900,54 +3172,101 @@ def list_pending_delete_devices():
     return pending
 
 
-def resolve_pending_delete(key, action, token):
-    """Confirm (delete) or keep a pending device. Returns a result dict.
+def _remaining_delete_time(operation):
+    return operation["deadline"] - time.monotonic()
 
-    delete：先校验 token，再实时复查可达性——设备当前在线就拒绝；随后删
-    LibreNMS 记录并转入"已退役"生命周期（回来按新设备处理）。
-    keep：清除待删除标记，继续监控；48 小时后仍离线才会再次询问。
-    """
-    if not DEVICE_PENDING_DELETE_ENABLED:
-        return {
-            "ok": False,
-            "enabled": False,
-            "error": "当前部署未启用待删除设备功能",
-        }
+
+def _stage_timeout(operation, maximum):
+    remaining = _remaining_delete_time(operation)
+    return min(float(maximum), remaining) if remaining > 0 else 0
+
+
+def _manual_delete_inventory(operation):
+    timeout = _stage_timeout(operation, 3)
+    token = _librenms_token()
+    if not token or not LIBRENMS_URL or timeout <= 0:
+        raise RuntimeError("LibreNMS inventory unavailable")
+    client = _librenms_client(token, timeout=timeout)
+    client.max_attempts = 1
+    client.retry_delay = 0
+    devices = client.list_devices()
+    if not isinstance(devices, list):
+        raise RuntimeError("LibreNMS inventory malformed")
+    matches = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        try:
+            candidate_ip = str(ipaddress.ip_address(_device_ip(device)))
+        except ValueError:
+            continue
+        if candidate_ip == operation["ip"]:
+            matches.append(device)
+    if len(matches) > 1:
+        raise RuntimeError("LibreNMS inventory identity ambiguous")
+    if not matches:
+        return token, "", None
+    device_id = str(matches[0].get("device_id") or "").strip()
+    if not device_id:
+        raise RuntimeError("LibreNMS device has no stable device_id")
+    return token, device_id, matches[0]
+
+
+def _manual_delete_exact_id(token, device_id, timeout):
+    if not token or not device_id or timeout <= 0:
+        raise RuntimeError("DELETE not dispatched")
+    encoded_ref = parse.quote(str(device_id), safe="")
+    req = request.Request(
+        f"{LIBRENMS_URL}/api/v0/devices/{encoded_ref}",
+        headers={"X-Auth-Token": token},
+        method="DELETE",
+    )
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except error.HTTPError as exc:
+        if exc.code == 404:
+            return "missing"
+        raise
+    data = json.loads(raw or "{}")
+    entries = data if isinstance(data, list) else [data]
+    if any(
+        isinstance(item, dict) and str(item.get("status") or "").lower() == "ok"
+        for item in entries
+    ):
+        return "deleted"
+    raise RuntimeError("DELETE response was not an explicit success")
+
+
+def _manual_delete_record(operation, phase, result="", failure_kind=""):
+    return {
+        "schema_version": MANUAL_DELETE_SCHEMA_VERSION,
+        "operation_id": operation["operation_id"],
+        "key": operation["key"],
+        "pending_generation": operation["pending_generation"],
+        "ip": operation["ip"],
+        "job": operation["job"],
+        "device_id": operation.get("device_id", ""),
+        "phase": phase,
+        "committed_at": operation["committed_at"],
+        "updated_at": time.time(),
+        "result": result,
+        "state_applied": False,
+        "failure_kind": failure_kind,
+    }
+
+
+def _apply_manual_delete_success(operation, guard):
     with RETIRE_LOCK:
-        state = DEVICE_DOWN_STATES.get(str(key or ""))
-        if not state or not state.get("pending_delete"):
-            return {"ok": False, "error": "该设备不在待删除列表（可能已处理或已恢复在线）"}
-        expected = state.get("pending_token") or ""
-        if not expected or not secrets.compare_digest(str(token or ""), expected):
-            return {"ok": False, "error": "确认口令不匹配，请刷新待删除列表后重试"}
-        name = state.get("name") or state.get("ip") or "?"
-        ip = state.get("ip") or ""
-        job = state.get("job") or ""
-
-    if action == "keep":
-        with RETIRE_LOCK:
-            _clear_pending_fields(state)
-            state["pending_snoozed_until"] = time.time() + max(1, DEVICE_REENROLL_AFTER_SECONDS)
-        save_device_down_states(DEVICE_DOWN_STATES)
-        log(f"[DOWN] PENDING-DELETE kept by operator: {name} ({ip})")
-        return {"ok": True, "action": "keep", "message": f"已保留 {name}，继续监控"}
-    if action != "delete":
-        return {"ok": False, "error": "action 必须是 delete 或 keep"}
-
-    # 网络调用都在锁外
-    target_status = _pending_delete_target_status(job, ip)
-    if target_status == "ONLINE":
-        with RETIRE_LOCK:
-            _clear_pending_fields(state)
-        save_device_down_states(DEVICE_DOWN_STATES)
-        log(f"[DOWN] PENDING-DELETE refused, target is back online: {name} ({ip})")
-        return {"ok": False, "error": f"{name} 当前在线，已取消删除并恢复正常监控"}
-    if target_status != "OFFLINE":
-        return {"ok": False, "error": "无法确认设备当前状态，未执行删除；设备仍保留在待删除列表，请稍后重试。"}
-    result = delete_librenms_device(ip)
-    if result not in ("deleted", "missing"):
-        return {"ok": False, "error": "LibreNMS 删除失败（API 不可达或未授权），设备保持待删除，请稍后重试"}
-    with RETIRE_LOCK:
+        state = DEVICE_DOWN_STATES.get(operation["key"])
+        if (
+            state is not operation.get("state_object")
+            or not state.get("pending_delete")
+            or _pending_generation(state.get("pending_token")) != operation["pending_generation"]
+            or str(state.get("ip") or "").strip() != operation["ip"]
+            or str(state.get("job") or "").strip() != operation["job"]
+        ):
+            return False
         _clear_pending_fields(state)
         state["alerting"] = False
         state["retired"] = True
@@ -2961,9 +3280,340 @@ def resolve_pending_delete(key, action, token):
         state["librenms_readded"] = False
         state["librenms_sync_last_attempt"] = 0
         state["pending_snoozed_until"] = None
-    save_device_down_states(DEVICE_DOWN_STATES)
+    save_device_down_states_durable(DEVICE_DOWN_STATES)
+    guard["state_applied"] = True
+    _persist_manual_delete_guard(guard)
+    with RETIRE_LOCK:
+        operation["phase"] = "SUCCEEDED"
+        _release_operation_locked(operation)
+    return True
+
+
+def _new_manual_delete_operation(key, state, token):
+    raw_ip = str(state.get("ip") or "").strip()
+    job = str(state.get("job") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_:.-]+", job):
+        return None, "设备监控身份无效，未执行删除"
+    try:
+        ip = str(ipaddress.ip_address(raw_ip))
+    except ValueError:
+        return None, "设备地址无效，未执行删除"
+    if raw_ip != ip:
+        return None, "设备地址未规范化，未执行删除"
+    generation = _pending_generation(token)
+    if key in MANUAL_DELETE_BY_KEY or ip in MANUAL_DELETE_BY_IP:
+        return None, "该设备已有删除检查正在进行，请稍后刷新"
+    for guard in MANUAL_DELETE_GUARDS.values():
+        if _guard_is_unresolved(guard) and (
+            guard.get("key") == key or guard.get("ip") == ip
+        ):
+            return None, "该设备存在未决删除记录，禁止重复删除"
+        if (
+            guard.get("key") == key
+            and guard.get("pending_generation") == generation
+            and guard.get("phase") == "SUCCEEDED"
+        ):
+            return None, "该确认代次已经处理，请刷新待删除列表"
+    operation_id = secrets.token_hex(16)
+    operation = {
+        "operation_id": operation_id,
+        "key": key,
+        "state_object": state,
+        "pending_generation": generation,
+        "ip": ip,
+        "job": job,
+        "phase": "CHECKING",
+        "started": time.monotonic(),
+        "deadline": time.monotonic() + MANUAL_DELETE_DEADLINE_SECONDS,
+        "device_id": "",
+        "committed_at": 0.0,
+        "failure_kind": "",
+    }
+    MANUAL_DELETE_OPERATIONS[operation_id] = operation
+    MANUAL_DELETE_BY_KEY[key] = operation_id
+    MANUAL_DELETE_BY_IP[ip] = operation_id
+    return operation, ""
+
+
+def resolve_pending_delete(key, action, token):
+    """Resolve one pending generation with fail-closed evidence and a durable receipt."""
+    if not DEVICE_PENDING_DELETE_ENABLED:
+        return {
+            "ok": False,
+            "enabled": False,
+            "error": "当前部署未启用待删除设备功能",
+        }
+    if not MANUAL_DELETE_GUARDS_READY:
+        return {"ok": False, "error": "删除安全记录尚未完成初始化，未执行任何操作"}
+    key = str(key or "")
+    if action not in ("delete", "keep"):
+        return {"ok": False, "error": "action 必须是 delete 或 keep"}
+    with RETIRE_LOCK:
+        state = DEVICE_DOWN_STATES.get(key)
+        if not state or not state.get("pending_delete"):
+            return {"ok": False, "error": "该设备不在待删除列表（可能已处理或已恢复在线）"}
+        expected = state.get("pending_token") or ""
+        if not expected or not secrets.compare_digest(str(token or ""), expected):
+            return {"ok": False, "error": "确认口令不匹配，请刷新待删除列表后重试"}
+        name = state.get("name") or state.get("ip") or "?"
+        ip = state.get("ip") or ""
+        job = state.get("job") or ""
+        operation = _operation_for_state_locked(key, state)
+        if action == "keep":
+            if operation and operation.get("phase") == "CHECKING":
+                _cancel_operation_locked(operation, "kept-by-operator")
+            elif _manual_delete_state_is_protected_locked(key, state):
+                return {"ok": False, "error": "删除已提交或结果未决，当前不能清除待删除状态"}
+            _clear_pending_fields(state)
+            state["pending_snoozed_until"] = time.time() + max(1, DEVICE_REENROLL_AFTER_SECONDS)
+        else:
+            operation, reason = _new_manual_delete_operation(key, state, expected)
+            if not operation:
+                return {"ok": False, "error": reason}
+
+    if action == "keep":
+        save_device_down_states(DEVICE_DOWN_STATES)
+        log(f"[DOWN] PENDING-DELETE kept by operator: {name} ({ip})")
+        return {"ok": True, "action": "keep", "message": f"已保留 {name}，继续监控"}
+
+    prom_timeout = _stage_timeout(operation, 2)
+    target_status = "UNKNOWN" if prom_timeout <= 0 else _pending_delete_target_status(job, ip, prom_timeout)
+    if target_status == "ONLINE":
+        with RETIRE_LOCK:
+            current = DEVICE_DOWN_STATES.get(key)
+            if _operation_for_state_locked(key, state) is operation:
+                _cancel_operation_locked(operation, "prometheus-online")
+                if (
+                    current is state
+                    and _pending_generation(state.get("pending_token")) == operation["pending_generation"]
+                ):
+                    _clear_pending_fields(state)
+        save_device_down_states(DEVICE_DOWN_STATES)
+        log(f"[DOWN] PENDING-DELETE refused, target is back online: {name} ({ip})")
+        return {"ok": False, "error": f"{name} 当前在线，已取消删除并恢复正常监控"}
+
+    try:
+        libre_token, device_id, unused_device = _manual_delete_inventory(operation)
+    except Exception as exc:
+        with RETIRE_LOCK:
+            _cancel_operation_locked(operation, "inventory-unavailable")
+        log(f"[DOWN] pending delete inventory unavailable: {type(exc).__name__}")
+        return {"ok": False, "error": "LibreNMS 设备清单不可用，未执行删除；设备仍保留在待删除列表"}
+
+    probe_timeout = _stage_timeout(operation, 3)
+    try:
+        reachable = _blackbox_icmp_probe(operation["ip"], timeout=probe_timeout) if probe_timeout > 0 else None
+    except Exception as exc:
+        reachable = None
+        log(f"[DOWN] pending delete final probe unavailable: {type(exc).__name__}")
+    if reachable is not False:
+        with RETIRE_LOCK:
+            _cancel_operation_locked(operation, "blackbox-online" if reachable is True else "blackbox-unknown")
+        if reachable is True:
+            return {"ok": False, "error": f"{name} 最终探测在线，未执行删除；设备仍保留在待删除列表"}
+        return {"ok": False, "error": "最终探测结果未知，未执行删除；设备仍保留在待删除列表"}
+
+    with RETIRE_LOCK:
+        current = DEVICE_DOWN_STATES.get(key)
+        valid = (
+            current is state
+            and _operation_for_state_locked(key, state) is operation
+            and MANUAL_DELETE_BY_IP.get(operation["ip"]) == operation["operation_id"]
+            and operation.get("phase") == "CHECKING"
+            and state.get("pending_delete")
+            and _pending_generation(state.get("pending_token")) == operation["pending_generation"]
+            and str(state.get("ip") or "").strip() == operation["ip"]
+            and str(state.get("job") or "") == operation["job"]
+            and not _manual_delete_receipt_conflicts_locked(operation, device_id)
+            and _remaining_delete_time(operation) > 0
+        )
+        if not valid:
+            _cancel_operation_locked(operation, "generation-changed")
+            return {"ok": False, "error": "待删除状态已变化，未执行删除，请刷新后重试"}
+        operation["device_id"] = device_id
+        operation["phase"] = "COMMITTED"
+        operation["committed_at"] = time.time()
+
+    if not device_id:
+        guard = _manual_delete_record(operation, "SUCCEEDED", result="missing")
+        try:
+            _persist_manual_delete_guard(guard)
+            if not _apply_manual_delete_success(operation, guard):
+                return {"ok": False, "error": "设备状态已变化，删除结果未应用；不会重复删除"}
+        except Exception as exc:
+            log(f"[DOWN] pending delete missing-result persistence failed: {type(exc).__name__}")
+            return {"ok": False, "error": "删除结果持久化失败，设备保持受保护状态，不会重复删除"}
+        return {"ok": True, "action": "delete", "message": f"{name} 的 LibreNMS 记录已不存在；已完成退役处理"}
+
+    guard = _manual_delete_record(operation, "DELETE_MAY_HAVE_BEEN_DISPATCHED")
+    try:
+        _persist_manual_delete_guard(guard)
+    except Exception as exc:
+        with RETIRE_LOCK:
+            operation["phase"] = "OUTCOME_UNKNOWN"
+            operation["failure_kind"] = "guard-persistence-uncertain"
+            uncertain = dict(guard)
+            uncertain.update({
+                "phase": "OUTCOME_UNKNOWN",
+                "failure_kind": "guard-persistence-uncertain",
+            })
+            MANUAL_DELETE_GUARDS[operation["operation_id"]] = uncertain
+        log(f"[DOWN] pending delete guard persistence failed: {type(exc).__name__}")
+        return {"ok": False, "error": "删除安全记录无法持久化，未发送 DELETE 请求"}
+
+    with RETIRE_LOCK:
+        owns_commit = bool(
+            _operation_for_state_locked(key, state) is operation
+            and operation.get("phase") == "COMMITTED"
+            and MANUAL_DELETE_BY_IP.get(operation["ip"]) == operation["operation_id"]
+            and _remaining_delete_time(operation) > 0
+        )
+        if owns_commit:
+            operation["phase"] = "DELETE_MAY_HAVE_BEEN_DISPATCHED"
+    delete_timeout = _stage_timeout(operation, MANUAL_DELETE_DEADLINE_SECONDS)
+    if not owns_commit or delete_timeout <= 0:
+        guard.update({"phase": "FAILED_NOT_DISPATCHED", "failure_kind": "deadline-before-dispatch"})
+        try:
+            _persist_manual_delete_guard(guard)
+        except Exception as exc:
+            log(f"[DOWN] pending delete deadline receipt failed: {type(exc).__name__}")
+            return {"ok": False, "error": "删除期限已到且安全记录状态未决；未发送 DELETE 请求"}
+        with RETIRE_LOCK:
+            operation["phase"] = "FAILED_NOT_DISPATCHED"
+            _release_operation_locked(operation)
+        return {"ok": False, "error": "删除期限已到，未发送 DELETE 请求"}
+    try:
+        result = _manual_delete_exact_id(libre_token, device_id, delete_timeout)
+        guard.update({"phase": "SUCCEEDED", "result": result, "failure_kind": ""})
+        _persist_manual_delete_guard(guard)
+    except Exception as exc:
+        guard.update({"phase": "OUTCOME_UNKNOWN", "failure_kind": type(exc).__name__})
+        try:
+            _persist_manual_delete_guard(guard)
+        except Exception:
+            pass
+        with RETIRE_LOCK:
+            operation["phase"] = "OUTCOME_UNKNOWN"
+        log(f"[DOWN] pending delete outcome unknown device_id={device_id}: {type(exc).__name__}")
+        return {"ok": False, "error": "LibreNMS DELETE 结果未知；设备保持保护状态，禁止自动重试"}
+
+    try:
+        if not _apply_manual_delete_success(operation, guard):
+            return {"ok": False, "error": "设备状态已变化，删除结果未应用；不会重复删除"}
+    except Exception as exc:
+        log(f"[DOWN] pending delete state persistence failed: {type(exc).__name__}")
+        return {"ok": False, "error": "删除成功但本地状态持久化失败；设备保持保护状态，禁止重试"}
     log(f"[DOWN] PENDING-DELETE confirmed, LibreNMS record removed: {name} ({ip})")
     return {"ok": True, "action": "delete", "message": f"已删除 {name} 的 LibreNMS 记录；再次上线将按新设备处理"}
+
+
+def _operation_from_guard(guard, state):
+    return {
+        "operation_id": guard["operation_id"],
+        "key": guard["key"],
+        "state_object": state,
+        "pending_generation": guard["pending_generation"],
+        "ip": guard["ip"],
+        "job": guard["job"],
+        "phase": guard["phase"],
+        "started": time.monotonic(),
+        "deadline": time.monotonic(),
+        "device_id": guard["device_id"],
+        "committed_at": guard["committed_at"],
+        "failure_kind": guard["failure_kind"],
+    }
+
+
+def _finish_reconciled_guard(guard, result):
+    guard.update({"phase": "SUCCEEDED", "result": result, "failure_kind": ""})
+    _persist_manual_delete_guard(guard)
+    if result == "superseded":
+        guard["state_applied"] = True
+        _persist_manual_delete_guard(guard)
+        return
+    with RETIRE_LOCK:
+        state = DEVICE_DOWN_STATES.get(guard["key"])
+        matches = bool(
+            state
+            and state.get("pending_delete")
+            and _pending_generation(state.get("pending_token")) == guard["pending_generation"]
+            and str(state.get("ip") or "").strip() == guard["ip"]
+            and str(state.get("job") or "") == guard["job"]
+        )
+        already_applied = bool(
+            state and state.get("retired") and state.get("librenms_deleted")
+            and not state.get("pending_delete")
+        )
+    if matches:
+        operation = _operation_from_guard(guard, state)
+        _apply_manual_delete_success(operation, guard)
+    else:
+        guard["state_applied"] = True
+        _persist_manual_delete_guard(guard)
+
+
+def reconcile_manual_delete_guards():
+    """Read-only reconcile committed receipts; never repeats DELETE."""
+    with RETIRE_LOCK:
+        pending = [
+            dict(item)
+            for item in MANUAL_DELETE_GUARDS.values()
+            if _guard_is_unresolved(item) or item.get("phase") == "SUCCEEDED"
+        ]
+    for guard in pending:
+        if guard.get("phase") == "SUCCEEDED":
+            try:
+                _finish_reconciled_guard(guard, guard.get("result") or "deleted")
+            except Exception as exc:
+                log(f"[DOWN] manual delete state reconciliation failed: {type(exc).__name__}")
+            continue
+        token = _librenms_token()
+        if not token or not LIBRENMS_URL:
+            continue
+        try:
+            client = _librenms_client(token, timeout=3)
+            client.max_attempts = 1
+            client.retry_delay = 0
+            devices = client.list_devices()
+            if not isinstance(devices, list):
+                raise RuntimeError("malformed inventory")
+            by_id = {}
+            same_ip = []
+            for device in devices:
+                if not isinstance(device, dict):
+                    continue
+                device_id = str(device.get("device_id") or "").strip()
+                if device_id:
+                    by_id[device_id] = device
+                try:
+                    candidate_ip = str(ipaddress.ip_address(_device_ip(device)))
+                except ValueError:
+                    continue
+                if candidate_ip == guard["ip"]:
+                    same_ip.append(device)
+        except Exception as exc:
+            log(f"[DOWN] manual delete guard remains unresolved: {type(exc).__name__}")
+            continue
+        stored_id = guard.get("device_id") or ""
+        if stored_id and stored_id not in by_id:
+            if not same_ip:
+                _finish_reconciled_guard(guard, "missing")
+            elif all(
+                str(item.get("device_id") or "").strip()
+                and str(item.get("device_id") or "").strip() != stored_id
+                for item in same_ip
+            ):
+                _finish_reconciled_guard(guard, "superseded")
+
+
+def initialize_manual_delete_safety():
+    global MANUAL_DELETE_GUARDS_READY
+    loaded = _load_manual_delete_guards_strict()
+    with RETIRE_LOCK:
+        MANUAL_DELETE_GUARDS.clear()
+        MANUAL_DELETE_GUARDS.update(loaded)
+        MANUAL_DELETE_GUARDS_READY = True
+    reconcile_manual_delete_guards()
 
 
 def prepare_reenrolled_librenms_device(state, name, ip, now):
@@ -3027,8 +3677,11 @@ def device_down_watcher():
     query = 'min_over_time(probe_success{job=~"%s"}[%ss])' % ("|".join(safe_jobs), sample_window)
     time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
     # 共享全局注册表：HTTP 线程（控制台/飞书回调的待删除确认）也要访问
-    DEVICE_DOWN_STATES.clear()
-    DEVICE_DOWN_STATES.update(load_device_down_states())
+    global DEVICE_DOWN_RUNTIME_LOADED
+    if not DEVICE_DOWN_RUNTIME_LOADED:
+        DEVICE_DOWN_STATES.clear()
+        DEVICE_DOWN_STATES.update(load_device_down_states())
+        DEVICE_DOWN_RUNTIME_LOADED = True
     states = DEVICE_DOWN_STATES
     last_status_log = 0.0
     last_name_refresh = 0.0
@@ -3132,12 +3785,20 @@ def device_down_watcher():
                 "job": "",
             }
             recover_stable = ISP_RECOVER_STABLE_SECONDS if job == "infra-isp-ping" else DEVICE_RECOVER_STABLE_SECONDS
-            state = states.setdefault(key, default_state.copy())
-            for field, value in default_state.items():
-                state.setdefault(field, value)
-            state["name"] = name
-            state["ip"] = ip
-            state["job"] = job
+            with RETIRE_LOCK:
+                state = states.setdefault(key, default_state.copy())
+                protected = _cancel_checking_for_watcher_locked(
+                    key, state, ip, job, recovered=up,
+                )
+                if not protected:
+                    for field, value in default_state.items():
+                        state.setdefault(field, value)
+                    state["name"] = name
+                    state["ip"] = ip
+                    state["job"] = job
+            if protected:
+                log(f"[DOWN] manual-delete operation protects {job} {name} ({ip}); watcher skipped")
+                continue
             if not up:
                 # A dip cancels any in-progress recovery debounce: the link must
                 # restart its stable-up window before it counts as recovered.
@@ -3177,6 +3838,12 @@ def device_down_watcher():
                     # （发新设备上线卡，而不是一张 48h+ 的陈旧恢复卡）。
                     # LibreNMS 记录从未被删，历史保留。
                     with RETIRE_LOCK:
+                        if _manual_delete_state_is_protected_locked(key, state):
+                            log(f"[DOWN] committed manual delete protects {job} {name} ({ip}); recovery skipped")
+                            continue
+                        _cancel_checking_for_watcher_locked(
+                            key, state, ip, job, recovered=True,
+                        )
                         _clear_pending_fields(state)
                         state["pending_snoozed_until"] = None
                         state["alerting"] = False
@@ -3526,10 +4193,13 @@ def _resolve_ap_online(key, metric, metric_online, controller_info=None):
     return True
 
 
-def _blackbox_icmp_probe(ip):
+def _blackbox_icmp_probe(ip, timeout=None):
     query = parse.urlencode({"target": ip, "module": "icmp"})
     req = request.Request(f"{BLACKBOX_EXPORTER_URL}/probe?{query}")
-    with request.urlopen(req, timeout=UNIFI_AP_PING_HTTP_TIMEOUT_SECONDS) as resp:
+    effective_timeout = (
+        UNIFI_AP_PING_HTTP_TIMEOUT_SECONDS if timeout is None else timeout
+    )
+    with request.urlopen(req, timeout=effective_timeout) as resp:
         body = resp.read().decode("utf-8", errors="replace")
     match = re.search(r"(?m)^probe_success\s+([01](?:\.0+)?)\s*$", body)
     if not match:
@@ -3797,6 +4467,13 @@ def run_device_auto_delete_cycle(
             log(
                 f"[device-auto-delete] recent hostname={hostname} ip={ip} "
                 f"device_id={device_id} offline_seconds={offline_seconds}; skip"
+            )
+            continue
+
+        if _manual_delete_guard_blocks_device(device.get("device_id"), ip):
+            log(
+                f"[device-auto-delete] guarded/manual-delete-unresolved "
+                f"hostname={hostname} ip={ip} device_id={device_id}; skip"
             )
             continue
 
@@ -5069,6 +5746,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global DEVICE_DOWN_RUNTIME_LOADED, MANUAL_DELETE_GUARDS_READY
+    if DEVICE_PENDING_DELETE_ENABLED:
+        DEVICE_DOWN_STATES.clear()
+        DEVICE_DOWN_STATES.update(load_device_down_states())
+        DEVICE_DOWN_RUNTIME_LOADED = True
+        try:
+            initialize_manual_delete_safety()
+        except Exception as exc:
+            MANUAL_DELETE_GUARDS_READY = False
+            log(f"[FATAL] manual delete safety initialization failed: {type(exc).__name__}")
+            raise
+    else:
+        MANUAL_DELETE_GUARDS_READY = True
     log(
         f"listening on 0.0.0.0:{PORT}  dry_run={DRY_RUN}  "
         f"token_set={bool(TOKEN)}  pending_delete={DEVICE_PENDING_DELETE_ENABLED} "
