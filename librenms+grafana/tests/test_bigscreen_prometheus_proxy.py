@@ -170,7 +170,11 @@ access_log /records/proxy-access.log proxy_audit;
     network = f"bigscreen-prometheus-test-{suffix}"
     upstream = f"bigscreen-prometheus-upstream-{suffix}"
     proxy = f"bigscreen-prometheus-proxy-{suffix}"
-    _run_docker("network", "create", network)
+    _run_docker(
+        "network", "create",
+        "--opt", "com.docker.network.bridge.host_binding_ipv4=127.0.0.1",
+        network,
+    )
     try:
         _run_docker(
             "run", "--detach", "--name", upstream,
@@ -182,7 +186,7 @@ access_log /records/proxy-access.log proxy_audit;
         _run_docker(
             "run", "--detach", "--name", proxy,
             "--network", network,
-            "--publish", "127.0.0.1::80",
+            "--publish", "80/tcp",
             "--volume", f"{ROOT / 'bigscreen'}:/app:ro",
             "--volume", f"{proxy_audit_config}:/etc/nginx/conf.d/00-test-audit.conf:ro",
             "--volume", f"{records_dir}:/records",
