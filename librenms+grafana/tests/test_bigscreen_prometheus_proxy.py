@@ -38,7 +38,9 @@ def _render_bigscreen_service():
         "config", "--format", "json",
     )
     service = json.loads(completed.stdout)["services"]["bigscreen"]
-    return service["image"], service["entrypoint"]
+    entrypoint = list(service["entrypoint"])
+    entrypoint[2] = entrypoint[2].replace("$$", "$")
+    return service["image"], entrypoint
 
 
 def _wait_for_proxy(container, timeout=15):
