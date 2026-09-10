@@ -77,6 +77,20 @@ def _request(port, method, path):
     return response.status, headers, body
 
 
+def _request_with_log_marker(port, proxy, method, path, timeout=5):
+    marker = f"p1-{uuid.uuid4().hex}"
+    separator = "&" if "?" in path else "?"
+    marked_path = f"{path}{separator}test_id={marker}"
+    result = _request(port, method, marked_path)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        logs = _run_docker("logs", proxy, check=False)
+        if marker in f"{logs.stdout}\n{logs.stderr}":
+            return result, marker, marked_path
+        time.sleep(0.05)
+    pytest.fail(f"proxy access log did not record request marker {marker}")
+
+
 def _wait_for_query_proxy(port, timeout=15):
     deadline = time.monotonic() + timeout
     last_status = None
@@ -97,6 +111,10 @@ def _upstream_requests(records):
     if not records.exists():
         return []
     return [line for line in records.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _upstream_requests_for(records, marker):
+    return [line for line in _upstream_requests(records) if marker in line]
 
 
 @pytest.fixture(scope="module")
@@ -155,14 +173,14 @@ http {
         _wait_for_query_proxy(port)
         syntax = _run_docker("exec", proxy, "nginx", "-t")
         assert "test is successful" in syntax.stderr
-        yield port, records
+        yield port, records, proxy
     finally:
         _run_docker("rm", "--force", proxy, upstream, check=False)
         _run_docker("network", "rm", network, check=False)
 
 
 def test_exact_query_endpoints_preserve_method_path_and_query(prometheus_proxy):
-    port, records = prometheus_proxy
+    port, records, proxy = prometheus_proxy
     cases = [
         (
             "/prometheus/api/v1/query?"
@@ -180,28 +198,35 @@ def test_exact_query_endpoints_preserve_method_path_and_query(prometheus_proxy):
     ]
 
     for path, upstream_prefix in cases:
-        expected_upstream_uri = path.removeprefix("/prometheus")
-        status, headers, body = _request(port, "GET", path)
+        (status, headers, body), marker, marked_path = _request_with_log_marker(
+            port, proxy, "GET", path,
+        )
+        expected_upstream_uri = marked_path.removeprefix("/prometheus")
         assert status == 200
         assert headers["x-fake-upstream"] == "true"
         assert headers["x-fake-method"] == "GET"
         assert headers["x-fake-uri"] == expected_upstream_uri
         assert body.decode("utf-8") == f"GET|{expected_upstream_uri}"
         assert expected_upstream_uri.startswith(upstream_prefix)
+        assert len(_upstream_requests_for(records, marker)) == 1
 
-        status, headers, body = _request(port, "HEAD", path)
+        (status, headers, body), marker, marked_path = _request_with_log_marker(
+            port, proxy, "HEAD", path,
+        )
+        expected_upstream_uri = marked_path.removeprefix("/prometheus")
         assert status == 200
         assert headers["x-fake-upstream"] == "true"
         assert headers["x-fake-method"] == "HEAD"
         assert headers["x-fake-uri"] == expected_upstream_uri
         assert body == b""
+        assert len(_upstream_requests_for(records, marker)) == 1
 
-    before = len(_upstream_requests(records))
-    status, unused_headers, unused_body = _request(
-        port, "GET", "/prometheus/api/v1/query?query=vector%281%29&fake_status=503",
+    (status, unused_headers, unused_body), marker, unused_path = _request_with_log_marker(
+        port, proxy, "GET",
+        "/prometheus/api/v1/query?query=vector%281%29&fake_status=503",
     )
     assert status == 503
-    assert len(_upstream_requests(records)) == before + 1
+    assert len(_upstream_requests_for(records, marker)) == 1
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
@@ -210,11 +235,12 @@ def test_exact_query_endpoints_preserve_method_path_and_query(prometheus_proxy):
     "/prometheus/api/v1/query_range",
 ])
 def test_mutating_methods_never_reach_allowed_query_paths(prometheus_proxy, method, path):
-    port, records = prometheus_proxy
-    before = len(_upstream_requests(records))
-    status, unused_headers, unused_body = _request(port, method, path)
+    port, records, proxy = prometheus_proxy
+    (status, unused_headers, unused_body), marker, unused_path = _request_with_log_marker(
+        port, proxy, method, path,
+    )
     assert status == 403
-    assert len(_upstream_requests(records)) == before
+    assert _upstream_requests_for(records, marker) == []
 
 
 @pytest.mark.parametrize("method,path,expected_status", [
@@ -223,6 +249,8 @@ def test_mutating_methods_never_reach_allowed_query_paths(prometheus_proxy, meth
     ("GET", "/prometheus/-/quit", 404),
     ("HEAD", "/prometheus/-/reload", 404),
     ("POST", "/prometheus/-/quit", 404),
+    ("PUT", "/prometheus/-/quit", 404),
+    ("POST", "/prometheus/-/reload", 404),
     ("PUT", "/prometheus/-/reload", 404),
     ("GET", "/prometheus/metrics", 404),
     ("GET", "/prometheus/api/v1/targets", 404),
@@ -239,11 +267,12 @@ def test_mutating_methods_never_reach_allowed_query_paths(prometheus_proxy, meth
 def test_other_prometheus_paths_are_rejected_without_upstream_access(
     prometheus_proxy, method, path, expected_status,
 ):
-    port, records = prometheus_proxy
-    before = len(_upstream_requests(records))
-    status, unused_headers, unused_body = _request(port, method, path)
+    port, records, proxy = prometheus_proxy
+    (status, unused_headers, unused_body), marker, unused_path = _request_with_log_marker(
+        port, proxy, method, path,
+    )
     if expected_status is None:
         assert 400 <= status < 500
     else:
         assert status == expected_status
-    assert len(_upstream_requests(records)) == before
+    assert _upstream_requests_for(records, marker) == []
