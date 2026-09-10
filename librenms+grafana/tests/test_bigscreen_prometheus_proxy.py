@@ -284,6 +284,7 @@ def test_mutating_methods_never_reach_allowed_query_paths(prometheus_proxy, meth
 
 @pytest.mark.parametrize("method,path,expected_status", [
     ("GET", "/prometheus", 404),
+    ("GET", "/Prometheus", 404),
     ("GET", "/prometheus/", 404),
     ("GET", "/prometheus/-/quit", 404),
     ("HEAD", "/prometheus/-/reload", 404),

@@ -1286,7 +1286,7 @@ services:
             return 404;
           }
 
-          location ~* ^/prometheus(?:/|$$) {
+          location ~* "^/prometheus(?:/|\z)" {
             return 404;
           }
 
