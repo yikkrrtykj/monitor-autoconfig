@@ -63,7 +63,8 @@ def _wait_for_proxy(container, timeout=15):
         else:
             last_error = port_result.stderr.strip()
         time.sleep(0.1)
-    logs = _run_docker("logs", container, check=False).stdout
+    logs_result = _run_docker("logs", container, check=False)
+    logs = "\n".join(part for part in (logs_result.stdout, logs_result.stderr) if part)
     pytest.fail(f"Bigscreen proxy did not become ready: {last_error}\n{logs}")
 
 
@@ -186,7 +187,7 @@ access_log /records/proxy-access.log proxy_audit;
         _run_docker(
             "run", "--detach", "--name", proxy,
             "--network", network,
-            "--publish", "80/tcp",
+            "--publish", "80",
             "--volume", f"{ROOT / 'bigscreen'}:/app:ro",
             "--volume", f"{proxy_audit_config}:/etc/nginx/conf.d/00-test-audit.conf:ro",
             "--volume", f"{records_dir}:/records",
