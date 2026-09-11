@@ -13,7 +13,7 @@ def test_isp_data_missing_card_states():
     alert = bridge.build_isp_data_missing_card(130, recovered=False)
     body = alert["card"]["body"]["elements"][0]["content"]
     assert "数据中断" in body
-    assert "FIREWALL_WAN_IF_FILTER" in body
+    assert "基础配置中的“WAN 口识别关键词”" in body
     assert alert["card"]["header"]["title"]["content"].endswith("🔴 外网流量采集中断")
     assert "subtitle" not in alert["card"]["header"]
     assert "🔴 状态：数据中断" in body

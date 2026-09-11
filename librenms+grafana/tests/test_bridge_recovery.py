@@ -330,7 +330,7 @@ def test_company_bot_pending_delete_command_returns_interactive_cards(monkeypatc
     assert actions == {"retire_delete", "retire_keep"}
     assert all(button["behaviors"][0]["value"]["token"] == "token-81" for button in buttons)
     content = elements[0]["content"]
-    assert "设备已离线满 48 小时，等待人工处理。" in content
+    assert "确认删除会移除该设备的 LibreNMS 记录；再次上线将按新设备处理。" in content
     assert "http://10.20.30.40:8088/control" in content
     assert "token-81" not in content
     bridge.DEVICE_DOWN_STATES.clear()
@@ -740,6 +740,10 @@ def test_test_card_uses_blue_information_title(monkeypatch):
     assert header["title"]["content"] == "#1 🔵 测试告警"
     assert header["template"] == "blue"
     assert "subtitle" not in header
+    body = card["card"]["body"]["elements"][0]["content"]
+    assert "这是一条测试告警。" in body
+    assert "收到此消息，说明本次测试告警已送达。" in body
+    assert "机器人配置无误" not in body
 
 
 def test_sysname_change_rejects_numeric_ip_and_case_only_artifacts():

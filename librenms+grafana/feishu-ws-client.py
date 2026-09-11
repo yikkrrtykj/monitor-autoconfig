@@ -74,9 +74,18 @@ def resolve_via_bridge(value: dict) -> dict:
         try:
             return json.loads(exc.read().decode("utf-8", errors="replace") or "{}")
         except json.JSONDecodeError:
-            return {"ok": False, "error": f"告警服务返回 HTTP {exc.code}"}
+            return {
+                "ok": False,
+                "error": (
+                    "暂时无法确认处理结果，请刷新列表查看。"
+                    f"为避免重复操作，请先确认当前状态。（HTTP {exc.code}）"
+                ),
+            }
     except Exception as exc:  # noqa: BLE001 - surfaced to the operator as a toast
-        return {"ok": False, "error": f"无法连接告警服务：{exc}"}
+        return {
+            "ok": False,
+            "error": "暂时无法确认处理结果，请刷新列表查看。为避免重复操作，请先确认当前状态。",
+        }
 
 
 def build_response(value: dict, result: dict):
@@ -102,7 +111,7 @@ def build_response(value: dict, result: dict):
             "schema": "2.0",
             "header": {
                 "title": {"tag": "plain_text", "content": "设备待删除确认"},
-                "subtitle": {"tag": "plain_text", "content": "已处理" if ok else "处理失败"},
+                "subtitle": {"tag": "plain_text", "content": "已处理" if ok else "操作未完成，请查看详情"},
                 "template": template,
             },
             "body": {

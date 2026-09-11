@@ -136,7 +136,7 @@ def test_retire_resolve_keeps_invalid_http_error_body_fallback(monkeypatch):
 
     assert bridge.bridge_retire_resolve(BRIDGE_URL, {}) == {
         "ok": False,
-        "error": "告警服务返回 HTTP 502",
+        "error": "暂时无法确认处理结果，请刷新列表查看。为避免重复操作，请先确认当前状态。（HTTP 502）",
     }
 
 
@@ -151,7 +151,7 @@ def test_retire_resolve_keeps_ordinary_connection_error(monkeypatch):
 
     assert bridge.bridge_retire_resolve(BRIDGE_URL, {}) == {
         "ok": False,
-        "error": "无法连接告警服务：fixture refused",
+        "error": "暂时无法确认处理结果，请刷新列表查看。为避免重复操作，请先确认当前状态。",
     }
 
 

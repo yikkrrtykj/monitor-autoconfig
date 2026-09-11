@@ -24,18 +24,23 @@ def test_every_outgoing_card_is_prefixed_with_event_name(monkeypatch):
     assert bridge._with_event_name(decorated)["card"]["header"]["title"]["content"] == "【EWC 上海站】 test"
 
 
-def test_event_scoped_help_teaches_shared_group_commands(monkeypatch):
+def test_help_uses_fixed_event_placeholder_without_leaking_event_name(monkeypatch):
     monkeypatch.setattr(bridge, "EVENT_NAME", "Singapore")
     monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
 
     result = bridge.handle_bot_query("帮助")
 
     assert result["ok"] is True
-    assert result["text"].startswith("【Singapore】")
-    assert "@机器人 Singapore 网络巡检" in result["text"]
-    assert "@机器人 Singapore 待删除设备" in result["text"]
-    assert "@机器人 Singapore 光功率巡检" in result["text"]
-    assert "@机器人 Singapore 上联冗余巡检" in result["text"]
+    assert result["text"] == (
+        "LibreBOT 帮助\n\n"
+        "可用命令：\n"
+        "• @LibreBOT 赛事名称 网络巡检 — 查看网络设备状态和堆叠健康\n"
+        "• @LibreBOT 赛事名称 光功率巡检 — 查看光功率和异常链路\n"
+        "• @LibreBOT 赛事名称 上联冗余巡检 — 查看设备上联和冗余状态\n"
+        "• @LibreBOT 赛事名称 待删除设备 — 查看和处理待删除设备"
+    )
+    assert "Singapore" not in result["text"]
+    assert "PGS" not in bridge.build_bot_help_text("PGS")
 
 
 def test_tournament_help_omits_pending_delete_command(monkeypatch):
@@ -45,8 +50,9 @@ def test_tournament_help_omits_pending_delete_command(monkeypatch):
     result = bridge.handle_bot_query("帮助")
 
     assert result["ok"] is True
-    assert "@机器人 Singapore 网络巡检" in result["text"]
-    assert "@机器人 Singapore 光功率巡检" in result["text"]
+    assert "@LibreBOT 赛事名称 网络巡检" in result["text"]
+    assert "@LibreBOT 赛事名称 光功率巡检" in result["text"]
+    assert "Singapore" not in result["text"]
     assert "待删除设备" not in result["text"]
 
 
@@ -94,7 +100,7 @@ def test_bot_network_audit_merges_status_and_offline_details(monkeypatch):
     # combined network audit rather than separate single-purpose commands.
     assert bridge.handle_bot_query("离线设备")["text"] == summary["text"]
     assert "设备 <设备名或 IP>" not in bridge.BOT_HELP_TEXT
-    assert bridge.handle_bot_query("查设备 RTS2")["text"].startswith("未识别命令")
+    assert bridge.handle_bot_query("查设备 RTS2")["text"].startswith("未识别这条命令，请参考以下帮助。")
 
 
 def _stack_sample(name, target, value, entity="", instance="core"):
@@ -798,12 +804,12 @@ def test_company_retire_card_has_buttons_and_plain_console_fallback(monkeypatch)
     assert notification["card"]["header"]["template"] == "orange"
     assert "subtitle" not in notification["card"]["header"]
     body = notification["card"]["body"]["elements"][0]["content"]
-    assert "⚠️ 设备已连续离线 48 小时，已进入待退役确认。" in body
+    assert "设备已连续离线 48 小时，请确认删除或保留。" in body
     assert "💻 设备：access-7" in body
     assert "🌐 IP：192.168.10.27" in body
     assert "🔴 状态：连续离线 48 小时 1 分" in body
     assert "🕒 时间：" in body
-    assert "设备已离线满 48 小时，等待人工处理。" in body
+    assert "确认删除会移除该设备的 LibreNMS 记录；再次上线将按新设备处理。" in body
     assert "请进入对应监控控制台确认删除或保留：" in body
     assert "http://192.168.16.20:8088/control" in body
     plain = bridge.build_retire_confirm_card(

@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 
@@ -118,6 +119,49 @@ def test_company_mode_forwards_token_guarded_card_action(monkeypatch):
     response = client.on_card_action(_card_action({**value, "action": "retire_keep"}))
     assert response[0]["token"] == "tok-company"
     assert response[1] == {"ok": True, "action": "keep"}
+
+
+def test_pending_action_transport_errors_use_neutral_unknown_result_copy(monkeypatch):
+    monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", True)
+    value = {"action": "retire_keep", "key": "switch-1", "token": "tok"}
+
+    monkeypatch.setattr(
+        client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionError("fixture secret")),
+    )
+    assert client.resolve_via_bridge(value) == {
+        "ok": False,
+        "error": "暂时无法确认处理结果，请刷新列表查看。为避免重复操作，请先确认当前状态。",
+    }
+
+    def http_error(request, timeout):
+        raise client.urllib.error.HTTPError(
+            request.full_url, 502, "Bad Gateway", None, io.BytesIO(b"not-json")
+        )
+
+    monkeypatch.setattr(client.urllib.request, "urlopen", http_error)
+    assert client.resolve_via_bridge(value) == {
+        "ok": False,
+        "error": "暂时无法确认处理结果，请刷新列表查看。为避免重复操作，请先确认当前状态。（HTTP 502）",
+    }
+
+
+def test_failed_pending_action_card_uses_neutral_subtitle_and_keeps_detail(monkeypatch):
+    module_name = "lark_oapi.event.callback.model.p2_card_action_trigger"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        SimpleNamespace(P2CardActionTriggerResponse=lambda payload: payload),
+    )
+
+    response = client.build_response(
+        {"device": "switch-1"},
+        {"ok": False, "error": "设备当前可达，未执行删除"},
+    )
+
+    assert response["card"]["data"]["header"]["subtitle"]["content"] == "操作未完成，请查看详情"
+    assert "设备当前可达，未执行删除" in response["card"]["data"]["body"]["elements"][0]["content"]
 
 
 def test_extracts_command_after_robot_mention():

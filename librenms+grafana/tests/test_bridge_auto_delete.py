@@ -302,12 +302,12 @@ def test_dry_run_twenty_four_candidates_send_one_bounded_summary(
     text = json.dumps(notifications[0], ensure_ascii=False)
     title = notifications[0]["card"]["header"]["title"]["content"]
     assert title == "#99901 🔵 LibreNMS 自动清理预检"
-    assert "DRY RUN" in text
+    assert "模式：测试模式" in text
     assert "候选设备：24 台" in text
     assert "清理阈值：离线 ≥ 7 天" in text
     assert "删除前检查：实时 ICMP 仍不可达" in text
     assert "未执行任何删除" in text
-    assert "未向 LibreNMS 发送 DELETE 请求" in text
+    assert "本轮仅检查，未执行删除，也未发送删除请求。" in text
     assert "old-switch-10" in text
     assert "old-switch-11" not in text
     assert "另有 14 台未展开" in text
@@ -345,7 +345,7 @@ def test_five_real_deletes_send_one_success_summary(monkeypatch, capsys):
     assert "删除成功：5 台" in text
     assert "retired-switch-1" in text
     assert "192.0.2.1" in text
-    assert "device_id：1" in text
+    assert "设备记录编号：1" in text
     assert "离线：7 天" in text
     assert "Down 超过配置阈值" in text
     assert "notification sent deleted=5 failed=0" in capsys.readouterr().err
@@ -371,9 +371,9 @@ def test_delete_failures_send_one_retry_alert(monkeypatch):
     text = json.dumps(notifications[0], ensure_ascii=False)
     title = notifications[0]["card"]["header"]["title"]["content"]
     assert title == "#99901 🔴 LibreNMS 自动清理异常"
-    assert "删除失败：1 台" in text
+    assert "未确认删除成功：1 台" in text
     assert "failed-switch" in text
-    assert "设备未从 LibreNMS 删除，将在后续检查中重试" in text
+    assert "请核实这些设备的删除结果；系统仍会按自动清理策略进行后续检查和重试。" in text
 
 
 def test_mixed_success_and_failure_stays_in_one_summary(monkeypatch):
@@ -404,8 +404,8 @@ def test_mixed_success_and_failure_stays_in_one_summary(monkeypatch):
     title = notifications[0]["card"]["header"]["title"]["content"]
     assert title == "#99901 🟠 LibreNMS 自动清理结果"
     assert "删除成功：4 台" in text
-    assert "删除失败：1 台" in text
-    assert "设备未从 LibreNMS 删除，将在后续检查中重试" in text
+    assert "未确认删除成功：1 台" in text
+    assert "请核实这些设备的删除结果；系统仍会按自动清理策略进行后续检查和重试。" in text
 
 
 def test_feishu_send_exception_does_not_fail_cleanup_cycle(

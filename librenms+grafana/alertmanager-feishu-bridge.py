@@ -841,22 +841,16 @@ def _librenms_get_json(token, path, timeout=15):
 
 
 def build_bot_help_text(event_name=""):
-    event = " ".join(str(event_name or "").split())
-    scope = f"{event} " if event else ""
-    heading = f"【{event}】\n" if event else ""
     lines = [
-        f"{heading}运维查询与巡检：",
-        f"• @机器人 {scope}网络巡检 — 全网在线/离线汇总，并检查思科堆叠成员、角色和版本状态",
+        "LibreBOT 帮助",
+        "",
+        "可用命令：",
+        "• @LibreBOT 赛事名称 网络巡检 — 查看网络设备状态和堆叠健康",
+        "• @LibreBOT 赛事名称 光功率巡检 — 查看光功率和异常链路",
+        "• @LibreBOT 赛事名称 上联冗余巡检 — 查看设备上联和冗余状态",
     ]
     if DEVICE_PENDING_DELETE_ENABLED:
-        lines.append(
-            f"• @机器人 {scope}待删除设备 — 展示待处理设备，并支持确认删除/保留"
-        )
-    lines.extend([
-        f"• @机器人 {scope}光功率巡检 — 全网 dBm 汇总，异常时附明细",
-        f"• @机器人 {scope}上联冗余巡检 — 结合 LLDP/CDP 和 Port-Channel 成员检查冗余",
-        "巡检读取 LibreNMS 和已经采集的拓扑，不会修改交换机配置。",
-    ])
+        lines.append("• @LibreBOT 赛事名称 待删除设备 — 查看和处理待删除设备")
     return "\n".join(lines)
 
 
@@ -1300,10 +1294,10 @@ def build_uplink_audit_cards():
         cards.append(_make_card("上联巡检异常明细", "Uplink Details", "orange", "\n".join(lines)))
     if unknown:
         lines = [
-            f"• **{item['name']} ({item['ip']})**\n  已识别 {item['aggregate']}，但设备未提供 ifStack 成员关系"
+            f"• **{item['name']} ({item['ip']})**\n  已识别 {item['aggregate']}，但暂时无法读取成员信息。"
             for item in unknown[:50]
         ]
-        lines.append("这些设备不按单上联报错；需设备支持 IF-MIB ifStackTable 才能核对成员数。")
+        lines.append("这些设备的上联冗余状态暂时无法确认，未计为单上联异常。")
         cards.append(_make_card("上联巡检待确认", "Uplink Member Visibility", "blue", "\n".join(lines)))
     return cards
 
@@ -1443,7 +1437,7 @@ def build_network_device_status_cards(devices, observations=None, page_size=35):
                 f"（{_device_ip(device) or 'IP 未知'}）"
             )
         if not chunk:
-            lines.append("暂无启用的 LibreNMS 设备。")
+            lines.append("暂无已启用监控的设备。")
         suffix = f"（{page}/{len(chunks)}）" if len(chunks) > 1 else ""
         cards.append(_make_card(
             f"网络巡检 · 设备状态{suffix}",
@@ -1682,16 +1676,16 @@ def handle_bot_query(text):
     if uplink_audit_cmd:
         return {"ok": True, "text": "上联冗余巡检完成。", "cards": build_uplink_audit_cards()}
     if not network_audit_cmd and not fiber_audit_cmd:
-        return {"ok": True, "text": f"未识别命令。\n{help_text}"}
+        return {"ok": True, "text": f"未识别这条命令，请参考以下帮助。\n{help_text}"}
 
     token = _librenms_token()
     if not token or not LIBRENMS_URL:
-        return {"ok": False, "text": "LibreNMS API 尚未就绪，请稍后再试。"}
+        return {"ok": False, "text": "设备查询服务尚未就绪，请稍后再试。"}
     try:
         devices = fetch_librenms_devices(token)
     except Exception as exc:
         log(f"[BOT] device query failed: {exc}")
-        return {"ok": False, "text": "读取 LibreNMS 设备列表失败，请稍后再试。"}
+        return {"ok": False, "text": "设备列表读取失败，请稍后再试。"}
     if network_audit_cmd:
         try:
             observations = fetch_network_reachability()
@@ -2236,8 +2230,8 @@ def build_sysname_change_card(old_name, new_name, ip="", hostname=""):
 def build_test_card():
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
-        "✅ 飞书告警链路正常",
-        "📡 这是一条测试告警，收到即代表机器人配置无误。",
+        "这是一条测试告警。",
+        "收到此消息，说明本次测试告警已送达。",
         f"⏰ 时间：{ts}",
     ]
     return _make_card(next_event_title(), "🔵 测试告警", "blue", "\n".join(lines))
@@ -2335,7 +2329,7 @@ def build_isp_data_missing_card(missing_seconds, recovered=False):
         f"⏰ 时间：{ts}",
     ]
     if not recovered:
-        lines.append("💡 请检查防火墙 SNMP 是否可达、FIREWALL_WAN_IF_FILTER 是否匹配新接口名")
+        lines.append("💡 请检查防火墙 SNMP 连接，以及基础配置中的“WAN 口识别关键词”是否匹配当前接口。")
     subtitle = "🟢 外网流量采集恢复" if recovered else "🔴 外网流量采集中断"
     return _make_card(next_event_title(), subtitle, color, "\n".join(lines))
 
@@ -2356,14 +2350,14 @@ def build_retire_confirm_card(state, key="", interactive=None):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dev = f"{name} ({ip})" if ip and ip != name else name
     lines = [
-        "⚠️ 设备已连续离线 48 小时，已进入待退役确认。",
+        "设备已连续离线 48 小时，请确认删除或保留。",
         "",
         f"💻 设备：{name}",
         f"🌐 IP：{ip or '?'}",
         f"🔴 状态：连续离线 {offline}",
         f"🕒 时间：{ts}",
         "",
-        "📝 设备已离线满 48 小时，等待人工处理。",
+        "确认删除会移除该设备的 LibreNMS 记录；再次上线将按新设备处理。",
         "",
         "请进入对应监控控制台确认删除或保留：",
         control_console_url(),
@@ -3434,13 +3428,13 @@ def _new_manual_delete_operation(key, state, token):
     raw_ip = str(state.get("ip") or "").strip()
     job = str(state.get("job") or "")
     if not re.fullmatch(r"[A-Za-z0-9_:.-]+", job):
-        return None, "设备监控身份无效，未执行删除"
+        return None, "设备监控信息无效，未执行删除。"
     try:
         ip = str(ipaddress.ip_address(raw_ip))
     except ValueError:
-        return None, "设备地址无效，未执行删除"
+        return None, "设备地址格式不符合要求，未执行删除。"
     if raw_ip != ip:
-        return None, "设备地址未规范化，未执行删除"
+        return None, "设备地址格式不符合要求，未执行删除。"
     generation = _pending_generation(token)
     if ip in AUTO_DELETE_BY_IP:
         return None, "该设备正在执行自动清理检查，请稍后刷新"
@@ -3450,13 +3444,13 @@ def _new_manual_delete_operation(key, state, token):
         if _guard_is_unresolved(guard) and (
             guard.get("key") == key or guard.get("ip") == ip
         ):
-            return None, "该设备存在未决删除记录，禁止重复删除"
+            return None, "上次删除结果尚未确认，暂不允许再次删除。"
         if (
             guard.get("key") == key
             and guard.get("pending_generation") == generation
             and guard.get("phase") == "SUCCEEDED"
         ):
-            return None, "该确认代次已经处理，请刷新待删除列表"
+            return None, "这次确认已处理，请刷新待删除列表。"
     operation_id = secrets.token_hex(16)
     started = time.monotonic()
     operation = {
@@ -3489,17 +3483,17 @@ def resolve_pending_delete(key, action, token):
             "error": "当前部署未启用待删除设备功能",
         }
     if not MANUAL_DELETE_GUARDS_READY:
-        return {"ok": False, "error": "删除安全记录尚未完成初始化，未执行任何操作"}
+        return {"ok": False, "error": "删除功能尚未准备就绪，本次未执行任何操作。"}
     key = str(key or "")
     if action not in ("delete", "keep"):
-        return {"ok": False, "error": "action 必须是 delete 或 keep"}
+        return {"ok": False, "error": "操作无效，请选择确认删除或保留。"}
     with RETIRE_LOCK:
         state = DEVICE_DOWN_STATES.get(key)
         if not state or not state.get("pending_delete"):
             return {"ok": False, "error": "该设备不在待删除列表（可能已处理或已恢复在线）"}
         expected = state.get("pending_token") or ""
         if not expected or not secrets.compare_digest(str(token or ""), expected):
-            return {"ok": False, "error": "确认口令不匹配，请刷新待删除列表后重试"}
+            return {"ok": False, "error": "本次确认信息已失效，请刷新待删除列表后重试。"}
         name = state.get("name") or state.get("ip") or "?"
         ip = state.get("ip") or ""
         job = state.get("job") or ""
@@ -3508,7 +3502,7 @@ def resolve_pending_delete(key, action, token):
             if operation and operation.get("phase") == "CHECKING":
                 _cancel_operation_locked(operation, "kept-by-operator")
             elif _manual_delete_state_is_protected_locked(key, state):
-                return {"ok": False, "error": "删除已提交或结果未决，当前不能清除待删除状态"}
+                return {"ok": False, "error": "删除已提交或结果尚未确认，当前不能执行保留操作。"}
             _clear_pending_fields(state)
             state["pending_snoozed_until"] = time.time() + max(1, DEVICE_REENROLL_AFTER_SECONDS)
         else:
@@ -3547,7 +3541,7 @@ def resolve_pending_delete(key, action, token):
         with RETIRE_LOCK:
             _cancel_operation_locked(operation, "inventory-unavailable")
         log(f"[DOWN] pending delete inventory unavailable: {type(exc).__name__}")
-        return {"ok": False, "error": "LibreNMS 设备清单不可用，未执行删除；设备仍保留在待删除列表"}
+        return {"ok": False, "error": "设备列表暂时无法读取，未执行删除；待删除记录保留。"}
 
     probe_timeout = _stage_timeout(operation, 3)
     try:
@@ -3565,8 +3559,8 @@ def resolve_pending_delete(key, action, token):
         with RETIRE_LOCK:
             _cancel_operation_locked(operation, "blackbox-online" if reachable is True else "blackbox-unknown")
         if reachable is True:
-            return {"ok": False, "error": f"{name} 最终探测在线，未执行删除；设备仍保留在待删除列表"}
-        return {"ok": False, "error": "最终探测结果未知，未执行删除；设备仍保留在待删除列表"}
+            return {"ok": False, "error": f"{name} 当前可达，未执行删除；待删除记录保留。"}
+        return {"ok": False, "error": "暂时无法确认设备是否可达，未执行删除；待删除记录保留。"}
 
     with RETIRE_LOCK:
         current = DEVICE_DOWN_STATES.get(key)
@@ -3594,7 +3588,7 @@ def resolve_pending_delete(key, action, token):
         try:
             _persist_manual_delete_guard(guard)
             if not _apply_manual_delete_success(operation, guard):
-                return {"ok": False, "error": "设备状态已变化，删除结果未应用；不会重复删除"}
+                return {"ok": False, "error": "设备状态已变化，本次结果未更新到当前记录；系统不会重复删除。"}
         except Exception as exc:
             log(f"[DOWN] pending delete missing-result persistence failed: {type(exc).__name__}")
             return {"ok": False, "error": "删除结果持久化失败，设备保持受保护状态，不会重复删除"}
@@ -3614,7 +3608,7 @@ def resolve_pending_delete(key, action, token):
             })
             MANUAL_DELETE_GUARDS[operation["operation_id"]] = uncertain
         log(f"[DOWN] pending delete guard persistence failed: {type(exc).__name__}")
-        return {"ok": False, "error": "删除安全记录无法持久化，未发送 DELETE 请求"}
+        return {"ok": False, "error": "无法保存删除安全记录，未发送删除请求。"}
 
     with RETIRE_LOCK:
         owns_commit = bool(
@@ -3632,11 +3626,11 @@ def resolve_pending_delete(key, action, token):
             _persist_manual_delete_guard(guard)
         except Exception as exc:
             log(f"[DOWN] pending delete deadline receipt failed: {type(exc).__name__}")
-            return {"ok": False, "error": "删除期限已到且安全记录状态未决；未发送 DELETE 请求"}
+            return {"ok": False, "error": "处理超时，未发送删除请求；安全记录仍需核实，暂不能继续操作。"}
         with RETIRE_LOCK:
             operation["phase"] = "FAILED_NOT_DISPATCHED"
             _release_operation_locked(operation)
-        return {"ok": False, "error": "删除期限已到，未发送 DELETE 请求"}
+        return {"ok": False, "error": "处理超时，未发送删除请求。"}
     try:
         result = _manual_delete_exact_id(
             libre_token, device_id, delete_timeout, operation["deadline"],
@@ -3671,14 +3665,14 @@ def resolve_pending_delete(key, action, token):
         with RETIRE_LOCK:
             operation["phase"] = "OUTCOME_UNKNOWN"
         log(f"[DOWN] pending delete outcome unknown device_id={device_id}: {type(exc).__name__}")
-        return {"ok": False, "error": "LibreNMS DELETE 结果未知；设备保持保护状态，禁止自动重试"}
+        return {"ok": False, "error": "删除结果暂时无法确认，系统已阻止重复删除，请联系管理员核实。"}
 
     try:
         if not _apply_manual_delete_success(operation, guard):
-            return {"ok": False, "error": "设备状态已变化，删除结果未应用；不会重复删除"}
+            return {"ok": False, "error": "设备状态已变化，本次结果未更新到当前记录；系统不会重复删除。"}
     except Exception as exc:
         log(f"[DOWN] pending delete state persistence failed: {type(exc).__name__}")
-        return {"ok": False, "error": "删除成功但本地状态持久化失败；设备保持保护状态，禁止重试"}
+        return {"ok": False, "error": "删除已成功，但处理结果未能保存；系统已阻止重试，请联系管理员核实。"}
     log(f"[DOWN] PENDING-DELETE confirmed, LibreNMS record removed: {name} ({ip})")
     return {"ok": True, "action": "delete", "message": f"已删除 {name} 的 LibreNMS 记录；再次上线将按新设备处理"}
 
@@ -4437,12 +4431,12 @@ def _device_auto_delete_record_lines(records, limit=10, include_error=False):
         if ip and ip != hostname:
             item_lines.append(f"  IP：{ip}")
         item_lines.extend([
-            f"  device_id：{item['device_id']}",
+            f"  设备记录编号：{item['device_id']}",
             f"  离线：{_device_auto_delete_duration(item['offline_seconds'])}",
         ])
         if include_error:
             item_lines.append(
-                f"  原因：{item['error'] or 'LibreNMS DELETE API 返回失败'}"
+                f"  原因：{item['error'] or '删除请求未得到成功确认。'}"
             )
         lines.append("\n".join(item_lines))
     remaining = len(records) - min(len(records), limit)
@@ -4464,7 +4458,7 @@ def build_device_auto_delete_summary_card(
     threshold = _device_auto_delete_threshold()
     if dry_run_records:
         body = [
-            "🧪 模式：DRY RUN",
+            "🧪 模式：测试模式",
             f"📦 候选设备：{len(dry_run_records)} 台",
             f"⏱ 清理阈值：离线 ≥ {threshold}",
             "🛡 删除前检查：实时 ICMP 仍不可达",
@@ -4472,8 +4466,7 @@ def build_device_auto_delete_summary_card(
             "",
             *_device_auto_delete_record_lines(dry_run_records, limit=10),
             "",
-            "ℹ️ 本轮未执行任何删除。",
-            "未向 LibreNMS 发送 DELETE 请求。",
+            "ℹ️ 本轮仅检查，未执行删除，也未发送删除请求。",
         ]
         return _make_card(
             next_event_title(),
@@ -4488,7 +4481,7 @@ def build_device_auto_delete_summary_card(
             f"🗑 删除成功：{len(deleted_records)} 台",
         ])
     if failed_records:
-        body.append(f"⚠️ 删除失败：{len(failed_records)} 台")
+        body.append(f"⚠️ 未确认删除成功：{len(failed_records)} 台")
     body.extend([
         f"⏱ 清理阈值：离线 ≥ {threshold}",
         "🛡 删除条件：删除前实时 ICMP 仍不可达",
@@ -4508,7 +4501,7 @@ def build_device_auto_delete_summary_card(
             *_device_auto_delete_record_lines(
                 failed_records, limit=10, include_error=True
             ),
-            "设备未从 LibreNMS 删除，将在后续检查中重试。",
+            "请核实这些设备的删除结果；系统仍会按自动清理策略进行后续检查和重试。",
         ])
     if failed_records and deleted_records:
         subtitle = "🟠 LibreNMS 自动清理结果"
@@ -4719,7 +4712,7 @@ def run_device_auto_delete_cycle(
                         device,
                         ip,
                         offline_seconds,
-                        "LibreNMS DELETE API 返回失败",
+                        "删除请求未得到成功确认。",
                     )
                 )
                 log(

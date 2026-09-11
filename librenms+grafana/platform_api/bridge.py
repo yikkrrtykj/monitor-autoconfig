@@ -42,9 +42,18 @@ def bridge_retire_resolve(bridge_url: str, data: dict) -> dict:
                 exc.read().decode("utf-8", errors="replace") or "{}"
             )
         except json.JSONDecodeError:
-            return {"ok": False, "error": f"告警服务返回 HTTP {exc.code}"}
+            return {
+                "ok": False,
+                "error": (
+                    "暂时无法确认处理结果，请刷新列表查看。"
+                    f"为避免重复操作，请先确认当前状态。（HTTP {exc.code}）"
+                ),
+            }
     except Exception as exc:
-        return {"ok": False, "error": f"无法连接告警服务：{exc}"}
+        return {
+            "ok": False,
+            "error": "暂时无法确认处理结果，请刷新列表查看。为避免重复操作，请先确认当前状态。",
+        }
 
 
 def send_test_alert(bridge_url: str) -> dict:
