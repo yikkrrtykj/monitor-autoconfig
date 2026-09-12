@@ -168,7 +168,7 @@ def test_prometheus_failure_short_circuits_remaining_checks(monkeypatch):
         "pass": 0,
         "warn": 0,
         "fail": 1,
-        "output": "  ✗ Prometheus 不可达（http://prometheus:9090）：offline",
+        "output": "  ✗ 监控数据服务无法连接。",
     }
 
 
@@ -226,13 +226,13 @@ def test_precheck_keeps_probe_order_urls_timeouts_and_good_result(monkeypatch):
         "warn": 0,
         "fail": 0,
         "output": "\n".join([
-            "  ✓ Prometheus 正常，抓取目标 1/1 全部在线",
+            "  ✓ 监控数据采集正常，1/1 项可用。",
             "  ✓ 基础设施 1 台全部在线",
             "  ✓ 选手机位 1/1 全部在线",
             "  ✓ Grafana 正常",
-            "  ✓ 告警服务及后台线程正常",
+            "  ✓ 告警监测服务正常",
             "  ✓ 赛事大屏入口正常",
-            "  ✓ 选手目标生成器正常，共 1 个目标",
+            "  ✓ 选手监控地址更新正常，共 1 个地址。",
             "  ✓ LibreNMS Web 正常",
             "  ✓ 配置无阻塞项",
         ]),
@@ -255,7 +255,7 @@ def test_precheck_fails_when_no_player_targets(monkeypatch):
 
     assert result["verdict"] == "bad"
     assert "选手机位监控目标为 0" in result["output"]
-    assert "选手目标生成器尚未生成任何目标" in result["output"]
+    assert "尚未识别到可监控的选手地址。" in result["output"]
 
 
 def test_precheck_fails_when_bridge_is_not_ready(monkeypatch):
@@ -265,7 +265,7 @@ def test_precheck_fails_when_bridge_is_not_ready(monkeypatch):
     result = precheck.run_precheck(_context())
 
     assert result["verdict"] == "bad"
-    assert "告警服务未就绪：未配置飞书 Token；后台线程已停止：device-down" in result["output"]
+    assert "告警服务未就绪：未配置飞书 Token；设备离线监测已停止" in result["output"]
 
 
 def test_bridge_http_error_body_keeps_health_detail_semantics(monkeypatch):
@@ -294,8 +294,40 @@ def test_bridge_http_error_body_keeps_health_detail_semantics(monkeypatch):
     result = precheck.run_precheck(_context())
 
     assert result["verdict"] == "bad"
-    assert "告警服务未就绪：后台线程已停止：incident" in result["output"]
+    assert "告警服务未就绪：incident监测已停止" in result["output"]
     assert "告警服务不可达" not in result["output"]
+
+
+def test_watcher_errors_use_operator_facing_monitor_names(monkeypatch):
+    labels = {
+        "device-online": "设备上线",
+        "sysname-change": "设备名称变更",
+        "device-auto-delete": "自动清理",
+        "isp-bandwidth": "ISP 带宽",
+        "interconnect": "聚合链路",
+        "device-down": "设备离线",
+        "unifi-ap": "无线 AP",
+        "device-resources": "设备资源",
+        "syslog": "网络事件",
+    }
+    for watcher_key, label in labels.items():
+        _mock_external_services(monkeypatch)
+        base_http_json = precheck._http_json
+
+        def http_json(url, timeout=5, key=watcher_key):
+            if "alertmanager" in url:
+                return {
+                    "ready": True,
+                    "tokenConfigured": True,
+                    "deadWatchers": [],
+                    "watchers": {key: {"lastError": "fixture detail"}},
+                }
+            return base_http_json(url, timeout)
+
+        monkeypatch.setattr(precheck, "_http_json", http_json)
+        monkeypatch.setattr(precheck, "_prom_query", _healthy_prom_query)
+        result = precheck.run_precheck(_context())
+        assert f"告警监测仍在运行，但最近一次检查失败：{label}：fixture detail" in result["output"]
 
 
 def test_config_check_keeps_only_first_six_blocking_issues(monkeypatch):

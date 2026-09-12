@@ -44,17 +44,17 @@ def run_precheck(context: PrecheckContext) -> dict:
         online = sum(1 for x in ups if (x.get("value") or [None, "0"])[1] == "1")
         failed = [x for x in ups if (x.get("value") or [None, "0"])[1] != "1"]
         if not ups:
-            add("bad", "Prometheus 可达，但没有任何抓取目标")
+            add("bad", "监控数据服务可连接，但尚无采集项。")
         elif failed:
             names = "、".join(
                 (x.get("metric") or {}).get("job", "?") + ":" + (x.get("metric") or {}).get("instance", "?")
                 for x in failed[:8]
             )
-            add("bad", f"Prometheus 有 {len(failed)} 个抓取目标失败（{online}/{len(ups)} 在线）：{names}")
+            add("bad", f"监控数据采集有 {len(failed)} 项失败（{online}/{len(ups)} 项可用）：{names}")
         else:
-            add("good", f"Prometheus 正常，抓取目标 {online}/{len(ups)} 全部在线")
+            add("good", f"监控数据采集正常，{online}/{len(ups)} 项可用。")
     except Exception as exc:
-        add("bad", f"Prometheus 不可达（{context.prom_url}）：{exc}")
+        add("bad", "监控数据服务无法连接。")
         # Without Prometheus the rest can't be judged.
         return _precheck_result(checks)
 
@@ -99,23 +99,37 @@ def run_precheck(context: PrecheckContext) -> dict:
         except urllib.error.HTTPError as exc:
             # 看门狗线程死亡时桥接按 503 返回同样的 JSON——读出来照常展示细节
             bridge_health = json.loads(exc.read().decode("utf-8", errors="replace") or "{}")
+        watcher_names = {
+            "device-online": "设备上线",
+            "sysname-change": "设备名称变更",
+            "device-auto-delete": "自动清理",
+            "isp-bandwidth": "ISP 带宽",
+            "interconnect": "聚合链路",
+            "device-down": "设备离线",
+            "unifi-ap": "无线 AP",
+            "device-resources": "设备资源",
+            "syslog": "网络事件",
+        }
         if not bridge_health.get("ready"):
             details = []
             if not bridge_health.get("tokenConfigured") and not bridge_health.get("dryRun"):
                 details.append("未配置飞书 Token")
             if bridge_health.get("deadWatchers"):
-                details.append("后台线程已停止：" + ",".join(bridge_health["deadWatchers"]))
+                details.append("、".join(
+                    f"{watcher_names.get(name, name)}监测已停止"
+                    for name in bridge_health["deadWatchers"]
+                ))
             add("bad", "告警服务未就绪：" + ("；".join(details) or "健康检查未通过"))
         else:
             watcher_errors = [
-                f"{name}: {state.get('lastError')}"
+                f"{watcher_names.get(name, name)}：{state.get('lastError')}"
                 for name, state in (bridge_health.get("watchers") or {}).items()
                 if state.get("lastError")
             ]
             if watcher_errors:
-                add("warn", "告警服务线程存活，但最近轮询失败：" + "；".join(watcher_errors[:4]))
+                add("warn", "告警监测仍在运行，但最近一次检查失败：" + "；".join(watcher_errors[:4]))
             else:
-                add("good", "告警服务及后台线程正常")
+                add("good", "告警监测服务正常")
     except Exception as exc:
         add("bad", f"告警服务不可达：{exc}")
 
@@ -131,13 +145,13 @@ def run_precheck(context: PrecheckContext) -> dict:
         target_status = _http_json(f"{context.player_targets_url}/status")
         target_count = int((target_status.get("targets") or {}).get("total") or 0)
         if target_status.get("error"):
-            add("bad", f"选手目标生成器异常：{target_status.get('error')}")
+            add("bad", f"选手监控地址更新异常：{target_status.get('error')}")
         elif target_count <= 0:
-            add("bad", "选手目标生成器尚未生成任何目标")
+            add("bad", "尚未识别到可监控的选手地址。")
         else:
-            add("good", f"选手目标生成器正常，共 {target_count} 个目标")
+            add("good", f"选手监控地址更新正常，共 {target_count} 个地址。")
     except Exception as exc:
-        add("bad", f"选手目标生成器不可达：{exc}")
+        add("bad", f"选手监控地址更新异常：{exc}")
 
     try:
         with urllib.request.urlopen(f"{context.librenms_url}/", timeout=5) as resp:

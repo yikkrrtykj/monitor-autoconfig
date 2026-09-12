@@ -158,7 +158,7 @@ def get_dhcp_bindings(context: DhcpRuntimeContext) -> dict:
             "arpEntries": arp_entries,
             "observedAddresses": [item["ip"] for item in arp_entries],
             "parserWarning": (
-                "show ip dhcp binding 当前未返回可解析的活动地址"
+                "当前未取得可用的租约明细，请刷新后重试。"
                 if not bindings else ""
             ),
             "arpWarning": arp_warning,

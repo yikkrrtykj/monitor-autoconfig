@@ -62,19 +62,16 @@
             const res = await postPlatform("/test-alert", {});
             const ok = Boolean(res && res.ok);
             if (result) {
-              const channel = { app: "自建应用", webhook: "群机器人 Webhook", "dry-run": "DryRun" }[res && res.channel] || "未知通道";
               const fellBack = ok && res && res.channel === "webhook" && res.appError;
               result.textContent = ok
                 ? (res.dryRun
-                  ? "已触发（DryRun 模式，未真正发送）"
-                  : fellBack
-                    ? `已通过 Webhook 回退发送；自建应用失败：${res.appError}`
-                    : `已通过${channel}发送，请到飞书群确认收到`)
-                : `失败：${(res && (res.appError || res.error)) || "未知错误"}`;
+                  ? "测试模式，未实际发送。"
+                  : "已发送，请到飞书群确认。")
+                : `发送失败：${(res && (res.appError || res.error)) || "未知错误"}`;
               result.className = `test-alert-result ${fellBack ? "warn" : ok ? "good" : "bad"}`;
             }
           } catch (error) {
-            if (result) { result.textContent = `失败：${error.message}`; result.className = "test-alert-result bad"; }
+            if (result) { result.textContent = "暂时无法确认是否发送成功，请先到飞书群查看。"; result.className = "test-alert-result bad"; }
           } finally {
             testBtn.disabled = false;
           }
@@ -94,7 +91,7 @@
             <div class="network-tool-heading">
               <div>
                 <h3 id="retirePendingTitle">待删除设备</h3>
-                <p>离线满 48 小时的设备在这里等人工确认；不确认永远不会自动删除。飞书确认卡与此面板等效。</p>
+                <p>处理持续离线的设备。确认删除会移除设备的 LibreNMS 记录；自动清理是否执行取决于当前设置。</p>
               </div>
               <button type="button" class="delivery-test-alert" id="retirePendingRefreshBtn">刷新列表</button>
             </div>

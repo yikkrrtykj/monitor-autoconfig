@@ -290,14 +290,20 @@ async function startAndFlush(harness) {
   assert.deepStrictEqual(basic.dashboardCalls, [false], 'start performs the existing non-forced refresh');
   assert.strictEqual(basic.dataSuccess.length, 1);
   assert.strictEqual(basic.document.getElementById('dhcpStatus').className, 'dhcp-status good');
-  assert.ok(basic.document.getElementById('dhcpStatus').textContent.includes('已从核心交换机刷新'));
+  assert.ok(basic.document.getElementById('dhcpStatus').textContent.includes('已更新 · 更新时间'));
+  assert.strictEqual(basic.document.getElementById('dhcpConnection').textContent, '192.168.10.254 · 每 75 秒更新');
   assert.ok(basic.document.getElementById('dhcpSummary').innerHTML.includes('总体使用率'));
   assert.ok(basic.document.getElementById('dhcpPools').innerHTML.includes('Alpha'));
   assert.ok(basic.document.getElementById('dhcpPools').innerHTML.includes('Beta'));
+  assert.ok(basic.document.getElementById('dhcpPools').innerHTML.includes('地址池内；等待租约信息，可点击“刷新租约 / ARP”。'));
   assert.strictEqual(basic.document.getElementById('dhcpPoolCount').textContent, '显示 2 / 2 个网段');
   assert.strictEqual(basic.panel.hasScheduledRefresh(), true);
   assert.strictEqual(basic.window.timersAt(75000).length, 1, 'payload refreshSeconds keeps the adaptive timeout');
   assert.strictEqual(basic.window.timersAt(0).length, 1, 'successful dashboard render schedules the initial bindings read');
+
+  const cached = createHarness({ dashboard: dashboardPayload({ cached: true, cacheAgeSeconds: 12 }) });
+  await startAndFlush(cached);
+  assert.ok(cached.document.getElementById('dhcpStatus').textContent.includes('当前显示 12 秒前的结果 · 更新时间'));
 
   await basic.window.runFirstAt(0);
   assert.strictEqual(basic.bindingCalls.length, 1);

@@ -333,8 +333,8 @@ function createHarness(options = {}) {
   assert.strictEqual(missing.document.getElementById('evidenceAt').value, '2024-01-01T08:00');
   assert.strictEqual(missing.renderCalls.length, 0);
   assert.ok(missing.document.getElementById('evidenceSummary').innerHTML.includes('当前没有可查询的 IP'));
-  assert.ok(missing.document.getElementById('evidenceLatencyChart').innerHTML.includes('当前座位未生成监控目标'));
-  assert.ok(missing.document.getElementById('evidenceSuccessChart').innerHTML.includes('当前座位未生成监控目标'));
+  assert.ok(missing.document.getElementById('evidenceLatencyChart').innerHTML.includes('当前座位暂无可查询的监控地址。'));
+  assert.ok(missing.document.getElementById('evidenceSuccessChart').innerHTML.includes('当前座位暂无可查询的监控地址。'));
 
   const emptyRange = createHarness({
     search: '?ip=192.0.2.1',

@@ -62,15 +62,15 @@
     if (outcome === "running") {
       return {
         pending: true,
-        pendingLabel: `应用任务仍在运行${operationId ? `（任务 ${operationId}）` : ""}`,
-        pendingNote: "任务仍在后端执行，请勿重复应用；可稍后刷新查看最终状态。"
+        pendingLabel: "应用配置",
+        pendingNote: "配置仍在应用中，请勿重复提交；可稍后刷新查看结果。"
       };
     }
     if (outcome === "unknown") {
       return {
         ok: false,
         errorTitle: "无法确认应用结果",
-        error: `任务状态不可用${operationId ? `（任务 ${operationId}）` : ""}，请刷新页面后重试查询。`
+        error: "暂时无法确认应用结果，请刷新后查看。"
       };
     }
     return {
@@ -189,7 +189,7 @@
     if (runtimeStatusFailed(runtimeStatus)) {
       return {
         value: "异常",
-        note: "选手目标生成失败",
+        note: "选手监控地址更新失败",
         level: "bad",
         failed: true
       };
@@ -202,7 +202,7 @@
       value: "0 个",
       note: playerTargetSourceConfigured(platformConfig)
         ? "暂未扫描到选手"
-        : "尚未配置选手目标",
+        : "尚未配置选手监控范围",
       level: "neutral",
       failed: false
     };
@@ -248,7 +248,7 @@
         label: "ISP",
         value: config.ispAutoDiscovery === "true" ? "自动发现" : (config.ispNames || "默认")
       },
-      { label: "选手探测目标", value: playerTargets.value, note: playerTargets.note }
+      { label: "选手监控地址", value: playerTargets.value, note: playerTargets.note }
     ];
   }
 
@@ -258,7 +258,7 @@
     const ispAuto = envFlag(config.ispAutoDiscovery);
 
     if (!ispAuto && !ispNames.length) {
-      risks.push({ level: "warn", label: "ISP 名称", value: "默认值", note: "未启用自动发现时建议显式配置 BIGSCREEN_ISP_NAMES" });
+      risks.push({ level: "warn", label: "ISP 名称", value: "默认值", note: "未启用自动发现时，请填写 ISP 名称。" });
     }
     if (!String(config.ispMaxBandwidthMbps || "").trim()) {
       risks.push({ level: "warn", label: "ISP 带宽", value: "未设置", note: "饱和判断会退回默认 1000 Mbps" });
@@ -266,9 +266,9 @@
     if (runtimeStatus && runtimeStatusFailed(runtimeStatus)) {
       risks.push({
         level: "bad",
-        label: "选手目标",
+        label: "选手监控地址",
         value: "异常",
-        note: `选手目标生成失败${runtimeStatus.error ? `：${runtimeStatus.error}` : ""}`
+        note: `选手监控地址更新失败${runtimeStatus.error ? `：${runtimeStatus.error}` : ""}`
       });
     }
     return risks;
@@ -278,13 +278,13 @@
     const summary = summarizeTargets(targets);
     const findings = [];
     if (summary.byKind.core === 0) {
-      findings.push({ level: "bad", label: "核心设备", value: "缺失", note: "CORE_SWITCH_PING 没有有效目标" });
+      findings.push({ level: "bad", label: "核心设备", value: "缺失", note: "未找到核心交换机监控数据，请检查基础配置。" });
     }
     if (summary.byKind.firewall === 0) {
-      findings.push({ level: "warn", label: "防火墙", value: "缺失", note: "FIREWALL_PING 没有有效目标" });
+      findings.push({ level: "warn", label: "防火墙", value: "缺失", note: "未找到防火墙监控数据，请检查基础配置。" });
     }
     if (summary.byKind.dist === 0) {
-      findings.push({ level: "warn", label: "接入交换机", value: "缺失", note: "DIST_SWITCH_PING 没有有效目标" });
+      findings.push({ level: "warn", label: "接入交换机", value: "缺失", note: "未找到接入交换机监控数据，请检查基础配置。" });
     }
     if (summary.offline.length) {
       findings.push({
@@ -295,7 +295,7 @@
       });
     }
     if (summary.byKind.dist > 0 && !edges.length) {
-      findings.push({ level: "warn", label: "LLDP 边", value: "0", note: "拓扑只能按逻辑兜底绘制，建议确认 LLDP/SNMP" });
+      findings.push({ level: "warn", label: "LLDP 链路", value: "0", note: "尚未发现邻居链路，当前显示示意连接；请检查 LLDP/SNMP。" });
     }
     return findings;
   }

@@ -8,6 +8,7 @@ const {
   summarizeServices,
   buildControlStatusRows,
   buildConfigRisks,
+  buildTopologyFindings,
   playerTargetPresentation,
   serviceHealthPresentation,
   buildReadinessChecks,
@@ -79,13 +80,13 @@ const normalRows = buildControlStatusRows({
   }
 });
 assert.deepStrictEqual(normalRows.map((row) => row.label), [
-  "平台版本", "运行状态", "ISP", "选手探测目标"
+  "平台版本", "运行状态", "ISP", "选手监控地址"
 ]);
 assert.strictEqual(normalRows.find((row) => row.label === "平台版本").value, "2026.08.1");
 assert.strictEqual(normalRows.find((row) => row.label === "运行状态").value, "正常");
 assert.deepStrictEqual(
-  normalRows.find((row) => row.label === "选手探测目标"),
-  { label: "选手探测目标", value: "0 个", note: "尚未配置选手目标" }
+  normalRows.find((row) => row.label === "选手监控地址"),
+  { label: "选手监控地址", value: "0 个", note: "尚未配置选手监控范围" }
 );
 assert.ok(!normalRows.some((row) => ["Git Commit", "配置版本", "平台 API", "采集任务"].includes(row.label)));
 assert.ok(!JSON.stringify(normalRows).includes("1700000000"), "player target generation timestamp stays diagnostic-only");
@@ -123,20 +124,29 @@ const healthyZeroRisks = buildConfigRisks(
   { ispAutoDiscovery: "true", ispMaxBandwidthMbps: "1000" },
   healthyRuntime
 );
-assert.ok(!healthyZeroRisks.some((item) => item.label === "选手目标"), "zero targets alone are not a risk");
+assert.ok(!healthyZeroRisks.some((item) => item.label === "选手监控地址"), "zero targets alone are not a risk");
 
 const failedRuntime = { ok: false, error: "targets file not found" };
 const generatorFailure = playerTargetPresentation(failedRuntime, noPlayerSource);
 assert.strictEqual(generatorFailure.value, "异常");
-assert.strictEqual(generatorFailure.note, "选手目标生成失败");
+assert.strictEqual(generatorFailure.note, "选手监控地址更新失败");
 assert.strictEqual(serviceHealthPresentation(healthyServices, failedRuntime).value, "⚠ 1 项异常");
 const failedRisks = buildConfigRisks(
   { ispAutoDiscovery: "true", ispMaxBandwidthMbps: "1000" },
   failedRuntime
 );
 assert.strictEqual(failedRisks.length, 1);
-assert.strictEqual(failedRisks[0].label, "选手目标");
-assert.ok(failedRisks[0].note.includes("选手目标生成失败"));
+assert.strictEqual(failedRisks[0].label, "选手监控地址");
+assert.ok(failedRisks[0].note.includes("选手监控地址更新失败"));
+
+const topologyCopy = buildTopologyFindings([
+  { job: "infra-dist-ping", success: true, displayName: "stage1" }
+], []);
+assert.ok(topologyCopy.some((item) => item.note === "未找到核心交换机监控数据，请检查基础配置。"));
+assert.ok(topologyCopy.some((item) => item.note === "未找到防火墙监控数据，请检查基础配置。"));
+assert.ok(topologyCopy.some((item) => (
+  item.label === "LLDP 链路" && item.note === "尚未发现邻居链路，当前显示示意连接；请检查 LLDP/SNMP。"
+)));
 
 const riskyConfig = `
 logging host 192.168.41.253

@@ -285,8 +285,7 @@ async function main() {
   await precheckError.document.getElementById('preCheckBtn').dispatch('click');
   assert.strictEqual(precheckError.document.getElementById('preCheckResult').textContent, '体检失败：request timeout');
 
-  // Test-alert keeps the existing channel/fallback wording, busy state, and
-  // error presentation without affecting the other Delivery actions.
+  // Test-alert keeps request behavior while presenting operator-facing outcomes.
   const alertPending = deferred();
   const alert = createHarness({
     postPlatform: (path) => path === '/test-alert' ? alertPending.promise : { ok: true }
@@ -302,8 +301,22 @@ async function main() {
   await alertClick;
   assert.strictEqual(alertBtn.disabled, false);
   assert.strictEqual(alertResult.className, 'test-alert-result warn');
-  assert.strictEqual(alertResult.textContent, '已通过 Webhook 回退发送；自建应用失败：app credential invalid');
+  assert.strictEqual(alertResult.textContent, '已发送，请到飞书群确认。');
   assert.deepStrictEqual(alert.postCalls[0], { path: '/test-alert', payload: {} });
+
+  const dryRun = createHarness({ postPlatform: async () => ({ ok: true, dryRun: true, channel: 'dry-run' }) });
+  dryRun.panel.render();
+  await settle();
+  await dryRun.document.getElementById('testAlertBtn').dispatch('click');
+  assert.strictEqual(dryRun.document.getElementById('testAlertResult').textContent, '测试模式，未实际发送。');
+
+  const explicitFailure = createHarness({
+    postPlatform: async () => ({ ok: false, error: 'missing permission' })
+  });
+  explicitFailure.panel.render();
+  await settle();
+  await explicitFailure.document.getElementById('testAlertBtn').dispatch('click');
+  assert.strictEqual(explicitFailure.document.getElementById('testAlertResult').textContent, '发送失败：missing permission');
 
   const alertError = createHarness({
     postPlatform: (path) => {
@@ -314,7 +327,7 @@ async function main() {
   alertError.panel.render();
   await settle();
   await alertError.document.getElementById('testAlertBtn').dispatch('click');
-  assert.strictEqual(alertError.document.getElementById('testAlertResult').textContent, '失败：send timeout');
+  assert.strictEqual(alertError.document.getElementById('testAlertResult').textContent, '暂时无法确认是否发送成功，请先到飞书群查看。');
   assert.strictEqual(alertError.document.getElementById('testAlertResult').className, 'test-alert-result bad');
 
   // Pending-device refresh supports dynamic payloads without rebuilding the

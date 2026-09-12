@@ -43,11 +43,11 @@
     const url = `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}`;
     const response = await fetchWithTimeout(url, { cache: "no-store" });
     if (!response.ok) {
-      throw new Error(`Prometheus HTTP ${response.status}`);
+      throw new Error(`监控数据查询失败（HTTP ${response.status}）`);
     }
     const payload = await response.json();
     if (payload.status !== "success") {
-      throw new Error("Prometheus query failed");
+      throw new Error("监控数据查询失败，请稍后再试。");
     }
     return payload.data.result
       .map((item) => ({
@@ -63,11 +63,11 @@
     const url = `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}`;
     const response = await fetchWithTimeout(url, { cache: "no-store" });
     if (!response.ok) {
-      throw new Error(`Prometheus HTTP ${response.status}`);
+      throw new Error(`监控数据查询失败（HTTP ${response.status}）`);
     }
     const payload = await response.json();
     if (payload.status !== "success") {
-      throw new Error("Prometheus query failed");
+      throw new Error("监控数据查询失败，请稍后再试。");
     }
     return payload.data.result
       .map((item) => ({
@@ -84,11 +84,11 @@
     });
     const response = await fetchWithTimeout(`${prometheusBaseUrl()}/api/v1/query_range?${params.toString()}`, { cache: "no-store" });
     if (!response.ok) {
-      throw new Error(`Prometheus range HTTP ${response.status}`);
+      throw new Error(`历史监控数据查询失败（HTTP ${response.status}）`);
     }
     const payload = await response.json();
     if (payload.status !== "success") {
-      throw new Error("Prometheus range query failed");
+      throw new Error("历史监控数据查询失败，请稍后再试。");
     }
     return payload.data.result
       .map((item) => ({
@@ -656,7 +656,7 @@
     }, options.timeoutMs || 15000);
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      const error = new Error((payload && payload.error) || `Platform API HTTP ${response.status}`);
+      const error = new Error((payload && payload.error) || `服务请求失败（HTTP ${response.status}）`);
       error.status = response.status;
       error.payload = payload;
       throw error;

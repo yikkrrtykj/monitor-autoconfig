@@ -151,7 +151,7 @@
                         ? `排除地址已发现${arpDetails.get(ip) ? ` · ${arpDetails.get(ip)}` : bindingDetails.get(ip) ? ` · ${bindingDetails.get(ip)}` : ""}`
                       : status === "excluded" ? "排除地址（当前租约和 ARP 表均未发现）" : status === "used"
                       ? `已租用${bindingDetails.get(ip) ? ` · ${bindingDetails.get(ip)}` : ""}`
-                      : (bindingPayload ? "未在当前租约表中" : "池内（点击“查询已用 IP”后标色）");
+                      : (bindingPayload ? "未在当前租约表中" : "地址池内；等待租约信息，可点击“刷新租约 / ARP”。");
                     return `<span class="dhcp-address-cell ${status}" title="${escapeHtml(`${ip} · ${statusText}`)}" aria-label="${escapeHtml(`${ip} ${statusText}`)}">${escapeHtml(label)}</span>`;
                   }).join("")}
                 </div>
@@ -171,14 +171,14 @@
         ? new Date(payload.capturedAt * 1000).toLocaleTimeString("zh-CN", { hour12: false })
         : "—";
       const refreshSeconds = Number(payload.refreshSeconds || 60);
-      setText("dhcpConnection", `${payload.host || "—"} · 读取自基础配置 · ${refreshSeconds} 秒刷新`);
+      setText("dhcpConnection", `${payload.host || "—"} · 每 ${refreshSeconds} 秒更新`);
 
       const status = document.getElementById("dhcpStatus");
       if (status) {
         status.className = "dhcp-status good";
         status.textContent = payload.refreshing
           ? `正在刷新，当前显示上次结果 · 采集于 ${captured}`
-          : `${payload.cached ? `使用 ${Number(payload.cacheAgeSeconds || 0).toFixed(0)} 秒内缓存` : `已从核心交换机刷新（${Number(payload.collectionSeconds || 0).toFixed(2)} 秒）`} · 采集于 ${captured}`;
+          : `${payload.cached ? `当前显示 ${Number(payload.cacheAgeSeconds || 0).toFixed(0)} 秒前的结果` : "已更新"} · 更新时间 ${captured}`;
       }
 
       const utilization = Number(summary.utilization || 0);
@@ -238,7 +238,7 @@
           const expected = (dhcpLastPayload && dhcpLastPayload.pools || [])
             .reduce((sum, pool) => sum + Number(pool.leased || 0), 0);
           const statusText = returned === 0 && expected > 0
-            ? `交换机统计已租用 ${expected} 个，但租约明细未解析；${payload.parserWarning || "请重试或检查命令输出"}`
+            ? `交换机统计有 ${expected} 个已租地址，但暂时无法显示租约明细。`
             : `DHCP 租约（绿色）${returned} 个 · 排除且已发现（蓝色）${reservedUsed} 个 · ${captured}`;
           status.textContent = payload.arpWarning ? `${statusText} · ${payload.arpWarning}` : statusText;
         }

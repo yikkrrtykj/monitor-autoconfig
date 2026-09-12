@@ -40,6 +40,9 @@ async function main() {
   const runningView = applyRecoveryRenderPayload(stillRunning, "apply");
   assert.strictEqual(runningView.pending, true);
   assert.notStrictEqual(runningView.ok, false, "running task must not render as a failure");
+  assert.strictEqual(runningView.pendingLabel, "应用配置");
+  assert.strictEqual(runningView.pendingNote, "配置仍在应用中，请勿重复提交；可稍后刷新查看结果。");
+  assert.ok(!JSON.stringify(runningView).includes("web-apply-running"));
 
   // A backend deadline extends a short local fallback, so a terminal status
   // arriving after the original browser window is still recovered.
@@ -74,10 +77,9 @@ async function main() {
     fakeRecoveryOptions([{ ok: false, state: "unavailable" }])
   );
   assert.strictEqual(unknown.outcome, "unknown");
-  assert.strictEqual(
-    applyRecoveryRenderPayload(unknown, "apply").errorTitle,
-    "无法确认应用结果"
-  );
+  const unknownView = applyRecoveryRenderPayload(unknown, "apply");
+  assert.strictEqual(unknownView.errorTitle, "无法确认应用结果");
+  assert.strictEqual(unknownView.error, "暂时无法确认应用结果，请刷新后查看。");
 
   console.log("bigscreen apply recovery tests passed");
 }

@@ -178,31 +178,31 @@
         headline = `
           <div class="control-apply-next good">
             <strong>↩ 回滚并应用完成</strong>
-            <span>配置与 .env 已恢复到同一个历史版本，相关服务已重新验证。</span>
+            <span>配置已恢复到历史版本，相关服务已通过检查。</span>
           </div>`;
       } else if (payload.applied) {
         headline = `
           <div class="control-apply-next good">
             <strong>🚀 应用完成</strong>
-            <span>配置已写入 .env，相关容器已重启生效。</span>
+            <span>配置已应用，相关服务已恢复。</span>
           </div>`;
       } else if (payload.needsRedeploy) {
         headline = `
           <div class="control-apply-next warn">
             <strong>已保存，待应用</strong>
-            <span>.env 已更新；点“应用配置”重启相关容器后才会生效。</span>
+            <span>配置已保存，点击“应用配置”后生效。</span>
           </div>`;
       } else if (payload.action === "save") {
         headline = `
           <div class="control-apply-next good">
             <strong>💾 已保存</strong>
-            <span>event-config.yml 已保存。点“应用配置”生成 .env 并让服务重启生效。</span>
+            <span>配置已保存，点击“应用配置”后生效。</span>
           </div>`;
       } else if (payload.action === "rollback") {
         headline = `
           <div class="control-apply-next warn">
             <strong>↩ 已恢复文件，等待部署</strong>
-            <span>配置与 .env 已成对恢复；当前环境关闭了自动应用，需要手动部署。</span>
+            <span>历史配置已恢复，尚未生效；请联系管理员完成部署。</span>
           </div>`;
       } else if (issues.length) {
         headline = "";
@@ -413,7 +413,7 @@
           <div class="config-fields">
             ${configInput("devices.core.ip", "核心 IP")}
             ${configInput("devices.firewall.ip", "防火墙 IP", { type: "textarea", compact: true, rows: 1, placeholder: "可留空；多台逗号或换行分隔" })}
-            ${configInput("devices.firewall.name", "防火墙名称（可选）", { placeholder: "大屏/拓扑显示名；留空用设备 SNMP sysName" })}
+            ${configInput("devices.firewall.name", "防火墙名称（可选）", { placeholder: "大屏/拓扑显示名；留空使用设备名称" })}
             ${configInput("devices.firewall.unit_snmp", "物理防火墙 SNMP IP", { type: "textarea", compact: true, rows: 1, placeholder: "两台物理防火墙，逗号或换行分隔" })}
           </div>
           ${controlDhcpSettingsMarkup()}
@@ -423,15 +423,15 @@
             <h3>赛事交换机（赛事项目必填）</h3>
             <p class="config-section-note">这里只填本项目承载选手电脑的交换机，例如 192.168.10.45、192.168.10.46。它们组成赛事白名单，用于座位识别和选手监控；普通管理网段里的其它交换机不会混入赛事控制台。</p>
             ${configListRows("stage_switches", lastEditableConfig.devices.stage_switches, [
-              { key: "name", label: "名称", placeholder: "可留空，默认用 SNMP hostname" },
+              { key: "name", label: "名称", placeholder: "留空使用设备名称" },
               { key: "ip", label: "管理地址", placeholder: "赛事交换机 IP" }
             ])}
           </section>
           <section class="config-section">
             <h3>固定普通交换机（选填）</h3>
-            <p class="config-section-note">一般留空，系统会从“普通交换机自动发现范围”识别其它接入交换机。这里只在需要固定显示名称时填写；这些设备只进入通用大屏、拓扑和 LibreNMS，不参与选手座位识别。</p>
+            <p class="config-section-note">一般留空，系统会从“普通交换机自动发现范围”识别其它接入交换机。这里只在需要固定显示名称时填写；这些设备用于网络监控和拓扑展示，不参与选手座位识别。</p>
             ${configListRows("access_switches", lastEditableConfig.devices.access_switches, [
-              { key: "name", label: "名称", placeholder: "可留空，默认用 SNMP hostname" },
+              { key: "name", label: "名称", placeholder: "留空使用设备名称" },
               { key: "ip", label: "管理地址", placeholder: "可留空" }
             ])}
           </section>
@@ -462,7 +462,7 @@
             ${configInput("unifi.enabled", "启用 UniFi", { type: "checkbox" })}
             ${configInput("unifi.controller_url", "UniFi 地址", { placeholder: "https://控制器IP" })}
             ${configInput("unifi.user", "UniFi 用户")}
-            ${configInput("unifi.password", "UniFi 密码", { inputType: "password", placeholder: "留空则保留 .env 现有值" })}
+            ${configInput("unifi.password", "UniFi 密码", { inputType: "password", placeholder: "留空保留已保存的密码" })}
             ${configInput("unifi.sites", "UniFi Sites", { placeholder: "all" })}
             ${configInput("unifi.verify_ssl", "校验 UniFi 证书", { type: "checkbox" })}
           </div>

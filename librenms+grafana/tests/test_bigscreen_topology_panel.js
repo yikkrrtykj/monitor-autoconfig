@@ -284,7 +284,7 @@ assert.strictEqual(canvas.svg.getAttribute('viewBox'), '0 0 800 500', 'full rend
 panel.updateStatus(edges);
 assert.ok(updated.textContent.startsWith('刷新于 '), 'updated timestamp keeps its existing prefix');
 assert.ok(updated.textContent.includes('拖动平移·滚轮缩放·双击复位'));
-assert.ok(updated.textContent.endsWith('LLDP 1 条边'));
+assert.ok(updated.textContent.endsWith('LLDP 1 条链路'));
 panel.updateStatus([]);
 assert.ok(updated.textContent.endsWith('LLDP 未发现邻居'));
 

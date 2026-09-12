@@ -107,6 +107,24 @@ global.fetch = async (url) => {
   assert.strictEqual(series.length, 1);
   assert.strictEqual(series[0].values[series[0].values.length - 1].v, 0.003);
 
+  global.fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
+  await assert.rejects(api.prometheusQuery("q"), /监控数据查询失败（HTTP 503）/);
+  await assert.rejects(
+    api.prometheusRangeFor("q", { start: 1, end: 2, step: 1 }),
+    /历史监控数据查询失败（HTTP 503）/
+  );
+  await assert.rejects(api.postPlatform("/fixture", {}), /服务请求失败（HTTP 503）/);
+
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({ status: "error", data: { result: [] } })
+  });
+  await assert.rejects(api.prometheusQuery("q"), /监控数据查询失败，请稍后再试。/);
+  await assert.rejects(
+    api.prometheusRangeFor("q", { start: 1, end: 2, step: 1 }),
+    /历史监控数据查询失败，请稍后再试。/
+  );
+
   Date.now = realDateNow;
   console.log("bigscreen api cache tests passed");
 })().catch((error) => {

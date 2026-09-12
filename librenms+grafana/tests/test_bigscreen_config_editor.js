@@ -519,7 +519,7 @@ async function testConfigActionsAndStickyResult() {
   await clickAction(save, 'controlConfigSave');
   assert.strictEqual(save.form.dataset.dirty, undefined, 'successful save clears ordinary dirty');
   assert.strictEqual(save.refreshCalls.length, 1);
-  assert.match(save.result.innerHTML, /已保存/);
+  assert.match(save.result.innerHTML, /配置已保存，点击“应用配置”后生效。/);
 
   const failed = createHarness({ postPlatform: async () => { throw new Error('save unavailable'); } });
   failed.editor.bind();
@@ -588,6 +588,7 @@ async function testApplyRollbackAndRecovery() {
   await applyClick;
   assert.strictEqual(apply.editor.isApplyInProgress(), false);
   assert.strictEqual(apply.refreshCalls.length, 1);
+  assert.match(apply.result.innerHTML, /配置已应用，相关服务已恢复。/);
   assert.strictEqual(configPosts(apply, '/config/apply')[0].options.timeoutMs, 180000);
   assert.ok(configPosts(apply, '/config/apply')[0].payload.operationId);
 
@@ -602,6 +603,7 @@ async function testApplyRollbackAndRecovery() {
   pendingRollback.resolve(platformPayload(configFixture(), { applied: true }));
   await rollbackClick;
   assert.strictEqual(rollback.refreshCalls.length, 1);
+  assert.match(rollback.result.innerHTML, /配置已恢复到历史版本，相关服务已通过检查。/);
   assert.ok(configPosts(rollback, '/config/rollback')[0].payload.operationId);
   assert.strictEqual(rollback.confirmCalls.length, 0, 'apply and rollback do not introduce confirmation prompts');
 

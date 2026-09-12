@@ -161,8 +161,8 @@
         if (!currentIps.length) {
           lastEvidenceExport = null;
           renderNoData(document.getElementById("evidenceSummary"), `${playerLabel(team, seat, network)} 当前没有可查询的 IP`);
-          renderNoData(document.getElementById("evidenceLatencyChart"), "当前座位未生成监控目标");
-          renderNoData(document.getElementById("evidenceSuccessChart"), "当前座位未生成监控目标");
+          renderNoData(document.getElementById("evidenceLatencyChart"), "当前座位暂无可查询的监控地址。");
+          renderNoData(document.getElementById("evidenceSuccessChart"), "当前座位暂无可查询的监控地址。");
           return;
         }
         const latencyQuery = evidenceLatencyQuery(team, seat, network, currentIps);
