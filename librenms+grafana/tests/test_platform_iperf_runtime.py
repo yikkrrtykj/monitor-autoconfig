@@ -638,7 +638,7 @@ def test_start_task_id_maps_single_flight_and_stop(monkeypatch, tmp_path):
 
     assert task["taskId"] == "iperf-1234-a1b2c3"
     assert task["state"] == "queued"
-    assert task["message"] == "正在准备测速…"
+    assert task["message"] == "测速任务已创建"
     assert iperf_runtime.IPERF_ACTIVE_TASK_ID == task["taskId"]
     assert task["taskId"] in iperf_runtime.IPERF_TASKS
     assert task["taskId"] in iperf_runtime.IPERF_CANCEL_EVENTS

@@ -205,7 +205,7 @@ def test_create_enforces_count_and_event_limits_without_overwriting(monkeypatch,
     seed_incidents(context, [{"id": 1, "events": []}])
     before = context.incident_path.read_bytes()
     monkeypatch.setattr(incidents, "MAX_INCIDENTS", 1)
-    with pytest.raises(incidents.IncidentCapacityError, match="事故处理记录数量达到上限 1"):
+    with pytest.raises(incidents.IncidentCapacityError, match="事故数量达到上限 1"):
         incidents.new_incident(context, {})
     assert context.incident_path.read_bytes() == before
 
@@ -369,7 +369,7 @@ def test_legacy_over_limit_data_is_preserved_and_only_non_growth_updates_allowed
     with pytest.raises(incidents.IncidentCapacityError, match="事故处理记录数量超过上限 2"):
         incidents.update_incident(context, 3, {"event": "cannot grow"})
     assert context.incident_path.read_bytes() == before
-    with pytest.raises(incidents.IncidentCapacityError, match="事故处理记录数量达到上限 2"):
+    with pytest.raises(incidents.IncidentCapacityError, match="事故数量达到上限 2"):
         incidents.new_incident(context, {})
     assert context.incident_path.read_bytes() == before
 
@@ -593,7 +593,7 @@ def test_incident_http_distinguishes_storage_and_capacity_errors(monkeypatch, tm
     try:
         status, _, payload = request_raw(f"{base_url}/incidents", b"{}", method="POST")
         assert status == 409
-        assert payload == {"ok": False, "error": "事故处理记录数量达到上限 0，无法新建事故"}
+        assert payload == {"ok": False, "error": "事故数量达到上限 0，无法新建事故"}
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -613,7 +613,7 @@ def test_concurrent_http_creates_cannot_exceed_incident_limit(monkeypatch, tmp_p
         assert len(incidents.incident_list(api._incident_context())) == 1
         failed = next(payload for status, _, payload in results if status == 409)
         assert failed["ok"] is False
-        assert "事故处理记录数量达到上限 1" in failed["error"]
+        assert "事故数量达到上限 1" in failed["error"]
     finally:
         server.shutdown()
         thread.join(timeout=5)

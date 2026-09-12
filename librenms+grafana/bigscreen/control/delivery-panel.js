@@ -67,7 +67,7 @@
                 ? (res.dryRun
                   ? "测试模式，未实际发送。"
                   : "已发送，请到飞书群确认。")
-                : `发送失败：${(res && (res.appError || res.error)) || "未知错误"}`;
+                : `未确认发送成功：${(res && (res.appError || res.error)) || "未知错误"}`;
               result.className = `test-alert-result ${fellBack ? "warn" : ok ? "good" : "bad"}`;
             }
           } catch (error) {

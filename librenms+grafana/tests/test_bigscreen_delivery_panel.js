@@ -316,7 +316,19 @@ async function main() {
   explicitFailure.panel.render();
   await settle();
   await explicitFailure.document.getElementById('testAlertBtn').dispatch('click');
-  assert.strictEqual(explicitFailure.document.getElementById('testAlertResult').textContent, '发送失败：missing permission');
+  assert.strictEqual(explicitFailure.document.getElementById('testAlertResult').textContent, '未确认发送成功：missing permission');
+
+  const backendTimeout = createHarness({
+    postPlatform: async () => ({ ok: false, error: '无法连接告警服务：fixture timeout' })
+  });
+  backendTimeout.panel.render();
+  await settle();
+  await backendTimeout.document.getElementById('testAlertBtn').dispatch('click');
+  assert.strictEqual(
+    backendTimeout.document.getElementById('testAlertResult').textContent,
+    '未确认发送成功：无法连接告警服务：fixture timeout'
+  );
+  assert.strictEqual(backendTimeout.postCalls.length, 1);
 
   const alertError = createHarness({
     postPlatform: (path) => {

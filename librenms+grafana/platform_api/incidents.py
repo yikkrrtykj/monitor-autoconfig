@@ -122,7 +122,7 @@ def new_incident(context: IncidentContext, data: dict) -> dict:
     context.require_write()
     items = incident_list(context)
     if len(items) >= MAX_INCIDENTS:
-        raise IncidentCapacityError(f"事故处理记录数量达到上限 {MAX_INCIDENTS}，无法新建事故")
+        raise IncidentCapacityError(f"事故数量达到上限 {MAX_INCIDENTS}，无法新建事故")
     next_id = max([int(item.get("id", 0)) for item in items] or [0]) + 1
     now = int(context.clock())
     incident = {

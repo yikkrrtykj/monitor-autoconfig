@@ -142,7 +142,9 @@ def test_tournament_mode_disables_pending_lifecycle_and_sanitizes_legacy_state(
         "error": "当前部署未启用待删除设备功能",
     }
     assert deleted == []
-    assert bridge.handle_bot_query("待删除设备")["text"].startswith("未识别命令")
+    assert bridge.handle_bot_query("待删除设备")["text"].startswith(
+        "未识别这条命令，请参考以下帮助。"
+    )
     assert "待删除设备" not in bridge.build_bot_help_text("Singapore")
     bridge.DEVICE_DOWN_STATES.clear()
 

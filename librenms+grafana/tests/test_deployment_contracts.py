@@ -1325,8 +1325,8 @@ def test_iperf_controller_is_loaded_after_pure_helpers_and_owns_browser_state_ma
         assert token not in app
     assert "control/iperf-controller.js?v=20260912a" in index
     assert index.index("iperf.js?v=20260912a") < index.index("control/iperf-controller.js?v=20260912a")
-    assert index.index("control/iperf-controller.js?v=20260912a") < index.index("control/delivery-panel.js?v=20260911a")
-    assert index.index("control/delivery-panel.js?v=20260911a") < index.index("app.js?v=20260911a")
+    assert index.index("control/iperf-controller.js?v=20260912a") < index.index("control/delivery-panel.js?v=20260912b")
+    assert index.index("control/delivery-panel.js?v=20260912b") < index.index("app.js?v=20260911a")
 
 
 def test_delivery_panel_owns_operator_actions_and_mounts_existing_iperf_controller_once():
@@ -1367,9 +1367,9 @@ def test_delivery_panel_owns_operator_actions_and_mounts_existing_iperf_controll
     ):
         assert controller_token in controller
         assert controller_token not in panel
-    assert "control/delivery-panel.js?v=20260911a" in index
-    assert index.index("control/iperf-controller.js?v=20260912a") < index.index("control/delivery-panel.js?v=20260911a")
-    assert index.index("control/delivery-panel.js?v=20260911a") < index.index("control/auth-controller.js?v=20260908a")
+    assert "control/delivery-panel.js?v=20260912b" in index
+    assert index.index("control/iperf-controller.js?v=20260912a") < index.index("control/delivery-panel.js?v=20260912b")
+    assert index.index("control/delivery-panel.js?v=20260912b") < index.index("control/auth-controller.js?v=20260908a")
     assert index.index("control/auth-controller.js?v=20260908a") < index.index("app.js?v=20260911a")
 
 

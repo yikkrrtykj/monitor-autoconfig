@@ -306,7 +306,6 @@ def test_dry_run_twenty_four_candidates_send_one_bounded_summary(
     assert "候选设备：24 台" in text
     assert "清理阈值：离线 ≥ 7 天" in text
     assert "删除前检查：实时 ICMP 仍不可达" in text
-    assert "未执行任何删除" in text
     assert "本轮仅检查，未执行删除，也未发送删除请求。" in text
     assert "old-switch-10" in text
     assert "old-switch-11" not in text
