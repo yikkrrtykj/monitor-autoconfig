@@ -152,7 +152,7 @@ def _health_context() -> platform_health.HealthContext:
 
 def require_write() -> None:
     if not WRITE_ENABLED:
-        raise PermissionError("platform write endpoints are disabled")
+        raise PermissionError("当前环境不允许修改配置。")
 
 
 def _apply_runtime_context() -> platform_apply_runtime.ApplyRuntimeContext:

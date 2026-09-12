@@ -219,7 +219,7 @@ def test_command_not_found_preserves_error_payload(monkeypatch, tmp_path):
 
     assert apply_runtime.run_apply_command(context) == {
         "ok": False,
-        "error": "配置已写入，但自动应用失败：找不到 apply 命令",
+        "error": "配置已保存，但应用服务不可用，请联系管理员。",
         "needsRedeploy": True,
         "nextStep": "cd librenms+grafana && ./apply-env.sh",
         "applyOutput": "fixture command missing",
@@ -357,7 +357,7 @@ def test_successful_command_with_verify_failure_preserves_combined_diagnostic(
 
     assert apply_runtime.run_apply_command(context) == {
         "ok": False,
-        "error": "容器重建命令已完成，但关键服务未能恢复",
+        "error": "服务更新已执行，但关键服务尚未恢复，应用未完成。",
         "needsRedeploy": True,
         "nextStep": "cd librenms+grafana && ./apply-env.sh",
         "applyOutput": (

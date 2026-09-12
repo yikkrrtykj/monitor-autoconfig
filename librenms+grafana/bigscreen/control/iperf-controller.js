@@ -49,7 +49,7 @@
               <select id="iperfPublicServer"></select>
             </label>
             <label>服务器
-              <input id="iperfServer" type="text" placeholder="正在加载版本化节点配置" spellcheck="false" readonly />
+              <input id="iperfServer" type="text" placeholder="正在加载测速服务器" spellcheck="false" readonly />
             </label>
             <label>端口或范围
               <input id="iperfPorts" type="text" inputmode="numeric" spellcheck="false" readonly />
@@ -92,7 +92,7 @@
             <div class="iperf-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
               <i id="iperfProgressFill"></i>
             </div>
-            <span id="iperfProgressDetail">正在建立任务…</span>
+            <span id="iperfProgressDetail">正在准备测速…</span>
           </div>
           <div class="network-tool-result" id="iperfResult" hidden></div>
           <div class="network-tool-history" id="iperfHistory" aria-live="polite"></div>
@@ -236,7 +236,7 @@
           percent: 0,
           elapsedSeconds: 0,
           maxSeconds: 60,
-          message: "正在连接测速服务…"
+          message: "测速已开始，正在连接服务器…"
         });
         if (iperfStopBtn) iperfStopBtn.hidden = false;
         iperfProgressTimer = window.setInterval(refreshIperfProgress, 500);
@@ -249,14 +249,14 @@
         if (result) {
           result.hidden = false;
           result.className = "network-tool-result loading";
-          result.textContent = "正在创建独立测速任务……";
+          result.textContent = "正在准备测速…";
         }
         try {
           const response = await postPlatform("/network/iperf3", request, { timeoutMs: 10000 });
           activeIperfTaskId = response.taskId || "";
           if (!activeIperfTaskId) throw new Error("后端没有返回任务编号");
           window.sessionStorage.setItem(iperfTaskStorageKey, activeIperfTaskId);
-          if (result) result.textContent = `任务 ${activeIperfTaskId} 已开始，正在寻找可用端口……`;
+          if (result) result.textContent = "测速已开始，正在连接服务器…";
           startIperfProgress();
           await refreshIperfProgress();
         } catch (error) {
@@ -264,7 +264,7 @@
           if (error.status === 409 && runningTaskId) {
             activeIperfTaskId = runningTaskId;
             window.sessionStorage.setItem(iperfTaskStorageKey, activeIperfTaskId);
-            if (result) result.textContent = `任务 ${activeIperfTaskId} 正在运行，已连接到该任务。`;
+            if (result) result.textContent = "已连接到正在进行的测速。";
             startIperfProgress();
             await refreshIperfProgress();
             return;
@@ -334,7 +334,7 @@
           iperfStopBtn.disabled = true;
           try {
             await postPlatform("/network/iperf3/stop", { taskId: activeIperfTaskId }, { timeoutMs: 5000 });
-            if (iperfProgressDetail) iperfProgressDetail.textContent = "正在停止测速进程……";
+            if (iperfProgressDetail) iperfProgressDetail.textContent = "正在停止测速…";
           } catch (error) {
             if (iperfProgressDetail) iperfProgressDetail.textContent = `停止失败：${error.message}`;
           } finally {

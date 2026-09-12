@@ -214,12 +214,12 @@ def test_parse_iperf3_json_keeps_prefix_suffix_recovery():
 
 @pytest.mark.parametrize("raw", ["[]", "42", '"text"'])
 def test_parse_iperf3_json_keeps_non_object_error(raw):
-    with pytest.raises(ValueError, match="^iperf3 返回的 JSON 不是对象$"):
+    with pytest.raises(ValueError, match="^测速服务返回的数据格式不正确。$"):
         iperf.parse_iperf3_json(raw)
 
 
 def test_parse_iperf3_json_keeps_invalid_json_error():
-    with pytest.raises(ValueError, match="^iperf3 未返回可解析的 JSON$"):
+    with pytest.raises(ValueError, match="^测速服务返回的数据无法读取。$"):
         iperf.parse_iperf3_json("not json")
 
 

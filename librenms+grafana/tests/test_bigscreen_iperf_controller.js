@@ -271,6 +271,8 @@ async function main() {
   assert.strictEqual(mounted.container.insertions[0].position, 'beforeend');
   assert.match(mounted.container.insertions[0].html, /id="iperfPreset"/);
   assert.match(mounted.container.insertions[0].html, /id="iperfProgress"/);
+  assert.match(mounted.container.insertions[0].html, /placeholder="正在加载测速服务器"/);
+  assert.match(mounted.container.insertions[0].html, />正在准备测速…<\/span>/);
   assert.strictEqual(mounted.serverConfigCalls.length, 1);
   assert.strictEqual(mounted.historyCalls.length, 1);
   assert.strictEqual(mounted.document.getElementById('iperfRunBtn').listenerCount('click'), 1);
@@ -312,6 +314,8 @@ async function main() {
     options: { timeoutMs: 10000 }
   });
   assert.strictEqual(success.storage.get('bigscreen.iperfTaskId'), 'task-1');
+  assert.strictEqual(success.document.getElementById('iperfResult').textContent, '测速已开始，正在连接服务器…');
+  assert.ok(!success.document.getElementById('iperfResult').textContent.includes('task-1'));
   assert.deepStrictEqual(success.statusCalls, ['task-1']);
   assert.strictEqual(success.intervals.size, 1);
   assert.strictEqual([...success.intervals.values()][0].delay, 500);
@@ -352,7 +356,11 @@ async function main() {
   assert.strictEqual(reconnect.storage.get('bigscreen.iperfTaskId'), 'task-existing');
   assert.deepStrictEqual(reconnect.statusCalls, ['task-existing']);
   assert.strictEqual(reconnect.intervals.size, 1);
-  assert.match(reconnect.document.getElementById('iperfResult').textContent, /已连接到该任务/);
+  assert.strictEqual(
+    reconnect.document.getElementById('iperfResult').textContent,
+    '已连接到正在进行的测速。'
+  );
+  assert.ok(!reconnect.document.getElementById('iperfResult').textContent.includes('task-existing'));
 
   const invalidConflict = new Error('conflict without task');
   invalidConflict.status = 409;
@@ -424,7 +432,7 @@ async function main() {
   });
   assert.strictEqual(stopping.intervals.size, 1);
   assert.strictEqual(stopping.storage.get('bigscreen.iperfTaskId'), 'task-1');
-  assert.strictEqual(stopping.document.getElementById('iperfProgressDetail').textContent, '正在停止测速进程……');
+  assert.strictEqual(stopping.document.getElementById('iperfProgressDetail').textContent, '正在停止测速…');
   await stoppingTimer.handler();
   await settle();
   assert.strictEqual(stopping.intervals.size, 0);

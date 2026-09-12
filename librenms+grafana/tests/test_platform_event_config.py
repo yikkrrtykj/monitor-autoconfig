@@ -133,10 +133,7 @@ def test_write_guard_refuses_future_schema_with_exact_semantics(tmp_path):
     payload = event_config.current_config_write_guard(context)
 
     assert payload["ok"] is False
-    assert payload["error"] == (
-        "Refusing to modify schema 2; software supports schema 1. "
-        "Upgrade the monitoring platform first."
-    )
+    assert payload["error"] == "配置版本 2 高于当前软件支持的版本 1，请先升级平台。"
     assert payload["config"]["future_runtime"]["preserve_me"] is True
     assert payload["writeEnabled"] is False
     assert payload["configSchemaOriginal"] == 2
@@ -193,10 +190,7 @@ def test_future_schema_is_read_only_but_preserves_existing_read_contract(
     assert payload["normalizedText"] == ""
     assert payload["env"] == {}
     assert payload["writeEnabled"] is False
-    assert payload["error"] == (
-        "event-config schema 2 is newer than supported schema 1; "
-        "upgrade the monitoring platform first"
-    )
+    assert payload["error"] == "配置版本 2 高于当前软件支持的版本 1，请先升级平台。"
 
 
 def test_legacy_schema_migrates_and_preserves_unknown_fields_and_secret(tmp_path):

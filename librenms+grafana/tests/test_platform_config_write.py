@@ -106,11 +106,40 @@ def test_save_validation_failure_writes_nothing(tmp_path):
     )
 
     assert result["ok"] is False
+    assert result["error"] == "配置验证未通过，请检查配置内容。"
     assert result["configTooNew"] is True
     assert api.CONFIG_PATH.read_bytes() == original_config
     assert api.ENV_PATH.read_bytes() == original_env
     assert not list(api.TRANSACTION_DIR.iterdir())
     assert not (api.STATE_DIR / "history.json").exists()
+
+    applied = config_write.apply_config(
+        api._config_write_context(), incoming, "admin", "apply", "apply-copy-invalid",
+    )
+    assert applied["ok"] is False
+    assert applied["error"] == "配置验证未通过，请检查配置内容。"
+    assert applied["operationId"] == "apply-copy-invalid"
+
+
+def test_write_disabled_and_missing_rollback_copy_is_user_facing(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    seed(api)
+    disabled = replace(api._config_write_context(), write_enabled=False)
+
+    with pytest.raises(PermissionError, match="^当前环境不允许修改配置。$"):
+        config_write.save_config(disabled, config_text("new"))
+
+    monkeypatch.setattr(
+        config_write.config_transaction, "list_config_snapshots", lambda _context: [],
+    )
+    result = config_write.rollback_config(
+        api._config_write_context(), operation_id="rollback-copy-empty",
+    )
+    assert result == {
+        "ok": False,
+        "operationId": "rollback-copy-empty",
+        "error": "没有可用的完整历史配置，无法回滚。",
+    }
 
 
 def test_apply_success_preserves_status_files_and_payload(monkeypatch, tmp_path):

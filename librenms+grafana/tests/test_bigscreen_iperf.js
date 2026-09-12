@@ -50,7 +50,8 @@ const complete = iperf.resultView({
   }]
 }, escapeHtml);
 assert.strictEqual(complete.className, "network-tool-result good");
-assert.ok(complete.html.includes("iperf-1-safe"));
+assert.ok(!complete.html.includes("iperf-1-safe"));
+assert.ok(complete.html.includes("TCP · 服务器 speed.example.test · 4 路并发 · 单向 10 秒"));
 assert.ok(complete.html.includes("接收端全程平均 950.00 Mbps"));
 assert.ok(complete.html.includes("TCP 重传"));
 

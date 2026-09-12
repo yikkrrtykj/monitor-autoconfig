@@ -393,7 +393,7 @@ def test_direction_maps_file_not_found(monkeypatch, tmp_path):
     assert_error(
         exc,
         HTTPStatus.SERVICE_UNAVAILABLE,
-        "找不到 iPerf3 客户端，请重新运行 deploy.sh 构建 platform-api 镜像",
+        "测速组件不可用，请联系管理员检查服务安装。",
     )
 
 
@@ -427,7 +427,7 @@ def test_direction_retries_timeout_parser_and_process_errors(monkeypatch, tmp_pa
     assert_error(
         exc,
         HTTPStatus.BAD_GATEWAY,
-        "iperf3 测速失败：5201: 超时；5202: iperf3 未返回可解析的 JSON；5203: 无法连接",
+        "iperf3 测速失败：5201: 超时；5202: 测速服务返回的数据无法读取。；5203: 无法连接",
     )
 
 
@@ -638,6 +638,7 @@ def test_start_task_id_maps_single_flight_and_stop(monkeypatch, tmp_path):
 
     assert task["taskId"] == "iperf-1234-a1b2c3"
     assert task["state"] == "queued"
+    assert task["message"] == "正在准备测速…"
     assert iperf_runtime.IPERF_ACTIVE_TASK_ID == task["taskId"]
     assert task["taskId"] in iperf_runtime.IPERF_TASKS
     assert task["taskId"] in iperf_runtime.IPERF_CANCEL_EVENTS
@@ -657,7 +658,7 @@ def test_start_task_id_maps_single_flight_and_stop(monkeypatch, tmp_path):
         "ok": True,
         "taskId": task["taskId"],
         "state": "stopping",
-        "message": "正在停止测速",
+        "message": "正在停止测速…",
     }
     assert iperf_runtime.IPERF_CANCEL_EVENTS[task["taskId"]].is_set()
 

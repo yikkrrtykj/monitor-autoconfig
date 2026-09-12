@@ -25,7 +25,7 @@ class ConfigWriteContext:
 
 def _require_write(context: ConfigWriteContext) -> None:
     if not context.write_enabled:
-        raise PermissionError("platform write endpoints are disabled")
+        raise PermissionError("当前环境不允许修改配置。")
 
 
 def save_config(
@@ -48,7 +48,7 @@ def save_config(
         return {
             **payload,
             "ok": False,
-            "error": "config has blocking validation errors",
+            "error": "配置验证未通过，请检查配置内容。",
         }
     snapshot = config_transaction.create_config_snapshot(
         context.transaction_context, "config.save", actor, note,
@@ -114,7 +114,7 @@ def apply_config(
             result = {
                 **payload,
                 "ok": False,
-                "error": "config has blocking validation errors",
+                "error": "配置验证未通过，请检查配置内容。",
                 "operationId": operation_id,
             }
             config_transaction.write_apply_status(
@@ -284,7 +284,7 @@ def rollback_config(
         context.transaction_context,
     )
     if not snapshots:
-        error_message = "没有可用的一致性配置快照；旧版分散备份不会自动混合回滚"
+        error_message = "没有可用的完整历史配置，无法回滚。"
         config_transaction.write_apply_status(
             context.transaction_context,
             operation_id,

@@ -41,33 +41,33 @@ def incident_list(context: IncidentContext) -> list[dict]:
     except FileNotFoundError:
         return []
     except OSError as exc:
-        raise IncidentStorageError("事故存储不可读取，需要人工处理") from exc
+        raise IncidentStorageError("事故记录无法读取，需要管理员处理") from exc
     if len(raw) > MAX_INCIDENT_FILE_BYTES:
         raise IncidentStorageError(
-            f"事故存储文件超过 {MAX_INCIDENT_FILE_BYTES} 字节读取上限，需要人工处理"
+            f"事故记录总大小超过上限 {MAX_INCIDENT_FILE_BYTES} 字节，需要管理员处理"
         )
     try:
         items = json.loads(raw.decode("utf-8"))
     except UnicodeDecodeError as exc:
-        raise IncidentStorageError("事故存储损坏：不是有效 UTF-8，需要人工处理") from exc
+        raise IncidentStorageError("事故记录格式损坏，需要管理员处理") from exc
     except json.JSONDecodeError as exc:
-        raise IncidentStorageError("事故存储损坏：不是有效 JSON，需要人工处理") from exc
+        raise IncidentStorageError("事故记录格式损坏，需要管理员处理") from exc
     if not isinstance(items, list):
-        raise IncidentStorageError("事故存储损坏：JSON 根节点必须是列表，需要人工处理")
+        raise IncidentStorageError("事故记录格式损坏：内容结构无效，需要管理员处理")
     for index, item in enumerate(items):
         if not isinstance(item, dict):
             raise IncidentStorageError(
-                f"事故存储损坏：第 {index + 1} 条记录不是对象，需要人工处理"
+                f"事故记录格式损坏：第 {index + 1} 条记录内容无效，需要管理员处理"
             )
         try:
             int(item.get("id", 0))
         except (TypeError, ValueError) as exc:
             raise IncidentStorageError(
-                f"事故存储损坏：第 {index + 1} 条记录 ID 无效，需要人工处理"
+                f"事故记录格式损坏：第 {index + 1} 条记录 ID 无效，需要管理员处理"
             ) from exc
         if "events" in item and not isinstance(item["events"], list):
             raise IncidentStorageError(
-                f"事故存储损坏：第 {index + 1} 条记录 events 不是列表，需要人工处理"
+                f"事故记录格式损坏：第 {index + 1} 条事故处理记录格式无效，需要管理员处理"
             )
     return items
 
@@ -88,21 +88,21 @@ def _validate_growth(current: int, candidate: int, limit: int, label: str) -> No
 def _validate_candidate(items: list[dict], incident: dict, previous: dict | None = None) -> None:
     events = incident.get("events", [])
     if not isinstance(events, list):
-        raise IncidentCapacityError("事故 events 必须是列表")
+        raise IncidentCapacityError("事故处理记录格式无效")
     previous_events = previous.get("events", []) if previous is not None else []
     _validate_growth(
         len(previous_events), len(events), MAX_EVENTS_PER_INCIDENT,
-        "事故 events 数量",
+        "事故处理记录数量",
     )
     _validate_growth(
         _serialized_size(previous) if previous is not None else 0,
         _serialized_size(incident), MAX_INCIDENT_BYTES,
-        "单条事故序列化字节数",
+        "单条事故数据大小（字节）",
     )
     file_size = _serialized_size(items)
     if file_size > MAX_INCIDENT_FILE_BYTES:
         raise IncidentCapacityError(
-            f"事故存储候选文件序列化字节数超过上限 {MAX_INCIDENT_FILE_BYTES}"
+            f"事故记录总大小超过上限 {MAX_INCIDENT_FILE_BYTES}"
         )
 
 
@@ -122,7 +122,7 @@ def new_incident(context: IncidentContext, data: dict) -> dict:
     context.require_write()
     items = incident_list(context)
     if len(items) >= MAX_INCIDENTS:
-        raise IncidentCapacityError(f"事故数量达到上限 {MAX_INCIDENTS}，无法新建事故")
+        raise IncidentCapacityError(f"事故处理记录数量达到上限 {MAX_INCIDENTS}，无法新建事故")
     next_id = max([int(item.get("id", 0)) for item in items] or [0]) + 1
     now = int(context.clock())
     incident = {

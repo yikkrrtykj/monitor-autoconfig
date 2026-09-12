@@ -86,9 +86,8 @@ def current_config_write_guard(context: EventConfigContext) -> dict | None:
         return _schema_error_payload(f"Cannot modify event config: {exc}")
     if status["config_too_new"]:
         message = (
-            f"Refusing to modify schema {status['original_version']}; "
-            f"software supports schema {status['current_supported']}. "
-            "Upgrade the monitoring platform first."
+            f"配置版本 {status['original_version']} 高于当前软件支持的版本 "
+            f"{status['current_supported']}，请先升级平台。"
         )
         return {**_schema_error_payload(message, config), **_schema_response(status)}
     return None
@@ -167,8 +166,8 @@ def config_payload(context: EventConfigContext, text: str | None = None) -> dict
         }
     if schema["config_too_new"]:
         message = (
-            f"event-config schema {schema['original_version']} is newer than supported "
-            f"schema {schema['current_supported']}; upgrade the monitoring platform first"
+            f"配置版本 {schema['original_version']} 高于当前软件支持的版本 "
+            f"{schema['current_supported']}，请先升级平台。"
         )
         return {
             **_schema_error_payload(message, config),

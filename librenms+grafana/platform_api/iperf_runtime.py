@@ -269,7 +269,7 @@ def _run_iperf_direction(
         except FileNotFoundError:
             raise context.error_factory(
                 HTTPStatus.SERVICE_UNAVAILABLE,
-                "找不到 iPerf3 客户端，请重新运行 deploy.sh 构建 platform-api 镜像",
+                "测速组件不可用，请联系管理员检查服务安装。",
             )
         except subprocess.TimeoutExpired:
             attempts.append(f"{port}: 超时")
@@ -375,7 +375,7 @@ def run_iperf_test(
         # One cap covers the entire task. A blocked public node must not consume
         # the timeout once for upload and then a second time for download.
         maxSeconds=context.timeout,
-        message="正在准备测速",
+        message="正在准备测速…",
         taskId=task_id or None,
     )
     try:
@@ -587,5 +587,5 @@ def stop_iperf_task(context: IperfRuntimeContext, data: dict) -> dict:
         "ok": True,
         "taskId": task_id,
         "state": "stopping",
-        "message": "正在停止测速",
+        "message": "正在停止测速…",
     }

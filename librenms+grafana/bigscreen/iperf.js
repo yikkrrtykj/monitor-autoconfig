@@ -71,7 +71,7 @@
             <div><span>${labels[item.direction] || escapeHtml(item.direction)} · 接收端平均</span><strong>${Number(item.mbps || 0).toFixed(2)} Mbps</strong><small>${formatBytes(item.bytes)} · 端口 ${Number(item.port) || "?"} · 重传 ${Number(item.retransmits || 0)}</small></div>
           `).join("")}
         </div>
-        <p class="network-result-note">任务 ${escapeHtml(response.taskId || "-")} · ${escapeHtml(protocol)} · 服务器 ${escapeHtml(response.server)} · ${Number(response.parallel) || "?"} 路并发 · 单向 ${Number(response.duration) || "?"} 秒</p>
+        <p class="network-result-note">${escapeHtml(protocol)} · 服务器 ${escapeHtml(response.server)} · ${Number(response.parallel) || "?"} 路并发 · 单向 ${Number(response.duration) || "?"} 秒</p>
         <div class="iperf-direction-details">
           ${(response.results || []).map((item) => directionDetails(item, protocol, escapeHtml)).join("")}
         </div>

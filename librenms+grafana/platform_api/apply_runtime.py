@@ -156,7 +156,7 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
     except FileNotFoundError as exc:
         return {
             "ok": False,
-            "error": "配置已写入，但自动应用失败：找不到 apply 命令",
+            "error": "配置已保存，但应用服务不可用，请联系管理员。",
             "needsRedeploy": True,
             "nextStep": "cd librenms+grafana && ./apply-env.sh",
             "applyOutput": str(exc),
@@ -188,7 +188,7 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
         )
         return {
             "ok": False,
-            "error": "容器重建命令已完成，但关键服务未能恢复",
+            "error": "服务更新已执行，但关键服务尚未恢复，应用未完成。",
             "needsRedeploy": True,
             "nextStep": "cd librenms+grafana && ./apply-env.sh",
             "applyOutput": (output + "\n运行验证失败：" + errors)[-4000:],

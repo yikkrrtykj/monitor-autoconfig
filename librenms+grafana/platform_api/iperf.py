@@ -39,12 +39,12 @@ def parse_iperf3_json(text: str) -> dict:
     except json.JSONDecodeError:
         start, end = raw.find("{"), raw.rfind("}")
         if start < 0 or end <= start:
-            raise ValueError("iperf3 未返回可解析的 JSON")
+            raise ValueError("测速服务返回的数据无法读取。")
         payload = json.loads(raw[start:end + 1])
     # 合法但非对象的 JSON（裸数组/数字/被代理截断的响应）必须走 ValueError，
     # 否则 AttributeError 会越过调用方的逐端口重试直接把整次测速打成 500。
     if not isinstance(payload, dict):
-        raise ValueError("iperf3 返回的 JSON 不是对象")
+        raise ValueError("测速服务返回的数据格式不正确。")
     if payload.get("error"):
         raise ValueError(str(payload["error"]))
 
