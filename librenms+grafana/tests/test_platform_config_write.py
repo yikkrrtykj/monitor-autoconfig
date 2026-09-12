@@ -106,7 +106,7 @@ def test_save_validation_failure_writes_nothing(tmp_path):
     )
 
     assert result["ok"] is False
-    assert result["error"] == "配置验证未通过，请检查配置内容。"
+    assert result["error"] == "配置版本 2 高于当前软件支持的版本 1，请先升级平台。"
     assert result["configTooNew"] is True
     assert api.CONFIG_PATH.read_bytes() == original_config
     assert api.ENV_PATH.read_bytes() == original_env
@@ -117,7 +117,7 @@ def test_save_validation_failure_writes_nothing(tmp_path):
         api._config_write_context(), incoming, "admin", "apply", "apply-copy-invalid",
     )
     assert applied["ok"] is False
-    assert applied["error"] == "配置验证未通过，请检查配置内容。"
+    assert applied["error"] == "配置版本 2 高于当前软件支持的版本 1，请先升级平台。"
     assert applied["operationId"] == "apply-copy-invalid"
 
 

@@ -81,7 +81,7 @@ def test_incident_reader_is_byte_bounded_before_parse(monkeypatch, tmp_path):
     context.incident_path.write_bytes(b"[" + b" " * 8 + b"]")
     monkeypatch.setattr(incidents, "MAX_INCIDENT_FILE_BYTES", 8)
 
-    with pytest.raises(incidents.IncidentStorageError, match="超过 8 字节读取上限"):
+    with pytest.raises(incidents.IncidentStorageError, match="事故记录总大小超过上限 8 字节"):
         incidents.incident_list(context)
 
 

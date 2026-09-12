@@ -352,7 +352,7 @@ def test_network_overview_precedes_dhcp_and_non_24_pools_are_grouped_by_c_block(
     assert 'const directoryScrollTop = previousDirectory ? previousDirectory.scrollTop : 0;' in dhcp_panel
     assert 'nextDirectory.scrollTop = selectionChanged ? 0 : directoryScrollTop' in dhcp_panel
     assert 'if (detail) detail.scrollTop = 0;' in dhcp_panel
-    assert "查询已用 IP" in dhcp_panel
+    assert "地址池内；等待租约信息，可点击“刷新租约 / ARP”。" in dhcp_panel
     assert "/network/dhcp/bindings" in (root / "bigscreen" / "api.js").read_text(encoding="utf-8")
     assert "content-visibility: auto" not in css
 

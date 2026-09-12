@@ -192,7 +192,8 @@ def test_network_audit_attaches_stackwise_card(monkeypatch):
     assert len(result["cards"]) == 2
     assert result["cards"][0]["card"]["header"]["title"]["content"].startswith("网络巡检 · 设备状态")
     assert result["cards"][1] == card
-    assert "网络巡检" in bridge.BOT_HELP_TEXT and "思科堆叠" in bridge.BOT_HELP_TEXT
+    assert "网络巡检" in bridge.BOT_HELP_TEXT
+    assert "查看网络设备状态和堆叠健康" in bridge.BOT_HELP_TEXT
 
 
 def test_bot_full_fiber_audit_returns_summary_and_grouped_details(monkeypatch):

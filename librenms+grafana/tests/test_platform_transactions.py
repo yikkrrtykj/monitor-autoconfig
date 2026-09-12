@@ -548,7 +548,7 @@ def test_newer_current_config_blocks_save_apply_import_and_rollback(monkeypatch,
     for result in (save_result, import_result, apply_result, rollback_result):
         assert result["ok"] is False
         assert result["configTooNew"] is True
-        assert "software supports schema 1" in result["error"]
+        assert result["error"] == "配置版本 2 高于当前软件支持的版本 1，请先升级平台。"
     assert api.CONFIG_PATH.read_bytes() == original_config
     assert api.ENV_PATH.read_bytes() == original_env
     assert not list(api.TRANSACTION_DIR.iterdir())
