@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import threading
 from types import SimpleNamespace
 
 
@@ -756,6 +757,7 @@ def test_polling_global_help_uses_actual_history_source_and_deduplicates(monkeyp
 
 
 def test_only_one_independent_instance_answers_global_help(monkeypatch):
+    real_thread = threading.Thread
     modules = []
     for index, (event_name, enabled) in enumerate((("PGS", "true"), ("Shanghai", "false"))):
         monkeypatch.setenv("EVENT_NAME", event_name)
@@ -779,7 +781,7 @@ def test_only_one_independent_instance_answers_global_help(monkeypatch):
             def start(self):
                 self.target(*self.args)
 
-        loaded.threading.Thread = ImmediateThread
+        loaded.threading = SimpleNamespace(Thread=ImmediateThread)
         loaded.process_polled_messages([{
             "message_id": "om_shared_global",
             "message_type": "text",
@@ -790,6 +792,156 @@ def test_only_one_independent_instance_answers_global_help(monkeypatch):
         }], source_chat_id="oc_shared")
 
     assert bridge_calls == [("PGS", "帮助")]
+    assert threading.Thread is real_thread
+
+
+def test_polling_publishes_group_and_failure_keeps_it_for_long_connection(monkeypatch):
+    class StopPolling(Exception):
+        pass
+
+    fetch_count = 0
+    sleep_count = 0
+    calls = []
+
+    def fetch_messages(_token, chat_id):
+        nonlocal fetch_count
+        fetch_count += 1
+        assert chat_id == "oc_resolved"
+        if fetch_count == 1:
+            return []
+        raise ConnectionError("temporary polling failure")
+
+    def controlled_sleep(_seconds):
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count >= 2:
+            raise StopPolling
+
+    class ImmediateThread:
+        def __init__(self, target, args, **_kwargs):
+            self.args = args
+
+        def start(self):
+            calls.append(self.args)
+
+    client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "GLOBAL_HELP_RESPONDER", True)
+    monkeypatch.setattr(client, "BOT_OPEN_ID", "ou_bot")
+    monkeypatch.setattr(client, "EVENT_NAME", "PGS")
+    monkeypatch.setattr(client, "CHAT_TARGET", "统一监控群")
+    monkeypatch.setattr(client, "_RESOLVED_COMMAND_CHAT_ID", "")
+    monkeypatch.setattr(client, "_POLL_READY", False)
+    monkeypatch.setattr(client, "_DEGRADED_WARNING_EMITTED", True)
+    monkeypatch.setattr(client, "tenant_access_token", lambda: "token")
+    monkeypatch.setattr(client, "resolve_command_chat", lambda _token: "oc_resolved")
+    monkeypatch.setattr(client, "fetch_chat_messages", fetch_messages)
+    monkeypatch.setattr(client.time, "sleep", controlled_sleep)
+    monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(client, "log", lambda _message: None)
+
+    try:
+        client.poll_site_group_commands()
+    except StopPolling:
+        pass
+    else:
+        raise AssertionError("controlled polling loop did not stop")
+
+    assert fetch_count == 2
+    assert client._POLL_READY is False
+    assert client._configured_command_chat_id() == "oc_resolved"
+
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 帮助", message_id="om_after_failure", chat_id="oc_resolved",
+    ))))
+    assert calls == [("om_after_failure", "帮助", True)]
+
+
+def test_responder_rejects_other_unscoped_commands_in_both_group_entries(monkeypatch):
+    class UnexpectedThread:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("rejected command must not start a worker")
+
+    monkeypatch.setattr(client, "GLOBAL_HELP_RESPONDER", True)
+    monkeypatch.setattr(client, "BOT_OPEN_ID", "ou_bot")
+    monkeypatch.setattr(client, "EVENT_NAME", "PGS")
+    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
+    monkeypatch.setattr(client, "_POLL_READY", False)
+    monkeypatch.setattr(client, "_DEGRADED_WARNING_EMITTED", True)
+    monkeypatch.setattr(client.threading, "Thread", UnexpectedThread)
+    monkeypatch.setattr(
+        client, "query_via_bridge",
+        lambda _command: (_ for _ in ()).throw(AssertionError("unexpected Bridge query")),
+    )
+    monkeypatch.setattr(
+        client, "reply_to_message",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected reply")),
+    )
+
+    commands = ("网络巡检", "光功率巡检", "上联冗余巡检", "待删除设备")
+    for index, command in enumerate(commands):
+        polling_message = {
+            "message_id": f"om_poll_reject_{index}",
+            "message_type": "text",
+            "body": {"content": json.dumps({"text": f"@_user_1 {command}"}, ensure_ascii=False)},
+            "mentions": [{"key": "@_user_1", "id": "ou_bot", "id_type": "open_id"}],
+            "sender": {"sender_type": "user"},
+        }
+        client._SEEN_MESSAGES.clear()
+        assert client.process_polled_messages(
+            [polling_message], source_chat_id="oc_shared",
+        ) == 0
+
+        client._SEEN_MESSAGES.clear()
+        message = _message(
+            f"@_user_1 {command}",
+            message_id=f"om_event_reject_{index}",
+            chat_id="oc_shared",
+        )
+        assert client.on_message(SimpleNamespace(event=SimpleNamespace(message=message))) is None
+
+    for index, chat_type in enumerate(("unknown", None)):
+        client._SEEN_MESSAGES.clear()
+        message = _message(
+            "@_user_1 帮助",
+            message_id=f"om_type_reject_{index}",
+            chat_type=chat_type,
+            chat_id="oc_shared",
+        )
+        assert client.on_message(SimpleNamespace(event=SimpleNamespace(message=message))) is None
+
+
+def test_responder_does_not_change_p2p_compatibility(monkeypatch):
+    calls = []
+
+    class ImmediateThread:
+        def __init__(self, target, args, **_kwargs):
+            self.args = args
+
+        def start(self):
+            calls.append(self.args)
+
+    client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "GLOBAL_HELP_RESPONDER", True)
+    monkeypatch.setattr(client, "BOT_OPEN_ID", "ou_bot")
+    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
+    monkeypatch.setattr(client, "_POLL_READY", False)
+    monkeypatch.setattr(client, "_DEGRADED_WARNING_EMITTED", True)
+    monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
+
+    monkeypatch.setattr(client, "EVENT_NAME", "PGS")
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 帮助", chat_type="p2p", message_id="om_p2p_unscoped",
+    ))))
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 PGS 帮助", chat_type="p2p", message_id="om_p2p_scoped_help",
+    ))))
+    assert calls == [("om_p2p_scoped_help", "帮助")]
+
+    monkeypatch.setattr(client, "EVENT_NAME", "")
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 网络巡检", chat_type="p2p", message_id="om_p2p_legacy",
+    ))))
+    assert calls[-1] == ("om_p2p_legacy", "网络巡检")
 
 
 def test_global_help_reply_skips_event_decoration_without_mutating_event(monkeypatch):
