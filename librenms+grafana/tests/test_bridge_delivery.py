@@ -792,10 +792,7 @@ def test_company_retire_card_has_buttons_and_plain_console_fallback(monkeypatch)
         True,
     )
     elements = notification["card"]["body"]["elements"]
-    rows = [e for e in elements if e.get("tag") == "column_set"]
-    assert len(rows) == 1
-    assert [column["weight"] for column in rows[0]["columns"]] == [1, 1]
-    buttons = [column["elements"][0] for column in rows[0]["columns"]]
+    buttons = [e for e in elements if e.get("tag") == "button"]
     assert [button["text"]["content"] for button in buttons] == ["保留", "确认删除"]
     assert [button["type"] for button in buttons] == ["default", "danger"]
     assert {
@@ -863,11 +860,10 @@ def test_company_pending_notification_prefers_interactive_app_card(monkeypatch):
     assert bridge.notify_pending_delete_states(states, 1000.0) is True
     assert states[key]["pending_notified"] is True
     assert len(app_cards) == 1
-    row = next(
+    buttons = [
         element for element in app_cards[0]["card"]["body"]["elements"]
-        if element.get("tag") == "column_set"
-    )
-    buttons = [column["elements"][0] for column in row["columns"]]
+        if element.get("tag") == "button"
+    ]
     assert [button["text"]["content"] for button in buttons] == ["保留", "确认删除"]
     assert [button["type"] for button in buttons] == ["default", "danger"]
     assert all(

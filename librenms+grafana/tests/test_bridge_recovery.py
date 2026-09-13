@@ -326,9 +326,7 @@ def test_company_bot_pending_delete_command_returns_interactive_cards(monkeypatc
     assert result["ok"] is True
     assert len(result["cards"]) == 1
     elements = result["cards"][0]["card"]["body"]["elements"]
-    rows = [item for item in elements if item.get("tag") == "column_set"]
-    assert len(rows) == 1
-    buttons = [column["elements"][0] for column in rows[0]["columns"]]
+    buttons = [item for item in elements if item.get("tag") == "button"]
     assert [button["text"]["content"] for button in buttons] == ["保留", "确认删除"]
     assert [button["type"] for button in buttons] == ["default", "danger"]
     actions = {button["behaviors"][0]["value"]["action"] for button in buttons}

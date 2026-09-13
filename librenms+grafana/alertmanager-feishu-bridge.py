@@ -2383,24 +2383,10 @@ def build_retire_confirm_card(state, key="", interactive=None):
                     },
                 }],
             }
-        extra_elements = [{
-            "tag": "column_set",
-            "horizontal_spacing": "8px",
-            "columns": [
-                {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 1,
-                    "elements": [_button("保留", "default", "retire_keep")],
-                },
-                {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 1,
-                    "elements": [_button("确认删除", "danger", "retire_delete")],
-                },
-            ],
-        }]
+        extra_elements = [
+            _button("保留", "default", "retire_keep"),
+            _button("确认删除", "danger", "retire_delete"),
+        ]
     else:
         lines.extend([
             "",
