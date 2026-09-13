@@ -9,6 +9,8 @@ Env:
   FEISHU_APP_ID / FEISHU_APP_SECRET  self-built app credentials (required)
   FEISHU_CHAT_ID the shared command/alert group name or oc_ chat id
   EVENT_NAME     local company/event name shown before every result
+  FEISHU_GLOBAL_HELP_RESPONDER allow exact unscoped group help (default false)
+  FEISHU_BOT_OPEN_ID application bot open ID used by global help verification
   DEVICE_PENDING_DELETE_ENABLED register pending-delete callbacks (default false)
   BRIDGE_URL   bridge base URL (default http://alertmanager-feishu-bridge:5005)
 
@@ -36,6 +38,10 @@ APP_ID = os.environ.get("FEISHU_APP_ID", "").strip()
 APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "").strip()
 CHAT_TARGET = os.environ.get("FEISHU_CHAT_ID", "").strip()
 EVENT_NAME = os.environ.get("EVENT_NAME", "").strip()
+GLOBAL_HELP_RESPONDER = (
+    os.environ.get("FEISHU_GLOBAL_HELP_RESPONDER", "").strip().lower() == "true"
+)
+BOT_OPEN_ID = os.environ.get("FEISHU_BOT_OPEN_ID", "").strip()
 POLL_SECONDS = max(2.0, float(os.environ.get("FEISHU_COMMAND_POLL_SECONDS", "5") or 5))
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
 DEVICE_PENDING_DELETE_ENABLED = os.environ.get(
@@ -48,6 +54,7 @@ _SEEN_LOCK = threading.Lock()
 _POLL_READY = False
 _POLL_STATE_LOCK = threading.Lock()
 _DEGRADED_WARNING_EMITTED = False
+_RESOLVED_COMMAND_CHAT_ID = ""
 
 
 def log(message: str) -> None:
@@ -307,6 +314,77 @@ def extract_command(message) -> str:
     return " ".join(text.split())
 
 
+def _message_text(message) -> str:
+    try:
+        content = json.loads(_message_content(message) or "{}")
+    except json.JSONDecodeError:
+        return ""
+    return str(content.get("text") or "")
+
+
+def _mention_open_id(mention) -> str:
+    identity = _field(mention, "id")
+    if isinstance(identity, str):
+        id_type = str(_field(mention, "id_type", "") or "").strip().lower()
+        return identity.strip() if id_type in ("", "open_id") else ""
+    return str(_field(identity, "open_id", "") or "").strip()
+
+
+def _mentions_configured_bot(message) -> bool:
+    if not BOT_OPEN_ID:
+        return False
+    text = _message_text(message)
+    for mention in (_field(message, "mentions", []) or []):
+        key = str(_field(mention, "key", "") or "")
+        if key and key in text and _mention_open_id(mention) == BOT_OPEN_ID:
+            return True
+    return False
+
+
+def _publish_resolved_command_chat_id(chat_id: str) -> None:
+    resolved = str(chat_id or "").strip()
+    if not resolved.startswith("oc_"):
+        return
+    global _RESOLVED_COMMAND_CHAT_ID
+    with _POLL_STATE_LOCK:
+        _RESOLVED_COMMAND_CHAT_ID = resolved
+
+
+def _configured_command_chat_id() -> str:
+    if not CHAT_TARGET:
+        return ""
+    if CHAT_TARGET.startswith("oc_"):
+        return CHAT_TARGET
+    with _POLL_STATE_LOCK:
+        return _RESOLVED_COMMAND_CHAT_ID
+
+
+def _route_message_command(
+    message,
+    raw_command: str,
+    *,
+    source_chat_id: str = "",
+    source_is_group: bool = False,
+    allow_unscoped: bool = False,
+) -> tuple[str, bool] | None:
+    command = route_event_command(raw_command, EVENT_NAME, allow_unscoped=allow_unscoped)
+    if command is not None:
+        return command or "帮助", False
+    normalized = " ".join(str(raw_command or "").split())
+    if not (
+        GLOBAL_HELP_RESPONDER
+        and " ".join(str(EVENT_NAME or "").split())
+        and source_is_group
+        and normalized == "帮助"
+        and _mentions_configured_bot(message)
+    ):
+        return None
+    target_chat_id = _configured_command_chat_id()
+    if not target_chat_id or str(source_chat_id or "").strip() != target_chat_id:
+        return None
+    return "帮助", True
+
+
 def route_event_command(
     command: str, event_name: str, *, allow_unscoped: bool = False,
 ) -> str | None:
@@ -380,18 +458,22 @@ def _reserve_message(message_id: str) -> bool:
         return True
 
 
-def _process_message(message_id: str, command: str) -> None:
+def _process_message(message_id: str, command: str, global_help: bool = False) -> None:
     result = query_via_bridge(command)
     reply = str(result.get("text") or result.get("error") or "查询失败，请稍后再试。")
     try:
-        cards = [_decorate_card(item) for item in (result.get("cards") or []) if isinstance(item, dict)]
+        cards = [
+            item if global_help else _decorate_card(item)
+            for item in (result.get("cards") or [])
+            if isinstance(item, dict)
+        ]
         if cards:
             for position, card in enumerate(cards):
                 reply_to_message(message_id, card=card)
                 if position + 1 < len(cards):
                     time.sleep(0.15)
         else:
-            reply_to_message(message_id, _decorate_text(reply))
+            reply_to_message(message_id, reply if global_help else _decorate_text(reply))
         log(f"replied to message {message_id}: {command[:80]}")
     except Exception as exc:  # noqa: BLE001 - event loop must stay alive
         log(f"reply to {message_id} failed: {exc}")
@@ -421,7 +503,9 @@ def _decorate_card(card: dict) -> dict:
     return decorated
 
 
-def process_polled_messages(items: list[dict], *, baseline: bool = False) -> int:
+def process_polled_messages(
+    items: list[dict], *, baseline: bool = False, source_chat_id: str = "",
+) -> int:
     """Reserve the initial history, then execute every newly observed @ command."""
     handled = 0
 
@@ -443,16 +527,26 @@ def process_polled_messages(items: list[dict], *, baseline: bool = False) -> int
             continue
         if not _reserve_message(message_id):
             continue
-        raw_command = extract_command(message) or "帮助"
+        raw_command = extract_command(message)
         # The polling source is the configured (possibly shared) group history:
         # never allow unscoped commands, regardless of chat_type on the entry.
-        command = route_event_command(raw_command, EVENT_NAME)
-        if command is None:
+        routed = _route_message_command(
+            message,
+            raw_command,
+            source_chat_id=source_chat_id,
+            source_is_group=True,
+        )
+        if routed is None:
             continue
-        command = command or "帮助"
+        command, global_help = routed
         log(f"site-group command {command[:120]!r} id={message_id}")
+        thread_args = (
+            (message_id, command, True) if global_help else (message_id, command)
+        )
         threading.Thread(
-            target=_process_message, args=(message_id, command), daemon=True,
+            target=_process_message,
+            args=thread_args,
+            daemon=True,
             name=f"feishu-query-{message_id[-8:]}",
         ).start()
         handled += 1
@@ -469,9 +563,14 @@ def poll_site_group_commands() -> None:
             token = tenant_access_token()
             if not chat_id:
                 chat_id = resolve_command_chat(token)
+                _publish_resolved_command_chat_id(chat_id)
                 log(f"site command group resolved: {chat_id}; event={EVENT_NAME or '未命名'}")
             items = fetch_chat_messages(token, chat_id)
-            process_polled_messages(items, baseline=not initialized)
+            process_polled_messages(
+                items,
+                baseline=not initialized,
+                source_chat_id=chat_id,
+            )
             if not initialized:
                 initialized = True
                 log(f"site command polling ready; baseline={len(items)} messages")
@@ -501,19 +600,31 @@ def on_message(data):
     message_id = str(_field(message, "message_id", "") or "")
     if not message_id or not _reserve_message(message_id):
         return None
-    raw_command = extract_command(message) or "帮助"
+    raw_command = extract_command(message)
     # Only an explicitly typed p2p chat keeps the legacy unscoped fallback;
     # group, missing and unknown chat types obey shared-group isolation.
     allow_unscoped = str(_field(message, "chat_type", "") or "").lower() == "p2p"
-    command = route_event_command(raw_command, EVENT_NAME, allow_unscoped=allow_unscoped)
-    if command is None:
+    chat_type = str(_field(message, "chat_type", "") or "").lower()
+    routed = _route_message_command(
+        message,
+        raw_command,
+        source_chat_id=str(_field(message, "chat_id", "") or ""),
+        source_is_group=chat_type == "group",
+        allow_unscoped=allow_unscoped,
+    )
+    if routed is None:
         return None
-    command = command or "帮助"
+    command, global_help = routed
     log(f"message command {command[:120]!r} id={message_id}")
     # A LibreNMS query may take several seconds. Acknowledge the event handler
     # immediately and send the reply asynchronously so Feishu does not retry it.
+    thread_args = (
+        (message_id, command, True) if global_help else (message_id, command)
+    )
     threading.Thread(
-        target=_process_message, args=(message_id, command), daemon=True,
+        target=_process_message,
+        args=thread_args,
+        daemon=True,
         name=f"feishu-query-{message_id[-8:]}",
     ).start()
     return None

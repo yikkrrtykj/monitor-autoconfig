@@ -15,13 +15,36 @@ assert _spec.loader
 _spec.loader.exec_module(client)
 
 
-def _message(text, *, mentions=True, chat_type="group", message_id="om_123"):
+def _load_client_module(name):
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().parent.parent / "feishu-ws-client.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def _message(
+    text,
+    *,
+    mentions=True,
+    chat_type="group",
+    chat_id="oc_shared",
+    message_id="om_123",
+    mention_open_id="ou_bot",
+):
     return SimpleNamespace(
         message_id=message_id,
         message_type="text",
         chat_type=chat_type,
+        chat_id=chat_id,
         content=json.dumps({"text": text}, ensure_ascii=False),
-        mentions=[SimpleNamespace(key="@_user_1", name="LibreBOT")] if mentions else [],
+        mentions=[SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id=mention_open_id),
+            name="LibreBOT",
+        )] if mentions else [],
     )
 
 
@@ -531,3 +554,270 @@ def test_site_polling_reserves_and_silently_ignores_other_events(monkeypatch):
     assert calls == [("om_sg", "网络巡检")]
     assert {"om_sg", "om_sh", "om_plain"}.issubset(client._SEEN_MESSAGES)
     assert client.process_polled_messages([singapore, shanghai, unscoped]) == 0
+
+
+def test_global_help_requires_exact_command_bot_identity_and_target_group(monkeypatch):
+    monkeypatch.setattr(client, "GLOBAL_HELP_RESPONDER", True)
+    monkeypatch.setattr(client, "BOT_OPEN_ID", "ou_bot")
+    monkeypatch.setattr(client, "EVENT_NAME", "PGS")
+    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
+
+    message = _message("@_user_1   帮助", chat_id="oc_shared")
+    assert client._route_message_command(
+        message, client.extract_command(message),
+        source_chat_id="oc_shared", source_is_group=True,
+    ) == ("帮助", True)
+
+    for text in ("@_user_1", "@_user_1 help", "@_user_1 ?", "@_user_1 命令", "@_user_1 帮助 网络巡检"):
+        rejected = _message(text, chat_id="oc_shared")
+        assert client._route_message_command(
+            rejected, client.extract_command(rejected),
+            source_chat_id="oc_shared", source_is_group=True,
+        ) is None
+
+    wrong_bot = _message("@_user_1 帮助", mention_open_id="ou_other")
+    assert client._route_message_command(
+        wrong_bot, client.extract_command(wrong_bot),
+        source_chat_id="oc_shared", source_is_group=True,
+    ) is None
+
+    wrong_group = _message("@_user_1 帮助", chat_id="oc_other")
+    assert client._route_message_command(
+        wrong_group, client.extract_command(wrong_group),
+        source_chat_id="oc_other", source_is_group=True,
+    ) is None
+
+    missing_key = _message("帮助")
+    assert client._route_message_command(
+        missing_key, client.extract_command(missing_key),
+        source_chat_id="oc_shared", source_is_group=True,
+    ) is None
+
+
+def test_global_help_accepts_polling_and_event_mention_identity_shapes(monkeypatch):
+    monkeypatch.setattr(client, "GLOBAL_HELP_RESPONDER", True)
+    monkeypatch.setattr(client, "BOT_OPEN_ID", "ou_bot")
+    monkeypatch.setattr(client, "EVENT_NAME", "PGS")
+    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
+
+    event_message = _message("@_user_1 帮助")
+    polling_message = {
+        "message_id": "om_poll_help",
+        "message_type": "text",
+        "body": {"content": json.dumps({"text": "@_user_1 帮助"}, ensure_ascii=False)},
+        "mentions": [{"key": "@_user_1", "id": "ou_bot", "id_type": "open_id"}],
+        "sender": {"sender_type": "user"},
+    }
+    assert client._mentions_configured_bot(event_message) is True
+    assert client._mentions_configured_bot(polling_message) is True
+
+    polling_message["mentions"][0]["id_type"] = "user_id"
+    assert client._mentions_configured_bot(polling_message) is False
+    polling_message["mentions"][0].pop("id_type")
+    polling_message["mentions"][0]["id"] = {"open_id": "ou_bot"}
+    assert client._mentions_configured_bot(polling_message) is True
+
+
+def test_global_help_switch_and_empty_event_name_fail_closed(monkeypatch):
+    message = _message("@_user_1 帮助")
+    monkeypatch.setattr(client, "BOT_OPEN_ID", "ou_bot")
+    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
+
+    for enabled, event_name in ((False, "PGS"), (True, ""), (True, "   ")):
+        monkeypatch.setattr(client, "GLOBAL_HELP_RESPONDER", enabled)
+        monkeypatch.setattr(client, "EVENT_NAME", event_name)
+        assert client._route_message_command(
+            message, client.extract_command(message),
+            source_chat_id="oc_shared", source_is_group=True,
+        ) is None
+
+
+def test_global_help_configuration_enables_only_exact_true(monkeypatch):
+    monkeypatch.setenv("FEISHU_BOT_OPEN_ID", " ou_bot ")
+    monkeypatch.setenv("EVENT_NAME", " PGS ")
+    monkeypatch.setenv("FEISHU_CHAT_ID", " oc_shared ")
+    for index, value in enumerate(("", "false", "1", "yes", "on", "invalid")):
+        monkeypatch.setenv("FEISHU_GLOBAL_HELP_RESPONDER", value)
+        loaded = _load_client_module(f"feishu_ws_global_off_{index}")
+        assert loaded.GLOBAL_HELP_RESPONDER is False
+    monkeypatch.setenv("FEISHU_GLOBAL_HELP_RESPONDER", " TrUe ")
+    loaded = _load_client_module("feishu_ws_global_on")
+    assert loaded.GLOBAL_HELP_RESPONDER is True
+    assert loaded.BOT_OPEN_ID == "ou_bot"
+
+
+def test_global_help_uses_direct_or_last_resolved_target_group(monkeypatch):
+    monkeypatch.setattr(client, "CHAT_TARGET", "oc_direct")
+    monkeypatch.setattr(client, "_RESOLVED_COMMAND_CHAT_ID", "oc_old")
+    assert client._configured_command_chat_id() == "oc_direct"
+
+    monkeypatch.setattr(client, "CHAT_TARGET", "统一监控群")
+    monkeypatch.setattr(client, "_RESOLVED_COMMAND_CHAT_ID", "")
+    assert client._configured_command_chat_id() == ""
+    client._publish_resolved_command_chat_id("oc_first")
+    assert client._configured_command_chat_id() == "oc_first"
+    client._publish_resolved_command_chat_id("invalid")
+    assert client._configured_command_chat_id() == "oc_first"
+    client._publish_resolved_command_chat_id("oc_new")
+    assert client._configured_command_chat_id() == "oc_new"
+    monkeypatch.setattr(client, "CHAT_TARGET", "")
+    assert client._configured_command_chat_id() == ""
+
+
+def test_long_connection_global_help_is_target_group_only(monkeypatch):
+    calls = []
+
+    class ImmediateThread:
+        def __init__(self, target, args, **_kwargs):
+            self.args = args
+
+        def start(self):
+            calls.append(self.args)
+
+    client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "GLOBAL_HELP_RESPONDER", True)
+    monkeypatch.setattr(client, "BOT_OPEN_ID", "ou_bot")
+    monkeypatch.setattr(client, "EVENT_NAME", "PGS")
+    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
+    monkeypatch.setattr(client, "_POLL_READY", False)
+    monkeypatch.setattr(client, "_DEGRADED_WARNING_EMITTED", True)
+    monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
+
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 帮助", message_id="om_global", chat_id="oc_shared",
+    ))))
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 帮助", message_id="om_other", chat_id="oc_other",
+    ))))
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 帮助", message_id="om_missing", chat_id="",
+    ))))
+    assert calls == [("om_global", "帮助", True)]
+
+    # Existing scoped routing stays independent of the newly configured group.
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 PGS 网络巡检", message_id="om_scoped", chat_id="oc_other",
+    ))))
+    assert calls[-1] == ("om_scoped", "网络巡检")
+
+    calls.clear()
+    monkeypatch.setattr(client, "CHAT_TARGET", "统一监控群")
+    monkeypatch.setattr(client, "_RESOLVED_COMMAND_CHAT_ID", "")
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 帮助", message_id="om_unresolved", chat_id="oc_shared",
+    ))))
+    assert calls == []
+    client._publish_resolved_command_chat_id("oc_shared")
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 帮助", message_id="om_resolved", chat_id="oc_shared",
+    ))))
+    assert calls == [("om_resolved", "帮助", True)]
+
+
+def test_polling_global_help_uses_actual_history_source_and_deduplicates(monkeypatch):
+    calls = []
+
+    class ImmediateThread:
+        def __init__(self, target, args, **_kwargs):
+            self.args = args
+
+        def start(self):
+            calls.append(self.args)
+
+    message = {
+        "message_id": "om_poll_global",
+        "message_type": "text",
+        "chat_type": "p2p",
+        "create_time": "100",
+        "body": {"content": json.dumps({"text": "@_user_1 帮助"}, ensure_ascii=False)},
+        "mentions": [{"key": "@_user_1", "id": "ou_bot", "id_type": "open_id"}],
+        "sender": {"sender_type": "user"},
+    }
+    client._SEEN_MESSAGES.clear()
+    monkeypatch.setattr(client, "GLOBAL_HELP_RESPONDER", True)
+    monkeypatch.setattr(client, "BOT_OPEN_ID", "ou_bot")
+    monkeypatch.setattr(client, "EVENT_NAME", "PGS")
+    monkeypatch.setattr(client, "CHAT_TARGET", "oc_shared")
+    monkeypatch.setattr(client.threading, "Thread", ImmediateThread)
+
+    assert client.process_polled_messages([message], source_chat_id="oc_shared") == 1
+    assert client.process_polled_messages([message], source_chat_id="oc_shared") == 0
+    assert calls == [("om_poll_global", "帮助", True)]
+
+    client._SEEN_MESSAGES.clear()
+    assert client.process_polled_messages(
+        [message], baseline=True, source_chat_id="oc_shared",
+    ) == 0
+    monkeypatch.setattr(client, "_POLL_READY", False)
+    client.on_message(SimpleNamespace(event=SimpleNamespace(message=_message(
+        "@_user_1 帮助", message_id="om_poll_global", chat_id="oc_shared",
+    ))))
+    assert calls == [("om_poll_global", "帮助", True)]
+
+
+def test_only_one_independent_instance_answers_global_help(monkeypatch):
+    modules = []
+    for index, (event_name, enabled) in enumerate((("PGS", "true"), ("Shanghai", "false"))):
+        monkeypatch.setenv("EVENT_NAME", event_name)
+        monkeypatch.setenv("FEISHU_CHAT_ID", "oc_shared")
+        monkeypatch.setenv("FEISHU_BOT_OPEN_ID", "ou_bot")
+        monkeypatch.setenv("FEISHU_GLOBAL_HELP_RESPONDER", enabled)
+        modules.append(_load_client_module(f"feishu_ws_instance_{index}"))
+
+    bridge_calls = []
+    for loaded in modules:
+        loaded._SEEN_MESSAGES = {}
+        loaded.query_via_bridge = lambda command, event=loaded.EVENT_NAME: (
+            bridge_calls.append((event, command)) or {"ok": True, "text": "help"}
+        )
+        loaded.reply_to_message = lambda *_args, **_kwargs: None
+
+        class ImmediateThread:
+            def __init__(self, target, args, **_kwargs):
+                self.target, self.args = target, args
+
+            def start(self):
+                self.target(*self.args)
+
+        loaded.threading.Thread = ImmediateThread
+        loaded.process_polled_messages([{
+            "message_id": "om_shared_global",
+            "message_type": "text",
+            "create_time": "100",
+            "body": {"content": json.dumps({"text": "@_user_1 帮助"}, ensure_ascii=False)},
+            "mentions": [{"key": "@_user_1", "id": "ou_bot", "id_type": "open_id"}],
+            "sender": {"sender_type": "user"},
+        }], source_chat_id="oc_shared")
+
+    assert bridge_calls == [("PGS", "帮助")]
+
+
+def test_global_help_reply_skips_event_decoration_without_mutating_event(monkeypatch):
+    replies = []
+    monkeypatch.setattr(client, "EVENT_NAME", "PGS")
+    monkeypatch.setattr(client, "query_via_bridge", lambda command: {
+        "ok": True, "text": f"reply:{command}",
+    })
+    monkeypatch.setattr(
+        client, "reply_to_message",
+        lambda message_id, text=None, card=None: replies.append((message_id, text, card)),
+    )
+
+    client._process_message("om_global", "帮助", True)
+    client._process_message("om_scoped", "帮助")
+    assert replies == [
+        ("om_global", "reply:帮助", None),
+        ("om_scoped", "【PGS】\nreply:帮助", None),
+    ]
+    assert client.EVENT_NAME == "PGS"
+
+    replies.clear()
+    card = {"header": {"title": {"tag": "plain_text", "content": "LibreBOT 帮助"}}}
+    monkeypatch.setattr(client, "query_via_bridge", lambda _command: {
+        "ok": True, "cards": [card],
+    })
+    client._process_message("om_global_card", "帮助", True)
+    client._process_message("om_scoped_card", "帮助")
+    assert replies[0] == ("om_global_card", None, card)
+    assert replies[1][2]["header"]["title"]["content"] == "【PGS】 LibreBOT 帮助"
+    assert card["header"]["title"]["content"] == "LibreBOT 帮助"

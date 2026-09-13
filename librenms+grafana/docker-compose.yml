@@ -577,6 +577,8 @@ services:
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
       FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"
       EVENT_NAME: "${EVENT_NAME:-}"
+      FEISHU_GLOBAL_HELP_RESPONDER: "${FEISHU_GLOBAL_HELP_RESPONDER:-false}"
+      FEISHU_BOT_OPEN_ID: "${FEISHU_BOT_OPEN_ID:-}"
       DEVICE_PENDING_DELETE_ENABLED: "${DEVICE_PENDING_DELETE_ENABLED:-false}"
       BRIDGE_URL: "http://alertmanager-feishu-bridge:5005"
     entrypoint: ["python3", "/feishu-ws-client.py"]

@@ -1,4 +1,5 @@
 import ast
+import importlib.util
 import json
 import os
 import shlex
@@ -896,14 +897,24 @@ def test_pending_delete_is_deployment_gated_without_hiding_feishu_app_config():
     assert "def resolve_via_bridge(" in ws
 
     compose = read("docker-compose.yml")
+    env_example = read(".env.example")
     feishu_service = compose.split("  feishu-ws:", 1)[1].split("  player-targets:", 1)[0]
     assert 'FEISHU_CHAT_ID: "${FEISHU_CHAT_ID:-}"' in feishu_service
     assert 'EVENT_NAME: "${EVENT_NAME:-}"' in feishu_service
+    assert 'FEISHU_GLOBAL_HELP_RESPONDER: "${FEISHU_GLOBAL_HELP_RESPONDER:-false}"' in feishu_service
+    assert 'FEISHU_BOT_OPEN_ID: "${FEISHU_BOT_OPEN_ID:-}"' in feishu_service
+    assert "FEISHU_GLOBAL_HELP_RESPONDER=false" in env_example
+    assert "FEISHU_BOT_OPEN_ID=" in env_example
     assert 'DEVICE_PENDING_DELETE_ENABLED: "${DEVICE_PENDING_DELETE_ENABLED:-false}"' in feishu_service
     bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split("  librenms:", 1)[0]
+    bridge_service_only = compose.split("  alertmanager-feishu-bridge:", 1)[1].split(
+        "  snmp-exporter:", 1
+    )[0]
     assert 'DEVICE_PENDING_DELETE_ENABLED: "${DEVICE_PENDING_DELETE_ENABLED:-false}"' in bridge_service
     assert 'SERVER_IP: "${SERVER_IP:-}"' in bridge_service
     assert 'BIGSCREEN_PORT: "${BIGSCREEN_PORT:-8088}"' in bridge_service
+    assert "FEISHU_GLOBAL_HELP_RESPONDER" not in bridge_service_only
+    assert "FEISHU_BOT_OPEN_ID" not in bridge_service_only
     assert "DEVICE_PENDING_DELETE_APP_RETRY_SECONDS" not in compose
 
     bridge = read("alertmanager-feishu-bridge.py")
@@ -919,6 +930,27 @@ def test_pending_delete_is_deployment_gated_without_hiding_feishu_app_config():
     assert "DEVICE_PENDING_DELETE_ENABLED=false" in readme
     assert "DEVICE_PENDING_DELETE_ENABLED=true" in readme
     assert "公司服务器升级前必须补上" in readme
+
+
+def test_global_help_manual_env_values_survive_config_merge(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "platform_config_global_help_contract", ROOT / "platform_config.py",
+    )
+    platform_config = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(platform_config)
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "EVENT_NAME=Old\n"
+        "FEISHU_GLOBAL_HELP_RESPONDER=true\n"
+        "FEISHU_BOT_OPEN_ID=ou_bot\n",
+        encoding="utf-8",
+    )
+    merged = platform_config.merge_env_file(env_file, {"EVENT_NAME": "PGS"})
+    assert "EVENT_NAME=PGS" in merged
+    assert "FEISHU_GLOBAL_HELP_RESPONDER=true" in merged
+    assert "FEISHU_BOT_OPEN_ID=ou_bot" in merged
 
 
 def test_device_auto_delete_defaults_are_safe_and_bridge_scoped():
