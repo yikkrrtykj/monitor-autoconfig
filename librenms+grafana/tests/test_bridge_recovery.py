@@ -326,14 +326,19 @@ def test_company_bot_pending_delete_command_returns_interactive_cards(monkeypatc
     assert result["ok"] is True
     assert len(result["cards"]) == 1
     elements = result["cards"][0]["card"]["body"]["elements"]
-    buttons = [item for item in elements if item.get("tag") == "button"]
-    assert [button["text"]["content"] for button in buttons] == ["确认删除", "保留"]
+    rows = [item for item in elements if item.get("tag") == "column_set"]
+    assert len(rows) == 1
+    buttons = [column["elements"][0] for column in rows[0]["columns"]]
+    assert [button["text"]["content"] for button in buttons] == ["保留", "确认删除"]
+    assert [button["type"] for button in buttons] == ["default", "danger"]
     actions = {button["behaviors"][0]["value"]["action"] for button in buttons}
     assert actions == {"retire_delete", "retire_keep"}
     assert all(button["behaviors"][0]["value"]["token"] == "token-81" for button in buttons)
     content = elements[0]["content"]
-    assert "确认删除会移除该设备的 LibreNMS 记录；再次上线将按新设备处理。" in content
-    assert "http://10.20.30.40:8088/control" in content
+    assert "设备已连续离线 48 小时，请确认删除或保留。" in content
+    assert "确认删除会移除该设备的 LibreNMS 记录；再次上线将按新设备处理。" not in content
+    assert "请进入对应监控控制台确认删除或保留：" not in content
+    assert "http://10.20.30.40:8088/control" not in content
     assert "token-81" not in content
     bridge.DEVICE_DOWN_STATES.clear()
 

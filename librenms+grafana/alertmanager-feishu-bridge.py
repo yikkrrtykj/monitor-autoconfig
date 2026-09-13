@@ -2356,11 +2356,6 @@ def build_retire_confirm_card(state, key="", interactive=None):
         f"🌐 IP：{ip or '?'}",
         f"🔴 状态：连续离线 {offline}",
         f"🕒 时间：{ts}",
-        "",
-        "确认删除会移除该设备的 LibreNMS 记录；再次上线将按新设备处理。",
-        "",
-        "请进入对应监控控制台确认删除或保留：",
-        control_console_url(),
     ]
     requested_interaction = feishu_app_configured() if interactive is None else bool(interactive)
     use_interaction = bool(
@@ -2388,10 +2383,32 @@ def build_retire_confirm_card(state, key="", interactive=None):
                     },
                 }],
             }
-        extra_elements = [
-            _button("确认删除", "danger", "retire_delete"),
-            _button("保留", "default", "retire_keep"),
-        ]
+        extra_elements = [{
+            "tag": "column_set",
+            "horizontal_spacing": "8px",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [_button("保留", "default", "retire_keep")],
+                },
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [_button("确认删除", "danger", "retire_delete")],
+                },
+            ],
+        }]
+    else:
+        lines.extend([
+            "",
+            "确认删除会移除该设备的 LibreNMS 记录；再次上线将按新设备处理。",
+            "",
+            "请进入对应监控控制台确认删除或保留：",
+            control_console_url(),
+        ])
     title = state.get("pending_event_title") or next_event_title()
     state["pending_event_title"] = title
     return _make_card(

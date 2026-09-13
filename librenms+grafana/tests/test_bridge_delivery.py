@@ -792,8 +792,12 @@ def test_company_retire_card_has_buttons_and_plain_console_fallback(monkeypatch)
         True,
     )
     elements = notification["card"]["body"]["elements"]
-    buttons = [e for e in elements if e.get("tag") == "button"]
-    assert [button["text"]["content"] for button in buttons] == ["确认删除", "保留"]
+    rows = [e for e in elements if e.get("tag") == "column_set"]
+    assert len(rows) == 1
+    assert [column["weight"] for column in rows[0]["columns"]] == [1, 1]
+    buttons = [column["elements"][0] for column in rows[0]["columns"]]
+    assert [button["text"]["content"] for button in buttons] == ["保留", "确认删除"]
+    assert [button["type"] for button in buttons] == ["default", "danger"]
     assert {
         button["behaviors"][0]["value"]["action"] for button in buttons
     } == {"retire_delete", "retire_keep"}
@@ -810,9 +814,9 @@ def test_company_retire_card_has_buttons_and_plain_console_fallback(monkeypatch)
     assert "🌐 IP：192.168.10.27" in body
     assert "🔴 状态：连续离线 48 小时 1 分" in body
     assert "🕒 时间：" in body
-    assert "确认删除会移除该设备的 LibreNMS 记录；再次上线将按新设备处理。" in body
-    assert "请进入对应监控控制台确认删除或保留：" in body
-    assert "http://192.168.16.20:8088/control" in body
+    assert "确认删除会移除该设备的 LibreNMS 记录；再次上线将按新设备处理。" not in body
+    assert "请进入对应监控控制台确认删除或保留：" not in body
+    assert "http://192.168.16.20:8088/control" not in body
     plain = bridge.build_retire_confirm_card(
         state,
         "infra-dist-ping|192.168.10.27",
@@ -820,8 +824,11 @@ def test_company_retire_card_has_buttons_and_plain_console_fallback(monkeypatch)
     )
     assert not [
         element for element in plain["card"]["body"]["elements"]
-        if element.get("tag") == "button"
+        if element.get("tag") in {"button", "column_set"}
     ]
+    plain_body = plain["card"]["body"]["elements"][0]["content"]
+    assert "请进入对应监控控制台确认删除或保留：" in plain_body
+    assert "http://192.168.16.20:8088/control" in plain_body
     assert "tok-9" not in json.dumps(plain, ensure_ascii=False)
     assert "callback" not in json.dumps(plain, ensure_ascii=False)
 
@@ -856,11 +863,13 @@ def test_company_pending_notification_prefers_interactive_app_card(monkeypatch):
     assert bridge.notify_pending_delete_states(states, 1000.0) is True
     assert states[key]["pending_notified"] is True
     assert len(app_cards) == 1
-    buttons = [
+    row = next(
         element for element in app_cards[0]["card"]["body"]["elements"]
-        if element.get("tag") == "button"
-    ]
-    assert [button["text"]["content"] for button in buttons] == ["确认删除", "保留"]
+        if element.get("tag") == "column_set"
+    )
+    buttons = [column["elements"][0] for column in row["columns"]]
+    assert [button["text"]["content"] for button in buttons] == ["保留", "确认删除"]
+    assert [button["type"] for button in buttons] == ["default", "danger"]
     assert all(
         button["behaviors"][0]["value"]["token"] == "tok-company"
         for button in buttons
