@@ -497,6 +497,7 @@ def test_alert_bridge_runtime_modules_are_packaged_without_legacy_roots():
         "device_name.py": "from feishu_bridge.device_name import (",
         "interconnect_watcher.py": "from feishu_bridge.interconnect_watcher import InterconnectWatcher",
         "isp_watcher.py": "from feishu_bridge.isp_watcher import IspBandwidthWatcher",
+        "inspection_pagination.py": "from feishu_bridge.inspection_pagination import (",
         "online_identity.py": "from feishu_bridge.online_identity import OnlineIdentityService",
         "resource_watcher.py": "from feishu_bridge.resource_watcher import ResourceWatcher",
         "sysname_watcher.py": "from feishu_bridge.sysname_watcher import SysnameChangeWatcher",
@@ -891,7 +892,7 @@ def test_pending_delete_is_deployment_gated_without_hiding_feishu_app_config():
     assert "def route_event_command(" in ws
     assert "shared-group event routing is degraded" in ws
     assert ".register_p2_im_message_receive_v1(on_message)" in ws
-    assert "if DEVICE_PENDING_DELETE_ENABLED:" in ws
+    assert "if INSPECTION_PAGINATION_ENABLED or DEVICE_PENDING_DELETE_ENABLED:" in ws
     assert ".register_p2_card_action_trigger(on_card_action)" in ws
     assert "def on_card_action(" in ws
     assert "def resolve_via_bridge(" in ws
@@ -906,11 +907,13 @@ def test_pending_delete_is_deployment_gated_without_hiding_feishu_app_config():
     assert "FEISHU_GLOBAL_HELP_RESPONDER=false" in env_example
     assert "FEISHU_BOT_OPEN_ID=" in env_example
     assert 'DEVICE_PENDING_DELETE_ENABLED: "${DEVICE_PENDING_DELETE_ENABLED:-false}"' in feishu_service
+    assert 'INSPECTION_PAGINATION_ENABLED: "${INSPECTION_PAGINATION_ENABLED:-false}"' in feishu_service
     bridge_service = compose.split("  alertmanager-feishu-bridge:", 1)[1].split("  librenms:", 1)[0]
     bridge_service_only = compose.split("  alertmanager-feishu-bridge:", 1)[1].split(
         "  snmp-exporter:", 1
     )[0]
     assert 'DEVICE_PENDING_DELETE_ENABLED: "${DEVICE_PENDING_DELETE_ENABLED:-false}"' in bridge_service
+    assert 'INSPECTION_PAGINATION_ENABLED: "${INSPECTION_PAGINATION_ENABLED:-false}"' in bridge_service
     assert 'SERVER_IP: "${SERVER_IP:-}"' in bridge_service
     assert 'BIGSCREEN_PORT: "${BIGSCREEN_PORT:-8088}"' in bridge_service
     assert "FEISHU_GLOBAL_HELP_RESPONDER" not in bridge_service_only
@@ -919,6 +922,8 @@ def test_pending_delete_is_deployment_gated_without_hiding_feishu_app_config():
 
     bridge = read("alertmanager-feishu-bridge.py")
     assert '"DEVICE_PENDING_DELETE_ENABLED", "false"' in bridge
+    assert '"INSPECTION_PAGINATION_ENABLED", "false"' in bridge
+    assert "INSPECTION_PAGINATION_ENABLED=false" in env_example
     assert "and job in jobs" in bridge
     assert "def control_console_url(" in bridge
     assert 'f"http://{SERVER_IP or \'VM-IP\'}:{BIGSCREEN_PORT}/control"' in bridge
@@ -932,7 +937,7 @@ def test_pending_delete_is_deployment_gated_without_hiding_feishu_app_config():
     assert "公司服务器升级前必须补上" in readme
 
 
-def test_global_help_manual_env_values_survive_config_merge(tmp_path):
+def test_manual_feishu_feature_flags_survive_config_merge(tmp_path):
     spec = importlib.util.spec_from_file_location(
         "platform_config_global_help_contract", ROOT / "platform_config.py",
     )
@@ -944,13 +949,15 @@ def test_global_help_manual_env_values_survive_config_merge(tmp_path):
     env_file.write_text(
         "EVENT_NAME=Old\n"
         "FEISHU_GLOBAL_HELP_RESPONDER=true\n"
-        "FEISHU_BOT_OPEN_ID=ou_bot\n",
+        "FEISHU_BOT_OPEN_ID=ou_bot\n"
+        "INSPECTION_PAGINATION_ENABLED=true\n",
         encoding="utf-8",
     )
     merged = platform_config.merge_env_file(env_file, {"EVENT_NAME": "PGS"})
     assert "EVENT_NAME=PGS" in merged
     assert "FEISHU_GLOBAL_HELP_RESPONDER=true" in merged
     assert "FEISHU_BOT_OPEN_ID=ou_bot" in merged
+    assert "INSPECTION_PAGINATION_ENABLED=true" in merged
 
 
 def test_device_auto_delete_defaults_are_safe_and_bridge_scoped():

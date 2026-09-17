@@ -11,6 +11,7 @@ Env:
   EVENT_NAME     local company/event name shown before every result
   FEISHU_GLOBAL_HELP_RESPONDER allow exact unscoped group help (default false)
   FEISHU_BOT_OPEN_ID application bot open ID used by global help verification
+  INSPECTION_PAGINATION_ENABLED enable read-only inspection cards (default false)
   DEVICE_PENDING_DELETE_ENABLED register pending-delete callbacks (default false)
   BRIDGE_URL   bridge base URL (default http://alertmanager-feishu-bridge:5005)
 
@@ -46,6 +47,9 @@ POLL_SECONDS = max(2.0, float(os.environ.get("FEISHU_COMMAND_POLL_SECONDS", "5")
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://alertmanager-feishu-bridge:5005").rstrip("/")
 DEVICE_PENDING_DELETE_ENABLED = os.environ.get(
     "DEVICE_PENDING_DELETE_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes", "on")
+INSPECTION_PAGINATION_ENABLED = os.environ.get(
+    "INSPECTION_PAGINATION_ENABLED", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
 _TENANT_TOKEN = {"value": "", "expires_at": 0.0}
 _TOKEN_LOCK = threading.Lock()
@@ -95,6 +99,51 @@ def resolve_via_bridge(value: dict) -> dict:
         }
 
 
+def _post_bridge_json(path: str, payload: dict, timeout: float) -> dict:
+    request_payload = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{BRIDGE_URL}{path}", data=request_payload,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+def bind_inspection_card(session_id, *, chat_id, source_message_id, card_message_id):
+    if not INSPECTION_PAGINATION_ENABLED:
+        return {"ok": False, "error": "巡检分页未启用"}
+    try:
+        return _post_bridge_json("/bot/inspection/bind", {
+            "session_id": str(session_id or ""),
+            "app_id": APP_ID,
+            "chat_id": str(chat_id or ""),
+            "source_message_id": str(source_message_id or ""),
+            "card_message_id": str(card_message_id or ""),
+        }, 1.0)
+    except Exception as exc:  # noqa: BLE001 - the already-sent card stays visible
+        log(f"inspection card bind failed: {type(exc).__name__}")
+        return {"ok": False, "error": "巡检分页绑定失败"}
+
+
+def inspection_page_via_bridge(value, *, app_id, chat_id, card_message_id):
+    if not INSPECTION_PAGINATION_ENABLED:
+        return {"ok": False, "error": "巡检分页未启用"}
+    try:
+        return _post_bridge_json("/bot/inspection/page", {
+            "session_id": str(value.get("session_id") or ""),
+            "page": value.get("page"),
+            "app_id": str(app_id or ""),
+            "chat_id": str(chat_id or ""),
+            "card_message_id": str(card_message_id or ""),
+        }, 1.0)
+    except Exception as exc:  # noqa: BLE001 - preserve the current card on transport failure
+        log(f"inspection page request failed: {type(exc).__name__}")
+        return {
+            "ok": False,
+            "error": "暂时无法加载巡检页面，请保持当前卡片并稍后重试。",
+        }
+
+
 def build_response(value: dict, result: dict):
     """Return a toast and replace the acted-on card with its final outcome."""
     from lark_oapi.event.callback.model.p2_card_action_trigger import (
@@ -136,12 +185,59 @@ def build_response(value: dict, result: dict):
     })
 
 
+def build_inspection_response(result: dict):
+    """Return a toast and replace the original card only after a valid lookup."""
+    from lark_oapi.event.callback.model.p2_card_action_trigger import (
+        P2CardActionTriggerResponse,
+    )
+    ok = bool(result.get("ok"))
+    message = str(result.get("message") or result.get("error") or "巡检页面不可用。")
+    payload = {
+        "toast": {"type": "success" if ok else "error", "content": message},
+    }
+    card = result.get("card")
+    if ok and isinstance(card, dict):
+        raw = card.get("card") if card.get("msg_type") == "interactive" else card
+        if isinstance(raw, dict):
+            payload["card"] = {"type": "raw", "data": raw}
+    return P2CardActionTriggerResponse(payload)
+
+
+def _trusted_card_context(data):
+    header = _field(data, "header") or {}
+    event = _field(data, "event") or {}
+    context = _field(event, "context") or {}
+    return {
+        "app_id": str(_field(header, "app_id", "") or "").strip(),
+        "chat_id": str(
+            _field(context, "open_chat_id", "")
+            or _field(context, "chat_id", "") or ""
+        ).strip(),
+        "card_message_id": str(
+            _field(context, "open_message_id", "")
+            or _field(context, "message_id", "") or ""
+        ).strip(),
+    }
+
+
 def on_card_action(data):
-    if not DEVICE_PENDING_DELETE_ENABLED:
-        return None
     action = getattr(getattr(data, "event", None), "action", None)
     value = dict(getattr(action, "value", None) or {})
-    if value.get("action") not in ("retire_delete", "retire_keep"):
+    action_name = value.get("action")
+    if action_name == "inspection_page":
+        if not INSPECTION_PAGINATION_ENABLED:
+            return None
+        context = _trusted_card_context(data)
+        if not all(context.values()) or context["app_id"] != APP_ID:
+            return build_inspection_response({
+                "ok": False,
+                "error": "无法确认巡检卡片来源。",
+            })
+        result = inspection_page_via_bridge(value, **context)
+        return build_inspection_response(result)
+    if action_name not in ("retire_delete", "retire_keep"):
+        return None
+    if not DEVICE_PENDING_DELETE_ENABLED:
         return None
     operator = getattr(getattr(data, "event", None), "operator", None)
     who = getattr(operator, "open_id", "") or getattr(operator, "user_id", "") or "?"
@@ -151,8 +247,11 @@ def on_card_action(data):
     return build_response(value, result)
 
 
-def query_via_bridge(text: str) -> dict:
-    payload = json.dumps({"text": text}, ensure_ascii=False).encode("utf-8")
+def query_via_bridge(text: str, source_context=None) -> dict:
+    body = {"text": text}
+    if isinstance(source_context, dict):
+        body["source_context"] = source_context
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         f"{BRIDGE_URL}/bot/query", data=payload,
         headers={"Content-Type": "application/json"}, method="POST",
@@ -189,7 +288,7 @@ def tenant_access_token() -> str:
         return _TENANT_TOKEN["value"]
 
 
-def reply_to_message(message_id: str, text: str = "", card: dict | None = None) -> None:
+def reply_to_message(message_id: str, text: str = "", card: dict | None = None) -> str:
     token = tenant_access_token()
     if card:
         card_content = card.get("card") if card.get("msg_type") == "interactive" else card
@@ -217,6 +316,8 @@ def reply_to_message(message_id: str, text: str = "", card: dict | None = None) 
         data = json.loads(resp.read().decode("utf-8") or "{}")
     if data.get("code") != 0:
         raise RuntimeError(f"reply rejected: {data.get('code')} {data.get('msg')}")
+    response_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return str(response_data.get("message_id") or "")
 
 
 def _api_get(path: str, token: str) -> dict:
@@ -458,8 +559,21 @@ def _reserve_message(message_id: str) -> bool:
         return True
 
 
-def _process_message(message_id: str, command: str, global_help: bool = False) -> None:
-    result = query_via_bridge(command)
+def _process_message(
+    message_id: str, command: str, global_help: bool = False,
+    source_chat_id: str = "", source_app_id: str = "",
+) -> None:
+    source_context = None
+    if INSPECTION_PAGINATION_ENABLED:
+        source_context = {
+            "app_id": str(source_app_id or ""),
+            "chat_id": str(source_chat_id or ""),
+            "source_message_id": str(message_id or ""),
+        }
+    result = (
+        query_via_bridge(command, source_context)
+        if source_context is not None else query_via_bridge(command)
+    )
     reply = str(result.get("text") or result.get("error") or "查询失败，请稍后再试。")
     try:
         cards = [
@@ -469,7 +583,17 @@ def _process_message(message_id: str, command: str, global_help: bool = False) -
         ]
         if cards:
             for position, card in enumerate(cards):
-                reply_to_message(message_id, card=card)
+                card_message_id = reply_to_message(message_id, card=card)
+                session = result.get("inspection_session")
+                if position == 0 and isinstance(session, dict):
+                    bind_result = bind_inspection_card(
+                        session.get("session_id"),
+                        chat_id=source_chat_id,
+                        source_message_id=message_id,
+                        card_message_id=card_message_id,
+                    )
+                    if not bind_result.get("ok"):
+                        log("inspection card sent but pagination binding did not complete")
                 if position + 1 < len(cards):
                     time.sleep(0.15)
         else:
@@ -540,9 +664,12 @@ def process_polled_messages(
             continue
         command, global_help = routed
         log(f"site-group command {command[:120]!r} id={message_id}")
-        thread_args = (
-            (message_id, command, True) if global_help else (message_id, command)
-        )
+        if INSPECTION_PAGINATION_ENABLED:
+            thread_args = (message_id, command, global_help, source_chat_id, APP_ID)
+        else:
+            thread_args = (
+                (message_id, command, True) if global_help else (message_id, command)
+            )
         threading.Thread(
             target=_process_message,
             args=thread_args,
@@ -618,9 +745,15 @@ def on_message(data):
     log(f"message command {command[:120]!r} id={message_id}")
     # A LibreNMS query may take several seconds. Acknowledge the event handler
     # immediately and send the reply asynchronously so Feishu does not retry it.
-    thread_args = (
-        (message_id, command, True) if global_help else (message_id, command)
-    )
+    if INSPECTION_PAGINATION_ENABLED:
+        thread_args = (
+            message_id, command, global_help,
+            str(_field(message, "chat_id", "") or ""), APP_ID,
+        )
+    else:
+        thread_args = (
+            (message_id, command, True) if global_help else (message_id, command)
+        )
     threading.Thread(
         target=_process_message,
         args=thread_args,
@@ -631,14 +764,17 @@ def on_message(data):
 
 
 def build_event_handler(lark):
-    """Register ordinary messages in all modes and card callbacks in company mode."""
+    """Register messages plus independently enabled read-only/action callbacks."""
     handler_builder = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_im_message_receive_v1(on_message)
     )
-    if DEVICE_PENDING_DELETE_ENABLED:
+    if INSPECTION_PAGINATION_ENABLED or DEVICE_PENDING_DELETE_ENABLED:
         handler_builder = handler_builder.register_p2_card_action_trigger(on_card_action)
-        log("pending-delete card callback enabled")
+        if INSPECTION_PAGINATION_ENABLED:
+            log("inspection pagination card callback enabled")
+        if DEVICE_PENDING_DELETE_ENABLED:
+            log("pending-delete card callback enabled")
     return handler_builder.build()
 
 

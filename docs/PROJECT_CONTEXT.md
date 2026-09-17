@@ -80,7 +80,7 @@ mkdir/write/replace 的 OSError 转为安全错误，保留 `require_write()` �
 
 ## 当前主线
 
-2026-09-17 更正（来源：用户 FEISHU-UX2 需求及本轮 Git/源码核对）：2026.08.1 / Golden Build ed01865 / Source Commit `ed01865a19616dd0573ba7548b13bf6e11db70f7` 已由用户确认完成 Golden/OVA 发布并投入使用，禁止回写。当前任务进入下一版本的 [FEISHU-UX2](iterations/feishu-ux2.md)，先审计并确认设计，再开发。不得顺带修改 shared-group/EVENT_NAME 路由、HELP、删除逻辑或启动 R5 重构。Git 已包含 f10a26e 隔离修复、bf573d2 全局帮助及 4aafd85 测试；下文是 2026-09-06 历史主线，不能继续把“尚未实施”当成当前状态。此次没有重新进行生产验收。
+2026-09-18 更正（来源：用户 FEISHU-UX2 确认及本轮 Git/源码核对）：2026.08.1 / Golden Build ed01865 / Source Commit `ed01865a19616dd0573ba7548b13bf6e11db70f7` 已由用户确认完成 Golden/OVA 发布并投入使用，禁止回写。下一版本的 [FEISHU-UX2](iterations/feishu-ux2.md) 已获准实施；分页可靠性的明确前提是同一飞书 App 只有一个有效长连接接收客户端。多实例共享 App 的跨实例 session/callback 不在本轮范围，不实现 Redis、数据库、callback forwarding 或 ownership routing。不得顺带修改 shared-group/EVENT_NAME 路由、HELP、删除逻辑或启动 R5 重构。此次没有重新进行生产验收。
 
 按用户明确恢复的顺序：Feishu EVENT_NAME shared-group isolation → pre-refactor 只读审计 → 无剩余 P0/P1 blocker 后停止扩大 correctness 修复 → behavior-preserving refactor。
 在 ce36e96 上只读审计确认空 EVENT_NAME 仍会放行群命令；[最小隔离方案](iterations/feishu-event-name-isolation.md) 已形成，尚未实施。群轮询和长连接群消息需统一拒绝空名称，明确 p2p 路径保留既有兼容；不修改冻结 ISP、已收口批次、P3 刷新或设备删除逻辑。

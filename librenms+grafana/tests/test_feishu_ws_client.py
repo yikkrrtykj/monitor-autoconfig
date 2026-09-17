@@ -49,10 +49,11 @@ def _message(
     )
 
 
-def _card_action(value):
-    return SimpleNamespace(event=SimpleNamespace(
+def _card_action(value, *, app_id="cli_app", chat_id="oc_shared", message_id="om_card"):
+    return SimpleNamespace(header=SimpleNamespace(app_id=app_id), event=SimpleNamespace(
         action=SimpleNamespace(value=value),
         operator=SimpleNamespace(open_id="ou_operator"),
+        context=SimpleNamespace(open_chat_id=chat_id, open_message_id=message_id),
     ))
 
 
@@ -80,8 +81,16 @@ def test_event_handler_registers_pending_callback_only_in_company_mode(monkeypat
     fake_lark = SimpleNamespace(EventDispatcherHandler=Dispatcher)
 
     monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", False)
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", False)
     assert [name for name, _handler in client.build_event_handler(fake_lark)] == ["message"]
 
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", True)
+    assert [name for name, _handler in client.build_event_handler(fake_lark)] == [
+        "message",
+        "card",
+    ]
+
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", False)
     monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", True)
     assert [name for name, _handler in client.build_event_handler(fake_lark)] == [
         "message",
@@ -145,6 +154,102 @@ def test_company_mode_forwards_token_guarded_card_action(monkeypatch):
     assert response[1] == {"ok": True, "action": "keep"}
 
 
+def test_inspection_bridge_transport_uses_dedicated_endpoints_and_short_timeout(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return b'{"ok":true}'
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(client, "APP_ID", "cli_app")
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", True)
+    monkeypatch.setattr(client.urllib.request, "urlopen", fake_urlopen)
+
+    assert client.bind_inspection_card(
+        "session-1",
+        chat_id="oc_shared",
+        source_message_id="om_source",
+        card_message_id="om_card",
+    ) == {"ok": True}
+    assert client.inspection_page_via_bridge(
+        {"session_id": "session-1", "page": 2},
+        app_id="cli_app",
+        chat_id="oc_shared",
+        card_message_id="om_card",
+    ) == {"ok": True}
+
+    bind_request, bind_timeout = requests[0]
+    assert bind_request.full_url == f"{client.BRIDGE_URL}/bot/inspection/bind"
+    assert bind_request.get_method() == "POST"
+    assert bind_timeout == 1.0
+    assert json.loads(bind_request.data.decode("utf-8")) == {
+        "session_id": "session-1",
+        "app_id": "cli_app",
+        "chat_id": "oc_shared",
+        "source_message_id": "om_source",
+        "card_message_id": "om_card",
+    }
+
+    page_request, page_timeout = requests[1]
+    assert page_request.full_url == f"{client.BRIDGE_URL}/bot/inspection/page"
+    assert page_request.get_method() == "POST"
+    assert page_timeout == 1.0
+    assert json.loads(page_request.data.decode("utf-8")) == {
+        "session_id": "session-1",
+        "page": 2,
+        "app_id": "cli_app",
+        "chat_id": "oc_shared",
+        "card_message_id": "om_card",
+    }
+
+
+def test_reply_to_message_returns_created_card_message_id(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def read():
+            return b'{"code":0,"data":{"message_id":"om_card_reply"}}'
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(client, "tenant_access_token", lambda: "tenant-token")
+    monkeypatch.setattr(client.urllib.request, "urlopen", fake_urlopen)
+
+    message_id = client.reply_to_message(
+        "om_source",
+        card={"msg_type": "interactive", "card": {"schema": "2.0"}},
+    )
+
+    assert message_id == "om_card_reply"
+    request, timeout = requests[0]
+    assert request.full_url.endswith("/im/v1/messages/om_source/reply")
+    assert timeout == 10
+    assert json.loads(request.data.decode("utf-8")) == {
+        "msg_type": "interactive",
+        "content": json.dumps({"schema": "2.0"}, ensure_ascii=False),
+    }
+
+
 def test_pending_action_transport_errors_use_neutral_unknown_result_copy(monkeypatch):
     monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", True)
     value = {"action": "retire_keep", "key": "switch-1", "token": "tok"}
@@ -188,6 +293,125 @@ def test_failed_pending_action_card_uses_neutral_subtitle_and_keeps_detail(monke
     assert "设备当前可达，未执行删除" in response["card"]["data"]["body"]["elements"][0]["content"]
 
 
+def test_inspection_callback_is_independent_from_pending_delete(monkeypatch):
+    module_name = "lark_oapi.event.callback.model.p2_card_action_trigger"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        SimpleNamespace(P2CardActionTriggerResponse=lambda payload: payload),
+    )
+    calls = []
+    monkeypatch.setattr(client, "APP_ID", "cli_app")
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", True)
+    monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", False)
+    monkeypatch.setattr(
+        client,
+        "inspection_page_via_bridge",
+        lambda value, **context: calls.append((value, context)) or {
+            "ok": True,
+            "message": "已切换巡检页面",
+            "card": {
+                "msg_type": "interactive",
+                "card": {"schema": "2.0", "body": {"elements": []}},
+            },
+        },
+    )
+    value = {"action": "inspection_page", "session_id": "session", "page": 2}
+    response = client.on_card_action(_card_action(value))
+    assert calls == [(value, {
+        "app_id": "cli_app",
+        "chat_id": "oc_shared",
+        "card_message_id": "om_card",
+    })]
+    assert response["card"] == {
+        "type": "raw",
+        "data": {"schema": "2.0", "body": {"elements": []}},
+    }
+
+
+def test_inspection_callback_missing_or_wrong_context_fails_closed(monkeypatch):
+    module_name = "lark_oapi.event.callback.model.p2_card_action_trigger"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        SimpleNamespace(P2CardActionTriggerResponse=lambda payload: payload),
+    )
+    monkeypatch.setattr(client, "APP_ID", "cli_app")
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", True)
+    monkeypatch.setattr(
+        client,
+        "inspection_page_via_bridge",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must fail before bridge")),
+    )
+    value = {"action": "inspection_page", "session_id": "session", "page": 2}
+    for kwargs in (
+        {"app_id": "wrong"},
+        {"chat_id": ""},
+        {"message_id": ""},
+    ):
+        response = client.on_card_action(_card_action(value, **kwargs))
+        assert response["toast"]["type"] == "error"
+        assert "card" not in response
+
+
+def test_unknown_action_never_falls_back_to_retire(monkeypatch):
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", True)
+    monkeypatch.setattr(client, "DEVICE_PENDING_DELETE_ENABLED", True)
+    monkeypatch.setattr(
+        client,
+        "resolve_via_bridge",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unknown action mutated state")),
+    )
+    monkeypatch.setattr(
+        client,
+        "inspection_page_via_bridge",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unknown action paginated")),
+    )
+    assert client.on_card_action(_card_action({"action": "something_else"})) is None
+
+
+def test_initial_inspection_sends_only_first_card_and_binds_returned_message_id(monkeypatch):
+    card = {"msg_type": "interactive", "card": {"schema": "2.0", "header": {}}}
+    queries = []
+    replies = []
+    bindings = []
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", True)
+    monkeypatch.setattr(client, "APP_ID", "cli_app")
+    monkeypatch.setattr(
+        client,
+        "query_via_bridge",
+        lambda command, context: queries.append((command, context)) or {
+            "ok": True,
+            "text": "完成",
+            "cards": [card],
+            "inspection_session": {"session_id": "session-1"},
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "reply_to_message",
+        lambda message_id, text="", card=None: replies.append((message_id, text, card)) or "om_card_reply",
+    )
+    monkeypatch.setattr(
+        client,
+        "bind_inspection_card",
+        lambda session_id, **context: bindings.append((session_id, context)) or {"ok": True},
+    )
+
+    client._process_message(
+        "om_source", "网络巡检", False, "oc_shared", "cli_app",
+    )
+    assert queries == [("网络巡检", {
+        "app_id": "cli_app",
+        "chat_id": "oc_shared",
+        "source_message_id": "om_source",
+    })]
+    assert len(replies) == 1
+    assert bindings == [("session-1", {
+        "chat_id": "oc_shared",
+        "source_message_id": "om_source",
+        "card_message_id": "om_card_reply",
+    })]
 def test_extracts_command_after_robot_mention():
     message = _message("@_user_1  查光功率 192.168.10.31 Gi1/0/1")
     assert client.should_handle_message(message) is True

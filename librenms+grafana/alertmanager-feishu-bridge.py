@@ -123,6 +123,11 @@ from feishu_bridge.card_presentation import (
     make_card as _presentation_make_card,
     with_event_name as _presentation_with_event_name,
 )
+from feishu_bridge.inspection_pagination import (
+    InspectionCapacityError,
+    InspectionPaginationError,
+    InspectionSessionStore,
+)
 from feishu_bridge.delivery import FeishuDelivery
 from feishu_bridge.device_model import (
     GENERIC_DEVICE_MODEL_RE as _GENERIC_DEVICE_MODEL_RE,
@@ -255,6 +260,9 @@ DEVICE_DOWN_JOBS = os.environ.get(
 DEVICE_PENDING_DELETE_ENABLED = os.environ.get(
     "DEVICE_PENDING_DELETE_ENABLED", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
+INSPECTION_PAGINATION_ENABLED = os.environ.get(
+    "INSPECTION_PAGINATION_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_DELETE_ENABLED = os.environ.get(
     "DEVICE_AUTO_DELETE_ENABLED", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
@@ -302,6 +310,7 @@ FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "").strip()
 EVENT_NAME = os.environ.get("EVENT_NAME", "").strip()
 SERVER_IP = os.environ.get("SERVER_IP", "").strip()
 BIGSCREEN_PORT = os.environ.get("BIGSCREEN_PORT", "8088").strip() or "8088"
+INSPECTION_SESSIONS = InspectionSessionStore()
 DEVICE_ONLINE_FROM_PING = os.environ.get("DEVICE_ONLINE_FROM_PING", "false").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_FROM_PING = os.environ.get("DEVICE_AUTO_ADD_FROM_PING", "true").lower() in ("1", "true", "yes", "on")
 DEVICE_AUTO_ADD_SNMP_JOBS = os.environ.get("DEVICE_AUTO_ADD_SNMP_JOBS", "infra-core-ping,infra-dist-ping")
@@ -1595,7 +1604,8 @@ def evaluate_cisco_stackwise_samples(samples, baseline=None, device_names=None):
     return results, baseline
 
 
-def build_cisco_stackwise_audit_cards(devices):
+def collect_cisco_stackwise_audit(devices):
+    """Collect and evaluate StackWise once, including the existing baseline update."""
     query = (
         '{job="infra-switch-stackwise",'
         '__name__=~"cswRingRedundant|cswSwitchNumCurrent|cswSwitchRole|cswSwitchState"}'
@@ -1613,6 +1623,27 @@ def build_cisco_stackwise_audit_cards(devices):
         )
         if new_baseline != old_baseline:
             _save_json_dict(STACKWISE_STATE_FILE, new_baseline)
+    return stacks
+
+
+def _stackwise_item_markdown(stack):
+    roles = {}
+    for member in stack["members"]:
+        role = STACKWISE_ROLE_NAMES.get(member.get("role"), "角色未知")
+        roles[role] = roles.get(role, 0) + 1
+    role_text = " / ".join(f"{name} {count}" for name, count in roles.items()) or "角色无数据"
+    location = (
+        f"{stack['name']} ({stack['target']})"
+        if stack["name"] != stack["target"] else stack["target"]
+    )
+    if stack["healthy"]:
+        ring = "，环路冗余正常" if stack.get("ring") == 1 else ""
+        return f"• 🟢 **{location}**：{len(stack['members'])} 成员，{role_text}{ring}"
+    return f"• 🔴 **{location}**：" + "；".join(stack["issues"])
+
+
+def build_cisco_stackwise_audit_cards(devices):
+    stacks = collect_cisco_stackwise_audit(devices)
     if not stacks:
         return []
 
@@ -1625,17 +1656,7 @@ def build_cisco_stackwise_audit_cards(devices):
         "",
     ]
     for stack in stacks[:30]:
-        roles = {}
-        for member in stack["members"]:
-            role = STACKWISE_ROLE_NAMES.get(member.get("role"), "角色未知")
-            roles[role] = roles.get(role, 0) + 1
-        role_text = " / ".join(f"{name} {count}" for name, count in roles.items()) or "角色无数据"
-        location = f"{stack['name']} ({stack['target']})" if stack["name"] != stack["target"] else stack["target"]
-        if stack["healthy"]:
-            ring = "，环路冗余正常" if stack.get("ring") == 1 else ""
-            lines.append(f"• 🟢 **{location}**：{len(stack['members'])} 成员，{role_text}{ring}")
-        else:
-            lines.append(f"• 🔴 **{location}**：" + "；".join(stack["issues"]))
+        lines.append(_stackwise_item_markdown(stack))
     if len(stacks) > 30:
         lines.append(f"另有 {len(stacks) - 30} 组未展开。")
     return [_make_card(
@@ -1646,7 +1667,101 @@ def build_cisco_stackwise_audit_cards(devices):
     )]
 
 
-def handle_bot_query(text):
+def build_network_inspection_snapshot(devices, observations=None):
+    """Build one immutable display model from one collection/evaluation cycle."""
+    active = [
+        device for device in (devices or [])
+        if str(device.get("disabled") or "0").strip().lower() not in ("1", "true", "yes")
+    ]
+    names = {ip: row.get("name", "") for ip, row in (observations or {}).items()}
+    state_order = {"offline": 0, "online": 1}
+    active.sort(key=lambda item: (
+        state_order[_device_observed_state(item, observations)],
+        _device_display(item, names).casefold(),
+        _device_ip(item),
+    ))
+    states = [_device_observed_state(device, observations) for device in active]
+    offline_count = states.count("offline")
+    reachable_count = len(active) - offline_count
+    try:
+        stacks = collect_cisco_stackwise_audit(devices)
+    except Exception as exc:
+        stacks = []
+        log(f"[BOT] Cisco StackWise audit unavailable: {exc}")
+    failed_stacks = [item for item in stacks if not item["healthy"]]
+    items = []
+    for device in active:
+        state = _device_observed_state(device, observations)
+        marker = {"online": "🟢", "offline": "🔴"}[state]
+        items.append({
+            "kind": "device",
+            "markdown": (
+                f"• {marker} **{_device_display(device, names)}**"
+                f"（{_device_ip(device) or 'IP 未知'}）"
+            ),
+        })
+    items.extend({"kind": "stackwise", "markdown": _stackwise_item_markdown(stack)} for stack in stacks)
+    title = "网络巡检"
+    if EVENT_NAME:
+        title = f"【{EVENT_NAME}】 {title}"
+    return {
+        "title": title,
+        "subtitle": "Network Inspection",
+        "template": "orange" if offline_count or failed_stacks else "green",
+        "summary_lines": [
+            f"巡检时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"✅ 网络可达：**{reachable_count} 台**",
+            f"🔴 网络离线：**{offline_count} 台**",
+            f"📋 设备合计：**{len(active)} 台**",
+            f"🧩 思科堆叠：**{len(stacks)} 组**（异常 {len(failed_stacks)} 组）",
+        ],
+        "items": items,
+    }
+
+
+def bind_inspection_session(payload):
+    """Bind a sent Feishu card to its server-owned inspection session."""
+    if not INSPECTION_PAGINATION_ENABLED:
+        return {"ok": False, "code": "disabled", "error": "巡检分页未启用。"}
+    try:
+        INSPECTION_SESSIONS.bind_card(
+            str(payload.get("session_id") or ""),
+            app_id=str(payload.get("app_id") or ""),
+            chat_id=str(payload.get("chat_id") or ""),
+            source_message_id=str(payload.get("source_message_id") or ""),
+            card_message_id=str(payload.get("card_message_id") or ""),
+        )
+        return {"ok": True}
+    except (InspectionPaginationError, ValueError) as exc:
+        return {
+            "ok": False,
+            "code": getattr(exc, "code", "invalid_request"),
+            "error": getattr(exc, "message", "巡检卡片绑定失败。"),
+        }
+
+
+def resolve_inspection_page(payload):
+    """Read one immutable snapshot page; this path performs no monitoring I/O."""
+    if not INSPECTION_PAGINATION_ENABLED:
+        return {"ok": False, "code": "disabled", "error": "巡检分页未启用。"}
+    try:
+        card = INSPECTION_SESSIONS.page(
+            str(payload.get("session_id") or ""),
+            payload.get("page"),
+            app_id=str(payload.get("app_id") or ""),
+            chat_id=str(payload.get("chat_id") or ""),
+            card_message_id=str(payload.get("card_message_id") or ""),
+        )
+        return {"ok": True, "message": "已切换巡检页面", "card": card}
+    except (InspectionPaginationError, ValueError) as exc:
+        return {
+            "ok": False,
+            "code": getattr(exc, "code", "invalid_request"),
+            "error": getattr(exc, "message", "巡检页面不可用。"),
+        }
+
+
+def handle_bot_query(text, source_context=None):
     """Execute a Feishu query/audit command against already-polled data."""
     command = re.sub(r"\s+", " ", str(text or "")).strip()
     help_text = build_bot_help_text(EVENT_NAME)
@@ -1696,6 +1811,32 @@ def handle_bot_query(text):
             "ok": True,
             "text": _device_status_summary(devices, offline_only=False, observations=observations),
         }
+        source_context = source_context if isinstance(source_context, dict) else {}
+        trusted_app = FEISHU_APP_ID
+        source_app = str(source_context.get("app_id") or "").strip()
+        source_chat = str(source_context.get("chat_id") or "").strip()
+        source_message = str(source_context.get("source_message_id") or "").strip()
+        if (
+            INSPECTION_PAGINATION_ENABLED
+            and trusted_app
+            and source_app == trusted_app
+            and source_chat
+            and source_message
+        ):
+            snapshot = build_network_inspection_snapshot(devices, observations)
+            try:
+                session_id, first_card = INSPECTION_SESSIONS.create(
+                    snapshot,
+                    app_id=trusted_app,
+                    chat_id=source_chat,
+                    source_message_id=source_message,
+                )
+            except (InspectionCapacityError, InspectionPaginationError) as exc:
+                log(f"[BOT] inspection pagination unavailable: {exc.code}")
+                return {"ok": False, "text": exc.message}
+            result["cards"] = [first_card]
+            result["inspection_session"] = {"session_id": session_id}
+            return result
         cards = build_network_device_status_cards(devices, observations=observations)
         try:
             cards.extend(build_cisco_stackwise_audit_cards(devices))
@@ -5804,8 +5945,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_json(self):
+    def _read_json(self, max_bytes=None):
         length = int(self.headers.get("Content-Length", "0"))
+        if max_bytes is not None and length > max_bytes:
+            raise ValueError("request body too large")
         raw = self.rfile.read(length) if length > 0 else b"{}"
         text = raw.decode("utf-8", errors="replace").strip()
         if not text:
@@ -5839,12 +5982,47 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_retire_resolve()
         if self.path == "/bot/query":
             return self._handle_bot_query()
+        if self.path == "/bot/inspection/bind":
+            return self._handle_inspection_bind()
+        if self.path == "/bot/inspection/page":
+            return self._handle_inspection_page()
         return self._send(404, b"not found")
 
     def _handle_bot_query(self):
         payload = self._read_json()
-        result = handle_bot_query(str(payload.get("text") or ""))
+        result = handle_bot_query(
+            str(payload.get("text") or ""),
+            source_context=payload.get("source_context"),
+        )
         log(f"[BOT] query={str(payload.get('text') or '')[:120]!r} ok={result.get('ok')}")
+        return self._send(
+            200,
+            json.dumps(result, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_inspection_bind(self):
+        if not INSPECTION_PAGINATION_ENABLED:
+            return self._send(404, b"not found")
+        try:
+            payload = self._read_json(max_bytes=8192)
+            result = bind_inspection_session(payload)
+        except ValueError:
+            result = {"ok": False, "code": "invalid_request", "error": "巡检卡片绑定失败。"}
+        return self._send(
+            200,
+            json.dumps(result, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
+
+    def _handle_inspection_page(self):
+        if not INSPECTION_PAGINATION_ENABLED:
+            return self._send(404, b"not found")
+        try:
+            payload = self._read_json(max_bytes=8192)
+            result = resolve_inspection_page(payload)
+        except ValueError:
+            result = {"ok": False, "code": "invalid_request", "error": "巡检页面不可用。"}
         return self._send(
             200,
             json.dumps(result, ensure_ascii=False).encode("utf-8"),
