@@ -156,4 +156,12 @@ BUILD-INFO、EVENT_NAME 路由、HELP、删除状态机、拓扑、platform-api 
 - 真实飞书桌面/手机、1/2/3+ 页、快速连续点击、并存会话及旧卡片：未运行，必须在生产部署后
   由用户按手册验收。没有用户反馈前不得标记收口。
 
-push、CI 和最终待验收状态在发布步骤后继续记录。
+实现已提交并普通推送：
+
+- 实现提交：`d79b4492a4906cb95f6508b3e28d7f2bd7769346`
+- GitHub CI run：`35250338126`，结论 `success`。
+- CI 全部作业通过：Ubuntu Python 3.13 full pytest、Python syntax、JavaScript、ShellCheck、
+  shell syntax、Compose configuration、Linux static smoke 与 Dashboard JSON。
+
+当前状态为代码、push 与 CI 完成，尚待用户按验收手册执行部署和真实飞书桌面/手机验收；
+本批在收到生产反馈前保持未收口。
