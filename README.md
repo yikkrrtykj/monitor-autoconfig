@@ -273,14 +273,6 @@ cd librenms+grafana
 光功率读取 LibreNMS 已采集的 dBm 传感器及阈值，不会额外轮询交换机。
 `im.message.receive_v1` 是在“事件与回调”里添加的事件类型，不是权限管理页里的权限名。
 
-网络巡检分页卡默认关闭。确认同一飞书 App 只有一个有效长连接接收客户端后，可在 `.env`
-设置 `INSPECTION_PAGINATION_ENABLED=true`。启用后每页显示 6 个完整检查项，翻页只读取首次
-巡检生成的内存快照，不会重新查询 LibreNMS、Prometheus 或改写 StackWise 学习基线；快照
-20 分钟后失效，Bridge 重启后旧卡也会失效。该功能与 Pending Delete 独立，开启分页不会
-启用任何设备删除能力。多实例共享同一个 App 时回调可能落到未持有 session 的实例，本版本
-不提供跨实例 session 共享或转发，因此这种部署不能启用分页。验收步骤见
-[`docs/runbooks/feishu-ux2-acceptance.md`](docs/runbooks/feishu-ux2-acceptance.md)。
-
 Pending Delete 是部署级可选能力，同一套代码不区分分支：
 
 - 比赛 Golden VM / appliance 保持 `DEVICE_PENDING_DELETE_ENABLED=false`（默认），不生成

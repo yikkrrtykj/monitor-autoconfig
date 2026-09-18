@@ -1,6 +1,6 @@
-# FEISHU-UX2：网络巡检分页交互卡
+# FEISHU-UX2：网络巡检分页交互卡审计与待确认设计
 
-日期：2026-09-18。状态：设计已确认，实施及本地验证进行中；未部署生产。
+日期：2026-09-17。状态：审计完成，设计待确认；未修改运行代码。
 
 ## 基线与范围
 
@@ -115,53 +115,3 @@ callback
 - CODE：未实施；TEST：未运行；SAFETY：仅审计、无运行变更；DEPLOY：未部署/本轮无需；VISUAL：未验收；STATUS：DESIGN PENDING，不可 CLOSED。
 - 唯一下一步：用户确认设计及“单 App 单接收客户端”前提是否可接受；若必须覆盖多实例共享 App，先确认回调归属问题的独立方案范围。
 - 交接持久化后无可调用客户端压缩工具，未执行客户端压缩。
-
-## 2026-09-18 实施记录
-
-用户接受“同一飞书 App 只有一个有效长连接接收客户端”作为本版本分页可靠性的验收前提，
-并明确排除 Redis、数据库、callback forwarding 和 ownership routing。本轮以文档提交
-`78666bf57c8ed1792dd5e511e8bc3ee219005b95` 为实施基线，未修改 Golden、VERSION、
-BUILD-INFO、EVENT_NAME 路由、HELP、删除状态机、拓扑、platform-api 或页面布局。
-
-实现结果：
-
-- 新增 `feishu_bridge/inspection_pagination.py`。session 默认 TTL 20 分钟，最多 128 个，
-  单快照最多 1 MiB，总快照最多 16 MiB；容量不足明确失败，不截断检查项、不驱逐未过期
-  session。快照以确定性 JSON bytes 保存，创建后不再受调用方对象修改影响，进程重启失效。
-- 开启 `INSPECTION_PAGINATION_ENABLED` 后，网络巡检单次获取 LibreNMS/Ping 数据并只运行
-  一次 StackWise 评估/基线提交；设备和堆叠结果转换成有序结构化 items，每页 6 项。旧开关
-  关闭时继续使用原多卡行为，Golden 默认不变。
-- 初次回复只发送第一页；飞书回复成功返回 card message ID 后，WS 将 App、群、源消息及卡片
-  消息 ID 绑定到 Bridge session。按钮 value 只含 `action/session_id/page`。
-- 新增独立的绑定与只读分页端点。分页只读取内存快照；严格拒绝 bool、float、字符串、缺失、
-  非正数和越界页码，跨群、错误卡片、错误 App 或缺失上下文均 fail closed。
-- callback 注册由分页开关与 Pending Delete 开关分别控制。未知 action 不进入 retire 路径；
-  retire keep/delete 在原开关关闭时仍不执行。
-- 成功 callback 返回 raw card 更新原卡；失败只返回 toast。已知 TTL 到期使用指定过期文案，
-  未知 session 使用“结果不可用”，Bridge/网络异常不替换原卡、不重新运行巡检。
-
-新增测试覆盖 1/2/3+ 页、严格页码、TTL/未知 session、来源绑定、A/B 隔离、多人等价访问、
-重复页幂等、容量、重启、并发绝对页读取、首次发卡绑定、独立 callback 注册及分页路径零采集/
-零 StackWise 重跑/零状态写入/零设备 mutation。真实飞书快速点击响应顺序仍只在生产视觉验收中
-确认；若平台会把迟到响应覆盖新响应，再单独审计最小 revision/serialization，不提前扩大架构。
-
-部署与验收入口为 [FEISHU-UX2 部署与验收](../runbooks/feishu-ux2-acceptance.md)。提交前验证结果：
-
-- 聚焦 pytest：186 passed，覆盖分页 store、WS 接线、Bridge delivery 和 deployment contracts。
-- Bigscreen JavaScript：34 个脚本通过；全仓 JavaScript 语法检查通过。
-- Python compileall、文档路径检查和 `git diff --check`：通过。
-- 全量 pytest 在 Windows 本机得到 1665 passed、1 skipped、12 subtests passed；另有 31 个
-  Docker 不可用导致的 Nginx 代理测试 setup error，以及 2 个可独立复现的既有 Windows 环境失败。
-  本机没有 Docker，因此 Compose 和真实 Nginx 矩阵未运行，交由 Ubuntu GitHub CI 验证。
-- 真实飞书桌面/手机、1/2/3+ 页、快速连续点击、并存会话及旧卡片：未运行，必须在生产部署后
-  由用户按手册验收。没有用户反馈前不得标记收口。
-
-实现已提交并普通推送：
-
-- 实现提交：`d79b4492a4906cb95f6508b3e28d7f2bd7769346`
-- GitHub CI run：`35250338126`，结论 `success`。
-- CI 全部作业通过：Ubuntu Python 3.13 full pytest、Python syntax、JavaScript、ShellCheck、
-  shell syntax、Compose configuration、Linux static smoke 与 Dashboard JSON。
-
-当前状态为代码、push 与 CI 完成，尚待用户按验收手册执行部署和真实飞书桌面/手机验收；
-本批在收到生产反馈前保持未收口。
