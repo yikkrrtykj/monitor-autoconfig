@@ -10,6 +10,7 @@ from feishu_bridge.inspection_pagination import (
     InspectionCapacityError,
     InspectionPaginationError,
     InspectionSessionStore,
+    render_page,
 )
 
 
@@ -49,9 +50,18 @@ def body(card):
 
 def callback_values(card):
     values = []
-    for element in body(card):
-        for behavior in element.get("behaviors") or []:
-            values.append(behavior["value"])
+
+    def collect(value):
+        if isinstance(value, dict):
+            for behavior in value.get("behaviors") or []:
+                values.append(behavior["value"])
+            for nested in value.values():
+                collect(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect(nested)
+
+    collect(body(card))
     return values
 
 
@@ -67,13 +77,9 @@ def create_bound(store, count=13, *, app="cli_app", chat="oc_group", source="om_
 
 
 def test_single_page_has_all_items_and_no_pagination_controls():
-    store = InspectionSessionStore()
-    session_id, card = store.create(
-        snapshot(6), app_id="cli_app", chat_id="oc_group", source_message_id="om_source",
-    )
+    card = render_page(snapshot(6), "", 1)
 
     rendered = json.dumps(card, ensure_ascii=False)
-    assert session_id
     for index in range(1, 7):
         assert f"检查项 {index}" in rendered
     assert "第 **" not in rendered
@@ -109,6 +115,9 @@ def test_three_pages_middle_page_has_both_controls():
         {"action": "inspection_page", "session_id": session_id, "page": 1},
         {"action": "inspection_page", "session_id": session_id, "page": 3},
     ]
+    button_rows = [element for element in body(middle) if element.get("tag") == "column_set"]
+    assert len(button_rows) == 1
+    assert len(button_rows[0]["columns"]) == 2
 
 
 @pytest.mark.parametrize("page", [None, True, False, 0, -1, 1.0, 2.5, "", "2", "bad"])
@@ -335,3 +344,31 @@ def test_bridge_collects_once_then_pagination_path_is_strictly_read_only(monkeyp
     assert page["ok"] is True
     assert "switch-7" in json.dumps(page["card"], ensure_ascii=False)
     assert calls == {"librenms": 1, "prometheus": 1, "stackwise": 1}
+
+
+def test_bridge_single_page_does_not_create_or_bind_a_session(monkeypatch):
+    devices = [
+        {"hostname": f"switch-{index}", "ip": f"192.0.2.{index}", "status": 1, "disabled": 0}
+        for index in range(1, 7)
+    ]
+    store = InspectionSessionStore(max_sessions=1)
+    monkeypatch.setattr(bridge, "INSPECTION_PAGINATION_ENABLED", True)
+    monkeypatch.setattr(bridge, "FEISHU_APP_ID", "cli_app")
+    monkeypatch.setattr(bridge, "LIBRENMS_URL", "http://librenms:8000")
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "token")
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda _token: copy.deepcopy(devices))
+    monkeypatch.setattr(bridge, "fetch_network_reachability", lambda: {})
+    monkeypatch.setattr(bridge, "collect_cisco_stackwise_audit", lambda _devices: [])
+    monkeypatch.setattr(bridge, "INSPECTION_SESSIONS", store)
+
+    result = bridge.handle_bot_query("网络巡检", {
+        "app_id": "cli_app",
+        "chat_id": "oc_group",
+        "source_message_id": "om_source",
+    })
+
+    assert result["ok"] is True
+    assert len(result["cards"]) == 1
+    assert "inspection_session" not in result
+    assert callback_values(result["cards"][0]) == []
+    assert store.stats() == {"sessions": 0, "bytes": 0}

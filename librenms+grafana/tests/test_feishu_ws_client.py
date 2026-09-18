@@ -214,6 +214,42 @@ def test_inspection_bridge_transport_uses_dedicated_endpoints_and_short_timeout(
     }
 
 
+def test_inspection_bind_retries_only_transport_failures(monkeypatch):
+    attempts = []
+    sleeps = []
+
+    def post(_path, _payload, _timeout):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 3:
+            raise TimeoutError("transient")
+        return {"ok": True}
+
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", True)
+    monkeypatch.setattr(client, "_post_bridge_json", post)
+    monkeypatch.setattr(client.time, "sleep", sleeps.append)
+
+    assert client.bind_inspection_card(
+        "session-1", chat_id="oc_shared",
+        source_message_id="om_source", card_message_id="om_card",
+    ) == {"ok": True}
+    assert attempts == [1, 2, 3]
+    assert sleeps == [0.1, 0.2]
+
+    attempts.clear()
+    sleeps.clear()
+    monkeypatch.setattr(
+        client,
+        "_post_bridge_json",
+        lambda *_args, **_kwargs: attempts.append(1) or {"ok": False, "code": "expired"},
+    )
+    assert client.bind_inspection_card(
+        "session-1", chat_id="oc_shared",
+        source_message_id="om_source", card_message_id="om_card",
+    ) == {"ok": False, "code": "expired"}
+    assert attempts == [1]
+    assert sleeps == []
+
+
 def test_reply_to_message_returns_created_card_message_id(monkeypatch):
     requests = []
 
@@ -352,6 +388,57 @@ def test_inspection_callback_missing_or_wrong_context_fails_closed(monkeypatch):
         response = client.on_card_action(_card_action(value, **kwargs))
         assert response["toast"]["type"] == "error"
         assert "card" not in response
+
+
+def test_inspection_callback_latest_started_request_wins(monkeypatch):
+    module_name = "lark_oapi.event.callback.model.p2_card_action_trigger"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        SimpleNamespace(P2CardActionTriggerResponse=lambda payload: payload),
+    )
+    started = threading.Event()
+    release = threading.Event()
+    responses = {}
+
+    def page(value, **_context):
+        if value["page"] == 2:
+            started.set()
+            assert release.wait(2)
+            marker = "older"
+        else:
+            marker = "newer"
+        return {
+            "ok": True,
+            "message": marker,
+            "card": {"msg_type": "interactive", "card": {"schema": "2.0", "marker": marker}},
+        }
+
+    monkeypatch.setattr(client, "APP_ID", "cli_app")
+    monkeypatch.setattr(client, "INSPECTION_PAGINATION_ENABLED", True)
+    monkeypatch.setattr(client, "inspection_page_via_bridge", page)
+    with client._INSPECTION_CALLBACK_LOCK:
+        client._INSPECTION_CALLBACK_SEQUENCE.clear()
+
+    older = threading.Thread(
+        target=lambda: responses.setdefault("older", client.on_card_action(_card_action({
+            "action": "inspection_page", "session_id": "session", "page": 2,
+        }))),
+    )
+    older.start()
+    assert started.wait(2)
+    responses["newer"] = client.on_card_action(_card_action({
+        "action": "inspection_page", "session_id": "session", "page": 1,
+    }))
+    release.set()
+    older.join(2)
+    assert not older.is_alive()
+
+    assert responses["newer"]["card"]["data"]["marker"] == "newer"
+    assert "card" not in responses["older"]
+    assert responses["older"]["toast"] == {
+        "type": "info", "content": "已忽略较早的翻页操作。",
+    }
 
 
 def test_unknown_action_never_falls_back_to_retire(monkeypatch):

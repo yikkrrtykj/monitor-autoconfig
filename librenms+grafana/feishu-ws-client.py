@@ -59,6 +59,10 @@ _POLL_READY = False
 _POLL_STATE_LOCK = threading.Lock()
 _DEGRADED_WARNING_EMITTED = False
 _RESOLVED_COMMAND_CHAT_ID = ""
+_INSPECTION_CALLBACK_LOCK = threading.Lock()
+_INSPECTION_CALLBACK_SEQUENCE = {}
+_INSPECTION_CALLBACK_SEQUENCE_TTL = 1200.0
+_INSPECTION_CALLBACK_SEQUENCE_LIMIT = 512
 
 
 def log(message: str) -> None:
@@ -112,17 +116,24 @@ def _post_bridge_json(path: str, payload: dict, timeout: float) -> dict:
 def bind_inspection_card(session_id, *, chat_id, source_message_id, card_message_id):
     if not INSPECTION_PAGINATION_ENABLED:
         return {"ok": False, "error": "巡检分页未启用"}
-    try:
-        return _post_bridge_json("/bot/inspection/bind", {
-            "session_id": str(session_id or ""),
-            "app_id": APP_ID,
-            "chat_id": str(chat_id or ""),
-            "source_message_id": str(source_message_id or ""),
-            "card_message_id": str(card_message_id or ""),
-        }, 1.0)
-    except Exception as exc:  # noqa: BLE001 - the already-sent card stays visible
-        log(f"inspection card bind failed: {type(exc).__name__}")
-        return {"ok": False, "error": "巡检分页绑定失败"}
+    payload = {
+        "session_id": str(session_id or ""),
+        "app_id": APP_ID,
+        "chat_id": str(chat_id or ""),
+        "source_message_id": str(source_message_id or ""),
+        "card_message_id": str(card_message_id or ""),
+    }
+    for attempt in range(3):
+        try:
+            return _post_bridge_json("/bot/inspection/bind", payload, 1.0)
+        except Exception as exc:  # noqa: BLE001 - bounded idempotent transport retry
+            log(
+                "inspection card bind transport failed "
+                f"attempt={attempt + 1}/3: {type(exc).__name__}"
+            )
+            if attempt < 2:
+                time.sleep(0.1 * (attempt + 1))
+    return {"ok": False, "error": "巡检分页绑定失败"}
 
 
 def inspection_page_via_bridge(value, *, app_id, chat_id, card_message_id):
@@ -192,9 +203,8 @@ def build_inspection_response(result: dict):
     )
     ok = bool(result.get("ok"))
     message = str(result.get("message") or result.get("error") or "巡检页面不可用。")
-    payload = {
-        "toast": {"type": "success" if ok else "error", "content": message},
-    }
+    toast_type = "success" if ok else ("info" if result.get("code") == "superseded" else "error")
+    payload = {"toast": {"type": toast_type, "content": message}}
     card = result.get("card")
     if ok and isinstance(card, dict):
         raw = card.get("card") if card.get("msg_type") == "interactive" else card
@@ -220,6 +230,34 @@ def _trusted_card_context(data):
     }
 
 
+def _begin_inspection_callback(card_message_id):
+    """Assign a per-card arrival sequence and bound the process-local registry."""
+    card_message_id = str(card_message_id or "").strip()
+    now = time.monotonic()
+    with _INSPECTION_CALLBACK_LOCK:
+        for key, (_sequence, last_seen) in list(_INSPECTION_CALLBACK_SEQUENCE.items()):
+            if now - last_seen >= _INSPECTION_CALLBACK_SEQUENCE_TTL:
+                _INSPECTION_CALLBACK_SEQUENCE.pop(key, None)
+        if (
+            card_message_id not in _INSPECTION_CALLBACK_SEQUENCE
+            and len(_INSPECTION_CALLBACK_SEQUENCE) >= _INSPECTION_CALLBACK_SEQUENCE_LIMIT
+        ):
+            oldest = min(
+                _INSPECTION_CALLBACK_SEQUENCE,
+                key=lambda key: _INSPECTION_CALLBACK_SEQUENCE[key][1],
+            )
+            _INSPECTION_CALLBACK_SEQUENCE.pop(oldest, None)
+        sequence = _INSPECTION_CALLBACK_SEQUENCE.get(card_message_id, (0, now))[0] + 1
+        _INSPECTION_CALLBACK_SEQUENCE[card_message_id] = (sequence, now)
+        return sequence
+
+
+def _inspection_callback_is_latest(card_message_id, sequence):
+    with _INSPECTION_CALLBACK_LOCK:
+        current = _INSPECTION_CALLBACK_SEQUENCE.get(str(card_message_id or "").strip())
+        return current is not None and current[0] == sequence
+
+
 def on_card_action(data):
     action = getattr(getattr(data, "event", None), "action", None)
     value = dict(getattr(action, "value", None) or {})
@@ -233,7 +271,14 @@ def on_card_action(data):
                 "ok": False,
                 "error": "无法确认巡检卡片来源。",
             })
+        sequence = _begin_inspection_callback(context["card_message_id"])
         result = inspection_page_via_bridge(value, **context)
+        if not _inspection_callback_is_latest(context["card_message_id"], sequence):
+            return build_inspection_response({
+                "ok": False,
+                "code": "superseded",
+                "error": "已忽略较早的翻页操作。",
+            })
         return build_inspection_response(result)
     if action_name not in ("retire_delete", "retire_keep"):
         return None

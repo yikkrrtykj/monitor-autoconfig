@@ -127,6 +127,7 @@ from feishu_bridge.inspection_pagination import (
     InspectionCapacityError,
     InspectionPaginationError,
     InspectionSessionStore,
+    render_page as render_inspection_page,
 )
 from feishu_bridge.delivery import FeishuDelivery
 from feishu_bridge.device_model import (
@@ -1824,6 +1825,11 @@ def handle_bot_query(text, source_context=None):
             and source_message
         ):
             snapshot = build_network_inspection_snapshot(devices, observations)
+            if len(snapshot.get("items") or []) <= INSPECTION_SESSIONS.page_size:
+                result["cards"] = [render_inspection_page(
+                    snapshot, "", 1, INSPECTION_SESSIONS.page_size,
+                )]
+                return result
             try:
                 session_id, first_card = INSPECTION_SESSIONS.create(
                     snapshot,

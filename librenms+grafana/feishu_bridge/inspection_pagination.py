@@ -81,6 +81,22 @@ def _button(label, session_id, page):
     }
 
 
+def _button_row(buttons):
+    return {
+        "tag": "column_set",
+        "horizontal_spacing": "8px",
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [button],
+            }
+            for button in buttons
+        ],
+    }
+
+
 def render_page(snapshot, session_id, page, page_size=6):
     """Render one absolute page without mutating the stored snapshot."""
     page = _strict_page(page)
@@ -103,10 +119,12 @@ def render_page(snapshot, session_id, page, page_size=6):
             "content": f"第 **{page} / {page_count}** 页",
             "text_align": "center",
         })
+        buttons = []
         if page > 1:
-            extra.append(_button("上一页", session_id, page - 1))
+            buttons.append(_button("上一页", session_id, page - 1))
         if page < page_count:
-            extra.append(_button("下一页", session_id, page + 1))
+            buttons.append(_button("下一页", session_id, page + 1))
+        extra.append(_button_row(buttons))
     return make_card(
         str(snapshot.get("title") or "网络巡检"),
         str(snapshot.get("subtitle") or "Network Inspection"),
