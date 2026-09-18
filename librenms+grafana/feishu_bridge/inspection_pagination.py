@@ -97,7 +97,7 @@ def _button_row(buttons):
     }
 
 
-def render_page(snapshot, session_id, page, page_size=6):
+def render_page(snapshot, session_id, page, page_size=10):
     """Render one absolute page without mutating the stored snapshot."""
     page = _strict_page(page)
     items = snapshot.get("items") or []
@@ -129,7 +129,7 @@ def render_page(snapshot, session_id, page, page_size=6):
         str(snapshot.get("title") or "网络巡检"),
         str(snapshot.get("subtitle") or "Network Inspection"),
         str(snapshot.get("template") or "green"),
-        "\n\n".join(lines),
+        "\n".join(lines),
         extra_elements=extra,
     )
 
@@ -140,7 +140,7 @@ class InspectionSessionStore:
     def __init__(
         self, *, ttl_seconds=1200, max_sessions=128,
         max_snapshot_bytes=1024 * 1024, max_total_bytes=16 * 1024 * 1024,
-        page_size=6, clock=time.monotonic,
+        page_size=10, clock=time.monotonic,
     ):
         self.ttl_seconds = float(ttl_seconds)
         self.max_sessions = int(max_sessions)

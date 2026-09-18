@@ -65,7 +65,7 @@ def callback_values(card):
     return values
 
 
-def create_bound(store, count=13, *, app="cli_app", chat="oc_group", source="om_source", card="om_card"):
+def create_bound(store, count=11, *, app="cli_app", chat="oc_group", source="om_source", card="om_card"):
     session_id, first = store.create(
         snapshot(count), app_id=app, chat_id=chat, source_message_id=source,
     )
@@ -76,19 +76,34 @@ def create_bound(store, count=13, *, app="cli_app", chat="oc_group", source="om_
     return session_id, first
 
 
-def test_single_page_has_all_items_and_no_pagination_controls():
-    card = render_page(snapshot(6), "", 1)
+@pytest.mark.parametrize("count", [1, 10])
+def test_single_page_has_all_items_and_no_pagination_controls(count):
+    card = render_page(snapshot(count), "", 1)
 
     rendered = json.dumps(card, ensure_ascii=False)
-    for index in range(1, 7):
+    for index in range(1, count + 1):
         assert f"检查项 {index}" in rendered
     assert "第 **" not in rendered
     assert callback_values(card) == []
 
 
+def test_body_uses_single_newlines_and_one_summary_item_section_break():
+    card = render_page(snapshot(3), "", 1)
+    content = body(card)[0]["content"]
+    assert content == (
+        "巡检时间：2026-09-18 12:00:00\n"
+        "设备合计：12 台\n\n"
+        "检查项 1\n"
+        "检查项 2\n"
+        "检查项 3"
+    )
+    assert content.count("\n\n") == 1
+    assert "\n\n\n" not in content
+
+
 def test_two_pages_use_absolute_next_and_previous_actions():
     store = InspectionSessionStore()
-    session_id, first = create_bound(store, count=7)
+    session_id, first = create_bound(store, count=11)
     assert callback_values(first) == [{
         "action": "inspection_page", "session_id": session_id, "page": 2,
     }]
@@ -97,8 +112,8 @@ def test_two_pages_use_absolute_next_and_previous_actions():
         session_id, 2, app_id="cli_app", chat_id="oc_group", card_message_id="om_card",
     )
     rendered = json.dumps(second, ensure_ascii=False)
-    assert "检查项 7" in rendered
-    assert "检查项 6" not in rendered
+    assert "检查项 11" in rendered
+    assert "检查项 10" not in rendered
     assert "第 **2 / 2** 页" in rendered
     assert callback_values(second) == [{
         "action": "inspection_page", "session_id": session_id, "page": 1,
@@ -107,7 +122,7 @@ def test_two_pages_use_absolute_next_and_previous_actions():
 
 def test_three_pages_middle_page_has_both_controls():
     store = InspectionSessionStore()
-    session_id, _first = create_bound(store, count=14)
+    session_id, _first = create_bound(store, count=21)
     middle = store.page(
         session_id, 2, app_id="cli_app", chat_id="oc_group", card_message_id="om_card",
     )
@@ -134,7 +149,7 @@ def test_page_rejects_non_integer_and_out_of_range_values(page):
 
 def test_page_rejects_page_past_server_side_page_count():
     store = InspectionSessionStore()
-    session_id, _first = create_bound(store, count=7)
+    session_id, _first = create_bound(store, count=11)
     with pytest.raises(InspectionPaginationError) as caught:
         store.page(
             session_id, 3,
@@ -184,7 +199,7 @@ def test_page_fails_closed_for_wrong_or_missing_trusted_context(app, chat, card)
 
 def test_sessions_are_independent_and_snapshot_is_immutable():
     store = InspectionSessionStore()
-    original_a = snapshot(7)
+    original_a = snapshot(11)
     session_a, _ = store.create(
         original_a, app_id="cli_app", chat_id="oc_a", source_message_id="om_a",
     )
@@ -194,7 +209,7 @@ def test_sessions_are_independent_and_snapshot_is_immutable():
         source_message_id="om_a", card_message_id="card_a",
     )
     session_b, _ = create_bound(
-        store, count=13, chat="oc_b", source="om_b", card="card_b",
+        store, count=21, chat="oc_b", source="om_b", card="card_b",
     )
 
     page_a = store.page(
@@ -205,7 +220,7 @@ def test_sessions_are_independent_and_snapshot_is_immutable():
     )
     assert "MUTATED" not in json.dumps(page_a, ensure_ascii=False)
     assert "检查项 1" in json.dumps(page_a, ensure_ascii=False)
-    assert "检查项 13" in json.dumps(page_b, ensure_ascii=False)
+    assert "检查项 21" in json.dumps(page_b, ensure_ascii=False)
 
 
 def test_repeated_and_multi_user_clicks_are_idempotent_without_current_page_state():
@@ -264,7 +279,7 @@ def test_restart_loses_sessions_and_reports_unknown_not_expired():
 
 def test_concurrent_absolute_page_reads_are_safe_and_independent():
     store = InspectionSessionStore()
-    session_id, _first = create_bound(store, count=19)
+    session_id, _first = create_bound(store, count=31)
     kwargs = {"app_id": "cli_app", "chat_id": "oc_group", "card_message_id": "om_card"}
     pages = [1, 2, 3, 4] * 8
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -277,7 +292,7 @@ def test_bridge_collects_once_then_pagination_path_is_strictly_read_only(monkeyp
     calls = {"librenms": 0, "prometheus": 0, "stackwise": 0}
     devices = [
         {"hostname": f"switch-{index}", "ip": f"192.0.2.{index}", "status": 1, "disabled": 0}
-        for index in range(1, 8)
+        for index in range(1, 12)
     ]
 
     def fetch_devices(_token):
@@ -342,14 +357,14 @@ def test_bridge_collects_once_then_pagination_path_is_strictly_read_only(monkeyp
         "card_message_id": "om_card",
     })
     assert page["ok"] is True
-    assert "switch-7" in json.dumps(page["card"], ensure_ascii=False)
+    assert "switch-9" in json.dumps(page["card"], ensure_ascii=False)
     assert calls == {"librenms": 1, "prometheus": 1, "stackwise": 1}
 
 
 def test_bridge_single_page_does_not_create_or_bind_a_session(monkeypatch):
     devices = [
         {"hostname": f"switch-{index}", "ip": f"192.0.2.{index}", "status": 1, "disabled": 0}
-        for index in range(1, 7)
+        for index in range(1, 11)
     ]
     store = InspectionSessionStore(max_sessions=1)
     monkeypatch.setattr(bridge, "INSPECTION_PAGINATION_ENABLED", True)
