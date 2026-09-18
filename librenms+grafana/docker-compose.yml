@@ -873,6 +873,8 @@ services:
     volumes:
       - ./:/workspace
       - ../VERSION:/workspace/VERSION:ro
+      - ./librenms-data:/librenms-data:ro
+      - topology-data:/etc/prometheus/targets/topology:ro
       - platform-state:/workspace/platform-state
       - /var/run/docker.sock:/var/run/docker.sock
       - /usr/bin:/host/usr/bin:ro
@@ -895,6 +897,13 @@ services:
       PLATFORM_PRECHECK_BIGSCREEN_URL: "${PLATFORM_PRECHECK_BIGSCREEN_URL:-http://bigscreen}"
       PLATFORM_PRECHECK_LIBRENMS_URL: "${PLATFORM_PRECHECK_LIBRENMS_URL:-http://librenms:8000}"
       PLATFORM_PRECHECK_PLAYER_TARGETS_URL: "${PLATFORM_PRECHECK_PLAYER_TARGETS_URL:-http://player-targets:9199}"
+      PLATFORM_NETWORK_LIBRENMS_URL: "${PLATFORM_NETWORK_LIBRENMS_URL:-http://librenms:8000}"
+      PLATFORM_NETWORK_LIBRENMS_TOKEN_FILE: "${PLATFORM_NETWORK_LIBRENMS_TOKEN_FILE:-/librenms-data/librenms-api-token}"
+      PLATFORM_NETWORK_PROMETHEUS_URL: "${PLATFORM_NETWORK_PROMETHEUS_URL:-http://prometheus:9090}"
+      PLATFORM_NETWORK_TOPOLOGY_FILE: "${PLATFORM_NETWORK_TOPOLOGY_FILE:-/etc/prometheus/targets/topology/edges.json}"
+      PLATFORM_NETWORK_ISP_INVENTORY_FILE: "${PLATFORM_NETWORK_ISP_INVENTORY_FILE:-/etc/prometheus/targets/topology/isp_targets.json}"
+      PLATFORM_NETWORK_ISP_STATE_FILE: "${PLATFORM_NETWORK_ISP_STATE_FILE:-/etc/prometheus/targets/topology/isp-discovery-state.json}"
+      PLATFORM_NETWORK_HTTP_TIMEOUT: "${PLATFORM_NETWORK_HTTP_TIMEOUT:-5}"
       PLATFORM_WRITE_ENABLED: "${PLATFORM_WRITE_ENABLED:-true}"
       PLATFORM_AUTH_ENABLED: "${PLATFORM_AUTH_ENABLED:-true}"
       PLATFORM_ADMIN_USER: "${PLATFORM_ADMIN_USER:-admin}"

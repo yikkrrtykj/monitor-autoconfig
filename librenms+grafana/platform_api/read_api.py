@@ -15,6 +15,7 @@ from . import (
     event_config,
     incidents,
     iperf_runtime,
+    network_read,
 )
 
 
@@ -30,6 +31,24 @@ class ReadApiContext:
     require_auth: Callable[[Any], dict]
     read_json_file: Callable[[Path, Any], Any]
     stamp: Callable[[], str]
+    network_context: network_read.NetworkReadContext | None = None
+    network_require_auth: Callable[[Any], dict] | None = None
+
+
+def _handle_network_read(
+    handler: Any,
+    context: ReadApiContext,
+    reader: Callable[[network_read.NetworkReadContext], dict[str, Any]],
+) -> None:
+    if context.network_require_auth is None or context.network_context is None:
+        raise RuntimeError("network read API is not configured")
+    context.network_require_auth(handler)
+    try:
+        payload = reader(context.network_context)
+    except network_read.NetworkReadError as exc:
+        handler._send_json(exc.payload, exc.status)
+        return
+    handler._send_json(payload)
 
 
 def handle_get(handler: Any, request_target: str, context: ReadApiContext) -> None:
@@ -40,6 +59,14 @@ def handle_get(handler: Any, request_target: str, context: ReadApiContext) -> No
         handler._send_json(
             event_config.version_payload(context.event_config_context),
         )
+    elif path == "/network/devices":
+        _handle_network_read(handler, context, network_read.read_devices)
+    elif path == "/network/topology":
+        _handle_network_read(handler, context, network_read.read_topology)
+    elif path == "/network/isp":
+        _handle_network_read(handler, context, network_read.read_isp)
+    elif path == "/network/overview":
+        _handle_network_read(handler, context, network_read.read_overview)
     elif path == "/config":
         context.require_auth(handler)
         payload = event_config.config_payload(context.event_config_context)

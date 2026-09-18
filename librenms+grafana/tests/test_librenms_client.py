@@ -31,8 +31,8 @@ class FakeResponse:
     def getcode(self):
         return self.status
 
-    def read(self):
-        return self.raw
+    def read(self, limit=-1):
+        return self.raw if limit < 0 else self.raw[:limit]
 
 
 @pytest.fixture(autouse=True)
@@ -271,6 +271,36 @@ def test_list_devices_normalizes_required_identity_fields():
         "sysName": "edge-7",
         "ip": "192.0.2.7",
     }]
+
+
+@pytest.mark.parametrize("payload", [
+    {"status": "ok"},
+    {"status": "ok", "devices": None},
+    {"status": "ok", "devices": ["bad"]},
+    {"status": "ok", "devices": [{}]},
+])
+def test_strict_device_inventory_rejects_missing_or_malformed_envelope(payload):
+    client = make_client()
+    attach_sequence(client, [FakeResponse(payload)])
+
+    with pytest.raises(LibreNMSInvalidResponse):
+        client.list_devices(strict=True)
+
+
+def test_strict_device_inventory_accepts_legitimate_empty_list():
+    client = make_client()
+    attach_sequence(client, [FakeResponse({"status": "ok", "devices": []})])
+
+    assert client.list_devices(strict=True) == []
+
+
+def test_optional_response_byte_limit_rejects_oversize_payload():
+    client = make_client()
+    client.max_response_bytes = 8
+    attach_sequence(client, [FakeResponse(raw=b'{"status":"ok"}')])
+
+    with pytest.raises(LibreNMSInvalidResponse):
+        client.get_json("/api/v0/devices")
 
 
 @pytest.mark.parametrize(

@@ -86,6 +86,30 @@ def _normalise_rows(payload: Mapping[str, Any], key: str) -> list[dict[str, Any]
     return []
 
 
+def _strict_rows(payload: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
+    """Validate an authoritative list envelope without changing legacy callers."""
+    if key not in payload:
+        raise LibreNMSInvalidResponse(
+            f"LibreNMS response is missing the {key} inventory"
+        )
+    value = payload[key]
+    if isinstance(value, (list, tuple)):
+        if not all(isinstance(item, Mapping) for item in value):
+            raise LibreNMSInvalidResponse(
+                f"LibreNMS returned malformed {key} inventory"
+            )
+        return [dict(item) for item in value]
+    if isinstance(value, Mapping):
+        if not value:
+            return []
+        if all(isinstance(item, Mapping) for item in value.values()):
+            return [dict(item) for item in value.values()]
+        return [dict(value)]
+    raise LibreNMSInvalidResponse(
+        f"LibreNMS returned malformed {key} inventory"
+    )
+
+
 def _normalise_device(device: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(device)
     hostname = str(device.get("hostname") or "").strip()
@@ -163,6 +187,7 @@ class LibreNMSClient:
         token: str | None = None,
         token_file: str | os.PathLike[str] | None = None,
         timeout: float | None = None,
+        max_response_bytes: int | None = None,
     ):
         self.base_url = str(
             os.environ.get("LIBRENMS_URL", DEFAULT_BASE_URL) if base_url is None else base_url
@@ -176,6 +201,10 @@ class LibreNMSClient:
             os.environ.get("LIBRENMS_API_TIMEOUT", DEFAULT_TIMEOUT) if timeout is None else timeout,
             DEFAULT_TIMEOUT,
         )
+        self.max_response_bytes = (
+            _positive_int(max_response_bytes, 1)
+            if max_response_bytes is not None else None
+        )
         self.max_attempts = _positive_int(
             os.environ.get("LIBRENMS_API_ATTEMPTS", DEFAULT_MAX_ATTEMPTS),
             DEFAULT_MAX_ATTEMPTS,
@@ -187,6 +216,7 @@ class LibreNMSClient:
         self._opener = urlrequest.urlopen
         self._sleep = time.sleep
         self._devices_cache: list[dict[str, Any]] | None = None
+        self._devices_cache_strict = False
         # Logical callers can compare this before/after a collection cycle to
         # report the actual HTTP attempt count, including bounded retries.
         self.request_count = 0
@@ -207,6 +237,7 @@ class LibreNMSClient:
 
     def clear_cache(self) -> None:
         self._devices_cache = None
+        self._devices_cache_strict = False
 
     def _build_url(self, path: str, params: Mapping[str, Any] | Iterable[tuple[str, Any]] | None) -> str:
         if not self.base_url:
@@ -265,7 +296,18 @@ class LibreNMSClient:
                         raise LibreNMSAPIError(
                             f"LibreNMS request failed with HTTP {status}", status_code=status
                         )
-                    raw = response.read()
+                    raw = (
+                        response.read(self.max_response_bytes + 1)
+                        if self.max_response_bytes is not None
+                        else response.read()
+                    )
+                    if (
+                        self.max_response_bytes is not None
+                        and len(raw) > self.max_response_bytes
+                    ):
+                        raise LibreNMSInvalidResponse(
+                            "LibreNMS response exceeded the configured byte limit"
+                        )
                     break
             except urlerror.HTTPError as exc:
                 status = int(exc.code)
@@ -297,13 +339,27 @@ class LibreNMSClient:
             raise LibreNMSAPIError("LibreNMS API reported a failure")
         return payload
 
-    def list_devices(self) -> list[dict[str, Any]]:
-        if self._devices_cache is None:
+    def list_devices(self, strict: bool = False) -> list[dict[str, Any]]:
+        if self._devices_cache is None or (strict and not self._devices_cache_strict):
             payload = self.get_json("/api/v0/devices")
             self._devices_cache = [
                 _normalise_device(device)
-                for device in _normalise_rows(payload, "devices")
+                for device in (
+                    _strict_rows(payload, "devices")
+                    if strict else _normalise_rows(payload, "devices")
+                )
             ]
+            if strict and any(
+                not any(str(device.get(field) or "").strip() for field in (
+                    "device_id", "hostname", "ip", "sysName",
+                ))
+                for device in self._devices_cache
+            ):
+                self._devices_cache = None
+                raise LibreNMSInvalidResponse(
+                    "LibreNMS returned a device without a usable identity"
+                )
+            self._devices_cache_strict = strict
         return [dict(device) for device in self._devices_cache]
 
     def resolve_device(self, identifier: object) -> dict[str, Any]:

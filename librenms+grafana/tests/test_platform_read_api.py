@@ -122,6 +122,10 @@ def test_all_protected_read_routes_still_require_auth(tmp_path):
             "/network/dhcp/settings",
             "/network/dhcp/bindings",
             "/network/retire/pending",
+            "/network/overview",
+            "/network/devices",
+            "/network/topology",
+            "/network/isp",
             "/network/dhcp?force=1",
             "/config/download",
         )
@@ -132,6 +136,27 @@ def test_all_protected_read_routes_still_require_auth(tmp_path):
                 "ok": False,
                 "error": "需要登录",
                 "authenticated": False,
+            }, path
+    finally:
+        stop_server(server, thread)
+
+
+def test_network_reads_fail_closed_when_global_auth_is_disabled(tmp_path):
+    api = load_api(tmp_path)
+    server, thread, base_url = run_server(api)
+    try:
+        for path in (
+            "/network/overview",
+            "/network/devices",
+            "/network/topology",
+            "/network/isp",
+        ):
+            status, _, payload = request_json(f"{base_url}{path}")
+            assert status == 503, path
+            assert payload == {
+                "ok": False,
+                "code": "authentication_unavailable",
+                "error": "网络只读接口需要启用身份认证",
             }, path
     finally:
         stop_server(server, thread)

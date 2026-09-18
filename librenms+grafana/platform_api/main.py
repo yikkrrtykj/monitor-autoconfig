@@ -13,8 +13,10 @@ import time
 from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 
+from librenms_client import LibreNMSClient
 from platform_config import (
     merge_env_file,
     read_env,
@@ -33,6 +35,7 @@ from platform_api import event_config as platform_event_config
 from platform_api import health as platform_health
 from platform_api import incidents as platform_incidents
 from platform_api import iperf_runtime as platform_iperf_runtime
+from platform_api import network_read as platform_network_read
 from platform_api import precheck as platform_precheck
 from platform_api import read_api as platform_read_api
 from platform_api import storage as platform_storage
@@ -81,6 +84,30 @@ PRECHECK_GRAFANA_URL = os.environ.get("PLATFORM_PRECHECK_GRAFANA_URL", "http://g
 PRECHECK_BIGSCREEN_URL = os.environ.get("PLATFORM_PRECHECK_BIGSCREEN_URL", "http://bigscreen").rstrip("/")
 PRECHECK_LIBRENMS_URL = os.environ.get("PLATFORM_PRECHECK_LIBRENMS_URL", "http://librenms:8000").rstrip("/")
 PRECHECK_PLAYER_TARGETS_URL = os.environ.get("PLATFORM_PRECHECK_PLAYER_TARGETS_URL", "http://player-targets:9199").rstrip("/")
+NETWORK_LIBRENMS_URL = os.environ.get(
+    "PLATFORM_NETWORK_LIBRENMS_URL", "http://librenms:8000"
+).rstrip("/")
+NETWORK_LIBRENMS_TOKEN_FILE = os.environ.get(
+    "PLATFORM_NETWORK_LIBRENMS_TOKEN_FILE", "/librenms-data/librenms-api-token"
+)
+NETWORK_PROMETHEUS_URL = os.environ.get(
+    "PLATFORM_NETWORK_PROMETHEUS_URL", "http://prometheus:9090"
+).rstrip("/")
+NETWORK_TOPOLOGY_PATH = Path(os.environ.get(
+    "PLATFORM_NETWORK_TOPOLOGY_FILE",
+    "/etc/prometheus/targets/topology/edges.json",
+))
+NETWORK_ISP_INVENTORY_PATH = Path(os.environ.get(
+    "PLATFORM_NETWORK_ISP_INVENTORY_FILE",
+    "/etc/prometheus/targets/topology/isp_targets.json",
+))
+NETWORK_ISP_STATE_PATH = Path(os.environ.get(
+    "PLATFORM_NETWORK_ISP_STATE_FILE",
+    "/etc/prometheus/targets/topology/isp-discovery-state.json",
+))
+NETWORK_HTTP_TIMEOUT = max(
+    1.0, min(15.0, float(os.environ.get("PLATFORM_NETWORK_HTTP_TIMEOUT", "5")))
+)
 TRANSACTION_RETENTION = CORE_SETTINGS.transaction_retention
 APPLY_STATUS_RETENTION = CORE_SETTINGS.apply_status_retention
 AUTH_CONTEXT = platform_auth.AuthContext(
@@ -330,6 +357,36 @@ def _read_api_context() -> platform_read_api.ReadApiContext:
         require_auth=partial(platform_auth.require_auth, AUTH_CONTEXT),
         read_json_file=platform_storage.read_json_file,
         stamp=stamp,
+        network_context=_network_read_context(),
+        network_require_auth=_require_network_auth,
+    )
+
+
+def _require_network_auth(handler):
+    if not AUTH_CONTEXT.enabled:
+        raise platform_auth.AuthError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "网络只读接口需要启用身份认证",
+            code="authentication_unavailable",
+        )
+    return platform_auth.require_auth(AUTH_CONTEXT, handler)
+
+
+def _network_read_context() -> platform_network_read.NetworkReadContext:
+    return platform_network_read.NetworkReadContext(
+        librenms_client_factory=lambda: LibreNMSClient(
+            base_url=NETWORK_LIBRENMS_URL,
+            token_file=NETWORK_LIBRENMS_TOKEN_FILE,
+            timeout=NETWORK_HTTP_TIMEOUT,
+            max_response_bytes=platform_network_read.HTTP_BYTE_LIMIT,
+        ),
+        prometheus_url=NETWORK_PROMETHEUS_URL,
+        topology_path=NETWORK_TOPOLOGY_PATH,
+        isp_inventory_path=NETWORK_ISP_INVENTORY_PATH,
+        isp_state_path=NETWORK_ISP_STATE_PATH,
+        env_path=ENV_PATH,
+        http_timeout=NETWORK_HTTP_TIMEOUT,
+        clock=time.time,
     )
 
 

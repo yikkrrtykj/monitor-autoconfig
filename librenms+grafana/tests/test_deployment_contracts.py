@@ -1907,6 +1907,18 @@ def test_topology_isp_discovery_can_read_librenms_interface_inventory():
     assert 'TOPOLOGY_SNMP_DELAY_MS: "${TOPOLOGY_SNMP_DELAY_MS:-500}"' in topology
 
 
+def test_platform_network_read_api_mounts_authoritative_runtime_inputs_read_only():
+    compose = read("docker-compose.yml")
+    service = compose.split("  platform-api:", 1)[1].split("  librenms:", 1)[0]
+
+    assert "topology-data:/etc/prometheus/targets/topology:ro" in service
+    assert "./librenms-data:/librenms-data:ro" in service
+    assert 'PLATFORM_NETWORK_LIBRENMS_URL: "${PLATFORM_NETWORK_LIBRENMS_URL:-http://librenms:8000}"' in service
+    assert 'PLATFORM_NETWORK_PROMETHEUS_URL: "${PLATFORM_NETWORK_PROMETHEUS_URL:-http://prometheus:9090}"' in service
+    assert 'PLATFORM_NETWORK_TOPOLOGY_FILE: "${PLATFORM_NETWORK_TOPOLOGY_FILE:-/etc/prometheus/targets/topology/edges.json}"' in service
+    assert (ROOT / "platform_api" / "network_read.py").is_file()
+
+
 def test_large_ping_trend_keeps_every_switch_identifiable():
     line_chart = read("bigscreen/charts/line-chart.js")
     ping_chart = read("bigscreen/charts/ping-chart.js")
