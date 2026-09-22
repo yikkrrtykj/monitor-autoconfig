@@ -253,10 +253,10 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
         "dhcp_runtime",
         "dhcp_settings",
         "event_config",
-            "incidents",
-            "iperf_runtime",
-            "network_read",
-        }
+        "incidents",
+        "iperf_runtime",
+        "network_read",
+    }
     assert package_dependencies("write_api") == set()
     assert package_dependencies("health") == set()
     assert package_dependencies("incidents") == set()
