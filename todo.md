@@ -15,6 +15,41 @@
 - [x] 生产验收：devices 47、topology 15 nodes / 16 edges、ISP 5；normal / degraded / stale / partial unavailable / all unavailable / auth fail-closed 均已通过。
 - [x] 部署边界确认：无设备 mutation、无 DELETE、Pending Delete / Auto Delete 配置未改变。
 
+### A-02.1 HOTFIX — UniFi AP “新设备部署”重复通知
+
+优先级：**高于 A-03/P3**。先解决本项，再继续前端接入。
+
+现象证据：
+
+- 同名 UniFi AP 在 DHCP/IP 变化后再次收到“新设备部署”卡。
+- 已观察到 `lanserver` 从 `192.168.42.43` 变化为 `192.168.72.1` 后再次通知。
+- 已观察到 `avl-2 / 192.168.71.138` 与后续 `avl / 192.168.71.8` 的再次部署通知。
+
+当前审计结论：
+
+- UniFi AP watcher 在拿到 MAC 时使用 `unifi-ap:<MAC>` 作为持久身份，正常情况下 DHCP 换 IP 不应重复通知。
+- 通用 LibreNMS/SNMP online watcher 若某一轮 UniFi enrichment 未拿到 `unifi_mac`，当前 fallback identity 主要退回 hostname/IP；卡片显示名可以仍是稳定的 display/sysName，但该稳定名称没有进入 fallback identity。
+- 因此 AP 换 IP + controller enrichment 短暂缺失时，新的 IP 可能被当成全新 identity，再发送“新设备部署”。
+- 现有测试覆盖“MAC 可用时 DHCP 换 IP不重复”，但缺少“enrichment 暂时失败 / MAC 缺失时的跨 watcher 去重”回归场景。
+
+待办：
+
+- [ ] 先用生产只读诊断确认重复卡对应 AP 的 MAC、当前/历史 IP、`notified-devices.json` 和 AP inventory 是否一致；不得改生产状态。
+- [ ] 修复身份策略：AP 的稳定 MAC identity 仍为首选；MAC 暂时不可得时，fallback 必须能与既有稳定 AP identity/名称安全关联，不能只靠变化中的 IP。
+- [ ] 避免把普通非 AP 设备仅凭相同 display 名错误合并；名称 fallback 必须有明确设备类型/唯一匹配约束。
+- [ ] 补回归测试：
+  - 同一 MAC、不同 DHCP IP，只通知一次；
+  - controller enrichment 暂时失败后恢复，不重复；
+  - AP watcher 与 LibreNMS watcher 交叉观察同一 AP，不重复；
+  - Bridge 重启后仍不重复；
+  - 同名但不同 MAC 的两台 AP 不得被错误合并；
+  - 真正新 MAC 的 AP 必须仍发送一次新设备部署。
+- [ ] 验证 `bridge-state/notified-devices.json` 持久化不因正常 deploy/restart 丢失。
+- [ ] focused tests + full relevant regression + CI + committed code audit。
+- [ ] 公司服务器只更新必要 Bridge 代码并最小化重启；部署命令由 Agent 一次性给出，包含备份/停止条件/回滚。
+- [ ] 生产验收不得通过真实删除/设备 mutation 制造场景；优先用隔离 fixture 验证 DHCP/IP 变化和双 watcher 去重。
+- [ ] Hotfix 生产稳定后再继续 A-03/P3。
+
 ### A-03 PLATFORM-API-P3 — 前端 / 控制台接入统一 Network Read API
 
 - [ ] 先设计并审计现有前端网络数据读取路径，列出哪些页面/组件仍直接读取 Prometheus、topology 文件、ISP discovery 或其他旧接口。
