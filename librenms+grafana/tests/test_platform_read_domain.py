@@ -48,6 +48,8 @@ def test_read_context_is_explicit_and_does_not_accept_entrypoint_globals():
         "require_auth",
         "read_json_file",
         "stamp",
+        "network_context",
+        "network_require_auth",
     }
 
 
