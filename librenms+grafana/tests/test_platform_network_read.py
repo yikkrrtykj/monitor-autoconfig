@@ -142,6 +142,42 @@ def test_topology_malformed_is_explicit_failure(tmp_path, content):
     assert raised.value.payload["code"] == "topology_malformed"
 
 
+@pytest.mark.parametrize("edge", [
+    {"from_ip": [], "to_ip": "192.0.2.2"},
+    {"from_ip": {}, "to_ip": "192.0.2.2"},
+    {"from_ip": 123, "to_ip": "192.0.2.2"},
+    {"from_ip": True, "to_ip": "192.0.2.2"},
+    {"from_ip": "192.0.2.1", "to_ip": []},
+    {"from_ip": "192.0.2.1", "to_ip": {}},
+    {"from_ip": "192.0.2.1", "to_ip": 123},
+    {"from_ip": "", "to_ip": "192.0.2.2"},
+    {"from_ip": "   ", "to_ip": "192.0.2.2"},
+    {"from_ip": "192.0.2.1", "to_ip": ""},
+    {"from_ip": "192.0.2.1", "to_ip": "   "},
+])
+def test_topology_rejects_non_string_or_blank_endpoints(tmp_path, edge):
+    context, _ = make_context(tmp_path)
+    context.topology_path.write_text(json.dumps([edge]), encoding="utf-8")
+
+    with pytest.raises(network_read.NetworkReadError) as raised:
+        network_read.read_topology(context)
+
+    assert raised.value.status == 503
+    assert raised.value.payload["code"] == "topology_malformed"
+
+
+def test_topology_accepts_nonempty_string_endpoints(tmp_path):
+    context, _ = make_context(tmp_path)
+    edge = {"from_ip": " 192.0.2.1 ", "to_ip": "192.0.2.2"}
+    context.topology_path.write_text(json.dumps([edge]), encoding="utf-8")
+
+    payload = network_read.read_topology(context)
+
+    assert payload["edgeCount"] == 1
+    assert payload["nodes"] == ["192.0.2.1", "192.0.2.2"]
+    assert payload["edges"] == [edge]
+
+
 def test_isp_keeps_targetless_auto_and_reads_manual_applied_env(tmp_path):
     context, _ = make_context(tmp_path)
     inventory = [{

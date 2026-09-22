@@ -125,6 +125,18 @@ def _normalise_device(device: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _has_strict_device_identity(device: Mapping[str, Any]) -> bool:
+    device_id = device.get("device_id")
+    if isinstance(device_id, int) and not isinstance(device_id, bool):
+        return True
+    if isinstance(device_id, str) and device_id.strip():
+        return True
+    return any(
+        isinstance(device.get(field), str) and bool(device[field].strip())
+        for field in ("hostname", "ip", "sysName")
+    )
+
+
 def parse_librenms_timestamp(value: object) -> datetime | None:
     """Parse common LibreNMS timestamps as timezone-aware UTC datetimes."""
     if value is None or value == "":
@@ -342,23 +354,22 @@ class LibreNMSClient:
     def list_devices(self, strict: bool = False) -> list[dict[str, Any]]:
         if self._devices_cache is None or (strict and not self._devices_cache_strict):
             payload = self.get_json("/api/v0/devices")
-            self._devices_cache = [
-                _normalise_device(device)
-                for device in (
-                    _strict_rows(payload, "devices")
-                    if strict else _normalise_rows(payload, "devices")
-                )
-            ]
+            devices = (
+                _strict_rows(payload, "devices")
+                if strict else _normalise_rows(payload, "devices")
+            )
             if strict and any(
-                not any(str(device.get(field) or "").strip() for field in (
-                    "device_id", "hostname", "ip", "sysName",
-                ))
-                for device in self._devices_cache
+                not _has_strict_device_identity(device) for device in devices
             ):
                 self._devices_cache = None
+                self._devices_cache_strict = False
                 raise LibreNMSInvalidResponse(
                     "LibreNMS returned a device without a usable identity"
                 )
+            self._devices_cache = [
+                _normalise_device(device)
+                for device in devices
+            ]
             self._devices_cache_strict = strict
         return [dict(device) for device in self._devices_cache]
 

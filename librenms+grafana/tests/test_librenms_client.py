@@ -294,6 +294,64 @@ def test_strict_device_inventory_accepts_legitimate_empty_list():
     assert client.list_devices(strict=True) == []
 
 
+@pytest.mark.parametrize("device", [
+    {"device_id": 7},
+    {"device_id": "7"},
+    {"hostname": "switch-01"},
+    {"ip": "192.0.2.10"},
+    {"sysName": "Core-SW"},
+    {"device_id": True, "hostname": "switch-02"},
+])
+def test_strict_device_inventory_accepts_typed_identity(device):
+    client = make_client()
+    attach_sequence(client, [FakeResponse({"status": "ok", "devices": [device]})])
+
+    assert len(client.list_devices(strict=True)) == 1
+
+
+@pytest.mark.parametrize("device", [
+    {"device_id": {}},
+    {"device_id": []},
+    {"device_id": True},
+    {"device_id": 7.5},
+    {"device_id": "   "},
+    {"hostname": {}},
+    {"hostname": []},
+    {"hostname": 123},
+    {"hostname": "   "},
+    {"ip": {}},
+    {"ip": []},
+    {"ip": 123},
+    {"ip": "   "},
+    {"sysName": {}},
+    {"sysName": []},
+    {"sysName": 123},
+    {"sysName": "   "},
+    {},
+])
+def test_strict_device_inventory_rejects_invalid_identity_types(device):
+    client = make_client()
+    attach_sequence(client, [FakeResponse({"status": "ok", "devices": [device]})])
+
+    with pytest.raises(LibreNMSInvalidResponse):
+        client.list_devices(strict=True)
+
+
+def test_legacy_device_inventory_keeps_permissive_identity_normalization():
+    client = make_client()
+    attach_sequence(client, [FakeResponse({
+        "status": "ok",
+        "devices": [{"hostname": 123}],
+    })])
+
+    assert client.list_devices(strict=False) == [{
+        "hostname": "123",
+        "device_id": None,
+        "ip": "",
+        "sysName": "",
+    }]
+
+
 def test_optional_response_byte_limit_rejects_oversize_payload():
     client = make_client()
     client.max_response_bytes = 8

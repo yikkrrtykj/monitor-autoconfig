@@ -182,16 +182,17 @@ def read_topology(context: NetworkReadContext) -> dict[str, Any]:
     if len(edges) > context.topology_edge_limit:
         raise NetworkReadError(503, "topology_oversize", "topology contains too many edges")
     if any(
-        not str(edge.get("from_ip") or "").strip()
-        or not str(edge.get("to_ip") or "").strip()
+        not isinstance(edge.get("from_ip"), str)
+        or not edge["from_ip"].strip()
+        or not isinstance(edge.get("to_ip"), str)
+        or not edge["to_ip"].strip()
         for edge in edges
     ):
         raise NetworkReadError(503, "topology_malformed", "topology data is malformed")
     nodes = sorted({
-        str(edge.get(field) or "").strip()
+        edge[field].strip()
         for edge in edges
         for field in ("from_ip", "to_ip")
-        if str(edge.get(field) or "").strip()
     })
     age = max(0.0, context.clock() - modified)
     stale = age > context.topology_stale_seconds
