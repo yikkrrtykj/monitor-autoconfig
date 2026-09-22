@@ -15,39 +15,39 @@
 - [x] 生产验收：devices 47、topology 15 nodes / 16 edges、ISP 5；normal / degraded / stale / partial unavailable / all unavailable / auth fail-closed 均已通过。
 - [x] 部署边界确认：无设备 mutation、无 DELETE、Pending Delete / Auto Delete 配置未改变。
 
-### A-02.1 HOTFIX — UniFi AP “新设备部署”重复通知
+### A-02.1 HOTFIX — UniFi AP “新设备部署”通知策略修正
 
 优先级：**高于 A-03/P3**。先解决本项，再继续前端接入。
 
-现象证据：
+现象与已确认事实：
 
-- 同名 UniFi AP 在 DHCP/IP 变化后再次收到“新设备部署”卡。
-- 已观察到 `lanserver` 从 `192.168.42.43` 变化为 `192.168.72.1` 后再次通知。
-- 已观察到 `avl-2 / 192.168.71.138` 与后续 `avl / 192.168.71.8` 的再次部署通知。
+- 飞书持续出现 UniFi AP 的“新设备部署”卡；截图中的设备型号均为 UAP/U6 系列。
+- 生产只读诊断确认 `UNIFI_AP_SNMP_AUTO_ADD=true`、`DEVICE_ONLINE_FROM_PING=false`。
+- `/bridge-state/notified-devices.json` 正常存在，已有 84 个 identity；截图中的 6 个 IP 全部已记录。
+- `unifi-ap-inventory.json` 正常按 `unifi-ap:<MAC>` 保存 AP 身份，当前样本可确认多个 AP 有不同 MAC。
+- 当前代码在 AP SNMP 自动加入 LibreNMS 成功后，会主动调用 `_send_pending_ap_deployment(...)` 发送“新设备部署”卡。因此现场不断发现/纳管 AP 时，会按当前设计持续出现这类通知。
+- 现有证据**不能证明同一台 AP 在重复发送**；当前首要问题是通知策略本身不符合需求，而不是状态文件丢失。
 
-当前审计结论：
+目标行为：
 
-- UniFi AP watcher 在拿到 MAC 时使用 `unifi-ap:<MAC>` 作为持久身份，正常情况下 DHCP 换 IP 不应重复通知。
-- 通用 LibreNMS/SNMP online watcher 若某一轮 UniFi enrichment 未拿到 `unifi_mac`，当前 fallback identity 主要退回 hostname/IP；卡片显示名可以仍是稳定的 display/sysName，但该稳定名称没有进入 fallback identity。
-- 因此 AP 换 IP + controller enrichment 短暂缺失时，新的 IP 可能被当成全新 identity，再发送“新设备部署”。
-- 现有测试覆盖“MAC 可用时 DHCP 换 IP不重复”，但缺少“enrichment 暂时失败 / MAC 缺失时的跨 watcher 去重”回归场景。
-
-待办：
-
-- [ ] 先用生产只读诊断确认重复卡对应 AP 的 MAC、当前/历史 IP、`notified-devices.json` 和 AP inventory 是否一致；不得改生产状态。
-- [ ] 修复身份策略：AP 的稳定 MAC identity 仍为首选；MAC 暂时不可得时，fallback 必须能与既有稳定 AP identity/名称安全关联，不能只靠变化中的 IP。
-- [ ] 避免把普通非 AP 设备仅凭相同 display 名错误合并；名称 fallback 必须有明确设备类型/唯一匹配约束。
-- [ ] 补回归测试：
-  - 同一 MAC、不同 DHCP IP，只通知一次；
-  - controller enrichment 暂时失败后恢复，不重复；
-  - AP watcher 与 LibreNMS watcher 交叉观察同一 AP，不重复；
-  - Bridge 重启后仍不重复；
-  - 同名但不同 MAC 的两台 AP 不得被错误合并；
-  - 真正新 MAC 的 AP 必须仍发送一次新设备部署。
-- [ ] 验证 `bridge-state/notified-devices.json` 持久化不因正常 deploy/restart 丢失。
-- [ ] focused tests + full relevant regression + CI + committed code audit。
-- [ ] 公司服务器只更新必要 Bridge 代码并最小化重启；部署命令由 Agent 一次性给出，包含备份/停止条件/回滚。
-- [ ] 生产验收不得通过真实删除/设备 mutation 制造场景；优先用隔离 fixture 验证 DHCP/IP 变化和双 watcher 去重。
+- [ ] UniFi AP 继续自动加入 LibreNMS，保持 `UNIFI_AP_SNMP_AUTO_ADD=true` 能力。
+- [ ] UniFi AP 继续保留掉线、恢复、Controller/Ping/SNMP 监控及名称/IP 同步。
+- [ ] UniFi AP 首次被发现或首次加入 LibreNMS 时，**不再发送通用“新设备部署”卡**。
+- [ ] 普通交换机/防火墙等非 AP SNMP 设备仍保留原有“新设备部署”通知。
+- [ ] AP 的稳定 MAC identity 与 `notified-devices.json` 持久化继续保留，用于跨 watcher 去重和历史兼容，不清空生产 ledger。
+- [ ] 通用 LibreNMS device-online watcher 也必须避免把已经识别为 UniFi AP 的设备再次当作普通新 SNMP 设备发送部署卡；不能只删除 AP watcher 的发送调用后留下第二条通知路径。
+- [ ] Controller enrichment 暂时不可用时不得用不可靠的型号字符串粗暴误判普通设备；AP 排除逻辑优先复用现有 controller/AP inventory/stable MAC 证据。
+- [ ] 回归测试至少覆盖：
+  - 新 UniFi AP 自动加入 LibreNMS，但发送“新设备部署”次数为 0；
+  - AP 掉线/恢复通知仍正常；
+  - 同一 AP DHCP/IP 变化不产生部署卡；
+  - Bridge 重启不产生部署卡；
+  - AP watcher 与 LibreNMS watcher 同时看到 AP 时部署卡仍为 0；
+  - 真正新的非 AP SNMP 设备仍恰好发送 1 次“新设备部署”；
+  - 不修改 Pending Delete / Auto Delete / DELETE 行为。
+- [ ] focused tests + relevant full regression + CI + committed code audit。
+- [ ] 公司服务器只更新必要 Bridge 代码并最小化重启；部署命令由 Agent 一次性给出，包含备份、停止条件和回滚。
+- [ ] 生产验收不得通过真实删除或设备 mutation 制造场景；使用隔离 fixture 验证 AP suppression，并只读确认真实 AP watcher/ledger 状态。
 - [ ] Hotfix 生产稳定后再继续 A-03/P3。
 
 ### A-03 PLATFORM-API-P3 — 前端 / 控制台接入统一 Network Read API
