@@ -526,8 +526,8 @@
     return `sum(rate(${metric}{job="firewall-snmp",ifAlias="${label}"}[1m]) or rate(${metric}{job="firewall-snmp",ifAlias="",ifName="${label}"}[1m]) or rate(${metric}{job="firewall-snmp",ifAlias="",ifName="",ifDescr="${label}"}[1m])) * 8`;
   }
 
-  async function fetchIspTraffic() {
-    const inventory = await fetchIspInventory();
+  async function fetchIspTraffic(inventoryOverride) {
+    const inventory = inventoryOverride || await fetchIspInventory();
     return Promise.all(inventory.map(async (item) => {
       const [downloadResult, uploadResult] = await Promise.allSettled([
         prometheusRangeCached(ispTrafficQuery("ifHCInOctets", item)),
@@ -624,13 +624,15 @@
     return Array.from(map.values());
   }
 
-  async function fetchTopologyEdges() {
+  async function fetchTopologyEdges(options = {}) {
     try {
       const response = await fetchWithTimeout("/topology/edges.json", { cache: "no-store" });
-      if (!response.ok) return [];
+      if (!response.ok) throw new Error(`topology edges HTTP ${response.status}`);
       const data = await response.json();
-      return Array.isArray(data) ? data : [];
+      if (!Array.isArray(data)) throw new Error("topology edges malformed");
+      return data;
     } catch (error) {
+      if (options.strict) throw error;
       return [];
     }
   }
@@ -662,6 +664,22 @@
       throw error;
     }
     return response.json();
+  }
+
+  function fetchNetworkOverview() {
+    return platformApi("/network/overview", { timeoutMs: 10000 });
+  }
+
+  function fetchNetworkDevices() {
+    return platformApi("/network/devices", { timeoutMs: 10000 });
+  }
+
+  function fetchNetworkTopology() {
+    return platformApi("/network/topology", { timeoutMs: 10000 });
+  }
+
+  function fetchNetworkIsp() {
+    return platformApi("/network/isp", { timeoutMs: 10000 });
   }
 
   async function fetchPlatformAuthStatus() {
@@ -816,6 +834,10 @@
     partitionInfraPingItems,
     fetchTopologyTargets,
     fetchTopologyEdges,
+    fetchNetworkOverview,
+    fetchNetworkDevices,
+    fetchNetworkTopology,
+    fetchNetworkIsp,
     fetchRuntimeStatus,
     fetchPlatformAuthStatus,
     loginPlatformAuth,
