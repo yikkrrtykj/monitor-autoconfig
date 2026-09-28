@@ -15,7 +15,7 @@
 | 可复制的部署/恢复/验收命令 | `docs/runbooks/` | 对应操作或目标版本改变 |
 | 跨模块长期设计决策 | `docs/decisions/NNNN-<主题>.md`，需要时创建 | API/架构/持久化/兼容策略有长期取舍 |
 
-`todo.md`、`docs/STATUS.md` 和既有迭代记录保留为历史快照，不再为活跃工作追加同一份待办。发现旧结论不准确时在对应 Issue/PR 说明来源和更正；稳定领域约束需要调整时才更新其专属文档。跨模块长期设计决策仍可单独建立决策文档。
+旧 `todo.md`、STATUS 和迭代记录已按原文迁入 [历史 Issue #16–#24](https://github.com/yikkrrtykj/monitor-autoconfig/issues/16)，文件从仓库移除；项目上下文原文归档在 [#44](https://github.com/yikkrrtykj/monitor-autoconfig/issues/44)。发现旧结论不准确时在对应 Issue/PR 说明来源和更正；稳定领域约束需要调整时才更新其专属文档。跨模块长期设计决策仍可单独建立决策文档。
 
 ## 内容与证据标准
 
@@ -31,7 +31,7 @@
 
 1. 核实实际 diff、验证结果和对应 Issue 的验收条件。仅在用户行为、运维步骤或稳定约束确实变化时改相应文档。
 2. 检查链接、命令路径、敏感内容和 Git diff；精确暂存、普通提交并 push 工作分支，核验远端分支。
-3. 创建/更新 PR，关联 `Refs #编号`，记录改动、测试、CI、审查点、限制和部署/验收步骤；Issue 保留 TODO、生产状态和唯一下一步。不要同步更新旧 `todo.md`、STATUS 或迭代 Markdown。
+3. 创建/更新 PR，关联 `Refs #编号`，记录改动、测试、CI、审查点、限制和部署/验收步骤；Issue 保留 TODO、生产状态和唯一下一步。不重新创建旧 `todo.md`、STATUS 或迭代记录。
 4. 交接持久化后执行宿主提供的上下文压缩。工具不存在或失败时报告实际情况，不能假装已压缩。
 5. 新会话先读 `AGENTS.md`、PROJECT_CONTEXT 和关联 Issue/PR，再检查实际 Git 状态；不自动创建新任务或删除聊天代替压缩。
 

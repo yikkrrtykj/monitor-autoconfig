@@ -12,7 +12,7 @@
 
 ## 每次开始或恢复上下文
 
-1. 阅读本文件、[项目约束](docs/PROJECT_CONTEXT.md)，查询 GitHub 上相关的开放 Issue、PR；`todo.md`、`docs/STATUS.md` 和旧迭代记录是历史快照，不是活跃 TODO 入口。
+1. 阅读本文件、[项目约束](docs/PROJECT_CONTEXT.md)，查询 GitHub 上相关的开放 Issue、PR；旧 `todo.md`、STATUS 和迭代记录已迁入 [历史 Issue #16–#24](https://github.com/yikkrrtykj/monitor-autoconfig/issues?q=is%3Aissue+is%3Aclosed+%22%E5%8E%86%E5%8F%B2%E8%B5%84%E6%96%99%22)，不在仓库继续维护。
 2. 按本次范围阅读相关的 [工程标准](docs/ENGINEERING.md)、[Git 规范](docs/GIT_WORKFLOW.md)、[文档规范](docs/DOCUMENTATION.md)、源码和专题文档，不把全部历史重新灌入上下文。
 3. 检查实际分支、工作区、暂存区和近期提交；修改前记录基线。远端跟踪引用可能过期，不能据此声称 GitHub 已同步。
 4. 有他人改动时保留原样，明确归属，只提交本轮文件；暂存区已有他人内容时先解决归属，不混入提交。
@@ -31,7 +31,7 @@
 ## Git 协议
 
 - 代码更新先有对应 GitHub Issue（可在本轮创建），再从已同步的 `main` 创建 `codex/` 分支并提交；普通 push 到同名远端分支后创建 PR，正文写 `Refs #编号`。代码里只有确需留在源码附近的待办才写 `TODO(#编号): ...`，不复制 Issue 清单。
-- PR 承载改动、测试、CI、限制和部署说明；Issue 承载 TODO、审计、生产验收及收口状态。旧 `todo.md` 与 STATUS 保留历史，不再为同一任务同步更新。稳定行为说明、运维手册或安全约束确有变化时才修改相应文档。
+- PR 承载改动、测试、CI、限制和部署说明；Issue 承载 TODO、审计、生产验收及收口状态。旧 `todo.md`、STATUS 和迭代记录的原文已转存 Issue；稳定行为说明、运维手册或安全约束确有变化时才修改相应文档。
 - 不自行合并 PR；通过审查和 CI 后由获授权的人员合并。不能为已经直接进入 main 的旧提交补造 PR。
 - 不 amend、rebase、force push、改写历史，不用 `reset --hard`、`clean` 或自动 stash 掩盖冲突。补丁使用追加 commit；分歧处理见 [Git 规范](docs/GIT_WORKFLOW.md)。
 - 精确暂存本轮文件并审查暂存 diff；不得盲用 `git add .` / `git add -A`。

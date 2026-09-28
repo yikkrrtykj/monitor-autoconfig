@@ -1,7 +1,7 @@
 # 公司服务器部署与 Batch 5.2 验收
 
 维护日期：2026-09-06。执行者：用户；Agent 不连接服务器。
-Batch 5.2 已由用户确认正式收口；P3 `/incident` 直接刷新问题 DEFERRED，以下命令仅保留为历史参考，无需重跑。当前主线见 [Feishu EVENT_NAME 隔离方案](../iterations/feishu-event-name-isolation.md)，本手册不是该修复的部署命令。
+Batch 5.2 已由用户确认正式收口；P3 `/incident` 直接刷新问题 DEFERRED，以下命令仅保留为历史参考，无需重跑。历史 [Feishu EVENT_NAME 隔离方案](https://github.com/yikkrrtykj/monitor-autoconfig/issues/23) 已归档为 Issue；本手册不是该修复的部署命令。
 本手册会快进服务器 `main` 并运行部署，可能重建或重启服务。运行前把 `target_commit` 替换为本次交付回复给出的完整 SHA；不可使用未核对的远端最新值。
 
 ## 停止条件
@@ -118,4 +118,4 @@ BATCH52
 4. 离开事故页再返回，确认 stop/restart 后页面正常；普通大屏 5 个 ISP、Tournament 2/2/1 和控制台仍正常。
 5. 不点击“应用配置”，不修改四开关，不执行真实 DELETE，不发送测试飞书。
 
-返回目标 SHA、configured 摘要、`SHA OK incident/incident-panel.js`、缓存头、三层四开关与网页结果，不贴凭据、完整配置或事故内容。通过后更新 [Batch 5.2](../iterations/batch-5.2-proposal.md) 和 [STATUS](../STATUS.md) 收口。
+返回目标 SHA、configured 摘要、`SHA OK incident/incident-panel.js`、缓存头、三层四开关与网页结果，不贴凭据、完整配置或事故内容。历史收口证据见 [Batch 5.2 归档 Issue](https://github.com/yikkrrtykj/monitor-autoconfig/issues/22)。
