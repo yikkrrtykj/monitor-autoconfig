@@ -32,6 +32,7 @@
 
 - 代码更新先有对应 GitHub Issue（可在本轮创建），再从已同步的 `main` 创建 `codex/` 分支并提交；普通 push 到同名远端分支后创建 PR，正文写 `Refs #编号`。代码里只有确需留在源码附近的待办才写 `TODO(#编号): ...`，不复制 Issue 清单。
 - PR 承载改动、测试、CI、限制和部署说明；Issue 承载 TODO、审计、生产验收及收口状态。旧 `todo.md`、STATUS 和迭代记录的原文已转存 Issue；稳定行为说明、运维手册或安全约束确有变化时才修改相应文档。
+- 不为单个批次新建计划、TODO、STATUS、交接、实现笔记、验收记录或部署 runbook Markdown；这类过程信息直接写对应 Issue/PR。现有长期文档仅在跨批次适用的行为、规则或操作确有变化时更新；新增 runbook 须具有可复用的长期操作价值，不能只为一次 PR 部署或验收而建。
 - 不自行合并 PR；通过审查和 CI 后由获授权的人员合并。不能为已经直接进入 main 的旧提交补造 PR。
 - 不 amend、rebase、force push、改写历史，不用 `reset --hard`、`clean` 或自动 stash 掩盖冲突。补丁使用追加 commit；分歧处理见 [Git 规范](docs/GIT_WORKFLOW.md)。
 - 精确暂存本轮文件并审查暂存 diff；不得盲用 `git add .` / `git add -A`。

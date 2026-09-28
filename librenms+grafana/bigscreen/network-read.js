@@ -76,20 +76,41 @@
 
   function mergeLegacyIspInventory(inventory, enrichment) {
     const ispMetrics = (enrichment || []).filter((item) => item.job === "infra-isp-ping");
-    const byIp = new Map(ispMetrics
-      .map((item) => [String(item.targetIp || item.instance || ""), item]));
+    const identity = (value) => String(value || "").trim().toLocaleLowerCase();
+    const uniqueMatch = (value, field) => {
+      const key = identity(value);
+      if (!key) return null;
+      const matches = ispMetrics.filter((metric) => !used.has(metric) && identity(field(metric)) === key);
+      return matches.length === 1 ? matches[0] : null;
+    };
     const used = new Set();
     const merged = mergeIspInventory((inventory || []).map((item) => {
-      const target = String(item.gateway || "");
-      const metric = byIp.get(target);
-      if (metric) used.add(target);
+      const configuredTarget = item.gateway || item.target || item.targetIp || item.ip;
+      const metric = uniqueMatch(configuredTarget, (entry) => entry.targetIp || entry.instance) ||
+        uniqueMatch(item.name, (entry) => entry.displayName);
+      if (metric) used.add(metric);
+      const target = String(metric ? (metric.targetIp || metric.instance || "") : (configuredTarget || ""));
       return {
         name: item.name, target, wanIp: item.wanIp,
         metricTarget: item.metricTarget, metricIfindex: item.metricIfindex,
         status: metric ? (metric.success === true ? "up" : (metric.success === false ? "down" : "unknown")) : "unknown"
       };
     }), enrichment);
-    return merged.concat(ispMetrics.filter((item) => !used.has(String(item.targetIp || item.instance || ""))));
+    return merged.concat(ispMetrics.filter((item) => !used.has(item)));
+  }
+
+  async function controlNetworkTargets(domains, fetchEnrichment) {
+    const devices = domains.devices;
+    const isp = domains.isp;
+    const enrichment = isp.source === "legacy"
+      ? (devices.source === "legacy" ? devices.data || [] : await fetchEnrichment().catch(() => []))
+      : [];
+    const ispTargets = isp.source === "network-api"
+      ? mergeIspInventory(isp.data.isps)
+      : mergeLegacyIspInventory(isp.data, enrichment);
+    return devices.source === "network-api"
+      ? mergeNetworkDevices(devices.data.devices).concat(ispTargets)
+      : (devices.data || []).filter((item) => item.job !== "infra-isp-ping").concat(ispTargets);
   }
 
   async function resolveNetworkDomain(payload, fallback, name) {
@@ -150,24 +171,39 @@
 
   function createNetworkSession(fetchAuthStatus, now = () => Date.now(), retryMs = 45000) {
     let authenticated = null;
-    let checkedAt = -Infinity;
+    let nextCheckAt = -Infinity;
     let pending = null;
     let revision = 0;
     return {
       async canRead() {
-        if (now() - checkedAt < retryMs && authenticated !== null) return authenticated;
+        if (now() < nextCheckAt && authenticated !== null) return authenticated;
         if (!pending) {
           const current = revision;
-          pending = Promise.resolve().then(fetchAuthStatus)
-            .then((result) => { if (revision === current) authenticated = result && result.authenticated === true; })
-            .catch(() => { if (revision === current) authenticated = false; })
-            .finally(() => { if (revision === current) checkedAt = now(); pending = null; });
+          const request = Promise.resolve().then(fetchAuthStatus)
+            .then((result) => {
+              if (revision !== current) return;
+              if (result && result.transient === true) {
+                authenticated = authenticated === true;
+                nextCheckAt = now() + Math.min(retryMs, 5000);
+              } else {
+                authenticated = !!(result && result.authenticated === true);
+                nextCheckAt = now() + retryMs;
+              }
+            })
+            .catch(() => {
+              if (revision === current) {
+                authenticated = authenticated === true;
+                nextCheckAt = now() + Math.min(retryMs, 5000);
+              }
+            })
+            .finally(() => { if (pending === request) pending = null; });
+          pending = request;
         }
         await pending;
-        return authenticated;
+        return authenticated === true;
       },
-      expired() { revision++; authenticated = false; checkedAt = now(); },
-      invalidate() { revision++; authenticated = null; checkedAt = -Infinity; }
+      expired() { revision++; pending = null; authenticated = false; nextCheckAt = now() + retryMs; },
+      invalidate() { revision++; pending = null; authenticated = null; nextCheckAt = -Infinity; }
     };
   }
 
@@ -175,7 +211,7 @@
 
   return {
     deviceStatus, networkDomainState, networkErrorInfo, normalizeNetworkOverview, mergeNetworkDevices,
-    mergeIspInventory, mergeLegacyIspInventory, resolveNetworkDomain, resolveNetworkSnapshot, networkPresentation,
+    mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, resolveNetworkDomain, resolveNetworkSnapshot, networkPresentation,
     createNetworkSession, loadNetworkDomains, isAuthError
   };
 }));

@@ -64,6 +64,36 @@ async function run() {
   assert.strictEqual(network.mergeIspInventory(isp.isps, []).length, 5);
   assert.strictEqual(network.mergeLegacyIspInventory([], [{ job: "infra-isp-ping", targetIp: "10.0.1.9", displayName: "legacy", success: true }]).length, 1,
     "anonymous topology keeps legacy probe-only ISP nodes");
+  const manualInventory = [{ name: "ISP-A", gateway: "" }, { name: "ISP-B", target: "10.0.1.2" }];
+  const ispProbes = [
+    { job: "infra-isp-ping", targetIp: "10.0.1.1", displayName: "ISP-A", success: false, latency: 0.021 },
+    { job: "infra-isp-ping", targetIp: "10.0.1.2", displayName: "different label", success: true, latency: 0.012 }
+  ];
+  const matchedIsp = network.mergeLegacyIspInventory(manualInventory, ispProbes);
+  assert.strictEqual(matchedIsp.length, 2, "matched probes are not duplicated");
+  assert.deepStrictEqual(matchedIsp.map((item) => item.success), [false, true]);
+  assert.deepStrictEqual(matchedIsp.map((item) => item.latency), [0.021, 0.012]);
+  assert.strictEqual(platform.summarizeTargets(matchedIsp).offline.length, 1, "manual ISP outage reaches control readiness");
+  const ambiguous = network.mergeLegacyIspInventory([{ name: "ISP-A", gateway: "" }], [
+    ispProbes[0], { ...ispProbes[0], targetIp: "10.0.1.3" }
+  ]);
+  assert.strictEqual(ambiguous[0].success, null, "ambiguous names do not invent a status");
+  let enrichmentCalls = 0;
+  const controlDomains = {
+    devices: { source: "network-api", data: devices },
+    isp: { source: "legacy", data: manualInventory }
+  };
+  const controlTargets = await network.controlNetworkTargets(controlDomains, async () => { enrichmentCalls++; return ispProbes; });
+  assert.strictEqual(enrichmentCalls, 1, "ISP fallback fetches probes even when devices API succeeds");
+  assert.strictEqual(platform.summarizeTargets(controlTargets).offline.length, 1);
+  const missingProbes = await network.controlNetworkTargets(controlDomains, async () => { throw new Error("Prometheus unavailable"); });
+  assert.strictEqual(missingProbes[1].success, null, "failed enrichment keeps inventory with unknown status");
+  await network.controlNetworkTargets({ ...controlDomains, isp: { source: "network-api", data: isp } }, async () => { enrichmentCalls++; return ispProbes; });
+  assert.strictEqual(enrichmentCalls, 1, "healthy ISP API does not fetch fallback probes");
+  const reusedTargets = await network.controlNetworkTargets({
+    devices: { source: "legacy", data: ispProbes }, isp: { source: "legacy", data: manualInventory }
+  }, async () => { throw new Error("must reuse device fallback"); });
+  assert.strictEqual(platform.summarizeTargets(reusedTargets).offline.length, 1);
   const trafficQueries = [];
   global.fetch = async (url) => {
     trafficQueries.push(String(url));
@@ -119,6 +149,33 @@ async function run() {
   assert.strictEqual(authCalls, 3);
   assert.strictEqual(network.isAuthError({ status: 401 }), true);
   assert.strictEqual(network.isAuthError({ status: 503 }), false);
+  let authState = { authenticated: true };
+  let transientCalls = 0;
+  let transientNow = 0;
+  const transientSession = network.createNetworkSession(async () => { transientCalls++; return authState; }, () => transientNow, 45000);
+  assert.strictEqual(await transientSession.canRead(), true);
+  transientNow = 45000;
+  authState = { authenticated: false, transient: true };
+  assert.strictEqual(await transientSession.canRead(), true, "temporary auth transport failure preserves known login");
+  transientNow += 4999;
+  assert.strictEqual(await transientSession.canRead(), true);
+  assert.strictEqual(transientCalls, 2);
+  transientNow++;
+  authState = { authenticated: true };
+  assert.strictEqual(await transientSession.canRead(), true, "transient status is retried after five seconds");
+  assert.strictEqual(transientCalls, 3);
+  transientSession.invalidate();
+  authState = { authenticated: false, transient: true };
+  assert.strictEqual(await transientSession.canRead(), false, "unknown login is not granted by transient failure");
+  transientNow += 5000;
+  authState = { authenticated: false };
+  assert.strictEqual(await transientSession.canRead(), false, "confirmed logout remains logged out");
+  transientNow += 45000;
+  authState = { authenticated: false, transient: true };
+  assert.strictEqual(await transientSession.canRead(), false);
+  transientNow += 5000;
+  authState = { authenticated: true };
+  assert.strictEqual(await transientSession.canRead(), true, "transient failure while logged out retries promptly");
   let releaseAuth;
   const delayed = network.createNetworkSession(() => new Promise((resolve) => { releaseAuth = resolve; }), () => now, 45000);
   const pendingAuth = delayed.canRead();

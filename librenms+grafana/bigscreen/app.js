@@ -51,7 +51,7 @@
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
   const {
-    mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, resolveNetworkDomain, resolveNetworkSnapshot,
+    mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, resolveNetworkDomain, resolveNetworkSnapshot,
     createNetworkSession, loadNetworkDomains, isAuthError
   } = window.BSNetworkRead;
   const {
@@ -672,15 +672,8 @@
       fetchIncidents(),
       fetchDhcpSettings()
     ]);
-    const devices = networkRead.domains.devices;
     const topology = networkRead.domains.topology;
-    const isp = networkRead.domains.isp;
-    const ispTargets = isp.source === "network-api"
-      ? mergeIspInventory(isp.data.isps)
-      : mergeLegacyIspInventory(isp.data, devices.source === "legacy" ? devices.data : []);
-    const targets = devices.source === "network-api"
-      ? mergeNetworkDevices(devices.data.devices).concat(ispTargets)
-      : (devices.data || []).filter((item) => item.job !== "infra-isp-ping").concat(ispTargets);
+    const targets = await controlNetworkTargets(networkRead.domains, fetchTopologyTargets);
     const edges = topology.source === "network-api" ? topology.data.edges : (topology.data || []);
     const players = page
       ? snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize)
