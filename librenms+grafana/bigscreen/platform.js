@@ -139,7 +139,7 @@
         : job.includes("srv") ? "server"
         : "other";
       byKind[kind] += 1;
-      if (!target.success) offline.push(target);
+      if (target.success === false) offline.push(target);
     });
     return { total: targets.length, byKind, offline };
   }
@@ -277,13 +277,13 @@
   function buildTopologyFindings(targets, edges) {
     const summary = summarizeTargets(targets);
     const findings = [];
-    if (summary.byKind.core === 0) {
+    if (summary.byKind.core === 0 && summary.byKind.other === 0) {
       findings.push({ level: "bad", label: "核心设备", value: "缺失", note: "未找到核心交换机监控数据，请检查基础配置。" });
     }
-    if (summary.byKind.firewall === 0) {
+    if (summary.byKind.firewall === 0 && summary.byKind.other === 0) {
       findings.push({ level: "warn", label: "防火墙", value: "缺失", note: "未找到防火墙监控数据，请检查基础配置。" });
     }
-    if (summary.byKind.dist === 0) {
+    if (summary.byKind.dist === 0 && summary.byKind.other === 0) {
       findings.push({ level: "warn", label: "接入交换机", value: "缺失", note: "未找到接入交换机监控数据，请检查基础配置。" });
     }
     if (summary.offline.length) {
@@ -325,9 +325,9 @@
     checks.push({
       section: "基础设施",
       label: "核心/防火墙",
-      level: target.byKind.core > 0 && target.byKind.firewall > 0 ? "good" : "warn",
-      value: `${target.byKind.core}/${target.byKind.firewall}`,
-      note: "核心 / 防火墙目标数"
+      level: target.byKind.other > 0 ? "info" : (target.byKind.core > 0 && target.byKind.firewall > 0 ? "good" : "warn"),
+      value: target.byKind.other > 0 ? "待确认" : `${target.byKind.core}/${target.byKind.firewall}`,
+      note: target.byKind.other > 0 ? "统一清单未提供设备类型" : "核心 / 防火墙目标数"
     });
     checks.push({
       section: "基础设施",

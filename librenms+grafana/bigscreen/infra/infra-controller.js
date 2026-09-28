@@ -61,6 +61,7 @@
     let infraCurrentTargets = null;
     let gaugeSeq = 0;
     let chartSeq = 0;
+    let runSeq = 0;
     let stageDeviceRegexCache = null;
     let ispTrafficResults = [];
 
@@ -267,11 +268,13 @@
     // Refresh the slowly-changing infrastructure "deployed" set on its own timer
     // so its long-window query does not run every 5s. Keep it on API failure.
     async function refreshInfraSeenUp() {
+      const run = runSeq;
       try {
         const [seenItems, currentTargets] = await Promise.all([
           prometheusInstant(activeInfraPingQuery()),
           fetchTopologyTargets()
         ]);
+        if (run !== runSeq) return;
         infraSeenUp = activeSeriesNames(seenItems);
         infraCurrentTargets = new Set();
         currentTargets.forEach((target) => {
@@ -389,17 +392,23 @@
 
     function start() {
       if (gaugeTimer || chartTimer) return;
+      const run = ++runSeq;
       clearRenderSignatures();
       invalidateRangeCache();
       // Resolve the "deployed" set first so the first paint already hides
       // never-online targets; then keep it fresh on a slow timer.
-      refreshInfraSeenUp().then(() => { refreshGauges(); refreshCharts(); });
+      refreshInfraSeenUp().then(() => {
+        if (run === runSeq) { refreshGauges(); refreshCharts(); }
+      });
       gaugeTimer = window.setInterval(refreshGauges, 5000);
       chartTimer = window.setInterval(refreshCharts, 5000);
       seenUpTimer = window.setInterval(refreshInfraSeenUp, 30000);
     }
 
     function stop() {
+      runSeq++;
+      gaugeSeq++;
+      chartSeq++;
       ispCarousel.deactivate();
       if (gaugeTimer) {
         window.clearInterval(gaugeTimer);

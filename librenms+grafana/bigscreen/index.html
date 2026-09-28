@@ -29,6 +29,7 @@
       </header>
 
       <section class="panel-grid" id="panelGrid" aria-label="监控面板">
+        <div class="network-read-status" id="infraNetworkStatus" role="status" hidden></div>
         <section class="panel custom-panel ping-panel" aria-labelledby="pingTitle">
           <h2 id="pingTitle">Ping</h2>
           <div class="gauge-subhead">网络设备</div>
@@ -106,6 +107,7 @@
         <div class="wireless-board" id="wirelessBoard"></div>
       </section>
       <section class="control-panel" id="controlPanel" aria-label="赛事控制台" hidden>
+        <div class="network-read-status" id="controlNetworkStatus" role="status" hidden></div>
         <div class="control-auth" id="controlAuth" hidden>
           <section class="auth-card" aria-labelledby="controlAuthTitle">
             <div class="auth-heading">
@@ -234,6 +236,7 @@
         <div class="dhcp-footnote" id="dhcpFootnote"></div>
       </section>
       <section class="topology-panel" id="topologyPanel" aria-label="网络拓扑" hidden>
+        <div class="network-read-status" id="topologyNetworkStatus" role="status" hidden></div>
         <div class="topology-toolbar">
           <span class="topology-legend">
             <i class="dot good"></i> 在线
@@ -304,6 +307,7 @@
     <script src="./metrics/ping-transform.js?v=20260826b"></script>
     <script src="./isp-carousel.js?v=20260731a"></script>
     <script src="./api.js?v=20260911a"></script>
+    <script src="./network-read.js?v=20260929a"></script>
     <script src="./players.js?v=20260802a"></script>
     <script src="./tournament/tournament-panel.js?v=20260828a"></script>
     <script src="./wireless/wireless-panel.js?v=20260827a"></script>

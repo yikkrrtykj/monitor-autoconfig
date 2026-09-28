@@ -11,8 +11,10 @@
     return status === "up" ? true : (status === "down" ? false : null);
   }
 
-  function networkDomainState(payload) {
+  function networkDomainState(payload, name) {
     if (!payload || payload.ok !== true) return "unavailable";
+    const field = { devices: "devices", topology: "edges", isp: "isps" }[name];
+    if (field && !Array.isArray(payload[field])) return "unavailable";
     if (payload.stale === true) return "stale";
     return payload.degraded === true ? "degraded" : "normal";
   }
@@ -86,9 +88,9 @@
     }), enrichment);
   }
 
-  async function resolveNetworkDomain(payload, fallback) {
-    if (networkDomainState(payload) !== "unavailable") {
-      return { data: payload, state: networkDomainState(payload), source: "network-api" };
+  async function resolveNetworkDomain(payload, fallback, name) {
+    if (networkDomainState(payload, name) !== "unavailable") {
+      return { data: payload, state: networkDomainState(payload, name), source: "network-api" };
     }
     try {
       const data = await fallback();
@@ -117,7 +119,7 @@
     const warnings = (payload && Array.isArray(payload.warnings)) ? payload.warnings : [];
     const entries = await Promise.all(DOMAINS.map(async (name) => [
       name, {
-        ...await resolveNetworkDomain(values[name], fallbacks[name]),
+        ...await resolveNetworkDomain(values[name], fallbacks[name], name),
         apiError: networkErrorInfo(apiErrors[name] || warnings.find((item) => item && item.domain === name && item.code))
       }
     ]));
