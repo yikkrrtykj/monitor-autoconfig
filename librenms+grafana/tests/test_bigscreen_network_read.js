@@ -62,6 +62,8 @@ async function run() {
   assert.strictEqual(network.mergeNetworkDevices([{ ip: "10.0.0.11", status: "down" }], [{ targetIp: "10.0.0.11", success: true }])[0].success, false);
   assert.strictEqual(network.mergeNetworkDevices([{ ip: "10.0.0.11", status: "up" }], [{ targetIp: "10.0.0.11", success: false }])[0].success, true);
   assert.strictEqual(network.mergeIspInventory(isp.isps, []).length, 5);
+  assert.strictEqual(network.mergeLegacyIspInventory([], [{ job: "infra-isp-ping", targetIp: "10.0.1.9", displayName: "legacy", success: true }]).length, 1,
+    "anonymous topology keeps legacy probe-only ISP nodes");
   const trafficQueries = [];
   global.fetch = async (url) => {
     trafficQueries.push(String(url));

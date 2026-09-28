@@ -75,17 +75,21 @@
   }
 
   function mergeLegacyIspInventory(inventory, enrichment) {
-    const byIp = new Map((enrichment || []).filter((item) => item.job === "infra-isp-ping")
+    const ispMetrics = (enrichment || []).filter((item) => item.job === "infra-isp-ping");
+    const byIp = new Map(ispMetrics
       .map((item) => [String(item.targetIp || item.instance || ""), item]));
-    return mergeIspInventory((inventory || []).map((item) => {
+    const used = new Set();
+    const merged = mergeIspInventory((inventory || []).map((item) => {
       const target = String(item.gateway || "");
       const metric = byIp.get(target);
+      if (metric) used.add(target);
       return {
         name: item.name, target, wanIp: item.wanIp,
         metricTarget: item.metricTarget, metricIfindex: item.metricIfindex,
         status: metric ? (metric.success === true ? "up" : (metric.success === false ? "down" : "unknown")) : "unknown"
       };
     }), enrichment);
+    return merged.concat(ispMetrics.filter((item) => !used.has(String(item.targetIp || item.instance || ""))));
   }
 
   async function resolveNetworkDomain(payload, fallback, name) {
