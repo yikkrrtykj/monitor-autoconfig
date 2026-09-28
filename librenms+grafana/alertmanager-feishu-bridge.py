@@ -717,6 +717,9 @@ def load_unifi_ap_inventory():
             "ip": str(value.get("ip") or ""),
             "model": str(value.get("model") or ""),
             "librenms_ip": str(value.get("librenms_ip") or ""),
+            # Freeze pre-hotfix aliases before DHCP/name updates overwrite them.
+            # New entries explicitly carry [] and cannot inherit an old IP ledger.
+            "legacy_online_aliases": _unifi_legacy_aliases(value),
         }
     return inventory
 
@@ -732,6 +735,7 @@ def save_unifi_ap_inventory(inventory):
             "ip": str(value.get("ip") or ""),
             "model": str(value.get("model") or ""),
             "librenms_ip": str(value.get("librenms_ip") or ""),
+            "legacy_online_aliases": _unifi_legacy_aliases(value),
         }
     with UNIFI_AP_INVENTORY_LOCK:
         return _save_json_dict(UNIFI_AP_INVENTORY_FILE, payload)
@@ -2181,15 +2185,88 @@ def _find_unifi_ap_by_device_name(device):
     return matches[0] if len(matches) == 1 else None
 
 
-def _enrich_device_with_unifi(device):
-    ip = device.get("ip") or device.get("hostname") or ""
-    # Name fallback covers the short window after DHCP changes an AP address
-    # but the controller cache still contains its previous IP. Only accept a
-    # unique name match so two identically named APs cannot be conflated.
-    ap = _find_unifi_ap_by_ip(ip) or _find_unifi_ap_by_device_name(device)
-    if not ap:
-        return device
+def _unifi_legacy_aliases(entry):
+    values = entry.get("legacy_online_aliases")
+    if values is None:
+        values = [entry.get(field) for field in ("ip", "librenms_ip", "name")]
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(str(v).strip() for v in values if isinstance(v, str) and v.strip()))
+
+
+def _unifi_identity_snapshot():
+    return fetch_unifi_controller_aps_cached(), load_unifi_ap_inventory()
+
+
+def resolve_unifi_identity(device: dict, controller: dict, inventory: dict) -> tuple[str, dict]:
+    """Read-only resolution: resolved AP metadata, unresolved, or not-an-AP.
+
+    Exact addresses precede unique names. A matching record without a valid
+    MAC is evidence of an AP, never permission to fall back to IP delivery.
+    """
+    direct = _normalize_mac_hex(device.get("unifi_mac"))
+    if direct:
+        return "resolved", {"mac": direct}
+    ips = {str(device.get(f) or "").strip() for f in ("ip", "hostname")}
+    ips = {ip for ip in ips if _looks_like_ip(ip)}
+    names = {_norm_ap_name(device.get(f)) for f in ("name", "display", "sysName", "hostname")
+             if device.get(f) and not _looks_like_ip(device.get(f))}
+    names.discard("")
+
+    def records(source):
+        return [dict(ap, mac=_normalize_mac_hex(ap.get("mac") or key))
+                for key, ap in source.items() if isinstance(ap, dict)]
+
+    live, saved = records(controller), records(inventory)
+
+    def unique(matches):
+        macs = {ap["mac"] for ap in matches}
+        if len(macs) == 1 and "" not in macs:
+            return "resolved", matches[0]
+        return "unresolved", {}
+
+    for source, fields in ((live, ("ip",)), (saved, ("ip", "librenms_ip"))):
+        matches = [ap for ap in source if any(ap.get(f) in ips for f in fields)]
+        if matches:
+            return unique(matches)
+    matches = [ap for ap in live + saved if _norm_ap_name(ap.get("name")) in names]
+    if matches:
+        return unique(matches)
+    ap_hint = (device.get("unifi_mac") or device.get("unifi_ap")
+               or str(device.get("type") or "").lower() == "uap"
+               or str(device.get("os") or "").lower() == "unifi")
+    return ("unresolved" if ap_hint else "not-an-AP"), {}
+
+
+def _unifi_migration_aliases(identity, controller, inventory):
+    """Only historical, uniquely owned aliases may seed a canonical ledger."""
+    entry = inventory.get(identity, {})
+    candidates = _unifi_legacy_aliases(entry)
+    safe = []
+    for alias in candidates:
+        owners = set()
+        for source in (inventory, controller):
+            for key, ap in source.items():
+                values = [ap.get(f) for f in ("ip", "librenms_ip", "name")]
+                if source is inventory:
+                    values += _unifi_legacy_aliases(ap)
+                if any(alias == value or (
+                    not _looks_like_ip(alias) and value and not _looks_like_ip(value)
+                    and _norm_ap_name(alias) == _norm_ap_name(value)
+                ) for value in values):
+                    owners.add(_unifi_ap_identity(ap.get("mac") or key))
+        if owners == {identity}:
+            safe.append(alias)
+    return safe
+
+
+def _enrich_device_with_unifi(device, snapshot=None):
+    controller, inventory = snapshot if snapshot is not None else _unifi_identity_snapshot()
+    status, ap = resolve_unifi_identity(device, controller, inventory)
     enriched = dict(device)
+    enriched["unifi_identity_status"] = status
+    if status != "resolved":
+        return enriched
     if ap.get("name"):
         enriched["display"] = ap["name"]
         enriched["sysName"] = ap["name"]
@@ -2197,6 +2274,9 @@ def _enrich_device_with_unifi(device):
         enriched["hardware"] = ap["model"]
     if ap.get("mac"):
         enriched["unifi_mac"] = ap["mac"]
+    enriched["unifi_legacy_online_aliases"] = _unifi_migration_aliases(
+        _unifi_ap_identity(ap.get("mac")), controller, inventory,
+    )
     return enriched
 
 
@@ -2255,7 +2335,12 @@ def fetch_librenms_name_cache():
 
 
 def _normalize_mac_hex(value):
-    mac = re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).lower()
+    text = str(value or "").strip().lower()
+    if text.startswith("unifi-ap:"):
+        text = text[len("unifi-ap:"):]
+    if not re.fullmatch(r"[0-9a-f]{12}|(?:[0-9a-f]{2}:){5}[0-9a-f]{2}|(?:[0-9a-f]{2}-){5}[0-9a-f]{2}|(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}", text):
+        return ""
+    mac = re.sub(r"[:.\-]", "", text)
     return mac if len(mac) == 12 else ""
 
 
@@ -2266,9 +2351,13 @@ def _unifi_ap_identity(value):
 
 def _device_online_identity_values(device):
     """Use an AP's MAC as its lifetime identity; retain IP keys for other devices."""
+    if device.get("unifi_identity_status") == "unresolved":
+        return ()
     ap_identity = _unifi_ap_identity(device.get("unifi_mac"))
     if ap_identity:
         return (ap_identity,)
+    if device.get("unifi_mac"):
+        return ()
     key = device.get("hostname") or device.get("ip")
     ip = device.get("ip") or device.get("hostname")
     return tuple(dict.fromkeys(value for value in (key, ip) if value))
@@ -2278,13 +2367,14 @@ def _migrate_unifi_device_online_identity(device):
     identity = _unifi_ap_identity(device.get("unifi_mac"))
     if not identity:
         return False
-    return migrate_device_online_identity(
+    migrated = migrate_device_online_identity(
         identity,
-        device.get("hostname"),
-        device.get("ip"),
-        device.get("display"),
-        device.get("sysName"),
+        *device.get("unifi_legacy_online_aliases", ()),
     )
+    if not migrated and set(device.get("unifi_legacy_online_aliases", ())) & _ONLINE_IDENTITY.known_identities():
+        # A failed ledger write must retry migration, not deliver an old AP again.
+        device["unifi_identity_status"] = "unresolved"
+    return migrated
 
 
 def _host_display_name(host, fdb_entry=None):
@@ -2740,11 +2830,38 @@ _ONLINE_IDENTITY = OnlineIdentityService(
 )
 
 
+def _resolve_online_delivery_identities(identity_values):
+    """Gate legacy Ping/reenrollment callers without changing their state machine."""
+    canonical = tuple(dict.fromkeys(
+        _unifi_ap_identity(value) for value in identity_values
+        if str(value).startswith("unifi-ap:") and _unifi_ap_identity(value)
+    ))
+    if canonical:
+        return canonical
+    if not identity_values:
+        return ()
+    device = {
+        "ip": next((v for v in identity_values if _looks_like_ip(v)), ""),
+        "display": next((v for v in identity_values if not _looks_like_ip(v)), ""),
+    }
+    device = _enrich_device_with_unifi(device)
+    if device["unifi_identity_status"] == "not-an-AP":
+        return identity_values
+    _migrate_unifi_device_online_identity(device)
+    return _device_online_identity_values(device)
+
+
 def send_device_online_once(card, *identity_values):
+    identity_values = _resolve_online_delivery_identities(identity_values)
     return _ONLINE_IDENTITY.send_once(card, *identity_values)
 
 
 def send_device_online_new_lifecycle(card, *identity_values):
+    identity_values = _resolve_online_delivery_identities(identity_values)
+    if not identity_values:
+        return False
+    if any(str(value).startswith("unifi-ap:") for value in identity_values):
+        return _ONLINE_IDENTITY.send_once(card, *identity_values)
     return _ONLINE_IDENTITY.send_new_lifecycle(card, *identity_values)
 
 
@@ -4978,10 +5095,14 @@ def reconcile_unifi_ap_inventory(known, inventory, migration_attempted, now):
                 "ip": ip,
                 "model": info.get("model") or "",
                 "librenms_ip": "",
+                "legacy_online_aliases": [],
             }
             inventory[identity] = entry
             changed = True
         previous_ip = str(entry.get("ip") or "").strip()
+        if "legacy_online_aliases" not in entry:
+            entry["legacy_online_aliases"] = _unifi_legacy_aliases(entry)
+            changed = True
         if ip and previous_ip and ip != previous_ip:
             log(
                 f"[AP] controller IP changed for {info.get('name') or identity}: "
@@ -5021,26 +5142,52 @@ def mark_unifi_ap_librenms_ip(inventory, key, info):
     return True
 
 
-def _send_pending_ap_deployment(name, ip, model, confirmed_ips, delivered_identities, mac=""):
+def _send_pending_ap_deployment(name, ip, model, confirmed_ips, delivered_identities, mac="", snapshot=None):
     """Retry an AP deployment card until Feishu confirms delivery."""
     identity = _unifi_ap_identity(mac)
-    delivery_key = identity or ip
-    if not ip or ip not in confirmed_ips or delivery_key in delivered_identities:
+    delivery_key = identity
+    if not identity or not ip or ip not in confirmed_ips or delivery_key in delivered_identities:
         return False
     card = build_device_online_card({
         "display": name,
         "ip": ip,
         "hardware": model or "",
     })
-    if identity:
-        migrate_device_online_identity(identity, name, ip)
-        identities = (identity,)
-    else:
-        identities = (name, ip)
-    if not send_device_online_once(card, *identities):
+    device = _enrich_device_with_unifi({"unifi_mac": mac}, snapshot)
+    _migrate_unifi_device_online_identity(device)
+    if device.get("unifi_identity_status") == "unresolved":
+        return False
+    if not send_device_online_once(card, identity):
         return False
     delivered_identities.add(delivery_key)
     return True
+
+
+def _merge_unifi_ap_states(states, controller, inventory):
+    """Fold provisional observations into MAC state without losing an outage."""
+    changed = False
+    for key, state in list(states.items()):
+        device = dict(state, unifi_mac=state.get("mac") or "", unifi_ap=True)
+        status, ap = resolve_unifi_identity(device, controller, inventory)
+        if status != "resolved":
+            continue
+        identity = _unifi_ap_identity(ap.get("mac"))
+        if identity == key:
+            continue
+        target = states.get(identity)
+        if target is None:
+            states[identity] = state
+        else:
+            # Keep the oldest active outage and strongest alert/armed evidence.
+            times = [s.get("down_since") for s in (target, state) if s.get("down_since") is not None]
+            target["down_since"] = min(times) if times else None
+            target["alerting"] = bool(target.get("alerting") or state.get("alerting"))
+            target["seen_up"] = bool(target.get("seen_up") or state.get("seen_up"))
+            target["up_since"] = None
+        states[identity]["mac"] = ap["mac"]
+        del states[key]
+        changed = True
+    return changed
 
 
 def unifi_ap_watcher():
@@ -5111,13 +5258,14 @@ def unifi_ap_watcher():
                 or metric.get("host")
                 or ""
             )
+            status, resolved = resolve_unifi_identity(
+                {"unifi_mac": metric_mac, "ip": metric_ip, "name": name, "unifi_ap": True},
+                controller_aps, ap_inventory,
+            )
+            if status == "resolved":
+                metric_mac = resolved["mac"]
+                key = _unifi_ap_identity(metric_mac)
             controller_info = controller_aps.get(key) or {}
-            if not controller_info and controller_aps:
-                for ap_info in controller_aps.values():
-                    if (metric_ip and ap_info.get("ip") == metric_ip) or (name and ap_info.get("name") == name):
-                        controller_info = ap_info
-                        key = ap_info.get("key") or key
-                        break
             if controller_aps and not controller_info:
                 continue
             info = {
@@ -5149,6 +5297,8 @@ def unifi_ap_watcher():
             else:
                 current.pop(key, None)
 
+        if _merge_unifi_ap_states(states, known, ap_inventory):
+            save_unifi_ap_states(states)
         probe_results = probe_unifi_ap_ips(known)
         current, ping_observed = apply_unifi_ap_ping_reachability(
             known, current, probe_results, previously_seen=set(states), now=now,
@@ -5186,6 +5336,7 @@ def unifi_ap_watcher():
                 snmp_confirmed_exists,
                 deployment_notification_confirmed,
                 info.get("mac") or "",
+                (controller_aps, ap_inventory),
             ):
                 log(f"[AP] AP deployment notification confirmed: {name} ({ip})")
             if ip and sync_name and not add_attempted:
@@ -5231,6 +5382,10 @@ def unifi_ap_watcher():
             if key in current or not state.get("seen_up"):
                 continue
             if controller_aps and key not in known:
+                if not _unifi_ap_identity(state.get("mac") or key):
+                    # A provisional outage with ambiguous identity is not proof
+                    # that its AP was removed; retain it for a later safe merge.
+                    continue
                 log(f"[AP] retired {state.get('name') or key}: removed from UniFi controller, no down alert")
                 states.pop(key, None)
                 save_unifi_ap_states(states)
@@ -5857,12 +6012,13 @@ def device_watcher():
             notified.update(persisted_notified)
 
         changed = False
+        identity_snapshot = _unifi_identity_snapshot()
         if first_successful_poll and not notified:
             seeded = 0
             for dev in devices:
                 if _is_ping_only_device(dev):
                     continue
-                online_dev = _enrich_device_with_unifi(dev)
+                online_dev = _enrich_device_with_unifi(dev, identity_snapshot)
                 if not _has_meaningful_device_name(online_dev):
                     continue
                 _migrate_unifi_device_online_identity(online_dev)
@@ -5881,7 +6037,7 @@ def device_watcher():
         for dev in devices:
             if _is_ping_only_device(dev):
                 continue
-            online_dev = _enrich_device_with_unifi(dev)
+            online_dev = _enrich_device_with_unifi(dev, identity_snapshot)
             if not _has_meaningful_device_name(online_dev):
                 key = online_dev.get("hostname") or online_dev.get("ip") or "?"
                 log(f"[WATCHER] waiting for SNMP name before online alert: {key}")

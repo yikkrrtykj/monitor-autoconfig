@@ -80,6 +80,8 @@ mkdir/write/replace 的 OSError 转为安全错误，保留 `require_write()` �
 
 ## 当前主线
 
+2026-09-28 更正（来源：用户 A-02.1 Hotfix 需求、本轮 Git 核对）：当前工作为 [UniFi AP MAC 生命周期修复](iterations/a-02.1-unifi-mac-hotfix.md)，开发基线 `fbe9094`，生产 `6607acf` 仅为用户交接。基线已经包含 FEISHU-UX2 分页及网络只读 API，以下旧记录不是当前实施状态；本轮不重新审计这些模块。AP 的物理身份为 MAC，IP/name/model 是属性；持久 inventory 作为 Controller 失败时的 fallback，旧 ledger 只按唯一历史归属补记 MAC，不清空、不把 IP/name 永久绑定为物理身份。详细迁移和验收边界见本次迭代记录。
+
 2026-09-17 更正（来源：用户 FEISHU-UX2 需求及本轮 Git/源码核对）：2026.08.1 / Golden Build ed01865 / Source Commit `ed01865a19616dd0573ba7548b13bf6e11db70f7` 已由用户确认完成 Golden/OVA 发布并投入使用，禁止回写。当前任务进入下一版本的 [FEISHU-UX2](iterations/feishu-ux2.md)，先审计并确认设计，再开发。不得顺带修改 shared-group/EVENT_NAME 路由、HELP、删除逻辑或启动 R5 重构。Git 已包含 f10a26e 隔离修复、bf573d2 全局帮助及 4aafd85 测试；下文是 2026-09-06 历史主线，不能继续把“尚未实施”当成当前状态。此次没有重新进行生产验收。
 
 按用户明确恢复的顺序：Feishu EVENT_NAME shared-group isolation → pre-refactor 只读审计 → 无剩余 P0/P1 blocker 后停止扩大 correctness 修复 → behavior-preserving refactor。

@@ -451,18 +451,18 @@ def test_ap_ip_change_does_not_send_a_second_deployment(monkeypatch, tmp_path):
 def test_librenms_ap_identity_uses_controller_mac(monkeypatch):
     monkeypatch.setattr(
         bridge,
-        "_find_unifi_ap_by_ip",
-        lambda _ip: {
+        "fetch_unifi_controller_aps_cached",
+        lambda: {"unifi-ap:aabbccddeeff": {
             "name": "AP-1",
             "ip": "192.0.2.99",
             "model": "U6-LR",
             "mac": "AA-BB-CC-DD-EE-FF",
-        },
+        }},
     )
 
     enriched = bridge._enrich_device_with_unifi({"hostname": "192.0.2.99"})
 
-    assert enriched["unifi_mac"] == "AA-BB-CC-DD-EE-FF"
+    assert enriched["unifi_mac"] == "aabbccddeeff"
     assert bridge._device_online_identity_values(enriched) == (
         "unifi-ap:aabbccddeeff",
     )
@@ -490,7 +490,7 @@ def test_librenms_ap_identity_survives_stale_controller_ip(monkeypatch):
         "sysName": "OB5",
     })
 
-    assert enriched["unifi_mac"] == "aa:bb:cc:dd:ee:ff"
+    assert enriched["unifi_mac"] == "aabbccddeeff"
     assert bridge._device_online_identity_values(enriched) == (
         "unifi-ap:aabbccddeeff",
     )

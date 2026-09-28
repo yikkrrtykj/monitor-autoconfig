@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import pytest
 from pathlib import Path
 
 from feishu_bridge import interconnect_watcher as interconnect
@@ -12,6 +13,76 @@ _spec = importlib.util.spec_from_file_location(
 )
 bridge = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bridge)
+
+
+@pytest.mark.parametrize("legacy_outage", [False, True, "ambiguous"])
+def test_ap_mac_outage_recovers_once_after_address_change(monkeypatch, tmp_path, legacy_outage):
+    class Finished(BaseException):
+        pass
+
+    identity = "unifi-ap:aabbccddeeff"
+    sent = []
+    clock = [100.0]
+    state_file = tmp_path / "ap-state.json"
+    monkeypatch.setattr(bridge, "UNIFI_AP_STATE_FILE", str(state_file))
+    monkeypatch.setattr(bridge, "UNIFI_AP_INVENTORY_FILE", str(tmp_path / "inventory.json"))
+    monkeypatch.setattr(bridge, "UNIFI_AP_ALERT_ENABLED", True)
+    monkeypatch.setattr(bridge, "UNIFI_AP_SNMP_AUTO_ADD", False)
+    monkeypatch.setattr(bridge, "UNIFI_AP_DOWN_FOR_SECONDS", 1)
+    monkeypatch.setattr(bridge, "UNIFI_AP_RECOVER_FOR_SECONDS", 0)
+    monkeypatch.setattr(bridge, "prometheus_query", lambda query: [])
+    monkeypatch.setattr(bridge, "_ap_online_metric_map", lambda: {})
+    monkeypatch.setattr(bridge, "probe_unifi_ap_ips", lambda known: {})
+    monkeypatch.setattr(bridge, "update_librenms_device_display", lambda *args, **kwargs: True)
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#test")
+    monkeypatch.setattr(bridge, "send_feishu", lambda card: sent.append(card) or True)
+    monkeypatch.setattr(bridge.time, "time", lambda: clock[0])
+    monkeypatch.setattr(bridge.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + 20))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("AP outage must not enter deletion or pending state mutation")
+
+    monkeypatch.setattr(bridge, "delete_librenms_device", forbidden)
+    monkeypatch.setattr(bridge, "save_device_down_states", forbidden)
+    monkeypatch.setattr(bridge.request, "urlopen", forbidden)
+    if legacy_outage:
+        state_file.write_text(json.dumps({"AP-1": {
+            "name": "AP-1", "ip": "192.0.2.10", "alerting": True, "down_since": 50,
+        }}), encoding="utf-8")
+        observations = [(True, "192.0.2.99"), (True, "192.0.2.99")]
+    else:
+        observations = [(True, "192.0.2.10"), (False, "192.0.2.10"),
+                        (True, "192.0.2.99"), (True, "192.0.2.99")]
+    samples = iter(observations)
+
+    def fetch():
+        try:
+            online, ip = next(samples)
+        except StopIteration:
+            raise Finished()
+        result = {identity: {"name": "AP-1", "mac": "aabbccddeeff", "ip": ip,
+                             "online": online, "model": "test", "source": "controller"}}
+        if legacy_outage == "ambiguous":
+            result["unifi-ap:112233445566"] = {
+                "name": "AP-1", "mac": "112233445566", "ip": "192.0.2.11",
+                "online": True, "model": "test", "source": "controller",
+            }
+        return result
+
+    monkeypatch.setattr(bridge, "fetch_unifi_controller_aps_cached", fetch)
+    with pytest.raises(Finished):
+        bridge.unifi_ap_watcher()
+    if legacy_outage == "ambiguous":
+        assert sent == []
+        assert set(bridge.load_unifi_ap_states()) == {"AP-1"}
+        assert bridge.load_unifi_ap_states()["AP-1"]["down_since"] == 50
+        return
+    titles = [card["card"]["header"]["title"]["content"] for card in sent]
+    assert sum("AP 掉线告警" in title for title in titles) == (0 if legacy_outage else 1)
+    assert sum("AP 上线恢复" in title for title in titles) == 1
+    assert "192.0.2.99" in json.dumps(sent[-1])
+    assert bridge.load_unifi_ap_states() == {}
+    assert set(bridge.load_unifi_ap_inventory()) == {identity}
 
 
 def enable_pending_delete(monkeypatch):

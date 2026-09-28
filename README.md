@@ -4,6 +4,8 @@
 
 开发协作从 [AGENTS.md](AGENTS.md) 开始；工程、Git、文档规范及交接索引见 [工程文档](docs/README.md)，当前进度和下一步见 [STATUS](docs/STATUS.md)。每轮交付先更新持久化记录、验证并提交推送，再进行客户端上下文压缩。
 
+UniFi AP 的部署通知与 AP 掉线/恢复以 MAC 作为物理身份；同 MAC 换 IP、改名或 Bridge 重启不会创建新的部署通知生命周期。Controller 不可用时使用持久 AP inventory；已知 AP 但 MAC 无法唯一确定时暂缓通知。历史通知记录保留并按唯一归属迁移，新 MAC 仍正常通知。A-02.1 的升级、兼容边界及验收见 [本次操作手册](docs/runbooks/a-02.1-unifi-mac-hotfix.md)。
+
 ## 入口
 
 | 服务 | 默认地址 | 用途 |
