@@ -256,8 +256,15 @@ def test_controller_and_inventory_name_conflict_defers(ap_identity_env, monkeypa
     assert bridge._device_online_identity_values(dev) == ()
 
 
-def test_generic_switch_with_ap_name_keeps_its_own_identity(ap_identity_env):
-    _write_inventory(_ap(name="shared-name"))
+@pytest.mark.parametrize("source", ["inventory", "controller"])
+def test_generic_switch_with_ap_name_keeps_its_own_identity(ap_identity_env, monkeypatch, source):
+    ap = _ap(name="shared-name")
+    if source == "inventory":
+        _write_inventory(ap)
+    else:
+        monkeypatch.setattr(bridge, "fetch_unifi_controller_aps_cached", lambda: {
+            "unifi-ap:aabbccddeeff": ap,
+        })
     dev = bridge._enrich_device_with_unifi({
         "ip": "192.0.2.99", "hostname": "192.0.2.99",
         "display": "shared-name", "os": "ios", "hardware": "test switch",
