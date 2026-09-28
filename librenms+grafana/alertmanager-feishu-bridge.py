@@ -669,10 +669,14 @@ def load_unifi_ap_states():
         if not key or not isinstance(value, dict) or not value.get("alerting"):
             continue
         down_since = _as_float(value.get("down_since"))
-        mac = _normalize_mac_hex(value.get("mac") or key)
-        state_key = _unifi_ap_identity(mac) or str(key)
+        # A legacy state key can be an AP name that happens to look like a MAC.
+        # Preserve it as provisional until live or inventory evidence resolves it.
+        canonical_key = str(key).startswith("unifi-ap:") and _unifi_ap_identity(key) == key
+        mac = _normalize_mac_hex(value.get("mac") or key) if canonical_key else ""
+        state_key = str(key)
         loaded[state_key] = {
             "alerting": True,
+            "identity_resolved": bool(value.get("identity_resolved")) and canonical_key,
             "down_since": down_since,
             "up_since": None,
             "seen_up": True,
@@ -692,11 +696,12 @@ def save_unifi_ap_states(states):
             continue
         active[str(key)] = {
             "alerting": True,
+            "identity_resolved": bool(state.get("identity_resolved")),
             "down_since": state.get("down_since"),
             "name": state.get("name") or "",
             "ip": state.get("ip") or "",
             "model": state.get("model") or "",
-            "mac": _normalize_mac_hex(state.get("mac") or key),
+            "mac": _normalize_mac_hex(state.get("mac") or key) if state.get("identity_resolved") else "",
         }
     with UNIFI_AP_STATE_LOCK:
         _save_json_dict(UNIFI_AP_STATE_FILE, active)
@@ -2214,10 +2219,14 @@ def resolve_unifi_identity(device: dict, controller: dict, inventory: dict) -> t
     names.discard("")
 
     def records(source):
-        return [dict(ap, mac=_normalize_mac_hex(ap.get("mac") or key))
-                for key, ap in source.items() if isinstance(ap, dict)]
+        return [dict(ap, mac=_normalize_mac_hex(ap.get("mac")))
+                for ap in source.values() if isinstance(ap, dict)]
 
-    live, saved = records(controller), records(inventory)
+    live = records(controller)
+    # Live Controller records supersede every persisted alias for the same MAC.
+    # An old inventory IP may already belong to a different physical device.
+    live_macs = {ap["mac"] for ap in live if ap["mac"]}
+    saved = [ap for ap in records(inventory) if ap["mac"] not in live_macs]
 
     def unique(matches):
         macs = {ap["mac"] for ap in matches}
@@ -2229,12 +2238,15 @@ def resolve_unifi_identity(device: dict, controller: dict, inventory: dict) -> t
         matches = [ap for ap in source if any(ap.get(f) in ips for f in fields)]
         if matches:
             return unique(matches)
-    matches = [ap for ap in live + saved if _norm_ap_name(ap.get("name")) in names]
-    if matches:
-        return unique(matches)
     ap_hint = (device.get("unifi_mac") or device.get("unifi_ap")
                or str(device.get("type") or "").lower() == "uap"
                or str(device.get("os") or "").lower() == "unifi")
+    # A shared display name alone is not evidence that a generic SNMP device
+    # is an AP. Only an independently identified AP may use name fallback.
+    if ap_hint:
+        matches = [ap for ap in live + saved if _norm_ap_name(ap.get("name")) in names]
+        if matches:
+            return unique(matches)
     return ("unresolved" if ap_hint else "not-an-AP"), {}
 
 
@@ -5084,8 +5096,12 @@ def reconcile_unifi_ap_inventory(known, inventory, migration_attempted, now):
     changed = False
     migrated_ips = set()
     for key, info in known.items():
-        mac = _normalize_mac_hex(info.get("mac") or key)
-        identity = _unifi_ap_identity(mac) or str(key)
+        mac = _normalize_mac_hex(info.get("mac"))
+        if not mac:
+            # A metric name can look exactly like a MAC or canonical key.
+            # Provisional observations must not become persisted AP identities.
+            continue
+        identity = _unifi_ap_identity(mac)
         ip = str(info.get("ip") or "").strip()
         entry = inventory.get(identity)
         if entry is None:
@@ -5133,7 +5149,9 @@ def reconcile_unifi_ap_inventory(known, inventory, migration_attempted, now):
 
 
 def mark_unifi_ap_librenms_ip(inventory, key, info):
-    identity = _unifi_ap_identity(info.get("mac")) or str(key)
+    identity = _unifi_ap_identity(info.get("mac"))
+    if not identity:
+        return False
     entry = inventory.get(identity)
     ip = str(info.get("ip") or "").strip()
     if not entry or not ip or entry.get("librenms_ip") == ip:
@@ -5167,12 +5185,14 @@ def _merge_unifi_ap_states(states, controller, inventory):
     """Fold provisional observations into MAC state without losing an outage."""
     changed = False
     for key, state in list(states.items()):
-        device = dict(state, unifi_mac=state.get("mac") or "", unifi_ap=True)
+        device = dict(state, unifi_mac=state.get("mac") if state.get("identity_resolved") else "",
+                      unifi_ap=True)
         status, ap = resolve_unifi_identity(device, controller, inventory)
         if status != "resolved":
             continue
         identity = _unifi_ap_identity(ap.get("mac"))
         if identity == key:
+            state["identity_resolved"] = True
             continue
         target = states.get(identity)
         if target is None:
@@ -5185,6 +5205,7 @@ def _merge_unifi_ap_states(states, controller, inventory):
             target["seen_up"] = bool(target.get("seen_up") or state.get("seen_up"))
             target["up_since"] = None
         states[identity]["mac"] = ap["mac"]
+        states[identity]["identity_resolved"] = True
         del states[key]
         changed = True
     return changed
@@ -5244,6 +5265,7 @@ def unifi_ap_watcher():
         controller_aps = fetch_unifi_controller_aps_cached()
         current = {}
         known = {}
+        resolved_keys = set()
         for item in results:
             metric = item.get("metric") or {}
             metric_mac = _normalize_mac_hex(metric.get("mac"))
@@ -5265,6 +5287,7 @@ def unifi_ap_watcher():
             if status == "resolved":
                 metric_mac = resolved["mac"]
                 key = _unifi_ap_identity(metric_mac)
+                resolved_keys.add(key)
             controller_info = controller_aps.get(key) or {}
             if controller_aps and not controller_info:
                 continue
@@ -5282,6 +5305,8 @@ def unifi_ap_watcher():
                 current[key] = info
 
         for key, controller_info in controller_aps.items():
+            if _unifi_ap_identity(controller_info.get("mac")) == key:
+                resolved_keys.add(key)
             info = known.get(key, {})
             merged = {
                 "name": controller_info.get("name") or info.get("name") or key,
@@ -5356,10 +5381,15 @@ def unifi_ap_watcher():
             state["ip"] = info["ip"] or state["ip"]
             state["model"] = info["model"] or state["model"]
             state["mac"] = info.get("mac") or state.get("mac") or ""
+            state["identity_resolved"] = key in resolved_keys
             state["last_seen"] = now
             if not state["seen_up"]:
                 state["seen_up"] = True
                 log(f"[AP] armed {name} ({state['ip']}) after first seen")
+            if key not in resolved_keys:
+                # Keep provisional observations, but never emit an AP recovery
+                # until a unique physical MAC owns this state.
+                continue
             if state["alerting"]:
                 if recovery_ready(
                     state, now, now, UNIFI_AP_RECOVER_FOR_SECONDS,
@@ -5380,6 +5410,9 @@ def unifi_ap_watcher():
         # Previously-seen APs now missing => down after debounce.
         for key, state in list(states.items()):
             if key in current or not state.get("seen_up"):
+                continue
+            if not state.get("identity_resolved") or not str(key).startswith("unifi-ap:"):
+                # A name-only AP cannot own a down notification lifecycle.
                 continue
             if controller_aps and key not in known:
                 if not _unifi_ap_identity(state.get("mac") or key):

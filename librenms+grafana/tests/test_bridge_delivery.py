@@ -488,6 +488,7 @@ def test_librenms_ap_identity_survives_stale_controller_ip(monkeypatch):
     enriched = bridge._enrich_device_with_unifi({
         "hostname": "192.168.39.1",
         "sysName": "OB5",
+        "os": "unifi",
     })
 
     assert enriched["unifi_mac"] == "aabbccddeeff"
@@ -716,13 +717,15 @@ def test_unifi_alert_state_survives_bridge_restart(monkeypatch, tmp_path):
     bridge.save_unifi_ap_states(states)
     loaded = bridge.load_unifi_ap_states()
 
-    state_key = "unifi-ap:aabbccddeeff"
+    # A legacy MAC-shaped key remains provisional until the watcher sees
+    # independent Controller/inventory evidence for its physical identity.
+    state_key = "aa:bb:cc:dd:ee:ff"
     assert set(loaded) == {state_key}
     assert loaded[state_key]["alerting"] is True
     assert loaded[state_key]["down_since"] == 1234.0
     assert loaded[state_key]["name"] == "AP-1"
     assert loaded[state_key]["ip"] == "192.0.2.10"
-    assert loaded[state_key]["mac"] == "aabbccddeeff"
+    assert loaded[state_key]["mac"] == ""
 
 
 def test_ap_watcher_restores_active_outages_instead_of_isp_watcher():

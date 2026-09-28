@@ -204,7 +204,7 @@ def test_inventory_fallback_and_legacy_migration(ap_identity_env):
 
 def test_ambiguous_ap_name_defers_without_ip_fallback(ap_identity_env):
     _write_inventory(_ap(name="same"), _ap("112233445566", "192.0.2.11", "same"))
-    dev = bridge._enrich_device_with_unifi({"display": "same", "ip": "192.0.2.99"})
+    dev = bridge._enrich_device_with_unifi({"display": "same", "ip": "192.0.2.99", "unifi_ap": True})
     assert bridge._device_online_identity_values(dev) == ()
     assert not bridge.send_device_online_once({}, *bridge._device_online_identity_values(dev))
     assert ap_identity_env == []
@@ -252,8 +252,44 @@ def test_controller_and_inventory_name_conflict_defers(ap_identity_env, monkeypa
     monkeypatch.setattr(bridge, "fetch_unifi_controller_aps_cached", lambda: {
         "unifi-ap:112233445566": _ap("112233445566", "192.0.2.11", "same"),
     })
-    dev = bridge._enrich_device_with_unifi({"ip": "192.0.2.99", "display": "same"})
+    dev = bridge._enrich_device_with_unifi({"ip": "192.0.2.99", "display": "same", "unifi_ap": True})
     assert bridge._device_online_identity_values(dev) == ()
+
+
+@pytest.mark.parametrize("source", ["inventory", "controller"])
+def test_generic_switch_with_ap_name_keeps_its_own_identity(ap_identity_env, monkeypatch, source):
+    ap = _ap(name="shared-name")
+    if source == "inventory":
+        _write_inventory(ap)
+    else:
+        monkeypatch.setattr(bridge, "fetch_unifi_controller_aps_cached", lambda: {
+            "unifi-ap:aabbccddeeff": ap,
+        })
+    dev = bridge._enrich_device_with_unifi({
+        "ip": "192.0.2.99", "hostname": "192.0.2.99",
+        "display": "shared-name", "os": "ios", "hardware": "test switch",
+    })
+    assert dev["unifi_identity_status"] == "not-an-AP"
+    assert bridge._device_online_identity_values(dev) == ("192.0.2.99",)
+    assert bridge.send_device_online_once({}, *bridge._device_online_identity_values(dev))
+    assert len(ap_identity_env) == 1
+    assert bridge._ONLINE_IDENTITY.known_identities() == {"192.0.2.99"}
+
+
+def test_live_controller_invalidates_stale_inventory_old_ip(ap_identity_env, monkeypatch):
+    _write_inventory(_ap(ip="192.0.2.10"))
+    monkeypatch.setattr(bridge, "fetch_unifi_controller_aps_cached", lambda: {
+        "unifi-ap:aabbccddeeff": _ap(ip="192.0.2.99"),
+    })
+    dev = bridge._enrich_device_with_unifi({
+        "ip": "192.0.2.10", "hostname": "192.0.2.10",
+        "display": "replacement", "os": "ios", "hardware": "test switch",
+    })
+    assert dev["unifi_identity_status"] == "not-an-AP"
+    assert bridge._device_online_identity_values(dev) == ("192.0.2.10",)
+    assert bridge.send_device_online_once({}, *bridge._device_online_identity_values(dev))
+    assert len(ap_identity_env) == 1
+    assert bridge._ONLINE_IDENTITY.known_identities() == {"192.0.2.10"}
 
 
 def test_first_mac_rename_ip_restart_and_replacement(ap_identity_env, monkeypatch):
@@ -363,9 +399,10 @@ def test_generic_watcher_inventory_retry_and_switch_regression(ap_identity_env, 
         [{"ip": "192.0.2.12", "display": "Cisco switch", "hardware": "test switch"}],
         [{"ip": "192.0.2.10", "display": "same"}, {"ip": "192.0.2.12", "display": "Cisco switch"}],
     ])
-    assert len(ap_identity_env) == 3
+    assert len(ap_identity_env) == 4
     assert bridge._ONLINE_IDENTITY.known_identities() == {
-        "unrelated-existing", "unifi-ap:aabbccddeeff", "unifi-ap:112233445566", "192.0.2.12",
+        "unrelated-existing", "unifi-ap:aabbccddeeff", "unifi-ap:112233445566",
+        "192.0.2.99", "192.0.2.12",
     }
 
 
@@ -386,7 +423,8 @@ def test_legacy_name_migrates_only_for_unique_owner(ap_identity_env):
     assert ap_identity_env == []
     _write_inventory(_ap(name="same"), _ap("112233445566", "192.0.2.11", "same"))
     bridge.mark_device_online_notified("same")
-    assert not bridge.send_device_online_new_lifecycle({}, "same", "192.0.2.99")
+    assert bridge.send_device_online_new_lifecycle({}, "same", "192.0.2.99")
+    assert len(ap_identity_env) == 1
     assert "unifi-ap:112233445566" not in bridge._ONLINE_IDENTITY.known_identities()
 
 
