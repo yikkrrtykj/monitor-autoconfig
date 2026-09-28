@@ -85,7 +85,7 @@ def test_ap_mac_outage_recovers_once_after_address_change(monkeypatch, tmp_path,
     assert set(bridge.load_unifi_ap_inventory()) == {identity}
 
 
-@pytest.mark.parametrize("name", ["AP-1", "aabbccddeeff"])
+@pytest.mark.parametrize("name", ["AP-1", "aabbccddeeff", "unifi-ap:aabbccddeeff"])
 def test_ap_without_unique_mac_waits_before_sending_down_alert(monkeypatch, tmp_path, name):
     class Finished(BaseException):
         pass
@@ -120,6 +120,7 @@ def test_ap_without_unique_mac_waits_before_sending_down_alert(monkeypatch, tmp_
             result = next(controller)
             if result:
                 assert sent == [], "ambiguous AP sent an alert before its MAC was known"
+                assert bridge.load_unifi_ap_inventory() == {}, "name became a fake MAC inventory entry"
             return result
         except StopIteration:
             raise Finished()

@@ -2219,9 +2219,8 @@ def resolve_unifi_identity(device: dict, controller: dict, inventory: dict) -> t
     names.discard("")
 
     def records(source):
-        return [dict(ap, mac=_normalize_mac_hex(
-            ap.get("mac") or (key if str(key).startswith("unifi-ap:") else "")
-        )) for key, ap in source.items() if isinstance(ap, dict)]
+        return [dict(ap, mac=_normalize_mac_hex(ap.get("mac")))
+                for ap in source.values() if isinstance(ap, dict)]
 
     live = records(controller)
     # Live Controller records supersede every persisted alias for the same MAC.
@@ -5097,8 +5096,12 @@ def reconcile_unifi_ap_inventory(known, inventory, migration_attempted, now):
     changed = False
     migrated_ips = set()
     for key, info in known.items():
-        mac = _normalize_mac_hex(info.get("mac") or key)
-        identity = _unifi_ap_identity(mac) or str(key)
+        mac = _normalize_mac_hex(info.get("mac"))
+        if not mac:
+            # A metric name can look exactly like a MAC or canonical key.
+            # Provisional observations must not become persisted AP identities.
+            continue
+        identity = _unifi_ap_identity(mac)
         ip = str(info.get("ip") or "").strip()
         entry = inventory.get(identity)
         if entry is None:
@@ -5146,7 +5149,9 @@ def reconcile_unifi_ap_inventory(known, inventory, migration_attempted, now):
 
 
 def mark_unifi_ap_librenms_ip(inventory, key, info):
-    identity = _unifi_ap_identity(info.get("mac")) or str(key)
+    identity = _unifi_ap_identity(info.get("mac"))
+    if not identity:
+        return False
     entry = inventory.get(identity)
     ip = str(info.get("ip") or "").strip()
     if not entry or not ip or entry.get("librenms_ip") == ip:
