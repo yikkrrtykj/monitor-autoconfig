@@ -5360,6 +5360,10 @@ def unifi_ap_watcher():
             if not state["seen_up"]:
                 state["seen_up"] = True
                 log(f"[AP] armed {name} ({state['ip']}) after first seen")
+            if not _unifi_ap_identity(key):
+                # Keep provisional observations, but never emit an AP recovery
+                # until a unique physical MAC owns this state.
+                continue
             if state["alerting"]:
                 if recovery_ready(
                     state, now, now, UNIFI_AP_RECOVER_FOR_SECONDS,
@@ -5380,6 +5384,9 @@ def unifi_ap_watcher():
         # Previously-seen APs now missing => down after debounce.
         for key, state in list(states.items()):
             if key in current or not state.get("seen_up"):
+                continue
+            if not _unifi_ap_identity(key):
+                # A name-only AP cannot own a down notification lifecycle.
                 continue
             if controller_aps and key not in known:
                 if not _unifi_ap_identity(state.get("mac") or key):

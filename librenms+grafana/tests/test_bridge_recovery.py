@@ -85,6 +85,53 @@ def test_ap_mac_outage_recovers_once_after_address_change(monkeypatch, tmp_path,
     assert set(bridge.load_unifi_ap_inventory()) == {identity}
 
 
+def test_ap_without_unique_mac_waits_before_sending_down_alert(monkeypatch, tmp_path):
+    class Finished(BaseException):
+        pass
+
+    sent = []
+    clock = [100.0]
+    identity = "unifi-ap:aabbccddeeff"
+    controller = iter([{}, {}, {
+        identity: {"name": "AP-1", "mac": "aabbccddeeff", "ip": "192.0.2.10",
+                   "online": False, "model": "test", "source": "controller"},
+    }])
+    online = iter([True, False, False])
+    monkeypatch.setattr(bridge, "UNIFI_AP_STATE_FILE", str(tmp_path / "ap-state.json"))
+    monkeypatch.setattr(bridge, "UNIFI_AP_INVENTORY_FILE", str(tmp_path / "inventory.json"))
+    monkeypatch.setattr(bridge, "UNIFI_AP_ALERT_ENABLED", True)
+    monkeypatch.setattr(bridge, "UNIFI_AP_SNMP_AUTO_ADD", False)
+    monkeypatch.setattr(bridge, "UNIFI_AP_PING_ENABLED", False)
+    monkeypatch.setattr(bridge, "UNIFI_AP_DOWN_FOR_SECONDS", 1)
+    monkeypatch.setattr(bridge, "prometheus_query", lambda query: [{
+        "metric": {"name": "AP-1", "ip": "192.0.2.10", "type": "uap"},
+        "value": [0, "1"],
+    }])
+    monkeypatch.setattr(bridge, "_ap_online_metric_map", lambda: {"AP-1": next(online, False)})
+    monkeypatch.setattr(bridge, "probe_unifi_ap_ips", lambda known: {})
+    monkeypatch.setattr(bridge, "update_librenms_device_display", lambda *args, **kwargs: True)
+    monkeypatch.setattr(bridge, "send_feishu", lambda card: sent.append(card) or True)
+    monkeypatch.setattr(bridge.time, "time", lambda: clock[0])
+    monkeypatch.setattr(bridge.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + 20))
+
+    def fetch_controller():
+        try:
+            result = next(controller)
+            if result:
+                assert sent == [], "ambiguous AP sent an alert before its MAC was known"
+            return result
+        except StopIteration:
+            raise Finished()
+
+    monkeypatch.setattr(bridge, "fetch_unifi_controller_aps_cached", fetch_controller)
+    with pytest.raises(Finished):
+        bridge.unifi_ap_watcher()
+
+    titles = [card["card"]["header"]["title"]["content"] for card in sent]
+    assert sum("AP 掉线告警" in title for title in titles) == 1
+    assert set(bridge.load_unifi_ap_states()) == {identity}
+
+
 def enable_pending_delete(monkeypatch):
     monkeypatch.setattr(bridge, "DEVICE_PENDING_DELETE_ENABLED", True)
     monkeypatch.setattr(bridge, "MANUAL_DELETE_GUARDS_READY", True)
