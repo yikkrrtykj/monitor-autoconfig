@@ -51,6 +51,51 @@
     });
   }
 
+  function overlayTopologyDeviceStatus(targets, devices) {
+    const byIp = new Map((devices || []).filter((device) => device && device.ip)
+      .map((device) => [String(device.ip), device]));
+    return (targets || []).map((target) => {
+      if (target.job === "infra-isp-ping") return target;
+      const device = byIp.get(String(target.targetIp || target.instance || ""));
+      return device ? { ...target, success: deviceStatus(device.status), status: device.status } : target;
+    });
+  }
+
+  function topologyNetworkTargets(domains, enrichment, seenUp) {
+    const deviceDomain = domains.devices;
+    const ispDomain = domains.isp;
+    const deviceTargets = deviceDomain.source === "network-api"
+      ? overlayTopologyDeviceStatus(enrichment, deviceDomain.data.devices)
+      : (deviceDomain.data || []);
+    const ispTargets = ispDomain.source === "network-api"
+      ? mergeIspInventory(ispDomain.data.isps, enrichment)
+      : mergeLegacyIspInventory(ispDomain.data, enrichment);
+    const combined = deviceTargets.filter((item) => item.job !== "infra-isp-ping").concat(ispTargets);
+    return seenUp && seenUp.size
+      ? combined.filter((target) => target.job === "infra-fw-unit-snmp" || target.job === "infra-isp-ping" ||
+        seenUp.has(target.instance))
+      : combined;
+  }
+
+  function networkIssueNotice(domains) {
+    const labels = { devices: "设备", topology: "拓扑", isp: "ISP" };
+    const states = { degraded: "数据降级", stale: "快照陈旧", unavailable: "不可用" };
+    const issues = Object.entries(domains || {}).filter(([, domain]) => domain && states[domain.state]);
+    if (!issues.length) return null;
+    const severity = ["unavailable", "stale", "degraded"].find((state) => issues.some(([, domain]) => domain.state === state));
+    return {
+      state: severity,
+      text: issues.map(([name, domain]) => `${labels[name] || name}${states[domain.state]}`).join(" · ")
+    };
+  }
+
+  function renderNetworkIssue(element, domains) {
+    const notice = networkIssueNotice(domains);
+    element.dataset.state = notice ? notice.state : "";
+    element.textContent = notice ? notice.text : "";
+    element.hidden = !notice;
+  }
+
   function mergeIspInventory(isps, enrichment) {
     const byIp = new Map((enrichment || []).filter((item) => item.job === "infra-isp-ping")
       .map((item) => [String(item.targetIp || item.instance || ""), item]));
@@ -211,6 +256,7 @@
 
   return {
     deviceStatus, networkDomainState, networkErrorInfo, normalizeNetworkOverview, mergeNetworkDevices,
+    overlayTopologyDeviceStatus, topologyNetworkTargets, networkIssueNotice, renderNetworkIssue,
     mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, resolveNetworkDomain, resolveNetworkSnapshot, networkPresentation,
     createNetworkSession, loadNetworkDomains, isAuthError
   };

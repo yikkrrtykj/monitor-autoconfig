@@ -51,7 +51,8 @@
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
   const {
-    mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, resolveNetworkDomain, resolveNetworkSnapshot,
+    mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, topologyNetworkTargets,
+    renderNetworkIssue, resolveNetworkDomain, resolveNetworkSnapshot,
     createNetworkSession, loadNetworkDomains, isAuthError
   } = window.BSNetworkRead;
   const {
@@ -100,15 +101,8 @@
 
   function renderNetworkStatus(id, status) {
     const element = document.getElementById(id);
-    if (!element || !status) return;
-    const labels = { devices: "设备", topology: "拓扑", isp: "ISP" };
-    const states = { normal: "正常", degraded: "数据降级", stale: "快照陈旧",
-      "legacy-fallback": "兼容读取", unavailable: "不可用" };
-    element.dataset.state = status.overall;
-    element.textContent = Object.entries(status.domains)
-      .map(([name, domain]) => `${labels[name]}：${states[domain.state] || domain.state}`)
-      .join(" · ");
-    element.hidden = false;
+    if (!element) return;
+    renderNetworkIssue(element, status && status.domains);
   }
 
   async function fetchInfraIspTraffic() {
@@ -139,12 +133,7 @@
   function renderIspNetworkStatus(state) {
     const element = document.getElementById("infraNetworkStatus");
     if (!element || activePageId !== "infra") return;
-    const labels = { normal: "ISP 统一清单正常", degraded: "ISP 统一清单降级",
-      stale: "ISP 统一清单陈旧", "legacy-fallback": "ISP：兼容读取",
-      unavailable: "ISP 清单不可用", unauthenticated: "匿名浏览 · ISP 兼容读取" };
-    element.dataset.state = state;
-    element.textContent = labels[state] || state;
-    element.hidden = false;
+    renderNetworkIssue(element, { isp: { state } });
   }
 
   async function readNetworkOverview() {
@@ -1037,23 +1026,11 @@
         prometheusInstant(activeInfraPingQuery()).catch(() => [])
       ]);
       if (seq !== topologySeq) return;
-      const deviceDomain = networkRead.domains.devices;
-      const ispDomain = networkRead.domains.isp;
       const topologyDomain = networkRead.domains.topology;
-      const allTargets = deviceDomain.source === "network-api"
-        ? mergeNetworkDevices(deviceDomain.data.devices, enrichment)
-        : (deviceDomain.data || []);
-      const ispTargets = ispDomain.source === "network-api"
-        ? mergeIspInventory(ispDomain.data.isps, enrichment)
-        : mergeLegacyIspInventory(ispDomain.data, enrichment);
-      const combined = allTargets.filter((item) => item.job !== "infra-isp-ping").concat(ispTargets);
       const edges = topologyDomain.source === "network-api" ? topologyDomain.data.edges : (topologyDomain.data || []);
       // 与网络总览一致：隐藏从没上线过的设备（按 instance 名匹配 seen-up 集合）。
       const seenUp = activeSeriesNames(seenItems);
-      const targets = seenUp.size
-        ? combined.filter((t) => t.job === "infra-fw-unit-snmp" || t.job === "infra-isp-ping" ||
-          t.status !== undefined || seenUp.has(t.instance))
-        : combined;
+      const targets = topologyNetworkTargets(networkRead.domains, enrichment, seenUp);
       const { layout, width } = topologyPanel.prepare(targets, edges);
       if (shouldRender("topology", topologySignature(layout, width, edges))) {
         topologyPanel.render({ layout, width });
