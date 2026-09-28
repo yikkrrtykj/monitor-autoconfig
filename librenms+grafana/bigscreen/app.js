@@ -249,7 +249,7 @@
     renameListWithInfraMap,
     partitionInfraPingItems,
     fetchTopologyTargets,
-    fetchIspTraffic: fetchInfraIspTraffic,
+    fetchIspTraffic: () => activePageId === "infra" ? fetchInfraIspTraffic() : fetchIspTraffic(),
     buildInfrastructurePingPresentation,
     renderPingChart,
     renderLossHeatmap,
