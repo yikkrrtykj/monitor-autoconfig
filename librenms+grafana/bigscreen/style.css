@@ -1174,6 +1174,10 @@ body {
 .topology-node.node-warn rect { stroke: rgba(251, 191, 36, 0.9); }
 .topology-node.node-bad  rect { stroke: rgba(248, 113, 113, 0.95); filter: drop-shadow(0 0 6px rgba(248, 113, 113, 0.55)); }
 .topology-node.node-none rect { stroke: rgba(71, 85, 105, 0.6); stroke-dasharray: 3 3; }
+.network-read-status { margin: 8px 0; padding: 8px 12px; border-radius: 8px; background: rgba(245, 158, 11, 0.13); color: #fbbf24; font-size: 13px; }
+.network-read-status[data-state="normal"] { background: rgba(34, 197, 94, 0.12); color: #86efac; }
+.network-read-status[data-state="unavailable"] { background: rgba(239, 68, 68, 0.12); color: #fca5a5; }
+#infraNetworkStatus { grid-column: 1 / -1; }
 .topology-node.node-unlocated rect { stroke-dasharray: 5 4; }
 
 .topology-node:hover rect,

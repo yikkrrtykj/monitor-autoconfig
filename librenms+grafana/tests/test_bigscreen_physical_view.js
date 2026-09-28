@@ -54,8 +54,9 @@ assert.strictEqual(
   'Topology owns one 10-second polling interval'
 );
 const refreshBody = appSource.match(/async function refreshTopology\(\) \{[\s\S]*?\n  \}/)[0];
-assert.strictEqual((refreshBody.match(/fetchTopologyTargets\(\)/g) || []).length, 1);
-assert.strictEqual((refreshBody.match(/fetchTopologyEdges\(\)/g) || []).length, 1);
+assert.strictEqual((refreshBody.match(/readTopologyNetwork\(enrichmentRequest\)/g) || []).length, 1);
+assert.strictEqual((refreshBody.match(/fetchTopologyTargets\(\)/g) || []).length, 1, 'Prometheus metadata remains presentation enrichment');
+assert.strictEqual((refreshBody.match(/fetchTopologyEdges\(\)/g) || []).length, 0, 'legacy edges are loaded only by the domain resolver');
 
 // The existing debounced resize path remains a single Operations refresh.
 const resizeRegistration = appSource.match(

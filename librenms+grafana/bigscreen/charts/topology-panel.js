@@ -47,7 +47,7 @@
             <dl>
               <dt>类型</dt><dd>${escapeHtml(topologyNodeKindLabel(node.kind))}</dd>
               <dt>IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
-              <dt>状态</dt><dd>${node.success === undefined ? "无数据" : (node.success ? "在线" : "离线")}</dd>
+              <dt>状态</dt><dd>${node.success === null ? "状态未知" : (node.success === undefined ? "无数据" : (node.success ? "在线" : "离线"))}</dd>
               <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
             </dl>
             <div class="topology-detail-actions">
@@ -221,7 +221,7 @@
         const node = topologyNodes[Number(el.dataset.idx)];
         const text = el.querySelector(".topology-node-latency");
         if (!node || !text) return;
-        text.textContent = Number.isFinite(node.latency)
+        text.textContent = node.success === null ? "状态未知" : Number.isFinite(node.latency)
           ? formatPingText(node.latency)
           : (node.kind === "isp" && node.success === true ? "在线" : "");
       });

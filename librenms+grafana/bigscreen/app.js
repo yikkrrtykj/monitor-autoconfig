@@ -45,10 +45,15 @@
     fetchIspInventory, ispTrafficQuery, fetchIspTraffic, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
+    fetchNetworkOverview, fetchNetworkDevices, fetchNetworkTopology, fetchNetworkIsp,
     fetchPlatformAuthStatus, loginPlatformAuth, logoutPlatformAuth,
     fetchPlatformConfig, fetchPlatformVersion, fetchApplyStatus, postPlatform, fetchRetirePending, patchPlatform, fetchIncidents,
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
+  const {
+    mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, resolveNetworkDomain, resolveNetworkSnapshot,
+    createNetworkSession, loadNetworkDomains, isAuthError
+  } = window.BSNetworkRead;
   const {
     buildTopologyLayers, topologyLayout, renderTopologySvg, topologyNodeKindLabel,
     topologyLatencyIp
@@ -74,6 +79,8 @@
   let lastDataSuccessAt = 0;
   let lastControlReport = null;
   const controlRefreshLifecycle = createControlRefreshLifecycle();
+  const networkSession = createNetworkSession(fetchPlatformAuthStatus);
+  let infraIspRequestSeq = 0;
   const DATA_STALE_AFTER_MS = 20000;
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
   function shouldRender(key, signature) {
@@ -89,6 +96,72 @@
     if (element) {
       element.textContent = value || "";
     }
+  }
+
+  function renderNetworkStatus(id, status) {
+    const element = document.getElementById(id);
+    if (!element || !status) return;
+    const labels = { devices: "设备", topology: "拓扑", isp: "ISP" };
+    const states = { normal: "正常", degraded: "数据降级", stale: "快照陈旧",
+      "legacy-fallback": "兼容读取", unavailable: "不可用" };
+    element.dataset.state = status.overall;
+    element.textContent = Object.entries(status.domains)
+      .map(([name, domain]) => `${labels[name]}：${states[domain.state] || domain.state}`)
+      .join(" · ");
+    element.hidden = false;
+  }
+
+  async function fetchInfraIspTraffic() {
+    const seq = ++infraIspRequestSeq;
+    if (!await networkSession.canRead()) {
+      const traffic = await fetchIspTraffic();
+      if (seq === infraIspRequestSeq) renderIspNetworkStatus("unauthenticated");
+      return traffic;
+    }
+    let payload = null;
+    try {
+      payload = await fetchNetworkIsp();
+    } catch (error) {
+      if (isAuthError(error)) networkSession.expired();
+    }
+    const domain = await resolveNetworkDomain(payload, fetchIspInventory, "isp");
+    if (seq === infraIspRequestSeq) renderIspNetworkStatus(domain.state);
+    if (domain.data === null) return [];
+    return fetchIspTraffic(domain.source === "network-api" ? domain.data.isps.map((item) => ({
+      name: item.name,
+      metricName: item.name,
+      metricTarget: item.metricTarget,
+      metricIfindex: item.metricIfindex,
+      wanIp: item.wanIp
+    })) : domain.data);
+  }
+
+  function renderIspNetworkStatus(state) {
+    const element = document.getElementById("infraNetworkStatus");
+    if (!element || activePageId !== "infra") return;
+    const labels = { normal: "ISP 统一清单正常", degraded: "ISP 统一清单降级",
+      stale: "ISP 统一清单陈旧", "legacy-fallback": "ISP：兼容读取",
+      unavailable: "ISP 清单不可用", unauthenticated: "匿名浏览 · ISP 兼容读取" };
+    element.dataset.state = state;
+    element.textContent = labels[state] || state;
+    element.hidden = false;
+  }
+
+  async function readNetworkOverview() {
+    let payload = null;
+    let apiError = null;
+    try {
+      payload = await fetchNetworkOverview();
+    } catch (error) {
+      if (isAuthError(error)) throw error;
+      apiError = error;
+      console.warn("Network overview unavailable; using domain fallback", error);
+    }
+    return resolveNetworkSnapshot(payload, {
+      devices: fetchTopologyTargets,
+      topology: () => fetchTopologyEdges({ strict: true }),
+      isp: fetchIspInventory
+    }, { devices: apiError, topology: apiError, isp: apiError });
   }
 
   function titleText() {
@@ -176,7 +249,7 @@
     renameListWithInfraMap,
     partitionInfraPingItems,
     fetchTopologyTargets,
-    fetchIspTraffic,
+    fetchIspTraffic: () => activePageId === "infra" ? fetchInfraIspTraffic() : fetchIspTraffic(),
     buildInfrastructurePingPresentation,
     renderPingChart,
     renderLossHeatmap,
@@ -310,10 +383,12 @@
     loginPlatformAuth,
     logoutPlatformAuth,
     onAuthenticated: () => {
+      networkSession.invalidate();
       invalidateControlRefresh();
       refreshControlPanel();
     },
     onLoggedOut: () => {
+      networkSession.expired();
       invalidateControlRefresh();
       lastControlReport = null;
     }
@@ -587,10 +662,9 @@
     const { page, network } = controlPageAndNetwork();
     const expectedSeats = page ? (page.teams || []).length * page.teamSize : 0;
     const selector = page ? tournamentSelector(page, network) : 'role="player"';
-    const [snapshot, targets, edges, servicesRaw, runtimeStatus, platformConfig, versionInfo, incidents, dhcpSettings] = await Promise.all([
+    const [snapshot, networkRead, servicesRaw, runtimeStatus, platformConfig, versionInfo, incidents, dhcpSettings] = await Promise.all([
       fetchPlayerSnapshot(selector),
-      fetchTopologyTargets(),
-      fetchTopologyEdges(),
+      readNetworkOverview(),
       prometheusInstant("up"),
       fetchRuntimeStatus(),
       fetchPlatformConfig(),
@@ -598,6 +672,9 @@
       fetchIncidents(),
       fetchDhcpSettings()
     ]);
+    const topology = networkRead.domains.topology;
+    const targets = await controlNetworkTargets(networkRead.domains, fetchTopologyTargets);
+    const edges = topology.source === "network-api" ? topology.data.edges : (topology.data || []);
     const players = page
       ? snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize)
       : snapshot.players;
@@ -615,6 +692,7 @@
       players,
       seatSummary,
       targets,
+      networkRead,
       targetSummary,
       edges,
       services: serviceSummary,
@@ -631,6 +709,7 @@
   }
 
   function renderControlPanel(snapshot) {
+    renderNetworkStatus("controlNetworkStatus", snapshot.networkRead);
     renderControlReadiness(snapshot.readiness, snapshot.checks);
     renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
     renderControlConfig(snapshot);
@@ -658,7 +737,17 @@
           if (element) element.innerHTML = `<div class="control-empty">加载中</div>`;
         });
       }
-      return { authenticated: true, snapshot: await collectControlSnapshot() };
+      try {
+        return { authenticated: true, snapshot: await collectControlSnapshot() };
+      } catch (error) {
+        if (isAuthError(error)) {
+          authController.invalidate();
+          await authController.ensureAuthenticated();
+          if (!isCurrent()) return { discarded: true };
+          return { authenticated: false };
+        }
+        throw error;
+      }
     }, (result) => {
       if (result.discarded) return;
       if (!result.authenticated) {
@@ -922,23 +1011,49 @@
       window.clearInterval(topologyTimer);
       topologyTimer = null;
     }
+    topologySeq += 1;
+  }
+
+  async function readTopologyNetwork(enrichment) {
+    return loadNetworkDomains(networkSession, {
+      devices: fetchNetworkDevices,
+      topology: fetchNetworkTopology,
+      isp: fetchNetworkIsp
+    }, {
+      devices: () => enrichment,
+      topology: () => fetchTopologyEdges({ strict: true }),
+      isp: fetchIspInventory
+    });
   }
 
   async function refreshTopology() {
     if (!topologyPanel.isAvailable()) return;
     const seq = ++topologySeq;
     try {
-      const [allTargets, edges, seenItems] = await Promise.all([
-        fetchTopologyTargets(),
-        fetchTopologyEdges(),
+      const enrichmentRequest = fetchTopologyTargets();
+      const [networkRead, enrichment, seenItems] = await Promise.all([
+        readTopologyNetwork(enrichmentRequest),
+        enrichmentRequest.catch(() => []),
         prometheusInstant(activeInfraPingQuery()).catch(() => [])
       ]);
       if (seq !== topologySeq) return;
+      const deviceDomain = networkRead.domains.devices;
+      const ispDomain = networkRead.domains.isp;
+      const topologyDomain = networkRead.domains.topology;
+      const allTargets = deviceDomain.source === "network-api"
+        ? mergeNetworkDevices(deviceDomain.data.devices, enrichment)
+        : (deviceDomain.data || []);
+      const ispTargets = ispDomain.source === "network-api"
+        ? mergeIspInventory(ispDomain.data.isps, enrichment)
+        : mergeLegacyIspInventory(ispDomain.data, enrichment);
+      const combined = allTargets.filter((item) => item.job !== "infra-isp-ping").concat(ispTargets);
+      const edges = topologyDomain.source === "network-api" ? topologyDomain.data.edges : (topologyDomain.data || []);
       // 与网络总览一致：隐藏从没上线过的设备（按 instance 名匹配 seen-up 集合）。
       const seenUp = activeSeriesNames(seenItems);
       const targets = seenUp.size
-        ? allTargets.filter((t) => t.job === "infra-fw-unit-snmp" || t.job === "infra-isp-ping" || seenUp.has(t.instance))
-        : allTargets;
+        ? combined.filter((t) => t.job === "infra-fw-unit-snmp" || t.job === "infra-isp-ping" ||
+          t.status !== undefined || seenUp.has(t.instance))
+        : combined;
       const { layout, width } = topologyPanel.prepare(targets, edges);
       if (shouldRender("topology", topologySignature(layout, width, edges))) {
         topologyPanel.render({ layout, width });
@@ -948,6 +1063,7 @@
         topologyPanel.updateLatency(layout.nodes);
       }
       topologyPanel.updateStatus(edges);
+      renderNetworkStatus("topologyNetworkStatus", networkRead);
       lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== topologySeq) return;
