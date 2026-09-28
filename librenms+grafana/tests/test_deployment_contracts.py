@@ -1433,14 +1433,12 @@ def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache(
     assert "function invalidateControlRefresh() {" in app
     assert "controlRefreshLifecycle.invalidate();" in app
     assert "authController.invalidate();" in app
-    assert """onAuthenticated: () => {
-      invalidateControlRefresh();
-      refreshControlPanel();
-    }""" in app
-    assert """onLoggedOut: () => {
-      invalidateControlRefresh();
-      lastControlReport = null;
-    }""" in app
+    login_actions = app.split("onAuthenticated: () => {", 1)[1].split("\n    }", 1)[0]
+    assert "networkSession.invalidate();" in login_actions
+    assert login_actions.index("invalidateControlRefresh();") < login_actions.index("refreshControlPanel();")
+    logout_actions = app.split("onLoggedOut: () => {", 1)[1].split("\n    }", 1)[0]
+    assert "networkSession.expired();" in logout_actions
+    assert logout_actions.index("invalidateControlRefresh();") < logout_actions.index("lastControlReport = null;")
     assert "const token = beginAuthRequest(true);" in controller
     assert "if (!commitAuthRequest(token)) return null;" in controller
     logout_body = controller[controller.index("async function logout("):controller.index("function bind(")]
