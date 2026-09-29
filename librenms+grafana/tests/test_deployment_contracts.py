@@ -1565,9 +1565,11 @@ def test_topology_browser_controller_is_extracted_without_owning_refresh_or_data
     assert "topologySeq" not in panel
     assert "topologySignature" not in panel
     assert "shouldRender" not in panel
-    assert "charts/topology-panel.js?v=20260929b" in index
-    assert index.index("topology.js?v=20260809a") < index.index("charts/topology-panel.js?v=20260929b")
-    assert index.index("charts/topology-panel.js?v=20260929b") < index.index("app.js?v=20260929b")
+    assert "charts/port-panel.js?v=20260930a" in index
+    assert "charts/topology-panel.js?v=20260930a" in index
+    assert index.index("topology.js?v=20260809a") < index.index("charts/port-panel.js?v=20260930a")
+    assert index.index("charts/port-panel.js?v=20260930a") < index.index("charts/topology-panel.js?v=20260930a")
+    assert index.index("charts/topology-panel.js?v=20260930a") < index.index("app.js?v=20260929b")
 
 
 def test_grafana_device_names_survive_low_frequency_snmp_scrapes():
@@ -1849,7 +1851,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'label: "OFFLINE"' in utils
     assert 'label: "--"' in utils
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
-    assert "style.css?v=20260929b" in index
+    assert "style.css?v=20260930a" in index
     assert "utils.js?v=20260904a" in index
     assert "app.js?v=20260929b" in index
 
@@ -1933,7 +1935,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".compact-series .side-legend" in css
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
-    assert "style.css?v=20260929b" in index
+    assert "style.css?v=20260930a" in index
     assert "app.js?v=20260929b" in index
 
 

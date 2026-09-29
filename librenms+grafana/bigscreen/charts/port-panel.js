@@ -1,8 +1,6 @@
 ;(function () {
   'use strict';
 
-  const FAMILIES = { Gi: 'Gigabit', Te: 'TenGigabit', Fa: 'FastEthernet', Hu: 'HundredGigabit', Fo: 'FortyGigabit', Twe: 'TwentyFiveGigabit', Eth: 'Ethernet' };
-
   function portState(port) {
     if (port.adminState === 'down') return { key: 'disabled', label: '管理关闭' };
     if (port.adminState === 'up' && port.operState === 'up') return { key: 'up', label: '在线' };
@@ -10,37 +8,52 @@
     return { key: 'unknown', label: '未知' };
   }
 
-  function portFamily(name) {
-    const match = /^(Gi|Te|Fa|Hu|Fo|Twe|Eth)\d{1,2}\/\d{1,2}\/\d{1,3}$/.exec(name || '');
-    return match ? match[1] : null;
+  function physicalParts(port) {
+    const match = /^(Gi|Te|Fa|Hu|Fo|Twe|Eth)([1-9]\d?)\/(\d{1,2})\/([1-9]\d{0,2})$/.exec(port.ifName || '');
+    if (!match) return null;
+    const member = Number(match[2]);
+    const slot = Number(match[3]);
+    const number = Number(match[4]);
+    if (member !== port.stackMember || number !== port.portNumber ||
+        member > 16 || number > 256) return null;
+    return { family: match[1], member, slot, number };
   }
 
   function groupPorts(ports) {
     const groups = new Map();
     const other = [];
     (Array.isArray(ports) ? ports : []).forEach((port, index) => {
-      const family = portFamily(port.ifName);
-      const member = port.stackMember;
-      const number = port.portNumber;
-      if (!family || !Number.isInteger(member) || member < 1 || member > 16 ||
-          !Number.isInteger(number) || number < 1 || number > 256) {
+      const parts = physicalParts(port);
+      if (!parts) {
         other.push({ port, index });
         return;
       }
-      const key = `${member}:${family}`;
-      if (!groups.has(key)) groups.set(key, { member, family, items: [] });
-      groups.get(key).items.push({ port, index });
+      const key = `${parts.member}:${parts.family}:${parts.slot}`;
+      if (!groups.has(key)) groups.set(key, { ...parts, items: [], seen: new Set() });
+      const bank = groups.get(key);
+      if (bank.seen.has(parts.number)) {
+        other.push({ port, index });
+        return;
+      }
+      bank.seen.add(parts.number);
+      bank.items.push({ port, index });
     });
-    const banks = [...groups.values()].sort((a, b) => a.member - b.member || a.family.localeCompare(b.family));
+    const banks = [...groups.values()].sort((a, b) => a.member - b.member ||
+      a.family.localeCompare(b.family) || a.slot - b.slot);
     banks.forEach((bank) => {
       bank.items.sort((a, b) => a.port.portNumber - b.port.portNumber || a.index - b.index);
-      bank.twoRow = bank.items.length >= 12 && Math.max(...bank.items.map((item) => item.port.portNumber)) <= 48;
+      bank.twoRow = bank.items.length >= 24 && Math.max(...bank.items.map((item) => item.port.portNumber)) <= 48;
       if (bank.twoRow) {
         bank.top = bank.items.filter((item) => item.port.portNumber % 2 === 1);
         bank.bottom = bank.items.filter((item) => item.port.portNumber % 2 === 0);
       }
     });
-    return { banks, other };
+    const memberGroups = new Map();
+    banks.forEach((bank) => {
+      if (!memberGroups.has(bank.member)) memberGroups.set(bank.member, { member: bank.member, banks: [] });
+      memberGroups.get(bank.member).banks.push(bank);
+    });
+    return { members: [...memberGroups.values()], banks, other };
   }
 
   function createPortPanel({ document, window, escapeHtml, setTimeout: delay = setTimeout,
@@ -62,23 +75,27 @@
     const cumulative = (port) => ['inputErrorsTotal', 'outputErrorsTotal', 'inputDiscardsTotal', 'outputDiscardsTotal']
       .some((field) => Number.isFinite(port[field]) && port[field] > 0);
 
-    function face(item) {
+    function face(item, physical = true) {
       const { port, index } = item;
       const state = portState(port);
       return `<button type="button" class="port-face port-state-${state.key}" data-port-index="${index}" aria-label="${safe(port.ifName)} ${state.label}">
-        <span class="port-face-number">${safe(port.portNumber == null ? port.ifName : port.portNumber)}</span>
+        <span class="port-face-number">${safe(physical ? port.portNumber : port.ifName)}</span>
         <span class="port-face-speed">${speed(port.speedBps)}</span>
         ${cumulative(port) ? '<span class="port-face-counter" aria-label="存在非零累计计数">·</span>' : ''}
       </button>`;
     }
 
     function bankHtml(bank) {
-      const heading = `成员 ${bank.member} · ${FAMILIES[bank.family] || bank.family}`;
+      const heading = `${bank.family} ${bank.member}/${bank.slot}`;
       const columns = bank.twoRow ? Math.max(bank.top.length, bank.bottom.length) : bank.items.length;
-      const rowHtml = (items) => `<div class="port-bank-row" style="--port-columns:${Math.max(1, columns)}">${items.map(face).join('')}</div>`;
-      return `<section class="port-bank"><h3>${safe(heading)}</h3><div class="port-bank-rows ${bank.twoRow ? 'port-bank-two-row' : 'port-bank-compact'}">
+      const rowHtml = (items) => `<div class="port-bank-row" style="--port-columns:${Math.max(1, columns)}">${items.map((item) => face(item)).join('')}</div>`;
+      return `<div class="port-bank ${bank.twoRow ? 'port-bank-wide' : ''}"><h4>${safe(heading)}</h4><div class="port-bank-rows ${bank.twoRow ? 'port-bank-two-row' : 'port-bank-compact'}">
         ${bank.twoRow ? rowHtml(bank.top) + rowHtml(bank.bottom) : rowHtml(bank.items)}
-      </div></section>`;
+      </div></div>`;
+    }
+
+    function memberHtml(group) {
+      return `<section class="port-member"><h3>成员 ${group.member}</h3><div class="port-member-banks">${group.banks.map(bankHtml).join('')}</div></section>`;
     }
 
     function neighborsText(neighbors) {
@@ -184,15 +201,21 @@
         counts[oper === 'up' || oper === 'down' ? oper : 'unknown'] += 1;
         if (port.adminState === 'down') counts.disabled += 1;
       });
-      const { banks, other } = groupPorts(data.ports);
+      const { members, banks, other } = groupPorts(data.ports);
+      const physicalCount = banks.reduce((count, bank) => count + bank.items.length, 0);
       const root = element();
       root.hidden = false;
       root.innerHTML = `<header><div><strong>${safe(data.name || data.ip)}</strong><p>${safe(data.model)} · ${safe(data.ip)}</p></div><button class="port-panel-close" type="button" aria-label="关闭端口面板">×</button></header>
-        <div class="port-panel-summary">共 ${data.ports.length} 端口 · 运行在线 ${counts.up} · 运行离线 ${counts.down} · 运行未知 ${counts.unknown} · 管理关闭 ${counts.disabled}</div>
+        <div class="port-panel-summary">接口 ${data.ports.length} · 物理可识别 ${physicalCount} · 其他 ${other.length} · 运行在线 ${counts.up} · 运行离线 ${counts.down} · 运行未知 ${counts.unknown} · 管理关闭 ${counts.disabled}</div>
+        <div class="port-panel-legend" aria-label="端口状态图例">
+          <span><i class="port-legend-dot port-state-up"></i>在线</span><span><i class="port-legend-dot port-state-down"></i>链路断开</span>
+          <span><i class="port-legend-dot port-state-disabled"></i>管理关闭</span><span><i class="port-legend-dot port-state-unknown"></i>未知</span>
+          <span><i class="port-legend-counter"></i>累计 errors/discards 非 0（不等于当前故障）</span>
+        </div>
         ${data.degraded ? '<div class="port-panel-degraded">端口资料部分降级</div>' : ''}
         ${Array.isArray(data.warnings) && data.warnings.length ? `<div class="port-panel-warnings">${data.warnings.map((warning) => `<p>${safe(warning)}</p>`).join('')}</div>` : ''}
-        <div class="port-panel-scroll">${banks.map(bankHtml).join('')}
-          <section class="port-other"><h3>其他接口 (${other.length})</h3><div class="port-other-grid">${other.map(face).join('')}</div></section>
+        <div class="port-panel-scroll">${members.map(memberHtml).join('')}
+          <details class="port-other"><summary>其他接口 (${other.length})</summary><div class="port-other-grid">${other.map((item) => face(item, false)).join('')}</div></details>
         </div><aside class="port-pinned-detail" hidden></aside><div class="port-hover-card" hidden></div>`;
       installEvents();
     }

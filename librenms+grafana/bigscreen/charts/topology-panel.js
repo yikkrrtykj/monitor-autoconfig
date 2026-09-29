@@ -57,22 +57,28 @@
           closePorts();
           const syslogUrl = node.ip ? `${location.protocol}//${location.hostname}:3000/d/device-syslog?var-host=${encodeURIComponent(node.ip)}` : "";
           const latencyIp = topologyLatencyIp(node);
-          detail.hidden = false;
-          detail.innerHTML = `
-            <header><strong>${escapeHtml(node.name)}</strong><button class="topology-detail-close" type="button" aria-label="关闭详情">×</button></header>
+          const actions = `<div class="topology-detail-actions">
+              ${latencyIp ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(latencyIp)}">延迟</a>` : ""}
+              ${syslogUrl ? `<a class="detail-link" href="${escapeHtml(syslogUrl)}">Syslog</a>` : ""}
+            </div>`;
+          const header = (name) => `<header><strong>${escapeHtml(name)}</strong><button class="topology-detail-close" type="button" aria-label="关闭详情">×</button></header>`;
+          const legacyCard = `${header(node.name)}
             <dl>
               <dt>类型</dt><dd>${escapeHtml(topologyNodeKindLabel(node.kind))}</dd>
               <dt>IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
               <dt>状态</dt><dd>${node.success === null ? "状态未知" : (node.success === undefined ? "无数据" : (node.success ? "在线" : "离线"))}</dd>
               <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
-            </dl>
-            <div class="topology-detail-actions">
-              ${latencyIp ? `<a class="detail-link" href="/latency?ip=${encodeURIComponent(latencyIp)}">延迟</a>` : ""}
-              ${syslogUrl ? `<a class="detail-link" href="${escapeHtml(syslogUrl)}">Syslog</a>` : ""}
-            </div>
-          `;
-          detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; closePorts(); detail.hidden = true; };
-          if (!node.ip || !["core", "dist", "device", "firewall"].includes(node.kind) || !fetchNodeInspector) return;
+            </dl>${actions}`;
+          const hasInspector = Boolean(node.ip && ["core", "dist", "device", "firewall"].includes(node.kind) && fetchNodeInspector);
+          const bindClose = () => {
+            detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; closePorts(); detail.hidden = true; };
+          };
+          detail.hidden = false;
+          detail.innerHTML = hasInspector
+            ? `${header(node.name)}<p class="topology-inspector-loading">节点详情读取中…</p>${actions}`
+            : legacyCard;
+          bindClose();
+          if (!hasInspector) return;
           const request = inspectorRequest;
           fetchNodeInspector(node.ip).then((inspector) => {
             if (request !== inspectorRequest || detail.hidden) return;
@@ -86,7 +92,7 @@
             const state = inspector.online === "up" ? "在线" : inspector.online === "down" ? "离线" : "未知";
             const row = (label, value) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value == null || value === "" ? "—" : String(value))}</dd>`;
             detail.innerHTML = `
-              <header><strong>${escapeHtml(inspector.name || node.name)}</strong><button class="topology-detail-close" type="button" aria-label="关闭详情">×</button></header>
+              ${header(inspector.name || node.name)}
               <dl>
                 ${row("Hostname", inspector.hostname)}${row("管理 IP", inspector.ip)}${row("型号", inspector.model)}
                 ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : null)}
@@ -95,10 +101,11 @@
                 ${node.kind === "firewall" || inspector.kind === "hillstone" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
               </dl>
               ${warnings.length ? `<div class="topology-inspector-warnings">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
+              ${actions}
               ${inspector.kind === "cisco" && ["core", "dist"].includes(node.kind) && fetchNodePorts && portPanel
                 ? '<div class="topology-detail-actions"><button type="button" class="topology-view-ports">查看端口</button></div>' : ''}
             `;
-            detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; closePorts(); detail.hidden = true; };
+            bindClose();
             const viewPorts = detail.querySelector(".topology-view-ports");
             if (viewPorts) viewPorts.onclick = () => {
               const currentRequest = ++portsRequest;
@@ -113,7 +120,12 @@
               });
             };
           }).catch((error) => {
-            if (request !== inspectorRequest || detail.hidden || error.status === 401 || error.status === 403) return;
+            if (request !== inspectorRequest || detail.hidden) return;
+            if (error.status === 401 || error.status === 403) {
+              detail.innerHTML = legacyCard;
+              bindClose();
+              return;
+            }
             detail.insertAdjacentHTML("beforeend", `<p class="topology-inspector-warnings">节点详情暂不可用</p>`);
           });
         };

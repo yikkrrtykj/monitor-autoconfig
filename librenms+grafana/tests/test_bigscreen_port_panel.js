@@ -29,6 +29,19 @@ assert.strictEqual(grouped.banks[1].twoRow, false, 'four uplinks stay a compact 
 assert.deepStrictEqual(grouped.banks[1].items.map((item) => item.port.portNumber), [1, 2, 3, 4]);
 assert.strictEqual(grouped.banks[2].member, 2);
 assert.strictEqual(grouped.other.length, 4, 'unparsed and logical interfaces remain accessible');
+const modular = groupPorts([
+  port('Te1/0/1', 1, 1), port('Te1/1/1', 1, 1), port('Te1/0/1', 1, 1),
+  port('Gi1/0/3', 1, 3)
+]);
+assert.strictEqual(modular.members.length, 1, 'one stack member has one outer section');
+assert.deepStrictEqual(modular.members[0].banks.map((bank) => `${bank.family} ${bank.member}/${bank.slot}`),
+  ['Gi 1/0', 'Te 1/0', 'Te 1/1']);
+assert.strictEqual(modular.members[0].banks[1].items.length, 1,
+  'duplicate physical identities cannot appear twice in one bank');
+assert.strictEqual(modular.other.length, 1, 'duplicate row remains accessible as an other interface');
+assert.strictEqual(groupPorts(Array.from({ length: 12 }, (_, index) =>
+  port(`Te1/1/${index + 1}`, 1, index + 1))).banks[0].twoRow, false,
+'a twelve-port modular bank remains compact');
 
 class FakeNode {
   constructor() { this.hidden = false; this.innerHTML = ''; this.style = {}; this.dataset = {};
@@ -70,6 +83,14 @@ assert.ok(root.innerHTML.includes('&lt;Core&gt;'));
 assert.ok(root.innerHTML.includes('当前 IF-MIB 无有效覆盖'));
 assert.ok(root.innerHTML.includes('已省略过期邻接'));
 assert.ok(root.innerHTML.includes('其他接口 (1)'));
+assert.ok(root.innerHTML.includes('接口 3 · 物理可识别 2 · 其他 1'));
+assert.ok(root.innerHTML.includes('<details class="port-other">'), 'other interfaces start collapsed');
+assert.strictEqual((root.innerHTML.match(/<section class="port-member">/g) || []).length, 1);
+assert.ok(root.innerHTML.includes('Gi 1/0'));
+assert.ok(root.innerHTML.includes('累计 errors/discards 非 0（不等于当前故障）'));
+for (const label of ['在线', '链路断开', '管理关闭', '未知']) {
+  assert.ok(root.innerHTML.includes(label), `state legend includes ${label}`);
+}
 assert.ok(root.innerHTML.includes('Port-channel1'));
 assert.ok(root.innerHTML.includes('port-state-up'));
 assert.ok(root.innerHTML.includes('port-state-down'));
@@ -106,6 +127,14 @@ assert.strictEqual(root.pinned.hidden, false);
 assert.ok(root.pinned.innerHTML.includes('VLAN 观测数据 / 非配置权威'));
 assert.strictEqual(first.attributes['aria-pressed'], 'true');
 assert.strictEqual(networkReads, 0, 'hover, focus and pin use loaded data only');
+
+panel.open({ ...payload, ports: [
+  port('Te1/0/1', 1, 1), port('Te1/1/1', 1, 1), port('Gi1/0/3', 1, 3)
+] });
+assert.strictEqual((root.innerHTML.match(/<section class="port-member">/g) || []).length, 1);
+assert.ok(root.innerHTML.includes('Te 1/0') && root.innerHTML.includes('Te 1/1'));
+assert.strictEqual((root.innerHTML.match(/class="port-face-number">1</g) || []).length, 2,
+  'equal slot numbers are separated by distinct sub-bank labels');
 
 const dense = { ...payload, ports: Array.from({ length: 338 }, (_, index) =>
   port(`Port-channel${index + 1}`, null, null, { speedBps: null })) };

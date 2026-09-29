@@ -1355,11 +1355,21 @@ body {
 .topology-port-panel > header p { margin: 4px 0 0; color: #94a3b8; font-size: 12px; }
 .port-panel-close { border: 0; color: #dbeafe; background: none; cursor: pointer; font-size: 24px; }
 .port-panel-summary { margin: 10px 0; font-size: 13px; }
+.port-panel-legend { display: flex; flex-wrap: wrap; gap: 5px 14px; padding: 5px 0 9px; color: #cbd5e1; font-size: 11px; }
+.port-panel-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.port-legend-dot { display: inline-block; width: 11px; height: 11px; border: 1px solid; border-radius: 2px; }
+.port-legend-counter { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #fde68a; }
 .port-panel-warnings, .port-panel-degraded { color: #ffbf80; font-size: 12px; }
 .port-panel-warnings p { margin: 3px 0; }
 .port-panel-scroll { min-height: 0; overflow: auto; padding: 0 2px 16px 0; }
-.port-bank, .port-other { margin: 12px 0; padding: 10px; border: 1px solid rgba(105, 160, 255, 0.18); border-radius: 8px; }
-.port-bank h3, .port-other h3 { margin: 0 0 8px; color: #a9c9ff; font-size: 13px; }
+.port-member, .port-other { margin: 10px 0; padding: 10px; border: 1px solid rgba(105, 160, 255, 0.18); border-radius: 8px; }
+.port-member h3 { margin: 0 0 8px; color: #a9c9ff; font-size: 13px; }
+.port-member-banks { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 16px; }
+.port-bank { min-width: 0; max-width: 100%; }
+.port-bank-wide { flex: 1 1 100%; }
+.port-bank h4 { margin: 0 0 5px; color: #cbd5e1; font-size: 11px; }
+.port-other summary { color: #a9c9ff; font-size: 13px; cursor: pointer; }
+.port-other-grid { margin-top: 10px; }
 .port-bank-rows { display: grid; gap: 5px; overflow-x: auto; }
 .port-bank-row { display: grid; grid-template-columns: repeat(var(--port-columns), minmax(25px, 1fr)); gap: 3px; }
 .port-bank-compact .port-bank-row { display: flex; flex-wrap: wrap; }
