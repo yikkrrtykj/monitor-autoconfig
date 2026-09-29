@@ -1,7 +1,9 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -116,6 +118,54 @@ def test_devices_prometheus_failure_is_degraded_with_unknown_status(tmp_path):
 
     assert payload["degraded"] is True
     assert payload["devices"][0]["status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("vip_probe", "primary_probe", "backup_probe", "expected"),
+    [
+        (1, 1, 0, ["up", "up", "down"]),
+        (0, 0, 1, ["down", "down", "up"]),
+        (1, 0, None, ["up", "down", "unknown"]),
+    ],
+)
+def test_devices_ha_vip_and_physical_units_keep_independent_probe_status(
+    tmp_path, vip_probe, primary_probe, backup_probe, expected
+):
+    addresses = ("192.168.9.1", "192.168.9.11", "192.168.9.12")
+    context, client = make_context(tmp_path, devices=[
+        {"device_id": index, "hostname": ip, "ip": ip, "sysName": name}
+        for index, (ip, name) in enumerate(zip(addresses, ("global-FW-VIP", "global-FW", "global-FW-backup")), 1)
+    ])
+    samples = [
+        (addresses[0], "infra-fw-ping", vip_probe),
+        (addresses[1], "infra-fw-unit-ping", primary_probe),
+        (addresses[2], "infra-fw-unit-ping", backup_probe),
+    ]
+    observed_queries = []
+
+    def filtered_prometheus(request, *, timeout):
+        assert timeout == context.http_timeout
+        query = parse_qs(urlsplit(request.full_url).query)["query"][0]
+        observed_queries.append(query)
+        match = re.search(r'job=~"([^"]+)"', query)
+        assert match, query
+        jobs = set(match.group(1).split("|"))
+        return FakeResponse({"status": "success", "data": {"result": [
+            {"metric": {"target_ip": ip, "job": job}, "value": [1, str(value)]}
+            for ip, job, value in samples if value is not None and job in jobs
+        ]}})
+
+    context = network_read.NetworkReadContext(
+        **{**context.__dict__, "urlopen": filtered_prometheus}
+    )
+    payload = network_read.read_devices(context)
+
+    assert client.strict is True
+    assert len(observed_queries) == 1
+    assert payload["ok"] is True
+    assert payload["degraded"] is False
+    assert [device["ip"] for device in payload["devices"]] == list(addresses)
+    assert [device["status"] for device in payload["devices"]] == expected
 
 
 def test_topology_empty_snapshot_uses_snapshot_mtime(tmp_path):
