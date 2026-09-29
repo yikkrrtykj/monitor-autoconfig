@@ -70,8 +70,8 @@ def _query_one(context: NetworkReadContext, query: str, ip: str) -> list[dict[st
                     or item["metric"].get("instance") or "") == ip][:2]
 
 
-def _ports(client: Any, device_id: Any) -> dict[str, Any]:
-    rows = client.get_device_ports(device_id, columns=PORT_COLUMNS)
+def _ports(client: Any, device: dict[str, Any]) -> dict[str, Any]:
+    rows = client.get_device_ports(device, columns=PORT_COLUMNS)
     if not rows or len(rows) > PORT_LIMIT or not all(isinstance(row, dict) for row in rows):
         raise ValueError("port inventory is unavailable or exceeds the inspector limit")
     up = down = unknown = 0
@@ -86,10 +86,11 @@ def _ports(client: Any, device_id: Any) -> dict[str, Any]:
     return {"up": up, "down": down, "unknown": unknown, "total": len(rows)}
 
 
-def _neighbors(context: NetworkReadContext, ip: str) -> tuple[list[dict[str, Any]], bool]:
+def _neighbors(context: NetworkReadContext, ip: str) -> tuple[list[dict[str, Any]], bool, bool]:
     topology = read_topology(context)
     edges = topology["edges"]
     selected = []
+    omitted_stale = False
     for edge in edges:
         if edge.get("from_ip") == ip:
             local, peer = "from", "to"
@@ -97,8 +98,11 @@ def _neighbors(context: NetworkReadContext, ip: str) -> tuple[list[dict[str, Any
             local, peer = "to", "from"
         else:
             continue
+        if edge.get("stale") is True:
+            omitted_stale = True
+            continue
         if len(selected) >= NEIGHBOR_LIMIT:
-            break
+            continue
         members = edge.get(f"{local}_member_ports")
         protocols = edge.get("protocols")
         selected.append({
@@ -110,7 +114,7 @@ def _neighbors(context: NetworkReadContext, ip: str) -> tuple[list[dict[str, Any
             "protocols": [name for name in (protocols[:3] if isinstance(protocols, list) else []) if isinstance(name, str)
                           if name in ("lldp", "cdp")],
         })
-    return selected, bool(topology["stale"])
+    return selected, bool(topology["stale"]), omitted_stale
 
 
 def _ap(context: NetworkReadContext, ip: str, warnings: list[str]) -> dict[str, Any] | None:
@@ -180,9 +184,10 @@ def read_inspector(context: NetworkReadContext, management_ip: str) -> dict[str,
     device = None
     client = context.librenms_client_factory()
     try:
-        device = client.get_device(ip)
-        if device and str(device.get("ip") or device.get("hostname") or "") != ip:
+        candidate = client.get_device(ip)
+        if candidate and str(candidate.get("ip") or candidate.get("hostname") or "") != ip:
             raise ValueError("device identity does not match requested address")
+        device = candidate
     except (LibreNMSError, ValueError):
         warnings.append("设备资料暂不可用")
 
@@ -243,15 +248,17 @@ def read_inspector(context: NetworkReadContext, management_ip: str) -> dict[str,
             warnings.append("延迟数据暂不可用")
         if device and device.get("device_id") is not None:
             try:
-                result["ports"] = _ports(client, device["device_id"])
+                result["ports"] = _ports(client, device)
             except (LibreNMSError, ValueError):
                 warnings.append("端口汇总暂不可用")
         else:
             warnings.append("端口汇总缺少设备标识")
         try:
-            result["neighbors"], stale = _neighbors(context, ip)
+            result["neighbors"], stale, omitted_stale = _neighbors(context, ip)
             if stale:
                 warnings.append("拓扑快照已过期")
+            if omitted_stale:
+                warnings.append("已省略过期邻接")
         except NetworkReadError:
             warnings.append("邻接资料暂不可用")
     result["warnings"] = warnings[:8]

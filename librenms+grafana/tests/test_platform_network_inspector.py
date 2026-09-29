@@ -7,6 +7,7 @@ from librenms_client import LibreNMSError
 from platform_api import network_inspector, network_read, read_api
 
 from .test_platform_network_read import FakeResponse, make_context
+from .test_librenms_client import FakeResponse as LibreNMSResponse, attach_sequence, make_client
 
 
 class InspectorClient:
@@ -64,9 +65,63 @@ def test_cisco_summary_is_single_node_bounded_and_does_not_fetch_counters(tmp_pa
     assert payload["online"] == "unknown"
     assert payload["ports"] == {"up": 1, "down": 1, "unknown": 1, "total": 3}
     assert payload["neighbors"][0]["aggregatePort"] == "Po1"
-    assert client.requested == [("device", ip), (7, network_inspector.PORT_COLUMNS)]
+    assert client.requested == [("device", ip), (client.devices[0], network_inspector.PORT_COLUMNS)]
     assert "ifHighSpeed" not in network_inspector.PORT_COLUMNS
     assert "ifHCInOctets" not in json.dumps(payload)
+
+
+def test_mismatched_librenms_device_never_supplies_identity_model_or_ports(tmp_path):
+    ip = "192.0.2.7"
+    wrong = {"device_id": 99, "ip": "192.0.2.99", "os": "ios",
+             "sysName": "WRONG-NAME", "hardware": "WRONG-MODEL"}
+    client = InspectorClient([wrong], [{"ifOperStatus": "up"}])
+    client.get_device = lambda requested: client.requested.append(("device", requested)) or wrong
+    context = context_for(tmp_path, client, edges=[{"from_ip": ip, "to_ip": "192.0.2.8"}])
+
+    payload = network_inspector.read_inspector(context, ip)
+
+    assert payload["kind"] == "unknown"
+    assert payload["name"] is None and payload["hostname"] is None
+    assert payload["model"] is None and payload["ports"] is None
+    assert payload["degraded"] is True
+    assert client.requested == [("device", ip)]
+    assert "WRONG-NAME" not in json.dumps(payload)
+    assert "WRONG-MODEL" not in json.dumps(payload)
+
+
+def test_real_librenms_client_inspector_uses_only_single_device_and_ports_get(tmp_path):
+    ip = "192.0.2.7"
+    client = make_client(max_attempts=1)
+    calls = attach_sequence(client, [
+        LibreNMSResponse({"status": "ok", "devices": [
+            {"device_id": 7, "ip": ip, "os": "ios", "sysName": "core-a"}]}),
+        LibreNMSResponse({"status": "ok", "ports": [{"ifOperStatus": "up"}]}),
+    ])
+
+    payload = network_inspector.read_inspector(context_for(tmp_path, client), ip)
+
+    assert payload["ports"] == {"up": 1, "down": 0, "unknown": 0, "total": 1}
+    paths = [urlsplit(call["url"]).path for call in calls]
+    assert paths == [f"/api/v0/devices/{ip}", "/api/v0/devices/7/ports"]
+    assert "/api/v0/devices" not in paths
+
+
+def test_fresh_topology_snapshot_omits_individually_stale_edge(tmp_path):
+    ip = "192.0.2.7"
+    client = InspectorClient([{"device_id": 7, "ip": ip, "os": "ios"}],
+                             [{"ifOperStatus": "up"}])
+    context = context_for(tmp_path, client, edges=[
+        {"from_ip": ip, "to_ip": "192.0.2.8", "stale": True},
+        {"from_ip": ip, "to_ip": "192.0.2.9", "stale": False},
+    ])
+    assert network_read.read_topology(context)["stale"] is False
+
+    payload = network_inspector.read_inspector(context, ip)
+
+    assert [row["peerIp"] for row in payload["neighbors"]] == ["192.0.2.9"]
+    assert "已省略过期邻接" in payload["warnings"]
+    assert "拓扑快照已过期" not in payload["warnings"]
+    assert payload["degraded"] is True
 
 
 def test_port_failure_is_partial_and_does_not_claim_zero(tmp_path):
