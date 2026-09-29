@@ -185,6 +185,22 @@ def test_hillstone_role_is_unavailable_even_when_unit_probe_up(tmp_path):
     assert payload["haRole"] == "unavailable"
 
 
+def test_production_stoneos_identifier_is_hillstone_without_inferred_ha_role(tmp_path):
+    ip = "192.0.2.11"
+    client = InspectorClient([{"device_id": 11, "ip": ip, "os": "stoneos",
+                               "hardware": "SG-6000-A3800"}], [{"ifOperStatus": "up"}])
+    query = (f'probe_success{{job=~"infra-core-ping|infra-dist-ping|infra-fw-ping|'
+             f'infra-fw-unit-ping",target_ip="{ip}"}}')
+
+    payload = network_inspector.read_inspector(
+        context_for(tmp_path, client, {query: [sample(ip, 1)]}), ip)
+
+    assert payload["kind"] == "hillstone"
+    assert payload["model"] == "SG-6000-A3800"
+    assert payload["online"] == "up"
+    assert payload["haRole"] == "unavailable"
+
+
 def test_unknown_probe_value_never_becomes_down(tmp_path):
     ip = "192.0.2.7"
     client = InspectorClient([{"device_id": 7, "ip": ip, "os": "ios"}])

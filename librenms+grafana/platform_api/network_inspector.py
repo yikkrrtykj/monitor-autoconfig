@@ -212,7 +212,7 @@ def read_inspector(context: NetworkReadContext, management_ip: str) -> dict[str,
             raise NetworkReadError(404, "node_not_found", "Node was not found")
         warnings.append("设备身份和端口汇总暂不可用")
 
-    kind = "unifi-ap" if ap or is_ap else ("hillstone" if "hillstone" in os_name else "cisco" if device else "unknown")
+    kind = "unifi-ap" if ap or is_ap else ("hillstone" if os_name in ("hillstone", "stoneos") else "cisco" if device else "unknown")
     result: dict[str, Any] = {
         "ok": True, "ip": ip, "kind": kind,
         "name": (ap or {}).get("name") or _text((device or {}).get("sysName") or (device or {}).get("hostname")),
