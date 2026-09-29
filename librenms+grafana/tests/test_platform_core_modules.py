@@ -255,6 +255,7 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
         "event_config",
         "incidents",
         "iperf_runtime",
+        "network_inspector",
         "network_read",
     }
     assert package_dependencies("write_api") == set()
