@@ -86,11 +86,13 @@ def _ports(client: Any, device: dict[str, Any]) -> dict[str, Any]:
     return {"up": up, "down": down, "unknown": unknown, "total": len(rows)}
 
 
-def _neighbors(context: NetworkReadContext, ip: str) -> tuple[list[dict[str, Any]], bool, bool]:
+def _neighbors(context: NetworkReadContext, ip: str) -> tuple[list[dict[str, Any]], bool, bool, dict[str, int]]:
     topology = read_topology(context)
     edges = topology["edges"]
     selected = []
     omitted_stale = False
+    peers: set[str] = set()
+    aggregates: set[str] = set()
     for edge in edges:
         if edge.get("from_ip") == ip:
             local, peer = "from", "to"
@@ -101,6 +103,12 @@ def _neighbors(context: NetworkReadContext, ip: str) -> tuple[list[dict[str, Any
         if edge.get("stale") is True:
             omitted_stale = True
             continue
+        peer_ip = edge.get(f"{peer}_ip")
+        aggregate_port = edge.get(f"{local}_aggregate_port")
+        if isinstance(peer_ip, str) and peer_ip:
+            peers.add(peer_ip)
+        if isinstance(aggregate_port, str) and aggregate_port:
+            aggregates.add(aggregate_port)
         if len(selected) >= NEIGHBOR_LIMIT:
             continue
         members = edge.get(f"{local}_member_ports")
@@ -114,7 +122,7 @@ def _neighbors(context: NetworkReadContext, ip: str) -> tuple[list[dict[str, Any
             "protocols": [name for name in (protocols[:3] if isinstance(protocols, list) else []) if isinstance(name, str)
                           if name in ("lldp", "cdp")],
         })
-    return selected, bool(topology["stale"]), omitted_stale
+    return selected, bool(topology["stale"]), omitted_stale, {"peers": len(peers), "aggregates": len(aggregates)}
 
 
 def _ap(context: NetworkReadContext, ip: str, warnings: list[str]) -> dict[str, Any] | None:
@@ -216,10 +224,11 @@ def read_inspector(context: NetworkReadContext, management_ip: str) -> dict[str,
     result: dict[str, Any] = {
         "ok": True, "ip": ip, "kind": kind,
         "name": (ap or {}).get("name") or _text((device or {}).get("sysName") or (device or {}).get("hostname")),
-        "hostname": _text((device or {}).get("hostname")) if device else (ap or {}).get("name"),
+        "hostname": _text(device.get("sysName") or device.get("hostname")) if device else (ap or {}).get("name"),
         "model": (ap or {}).get("model") or _text((device or {}).get("hardware") or (device or {}).get("model")),
         "online": "unknown", "latencySeconds": None,
-        "ports": None, "neighbors": [], "haRole": "unavailable" if kind == "hillstone" else None,
+        "ports": None, "neighbors": [], "connections": None,
+        "haRole": "unavailable" if kind == "hillstone" else None,
         "clients": ap["clients"] if ap else None,
         "uplink": ap["uplink"] if ap else None, "radio": ap["radio"] if ap else None,
     }
@@ -254,7 +263,7 @@ def read_inspector(context: NetworkReadContext, management_ip: str) -> dict[str,
         else:
             warnings.append("端口汇总缺少设备标识")
         try:
-            result["neighbors"], stale, omitted_stale = _neighbors(context, ip)
+            result["neighbors"], stale, omitted_stale, result["connections"] = _neighbors(context, ip)
             if stale:
                 warnings.append("拓扑快照已过期")
             if omitted_stale:
