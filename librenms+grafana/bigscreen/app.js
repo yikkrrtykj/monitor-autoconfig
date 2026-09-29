@@ -52,7 +52,7 @@
   } = window.BSApi;
   const {
     mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, topologyNetworkTargets,
-    createTopologyTargetCache, createApiEdgeCache, topologyReadStatus, renderNetworkIssue,
+    createTopologyTargetCache, createTopologyLifecycle, topologyReadStatus, renderNetworkIssue,
     readApiOverview, readApiIspTraffic, apiControlTargets,
     createNetworkSession, loadNetworkDomains, isAuthError
   } = window.BSNetworkRead;
@@ -76,7 +76,10 @@
   let controlTimer = null;
   let activePageId = "";
   let activeRoute = "";
-  let topologySeq = 0;
+  const topologyLifecycle = createTopologyLifecycle();
+  function invalidateTopologyEdges() {
+    topologyLifecycle.invalidate();
+  }
   const renderSignatures = new Map();
   let lastDataSuccessAt = 0;
   let lastControlReport = null;
@@ -347,11 +350,13 @@
     loginPlatformAuth,
     logoutPlatformAuth,
     onAuthenticated: () => {
+      invalidateTopologyEdges();
       networkSession.invalidate();
       invalidateControlRefresh();
       refreshControlPanel();
     },
     onLoggedOut: () => {
+      invalidateTopologyEdges();
       networkSession.expired();
       invalidateControlRefresh();
       lastControlReport = null;
@@ -407,7 +412,10 @@
     waitForApplyRecovery,
     applyRecoveryRenderPayload,
     applyRequestTimeoutMs: APPLY_REQUEST_TIMEOUT_MS,
-    onApplyStart: invalidateControlRefresh,
+    onApplyStart: () => {
+      invalidateTopologyEdges();
+      invalidateControlRefresh();
+    },
     onRefresh: refreshControlPanel
   });
 
@@ -984,14 +992,13 @@
 
   let topologyTimer = null;
   const topologyTargetCache = createTopologyTargetCache();
-  const apiEdgeCache = createApiEdgeCache();
 
   function stopTopologyRefresh() {
     if (topologyTimer) {
       window.clearInterval(topologyTimer);
       topologyTimer = null;
     }
-    topologySeq += 1;
+    invalidateTopologyEdges();
   }
 
   async function readTopologyNetwork(enrichment) {
@@ -1008,7 +1015,7 @@
 
   async function refreshTopology() {
     if (!topologyPanel.isAvailable()) return;
-    const seq = ++topologySeq;
+    const seq = topologyLifecycle.begin();
     try {
       const enrichmentRequest = fetchTopologyTargets();
       const enrichmentResult = enrichmentRequest.then(
@@ -1020,14 +1027,21 @@
         enrichmentResult,
         prometheusInstant(activeInfraPingQuery()).catch(() => [])
       ]);
-      if (seq !== topologySeq) return;
+      if (!topologyLifecycle.isCurrent(seq)) return;
+      if (networkRead.authExpired) {
+        invalidateTopologyEdges();
+        renderSignatures.delete("topology");
+        topologyPanel.showError("拓扑数据暂不可用");
+        renderNetworkStatus("topologyNetworkStatus", { domains: { topology: { state: "unavailable" } } });
+        return;
+      }
       if (probeResult.failed) console.warn("Topology target probe unavailable; retaining known structure", probeResult.error);
       const enrichment = probeResult.failed
         ? topologyTargetCache.recover()
         : topologyTargetCache.remember(probeResult.targets);
       const topologyDomain = networkRead.domains.topology;
-      if (!networkRead.authenticated) apiEdgeCache.clear();
-      const edges = networkRead.authenticated ? apiEdgeCache.read(topologyDomain) : (topologyDomain.data || []);
+      if (!networkRead.authenticated) topologyLifecycle.clearEdges();
+      const edges = networkRead.authenticated ? topologyLifecycle.readEdges(topologyDomain) : (topologyDomain.data || []);
       if (edges === null) throw new Error("拓扑数据暂不可用");
       // 与网络总览一致：隐藏从没上线过的设备（按 instance 名匹配 seen-up 集合）。
       const seenUp = activeSeriesNames(seenItems);
@@ -1044,7 +1058,7 @@
       renderNetworkStatus("topologyNetworkStatus", topologyReadStatus(networkRead, probeResult.failed));
       if (!probeResult.failed) lastDataSuccessAt = Date.now();
     } catch (error) {
-      if (seq !== topologySeq) return;
+      if (!topologyLifecycle.isCurrent(seq)) return;
       // The error message replaces the SVG, so the next success must rebuild
       // even when the data signature is unchanged.
       renderSignatures.delete("topology");

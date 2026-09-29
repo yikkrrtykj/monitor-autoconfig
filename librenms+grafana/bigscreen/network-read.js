@@ -92,6 +92,18 @@
     };
   }
 
+  function createTopologyLifecycle() {
+    const edgeCache = createApiEdgeCache();
+    let sequence = 0;
+    return {
+      begin() { return ++sequence; },
+      isCurrent(value) { return value === sequence; },
+      invalidate() { sequence++; edgeCache.clear(); },
+      clearEdges() { edgeCache.clear(); },
+      readEdges(domain) { return edgeCache.read(domain); }
+    };
+  }
+
   function topologyReadStatus(snapshot, targetsDegraded) {
     if (!targetsDegraded) return snapshot;
     const topology = snapshot.domains.topology;
@@ -278,16 +290,20 @@
       return { ...snapshot, authenticated: false, overall: snapshot.overall === "legacy-fallback" ? "unauthenticated" : snapshot.overall };
     }
     const errors = {};
+    let authExpired = false;
     const results = await Promise.all(DOMAINS.map(async (name) => {
       try {
         return [name, await clients[name]()];
       } catch (error) {
-        if (isAuthError(error)) session.expired();
+        if (isAuthError(error)) {
+          session.expired();
+          authExpired = true;
+        }
         errors[name] = error;
         return [name, null];
       }
     }));
-    return { ...resolveApiSnapshot(Object.fromEntries(results), errors), authenticated: true };
+    return { ...resolveApiSnapshot(Object.fromEntries(results), errors), authenticated: true, authExpired };
   }
 
   function createNetworkSession(fetchAuthStatus, now = () => Date.now(), retryMs = 45000) {
@@ -332,7 +348,7 @@
 
   return {
     deviceStatus, networkDomainState, networkErrorInfo, normalizeNetworkOverview, mergeNetworkDevices,
-    overlayTopologyDeviceStatus, createTopologyTargetCache, createApiEdgeCache, topologyReadStatus,
+    overlayTopologyDeviceStatus, createTopologyTargetCache, createApiEdgeCache, createTopologyLifecycle, topologyReadStatus,
     topologyNetworkTargets, networkIssueNotice, renderNetworkIssue,
     mergeIspInventory, mergeLegacyIspInventory, apiControlTargets,
     resolveApiDomain, resolveApiSnapshot, readApiOverview, readApiIspTraffic,

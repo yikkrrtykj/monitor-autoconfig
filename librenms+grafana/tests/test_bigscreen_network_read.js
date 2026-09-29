@@ -232,6 +232,35 @@ async function run() {
   assert.deepStrictEqual(edgeCache.read({ source: "none", data: null }), topology.edges, "API outage retains last API edge structure");
   edgeCache.clear();
   assert.strictEqual(edgeCache.read({ source: "none", data: null }), null, "anonymous transition cannot reuse authenticated edges");
+  const apiEdges = { source: "network-api", data: { edges: topology.edges } };
+  const unavailableEdges = { source: "none", data: null };
+  const legacyEdges = { source: "legacy", data: [{ from_ip: "legacy", to_ip: "b" }] };
+  const edgeLifecycle = network.createTopologyLifecycle();
+  const oldPoll = edgeLifecycle.begin();
+  edgeLifecycle.readEdges(apiEdges);
+  edgeLifecycle.invalidate(); // stopTopologyRefresh / route exit
+  assert.strictEqual(edgeLifecycle.isCurrent(oldPoll), false, "route exit invalidates in-flight topology reads");
+  assert.strictEqual(edgeLifecycle.readEdges(unavailableEdges), null, "route re-entry 503 cannot reuse prior route edges");
+
+  edgeLifecycle.readEdges(apiEdges);
+  edgeLifecycle.invalidate(); // onLoggedOut
+  edgeLifecycle.invalidate(); // onAuthenticated
+  assert.strictEqual(edgeLifecycle.readEdges(unavailableEdges), null, "logout/login 503 cannot reuse prior session edges");
+
+  edgeLifecycle.readEdges(apiEdges);
+  edgeLifecycle.invalidate(); // onApplyStart
+  assert.strictEqual(edgeLifecycle.readEdges(unavailableEdges), null, "Apply 503 cannot reuse pre-Apply edges");
+
+  edgeLifecycle.readEdges(apiEdges);
+  edgeLifecycle.invalidate(); // current-round authExpired
+  assert.strictEqual(edgeLifecycle.readEdges(unavailableEdges), null, "401/403 current round cannot reuse authenticated edges");
+  assert.strictEqual(edgeLifecycle.readEdges(unavailableEdges), null, "subsequent polls cannot reuse expired edges");
+
+  edgeLifecycle.readEdges(legacyEdges);
+  assert.strictEqual(edgeLifecycle.readEdges(unavailableEdges), null, "anonymous legacy edges never populate API edge cache");
+  edgeLifecycle.readEdges(apiEdges);
+  assert.deepStrictEqual(edgeLifecycle.readEdges(unavailableEdges), topology.edges,
+    "ordinary same-lifecycle 503 retains the last successful API edges");
 
   let now = 0;
   let authenticated = false;
@@ -333,9 +362,11 @@ async function run() {
   clients.isp = async () => { clientCalls.isp++; return isp; };
 
   clients.devices = async () => { clientCalls.devices++; throw Object.assign(new Error("auth"), { status: 401 }); };
-  await network.loadNetworkDomains(gated, clients, fallback);
+  result = await network.loadNetworkDomains(gated, clients, fallback);
+  assert.strictEqual(result.authExpired, true, "current API round exposes session expiry to topology rendering");
   const beforeExpiredPoll = { ...clientCalls };
-  await network.loadNetworkDomains(gated, clients, fallback);
+  result = await network.loadNetworkDomains(gated, clients, fallback);
+  assert.strictEqual(result.authenticated, false, "subsequent poll uses anonymous legacy reads");
   assert.deepStrictEqual(clientCalls, beforeExpiredPoll, "expired session stops protected polls");
   assert.strictEqual(calls.topology, beforeStaleFallback + 1, "anonymous fallback still reads legacy edges after expiry");
   clients.devices = async () => { clientCalls.devices++; return devices; };
