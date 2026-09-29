@@ -569,5 +569,25 @@ console.log('bigscreen Topology panel tests passed');
   await Promise.resolve();
   assert.ok(detail.innerHTML.includes('<dt>类型</dt><dd>core</dd>'), 'anonymous topology keeps legacy detail after auth denial');
   assert.ok(detail.innerHTML.includes('href="/latency?ip=10.0.0.1"'));
+  for (const failure of [{ status: 503 }, new Error('transport failure')]) {
+    const failedPanel = topologyPanelModule.createTopologyPanel({
+      document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+      buildTopologyLayers, topologyLayout, renderTopologySvg,
+      topologyNodeKindLabel: (kind) => kind, topologyLatencyIp: (node) => node.ip,
+      escapeHtml, formatPingText,
+      fetchNodeInspector: () => Promise.reject(failure)
+    });
+    failedPanel.render(failedPanel.prepare([{ kind: 'core', ip: '10.0.0.1', name: 'A' }], []));
+    canvas.nodes[0].dispatch('click');
+    assert.ok(detail.innerHTML.includes('节点详情读取中'));
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(!detail.innerHTML.includes('节点详情读取中'), 'failed Inspector must leave loading state');
+    assert.ok(detail.innerHTML.includes('节点详情暂不可用'));
+    assert.ok(detail.innerHTML.includes('href="/latency?ip=10.0.0.1"'));
+    assert.ok(detail.innerHTML.includes('var-host=10.0.0.1'));
+    detail.querySelector('.topology-detail-close').onclick();
+    assert.strictEqual(detail.hidden, true, 'failure detail remains closable');
+  }
   console.log('bigscreen Node Inspector lifecycle tests passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

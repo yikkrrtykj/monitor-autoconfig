@@ -126,7 +126,8 @@
               bindClose();
               return;
             }
-            detail.insertAdjacentHTML("beforeend", `<p class="topology-inspector-warnings">节点详情暂不可用</p>`);
+            detail.innerHTML = `${legacyCard}<p class="topology-inspector-warnings">节点详情暂不可用</p>`;
+            bindClose();
           });
         };
         el.addEventListener("click", handler);
