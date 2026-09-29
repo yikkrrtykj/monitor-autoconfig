@@ -17,6 +17,7 @@ from . import (
     iperf_runtime,
     network_read,
     network_inspector,
+    network_ports,
 )
 
 
@@ -71,6 +72,17 @@ def handle_get(handler: Any, request_target: str, context: ReadApiContext) -> No
         node = path.removeprefix("/network/nodes/").removesuffix("/inspector").strip("/")
         try:
             payload = network_inspector.read_inspector(context.network_context, node)
+        except network_read.NetworkReadError as exc:
+            handler._send_json(exc.payload, exc.status)
+        else:
+            handler._send_json(payload)
+    elif path.startswith("/network/nodes/") and path.endswith("/ports"):
+        if context.network_require_auth is None or context.network_context is None:
+            raise RuntimeError("network read API is not configured")
+        context.network_require_auth(handler)
+        node = path.removeprefix("/network/nodes/").removesuffix("/ports").strip("/")
+        try:
+            payload = network_ports.read_ports(context.network_context, node)
         except network_read.NetworkReadError as exc:
             handler._send_json(exc.payload, exc.status)
         else:
