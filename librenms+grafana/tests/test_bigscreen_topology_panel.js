@@ -426,6 +426,8 @@ console.log('bigscreen Topology panel tests passed');
     { kind: 'dist', ip: '10.0.0.2', name: 'B', level: 'none' }
   ], []));
   canvas.nodes[0].dispatch('click');
+  assert.ok(detail.innerHTML.includes('节点详情读取中'));
+  assert.ok(!detail.innerHTML.includes('<dt>类型</dt>'), 'authenticated Inspector has no legacy-card flash');
   canvas.nodes[1].dispatch('click');
   assert.deepStrictEqual(pending.map((item) => item.ip), ['10.0.0.1', '10.0.0.2']);
   pending[0].resolve({ name: 'stale', ports: { up: 9, down: 0, unknown: 0 } });
@@ -451,6 +453,8 @@ console.log('bigscreen Topology panel tests passed');
   assert.ok(detail.innerHTML.includes('拓扑快照已过期'));
   assert.ok(detail.innerHTML.includes('partial &lt;source&gt;'));
   assert.ok(!detail.innerHTML.includes('partial <source>'));
+  assert.ok(detail.innerHTML.includes('href="/latency?ip=10.0.0.2"'));
+  assert.ok(detail.innerHTML.includes('var-host=10.0.0.2'), 'final Inspector retains Syslog');
   inspectorPanel.clearDetail();
   canvas.nodes[0].dispatch('click');
   pending[2].resolve({ ip: '10.0.0.1', neighbors: [{ peerIp: '10.0.0.2', aggregatePort: 'Po1' }],
@@ -514,9 +518,13 @@ console.log('bigscreen Topology panel tests passed');
     { kind: 'firewall', ip: '10.0.0.3', name: 'Hillstone' }
   ], []));
   canvas.nodes[0].dispatch('click');
+  assert.ok(detail.innerHTML.includes('节点详情读取中'));
+  assert.ok(!detail.innerHTML.includes('<dt>类型</dt>'));
   inspectorReads[0].resolve({ kind: 'hillstone', ip: '10.0.0.3' });
   await Promise.resolve();
   assert.ok(!detail.innerHTML.includes('topology-view-ports'), 'Hillstone has no usable Port Panel action');
+  assert.ok(detail.innerHTML.includes('href="/latency?ip=10.0.0.3"'));
+  assert.ok(detail.innerHTML.includes('var-host=10.0.0.3'), 'firewall final Inspector retains Syslog');
   canvas.nodes[1].dispatch('click');
   inspectorReads[1].resolve({ kind: 'cisco', ip: '10.0.0.1' });
   await Promise.resolve();
@@ -546,5 +554,40 @@ console.log('bigscreen Topology panel tests passed');
   await Promise.resolve();
   assert.strictEqual(portEvents.filter((item) => item === 'open:10.0.0.2').length, 1,
     'close/clear invalidates late requests');
+
+  const anonymousPanel = topologyPanelModule.createTopologyPanel({
+    document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+    buildTopologyLayers, topologyLayout, renderTopologySvg,
+    topologyNodeKindLabel: (kind) => kind, topologyLatencyIp: (node) => node.ip,
+    escapeHtml, formatPingText,
+    fetchNodeInspector: () => Promise.reject({ status: 401 })
+  });
+  anonymousPanel.render(anonymousPanel.prepare([{ kind: 'core', ip: '10.0.0.1', name: 'A' }], []));
+  canvas.nodes[0].dispatch('click');
+  assert.ok(detail.innerHTML.includes('节点详情读取中'));
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('<dt>类型</dt><dd>core</dd>'), 'anonymous topology keeps legacy detail after auth denial');
+  assert.ok(detail.innerHTML.includes('href="/latency?ip=10.0.0.1"'));
+  for (const failure of [{ status: 503 }, new Error('transport failure')]) {
+    const failedPanel = topologyPanelModule.createTopologyPanel({
+      document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+      buildTopologyLayers, topologyLayout, renderTopologySvg,
+      topologyNodeKindLabel: (kind) => kind, topologyLatencyIp: (node) => node.ip,
+      escapeHtml, formatPingText,
+      fetchNodeInspector: () => Promise.reject(failure)
+    });
+    failedPanel.render(failedPanel.prepare([{ kind: 'core', ip: '10.0.0.1', name: 'A' }], []));
+    canvas.nodes[0].dispatch('click');
+    assert.ok(detail.innerHTML.includes('节点详情读取中'));
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(!detail.innerHTML.includes('节点详情读取中'), 'failed Inspector must leave loading state');
+    assert.ok(detail.innerHTML.includes('节点详情暂不可用'));
+    assert.ok(detail.innerHTML.includes('href="/latency?ip=10.0.0.1"'));
+    assert.ok(detail.innerHTML.includes('var-host=10.0.0.1'));
+    detail.querySelector('.topology-detail-close').onclick();
+    assert.strictEqual(detail.hidden, true, 'failure detail remains closable');
+  }
   console.log('bigscreen Node Inspector lifecycle tests passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });
