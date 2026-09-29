@@ -72,6 +72,7 @@ function harness() {
     render: noop, updateLatency: noop, updateStatus: noop,
     showError: (message) => errors.push(message)
   }) };
+  window.BSPortPanel = { createPortPanel: () => noOpPanel };
   window.BSAuthController = {
     createAuthController: (options) => { callbacks.auth = options; return { invalidate: noop, ensureAuthenticated: async () => false }; },
     createControlRefreshLifecycle: () => ({ stop: noop, invalidate: noop, execute: async () => {} })

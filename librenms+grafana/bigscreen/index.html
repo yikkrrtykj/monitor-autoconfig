@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
-    <link rel="stylesheet" href="./style.css?v=20260929a" />
+    <link rel="stylesheet" href="./style.css?v=20260929b" />
     <link rel="stylesheet" href="./platform.css?v=20260908a" />
   </head>
   <body>
@@ -249,6 +249,7 @@
         </div>
         <div class="topology-canvas" id="topologyCanvas"></div>
         <aside class="topology-detail" id="topologyDetail"></aside>
+        <aside class="topology-port-panel" id="topologyPortPanel" aria-label="端口面板" hidden></aside>
       </section>
       <section class="incident-panel" id="incidentPanel" aria-label="卡顿根因分析" hidden>
         <form class="incident-controls" id="incidentForm">
@@ -307,7 +308,7 @@
     <script src="./evidence/evidence-panel.js?v=20260911a"></script>
     <script src="./metrics/ping-transform.js?v=20260826b"></script>
     <script src="./isp-carousel.js?v=20260731a"></script>
-    <script src="./api.js?v=20260929a"></script>
+    <script src="./api.js?v=20260929b"></script>
     <script src="./network-read.js?v=20260929a"></script>
     <script src="./players.js?v=20260802a"></script>
     <script src="./tournament/tournament-panel.js?v=20260828a"></script>
@@ -315,7 +316,8 @@
     <script src="./incident.js?v=20260904a"></script>
     <script src="./incident/incident-panel.js?v=20260905a"></script>
     <script src="./topology.js?v=20260809a"></script>
-    <script src="./charts/topology-panel.js?v=20260929a"></script>
+    <script src="./charts/port-panel.js?v=20260929b"></script>
+    <script src="./charts/topology-panel.js?v=20260929b"></script>
     <script src="./platform.js?v=20260911a"></script>
     <script src="./iperf.js?v=20260912a"></script>
     <script src="./control/iperf-controller.js?v=20260912a"></script>
@@ -323,6 +325,6 @@
     <script src="./control/auth-controller.js?v=20260908a"></script>
     <script src="./control/incident-registry.js?v=20260828a"></script>
     <script src="./infra/infra-controller.js?v=20260828a"></script>
-    <script src="./app.js?v=20260929a"></script>
+    <script src="./app.js?v=20260929b"></script>
   </body>
 </html>
