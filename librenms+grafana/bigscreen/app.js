@@ -36,6 +36,7 @@
   const { createAuthController, createControlRefreshLifecycle } = window.BSAuthController;
   const { createIncidentRegistry } = window.BSIncidentRegistry;
   const { createTopologyPanel } = window.BSTopologyPanel;
+  const { createPortPanel } = window.BSPortPanel;
   const { createInfraController } = window.BSInfraController;
   const { buildInfrastructurePingPresentation } = window.BSPingTransform;
   const {
@@ -45,7 +46,7 @@
     fetchIspInventory, ispTrafficQuery, fetchIspTraffic, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
-    fetchNetworkOverview, fetchNetworkDevices, fetchNetworkTopology, fetchNodeInspector, fetchNetworkIsp,
+    fetchNetworkOverview, fetchNetworkDevices, fetchNetworkTopology, fetchNodeInspector, fetchNodePorts, fetchNetworkIsp,
     fetchPlatformAuthStatus, loginPlatformAuth, logoutPlatformAuth,
     fetchPlatformConfig, fetchPlatformVersion, fetchApplyStatus, postPlatform, fetchRetirePending, patchPlatform, fetchIncidents,
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
@@ -377,6 +378,8 @@
     getControlReport: () => lastControlReport,
     now: () => Date.now()
   });
+  const portPanel = createPortPanel({ document, window, escapeHtml,
+    setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window) });
   const topologyPanel = createTopologyPanel({
     document,
     location: window.location,
@@ -387,7 +390,9 @@
     topologyLatencyIp,
     escapeHtml,
     formatPingText,
-    fetchNodeInspector
+    fetchNodeInspector,
+    fetchNodePorts,
+    portPanel
   });
   const dhcpPanel = createDhcpPanel({
     document,
@@ -1039,6 +1044,7 @@
       if (!topologyLifecycle.isCurrent(seq)) return;
       if (networkRead.authExpired) {
         invalidateTopologyEdges();
+        topologyPanel.clearDetail();
         renderSignatures.delete("topology");
         topologyPanel.showError("拓扑数据暂不可用");
         renderNetworkStatus("topologyNetworkStatus", { domains: { topology: { state: "unavailable" } } });

@@ -485,5 +485,66 @@ console.log('bigscreen Topology panel tests passed');
   await Promise.resolve();
   assert.strictEqual(detail.hidden, true);
   assert.ok(!detail.innerHTML.includes('late'));
+
+  const inspectorReads = [];
+  const portReads = [];
+  const portEvents = [];
+  let portOpen = false;
+  let closeHandler;
+  const portPanel = {
+    setCloseHandler(handler) { closeHandler = handler; },
+    close() { portOpen = false; portEvents.push('close'); },
+    loading(ip) { portOpen = true; portEvents.push(`loading:${ip}`); },
+    open(data) { portEvents.push(`open:${data.ip}`); },
+    failure() { portEvents.push('failure'); },
+    isOpen() { return portOpen; }
+  };
+  const portsPanel = topologyPanelModule.createTopologyPanel({
+    document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+    buildTopologyLayers, topologyLayout, renderTopologySvg,
+    topologyNodeKindLabel: (kind) => kind,
+    topologyLatencyIp: (node) => node.ip,
+    escapeHtml, formatPingText, portPanel,
+    fetchNodeInspector: (ip) => new Promise((resolve) => inspectorReads.push({ ip, resolve })),
+    fetchNodePorts: (ip) => new Promise((resolve) => portReads.push({ ip, resolve }))
+  });
+  portsPanel.render(portsPanel.prepare([
+    { kind: 'core', ip: '10.0.0.1', name: 'Cisco A' },
+    { kind: 'dist', ip: '10.0.0.2', name: 'Cisco B' },
+    { kind: 'firewall', ip: '10.0.0.3', name: 'Hillstone' }
+  ], []));
+  canvas.nodes[0].dispatch('click');
+  inspectorReads[0].resolve({ kind: 'hillstone', ip: '10.0.0.3' });
+  await Promise.resolve();
+  assert.ok(!detail.innerHTML.includes('topology-view-ports'), 'Hillstone has no usable Port Panel action');
+  canvas.nodes[1].dispatch('click');
+  inspectorReads[1].resolve({ kind: 'cisco', ip: '10.0.0.1' });
+  await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('topology-view-ports'));
+  detail.querySelector('.topology-view-ports').onclick();
+  assert.deepStrictEqual(portReads.map((read) => read.ip), ['10.0.0.1'], 'one click makes one node read');
+  assert.ok(portEvents.includes('loading:10.0.0.1'));
+  canvas.nodes[2].dispatch('click');
+  inspectorReads[2].resolve({ kind: 'cisco', ip: '10.0.0.2' });
+  await Promise.resolve();
+  detail.querySelector('.topology-view-ports').onclick();
+  portReads[0].resolve({ ip: '10.0.0.1', ports: [] });
+  await Promise.resolve();
+  assert.ok(!portEvents.includes('open:10.0.0.1'), 'old node response cannot replace newer panel');
+  portReads[1].resolve({ ip: '10.0.0.2', ports: [] });
+  await Promise.resolve();
+  assert.ok(portEvents.includes('open:10.0.0.2'));
+  detail.querySelector('.topology-view-ports').onclick();
+  closeHandler(); portPanel.close();
+  portReads[2].resolve({ ip: '10.0.0.2', ports: [] });
+  await Promise.resolve();
+  assert.strictEqual(portEvents.filter((item) => item === 'open:10.0.0.2').length, 1,
+    'closing the drawer invalidates its pending response');
+  detail.querySelector('.topology-view-ports').onclick();
+  portsPanel.clearDetail();
+  portReads[3].resolve({ ip: '10.0.0.2', ports: [] });
+  await Promise.resolve();
+  assert.strictEqual(portEvents.filter((item) => item === 'open:10.0.0.2').length, 1,
+    'close/clear invalidates late requests');
   console.log('bigscreen Node Inspector lifecycle tests passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

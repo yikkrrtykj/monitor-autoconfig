@@ -12,11 +12,14 @@
       topologyLatencyIp,
       escapeHtml,
       formatPingText,
-      fetchNodeInspector
+      fetchNodeInspector,
+      fetchNodePorts,
+      portPanel
     } = dependencies;
 
     let topologyNodes = [];
     let inspectorRequest = 0;
+    let portsRequest = 0;
     const topoView = { scale: 1, x: 0, y: 0 };
 
     const canvasElement = () => document.getElementById("topologyCanvas");
@@ -26,6 +29,13 @@
       return Boolean(canvasElement());
     }
 
+    function closePorts() {
+      portsRequest += 1;
+      if (portPanel) portPanel.close();
+    }
+
+    if (portPanel) portPanel.setCloseHandler(() => { portsRequest += 1; });
+
     function bindTopologyNodeEvents() {
       const detail = detailElement();
       const canvas = canvasElement();
@@ -33,6 +43,7 @@
         canvas.onclick = (event) => {
           if (event.target.closest && event.target.closest(".topology-node")) return;
           inspectorRequest += 1;
+          closePorts();
           detail.hidden = true;
         };
       }
@@ -42,6 +53,8 @@
           const idx = Number(el.dataset.idx);
           const node = topologyNodes[idx];
           if (!node) return;
+          inspectorRequest += 1;
+          closePorts();
           const syslogUrl = node.ip ? `${location.protocol}//${location.hostname}:3000/d/device-syslog?var-host=${encodeURIComponent(node.ip)}` : "";
           const latencyIp = topologyLatencyIp(node);
           detail.hidden = false;
@@ -58,9 +71,9 @@
               ${syslogUrl ? `<a class="detail-link" href="${escapeHtml(syslogUrl)}">Syslog</a>` : ""}
             </div>
           `;
-          detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; detail.hidden = true; };
+          detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; closePorts(); detail.hidden = true; };
           if (!node.ip || !["core", "dist", "device", "firewall"].includes(node.kind) || !fetchNodeInspector) return;
-          const request = ++inspectorRequest;
+          const request = inspectorRequest;
           fetchNodeInspector(node.ip).then((inspector) => {
             if (request !== inspectorRequest || detail.hidden) return;
             const ports = inspector.ports;
@@ -82,11 +95,23 @@
                 ${node.kind === "firewall" || inspector.kind === "hillstone" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
               </dl>
               ${warnings.length ? `<div class="topology-inspector-warnings">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
-              <div class="topology-detail-actions"><button type="button" class="topology-view-ports">查看端口</button></div>
-              <div class="topology-port-note" hidden>完整端口面板将在 T-03 提供；当前仅有在线、离线和未知汇总。</div>
+              ${inspector.kind === "cisco" && ["core", "dist"].includes(node.kind) && fetchNodePorts && portPanel
+                ? '<div class="topology-detail-actions"><button type="button" class="topology-view-ports">查看端口</button></div>' : ''}
             `;
-            detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; detail.hidden = true; };
-            detail.querySelector(".topology-view-ports").onclick = () => { detail.querySelector(".topology-port-note").hidden = false; };
+            detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; closePorts(); detail.hidden = true; };
+            const viewPorts = detail.querySelector(".topology-view-ports");
+            if (viewPorts) viewPorts.onclick = () => {
+              const currentRequest = ++portsRequest;
+              portPanel.loading(node.ip);
+              fetchNodePorts(node.ip).then((result) => {
+                if (currentRequest !== portsRequest || detail.hidden || !portPanel.isOpen()) return;
+                portPanel.open(result);
+              }).catch((error) => {
+                if (currentRequest !== portsRequest || detail.hidden || !portPanel.isOpen()) return;
+                if (error.status === 401 || error.status === 403) { closePorts(); return; }
+                portPanel.failure();
+              });
+            };
           }).catch((error) => {
             if (request !== inspectorRequest || detail.hidden || error.status === 401 || error.status === 403) return;
             detail.insertAdjacentHTML("beforeend", `<p class="topology-inspector-warnings">节点详情暂不可用</p>`);
@@ -273,6 +298,7 @@
 
     function clearDetail() {
       inspectorRequest += 1;
+      closePorts();
       const detail = detailElement();
       detail.hidden = true;
       detail.innerHTML = `<div class="topology-empty">点击任意节点查看详情</div>`;

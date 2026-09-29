@@ -1331,6 +1331,62 @@ body {
   padding: 16px;
 }
 
+.topology-port-panel {
+  position: absolute;
+  z-index: 5;
+  right: 12px;
+  top: 55px;
+  bottom: 12px;
+  width: min(900px, calc(100% - 36px));
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  padding: 16px;
+  border: 1px solid rgba(105, 160, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(11, 18, 30, 0.97);
+  box-shadow: 0 14px 48px rgba(0, 0, 0, 0.55);
+  color: #eaf2ff;
+}
+.topology-port-panel[hidden], .port-hover-card[hidden], .port-pinned-detail[hidden] { display: none; }
+.topology-port-panel > header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.topology-port-panel > header strong { font-size: 19px; }
+.topology-port-panel > header p { margin: 4px 0 0; color: #94a3b8; font-size: 12px; }
+.port-panel-close { border: 0; color: #dbeafe; background: none; cursor: pointer; font-size: 24px; }
+.port-panel-summary { margin: 10px 0; font-size: 13px; }
+.port-panel-warnings, .port-panel-degraded { color: #ffbf80; font-size: 12px; }
+.port-panel-warnings p { margin: 3px 0; }
+.port-panel-scroll { min-height: 0; overflow: auto; padding: 0 2px 16px 0; }
+.port-bank, .port-other { margin: 12px 0; padding: 10px; border: 1px solid rgba(105, 160, 255, 0.18); border-radius: 8px; }
+.port-bank h3, .port-other h3 { margin: 0 0 8px; color: #a9c9ff; font-size: 13px; }
+.port-bank-rows { display: grid; gap: 5px; overflow-x: auto; }
+.port-bank-row { display: grid; grid-template-columns: repeat(var(--port-columns), minmax(25px, 1fr)); gap: 3px; }
+.port-bank-compact .port-bank-row { display: flex; flex-wrap: wrap; }
+.port-bank-compact .port-face { width: 45px; }
+.port-other-grid { display: flex; flex-wrap: wrap; gap: 4px; max-height: 180px; overflow: auto; }
+.port-other .port-face { width: auto; min-width: 80px; max-width: 170px; }
+.port-face { min-width: 0; height: 34px; border: 1px solid #64748b; border-radius: 4px; background: #334155; color: #f8fafc; cursor: pointer; position: relative; padding: 2px; }
+.port-face:focus-visible, .port-face[aria-pressed="true"] { outline: 2px solid #93c5fd; outline-offset: 1px; }
+.port-state-up { border-color: #34d399; background: #14532d; }
+.port-state-down { border-color: #fb923c; background: #7c2d12; }
+.port-state-disabled { border-color: #94a3b8; background: #374151; }
+.port-state-unknown { border-color: #64748b; background: #1e293b; }
+.port-face-number { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; }
+.port-face-speed { display: block; color: #cbd5e1; font-size: 9px; }
+.port-face-counter { position: absolute; right: 2px; top: -6px; color: #fde68a; font-size: 18px; }
+.port-pinned-detail { flex: 0 0 auto; max-height: 32%; overflow: auto; border-top: 1px solid #475569; padding-top: 8px; }
+.port-hover-card { position: fixed; z-index: 9; width: 310px; max-height: min(500px, calc(100vh - 16px)); overflow: auto; padding: 12px; border: 1px solid #60a5fa; border-radius: 8px; background: #0f172a; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6); font-size: 12px; }
+.port-detail-content strong { display: block; margin-bottom: 8px; }
+.port-detail-content dl { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 5px 8px; margin: 0; }
+.port-detail-content dt { color: #94a3b8; }
+.port-detail-content dd { margin: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 820px) {
+  .topology-port-panel { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; height: min(76vh, 760px); }
+  .port-bank-two-row .port-bank-row { min-width: 760px; }
+}
+
 /* ==================== 手机端适配 ====================
    仅在窄屏(手机/竖屏平板)生效:整页改为纵向滚动的单列布局。
    电视墙和桌面浏览器(>820px)不受任何影响。 */
