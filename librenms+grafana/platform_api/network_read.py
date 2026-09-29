@@ -106,7 +106,7 @@ def _prometheus_query(context: NetworkReadContext, query: str) -> list[dict[str,
 def _probe_statuses(context: NetworkReadContext) -> dict[str, str]:
     result = _prometheus_query(
         context,
-        'probe_success{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping|infra-srv-ping"}',
+        'probe_success{job=~"infra-isp-ping|infra-core-ping|infra-dist-ping|infra-fw-ping|infra-fw-unit-ping|infra-srv-ping"}',
     )
     statuses: dict[str, str] = {}
     for item in result:
