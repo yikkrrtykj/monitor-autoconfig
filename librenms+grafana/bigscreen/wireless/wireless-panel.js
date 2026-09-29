@@ -17,11 +17,44 @@
       renderNoData,
       fetchPlayerSnapshot,
       prometheusQuery,
+      fetchNodeInspector,
       triggerRescan,
       onDataSuccess
     } = dependencies;
 
     let wirelessTimer = null;
+    let inspectorRequest = 0;
+
+    function bindApInspector() {
+      const board = document.getElementById("wirelessBoard");
+      const detail = document.getElementById("wirelessInspector");
+      if (!board || !detail || !fetchNodeInspector || board.dataset.inspectorBound) return;
+      board.dataset.inspectorBound = "1";
+      board.addEventListener("click", async (event) => {
+        const chip = event.target.closest && event.target.closest(".ap-chip[data-ip]");
+        if (!chip || !chip.dataset.ip) return;
+        const request = ++inspectorRequest;
+        try {
+          const data = await fetchNodeInspector(chip.dataset.ip);
+          if (request !== inspectorRequest) return;
+          const value = (item) => escapeHtml(item == null || item === "" ? "—" : String(item));
+          detail.hidden = false;
+          detail.innerHTML = `<header><strong>${value(data.name)}</strong><button type="button" class="topology-detail-close" aria-label="关闭详情">×</button></header>
+            <dl><dt>IP</dt><dd>${value(data.ip)}</dd><dt>型号</dt><dd>${value(data.model)}</dd>
+            <dt>状态</dt><dd>${data.online === "up" ? "在线" : data.online === "down" ? "离线" : "未知"}</dd>
+            <dt>客户端</dt><dd>${value(data.clients)}</dd><dt>上联</dt><dd>${value(data.uplink)}</dd>
+            <dt>射频</dt><dd>${value(data.radio)}</dd></dl>
+            ${(data.warnings || []).map((warning) => `<p class="topology-inspector-warnings">${value(warning)}</p>`).join("")}`;
+          detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; detail.hidden = true; };
+        } catch (error) {
+          if (request !== inspectorRequest) return;
+          detail.hidden = false;
+          detail.innerHTML = error.status === 401 || error.status === 403
+            ? '<p>登录后可查看 AP 详情</p>'
+            : '<p class="topology-inspector-warnings">AP 详情暂不可用</p>';
+        }
+      });
+    }
 
     function renderWirelessKpis(items) {
       document.getElementById("wirelessSummary").innerHTML = items.map((item) => `
@@ -133,6 +166,7 @@
           const online = onlineByName.has(name) ? onlineByName.get(name) : (labelState == null ? true : labelState);
           return {
             name,
+            ip: i.metric.ip || "",
             model: i.metric.model || "",
             online,
             clients: online && clients[name] != null ? clients[name] : 0
@@ -148,11 +182,11 @@
       const onlineCount = aps.filter((ap) => ap.online).length;
       const totalClients = aps.reduce((sum, ap) => sum + (ap.online ? ap.clients : 0), 0);
       const chips = aps.map((ap) => `
-        <div class="ap-chip ${ap.online ? "online" : "offline"}" title="${escapeHtml(`${ap.name} · ${ap.online ? "在线" : "离线"}${ap.model ? ` · ${ap.model}` : ""}`)}">
+        <button type="button" class="ap-chip ${ap.online ? "online" : "offline"}" data-ip="${escapeHtml(ap.ip)}" ${ap.ip ? "" : "disabled"} title="${escapeHtml(`${ap.name} · ${ap.online ? "在线" : "离线"}${ap.model ? ` · ${ap.model}` : ""}`)}">
           <i class="dot"></i>
           <span class="ap-name">${escapeHtml(ap.name)}</span>
           <span class="ap-clients">${ap.online ? `<b>${ap.clients}</b> 人` : "离线"}</span>
-        </div>
+        </button>
       `).join("");
       board.insertAdjacentHTML("afterbegin", `
         <div class="ap-strip">
@@ -195,7 +229,14 @@
       }
     }
 
+    function clearInspector() {
+      inspectorRequest += 1;
+      const detail = document.getElementById("wirelessInspector");
+      if (detail) detail.hidden = true;
+    }
+
     function stop() {
+      clearInspector();
       if (wirelessTimer) {
         window.clearInterval(wirelessTimer);
         wirelessTimer = null;
@@ -204,6 +245,7 @@
 
     function start(page) {
       stop();
+      bindApInspector();
       const refresh = refreshWirelessOverview;
       refresh();
       wirelessTimer = window.setInterval(refresh, 5000);
@@ -221,7 +263,7 @@
       return Boolean(wirelessTimer);
     }
 
-    return { start, stop, hasScheduledRefresh };
+    return { start, stop, hasScheduledRefresh, clearInspector };
   }
 
   const ns = { createWirelessPanel };

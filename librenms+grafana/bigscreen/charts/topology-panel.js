@@ -11,10 +11,12 @@
       topologyNodeKindLabel,
       topologyLatencyIp,
       escapeHtml,
-      formatPingText
+      formatPingText,
+      fetchNodeInspector
     } = dependencies;
 
     let topologyNodes = [];
+    let inspectorRequest = 0;
     const topoView = { scale: 1, x: 0, y: 0 };
 
     const canvasElement = () => document.getElementById("topologyCanvas");
@@ -30,6 +32,7 @@
       if (canvas) {
         canvas.onclick = (event) => {
           if (event.target.closest && event.target.closest(".topology-node")) return;
+          inspectorRequest += 1;
           detail.hidden = true;
         };
       }
@@ -43,7 +46,7 @@
           const latencyIp = topologyLatencyIp(node);
           detail.hidden = false;
           detail.innerHTML = `
-            <header><strong>${escapeHtml(node.name)}</strong><span class="dot ${node.level}"></span></header>
+            <header><strong>${escapeHtml(node.name)}</strong><button class="topology-detail-close" type="button" aria-label="关闭详情">×</button></header>
             <dl>
               <dt>类型</dt><dd>${escapeHtml(topologyNodeKindLabel(node.kind))}</dd>
               <dt>IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
@@ -55,6 +58,35 @@
               ${syslogUrl ? `<a class="detail-link" href="${escapeHtml(syslogUrl)}">Syslog</a>` : ""}
             </div>
           `;
+          detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; detail.hidden = true; };
+          if (!node.ip || !["core", "dist", "device", "firewall"].includes(node.kind) || !fetchNodeInspector) return;
+          const request = ++inspectorRequest;
+          fetchNodeInspector(node.ip).then((inspector) => {
+            if (request !== inspectorRequest || detail.hidden) return;
+            const ports = inspector.ports;
+            const neighbors = Array.isArray(inspector.neighbors) ? inspector.neighbors : [];
+            const warnings = Array.isArray(inspector.warnings) ? inspector.warnings : [];
+            const state = inspector.online === "up" ? "在线" : inspector.online === "down" ? "离线" : "未知";
+            const row = (label, value) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value == null || value === "" ? "—" : String(value))}</dd>`;
+            detail.innerHTML = `
+              <header><strong>${escapeHtml(inspector.name || node.name)}</strong><button class="topology-detail-close" type="button" aria-label="关闭详情">×</button></header>
+              <dl>
+                ${row("Hostname", inspector.hostname)}${row("管理 IP", inspector.ip)}${row("型号", inspector.model)}
+                ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : null)}
+                ${row("端口", ports ? `在线 ${ports.up} / 离线 ${ports.down} / 未知 ${ports.unknown}` : null)}
+                ${node.kind === "firewall" || inspector.kind === "hillstone" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
+              </dl>
+              ${neighbors.length ? `<div class="topology-inspector-section"><strong>已发现上联与邻居</strong>${neighbors.map((item) => `<p>${escapeHtml(item.localPort || "端口未知")} → ${escapeHtml(item.peerIp || "邻居未知")}${item.aggregatePort ? ` · ${escapeHtml(item.aggregatePort)}` : ""}${item.members && item.members.length ? ` · ${item.members.length} 成员` : ""}</p>`).join("")}</div>` : ""}
+              ${warnings.length ? `<div class="topology-inspector-warnings">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
+              <div class="topology-detail-actions"><button type="button" class="topology-view-ports">查看端口</button></div>
+              <div class="topology-port-note" hidden>完整端口面板将在 T-03 提供；当前仅有在线、离线和未知汇总。</div>
+            `;
+            detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; detail.hidden = true; };
+            detail.querySelector(".topology-view-ports").onclick = () => { detail.querySelector(".topology-port-note").hidden = false; };
+          }).catch((error) => {
+            if (request !== inspectorRequest || detail.hidden || error.status === 401 || error.status === 403) return;
+            detail.insertAdjacentHTML("beforeend", `<p class="topology-inspector-warnings">节点详情暂不可用</p>`);
+          });
         };
         el.addEventListener("click", handler);
         el.addEventListener("keydown", (event) => {
@@ -236,10 +268,12 @@
     }
 
     function clearDetail() {
+      inspectorRequest += 1;
       const detail = detailElement();
       detail.hidden = true;
       detail.innerHTML = `<div class="topology-empty">点击任意节点查看详情</div>`;
     }
+
 
     return {
       isAvailable,

@@ -90,6 +90,12 @@ class FakeElement {
   closest() {
     return null;
   }
+
+  querySelector(selector) {
+    if (!this.children) this.children = new Map();
+    if (!this.children.has(selector)) this.children.set(selector, new FakeElement('BUTTON'));
+    return this.children.get(selector);
+  }
 }
 
 class FakeSvg extends FakeElement {
@@ -403,3 +409,45 @@ const wideFrame = panel.prepare(wideTargets, []);
 assert.strictEqual(wideFrame.width, 6 * 168 + 48, 'dist and server nodes retain the existing natural-width calculation');
 
 console.log('bigscreen Topology panel tests passed');
+
+// Inspector responses are used only for the most recently selected, still-open node.
+(async () => {
+  const pending = [];
+  const inspectorPanel = topologyPanelModule.createTopologyPanel({
+    document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+    buildTopologyLayers, topologyLayout, renderTopologySvg,
+    topologyNodeKindLabel: (kind) => kind,
+    topologyLatencyIp: (node) => node.ip,
+    escapeHtml, formatPingText,
+    fetchNodeInspector: (ip) => new Promise((resolve) => pending.push({ ip, resolve }))
+  });
+  inspectorPanel.render(inspectorPanel.prepare([
+    { kind: 'core', ip: '10.0.0.1', name: 'A', level: 'good' },
+    { kind: 'dist', ip: '10.0.0.2', name: 'B', level: 'none' }
+  ], []));
+  canvas.nodes[0].dispatch('click');
+  canvas.nodes[1].dispatch('click');
+  assert.deepStrictEqual(pending.map((item) => item.ip), ['10.0.0.1', '10.0.0.2']);
+  pending[0].resolve({ name: 'stale', ports: { up: 9, down: 0, unknown: 0 } });
+  await Promise.resolve();
+  assert.ok(!detail.innerHTML.includes('stale'), 'older selection cannot replace newer selection');
+  pending[1].resolve({ ip: '10.0.0.2', name: '<B>', model: 'switch', online: 'unknown',
+    latencySeconds: null, ports: { up: 2, down: 1, unknown: 1 }, neighbors: [
+      { localPort: 'Gi1', peerIp: '10.0.0.3', aggregatePort: 'Po1', members: ['Gi1'] }
+    ], warnings: ['partial <source>'] });
+  await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('&lt;B&gt;'));
+  assert.ok(detail.innerHTML.includes('未知'));
+  assert.ok(detail.innerHTML.includes('在线 2 / 离线 1 / 未知 1'));
+  assert.ok(detail.innerHTML.includes('Po1'));
+  assert.ok(detail.innerHTML.includes('partial &lt;source&gt;'));
+  assert.ok(!detail.innerHTML.includes('partial <source>'));
+  inspectorPanel.clearDetail();
+  canvas.nodes[0].dispatch('click');
+  inspectorPanel.clearDetail();
+  pending[2].resolve({ name: 'late' });
+  await Promise.resolve();
+  assert.strictEqual(detail.hidden, true);
+  assert.ok(!detail.innerHTML.includes('late'));
+  console.log('bigscreen Node Inspector lifecycle tests passed');
+})().catch((error) => { console.error(error); process.exitCode = 1; });

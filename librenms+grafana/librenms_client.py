@@ -373,6 +373,24 @@ class LibreNMSClient:
             self._devices_cache_strict = strict
         return [dict(device) for device in self._devices_cache]
 
+    def get_device(self, identifier: str) -> dict[str, Any] | None:
+        """Read one device by its LibreNMS hostname/id without listing inventory."""
+        ref = urlparse.quote(str(identifier).strip(), safe="")
+        if not ref:
+            raise LibreNMSAPIError("LibreNMS device identifier is empty")
+        try:
+            payload = self.get_json(f"/api/v0/devices/{ref}")
+        except LibreNMSAPIError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        devices = _strict_rows(payload, "devices")
+        if not devices:
+            return None
+        if len(devices) != 1 or not _has_strict_device_identity(devices[0]):
+            raise LibreNMSInvalidResponse("LibreNMS returned an ambiguous device")
+        return _normalise_device(devices[0])
+
     def resolve_device(self, identifier: object) -> dict[str, Any]:
         if isinstance(identifier, Mapping):
             return _normalise_device(identifier)
