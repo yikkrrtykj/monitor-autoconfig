@@ -61,6 +61,80 @@ async function run() {
   assert(topologyView.renderTopologySvg(topologyView.topologyLayout(topologyView.buildTopologyLayers(topologyTargets), 1200, 700, []), 1200).includes("状态未知"));
   assert.strictEqual(network.mergeNetworkDevices([{ ip: "10.0.0.11", status: "down" }], [{ targetIp: "10.0.0.11", success: true }])[0].success, false);
   assert.strictEqual(network.mergeNetworkDevices([{ ip: "10.0.0.11", status: "up" }], [{ targetIp: "10.0.0.11", success: false }])[0].success, true);
+  const physicalTargets = [
+    { job: "infra-core-ping", targetIp: "10.0.0.1", instance: "10.0.0.1", displayName: "core", success: true, latency: 0.002 },
+    { job: "infra-dist-ping", targetIp: "10.0.0.2", instance: "10.0.0.2", displayName: "dist", success: true, latency: 0.003 },
+    { job: "infra-dist-ping", targetIp: "10.0.0.3", instance: "10.0.0.3", displayName: "never seen", success: true },
+    { job: "infra-isp-ping", targetIp: "10.0.1.1", instance: "10.0.1.1", displayName: "ISP-A", success: true, latency: 0.004 }
+  ];
+  const fullInventory = [
+    { ip: "10.0.0.1", status: "down", name: "core renamed" },
+    { ip: "10.0.0.2", status: "unknown", name: "dist renamed" },
+    { ip: "10.0.0.3", status: "up" },
+    ...Array.from({ length: 20 }, (_, index) => ({ ip: `10.9.0.${index}`, status: "up" }))
+  ];
+  const topologyDomains = {
+    devices: { source: "network-api", data: { devices: fullInventory } },
+    isp: { source: "network-api", data: { isps: [{ name: "ISP-A", target: "10.0.1.1", status: "up" }] } }
+  };
+  const seenUp = new Set(["10.0.0.1", "10.0.0.2"]);
+  const apiTopologyTargets = network.topologyNetworkTargets(topologyDomains, physicalTargets, seenUp);
+  const legacyTopologyTargets = network.topologyNetworkTargets({
+    devices: { source: "legacy", data: physicalTargets },
+    isp: { source: "legacy", data: [{ name: "ISP-A", gateway: "10.0.1.1" }] }
+  }, physicalTargets, seenUp);
+  assert.deepStrictEqual(apiTopologyTargets.map((item) => item.targetIp), legacyTopologyTargets.map((item) => item.targetIp),
+    "full LibreNMS inventory cannot expand the existing topology target set");
+  assert.deepStrictEqual(apiTopologyTargets.map((item) => item.success), [false, null, true],
+    "only matching topology targets receive authoritative API status; unknown remains neutral");
+  assert.strictEqual(apiTopologyTargets[0].displayName, "core", "API inventory does not replace topology labels");
+  const apiLayout = topologyView.topologyLayout(topologyView.buildTopologyLayers(apiTopologyTargets), 1200, 700, []);
+  const legacyLayout = topologyView.topologyLayout(topologyView.buildTopologyLayers(legacyTopologyTargets), 1200, 700, []);
+  assert.strictEqual(apiLayout.nodes.length, legacyLayout.nodes.length, "authenticated layout keeps the legacy business node count");
+  assert.strictEqual(apiLayout.nodes.find((node) => node.ip === "10.0.0.2").level, "none");
+  assert.strictEqual(network.topologyNetworkTargets(topologyDomains, [], seenUp).filter((item) => item.job !== "infra-isp-ping").length, 0,
+    "missing probes cannot be replaced by full API inventory");
+  const targetCache = network.createTopologyTargetCache();
+  assert.throws(() => targetCache.recover(), /拓扑数据暂不可用/, "first probe failure cannot render an empty success");
+  assert.strictEqual(targetCache.remember(physicalTargets)[0].latency, 0.002, "fresh probes retain current latency");
+  const recoveredTargets = targetCache.recover();
+  assert.deepStrictEqual(recoveredTargets.map((item) => item.targetIp), physicalTargets.map((item) => item.targetIp));
+  assert(recoveredTargets.every((item) => item.success === null && item.status === "unknown" && item.latency === null),
+    "cached structure cannot claim old probe status or latency is current");
+  const recoveredApiTargets = network.topologyNetworkTargets(topologyDomains, recoveredTargets, seenUp);
+  assert.deepStrictEqual(recoveredApiTargets.map((item) => item.targetIp), apiTopologyTargets.map((item) => item.targetIp),
+    "probe failure preserves nodes without adding unrelated LibreNMS devices");
+  assert.deepStrictEqual(recoveredApiTargets.map((item) => item.success), [false, null, true],
+    "current API status may still cover matching cached devices");
+  assert(recoveredApiTargets.every((item) => item.latency === null), "old latency is absent from rendered targets");
+  const recoveredLegacyTargets = network.topologyNetworkTargets({
+    devices: { source: "none", data: null },
+    isp: { source: "legacy", data: [{ name: "ISP-A", gateway: "10.0.1.1" }] }
+  }, recoveredTargets, seenUp);
+  assert.strictEqual(recoveredLegacyTargets.length, 3, "cached structure survives simultaneous API and probe failure");
+  assert(recoveredLegacyTargets.every((item) => item.success === null), "legacy fallback does not reuse old probe states");
+  const normalSnapshot = { domains: { devices: { state: "normal" }, topology: { state: "normal" }, isp: { state: "normal" } } };
+  assert.strictEqual(network.networkIssueNotice(normalSnapshot.domains), null);
+  assert.deepStrictEqual(network.networkIssueNotice(network.topologyReadStatus(normalSnapshot, true).domains), {
+    state: "degraded", text: "拓扑数据降级"
+  }, "cached structure is visibly degraded rather than reported as a fresh success");
+  assert.strictEqual(network.topologyReadStatus(normalSnapshot, false), normalSnapshot);
+  assert.strictEqual(network.topologyReadStatus({ domains: { topology: { state: "unavailable" } } }, true).domains.topology.state,
+    "unavailable", "probe failure cannot downgrade an existing unavailable warning");
+  assert.strictEqual(network.networkIssueNotice({ devices: { state: "normal" }, isp: { state: "legacy-fallback" } }), null);
+  assert.strictEqual(network.networkIssueNotice({ isp: { state: "unauthenticated" } }), null);
+  assert.deepStrictEqual(network.networkIssueNotice({ devices: { state: "degraded" }, topology: { state: "stale" }, isp: { state: "unavailable" } }), {
+    state: "unavailable", text: "设备数据降级 · 拓扑快照陈旧 · ISP不可用"
+  });
+  assert(!network.networkIssueNotice({ isp: { state: "normal" } }), "healthy ISP does not render a status banner");
+  const noticeElement = { dataset: {}, textContent: "", hidden: true };
+  network.renderNetworkIssue(noticeElement, { isp: { state: "degraded" } });
+  assert.deepStrictEqual(noticeElement, { dataset: { state: "degraded" }, textContent: "ISP数据降级", hidden: false });
+  network.renderNetworkIssue(noticeElement, { isp: { state: "legacy-fallback" } });
+  assert.deepStrictEqual(noticeElement, { dataset: { state: "" }, textContent: "", hidden: true },
+    "normal or legacy recovery removes the notice and its layout space");
+  network.renderNetworkIssue(noticeElement, { isp: { state: "unauthenticated" } });
+  assert.strictEqual(noticeElement.hidden, true, "anonymous view does not expose source state");
   assert.strictEqual(network.mergeIspInventory(isp.isps, []).length, 5);
   assert.strictEqual(network.mergeLegacyIspInventory([], [{ job: "infra-isp-ping", targetIp: "10.0.1.9", displayName: "legacy", success: true }]).length, 1,
     "anonymous topology keeps legacy probe-only ISP nodes");
