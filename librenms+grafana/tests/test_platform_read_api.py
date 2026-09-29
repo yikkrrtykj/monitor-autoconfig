@@ -125,6 +125,7 @@ def test_all_protected_read_routes_still_require_auth(tmp_path):
             "/network/overview",
             "/network/devices",
             "/network/topology",
+            "/network/nodes/192.0.2.7/inspector",
             "/network/isp",
             "/network/dhcp?force=1",
             "/config/download",
@@ -149,6 +150,7 @@ def test_network_reads_fail_closed_when_global_auth_is_disabled(tmp_path):
             "/network/overview",
             "/network/devices",
             "/network/topology",
+            "/network/nodes/192.0.2.7/inspector",
             "/network/isp",
         ):
             status, _, payload = request_json(f"{base_url}{path}")

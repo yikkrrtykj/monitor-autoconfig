@@ -16,6 +16,7 @@ from . import (
     incidents,
     iperf_runtime,
     network_read,
+    network_inspector,
 )
 
 
@@ -63,6 +64,17 @@ def handle_get(handler: Any, request_target: str, context: ReadApiContext) -> No
         _handle_network_read(handler, context, network_read.read_devices)
     elif path == "/network/topology":
         _handle_network_read(handler, context, network_read.read_topology)
+    elif path.startswith("/network/nodes/") and path.endswith("/inspector"):
+        if context.network_require_auth is None or context.network_context is None:
+            raise RuntimeError("network read API is not configured")
+        context.network_require_auth(handler)
+        node = path.removeprefix("/network/nodes/").removesuffix("/inspector").strip("/")
+        try:
+            payload = network_inspector.read_inspector(context.network_context, node)
+        except network_read.NetworkReadError as exc:
+            handler._send_json(exc.payload, exc.status)
+        else:
+            handler._send_json(payload)
     elif path == "/network/isp":
         _handle_network_read(handler, context, network_read.read_isp)
     elif path == "/network/overview":

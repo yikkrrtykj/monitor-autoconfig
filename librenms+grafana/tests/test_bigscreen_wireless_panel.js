@@ -47,9 +47,13 @@ class FakeElement {
     return (this.listeners.get(type) || []).length;
   }
 
-  dispatch(type) {
-    const event = { type, target: this };
+  dispatch(type, target = this) {
+    const event = { type, target };
     (this.listeners.get(type) || []).forEach((handler) => handler.call(this, event));
+  }
+
+  querySelector() {
+    return { onclick: null };
   }
 
   insertAdjacentHTML(position, html) {
@@ -61,7 +65,7 @@ class FakeElement {
 class FakeDocument {
   constructor() {
     this.elements = new Map();
-    ['wirelessControls', 'wirelessSummary', 'wirelessBoard', 'wirelessRescan']
+    ['wirelessControls', 'wirelessSummary', 'wirelessBoard', 'wirelessRescan', 'wirelessInspector']
       .forEach((id) => this.elements.set(id, new FakeElement(id)));
   }
 
@@ -183,6 +187,7 @@ function createHarness(options = {}) {
         return Promise.reject(error);
       }
     },
+    fetchNodeInspector: options.fetchNodeInspector,
     triggerRescan(button) {
       rescanCalls.push(button);
       if (options.triggerRescan) return options.triggerRescan(button);
@@ -353,6 +358,33 @@ async function main() {
   await settle();
   assert.strictEqual(lifecycle.dataSuccesses, 2);
   assert.match(lifecycle.document.getElementById('wirelessBoard').innerHTML, /10\.0\.1\.11/);
+
+  const inspectorPending = deferred();
+  const apInspector = createHarness({
+    fetchNodeInspector: (ip) => {
+      assert.strictEqual(ip, '192.0.2.30');
+      return inspectorPending.promise;
+    },
+    prometheusQuery(query) {
+      if (query.startsWith('unpoller_device_info')) return [metricItem({ name: 'AP-A', ip: '192.0.2.30', model: 'U6' }, 1)];
+      if (query.startsWith('sum by (name)')) return [metricItem({ name: 'AP-A' }, 2)];
+      return [];
+    }
+  });
+  apInspector.panel.start({ id: 'wireless' });
+  await settle();
+  const apBoard = apInspector.document.getElementById('wirelessBoard');
+  assert.match(apBoard.innerHTML, /data-ip="192\.0\.2\.30"/);
+  apBoard.dispatch('click', { closest: () => ({ dataset: { ip: '192.0.2.30' } }) });
+  inspectorPending.resolve({ ip: '192.0.2.30', name: '<AP-A>', model: 'U6', online: 'unknown',
+    clients: 2, uplink: null, radio: null, warnings: ['partial <data>'] });
+  await settle();
+  const apDetail = apInspector.document.getElementById('wirelessInspector');
+  assert.strictEqual(apDetail.hidden, false);
+  assert.match(apDetail.innerHTML, /&lt;AP-A&gt;/);
+  assert.match(apDetail.innerHTML, /partial &lt;data&gt;/);
+  apInspector.panel.stop();
+  assert.strictEqual(apDetail.hidden, true);
 
   console.log('bigscreen wireless panel tests passed');
 }

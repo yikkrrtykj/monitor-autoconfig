@@ -45,7 +45,7 @@
     fetchIspInventory, ispTrafficQuery, fetchIspTraffic, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
-    fetchNetworkOverview, fetchNetworkDevices, fetchNetworkTopology, fetchNetworkIsp,
+    fetchNetworkOverview, fetchNetworkDevices, fetchNetworkTopology, fetchNodeInspector, fetchNetworkIsp,
     fetchPlatformAuthStatus, loginPlatformAuth, logoutPlatformAuth,
     fetchPlatformConfig, fetchPlatformVersion, fetchApplyStatus, postPlatform, fetchRetirePending, patchPlatform, fetchIncidents,
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
@@ -290,6 +290,7 @@
     renderNoData,
     fetchPlayerSnapshot,
     prometheusQuery,
+    fetchNodeInspector,
     triggerRescan,
     onDataSuccess: () => { lastDataSuccessAt = Date.now(); }
   });
@@ -351,12 +352,16 @@
     logoutPlatformAuth,
     onAuthenticated: () => {
       invalidateTopologyEdges();
+      topologyPanel.clearDetail();
+      wirelessPanel.clearInspector();
       networkSession.invalidate();
       invalidateControlRefresh();
       refreshControlPanel();
     },
     onLoggedOut: () => {
       invalidateTopologyEdges();
+      topologyPanel.clearDetail();
+      wirelessPanel.clearInspector();
       networkSession.expired();
       invalidateControlRefresh();
       lastControlReport = null;
@@ -381,7 +386,8 @@
     topologyNodeKindLabel,
     topologyLatencyIp,
     escapeHtml,
-    formatPingText
+    formatPingText,
+    fetchNodeInspector
   });
   const dhcpPanel = createDhcpPanel({
     document,
@@ -414,6 +420,8 @@
     applyRequestTimeoutMs: APPLY_REQUEST_TIMEOUT_MS,
     onApplyStart: () => {
       invalidateTopologyEdges();
+      topologyPanel.clearDetail();
+      wirelessPanel.clearInspector();
       invalidateControlRefresh();
     },
     onRefresh: refreshControlPanel
@@ -999,6 +1007,7 @@
       topologyTimer = null;
     }
     invalidateTopologyEdges();
+    topologyPanel.clearDetail();
   }
 
   async function readTopologyNetwork(enrichment) {

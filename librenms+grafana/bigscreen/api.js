@@ -678,6 +678,10 @@
     return platformApi("/network/topology", { timeoutMs: 10000 });
   }
 
+  function fetchNodeInspector(ip) {
+    return platformApi(`/network/nodes/${encodeURIComponent(ip)}/inspector`, { timeoutMs: 15000 });
+  }
+
   function fetchNetworkIsp() {
     return platformApi("/network/isp", { timeoutMs: 10000 });
   }
@@ -837,6 +841,7 @@
     fetchNetworkOverview,
     fetchNetworkDevices,
     fetchNetworkTopology,
+    fetchNodeInspector,
     fetchNetworkIsp,
     fetchRuntimeStatus,
     fetchPlatformAuthStatus,

@@ -141,6 +141,19 @@ def test_url_join_header_and_timeout_are_consistent():
     }]
 
 
+def test_get_device_reads_only_requested_identity_and_handles_missing():
+    client = make_client(max_attempts=1)
+    calls = attach_sequence(client, [FakeResponse({"status": "ok", "devices": [
+        {"device_id": 7, "hostname": "192.0.2.7", "ip": "192.0.2.7", "os": "ios"}
+    ]}), http_error(404)])
+    assert client.get_device("192.0.2.7")["device_id"] == 7
+    assert client.get_device("192.0.2.8") is None
+    assert [call["url"] for call in calls] == [
+        "http://librenms:8000/api/v0/devices/192.0.2.7",
+        "http://librenms:8000/api/v0/devices/192.0.2.8",
+    ]
+
+
 def test_invalid_base_url_fails_without_echoing_its_contents():
     client = LibreNMSClient(base_url="not-a-url-with-password=secret", token="token")
 
