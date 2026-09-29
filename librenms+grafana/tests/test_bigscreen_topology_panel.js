@@ -433,19 +433,55 @@ console.log('bigscreen Topology panel tests passed');
   assert.ok(!detail.innerHTML.includes('stale'), 'older selection cannot replace newer selection');
   pending[1].resolve({ ip: '10.0.0.2', name: '<B>', model: 'switch', online: 'unknown',
     latencySeconds: null, ports: { up: 2, down: 1, unknown: 1 }, neighbors: [
-      { localPort: 'Gi1', peerIp: '10.0.0.3', aggregatePort: 'Po1', members: ['Gi1'] }
-    ], warnings: ['partial <source>'] });
+      { localPort: 'Gi1', peerIp: '10.0.0.3', aggregatePort: 'Po1', members: ['Gi1'] },
+      { localPort: 'Gi2', peerIp: '10.0.0.3', aggregatePort: 'Po1', members: ['Gi2'] },
+      { localPort: 'Gi3', peerIp: '10.0.0.4', aggregatePort: 'Po2', members: ['Gi3'] }
+    ], connections: { peers: 2, aggregates: 2 },
+    warnings: ['partial <source>', '已省略过期邻接', '拓扑快照已过期'] });
   await Promise.resolve();
   assert.ok(detail.innerHTML.includes('&lt;B&gt;'));
   assert.ok(detail.innerHTML.includes('未知'));
   assert.ok(detail.innerHTML.includes('在线 2 / 离线 1 / 未知 1'));
-  assert.ok(detail.innerHTML.includes('Po1'));
+  assert.ok(detail.innerHTML.includes('连接摘要'));
+  assert.ok(detail.innerHTML.includes('邻接 2 台 · 聚合链路 2 组'));
+  assert.ok(!detail.innerHTML.includes('Gi1'));
+  assert.ok(!detail.innerHTML.includes('10.0.0.3'));
+  assert.ok(!detail.innerHTML.includes('已发现上联与邻居'));
+  assert.ok(detail.innerHTML.includes('已省略过期邻接'));
+  assert.ok(detail.innerHTML.includes('拓扑快照已过期'));
   assert.ok(detail.innerHTML.includes('partial &lt;source&gt;'));
   assert.ok(!detail.innerHTML.includes('partial <source>'));
   inspectorPanel.clearDetail();
   canvas.nodes[0].dispatch('click');
+  pending[2].resolve({ ip: '10.0.0.1', neighbors: [{ peerIp: '10.0.0.2', aggregatePort: 'Po1' }],
+    connections: { peers: 16, aggregates: 3 }, warnings: [] });
+  await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('邻接 16 台 · 聚合链路 3 组'));
   inspectorPanel.clearDetail();
-  pending[2].resolve({ name: 'late' });
+  canvas.nodes[0].dispatch('click');
+  pending[3].resolve({ ip: '10.0.0.1', neighbors: [],
+    connections: { peers: 0, aggregates: 0 }, warnings: [] });
+  await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('邻接 0 台 · 聚合链路 0 组'));
+  inspectorPanel.clearDetail();
+  canvas.nodes[0].dispatch('click');
+  pending[4].resolve({ ip: '10.0.0.1', neighbors: [],
+    connections: { peers: 0, aggregates: 0 }, warnings: ['邻接资料暂不可用'] });
+  await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('<dt>连接摘要</dt><dd>—</dd>'));
+  inspectorPanel.clearDetail();
+  canvas.nodes[0].dispatch('click');
+  pending[5].resolve({ ip: '10.0.0.1',
+    neighbors: Array.from({ length: 12 }, (_, index) => ({ peerIp: `10.0.0.${index + 20}`, aggregatePort: 'Po1' })),
+    warnings: ['已省略过期邻接'] });
+  await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('<dt>连接摘要</dt><dd>—</dd>'));
+  assert.ok(!detail.innerHTML.includes('邻接 12 台'));
+  assert.ok(detail.innerHTML.includes('已省略过期邻接'));
+  inspectorPanel.clearDetail();
+  canvas.nodes[0].dispatch('click');
+  inspectorPanel.clearDetail();
+  pending[6].resolve({ name: 'late' });
   await Promise.resolve();
   assert.strictEqual(detail.hidden, true);
   assert.ok(!detail.innerHTML.includes('late'));

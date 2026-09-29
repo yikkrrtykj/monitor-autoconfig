@@ -64,8 +64,12 @@
           fetchNodeInspector(node.ip).then((inspector) => {
             if (request !== inspectorRequest || detail.hidden) return;
             const ports = inspector.ports;
-            const neighbors = Array.isArray(inspector.neighbors) ? inspector.neighbors : [];
             const warnings = Array.isArray(inspector.warnings) ? inspector.warnings : [];
+            const connections = inspector.connections;
+            const hasConnectionCounts = connections && Number.isInteger(connections.peers) && connections.peers >= 0
+              && Number.isInteger(connections.aggregates) && connections.aggregates >= 0;
+            const connectionSummary = hasConnectionCounts && !warnings.includes("邻接资料暂不可用")
+              ? `邻接 ${connections.peers} 台 · 聚合链路 ${connections.aggregates} 组` : "—";
             const state = inspector.online === "up" ? "在线" : inspector.online === "down" ? "离线" : "未知";
             const row = (label, value) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value == null || value === "" ? "—" : String(value))}</dd>`;
             detail.innerHTML = `
@@ -74,9 +78,9 @@
                 ${row("Hostname", inspector.hostname)}${row("管理 IP", inspector.ip)}${row("型号", inspector.model)}
                 ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : null)}
                 ${row("端口", ports ? `在线 ${ports.up} / 离线 ${ports.down} / 未知 ${ports.unknown}` : null)}
+                ${row("连接摘要", connectionSummary)}
                 ${node.kind === "firewall" || inspector.kind === "hillstone" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
               </dl>
-              ${neighbors.length ? `<div class="topology-inspector-section"><strong>已发现上联与邻居</strong>${neighbors.map((item) => `<p>${escapeHtml(item.localPort || "端口未知")} → ${escapeHtml(item.peerIp || "邻居未知")}${item.aggregatePort ? ` · ${escapeHtml(item.aggregatePort)}` : ""}${item.members && item.members.length ? ` · ${item.members.length} 成员` : ""}</p>`).join("")}</div>` : ""}
               ${warnings.length ? `<div class="topology-inspector-warnings">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
               <div class="topology-detail-actions"><button type="button" class="topology-view-ports">查看端口</button></div>
               <div class="topology-port-note" hidden>完整端口面板将在 T-03 提供；当前仅有在线、离线和未知汇总。</div>

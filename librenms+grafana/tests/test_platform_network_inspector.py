@@ -50,7 +50,7 @@ def sample(target, value, **labels):
 
 def test_cisco_summary_is_single_node_bounded_and_does_not_fetch_counters(tmp_path):
     ip = "192.0.2.7"
-    client = InspectorClient([{"device_id": 7, "ip": ip, "os": "ios",
+    client = InspectorClient([{"device_id": 7, "ip": ip, "hostname": ip, "os": "ios",
                                "sysName": "core-a", "hardware": "C9300"}], [
         {"ifOperStatus": "up"}, {"ifOperStatus": 2}, {"ifOperStatus": None},
     ])
@@ -61,6 +61,8 @@ def test_cisco_summary_is_single_node_bounded_and_does_not_fetch_counters(tmp_pa
     payload = network_inspector.read_inspector(context, ip)
     assert payload["kind"] == "cisco"
     assert payload["name"] == "core-a"
+    assert payload["hostname"] == "core-a"
+    assert payload["ip"] == ip
     assert payload["model"] == "C9300"
     assert payload["online"] == "unknown"
     assert payload["ports"] == {"up": 1, "down": 1, "unknown": 1, "total": 3}
@@ -68,6 +70,18 @@ def test_cisco_summary_is_single_node_bounded_and_does_not_fetch_counters(tmp_pa
     assert client.requested == [("device", ip), (client.devices[0], network_inspector.PORT_COLUMNS)]
     assert "ifHighSpeed" not in network_inspector.PORT_COLUMNS
     assert "ifHCInOctets" not in json.dumps(payload)
+
+
+def test_hostname_falls_back_to_librenms_hostname_when_sysname_missing(tmp_path):
+    ip = "192.0.2.7"
+    client = InspectorClient([{"device_id": 7, "ip": ip, "hostname": "core-fallback",
+                               "os": "ios"}], [{"ifOperStatus": "up"}])
+
+    payload = network_inspector.read_inspector(context_for(tmp_path, client), ip)
+
+    assert payload["name"] == "core-fallback"
+    assert payload["hostname"] == "core-fallback"
+    assert payload["ip"] == ip
 
 
 def test_mismatched_librenms_device_never_supplies_identity_model_or_ports(tmp_path):
@@ -119,9 +133,28 @@ def test_fresh_topology_snapshot_omits_individually_stale_edge(tmp_path):
     payload = network_inspector.read_inspector(context, ip)
 
     assert [row["peerIp"] for row in payload["neighbors"]] == ["192.0.2.9"]
+    assert payload["connections"] == {"peers": 1, "aggregates": 0}
     assert "已省略过期邻接" in payload["warnings"]
     assert "拓扑快照已过期" not in payload["warnings"]
     assert payload["degraded"] is True
+
+
+def test_connection_counts_cover_edges_beyond_bounded_neighbor_list(tmp_path):
+    ip = "192.0.2.7"
+    client = InspectorClient([{"device_id": 7, "ip": ip, "os": "ios"}],
+                             [{"ifOperStatus": "up"}])
+    edges = [{"from_ip": ip, "to_ip": f"192.0.2.{index + 20}",
+              "from_aggregate_port": f"Po{index % 2 + 1}"}
+             for index in range(network_inspector.NEIGHBOR_LIMIT + 2)]
+    edges += [{"from_ip": ip, "to_ip": "192.0.2.20", "from_aggregate_port": "Po1"},
+              {"from_ip": ip, "to_ip": "192.0.2.99", "from_aggregate_port": "Po3", "stale": True}]
+
+    payload = network_inspector.read_inspector(context_for(tmp_path, client, edges=edges), ip)
+
+    assert len(payload["neighbors"]) == network_inspector.NEIGHBOR_LIMIT
+    assert payload["connections"] == {"peers": network_inspector.NEIGHBOR_LIMIT + 2,
+                                      "aggregates": 2}
+    assert "已省略过期邻接" in payload["warnings"]
 
 
 def test_port_failure_is_partial_and_does_not_claim_zero(tmp_path):
@@ -240,6 +273,8 @@ def test_unifi_also_uses_ap_metrics_when_present_in_librenms_inventory(tmp_path)
     }), ip)
     assert payload["kind"] == "unifi-ap"
     assert payload["name"] == "AP-A"
+    assert payload["hostname"] == "inventory-name"
+    assert payload["ip"] == ip
     assert payload["ports"] is None
     assert client.requested == [("device", ip)]
 
