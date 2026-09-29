@@ -1376,6 +1376,13 @@ body {
 .port-bank-compact .port-face { width: 45px; }
 .port-other-grid { display: flex; flex-wrap: wrap; gap: 4px; max-height: 180px; overflow: auto; }
 .port-other .port-face { width: auto; min-width: 80px; max-width: 170px; }
+.port-interface-section { margin: 10px 0; }
+.port-interface-section h3 { color: #a9c9ff; font-size: 13px; margin: 0 0 6px; }
+.port-interface-list { display: grid; gap: 4px; }
+.port-interface-row { width: 100%; height: auto; min-height: 40px; display: grid; grid-template-columns: minmax(90px, 1fr) minmax(120px, 1.5fr) minmax(100px, 1fr) 65px minmax(160px, 1.5fr) minmax(130px, 1fr); gap: 8px; align-items: center; text-align: left; padding: 5px 8px; font-size: 11px; }
+.port-interface-name { font-weight: 700; }
+.port-interface-description { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.port-interface-state { font-weight: 700; }
 .port-face { min-width: 0; height: 34px; border: 1px solid #64748b; border-radius: 4px; background: #334155; color: #f8fafc; cursor: pointer; position: relative; padding: 2px; }
 .port-face:focus-visible, .port-face[aria-pressed="true"] { outline: 2px solid #93c5fd; outline-offset: 1px; }
 .port-state-up { border-color: #34d399; background: #14532d; }
@@ -1395,6 +1402,7 @@ body {
 @media (max-width: 820px) {
   .topology-port-panel { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; height: min(76vh, 760px); }
   .port-bank-two-row .port-bank-row { min-width: 760px; }
+  .port-interface-row { grid-template-columns: minmax(90px, 1fr) minmax(110px, 1fr) minmax(90px, 1fr); }
 }
 
 /* ==================== 手机端适配 ====================

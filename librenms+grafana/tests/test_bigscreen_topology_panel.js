@@ -522,7 +522,8 @@ console.log('bigscreen Topology panel tests passed');
   assert.ok(!detail.innerHTML.includes('<dt>类型</dt>'));
   inspectorReads[0].resolve({ kind: 'hillstone', ip: '10.0.0.3' });
   await Promise.resolve();
-  assert.ok(!detail.innerHTML.includes('topology-view-ports'), 'Hillstone has no usable Port Panel action');
+  assert.ok(detail.innerHTML.includes('查看接口'), 'Hillstone offers the Interface Panel');
+  assert.ok(!detail.innerHTML.includes('查看端口'), 'Hillstone does not offer Cisco port layout');
   assert.ok(detail.innerHTML.includes('href="/latency?ip=10.0.0.3"'));
   assert.ok(detail.innerHTML.includes('var-host=10.0.0.3'), 'firewall final Inspector retains Syslog');
   canvas.nodes[1].dispatch('click');
@@ -554,6 +555,37 @@ console.log('bigscreen Topology panel tests passed');
   await Promise.resolve();
   assert.strictEqual(portEvents.filter((item) => item === 'open:10.0.0.2').length, 1,
     'close/clear invalidates late requests');
+
+  const hillstoneReads = [];
+  const hillstonePanel = topologyPanelModule.createTopologyPanel({
+    document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+    buildTopologyLayers, topologyLayout, renderTopologySvg,
+    topologyNodeKindLabel: (kind) => kind, topologyLatencyIp: (node) => node.ip,
+    escapeHtml, formatPingText, portPanel,
+    fetchNodeInspector: () => Promise.resolve({ kind: 'hillstone', ip: '10.0.0.3', haRole: 'unavailable' }),
+    fetchNodePorts: (ip) => new Promise((resolve) => hillstoneReads.push({ ip, resolve }))
+  });
+  hillstonePanel.render(hillstonePanel.prepare([
+    { kind: 'firewall', ip: '10.0.0.3', name: 'Hillstone' },
+    { kind: 'core', ip: '10.0.0.1', name: 'Cisco' }
+  ], []));
+  canvas.nodes[0].dispatch('click');
+  await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('HA 角色</dt><dd>未知（暂无可信数据源）'));
+  detail.querySelector('.topology-view-ports').onclick();
+  assert.deepStrictEqual(hillstoneReads.map((read) => read.ip), ['10.0.0.3']);
+  canvas.nodes[1].dispatch('click');
+  hillstoneReads[0].resolve({ ip: '10.0.0.3', kind: 'hillstone', ports: [] });
+  await Promise.resolve();
+  assert.ok(!portEvents.includes('open:10.0.0.3'), 'late Hillstone response cannot replace another node');
+  canvas.nodes[0].dispatch('click');
+  await Promise.resolve();
+  detail.querySelector('.topology-view-ports').onclick();
+  detail.querySelector('.topology-detail-close').onclick();
+  hillstoneReads[1].resolve({ ip: '10.0.0.3', kind: 'hillstone', ports: [] });
+  await Promise.resolve();
+  assert.strictEqual(portEvents.filter((event) => event === 'open:10.0.0.3').length, 0,
+    'closing Hillstone Inspector invalidates its pending Interface Panel');
 
   const anonymousPanel = topologyPanelModule.createTopologyPanel({
     document, location: { protocol: 'http:', hostname: 'bigscreen.local' },

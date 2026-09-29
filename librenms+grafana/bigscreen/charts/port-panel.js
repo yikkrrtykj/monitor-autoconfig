@@ -122,7 +122,44 @@
         ${row('输入错误（累计）', port.inputErrorsTotal)}${row('输出错误（累计）', port.outputErrorsTotal)}
         ${row('输入丢弃（累计）', port.inputDiscardsTotal)}${row('输出丢弃（累计）', port.outputDiscardsTotal)}
         ${row('VLAN 观测数据 / 非配置权威', vlan)}${row('当前邻接', neighborsText(port.neighbors))}
+        ${port.wanEvidence ? row('WAN / ISP', [port.wanEvidence.name,
+          port.wanEvidence.wanIp && `WAN IP ${port.wanEvidence.wanIp}`,
+          port.wanEvidence.gateway && `网关 ${port.wanEvidence.gateway}`].filter(Boolean).join(' · ')) : ''}
       </dl></div>`;
+    }
+
+    function interfaceRow(port, index) {
+      const state = portState(port);
+      const description = [port.ifAlias, port.ifDescr].filter((value, i, values) => value &&
+        value !== port.ifName && values.indexOf(value) === i).join(' · ');
+      return `<button type="button" class="port-face port-interface-row port-state-${state.key}" data-port-index="${index}"
+        aria-label="${safe(port.ifName)} ${state.label}">
+        <span class="port-interface-name">${safe(port.ifName)}</span>
+        <span class="port-interface-description">${safe(description)}</span>
+        <span class="port-interface-state">${state.label} · ${safe(port.adminState)}</span>
+        <span>${speed(port.speedBps)}</span><span>RX ${rate(port.rxBps)} · TX ${rate(port.txBps)}</span>
+        <span>${cumulative(port) ? '累计 errors/discards 非 0' : '累计 —'}</span>
+      </button>`;
+    }
+
+    function interfaceSection(title, items) {
+      return `<section class="port-interface-section"><h3>${safe(title)}</h3><div class="port-interface-list">${items.map(({ port, index }) => interfaceRow(port, index)).join('')}</div></section>`;
+    }
+
+    function openInterfaces(data, counts) {
+      const wan = [];
+      const other = [];
+      data.ports.forEach((port, index) => (port.wanEvidence ? wan : other).push({ port, index }));
+      const root = element();
+      root.hidden = false;
+      root.innerHTML = `<header><div><strong>${safe(data.name || data.ip)}</strong><p>${safe(data.model)} · ${safe(data.ip)}</p></div><button class="port-panel-close" type="button" aria-label="关闭接口面板">×</button></header>
+        <div class="port-panel-summary">接口 ${data.ports.length} · 在线 ${counts.up} · 离线 ${counts.down} · 未知 ${counts.unknown} · 管理关闭 ${counts.disabled}</div>
+        <div class="port-panel-legend">累计 errors/discards 非 0 是历史累计证据，不等于当前故障</div>
+        ${data.degraded ? '<div class="port-panel-degraded">接口资料部分降级</div>' : ''}
+        ${Array.isArray(data.warnings) && data.warnings.length ? `<div class="port-panel-warnings">${data.warnings.map((warning) => `<p>${safe(warning)}</p>`).join('')}</div>` : ''}
+        <div class="port-panel-scroll">${wan.length ? interfaceSection('WAN / ISP', wan) : ''}${interfaceSection(wan.length ? '其他接口' : '接口', other)}</div>
+        <aside class="port-pinned-detail" hidden></aside><div class="port-hover-card" hidden></div>`;
+      installEvents();
     }
 
     function hideHover() {
@@ -183,11 +220,11 @@
       };
     }
 
-    function loading(ip) {
+    function loading(ip, kind = 'cisco') {
       close();
       const root = element();
       root.hidden = false;
-      root.innerHTML = `<header><strong>端口面板 · ${safe(ip)}</strong><button class="port-panel-close" type="button" aria-label="关闭端口面板">×</button></header><p>正在读取端口…</p>`;
+      root.innerHTML = `<header><strong>${kind === 'hillstone' ? '接口' : '端口'}面板 · ${safe(ip)}</strong><button class="port-panel-close" type="button" aria-label="关闭面板">×</button></header><p>正在读取${kind === 'hillstone' ? '接口' : '端口'}…</p>`;
       installEvents();
     }
 
@@ -201,6 +238,7 @@
         counts[oper === 'up' || oper === 'down' ? oper : 'unknown'] += 1;
         if (port.adminState === 'down') counts.disabled += 1;
       });
+      if (data.kind === 'hillstone') { openInterfaces(data, counts); return; }
       const { members, banks, other } = groupPorts(data.ports);
       const physicalCount = banks.reduce((count, bank) => count + bank.items.length, 0);
       const root = element();

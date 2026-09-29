@@ -102,14 +102,15 @@
               </dl>
               ${warnings.length ? `<div class="topology-inspector-warnings">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
               ${actions}
-              ${inspector.kind === "cisco" && ["core", "dist"].includes(node.kind) && fetchNodePorts && portPanel
-                ? '<div class="topology-detail-actions"><button type="button" class="topology-view-ports">查看端口</button></div>' : ''}
+              ${fetchNodePorts && portPanel && (inspector.kind === "hillstone" ||
+                (inspector.kind === "cisco" && ["core", "dist"].includes(node.kind)))
+                ? `<div class="topology-detail-actions"><button type="button" class="topology-view-ports">${inspector.kind === "hillstone" ? "查看接口" : "查看端口"}</button></div>` : ''}
             `;
             bindClose();
             const viewPorts = detail.querySelector(".topology-view-ports");
             if (viewPorts) viewPorts.onclick = () => {
               const currentRequest = ++portsRequest;
-              portPanel.loading(node.ip);
+              portPanel.loading(node.ip, inspector.kind);
               fetchNodePorts(node.ip).then((result) => {
                 if (currentRequest !== portsRequest || detail.hidden || !portPanel.isOpen()) return;
                 portPanel.open(result);

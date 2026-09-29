@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -52,6 +53,20 @@ def sample(index, value, *, ip=IP):
     return {"metric": {"target_ip": ip, "ifIndex": str(index)}, "value": [time.time(), str(value)]}
 
 
+def firewall_sample(index, value, *, ip=IP):
+    return {"metric": {"job": "firewall-snmp", "instance": ip, "ifIndex": str(index)},
+            "value": [time.time(), str(value)]}
+
+
+def set_isp_inventory(context, entries):
+    raw = json.dumps(entries).encode("utf-8")
+    context.isp_inventory_path.write_bytes(raw)
+    context.isp_state_path.write_text(json.dumps({
+        "status": "ok", "inventory_count": len(entries),
+        "inventory_sha256": hashlib.sha256(raw).hexdigest(),
+    }), encoding="utf-8")
+
+
 def test_full_inventory_includes_down_ports_and_observed_vlan_evidence(tmp_path):
     client = PortsClient([
         {"ifIndex": 101, "ifName": "Gi1/0/17", "ifDescr": "GigabitEthernet1/0/17",
@@ -66,6 +81,7 @@ def test_full_inventory_includes_down_ports_and_observed_vlan_evidence(tmp_path)
     result = network_ports.read_ports(context, IP)
 
     assert result["count"] == 3
+    assert result["kind"] == "cisco"
     first, second, third = result["ports"]
     assert (first["stackMember"], first["portNumber"]) == (1, 17)
     assert (second["stackMember"], second["portNumber"]) == (2, 3)
@@ -225,7 +241,7 @@ def test_missing_wrong_identity_and_non_cisco_rejected(tmp_path):
     for device, expected in [
         (None, "node_not_found"),
         ({"device_id": 9, "ip": "192.0.2.99", "os": "ios"}, "identity_mismatch"),
-        ({"device_id": 7, "ip": IP, "os": "stoneos"}, "not_cisco"),
+        ({"device_id": 7, "ip": IP, "os": "linux"}, "unsupported_os"),
     ]:
         client = PortsClient([{"ifIndex": 1}], device={"ip": IP, "os": "ios"})
         client.device = device
@@ -233,6 +249,141 @@ def test_missing_wrong_identity_and_non_cisco_rejected(tmp_path):
             network_ports.read_ports(context_for(tmp_path, client)[0], IP)
         assert caught.value.payload["code"] == expected
         assert not any(call[0] == "ports" for call in client.calls)
+
+
+@pytest.mark.parametrize("os_name", ["stoneos", "hillstone"])
+def test_hillstone_inventory_without_current_coverage_keeps_all_interfaces(tmp_path, os_name):
+    client = PortsClient([
+        {"ifIndex": 7, "ifName": "eth1", "ifAdminStatus": 1, "ifOperStatus": 1},
+        {"ifIndex": 8, "ifName": "eth2", "ifAdminStatus": 2, "ifOperStatus": 2},
+        {"ifIndex": 9, "ifName": "vlan10", "ifAdminStatus": 1, "ifOperStatus": 2},
+    ], device={"device_id": 7, "ip": IP, "os": os_name})
+    context, queries = context_for(tmp_path, client)
+    result = network_ports.read_ports(context, IP)
+    assert result["kind"] == "hillstone" and result["count"] == 3
+    assert [port["ifName"] for port in result["ports"]] == ["eth1", "eth2", "vlan10"]
+    assert all(port["stackMember"] is None and port["portNumber"] is None for port in result["ports"])
+    assert all(port["rxBps"] is None and port["wanEvidence"] is None for port in result["ports"])
+    assert result["ports"][1]["adminState"] == "down"
+    assert result["degraded"] and "当前防火墙 IF-MIB 无有效覆盖" in result["warnings"]
+    assert len(queries) == len(network_ports.FIREWALL_METRICS)
+    assert all(f'job="firewall-snmp",instance="{IP}"' in query for query in queries)
+    assert "timestamp(ifHCInOctets" in queries[0] and "time() - 120" in queries[0]
+
+
+def test_hillstone_current_metrics_match_exact_instance_and_ifindex(tmp_path):
+    client = PortsClient([{"ifIndex": 7, "ifName": "eth1", "ifSpeed": 1000000000},
+                          {"ifIndex": 8, "ifName": "eth2"}],
+                         device={"device_id": 7, "ip": IP, "os": "stoneos"})
+    queries = network_ports.FIREWALL_METRICS
+    metrics = {
+        queries["rxBps"].replace("{ip}", IP): [firewall_sample(7, 100000000),
+                                                 firewall_sample(8, 50000000, ip="192.0.2.8")],
+        queries["txBps"].replace("{ip}", IP): [firewall_sample(7, 200000000)],
+        queries["inputErrorsTotal"].replace("{ip}", IP): [firewall_sample(7, 5)],
+    }
+    result = network_ports.read_ports(context_for(tmp_path, client, metrics=metrics)[0], IP)
+    first, second = result["ports"]
+    assert first["rxBps"] == 100000000 and first["txBps"] == 200000000
+    assert first["rxUtilization"] == 0.1 and first["txUtilization"] == 0.2
+    assert first["inputErrorsTotal"] == 5
+    assert second["rxBps"] is None and second["rxUtilization"] is None
+
+
+def test_hillstone_stopped_scrape_and_peer_metrics_never_look_current(tmp_path):
+    client = PortsClient([{"ifIndex": 7, "ifName": "eth1"}],
+                         device={"device_id": 7, "ip": IP, "os": "stoneos"})
+    context, queries = context_for(tmp_path, client)
+    original = context.urlopen
+
+    def prometheus(request, *, timeout):
+        query = parse_qs(urlsplit(request.full_url).query)["query"][0]
+        if "ifHCInOctets" in query:
+            assert 'instance="192.0.2.7"' in query and "timestamp(" in query
+            return FakeResponse({"status": "success", "data": {"result": [
+                firewall_sample(7, 42, ip="192.0.2.8")]}})
+        return original(request, timeout=timeout)
+
+    context = network_read.NetworkReadContext(**{**context.__dict__, "urlopen": prometheus})
+    result = network_ports.read_ports(context, IP)
+    assert result["ports"][0]["rxBps"] is None
+    assert "当前防火墙 IF-MIB 无有效覆盖" in result["warnings"]
+    assert len(queries) == len(network_ports.FIREWALL_METRICS) - 1
+
+
+def test_hillstone_old_raw_sample_and_partial_prometheus_failure_keep_inventory(tmp_path):
+    client = PortsClient([{"ifIndex": 7, "ifName": "eth1"}],
+                         device={"device_id": 7, "ip": IP, "os": "stoneos"})
+    context, _ = context_for(tmp_path, client)
+
+    def prometheus(request, *, timeout):
+        query = parse_qs(urlsplit(request.full_url).query)["query"][0]
+        if "ifHCInOctets" in query:
+            assert "timestamp(ifHCInOctets" in query and "time() - 120" in query
+            # A previous raw scrape is outside the expression's freshness gate.
+            return FakeResponse({"status": "success", "data": {"result": []}})
+        if "ifInErrors" in query:
+            raise OSError("one metric unavailable")
+        if "ifOutErrors" in query:
+            return FakeResponse({"status": "success", "data": {"result": [firewall_sample(7, 3)]}})
+        return FakeResponse({"status": "success", "data": {"result": []}})
+
+    context = network_read.NetworkReadContext(**{**context.__dict__, "urlopen": prometheus})
+    result = network_ports.read_ports(context, IP)
+    assert result["count"] == 1 and result["ports"][0]["rxBps"] is None
+    assert result["ports"][0]["outputErrorsTotal"] == 3
+    assert "当前防火墙 IF-MIB 指标部分不可用" in result["warnings"]
+
+
+def test_hillstone_exact_isp_join_and_conflict_do_not_guess(tmp_path):
+    client = PortsClient([{"ifIndex": 7, "ifName": "eth1"}, {"ifIndex": 8, "ifName": "eth2"}],
+                         device={"device_id": 7, "ip": IP, "os": "stoneos"})
+    context, _ = context_for(tmp_path, client)
+    record = lambda target, index, name: {"targets": ["198.51.100.1"], "labels": {
+        "metric_target": target, "metric_ifindex": str(index), "display_name": name,
+        "wan_ip": "198.51.100.2"}}
+    set_isp_inventory(context, [record(IP, 7, "ISP A"), record("192.0.2.8", 8, "peer ISP")])
+    result = network_ports.read_ports(context, IP)
+    assert result["ports"][0]["wanEvidence"] == {"authority": "isp-inventory", "name": "ISP A",
+                                                    "wanIp": "198.51.100.2", "gateway": "198.51.100.1"}
+    assert result["ports"][1]["wanEvidence"] is None
+    set_isp_inventory(context, [record(IP, 7, "ISP A"), record(IP, 7, "ISP B")])
+    result = network_ports.read_ports(context, IP)
+    assert result["ports"][0]["wanEvidence"] is None
+    assert "WAN / ISP 映射存在冲突，已省略" in result["warnings"]
+    context.isp_state_path.write_text('{"status":"stale"}', encoding="utf-8")
+    result = network_ports.read_ports(context, IP)
+    assert result["ports"][0]["wanEvidence"] is None
+    assert "WAN / ISP 资料已过期或不一致" in result["warnings"]
+
+
+def test_hillstone_metric_budget_and_bounds(monkeypatch, tmp_path):
+    client = PortsClient([{"ifIndex": 1, "ifName": "X" * 300}],
+                         device={"device_id": 7, "ip": IP, "os": "stoneos"})
+    context, _ = context_for(tmp_path, client)
+    elapsed = [0.0]
+    timeouts = []
+    monkeypatch.setattr(network_ports.time, "monotonic", lambda: elapsed[0])
+
+    def slow(_request, *, timeout):
+        timeouts.append(timeout)
+        elapsed[0] += min(2.0, timeout)
+        raise TimeoutError("slow")
+
+    context = network_read.NetworkReadContext(**{**context.__dict__, "urlopen": slow, "http_timeout": 5.0})
+    result = network_ports.read_ports(context, IP)
+    assert timeouts == [5.0, 3.0, 1.0]
+    assert len(result["ports"][0]["ifName"]) == network_ports.TEXT_LIMIT
+    assert result["ports"][0]["rxBps"] is None
+    client.ports = [{"ifIndex": 1}] * (network_ports.PORT_LIMIT + 1)
+    with pytest.raises(network_read.NetworkReadError) as oversized:
+        network_ports.read_ports(context, IP)
+    assert oversized.value.payload["code"] == "ports_invalid"
+    client.ports = [{"ifIndex": 1, "ifName": "eth1"}]
+    monkeypatch.setattr(network_ports, "RESPONSE_BYTE_LIMIT", 100)
+    with pytest.raises(network_read.NetworkReadError) as oversized_response:
+        network_ports.read_ports(context, IP)
+    assert oversized_response.value.payload["code"] == "ports_oversize"
 
 
 def test_inventory_failure_and_hard_port_count_bound(tmp_path):
@@ -303,14 +454,16 @@ def test_missing_topology_is_unknown_neighbor_evidence_not_empty_success(tmp_pat
     assert "邻接资料暂不可用" in result["warnings"]
 
 
-def test_real_librenms_client_uses_single_device_and_one_ports_get(tmp_path):
+@pytest.mark.parametrize("os_name", ["ios", "stoneos"])
+def test_real_librenms_client_uses_single_device_and_one_ports_get(tmp_path, os_name):
     client = make_client(max_attempts=1)
     calls = attach_sequence(client, [
-        LibreNMSResponse({"status": "ok", "devices": [{"device_id": 7, "ip": IP, "os": "ios"}]}),
+        LibreNMSResponse({"status": "ok", "devices": [{"device_id": 7, "ip": IP, "os": os_name}]}),
         LibreNMSResponse({"status": "ok", "ports": [{"ifIndex": 1, "ifName": "Gi1/0/1"}]}),
     ])
     result = network_ports.read_ports(context_for(tmp_path, client)[0], IP)
     assert result["count"] == 1
+    assert result["kind"] == ("cisco" if os_name == "ios" else "hillstone")
     paths = [urlsplit(call["url"]).path for call in calls]
     assert paths == [f"/api/v0/devices/{IP}", "/api/v0/devices/7/ports"]
     assert "/api/v0/devices" not in paths
