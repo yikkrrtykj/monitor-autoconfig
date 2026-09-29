@@ -35,7 +35,7 @@ def context_for(tmp_path, client, edges=None, metrics=None, fail_metrics=False):
     queries = []
 
     def urlopen(request, *, timeout):
-        assert timeout == context.http_timeout
+        assert 0 < timeout <= context.http_timeout
         query = parse_qs(urlsplit(request.full_url).query)["query"][0]
         queries.append(query)
         if fail_metrics:
@@ -131,6 +131,15 @@ def test_prometheus_failure_keeps_inventory_and_unknown_metrics(tmp_path):
     assert result["ports"][0]["inputErrorsTotal"] is None
 
 
+def test_no_ifmib_target_coverage_is_degraded_but_inventory_succeeds(tmp_path):
+    client = PortsClient([{"ifIndex": 101, "ifName": "Gi1/0/17"}])
+    result = network_ports.read_ports(context_for(tmp_path, client)[0], IP)
+    assert result["count"] == 1
+    assert result["ports"][0]["rxBps"] is None
+    assert result["warnings"] == ["当前 IF-MIB 无有效覆盖"]
+    assert result["degraded"] is True
+
+
 def test_single_metric_failure_keeps_other_current_values(tmp_path):
     client = PortsClient([{"ifIndex": 101, "ifName": "Gi1/0/17"}])
     context, _ = context_for(tmp_path, client)
@@ -152,15 +161,52 @@ def test_single_metric_failure_keeps_other_current_values(tmp_path):
     assert result["warnings"] == ["当前 IF-MIB 指标部分不可用"]
 
 
-def test_stale_prometheus_sample_does_not_become_current_rate(tmp_path):
+def test_stopped_scrape_does_not_become_current_rate_despite_fresh_query_timestamp(tmp_path):
     client = PortsClient([{"ifIndex": 101, "ifName": "Gi1/0/17", "ifSpeed": 1000000000}])
-    stale = sample(101, 100000000)
-    stale["value"][0] -= network_ports.METRIC_STALE_SECONDS + 1
-    metrics = {network_ports.METRICS["rxBps"].replace("{ip}", IP): [stale]}
-    result = network_ports.read_ports(context_for(tmp_path, client, metrics=metrics)[0], IP)
+    context, queries = context_for(tmp_path, client)
+    stopped_scrape_age = network_ports.METRIC_STALE_SECONDS + 1
+
+    def prometheus(request, *, timeout):
+        query = parse_qs(urlsplit(request.full_url).query)["query"][0]
+        queries.append(query)
+        # Prometheus evaluates the expression now, while the last raw scrape is old.
+        raw_age = stopped_scrape_age
+        freshness_filter = ("timestamp(" in query
+                            and f'target_ip="{IP}"' in query
+                            and f"time() - {network_ports.METRIC_STALE_SECONDS}" in query)
+        rows = [] if freshness_filter and raw_age > network_ports.METRIC_STALE_SECONDS else [
+            sample(101, 100000000)]
+        return FakeResponse({"status": "success", "data": {"result": rows}})
+
+    context = network_read.NetworkReadContext(**{**context.__dict__, "urlopen": prometheus})
+    result = network_ports.read_ports(context, IP)
     assert result["ports"][0]["rxBps"] is None
     assert result["ports"][0]["rxUtilization"] is None
-    assert "部分 IF-MIB 样本已过期" in result["warnings"]
+    assert result["warnings"] == ["当前 IF-MIB 无有效覆盖"]
+    assert len(queries) == len(network_ports.METRICS)
+    assert "timestamp(ifHCInOctets" in queries[0]
+
+
+def test_prometheus_metric_enrichment_uses_one_deadline(monkeypatch, tmp_path):
+    client = PortsClient([{"ifIndex": 101, "ifName": "Gi1/0/17"}])
+    context, _ = context_for(tmp_path, client)
+    elapsed = [0.0]
+    timeouts = []
+    monkeypatch.setattr(network_ports.time, "monotonic", lambda: elapsed[0])
+
+    def slow_prometheus(_request, *, timeout):
+        timeouts.append(timeout)
+        elapsed[0] += min(2.0, timeout)
+        raise TimeoutError("slow Prometheus")
+
+    context = network_read.NetworkReadContext(**{
+        **context.__dict__, "urlopen": slow_prometheus, "http_timeout": 5.0,
+    })
+    result = network_ports.read_ports(context, IP)
+    assert timeouts == [5.0, 3.0, 1.0]
+    assert elapsed[0] == 5.0
+    assert result["count"] == 1 and result["ports"][0]["rxBps"] is None
+    assert result["degraded"] is True
 
 
 @pytest.mark.parametrize("value,status,code", [

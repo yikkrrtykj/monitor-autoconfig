@@ -5,6 +5,8 @@ import ipaddress
 import json
 import math
 import re
+import time
+from dataclasses import replace
 from typing import Any
 
 from librenms_client import LibreNMSError
@@ -19,14 +21,24 @@ VLAN_LIMIT = 128
 NEIGHBOR_LIMIT = 8
 METRIC_STALE_SECONDS = 120
 PORT_COLUMNS = "ifIndex,ifName,ifDescr,ifAlias,ifAdminStatus,ifOperStatus,ifSpeed"
+
+
+def _fresh_metric(metric: str, *, rate: bool = False) -> str:
+    series = f'{metric}{{job="infra-switch-ifmib",target_ip="{{ip}}"}}'
+    value = f'rate({series}[5m]) * 8' if rate else series
+    # Instant-query result timestamps are evaluation times, not scrape times.
+    return (f'({value}) and on(job,target_ip,ifIndex) '
+            f'(timestamp({series}) >= time() - {METRIC_STALE_SECONDS})')
+
+
 METRICS = {
-    "rxBps": 'rate(ifHCInOctets{job="infra-switch-ifmib",target_ip="{ip}"}[5m]) * 8',
-    "txBps": 'rate(ifHCOutOctets{job="infra-switch-ifmib",target_ip="{ip}"}[5m]) * 8',
-    "highSpeedMbps": 'ifHighSpeed{job="infra-switch-ifmib",target_ip="{ip}"}',
-    "inputErrorsTotal": 'ifInErrors{job="infra-switch-ifmib",target_ip="{ip}"}',
-    "outputErrorsTotal": 'ifOutErrors{job="infra-switch-ifmib",target_ip="{ip}"}',
-    "inputDiscardsTotal": 'ifInDiscards{job="infra-switch-ifmib",target_ip="{ip}"}',
-    "outputDiscardsTotal": 'ifOutDiscards{job="infra-switch-ifmib",target_ip="{ip}"}',
+    "rxBps": _fresh_metric("ifHCInOctets", rate=True),
+    "txBps": _fresh_metric("ifHCOutOctets", rate=True),
+    "highSpeedMbps": _fresh_metric("ifHighSpeed"),
+    "inputErrorsTotal": _fresh_metric("ifInErrors"),
+    "outputErrorsTotal": _fresh_metric("ifOutErrors"),
+    "inputDiscardsTotal": _fresh_metric("ifInDiscards"),
+    "outputDiscardsTotal": _fresh_metric("ifOutDiscards"),
 }
 STACK_PORT = re.compile(r"^(?:Gi|Te|Fa|Hu|Fo|Twe|Eth)([1-9]\d?)/\d{1,2}/([1-9]\d{0,2})$")
 CISCO_OS = frozenset(("ios", "iosxe", "iosxr", "nxos"))
@@ -97,13 +109,21 @@ def _vlans(value: Any, warnings: list[str]) -> dict[str, Any] | None:
 def _current_metrics(context: NetworkReadContext, ip: str, warnings: list[str]) -> dict[str, dict[int, float]]:
     output: dict[str, dict[int, float]] = {}
     failed = False
-    stale = False
+    covered = False
+    deadline = time.monotonic() + context.http_timeout
     for field, template in METRICS.items():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            failed = True
+            break
         try:
-            rows = _prometheus_query(context, template.replace("{ip}", ip))
+            rows = _prometheus_query(replace(context, http_timeout=remaining), template.replace("{ip}", ip))
         except NetworkReadError:
             failed = True
             continue
+        if time.monotonic() >= deadline:
+            failed = True
+            break
         values: dict[int, float] = {}
         duplicate: set[int] = set()
         for row in rows:
@@ -113,10 +133,6 @@ def _current_metrics(context: NetworkReadContext, ip: str, warnings: list[str]) 
                 continue
             index = _index(metric.get("ifIndex"))
             numeric = _number(sample[1]) if isinstance(sample, list) and len(sample) >= 2 else None
-            timestamp = _number(sample[0]) if isinstance(sample, list) and len(sample) >= 2 else None
-            if timestamp is None or context.clock() - timestamp > METRIC_STALE_SECONDS or timestamp - context.clock() > 30:
-                stale = True
-                continue
             if index is None or numeric is None:
                 continue
             if index in values:
@@ -125,11 +141,12 @@ def _current_metrics(context: NetworkReadContext, ip: str, warnings: list[str]) 
                 values[index] = numeric
         for index in duplicate:
             values.pop(index, None)
+        covered |= bool(values)
         output[field] = values
     if failed:
         warnings.append("当前 IF-MIB 指标部分不可用")
-    if stale:
-        warnings.append("部分 IF-MIB 样本已过期")
+    if not covered:
+        warnings.append("当前 IF-MIB 无有效覆盖")
     return output
 
 
