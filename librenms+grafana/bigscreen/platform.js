@@ -274,7 +274,7 @@
     return risks;
   }
 
-  function buildTopologyFindings(targets, edges) {
+  function buildTopologyFindings(targets, edges, availability = {}) {
     const summary = summarizeTargets(targets);
     const findings = [];
     if (summary.byKind.core === 0 && summary.byKind.other === 0) {
@@ -294,7 +294,7 @@
         note: summary.offline.slice(0, 4).map((item) => item.displayName || item.instance || item.targetIp).join("、")
       });
     }
-    if (summary.byKind.dist > 0 && !edges.length) {
+    if (availability.topologyAvailable !== false && summary.byKind.dist > 0 && !edges.length) {
       findings.push({ level: "warn", label: "LLDP 链路", value: "0", note: "尚未发现邻居链路，当前显示示意连接；请检查 LLDP/SNMP。" });
     }
     return findings;
@@ -322,14 +322,14 @@
       value: `${seat.online}/${seat.total}`,
       note: seat.highLatency ? `${seat.highLatency} 个高延迟` : "在线状态正常"
     });
-    checks.push({
+    if (input.devicesAvailable !== false && input.ispAvailable !== false) checks.push({
       section: "基础设施",
       label: "核心/防火墙",
       level: target.byKind.other > 0 ? "info" : (target.byKind.core > 0 && target.byKind.firewall > 0 ? "good" : "warn"),
       value: target.byKind.other > 0 ? "待确认" : `${target.byKind.core}/${target.byKind.firewall}`,
       note: target.byKind.other > 0 ? "统一清单未提供设备类型" : "核心 / 防火墙目标数"
     });
-    checks.push({
+    if (input.devicesAvailable !== false && input.ispAvailable !== false) checks.push({
       section: "基础设施",
       label: "设备离线",
       level: target.offline.length ? "bad" : "good",

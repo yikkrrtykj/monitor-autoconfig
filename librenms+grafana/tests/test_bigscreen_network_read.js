@@ -88,6 +88,18 @@ async function run() {
   assert.deepStrictEqual(apiTopologyTargets.map((item) => item.success), [false, null, true],
     "only matching topology targets receive authoritative API status; unknown remains neutral");
   assert.strictEqual(apiTopologyTargets[0].displayName, "core", "API inventory does not replace topology labels");
+  const unavailableTargets = network.topologyNetworkTargets({
+    authenticated: true,
+    devices: { source: "none", data: null }, isp: { source: "none", data: null }
+  }, physicalTargets, seenUp);
+  assert.deepStrictEqual(unavailableTargets.map((item) => item.targetIp), apiTopologyTargets.map((item) => item.targetIp));
+  assert(unavailableTargets.every((item) => item.success === null && item.status === "unknown"),
+    "API outage keeps probe structure but never promotes probe success to authoritative status");
+  const partialDevices = network.topologyNetworkTargets({ ...topologyDomains, authenticated: true,
+    devices: { source: "network-api", data: { devices: [{ ip: "10.0.0.1", status: "down" }] } }
+  }, physicalTargets, seenUp);
+  assert.deepStrictEqual(partialDevices.map((item) => item.success), [false, null, true],
+    "unmatched devices remain unknown while ISP API status remains authoritative");
   const apiLayout = topologyView.topologyLayout(topologyView.buildTopologyLayers(apiTopologyTargets), 1200, 700, []);
   const legacyLayout = topologyView.topologyLayout(topologyView.buildTopologyLayers(legacyTopologyTargets), 1200, 700, []);
   assert.strictEqual(apiLayout.nodes.length, legacyLayout.nodes.length, "authenticated layout keeps the legacy business node count");
@@ -152,22 +164,9 @@ async function run() {
     ispProbes[0], { ...ispProbes[0], targetIp: "10.0.1.3" }
   ]);
   assert.strictEqual(ambiguous[0].success, null, "ambiguous names do not invent a status");
-  let enrichmentCalls = 0;
-  const controlDomains = {
-    devices: { source: "network-api", data: devices },
-    isp: { source: "legacy", data: manualInventory }
-  };
-  const controlTargets = await network.controlNetworkTargets(controlDomains, async () => { enrichmentCalls++; return ispProbes; });
-  assert.strictEqual(enrichmentCalls, 1, "ISP fallback fetches probes even when devices API succeeds");
-  assert.strictEqual(platform.summarizeTargets(controlTargets).offline.length, 1);
-  const missingProbes = await network.controlNetworkTargets(controlDomains, async () => { throw new Error("Prometheus unavailable"); });
-  assert.strictEqual(missingProbes[1].success, null, "failed enrichment keeps inventory with unknown status");
-  await network.controlNetworkTargets({ ...controlDomains, isp: { source: "network-api", data: isp } }, async () => { enrichmentCalls++; return ispProbes; });
-  assert.strictEqual(enrichmentCalls, 1, "healthy ISP API does not fetch fallback probes");
-  const reusedTargets = await network.controlNetworkTargets({
-    devices: { source: "legacy", data: ispProbes }, isp: { source: "legacy", data: manualInventory }
-  }, async () => { throw new Error("must reuse device fallback"); });
-  assert.strictEqual(platform.summarizeTargets(reusedTargets).offline.length, 1);
+  assert.strictEqual(network.apiControlTargets({
+    devices: { source: "none", data: null }, isp: { source: "none", data: null }
+  }).length, 0, "control never supplements unavailable API domains with legacy inventory");
   const trafficQueries = [];
   global.fetch = async (url) => {
     trafficQueries.push(String(url));
@@ -197,6 +196,42 @@ async function run() {
   result = await network.resolveNetworkSnapshot(null, { ...fallback, topology: async () => { throw new Error("offline"); } });
   assert.strictEqual(result.overall, "partial-unavailable");
   assert.strictEqual(result.domains.topology.state, "unavailable");
+  const beforeApiOnly = { ...calls };
+  const noLegacy = network.resolveApiSnapshot({ devices, topology: null, isp });
+  assert.strictEqual(noLegacy.domains.topology.state, "unavailable");
+  assert.strictEqual(noLegacy.domains.topology.source, "none");
+  assert.strictEqual(network.resolveApiSnapshot(null).overall, "unavailable", "503 overview leaves all domains unavailable");
+  assert.strictEqual(network.resolveApiDomain({ ok: true }, "topology").source, "none", "malformed success is unavailable");
+  assert.deepStrictEqual(calls, beforeApiOnly, "API-only resolution does not touch legacy readers");
+  const failedOverview = await network.readApiOverview(async () => { throw Object.assign(new Error("offline"), { status: 503 }); });
+  assert.deepStrictEqual(Object.values(failedOverview.domains).map((domain) => domain.state),
+    ["unavailable", "unavailable", "unavailable"], "overview 503 does not abort the other control reads");
+  assert.deepStrictEqual(calls, beforeApiOnly, "overview 503 cannot invoke legacy readers");
+  await assert.rejects(network.readApiOverview(async () => { throw Object.assign(new Error("auth"), { status: 401 }); }),
+    (error) => error.status === 401, "control auth expiry still fails closed");
+  let trafficCalls = 0;
+  let expiredCalls = 0;
+  const unavailableTraffic = await network.readApiIspTraffic(
+    async () => { throw Object.assign(new Error("offline"), { status: 503 }); },
+    async () => { trafficCalls++; return []; }, () => { expiredCalls++; });
+  assert.strictEqual(unavailableTraffic.domain.state, "unavailable");
+  assert.deepStrictEqual(unavailableTraffic.traffic, []);
+  assert.strictEqual(trafficCalls, 0, "infra ISP 503 skips traffic inventory and legacy read");
+  assert.deepStrictEqual(calls, beforeApiOnly);
+  const degradedTraffic = await network.readApiIspTraffic(async () => isp,
+    async (inventory) => { trafficCalls++; assert.strictEqual(inventory.length, 5); return ["series"]; }, () => { expiredCalls++; });
+  assert.strictEqual(degradedTraffic.domain.state, "stale");
+  assert.deepStrictEqual(degradedTraffic.traffic, ["series"], "degraded/stale API inventory still drives Prometheus traffic");
+  await network.readApiIspTraffic(async () => { throw Object.assign(new Error("auth"), { status: 403 }); },
+    async () => { trafficCalls++; return []; }, () => { expiredCalls++; });
+  assert.strictEqual(expiredCalls, 1, "infra auth expiry invalidates the session");
+
+  const edgeCache = network.createApiEdgeCache();
+  assert.strictEqual(edgeCache.read({ source: "none", data: null }), null, "first API edge failure has no invented zero edges");
+  assert.deepStrictEqual(edgeCache.read({ source: "network-api", data: { edges: topology.edges } }), topology.edges);
+  assert.deepStrictEqual(edgeCache.read({ source: "none", data: null }), topology.edges, "API outage retains last API edge structure");
+  edgeCache.clear();
+  assert.strictEqual(edgeCache.read({ source: "none", data: null }), null, "anonymous transition cannot reuse authenticated edges");
 
   let now = 0;
   let authenticated = false;
@@ -274,24 +309,35 @@ async function run() {
   gated.invalidate();
   result = await network.loadNetworkDomains(gated, clients, fallback);
   assert.strictEqual(result.domains.topology.state, "stale");
+  assert.strictEqual(result.authenticated, true);
   assert.deepStrictEqual(clientCalls, { devices: 1, topology: 1, isp: 1 });
   const beforeStaleFallback = calls.topology;
   assert.strictEqual(calls.topology, beforeStaleFallback);
 
   clients.topology = async () => { clientCalls.topology++; throw Object.assign(new Error("unavailable"), { status: 503 }); };
   result = await network.loadNetworkDomains(gated, clients, fallback);
-  assert.strictEqual(result.domains.topology.source, "legacy");
+  assert.strictEqual(result.domains.topology.source, "none");
   assert.strictEqual(result.domains.topology.apiError.status, 503);
-  assert.strictEqual(calls.topology, beforeStaleFallback + 1);
+  assert.strictEqual(calls.topology, beforeStaleFallback);
   clients.topology = async () => { clientCalls.topology++; return topology; };
   result = await network.loadNetworkDomains(gated, clients, fallback);
   assert.strictEqual(result.domains.topology.source, "network-api", "API recovers on next poll");
+
+  clients.devices = async () => { clientCalls.devices++; throw Object.assign(new Error("unavailable"), { status: 503 }); };
+  clients.isp = async () => { clientCalls.isp++; throw Object.assign(new Error("unavailable"), { status: 503 }); };
+  const beforeDomainFailure = { ...calls };
+  result = await network.loadNetworkDomains(gated, clients, fallback);
+  assert.strictEqual(result.domains.devices.state, "unavailable");
+  assert.strictEqual(result.domains.isp.state, "unavailable");
+  assert.deepStrictEqual(calls, beforeDomainFailure, "authenticated domain 503 never reads legacy inventory or edges");
+  clients.isp = async () => { clientCalls.isp++; return isp; };
 
   clients.devices = async () => { clientCalls.devices++; throw Object.assign(new Error("auth"), { status: 401 }); };
   await network.loadNetworkDomains(gated, clients, fallback);
   const beforeExpiredPoll = { ...clientCalls };
   await network.loadNetworkDomains(gated, clients, fallback);
   assert.deepStrictEqual(clientCalls, beforeExpiredPoll, "expired session stops protected polls");
+  assert.strictEqual(calls.topology, beforeStaleFallback + 1, "anonymous fallback still reads legacy edges after expiry");
   clients.devices = async () => { clientCalls.devices++; return devices; };
   now += 45000;
   result = await network.loadNetworkDomains(gated, clients, fallback);

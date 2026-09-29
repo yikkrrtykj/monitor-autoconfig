@@ -147,6 +147,16 @@ assert.ok(topologyCopy.some((item) => item.note === "未找到防火墙监控数
 assert.ok(topologyCopy.some((item) => (
   item.label === "LLDP 链路" && item.note === "尚未发现邻居链路，当前显示示意连接；请检查 LLDP/SNMP。"
 )));
+const unavailableNetworkChecks = buildReadinessChecks({
+  seatSummary, targetSummary: summarizeTargets([]), serviceSummary, configRisks: [], topologyFindings: [],
+  devicesAvailable: false, ispAvailable: false
+});
+assert(unavailableNetworkChecks.some((item) => item.label === "座位识别"));
+assert(unavailableNetworkChecks.some((item) => item.label === "采集任务异常"));
+assert(!unavailableNetworkChecks.some((item) => ["核心/防火墙", "设备离线"].includes(item.label)),
+  "unavailable inventory cannot produce false missing or all-online readiness conclusions");
+assert(!buildTopologyFindings([{ job: "infra-dist-ping", success: true }], [], { topologyAvailable: false })
+  .some((item) => item.label === "LLDP 链路"), "unavailable topology cannot be described as zero LLDP links");
 
 const riskyConfig = `
 logging host 192.168.41.253

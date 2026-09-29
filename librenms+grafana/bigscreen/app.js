@@ -51,8 +51,9 @@
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
   } = window.BSApi;
   const {
-    mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, topologyNetworkTargets,
-    createTopologyTargetCache, topologyReadStatus, renderNetworkIssue, resolveNetworkDomain, resolveNetworkSnapshot,
+    mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, topologyNetworkTargets,
+    createTopologyTargetCache, createApiEdgeCache, topologyReadStatus, renderNetworkIssue,
+    readApiOverview, readApiIspTraffic, apiControlTargets,
     createNetworkSession, loadNetworkDomains, isAuthError
   } = window.BSNetworkRead;
   const {
@@ -112,22 +113,9 @@
       if (seq === infraIspRequestSeq) renderIspNetworkStatus("unauthenticated");
       return traffic;
     }
-    let payload = null;
-    try {
-      payload = await fetchNetworkIsp();
-    } catch (error) {
-      if (isAuthError(error)) networkSession.expired();
-    }
-    const domain = await resolveNetworkDomain(payload, fetchIspInventory, "isp");
+    const { domain, traffic } = await readApiIspTraffic(fetchNetworkIsp, fetchIspTraffic, () => networkSession.expired());
     if (seq === infraIspRequestSeq) renderIspNetworkStatus(domain.state);
-    if (domain.data === null) return [];
-    return fetchIspTraffic(domain.source === "network-api" ? domain.data.isps.map((item) => ({
-      name: item.name,
-      metricName: item.name,
-      metricTarget: item.metricTarget,
-      metricIfindex: item.metricIfindex,
-      wanIp: item.wanIp
-    })) : domain.data);
+    return traffic;
   }
 
   function renderIspNetworkStatus(state) {
@@ -137,20 +125,7 @@
   }
 
   async function readNetworkOverview() {
-    let payload = null;
-    let apiError = null;
-    try {
-      payload = await fetchNetworkOverview();
-    } catch (error) {
-      if (isAuthError(error)) throw error;
-      apiError = error;
-      console.warn("Network overview unavailable; using domain fallback", error);
-    }
-    return resolveNetworkSnapshot(payload, {
-      devices: fetchTopologyTargets,
-      topology: () => fetchTopologyEdges({ strict: true }),
-      isp: fetchIspInventory
-    }, { devices: apiError, topology: apiError, isp: apiError });
+    return readApiOverview(fetchNetworkOverview);
   }
 
   function titleText() {
@@ -566,10 +541,16 @@
       : `<div class="control-empty good">当前没有需要关注的问题</div>`;
   }
 
-  function renderControlTopology(targetSummary, topologyFindings, edges) {
+  function renderControlTopology(targetSummary, topologyFindings, edges, networkRead) {
+    const { devices, topology, isp } = networkRead.domains;
+    const available = (domain) => domain.source === "network-api";
     const rows = [
-      { section: "拓扑", label: "监控设备", level: targetSummary.total ? "good" : "warn", value: String(targetSummary.total), note: `核心 ${targetSummary.byKind.core} / 接入 ${targetSummary.byKind.dist} / ISP ${targetSummary.byKind.isp}` },
-      { section: "拓扑", label: "LLDP 链路", level: edges.length ? "good" : "warn", value: String(edges.length), note: edges.length ? "已采集拓扑关系" : "未采集到拓扑关系" },
+      { section: "拓扑", label: "监控设备", level: available(devices) && available(isp) ? (targetSummary.total ? "good" : "warn") : "info",
+        value: available(devices) && available(isp) ? String(targetSummary.total) : "不可用",
+        note: available(devices) && available(isp) ? `核心 ${targetSummary.byKind.core} / 接入 ${targetSummary.byKind.dist} / ISP ${targetSummary.byKind.isp}` : "设备或 ISP 数据不可用" },
+      { section: "拓扑", label: "LLDP 链路", level: available(topology) ? (edges.length ? "good" : "warn") : "info",
+        value: available(topology) ? String(edges.length) : "不可用",
+        note: available(topology) ? (edges.length ? "已采集拓扑关系" : "未采集到拓扑关系") : "拓扑数据不可用" },
       ...topologyFindings
     ];
     document.getElementById("controlTopology").innerHTML = rows.map(controlItemHtml).join("");
@@ -604,8 +585,9 @@
     const flow = [
       { label: "卡顿分析", href: `/incident?at=${encodeURIComponent(nowValue)}&window=5&threshold=0.05`, value: "当前时间" },
       { label: "比赛座位", href: snapshot.page ? snapshot.page.path : "/", value: `${snapshot.seatSummary.seats}/${snapshot.seatSummary.expectedSeats}` },
-      { label: "拓扑", href: "/topology", value: `${snapshot.edges.length} 边` },
-      { label: "网络总览", href: "/infra", value: snapshot.targetSummary.offline.length ? `${snapshot.targetSummary.offline.length} 离线` : "正常" }
+      { label: "拓扑", href: "/topology", value: snapshot.networkRead.domains.topology.source === "network-api" ? `${snapshot.edges.length} 边` : "不可用" },
+      { label: "网络总览", href: "/infra", value: snapshot.networkRead.domains.devices.source === "network-api" && snapshot.networkRead.domains.isp.source === "network-api" ?
+        (snapshot.targetSummary.offline.length ? `${snapshot.targetSummary.offline.length} 离线` : "正常") : "不可用" }
     ];
     document.getElementById("controlIncidentFlow").innerHTML = `
       <div class="flow-state ${worst}">
@@ -662,8 +644,8 @@
       fetchDhcpSettings()
     ]);
     const topology = networkRead.domains.topology;
-    const targets = await controlNetworkTargets(networkRead.domains, fetchTopologyTargets);
-    const edges = topology.source === "network-api" ? topology.data.edges : (topology.data || []);
+    const targets = apiControlTargets(networkRead.domains);
+    const edges = topology.source === "network-api" ? topology.data.edges : [];
     const players = page
       ? snapshot.players.filter((player) => !page.teamSize || player.seat <= page.teamSize)
       : snapshot.players;
@@ -671,8 +653,15 @@
     const targetSummary = summarizeTargets(targets);
     const serviceSummary = summarizeServices(servicesRaw);
     const configRisks = buildConfigRisks(config, runtimeStatus);
-    const topologyFindings = buildTopologyFindings(targets, edges);
-    const checks = buildReadinessChecks({ seatSummary, targetSummary, serviceSummary, configRisks, topologyFindings });
+    const topologyFindings = networkRead.domains.devices.source === "network-api"
+      ? buildTopologyFindings(targets, edges, { topologyAvailable: topology.source === "network-api" }) : [];
+    const checks = buildReadinessChecks({ seatSummary, targetSummary, serviceSummary, configRisks, topologyFindings,
+      devicesAvailable: networkRead.domains.devices.source === "network-api", ispAvailable: networkRead.domains.isp.source === "network-api" });
+    for (const [name, label] of [["devices", "设备"], ["topology", "拓扑"], ["isp", "ISP"]]) {
+      if (networkRead.domains[name].state === "unavailable") {
+        checks.push({ section: "网络", label: `${label}不可用`, level: "warn", value: "不可用", note: "等待 Network API 恢复" });
+      }
+    }
     const readiness = readinessScore(checks);
     return {
       mode: "monitor",
@@ -700,7 +689,7 @@
   function renderControlPanel(snapshot) {
     renderNetworkStatus("controlNetworkStatus", snapshot.networkRead);
     renderControlReadiness(snapshot.readiness, snapshot.checks);
-    renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges);
+    renderControlTopology(snapshot.targetSummary, snapshot.topologyFindings, snapshot.edges, snapshot.networkRead);
     renderControlConfig(snapshot);
     configEditor.render(snapshot.platformConfig, snapshot.dhcpSettings);
     renderControlIncidentFlow(snapshot);
@@ -995,6 +984,7 @@
 
   let topologyTimer = null;
   const topologyTargetCache = createTopologyTargetCache();
+  const apiEdgeCache = createApiEdgeCache();
 
   function stopTopologyRefresh() {
     if (topologyTimer) {
@@ -1036,10 +1026,12 @@
         ? topologyTargetCache.recover()
         : topologyTargetCache.remember(probeResult.targets);
       const topologyDomain = networkRead.domains.topology;
-      const edges = topologyDomain.source === "network-api" ? topologyDomain.data.edges : (topologyDomain.data || []);
+      if (!networkRead.authenticated) apiEdgeCache.clear();
+      const edges = networkRead.authenticated ? apiEdgeCache.read(topologyDomain) : (topologyDomain.data || []);
+      if (edges === null) throw new Error("拓扑数据暂不可用");
       // 与网络总览一致：隐藏从没上线过的设备（按 instance 名匹配 seen-up 集合）。
       const seenUp = activeSeriesNames(seenItems);
-      const targets = topologyNetworkTargets(networkRead.domains, enrichment, seenUp);
+      const targets = topologyNetworkTargets({ ...networkRead.domains, authenticated: networkRead.authenticated }, enrichment, seenUp);
       const { layout, width } = topologyPanel.prepare(targets, edges);
       if (shouldRender("topology", topologySignature(layout, width, edges))) {
         topologyPanel.render({ layout, width });
