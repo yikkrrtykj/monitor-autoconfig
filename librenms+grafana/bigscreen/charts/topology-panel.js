@@ -64,14 +64,12 @@
           fetchNodeInspector(node.ip).then((inspector) => {
             if (request !== inspectorRequest || detail.hidden) return;
             const ports = inspector.ports;
-            const neighbors = Array.isArray(inspector.neighbors) ? inspector.neighbors : [];
             const warnings = Array.isArray(inspector.warnings) ? inspector.warnings : [];
-            const peerCount = inspector.connections && Number.isInteger(inspector.connections.peers) && inspector.connections.peers >= 0
-              ? inspector.connections.peers : new Set(neighbors.map((item) => item.peerIp).filter(Boolean)).size;
-            const aggregateCount = inspector.connections && Number.isInteger(inspector.connections.aggregates) && inspector.connections.aggregates >= 0
-              ? inspector.connections.aggregates : new Set(neighbors.map((item) => item.aggregatePort).filter(Boolean)).size;
-            const connectionSummary = inspector.kind === "unifi-ap" || warnings.includes("邻接资料暂不可用")
-              ? "—" : `邻接 ${peerCount} 台 · 聚合链路 ${aggregateCount} 组`;
+            const connections = inspector.connections;
+            const hasConnectionCounts = connections && Number.isInteger(connections.peers) && connections.peers >= 0
+              && Number.isInteger(connections.aggregates) && connections.aggregates >= 0;
+            const connectionSummary = hasConnectionCounts && !warnings.includes("邻接资料暂不可用")
+              ? `邻接 ${connections.peers} 台 · 聚合链路 ${connections.aggregates} 组` : "—";
             const state = inspector.online === "up" ? "在线" : inspector.online === "down" ? "离线" : "未知";
             const row = (label, value) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value == null || value === "" ? "—" : String(value))}</dd>`;
             detail.innerHTML = `
