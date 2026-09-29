@@ -57,7 +57,8 @@
     return (targets || []).map((target) => {
       if (target.job === "infra-isp-ping") return target;
       const device = byIp.get(String(target.targetIp || target.instance || ""));
-      return device ? { ...target, success: deviceStatus(device.status), status: device.status } : target;
+      return device ? { ...target, success: deviceStatus(device.status), status: device.status }
+        : { ...target, success: null, status: "unknown" };
     });
   }
 
@@ -77,6 +78,32 @@
     };
   }
 
+  function createApiEdgeCache() {
+    let edges = null;
+    return {
+      read(domain) {
+        if (domain.source === "network-api") {
+          edges = domain.data.edges.map((edge) => ({ ...edge }));
+          return edges.map((edge) => ({ ...edge }));
+        }
+        return edges ? edges.map((edge) => ({ ...edge })) : null;
+      },
+      clear() { edges = null; }
+    };
+  }
+
+  function createTopologyLifecycle() {
+    const edgeCache = createApiEdgeCache();
+    let sequence = 0;
+    return {
+      begin() { return ++sequence; },
+      isCurrent(value) { return value === sequence; },
+      invalidate() { sequence++; edgeCache.clear(); },
+      clearEdges() { edgeCache.clear(); },
+      readEdges(domain) { return edgeCache.read(domain); }
+    };
+  }
+
   function topologyReadStatus(snapshot, targetsDegraded) {
     if (!targetsDegraded) return snapshot;
     const topology = snapshot.domains.topology;
@@ -87,12 +114,15 @@
   function topologyNetworkTargets(domains, enrichment, seenUp) {
     const deviceDomain = domains.devices;
     const ispDomain = domains.isp;
+    const authenticated = domains.authenticated === true;
     const deviceTargets = deviceDomain.source === "network-api"
       ? overlayTopologyDeviceStatus(enrichment, deviceDomain.data.devices)
-      : (deviceDomain.data || enrichment || []);
+      : authenticated ? overlayTopologyDeviceStatus(enrichment, []) : (deviceDomain.data || enrichment || []);
     const ispTargets = ispDomain.source === "network-api"
       ? mergeIspInventory(ispDomain.data.isps, enrichment)
-      : mergeLegacyIspInventory(ispDomain.data, enrichment);
+      : authenticated ? (enrichment || []).filter((item) => item.job === "infra-isp-ping")
+        .map((item) => ({ ...item, success: null, status: "unknown" }))
+        : mergeLegacyIspInventory(ispDomain.data, enrichment);
     const combined = deviceTargets.filter((item) => item.job !== "infra-isp-ping").concat(ispTargets);
     return seenUp && seenUp.size
       ? combined.filter((target) => target.job === "infra-fw-unit-snmp" || target.job === "infra-isp-ping" ||
@@ -167,18 +197,53 @@
     return merged.concat(ispMetrics.filter((item) => !used.has(item)));
   }
 
-  async function controlNetworkTargets(domains, fetchEnrichment) {
-    const devices = domains.devices;
-    const isp = domains.isp;
-    const enrichment = isp.source === "legacy"
-      ? (devices.source === "legacy" ? devices.data || [] : await fetchEnrichment().catch(() => []))
-      : [];
-    const ispTargets = isp.source === "network-api"
-      ? mergeIspInventory(isp.data.isps)
-      : mergeLegacyIspInventory(isp.data, enrichment);
-    return devices.source === "network-api"
-      ? mergeNetworkDevices(devices.data.devices).concat(ispTargets)
-      : (devices.data || []).filter((item) => item.job !== "infra-isp-ping").concat(ispTargets);
+  function apiControlTargets(domains) {
+    const devices = domains.devices.source === "network-api" ? mergeNetworkDevices(domains.devices.data.devices) : [];
+    const isps = domains.isp.source === "network-api" ? mergeIspInventory(domains.isp.data.isps) : [];
+    return devices.concat(isps);
+  }
+
+  function resolveApiDomain(payload, name, error) {
+    const state = networkDomainState(payload, name);
+    return {
+      data: state === "unavailable" ? null : payload,
+      state,
+      source: state === "unavailable" ? "none" : "network-api",
+      apiError: networkErrorInfo(error)
+    };
+  }
+
+  function resolveApiSnapshot(payload, apiErrors = {}) {
+    const values = normalizeNetworkOverview(payload);
+    const warnings = payload && Array.isArray(payload.warnings) ? payload.warnings : [];
+    return networkPresentation(Object.fromEntries(DOMAINS.map((name) => [name,
+      resolveApiDomain(values[name], name, apiErrors[name] || warnings.find((item) => item && item.domain === name && item.code))
+    ])));
+  }
+
+  async function readApiOverview(fetchOverview) {
+    try {
+      return resolveApiSnapshot(await fetchOverview());
+    } catch (error) {
+      if (isAuthError(error)) throw error;
+      return resolveApiSnapshot(null, { devices: error, topology: error, isp: error });
+    }
+  }
+
+  async function readApiIspTraffic(fetchIsp, fetchTraffic, onAuthError) {
+    let payload = null;
+    try {
+      payload = await fetchIsp();
+    } catch (error) {
+      if (isAuthError(error)) onAuthError();
+    }
+    const domain = resolveApiDomain(payload, "isp");
+    if (domain.data === null) return { domain, traffic: [] };
+    const inventory = domain.data.isps.map((item) => ({
+      name: item.name, metricName: item.name, metricTarget: item.metricTarget,
+      metricIfindex: item.metricIfindex, wanIp: item.wanIp
+    }));
+    return { domain, traffic: await fetchTraffic(inventory) };
   }
 
   async function resolveNetworkDomain(payload, fallback, name) {
@@ -222,19 +287,23 @@
   async function loadNetworkDomains(session, clients, fallbacks) {
     if (!await session.canRead()) {
       const snapshot = await resolveNetworkSnapshot(null, fallbacks);
-      return { ...snapshot, overall: snapshot.overall === "legacy-fallback" ? "unauthenticated" : snapshot.overall };
+      return { ...snapshot, authenticated: false, overall: snapshot.overall === "legacy-fallback" ? "unauthenticated" : snapshot.overall };
     }
     const errors = {};
+    let authExpired = false;
     const results = await Promise.all(DOMAINS.map(async (name) => {
       try {
         return [name, await clients[name]()];
       } catch (error) {
-        if (isAuthError(error)) session.expired();
+        if (isAuthError(error)) {
+          session.expired();
+          authExpired = true;
+        }
         errors[name] = error;
         return [name, null];
       }
     }));
-    return resolveNetworkSnapshot(Object.fromEntries(results), fallbacks, errors);
+    return { ...resolveApiSnapshot(Object.fromEntries(results), errors), authenticated: true, authExpired };
   }
 
   function createNetworkSession(fetchAuthStatus, now = () => Date.now(), retryMs = 45000) {
@@ -279,9 +348,11 @@
 
   return {
     deviceStatus, networkDomainState, networkErrorInfo, normalizeNetworkOverview, mergeNetworkDevices,
-    overlayTopologyDeviceStatus, createTopologyTargetCache, topologyReadStatus,
+    overlayTopologyDeviceStatus, createTopologyTargetCache, createApiEdgeCache, createTopologyLifecycle, topologyReadStatus,
     topologyNetworkTargets, networkIssueNotice, renderNetworkIssue,
-    mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, resolveNetworkDomain, resolveNetworkSnapshot, networkPresentation,
+    mergeIspInventory, mergeLegacyIspInventory, apiControlTargets,
+    resolveApiDomain, resolveApiSnapshot, readApiOverview, readApiIspTraffic,
+    resolveNetworkDomain, resolveNetworkSnapshot, networkPresentation,
     createNetworkSession, loadNetworkDomains, isAuthError
   };
 }));

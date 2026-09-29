@@ -1427,16 +1427,19 @@ def test_auth_controller_owns_control_auth_ui_actions_and_reliable_status_cache(
     assert "return { start, stop, invalidate, execute };" in controller
     assert "return controlRefreshLifecycle.execute(async (isCurrent) => {" in app
     assert "if (!isCurrent()) return { discarded: true };" in app
-    assert "onApplyStart: invalidateControlRefresh," in app
+    apply_actions = app.split("onApplyStart: () => {", 1)[1].split("\n    }", 1)[0]
+    assert apply_actions.index("invalidateTopologyEdges();") < apply_actions.index("invalidateControlRefresh();")
     assert "controlRefreshLifecycle.stop();" in app
     assert "controlRefreshLifecycle.start();" in app
     assert "function invalidateControlRefresh() {" in app
     assert "controlRefreshLifecycle.invalidate();" in app
     assert "authController.invalidate();" in app
     login_actions = app.split("onAuthenticated: () => {", 1)[1].split("\n    }", 1)[0]
+    assert login_actions.index("invalidateTopologyEdges();") < login_actions.index("networkSession.invalidate();")
     assert "networkSession.invalidate();" in login_actions
     assert login_actions.index("invalidateControlRefresh();") < login_actions.index("refreshControlPanel();")
     logout_actions = app.split("onLoggedOut: () => {", 1)[1].split("\n    }", 1)[0]
+    assert logout_actions.index("invalidateTopologyEdges();") < logout_actions.index("networkSession.expired();")
     assert "networkSession.expired();" in logout_actions
     assert logout_actions.index("invalidateControlRefresh();") < logout_actions.index("lastControlReport = null;")
     assert "const token = beginAuthRequest(true);" in controller
