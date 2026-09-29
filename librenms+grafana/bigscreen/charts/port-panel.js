@@ -53,7 +53,7 @@
     const safe = (value) => escapeHtml(value == null || value === '' ? '—' : String(value));
     const number = (value, digits = 1) => Number.isFinite(value) ? Number(value).toFixed(digits) : '—';
     const speed = (value) => !Number.isFinite(value) ? '—' : value >= 1e9
-      ? `${number(value / 1e9, 0)}G` : value >= 1e6 ? `${number(value / 1e6, 0)}M` : `${number(value / 1e3, 0)}K`;
+      ? `${Number((value / 1e9).toFixed(3))}G` : value >= 1e6 ? `${number(value / 1e6, 0)}M` : `${number(value / 1e3, 0)}K`;
     const rate = (value) => !Number.isFinite(value) ? '—' : value >= 1e9
       ? `${number(value / 1e9)} Gb/s` : value >= 1e6 ? `${number(value / 1e6)} Mb/s`
         : value >= 1e3 ? `${number(value / 1e3)} kb/s` : `${number(value, 0)} b/s`;
@@ -133,6 +133,8 @@
 
     function installEvents() {
       const root = element();
+      const portFace = (target) => target && typeof target.closest === 'function'
+        ? target.closest('.port-face') : null;
       root.onclick = (event) => {
         if (event.target.closest('.port-panel-close')) { onClose(); close(); return; }
         const button = event.target.closest('.port-face');
@@ -146,13 +148,14 @@
         });
       };
       root.onmouseover = (event) => {
-        const button = event.target.closest('.port-face');
-        if (!button) return;
+        const button = portFace(event.target);
+        if (!button || portFace(event.relatedTarget) === button) return;
         hideHover();
         hoverTimer = delay(() => { hoverTimer = null; showHover(button); }, 120);
       };
       root.onmouseout = (event) => {
-        if (event.target.closest('.port-face')) hideHover();
+        const button = portFace(event.target);
+        if (button && portFace(event.relatedTarget) !== button) hideHover();
       };
       root.onfocusin = (event) => {
         const button = event.target.closest('.port-face');

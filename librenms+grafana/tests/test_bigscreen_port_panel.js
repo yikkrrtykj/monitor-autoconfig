@@ -57,11 +57,11 @@ const panel = createPortPanel({ document: { getElementById: () => root },
   clearTimeout: () => {} });
 const payload = { ip: '192.0.2.7', name: '<Core>', model: 'C9300', degraded: true,
   warnings: ['当前 IF-MIB 无有效覆盖', '已省略过期邻接'], ports: [
-    port('Gi1/0/1', 1, 1, { rxBps: null, txBps: null, rxUtilization: null,
+    port('Gi1/0/1', 1, 1, { speedBps: 2_500_000_000, rxBps: null, txBps: null, rxUtilization: null,
       vlanEvidence: { authority: 'observed', memberships: [{ vlanId: 42, untagged: true }] },
       neighbors: null, inputErrorsTotal: 3 }),
     port('Gi1/0/2', 1, 2, { adminState: 'up', operState: 'down', neighbors: [] }),
-    port('Port-channel1', null, null)
+    port('Port-channel1', null, null, { speedBps: 10_000_000_000 })
   ] };
 panel.loading(payload.ip);
 assert.strictEqual(panel.isOpen(), true);
@@ -75,17 +75,30 @@ assert.ok(root.innerHTML.includes('port-state-up'));
 assert.ok(root.innerHTML.includes('port-state-down'));
 assert.ok(root.innerHTML.includes('aria-label="Gi1/0/1 在线"'));
 assert.ok(root.innerHTML.includes('port-face-counter'));
+assert.ok(root.innerHTML.includes('2.5G') && root.innerHTML.includes('10G'));
+assert.ok(!root.innerHTML.includes('3G'), '2.5G must not round to 3G');
 
 const first = new FakeNode(); first.dataset.portIndex = '0';
 const second = new FakeNode(); second.dataset.portIndex = '1';
+const numberChild = { closest: () => first };
+const speedChild = { closest: () => first };
 root.faces = [first, second];
 root.onmouseover({ target: first });
 assert.strictEqual(root.card.innerHTML, '', 'pointer hover waits before showing the card');
+root.onmouseout({ target: numberChild, relatedTarget: speedChild });
+root.onmouseover({ target: speedChild, relatedTarget: numberChild });
+assert.strictEqual(tasks.length, 1, 'internal movement does not re-arm the pending hover timer');
 tasks.shift()();
 assert.ok(root.card.innerHTML.includes('RX</dt><dd>—'));
 assert.ok(root.card.innerHTML.includes('VLAN 观测数据 / 非配置权威'));
 assert.ok(root.card.innerHTML.includes('邻接资料暂不可用'));
 assert.ok(root.card.innerHTML.includes('输入错误（累计）'));
+assert.ok(root.card.innerHTML.includes('<dt>速率</dt><dd>2.5G</dd>'));
+const scheduledBeforeInternalMove = tasks.length;
+root.onmouseout({ target: numberChild, relatedTarget: speedChild });
+root.onmouseover({ target: speedChild, relatedTarget: numberChild });
+assert.strictEqual(root.card.hidden, false, 'moving within one port keeps the hover card visible');
+assert.strictEqual(tasks.length, scheduledBeforeInternalMove, 'moving within one port does not restart the delay');
 root.onfocusin({ target: second });
 assert.ok(root.card.innerHTML.includes('当前快照未发现邻接'), 'empty neighbor list differs from unavailable');
 root.onclick({ target: first });

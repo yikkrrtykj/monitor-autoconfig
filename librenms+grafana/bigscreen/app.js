@@ -1044,6 +1044,7 @@
       if (!topologyLifecycle.isCurrent(seq)) return;
       if (networkRead.authExpired) {
         invalidateTopologyEdges();
+        topologyPanel.clearDetail();
         renderSignatures.delete("topology");
         topologyPanel.showError("拓扑数据暂不可用");
         renderNetworkStatus("topologyNetworkStatus", { domains: { topology: { state: "unavailable" } } });

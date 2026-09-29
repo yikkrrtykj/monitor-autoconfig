@@ -29,6 +29,7 @@ function harness() {
   let deviceFailure = null;
   const renderedEdges = [];
   const errors = [];
+  const protectedPanel = { open: false, generation: 0 };
   const noop = () => {};
   const noOpPanel = new Proxy({}, { get: () => noop });
   const ns = (factory) => new Proxy({}, { get: (_, key) => key.startsWith("create") ? factory : noop });
@@ -67,7 +68,9 @@ function harness() {
     return noop;
   } });
   window.BSTopologyPanel = { createTopologyPanel: () => ({
-    isAvailable: () => true, clearDetail: noop, resetView: noop,
+    isAvailable: () => true,
+    clearDetail: () => { protectedPanel.open = false; protectedPanel.generation += 1; },
+    resetView: noop,
     prepare: (_, edges) => { renderedEdges.push(edges); return { layout: { nodes: [] }, width: 100 }; },
     render: noop, updateLatency: noop, updateStatus: noop,
     showError: (message) => errors.push(message)
@@ -94,7 +97,8 @@ function harness() {
     timer.fn();
   };
   return {
-    callbacks, lifecycle, navigate, poll, renderedEdges, errors, element,
+    callbacks, lifecycle, navigate, poll, renderedEdges, errors, element, protectedPanel,
+    openProtectedPortPanel: () => { protectedPanel.open = true; return protectedPanel.generation; },
     failTopology: (status) => { topologyFailure = status; },
     failDevices: (status) => { deviceFailure = status; }
   };
@@ -133,11 +137,16 @@ async function run() {
     expiry.navigate("/topology");
     await settle();
     assert.deepStrictEqual(expiry.lifecycle.readEdges(unavailable), apiEdges);
+    const pendingPortGeneration = expiry.openProtectedPortPanel();
+    assert.strictEqual(expiry.protectedPanel.open, true, "the protected Port Panel is open before expiry");
     expiry.failDevices(status);
     const renderedBeforeExpiry = expiry.renderedEdges.length;
     expiry.poll();
     await settle();
     assert.strictEqual(expiry.lifecycle.readEdges(unavailable), null, `${status} current round clears authenticated edges`);
+    assert.strictEqual(expiry.protectedPanel.open, false, `${status} closes loaded protected ports`);
+    assert.ok(expiry.protectedPanel.generation > pendingPortGeneration,
+      `${status} invalidates pending Port Panel responses`);
     assert(expiry.errors.length > 0, `${status} current round renders unavailable`);
     assert.strictEqual(expiry.renderedEdges.length, renderedBeforeExpiry, `${status} cannot repaint old API edges`);
     expiry.failDevices(null);
