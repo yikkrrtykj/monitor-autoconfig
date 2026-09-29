@@ -61,12 +61,35 @@
     });
   }
 
+  function createTopologyTargetCache() {
+    let structure = null;
+    return {
+      remember(targets) {
+        structure = targets.map(({ success, status, latency, ...target }) => ({
+          ...target, success: null, status: "unknown", latency: null
+        }));
+        return targets;
+      },
+      recover() {
+        if (!structure) throw new Error("拓扑数据暂不可用");
+        return structure.map((target) => ({ ...target }));
+      }
+    };
+  }
+
+  function topologyReadStatus(snapshot, targetsDegraded) {
+    if (!targetsDegraded) return snapshot;
+    const topology = snapshot.domains.topology;
+    const state = topology.state === "stale" || topology.state === "unavailable" ? topology.state : "degraded";
+    return { ...snapshot, domains: { ...snapshot.domains, topology: { ...topology, state } } };
+  }
+
   function topologyNetworkTargets(domains, enrichment, seenUp) {
     const deviceDomain = domains.devices;
     const ispDomain = domains.isp;
     const deviceTargets = deviceDomain.source === "network-api"
       ? overlayTopologyDeviceStatus(enrichment, deviceDomain.data.devices)
-      : (deviceDomain.data || []);
+      : (deviceDomain.data || enrichment || []);
     const ispTargets = ispDomain.source === "network-api"
       ? mergeIspInventory(ispDomain.data.isps, enrichment)
       : mergeLegacyIspInventory(ispDomain.data, enrichment);
@@ -256,7 +279,8 @@
 
   return {
     deviceStatus, networkDomainState, networkErrorInfo, normalizeNetworkOverview, mergeNetworkDevices,
-    overlayTopologyDeviceStatus, topologyNetworkTargets, networkIssueNotice, renderNetworkIssue,
+    overlayTopologyDeviceStatus, createTopologyTargetCache, topologyReadStatus,
+    topologyNetworkTargets, networkIssueNotice, renderNetworkIssue,
     mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, resolveNetworkDomain, resolveNetworkSnapshot, networkPresentation,
     createNetworkSession, loadNetworkDomains, isAuthError
   };

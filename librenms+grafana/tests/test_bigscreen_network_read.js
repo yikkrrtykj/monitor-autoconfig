@@ -94,6 +94,33 @@ async function run() {
   assert.strictEqual(apiLayout.nodes.find((node) => node.ip === "10.0.0.2").level, "none");
   assert.strictEqual(network.topologyNetworkTargets(topologyDomains, [], seenUp).filter((item) => item.job !== "infra-isp-ping").length, 0,
     "missing probes cannot be replaced by full API inventory");
+  const targetCache = network.createTopologyTargetCache();
+  assert.throws(() => targetCache.recover(), /拓扑数据暂不可用/, "first probe failure cannot render an empty success");
+  assert.strictEqual(targetCache.remember(physicalTargets)[0].latency, 0.002, "fresh probes retain current latency");
+  const recoveredTargets = targetCache.recover();
+  assert.deepStrictEqual(recoveredTargets.map((item) => item.targetIp), physicalTargets.map((item) => item.targetIp));
+  assert(recoveredTargets.every((item) => item.success === null && item.status === "unknown" && item.latency === null),
+    "cached structure cannot claim old probe status or latency is current");
+  const recoveredApiTargets = network.topologyNetworkTargets(topologyDomains, recoveredTargets, seenUp);
+  assert.deepStrictEqual(recoveredApiTargets.map((item) => item.targetIp), apiTopologyTargets.map((item) => item.targetIp),
+    "probe failure preserves nodes without adding unrelated LibreNMS devices");
+  assert.deepStrictEqual(recoveredApiTargets.map((item) => item.success), [false, null, true],
+    "current API status may still cover matching cached devices");
+  assert(recoveredApiTargets.every((item) => item.latency === null), "old latency is absent from rendered targets");
+  const recoveredLegacyTargets = network.topologyNetworkTargets({
+    devices: { source: "none", data: null },
+    isp: { source: "legacy", data: [{ name: "ISP-A", gateway: "10.0.1.1" }] }
+  }, recoveredTargets, seenUp);
+  assert.strictEqual(recoveredLegacyTargets.length, 3, "cached structure survives simultaneous API and probe failure");
+  assert(recoveredLegacyTargets.every((item) => item.success === null), "legacy fallback does not reuse old probe states");
+  const normalSnapshot = { domains: { devices: { state: "normal" }, topology: { state: "normal" }, isp: { state: "normal" } } };
+  assert.strictEqual(network.networkIssueNotice(normalSnapshot.domains), null);
+  assert.deepStrictEqual(network.networkIssueNotice(network.topologyReadStatus(normalSnapshot, true).domains), {
+    state: "degraded", text: "拓扑数据降级"
+  }, "cached structure is visibly degraded rather than reported as a fresh success");
+  assert.strictEqual(network.topologyReadStatus(normalSnapshot, false), normalSnapshot);
+  assert.strictEqual(network.topologyReadStatus({ domains: { topology: { state: "unavailable" } } }, true).domains.topology.state,
+    "unavailable", "probe failure cannot downgrade an existing unavailable warning");
   assert.strictEqual(network.networkIssueNotice({ devices: { state: "normal" }, isp: { state: "legacy-fallback" } }), null);
   assert.strictEqual(network.networkIssueNotice({ isp: { state: "unauthenticated" } }), null);
   assert.deepStrictEqual(network.networkIssueNotice({ devices: { state: "degraded" }, topology: { state: "stale" }, isp: { state: "unavailable" } }), {

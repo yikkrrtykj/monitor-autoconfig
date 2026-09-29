@@ -52,7 +52,7 @@
   } = window.BSApi;
   const {
     mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, controlNetworkTargets, topologyNetworkTargets,
-    renderNetworkIssue, resolveNetworkDomain, resolveNetworkSnapshot,
+    createTopologyTargetCache, topologyReadStatus, renderNetworkIssue, resolveNetworkDomain, resolveNetworkSnapshot,
     createNetworkSession, loadNetworkDomains, isAuthError
   } = window.BSNetworkRead;
   const {
@@ -994,6 +994,7 @@
   // ---- Network topology ----
 
   let topologyTimer = null;
+  const topologyTargetCache = createTopologyTargetCache();
 
   function stopTopologyRefresh() {
     if (topologyTimer) {
@@ -1020,12 +1021,20 @@
     const seq = ++topologySeq;
     try {
       const enrichmentRequest = fetchTopologyTargets();
-      const [networkRead, enrichment, seenItems] = await Promise.all([
+      const enrichmentResult = enrichmentRequest.then(
+        (targets) => ({ targets, failed: false }),
+        (error) => ({ error, failed: true })
+      );
+      const [networkRead, probeResult, seenItems] = await Promise.all([
         readTopologyNetwork(enrichmentRequest),
-        enrichmentRequest.catch(() => []),
+        enrichmentResult,
         prometheusInstant(activeInfraPingQuery()).catch(() => [])
       ]);
       if (seq !== topologySeq) return;
+      if (probeResult.failed) console.warn("Topology target probe unavailable; retaining known structure", probeResult.error);
+      const enrichment = probeResult.failed
+        ? topologyTargetCache.recover()
+        : topologyTargetCache.remember(probeResult.targets);
       const topologyDomain = networkRead.domains.topology;
       const edges = topologyDomain.source === "network-api" ? topologyDomain.data.edges : (topologyDomain.data || []);
       // 与网络总览一致：隐藏从没上线过的设备（按 instance 名匹配 seen-up 集合）。
@@ -1040,8 +1049,8 @@
         topologyPanel.updateLatency(layout.nodes);
       }
       topologyPanel.updateStatus(edges);
-      renderNetworkStatus("topologyNetworkStatus", networkRead);
-      lastDataSuccessAt = Date.now();
+      renderNetworkStatus("topologyNetworkStatus", topologyReadStatus(networkRead, probeResult.failed));
+      if (!probeResult.failed) lastDataSuccessAt = Date.now();
     } catch (error) {
       if (seq !== topologySeq) return;
       // The error message replaces the SVG, so the next success must rebuild
@@ -1049,6 +1058,7 @@
       renderSignatures.delete("topology");
       console.error("Topology fetch failed:", error);
       topologyPanel.showError(error.message || "");
+      renderNetworkStatus("topologyNetworkStatus", { domains: { topology: { state: "unavailable" } } });
     }
   }
 
