@@ -46,7 +46,7 @@
     fetchIspInventory, ispTrafficQuery, fetchIspTraffic, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
-    fetchNetworkOverview, fetchNetworkDevices, fetchNetworkTopology, fetchNodeInspector, fetchNodePorts, fetchNetworkIsp,
+    fetchNetworkOverview, fetchNetworkDevices, fetchNetworkTopology, fetchNodeInspector, fetchNodePorts, fetchPortHistory, fetchNetworkIsp,
     fetchPlatformAuthStatus, loginPlatformAuth, logoutPlatformAuth,
     fetchPlatformConfig, fetchPlatformVersion, fetchApplyStatus, postPlatform, fetchRetirePending, patchPlatform, fetchIncidents,
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
@@ -378,7 +378,7 @@
     getControlReport: () => lastControlReport,
     now: () => Date.now()
   });
-  const portPanel = createPortPanel({ document, window, escapeHtml,
+  const portPanel = createPortPanel({ document, window, escapeHtml, fetchPortHistory, renderLineChart, formatBits,
     setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window) });
   const topologyPanel = createTopologyPanel({
     document,

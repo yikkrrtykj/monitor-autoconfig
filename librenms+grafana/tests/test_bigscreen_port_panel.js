@@ -66,6 +66,7 @@ const originalFetch = global.fetch;
 global.fetch = () => { networkReads += 1; throw new Error('Port Panel must use loaded data'); };
 const panel = createPortPanel({ document: { getElementById: () => root },
   window: { innerWidth: 1200, innerHeight: 800 }, escapeHtml,
+  fetchPortHistory: async () => ({ rx: [], tx: [], coverage: { rx: 'empty', tx: 'empty' } }),
   setTimeout: (handler, delay) => { assert.strictEqual(delay, 120); tasks.push(handler); return tasks.length; },
   clearTimeout: () => {} });
 const payload = { ip: '192.0.2.7', name: '<Core>', model: 'C9300', degraded: true,
