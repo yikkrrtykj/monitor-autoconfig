@@ -328,11 +328,10 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
         source = "Prometheus" if any(value is not None for value in values.values()) else None
         age = None
         # Do not mix sources within a row or borrow another device/HA member.
-        if source is None and kind in ("hillstone", "generic-switch"):
-            now = context.clock()
+        if source is None:
             raw_poll = row.get("poll_time")
             poll = _number(raw_poll) if not isinstance(raw_poll, bool) else None
-            age = now - poll if poll is not None and poll > 0 else None
+            age = context.clock() - poll if poll is not None and poll > 0 else None
             if (age is not None and 0 <= age <= POLLER_STALE_SECONDS
                     and (row.get("device_id") is None or
                          str(row["device_id"]) == str(candidate.get("device_id")))):
@@ -373,6 +372,11 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
         if kind == "hillstone":
             port["wanEvidence"] = wan_evidence.get(index) if index is not None else None
         ports.append(port)
+    if any(port["metricSource"] == "LibreNMS poller" for port in ports):
+        no_coverage = ("当前防火墙 IF-MIB 无有效覆盖" if kind == "hillstone"
+                       else "当前 IF-MIB 无有效覆盖")
+        warnings = ["Prometheus IF-MIB 无有效覆盖，已使用 LibreNMS poller（未覆盖接口仍为 —）"
+                    if warning == no_coverage else warning for warning in warnings]
     unique_warnings = list(dict.fromkeys(warnings))
     result = {"ok": True, "ip": ip, "kind": kind,
               "name": _text(candidate.get("sysName") or candidate.get("hostname")),
