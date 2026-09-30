@@ -153,11 +153,11 @@
       const other = [];
       data.ports.forEach((port, index) => (port.wanEvidence ? wan : other).push({ port, index }));
       const root = element();
+      root.dataset.panelMode = 'interfaces';
       root.hidden = false;
       root.innerHTML = `<header><div><strong>${safe(data.name || data.ip)}</strong><p>型号 ${safe(data.model)} · ${safe(data.ip)}</p></div><button class="port-panel-close" type="button" aria-label="关闭接口面板">×</button></header>
         <div class="port-panel-summary">接口 ${data.ports.length} · 在线 ${counts.up} · 离线 ${counts.down} · 未知 ${counts.unknown} · 管理关闭 ${counts.disabled}</div>
         <div class="port-panel-legend">累计 errors/discards 非 0 是历史累计证据，不等于当前故障</div>
-        ${data.degraded ? '<div class="port-panel-degraded">接口资料部分降级</div>' : ''}
         ${Array.isArray(data.warnings) && data.warnings.length ? `<div class="port-panel-warnings">${data.warnings.map((warning) => `<p>${safe(warning)}</p>`).join('')}</div>` : ''}
         <div class="port-panel-scroll">${wan.length ? interfaceSection('WAN / ISP', wan) : ''}${interfaceSection(wan.length ? '其他接口' : '接口', other)}</div>
         <aside class="port-pinned-detail" hidden></aside><div class="port-hover-card" hidden></div>`;
@@ -187,21 +187,41 @@
       card.style.top = `${Math.max(8, Math.min(rect.top, window.innerHeight - height - 8))}px`;
     }
 
+    function closePinned() {
+      selectedIndex = null;
+      const root = element();
+      const detail = root.querySelector('.port-pinned-detail');
+      if (detail) { detail.hidden = true; detail.innerHTML = ''; }
+      root.querySelectorAll('.port-face').forEach((button) => button.setAttribute('aria-pressed', 'false'));
+    }
+
     function installEvents() {
       const root = element();
       const portFace = (target) => target && typeof target.closest === 'function'
         ? target.closest('.port-face') : null;
       root.onclick = (event) => {
+        if (event.target.closest('.port-pinned-close')) { closePinned(); return; }
         if (event.target.closest('.port-panel-close')) { onClose(); close(); return; }
         const button = event.target.closest('.port-face');
         if (!button || !payload) return;
-        selectedIndex = Number(button.dataset.portIndex);
+        const index = Number(button.dataset.portIndex);
+        if (!payload.ports[index]) return;
+        if (selectedIndex === index) { closePinned(); return; }
+        selectedIndex = index;
         const detail = root.querySelector('.port-pinned-detail');
-        detail.innerHTML = detailHtml(payload.ports[selectedIndex]);
+        detail.innerHTML = '<button class="port-pinned-close" type="button" aria-label="关闭详情">×</button>' + detailHtml(payload.ports[selectedIndex]);
         detail.hidden = false;
         root.querySelectorAll('.port-face').forEach((faceButton) => {
           faceButton.setAttribute('aria-pressed', String(faceButton === button));
         });
+      };
+      root.onkeydown = (event) => {
+        if (event.key === 'Escape' && selectedIndex != null) {
+          event.preventDefault();
+          event.stopPropagation();
+          closePinned();
+          hideHover();
+        }
       };
       root.onmouseover = (event) => {
         const button = portFace(event.target);
@@ -225,6 +245,7 @@
     function loading(ip, kind = 'cisco') {
       close();
       const root = element();
+      root.dataset.panelMode = ['hillstone', 'generic-switch'].includes(kind) ? 'interfaces' : 'physical';
       root.hidden = false;
       root.innerHTML = `<header><strong>${kind !== 'cisco' ? '接口' : '端口'}面板 · ${safe(ip)}</strong><button class="port-panel-close" type="button" aria-label="关闭面板">×</button></header><p>正在读取${kind !== 'cisco' ? '接口' : '端口'}…</p>`;
       installEvents();
@@ -232,8 +253,9 @@
 
     function open(data) {
       if (!data || !Array.isArray(data.ports)) { failure(); return; }
+      hideHover();
+      closePinned();
       payload = data;
-      selectedIndex = null;
       const counts = { up: 0, down: 0, unknown: 0, disabled: 0 };
       data.ports.forEach((port) => {
         const oper = port.operState;
@@ -244,6 +266,7 @@
       const { members, banks, other } = groupPorts(data.ports);
       const physicalCount = banks.reduce((count, bank) => count + bank.items.length, 0);
       const root = element();
+      root.dataset.panelMode = 'physical';
       root.hidden = false;
       root.innerHTML = `<header><div><strong>${safe(data.name || data.ip)}</strong><p>型号 ${safe(data.model)} · ${safe(data.ip)}</p></div><button class="port-panel-close" type="button" aria-label="关闭端口面板">×</button></header>
         <div class="port-panel-summary">接口 ${data.ports.length} · 物理可识别 ${physicalCount} · 其他 ${other.length} · 运行在线 ${counts.up} · 运行离线 ${counts.down} · 运行未知 ${counts.unknown} · 管理关闭 ${counts.disabled}</div>
@@ -252,7 +275,6 @@
           <span><i class="port-legend-dot port-state-disabled"></i>管理关闭</span><span><i class="port-legend-dot port-state-unknown"></i>未知</span>
           <span><i class="port-legend-counter"></i>累计 errors/discards 非 0（不等于当前故障）</span>
         </div>
-        ${data.degraded ? '<div class="port-panel-degraded">端口资料部分降级</div>' : ''}
         ${Array.isArray(data.warnings) && data.warnings.length ? `<div class="port-panel-warnings">${data.warnings.map((warning) => `<p>${safe(warning)}</p>`).join('')}</div>` : ''}
         <div class="port-panel-scroll">${members.map(memberHtml).join('')}
           <details class="port-other"><summary>其他接口 (${other.length})</summary><div class="port-other-grid">${other.map((item) => face(item, false)).join('')}</div></details>
@@ -261,6 +283,8 @@
     }
 
     function failure(message = '端口资料暂不可用') {
+      closePinned();
+      hideHover();
       payload = null;
       const root = element();
       if (root.hidden) return;
@@ -271,6 +295,10 @@
     function close() {
       if (element()) {
         hideHover();
+        closePinned();
+        const root = element();
+        root.onclick = root.onkeydown = root.onmouseover = root.onmouseout = root.onfocusin = root.onfocusout = null;
+        delete root.dataset.panelMode;
         element().hidden = true;
         element().innerHTML = '';
       }
