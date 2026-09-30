@@ -139,8 +139,8 @@
         <span class="port-interface-name">${safe(port.ifName)}</span>
         <span class="port-interface-description">${safe(description)}</span>
         <span class="port-interface-state">${state.label} · ${safe(port.adminState)}</span>
-        <span>${speed(port.speedBps)}</span><span>RX ${rate(port.rxBps)} · TX ${rate(port.txBps)}</span>
-        <span>${safe(sourceText(port))}</span><span>${cumulative(port) ? '累计 errors/discards 非 0' : '累计 —'}</span>
+        <span>${speed(port.speedBps)}</span><span>RX ${rate(port.rxBps)} · TX ${rate(port.txBps)}<br>${safe(sourceText(port))}</span>
+        <span>${cumulative(port) ? '累计 errors/discards 非 0' : '累计 —'}</span>
       </button>`;
     }
 
