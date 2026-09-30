@@ -561,12 +561,14 @@ def test_fresh_poller_fallback_is_single_read_and_device_local(tmp_path, os_name
 
 @pytest.mark.parametrize("poll", [None, "invalid", "2026-09-30T00:00:00Z", True,
                                  float("nan"), float("inf"), 0, -1,
-                                 time.time() - 700, time.time() + 60])
+                                 1_800_000_000 - 700, 1_800_000_000 + 60])
 def test_invalid_poller_time_never_populates_current_values(tmp_path, poll):
     client = PortsClient([{"ifIndex": 1, "poll_time": poll, "ifInOctets_rate": 10,
                            "ifOutOctets_rate": 20, "ifInErrors": 3}],
                          {"device_id": 7, "ip": IP, "os": "ciscosb"})
-    result = network_ports.read_ports(context_for(tmp_path, client)[0], IP)
+    context, _ = context_for(tmp_path, client)
+    context = network_read.NetworkReadContext(**{**context.__dict__, "clock": lambda: 1_800_000_000})
+    result = network_ports.read_ports(context, IP)
     port = result["ports"][0]
     assert all(port[field] is None for field in network_ports.POLLER_FIELDS)
     assert port["metricSource"] is None
