@@ -1,4 +1,4 @@
-"""Bounded, read-only Cisco port inventory from existing collected sources."""
+"""Bounded, read-only node interface inventory from existing collected sources."""
 from __future__ import annotations
 
 import ipaddress
@@ -11,7 +11,8 @@ from typing import Any
 
 from librenms_client import LibreNMSError
 
-from .network_read import NetworkReadContext, NetworkReadError, _prometheus_query, read_topology
+from .network_read import (NetworkReadContext, NetworkReadError, _isp_pair_consistent,
+                           _prometheus_query, _read_isp_pair, read_topology)
 
 
 PORT_LIMIT = 2048
@@ -31,6 +32,13 @@ def _fresh_metric(metric: str, *, rate: bool = False) -> str:
             f'(timestamp({series}) >= time() - {METRIC_STALE_SECONDS})')
 
 
+def _fresh_firewall_metric(metric: str, *, rate: bool = False) -> str:
+    series = f'{metric}{{job="firewall-snmp",instance="{{ip}}"}}'
+    value = f'rate({series}[5m]) * 8' if rate else series
+    return (f'({value}) and on(job,instance,ifIndex) '
+            f'(timestamp({series}) >= time() - {METRIC_STALE_SECONDS})')
+
+
 METRICS = {
     "rxBps": _fresh_metric("ifHCInOctets", rate=True),
     "txBps": _fresh_metric("ifHCOutOctets", rate=True),
@@ -40,8 +48,18 @@ METRICS = {
     "inputDiscardsTotal": _fresh_metric("ifInDiscards"),
     "outputDiscardsTotal": _fresh_metric("ifOutDiscards"),
 }
+FIREWALL_METRICS = {
+    "rxBps": _fresh_firewall_metric("ifHCInOctets", rate=True),
+    "txBps": _fresh_firewall_metric("ifHCOutOctets", rate=True),
+    "highSpeedMbps": _fresh_firewall_metric("ifHighSpeed"),
+    "inputErrorsTotal": _fresh_firewall_metric("ifInErrors"),
+    "outputErrorsTotal": _fresh_firewall_metric("ifOutErrors"),
+    "inputDiscardsTotal": _fresh_firewall_metric("ifInDiscards"),
+    "outputDiscardsTotal": _fresh_firewall_metric("ifOutDiscards"),
+}
 STACK_PORT = re.compile(r"^(?:Gi|Te|Fa|Hu|Fo|Twe|Eth)([1-9]\d?)/\d{1,2}/([1-9]\d{0,2})$")
 CISCO_OS = frozenset(("ios", "iosxe", "iosxr", "nxos"))
+HILLSTONE_OS = frozenset(("hillstone", "stoneos"))
 
 
 def _text(value: Any) -> str | None:
@@ -106,12 +124,15 @@ def _vlans(value: Any, warnings: list[str]) -> dict[str, Any] | None:
     return {"authority": "observed", "memberships": observed}
 
 
-def _current_metrics(context: NetworkReadContext, ip: str, warnings: list[str]) -> dict[str, dict[int, float]]:
+def _current_metrics(context: NetworkReadContext, ip: str, warnings: list[str],
+                     kind: str) -> dict[str, dict[int, float]]:
     output: dict[str, dict[int, float]] = {}
     failed = False
     covered = False
     deadline = time.monotonic() + context.http_timeout
-    for field, template in METRICS.items():
+    templates = METRICS if kind == "cisco" else FIREWALL_METRICS
+    identity_label = "target_ip" if kind == "cisco" else "instance"
+    for field, template in templates.items():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             failed = True
@@ -129,7 +150,9 @@ def _current_metrics(context: NetworkReadContext, ip: str, warnings: list[str]) 
         for row in rows:
             metric = row.get("metric")
             sample = row.get("value")
-            if not isinstance(metric, dict) or metric.get("target_ip") != ip:
+            if not isinstance(metric, dict) or metric.get(identity_label) != ip:
+                continue
+            if kind == "hillstone" and metric.get("job") != "firewall-snmp":
                 continue
             index = _index(metric.get("ifIndex"))
             numeric = _number(sample[1]) if isinstance(sample, list) and len(sample) >= 2 else None
@@ -144,10 +167,47 @@ def _current_metrics(context: NetworkReadContext, ip: str, warnings: list[str]) 
         covered |= bool(values)
         output[field] = values
     if failed:
-        warnings.append("当前 IF-MIB 指标部分不可用")
+        warnings.append("当前防火墙 IF-MIB 指标部分不可用" if kind == "hillstone" else "当前 IF-MIB 指标部分不可用")
     if not covered:
-        warnings.append("当前 IF-MIB 无有效覆盖")
+        warnings.append("当前防火墙 IF-MIB 无有效覆盖" if kind == "hillstone" else "当前 IF-MIB 无有效覆盖")
     return output
+
+
+def _wan_evidence(context: NetworkReadContext, ip: str, warnings: list[str]) -> dict[int, dict[str, Any]]:
+    try:
+        inventory, state, raw = _read_isp_pair(context)
+        if not _isp_pair_consistent(inventory, state, raw):
+            inventory, state, raw = _read_isp_pair(context)
+    except NetworkReadError:
+        warnings.append("WAN / ISP 资料暂不可用")
+        return {}
+    state_status = str(state.get("status") or "").lower()
+    if not _isp_pair_consistent(inventory, state, raw) or state_status not in ("ok", "disabled") or (state_status == "disabled" and inventory):
+        warnings.append("WAN / ISP 资料已过期或不一致")
+        return {}
+    matches: dict[int, list[dict[str, Any]]] = {}
+    for item in inventory:
+        labels = item.get("labels")
+        targets = item.get("targets")
+        if not isinstance(labels, dict) or not isinstance(targets, list):
+            warnings.append("WAN / ISP 资料格式无效")
+            return {}
+        if labels.get("metric_target") != ip:
+            continue
+        index = _index(labels.get("metric_ifindex"))
+        if index is None:
+            continue
+        name = _text(labels.get("display_name") or labels.get("metric_name"))
+        if not name:
+            continue
+        gateway = _text(targets[0]) if targets and isinstance(targets[0], str) else None
+        matches.setdefault(index, []).append({
+            "authority": "isp-inventory", "name": name,
+            "wanIp": _text(labels.get("wan_ip")), "gateway": gateway,
+        })
+    if any(len(entries) > 1 for entries in matches.values()):
+        warnings.append("WAN / ISP 映射存在冲突，已省略")
+    return {index: entries[0] for index, entries in matches.items() if len(entries) == 1}
 
 
 def _neighbors(context: NetworkReadContext, ip: str, port_names: set[str],
@@ -220,8 +280,13 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
         raise NetworkReadError(404, "node_not_found", "Node was not found")
     if str(candidate.get("ip") or candidate.get("hostname") or "") != ip:
         raise NetworkReadError(503, "identity_mismatch", "Device identity does not match requested address")
-    if str(candidate.get("os") or "").lower() not in CISCO_OS:
-        raise NetworkReadError(404, "not_cisco", "Cisco port inventory is unavailable for this node")
+    os_name = str(candidate.get("os") or "").lower()
+    if os_name in CISCO_OS:
+        kind = "cisco"
+    elif os_name in HILLSTONE_OS:
+        kind = "hillstone"
+    else:
+        raise NetworkReadError(404, "unsupported_os", "Interface inventory is unavailable for this node")
     try:
         rows = client.get_device_ports(candidate, columns=PORT_COLUMNS, with_vlans=True)
     except LibreNMSError as exc:
@@ -229,14 +294,15 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
     if not isinstance(rows, list) or not rows or len(rows) > PORT_LIMIT or not all(isinstance(row, dict) for row in rows):
         raise NetworkReadError(503, "ports_invalid", "Port inventory is empty, malformed, or exceeds the limit")
     warnings: list[str] = []
-    metrics = _current_metrics(context, ip, warnings)
+    metrics = _current_metrics(context, ip, warnings, kind)
+    wan_evidence = _wan_evidence(context, ip, warnings) if kind == "hillstone" else {}
     port_names = {_text(row.get("ifName")) for row in rows}
     neighbors = _neighbors(context, ip, {name for name in port_names if name}, warnings)
     ports = []
     for row in rows:
         index = _index(row.get("ifIndex"))
         name = _text(row.get("ifName"))
-        stack_member, port_number = _stack_parts(name)
+        stack_member, port_number = _stack_parts(name) if kind == "cisco" else (None, None)
         speed = _speed(row.get("ifSpeed"))
         high_speed = metrics.get("highSpeedMbps", {}).get(index) if index is not None else None
         if speed is None and high_speed is not None and 0 < high_speed <= 1_000_000:
@@ -244,7 +310,7 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
         rx = metrics.get("rxBps", {}).get(index) if index is not None else None
         tx = metrics.get("txBps", {}).get(index) if index is not None else None
         current = lambda field: metrics.get(field, {}).get(index) if index is not None else None
-        ports.append({
+        port = {
             "ifIndex": index, "ifName": name,
             "ifDescr": _text(row.get("ifDescr")), "ifAlias": _text(row.get("ifAlias")),
             "stackMember": stack_member,
@@ -261,9 +327,13 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
             "outputDiscardsTotal": current("outputDiscardsTotal"),
             "vlanEvidence": _vlans(row.get("vlans"), warnings),
             "neighbors": neighbors.get(name or "", []) if neighbors is not None else None,
-        })
+        }
+        if kind == "hillstone":
+            port["wanEvidence"] = wan_evidence.get(index) if index is not None else None
+        ports.append(port)
     unique_warnings = list(dict.fromkeys(warnings))
-    result = {"ok": True, "ip": ip, "name": _text(candidate.get("sysName") or candidate.get("hostname")),
+    result = {"ok": True, "ip": ip, "kind": kind,
+              "name": _text(candidate.get("sysName") or candidate.get("hostname")),
               "model": _text(candidate.get("hardware") or candidate.get("model")),
               "count": len(ports), "ports": ports, "warnings": unique_warnings,
               "degraded": bool(unique_warnings)}

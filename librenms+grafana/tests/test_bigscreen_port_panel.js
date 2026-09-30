@@ -136,6 +136,35 @@ assert.ok(root.innerHTML.includes('Te 1/0') && root.innerHTML.includes('Te 1/1')
 assert.strictEqual((root.innerHTML.match(/class="port-face-number">1</g) || []).length, 2,
   'equal slot numbers are separated by distinct sub-bank labels');
 
+const hillstone = { ...payload, kind: 'hillstone', name: 'FW A', model: 'SG-6000',
+  warnings: ['当前防火墙 IF-MIB 无有效覆盖', '已省略过期邻接'], ports: [
+    port('eth1', null, null, { ifAlias: 'WAN-A', rxBps: null, txBps: null,
+      wanEvidence: { authority: 'isp-inventory', name: 'ISP A', wanIp: '198.51.100.2', gateway: '198.51.100.1' },
+      inputErrorsTotal: 4, neighbors: null }),
+    port('eth2', null, null, { adminState: 'down', operState: 'down', speedBps: null,
+      rxBps: null, txBps: null, wanEvidence: null, neighbors: [] })
+  ] };
+panel.open(hillstone);
+assert.ok(root.innerHTML.includes('接口 2 · 在线 1 · 离线 1 · 未知 0 · 管理关闭 1'));
+assert.ok(root.innerHTML.includes('WAN / ISP') && root.innerHTML.includes('其他接口'));
+assert.ok(root.innerHTML.includes('当前防火墙 IF-MIB 无有效覆盖'));
+assert.ok(root.innerHTML.includes('RX — · TX —'));
+assert.ok(root.innerHTML.includes('历史累计证据，不等于当前故障'));
+assert.ok(!root.innerHTML.includes('port-member') && !root.innerHTML.includes('port-bank'),
+  'Hillstone must not reuse Cisco physical or StackWise layout');
+first.dataset.portIndex = '0';
+root.onfocusin({ target: first });
+assert.ok(root.card.innerHTML.includes('ISP A'));
+assert.ok(root.card.innerHTML.includes('邻接资料暂不可用'));
+root.onclick({ target: first });
+assert.ok(root.pinned.innerHTML.includes('WAN IP 198.51.100.2'));
+second.dataset.portIndex = '1';
+root.onfocusin({ target: second });
+assert.ok(root.card.innerHTML.includes('当前快照未发现邻接'));
+assert.strictEqual(networkReads, 0, 'Hillstone hover, focus and pin use only loaded payload');
+panel.open({ ...hillstone, ports: [{ ...hillstone.ports[1] }], warnings: [] });
+assert.ok(!root.innerHTML.includes('WAN / ISP'), 'no exact WAN evidence means no WAN section');
+
 const dense = { ...payload, ports: Array.from({ length: 338 }, (_, index) =>
   port(`Port-channel${index + 1}`, null, null, { speedBps: null })) };
 panel.open(dense);
