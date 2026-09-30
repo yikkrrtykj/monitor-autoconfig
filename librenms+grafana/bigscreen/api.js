@@ -77,12 +77,12 @@
       .filter((item) => Number.isFinite(item.value));
   }
 
-  async function prometheusRangeFor(query, window, nameGetter = metricName) {
+  async function prometheusRangeFor(query, window, nameGetter = metricName, raw = false, base = prometheusBaseUrl()) {
     const params = new URLSearchParams({
       query,
       ...Object.fromEntries(Object.entries(window).map(([key, value]) => [key, String(value)]))
     });
-    const response = await fetchWithTimeout(`${prometheusBaseUrl()}/api/v1/query_range?${params.toString()}`, { cache: "no-store" });
+    const response = await fetchWithTimeout(`${base}/api/v1/query_range?${params.toString()}`, { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`历史监控数据查询失败（HTTP ${response.status}）`);
     }
@@ -90,6 +90,7 @@
     if (payload.status !== "success") {
       throw new Error("历史监控数据查询失败，请稍后再试。");
     }
+    if (raw) return payload.data.result;
     return payload.data.result
       .map((item) => ({
         name: nameGetter(item.metric || {}),
@@ -686,6 +687,49 @@
     return platformApi(`/network/nodes/${encodeURIComponent(ip)}/ports`, { timeoutMs: 15000 });
   }
 
+  async function fetchPortHistory(device, port) {
+    const index = port && port.ifIndex;
+    const ip = device && device.ip;
+    if (!device || !['cisco', 'generic-switch', 'hillstone'].includes(device.kind) ||
+        !Number.isInteger(index) || index <= 0 || index > 2147483647 ||
+        typeof ip !== 'string' || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip) ||
+        !ip.split('.').every((part) => Number(part) <= 255 && String(Number(part)) === part)) {
+      throw new Error('接口历史身份不可用');
+    }
+    const job = device.kind === 'hillstone' ? 'firewall-snmp' : 'infra-switch-ifmib';
+    const label = device.kind === 'hillstone' ? 'instance' : 'target_ip';
+    const window = rangeWindow(30);
+    const read = async (metric) => {
+      const query = `rate(${metric}{job="${job}",${label}="${ip}",ifIndex="${index}"}[5m]) * 8`;
+      const rows = await prometheusRangeFor(query, window, metricName, true, '/prometheus');
+      if (!Array.isArray(rows)) throw new Error('接口历史响应无效');
+      const matches = rows.filter((row) => row && row.metric && row.metric.job === job &&
+        row.metric[label] === ip && row.metric.ifIndex === String(index));
+      if (matches.length > 1) return { points: [], coverage: 'ambiguous' };
+      if (!matches.length) return { points: [], coverage: 'empty' };
+      if (!Array.isArray(matches[0].values)) throw new Error('接口历史响应无效');
+      const points = [];
+      const seen = new Set();
+      for (const sample of matches[0].values) {
+        if (!Array.isArray(sample) || sample.length !== 2 || sample[0] == null || sample[1] == null ||
+            typeof sample[0] === 'boolean' || typeof sample[1] === 'boolean' ||
+            String(sample[0]).trim() === '' || String(sample[1]).trim() === '') continue;
+        const t = Number(sample[0]);
+        const v = Number(sample[1]);
+        if (!Number.isFinite(t) || !Number.isFinite(v) || v < 0 ||
+            t < window.start || t > window.end || (t - window.start) % window.step !== 0) continue;
+        if (seen.has(t)) return { points: [], coverage: 'ambiguous' };
+        seen.add(t);
+        points.push({ t, v });
+      }
+      points.sort((a, b) => a.t - b.t);
+      return { points, coverage: points.length ? 'available' : 'empty' };
+    };
+    const [rx, tx] = await Promise.all([read('ifHCInOctets'), read('ifHCOutOctets')]);
+    return { source: 'Prometheus', ...window, rx: rx.points, tx: tx.points,
+      coverage: { rx: rx.coverage, tx: tx.coverage } };
+  }
+
   function fetchNetworkIsp() {
     return platformApi("/network/isp", { timeoutMs: 10000 });
   }
@@ -847,6 +891,7 @@
     fetchNetworkTopology,
     fetchNodeInspector,
     fetchNodePorts,
+    fetchPortHistory,
     fetchNetworkIsp,
     fetchRuntimeStatus,
     fetchPlatformAuthStatus,

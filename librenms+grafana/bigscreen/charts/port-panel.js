@@ -56,12 +56,13 @@
     return { members: [...memberGroups.values()], banks, other };
   }
 
-  function createPortPanel({ document, window, escapeHtml, setTimeout: delay = setTimeout,
+  function createPortPanel({ document, window, escapeHtml, fetchPortHistory, renderLineChart, formatBits, setTimeout: delay = setTimeout,
                              clearTimeout: cancel = clearTimeout }) {
     const element = () => document.getElementById('topologyPortPanel');
     let payload = null;
     let hoverTimer = null;
     let selectedIndex = null;
+    let historyGeneration = 0;
     let onClose = () => {};
     const safe = (value) => escapeHtml(value == null || value === '' ? '—' : String(value));
     const number = (value, digits = 1) => Number.isFinite(value) ? Number(value).toFixed(digits) : '—';
@@ -184,11 +185,48 @@
     }
 
     function closePinned() {
+      historyGeneration += 1;
       selectedIndex = null;
       const root = element();
       const detail = root.querySelector('.port-pinned-detail');
       if (detail) { detail.hidden = true; detail.innerHTML = ''; }
       root.querySelectorAll('.port-face').forEach((button) => button.setAttribute('aria-pressed', 'false'));
+    }
+
+    function pinnedHtml(port) {
+      return '<button class="port-pinned-close" type="button" aria-label="关闭详情">×</button>' + detailHtml(port) +
+        '<section class="port-history"><h4>最近 15 分钟 RX/TX · Prometheus</h4><p class="port-history-status">正在读取历史…</p><div id="portHistoryChart" class="port-history-chart" hidden></div></section>';
+    }
+
+    async function loadHistory(device, port, index) {
+      const generation = ++historyGeneration;
+      const active = () => generation === historyGeneration && payload === device && selectedIndex === index;
+      try {
+        if (!fetchPortHistory) throw new Error('历史查询不可用');
+        const history = await fetchPortHistory(device, port);
+        if (!active()) return;
+        const detail = element().querySelector('.port-pinned-detail');
+        const status = detail.querySelector('.port-history-status');
+        const chart = detail.querySelector('.port-history-chart');
+        const ambiguous = ['rx', 'tx'].filter((key) => history.coverage[key] === 'ambiguous');
+        const missing = ['rx', 'tx'].filter((key) => !history[key].length);
+        if (missing.length === 2) {
+          status.textContent = ambiguous.length ? 'Prometheus 接口历史存在重复序列，无法确定覆盖' :
+            `${port.metricSource === 'LibreNMS poller' ? '当前值来自 LibreNMS poller；' : ''}Prometheus 暂无该接口历史 RX/TX 覆盖`;
+          return;
+        }
+        status.textContent = missing.length ? `${missing.map((key) => key.toUpperCase()).join('/')} 历史${ambiguous.length ? '存在重复序列' : '暂无覆盖'}；未补零` : '';
+        chart.hidden = false;
+        renderLineChart('portHistoryChart', [
+          { name: 'RX', values: history.rx, color: '#60a5fa' },
+          { name: 'TX', values: history.tx, color: '#34d399' }
+        ], { legend: 'bottom', axisFormatter: formatBits, valueFormatter: formatBits,
+          minHeight: 150, minWidth: 240, minMax: 1, calcs: ['last'] });
+      } catch (error) {
+        if (!active()) return;
+        const status = element().querySelector('.port-pinned-detail').querySelector('.port-history-status');
+        status.textContent = 'Prometheus 接口历史暂不可用，请稍后重新选择';
+      }
     }
 
     function installEvents() {
@@ -205,8 +243,9 @@
         if (selectedIndex === index) { closePinned(); return; }
         selectedIndex = index;
         const detail = root.querySelector('.port-pinned-detail');
-        detail.innerHTML = '<button class="port-pinned-close" type="button" aria-label="关闭详情">×</button>' + detailHtml(payload.ports[selectedIndex]);
+        detail.innerHTML = pinnedHtml(payload.ports[selectedIndex]);
         detail.hidden = false;
+        loadHistory(payload, payload.ports[index], index);
         root.querySelectorAll('.port-face').forEach((faceButton) => {
           faceButton.setAttribute('aria-pressed', String(faceButton === button));
         });
