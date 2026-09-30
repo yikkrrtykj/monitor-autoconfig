@@ -189,6 +189,59 @@ assert.ok(root.card.innerHTML.includes('输入错误（累计）</dt><dd>0</dd>'
 assert.ok(root.card.innerHTML.includes('输入丢弃（累计）</dt><dd>—</dd>'));
 assert.strictEqual(networkReads, 0);
 
+for (const kind of ['cisco', 'hillstone', 'generic-switch']) {
+  const warnings = ['Prometheus IF-MIB 无有效覆盖，已使用 LibreNMS poller', '已省略过期邻接', 'WAN / ISP 资料暂不可用'];
+  panel.open({ ...payload, kind, degraded: true, warnings, ports: [
+    port('Gi1/0/1', 1, 1, { metricSource: 'LibreNMS poller', metricAgeSeconds: 30, rxBps: 80 }),
+    port('Gi1/0/2', 1, 2, { txBps: null })
+  ] });
+  first.dataset.portIndex = '0';
+  second.dataset.portIndex = '1';
+  assert.strictEqual(root.dataset.panelMode, kind === 'cisco' ? 'physical' : 'interfaces');
+  assert.ok(!root.innerHTML.includes('资料部分降级'));
+  warnings.forEach((warning) => assert.ok(root.innerHTML.includes(warning)));
+  root.onclick({ target: first });
+  assert.strictEqual(root.pinned.hidden, false);
+  assert.ok(root.pinned.innerHTML.includes('关闭详情'));
+  assert.strictEqual(first.attributes['aria-pressed'], 'true');
+  root.onclick({ target: second });
+  assert.ok(root.pinned.innerHTML.includes('Gi1/0/2'));
+  assert.strictEqual(first.attributes['aria-pressed'], 'false');
+  assert.strictEqual(second.attributes['aria-pressed'], 'true');
+  root.onclick({ target: second });
+  assert.strictEqual(root.pinned.hidden, true);
+  assert.strictEqual(root.pinned.innerHTML, '');
+  assert.ok(root.faces.every((face) => face.attributes['aria-pressed'] === 'false'));
+  root.onclick({ target: second });
+  assert.strictEqual(root.pinned.hidden, false, 'same port can reopen after deselection');
+  root.onclick({ target: { closest: (selector) => selector === '.port-pinned-close' ? {} : null } });
+  assert.strictEqual(root.pinned.hidden, true);
+  assert.strictEqual(root.pinned.innerHTML, '');
+  assert.ok(root.faces.every((face) => face.attributes['aria-pressed'] === 'false'));
+  root.onclick({ target: second });
+  assert.strictEqual(root.pinned.hidden, false, 'explicit close resets selected index');
+  let prevented = 0;
+  let stopped = 0;
+  const escape = { key: 'Escape', preventDefault: () => prevented++, stopPropagation: () => stopped++ };
+  root.onkeydown(escape);
+  assert.strictEqual(root.pinned.hidden, true);
+  assert.strictEqual(root.pinned.innerHTML, '');
+  assert.ok(root.faces.every((face) => face.attributes['aria-pressed'] === 'false'));
+  assert.strictEqual(panel.isOpen(), true, 'first Escape closes detail only');
+  root.onkeydown(escape);
+  assert.strictEqual(prevented, 1);
+  assert.strictEqual(stopped, 1, 'subsequent Escape is left to existing outer behavior');
+  root.onclick({ target: second });
+  assert.strictEqual(root.pinned.hidden, false, 'Escape resets selected index');
+  panel.close();
+  assert.strictEqual(root.onkeydown, null);
+  assert.strictEqual(root.onclick, null);
+  assert.strictEqual(root.pinned.hidden, true);
+  assert.ok(root.faces.every((face) => face.attributes['aria-pressed'] === 'false'));
+  assert.strictEqual(root.dataset.panelMode, undefined);
+}
+assert.strictEqual(networkReads, 0, 'all pin lifecycle actions stay payload-only');
+
 const dense = { ...payload, ports: Array.from({ length: 338 }, (_, index) =>
   port(`Port-channel${index + 1}`, null, null, { speedBps: null })) };
 panel.open(dense);
@@ -196,6 +249,10 @@ assert.strictEqual((root.innerHTML.match(/data-port-index=/g) || []).length, 338
 assert.ok(root.innerHTML.includes('其他接口 (338)'));
 const css = fs.readFileSync(path.join(__dirname, '../bigscreen/style.css'), 'utf8');
 assert.ok(css.includes('width: min(900px, calc(100% - 36px))'));
+assert.ok(css.includes('.topology-port-panel[data-panel-mode="interfaces"] { width: min(740px, calc(100% - 36px)); }'));
+assert.ok(css.includes('.topology-port-panel[data-panel-mode="interfaces"] { width: auto; }'));
+assert.ok(css.includes('grid-template-columns: repeat(3, minmax(0, 1fr))'));
+assert.ok(css.includes('text-overflow: ellipsis'));
 assert.ok(css.includes('.port-other-grid {') && css.includes('max-height: 180px'));
 assert.ok(css.includes('.port-bank-two-row .port-bank-row { min-width: 760px'));
 panel.close();
