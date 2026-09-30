@@ -1379,12 +1379,12 @@ body {
 .topology-port-panel[data-panel-mode="interfaces"] { width: min(740px, calc(100% - 36px)); }
 .port-interface-section { margin: 10px 0; }
 .port-interface-section h3 { color: #a9c9ff; font-size: 13px; margin: 0 0 6px; }
-.port-interface-list { display: grid; gap: 4px; }
-.port-interface-name { font-weight: 700; overflow-wrap: anywhere; }
-.port-interface-description { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.port-interface-state { font-weight: 700; }
+.port-interface-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(120px, 100%), 1fr)); gap: 6px; }
+.port-interface-name, .port-interface-summary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.port-interface-name { font-weight: 700; }
+.port-interface-summary { color: #cbd5e1; font-size: 10px; margin-top: 3px; }
 .port-face { min-width: 0; height: 34px; border: 1px solid #64748b; border-radius: 4px; background: #334155; color: #f8fafc; cursor: pointer; position: relative; padding: 2px; }
-.port-interface-row { width: 100%; height: auto; min-height: 40px; display: grid; grid-template-columns: minmax(80px, 1fr) minmax(70px, 1fr) minmax(90px, 1fr) 42px minmax(145px, 1.5fr) minmax(110px, 1fr); gap: 6px; align-items: center; text-align: left; padding: 5px 8px; font-size: 11px; }
+.port-interface-tile { width: 100%; height: 54px; min-width: 0; text-align: left; padding: 6px 8px; }
 .port-face:focus-visible, .port-face[aria-pressed="true"] { outline: 2px solid #93c5fd; outline-offset: 1px; }
 .port-state-up { border-color: #34d399; background: #14532d; }
 .port-state-down { border-color: #fb923c; background: #7c2d12; }
@@ -1405,7 +1405,6 @@ body {
   .topology-port-panel { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; height: min(76vh, 760px); }
   .topology-port-panel[data-panel-mode="interfaces"] { width: auto; }
   .port-bank-two-row .port-bank-row { min-width: 760px; }
-  .port-interface-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 /* ==================== 手机端适配 ====================
