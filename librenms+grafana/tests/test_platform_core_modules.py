@@ -256,10 +256,12 @@ def test_platform_api_package_dependency_direction_and_compose_mount():
         "incidents",
         "iperf_runtime",
         "network_inspector",
+        "network_port_history",
         "network_ports",
         "network_read",
     }
     assert package_dependencies("network_ports") == {"network_read"}
+    assert package_dependencies("network_port_history") == {"network_read", "network_ports"}
     assert package_dependencies("write_api") == set()
     assert package_dependencies("health") == set()
     assert package_dependencies("incidents") == set()
