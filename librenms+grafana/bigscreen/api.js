@@ -725,9 +725,21 @@
       points.sort((a, b) => a.t - b.t);
       return { points, coverage: points.length ? 'available' : 'empty' };
     };
-    const [rx, tx] = await Promise.all([read('ifHCInOctets'), read('ifHCOutOctets')]);
+    const directions = await Promise.allSettled([read('ifHCInOctets'), read('ifHCOutOctets')]);
+    if (directions.every((item) => item.status === 'rejected')) throw new Error('接口历史查询失败');
+    const [rx, tx] = directions.map((item) => item.status === 'fulfilled' ? item.value : { points: [], coverage: 'unavailable' });
     return { source: 'Prometheus', ...window, rx: rx.points, tx: tx.points,
       coverage: { rx: rx.coverage, tx: tx.coverage } };
+  }
+
+  async function fetchPortHistoryFallback(ip, ifIndex) {
+    if (typeof ip !== 'string' || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip) ||
+        !ip.split('.').every((part) => Number(part) <= 255 && String(Number(part)) === part) ||
+        !Number.isInteger(ifIndex) || ifIndex <= 0 || ifIndex > 2147483647) throw new Error('接口历史身份不可用');
+    const result = await platformApi(`/network/nodes/${encodeURIComponent(ip)}/ports/${ifIndex}/history`, { timeoutMs: 15000 });
+    if (result.source !== 'LibreNMS RRD' || result.ip !== ip || result.ifIndex !== ifIndex ||
+        !Array.isArray(result.rx) || !Array.isArray(result.tx) || !result.coverage) throw new Error('接口历史响应无效');
+    return result;
   }
 
   function fetchNetworkIsp() {
@@ -892,6 +904,7 @@
     fetchNodeInspector,
     fetchNodePorts,
     fetchPortHistory,
+    fetchPortHistoryFallback,
     fetchNetworkIsp,
     fetchRuntimeStatus,
     fetchPlatformAuthStatus,
