@@ -152,7 +152,8 @@ def test_no_ifmib_target_coverage_is_degraded_but_inventory_succeeds(tmp_path):
     result = network_ports.read_ports(context_for(tmp_path, client)[0], IP)
     assert result["count"] == 1
     assert result["ports"][0]["rxBps"] is None
-    assert result["warnings"] == ["当前 IF-MIB 无有效覆盖"]
+    assert result["warnings"] == ["当前 IF-MIB 无有效覆盖",
+                                  "LibreNMS poller 时间缺失、无效或已过期，当前指标不可用"]
     assert result["degraded"] is True
 
 
@@ -198,7 +199,8 @@ def test_stopped_scrape_does_not_become_current_rate_despite_fresh_query_timesta
     result = network_ports.read_ports(context, IP)
     assert result["ports"][0]["rxBps"] is None
     assert result["ports"][0]["rxUtilization"] is None
-    assert result["warnings"] == ["当前 IF-MIB 无有效覆盖"]
+    assert result["warnings"] == ["当前 IF-MIB 无有效覆盖",
+                                  "LibreNMS poller 时间缺失、无效或已过期，当前指标不可用"]
     assert len(queries) == len(network_ports.METRICS)
     assert "timestamp(ifHCInOctets" in queries[0]
 
@@ -631,3 +633,61 @@ def test_prometheus_discard_totals_remain_available(tmp_path, os_name):
     port = network_ports.read_ports(context_for(tmp_path, client, metrics=metrics)[0], IP)["ports"][0]
     assert (port["inputDiscardsTotal"], port["outputDiscardsTotal"]) == (5, 0)
     assert port["metricSource"] == "Prometheus" and port["rxBps"] is None
+
+
+@pytest.mark.parametrize("os_name", ["ios", "iosxe"])
+def test_cisco_fresh_poller_preserves_physical_identity_and_zero_errors(tmp_path, os_name):
+    client = PortsClient([
+        {"device_id": 7, "ifIndex": 1, "ifName": "Gi1/0/1", "ifSpeed": 1000,
+         "poll_time": 1_800_000_000 - 30, "ifInOctets_rate": 10,
+         "ifOutOctets_rate": 20, "ifInErrors": 0, "ifOutErrors": 0},
+        {"device_id": 7, "ifIndex": 2, "ifName": "Gi2/0/1",
+         "poll_time": 1_800_000_000 - 30, "ifInOctets_rate": 0},
+    ], {"device_id": 7, "ip": IP, "os": os_name})
+    context, _ = context_for(tmp_path, client)
+    context = network_read.NetworkReadContext(**{**context.__dict__, "clock": lambda: 1_800_000_000})
+    result = network_ports.read_ports(context, IP)
+    first, second = result["ports"]
+    assert result["kind"] == "cisco"
+    assert (first["stackMember"], first["portNumber"]) == (1, 1)
+    assert (first["rxBps"], first["txBps"], first["rxUtilization"]) == (80, 160, .08)
+    assert first["metricSource"] == "LibreNMS poller" and first["metricAgeSeconds"] == 30
+    assert (first["inputErrorsTotal"], first["outputErrorsTotal"]) == (0, 0)
+    assert first["inputDiscardsTotal"] is None and first["outputDiscardsTotal"] is None
+    assert second["inputErrorsTotal"] is None and second["outputErrorsTotal"] is None
+    assert second["rxBps"] == 0 and second["rxUtilization"] is None
+    assert any("已使用 LibreNMS poller" in warning for warning in result["warnings"])
+    assert "当前 IF-MIB 无有效覆盖" not in result["warnings"]
+    assert len([call for call in client.calls if call[0] == "ports"]) == 1
+
+
+@pytest.mark.parametrize("poll,device_id", [(None, 7), (-1, 7), (1_800_000_000 - 601, 7),
+    (1_800_000_000 + 1, 7), ("invalid", 7), (1_800_000_000 - 30, 99)])
+def test_cisco_invalid_poller_keeps_unknown_values(tmp_path, poll, device_id):
+    client = PortsClient([{"device_id": device_id, "ifIndex": 1, "poll_time": poll,
+                           "ifInOctets_rate": 10, "ifInErrors": 0}])
+    context, _ = context_for(tmp_path, client)
+    context = network_read.NetworkReadContext(**{**context.__dict__, "clock": lambda: 1_800_000_000})
+    result = network_ports.read_ports(context, IP)
+    port = result["ports"][0]
+    assert all(port[field] is None for field in network_ports.CURRENT_FIELDS)
+    assert port["metricSource"] is None and result["degraded"]
+    assert "当前 IF-MIB 无有效覆盖" in result["warnings"]
+    assert not any("已使用" in warning for warning in result["warnings"])
+
+
+@pytest.mark.parametrize("field,value", [("rxBps", 80), ("inputErrorsTotal", 0), ("outputDiscardsTotal", 0)])
+def test_cisco_prometheus_preference_is_per_row_without_fallback_mixing(tmp_path, field, value):
+    client = PortsClient([
+        {"ifIndex": 1, "poll_time": 1_800_000_000 - 30,
+         "ifInOctets_rate": 999, "ifOutOctets_rate": 888, "ifInErrors": 3},
+        {"ifIndex": 2, "poll_time": 1_800_000_000 - 30, "ifInOctets_rate": 10},
+    ])
+    query = network_ports.METRICS[field].replace("{ip}", IP)
+    context, _ = context_for(tmp_path, client, metrics={query: [sample(1, value), sample(2, 777, ip="192.0.2.99")]})
+    context = network_read.NetworkReadContext(**{**context.__dict__, "clock": lambda: 1_800_000_000})
+    first, second = network_ports.read_ports(context, IP)["ports"]
+    assert first["metricSource"] == "Prometheus" and first["metricAgeSeconds"] is None
+    assert first[field] == value
+    assert all(first[other] is None for other in network_ports.CURRENT_FIELDS if other != field)
+    assert second["metricSource"] == "LibreNMS poller" and second["rxBps"] == 80

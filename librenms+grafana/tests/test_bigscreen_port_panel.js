@@ -176,6 +176,19 @@ root.onclick({ target: first });
 assert.ok(root.pinned.innerHTML.includes('指标来源'));
 assert.strictEqual(networkReads, 0);
 
+panel.open({ ...payload, kind: 'cisco', warnings: ['Prometheus IF-MIB 无有效覆盖，已使用 LibreNMS poller'], ports: [
+  port('Gi1/0/1', 1, 1, { metricSource: 'LibreNMS poller', metricAgeSeconds: 30,
+    rxBps: 80, txBps: 160, inputErrorsTotal: 0, outputErrorsTotal: 0,
+    inputDiscardsTotal: null, outputDiscardsTotal: null })
+] });
+assert.ok(root.innerHTML.includes('port-member') && root.innerHTML.includes('Gi 1/0'));
+assert.ok(!root.innerHTML.includes('class="port-face-counter"'), 'zero counters never create a warning marker');
+root.onfocusin({ target: first });
+assert.ok(root.card.innerHTML.includes('LibreNMS poller · 30 秒前'));
+assert.ok(root.card.innerHTML.includes('输入错误（累计）</dt><dd>0</dd>'));
+assert.ok(root.card.innerHTML.includes('输入丢弃（累计）</dt><dd>—</dd>'));
+assert.strictEqual(networkReads, 0);
+
 const dense = { ...payload, ports: Array.from({ length: 338 }, (_, index) =>
   port(`Port-channel${index + 1}`, null, null, { speedBps: null })) };
 panel.open(dense);
