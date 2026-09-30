@@ -43,16 +43,19 @@ def _rrd_path(base: Path, hostname: Any, port_id: int) -> Path | None:
         return None
 
 
-def _fetch(path: Path, start: int, end: int) -> str | None:
+def _fetch(path: Path, base: Path, start: int, end: int) -> str | None:
     # stdout goes to a temporary file to avoid unbounded in-memory capture.
     # fetch has no DS selector; only the two traffic datasets are parsed below.
     try:
+        root = base.resolve(strict=True)
+        relative = path.relative_to(root)
+        # Remote rrdcached rejects absolute names; local reads must use its base too.
         with tempfile.TemporaryFile() as output:
             result = subprocess.run(
-                ["rrdtool", "fetch", str(path), "AVERAGE", "--daemon", DAEMON,
+                ["rrdtool", "fetch", relative.as_posix(), "AVERAGE", "--daemon", DAEMON,
                  "--start", str(start), "--end", str(end)],
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
-                timeout=RRD_TIMEOUT, check=False, shell=False,
+                timeout=RRD_TIMEOUT, check=False, shell=False, cwd=root,
             )
             if result.returncode:
                 return None
@@ -61,7 +64,7 @@ def _fetch(path: Path, start: int, end: int) -> str | None:
             if len(raw) > OUTPUT_LIMIT:
                 return None
             return raw.decode("ascii", errors="strict")
-    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+    except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError, RuntimeError):
         return None
 
 
@@ -141,5 +144,5 @@ def read_port_history(context: NetworkReadContext, management_ip: str, ifindex: 
     path = _rrd_path(context.rrd_base_path, device.get("hostname"), port_id)
     if path is None:
         return payload
-    raw = _fetch(path, payload["start"], end)
+    raw = _fetch(path, context.rrd_base_path, payload["start"], end)
     return _parse(raw, payload) if raw is not None else payload

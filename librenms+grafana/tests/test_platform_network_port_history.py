@@ -61,10 +61,12 @@ def test_exact_identity_and_native_resolution_zero_bits_conversion(tmp_path, mon
     result = history.read_port_history(context, IP, "101")
     assert client.calls == [("device", IP), ("ports", 7, "device_id,ifIndex,port_id")]
     argv, options = calls[0]
-    assert argv == ["rrdtool", "fetch", str(context.rrd_base_path.resolve() / "switch.example" / "port-id42.rrd"),
+    assert argv == ["rrdtool", "fetch", "switch.example/port-id42.rrd",
                     "AVERAGE", "--daemon", "librenms-rrdcached:42217", "--start", str(END - 900), "--end", str(END)]
     assert options["timeout"] == 5 and options["shell"] is False
     assert options["stdin"] == subprocess.DEVNULL
+    assert options["cwd"] == context.rrd_base_path.resolve(strict=True)
+    assert not Path(argv[2]).is_absolute()
     assert result["source"] == "LibreNMS RRD" and result["step"] == 300
     assert result["rx"] == [{"t": END - 600, "v": 0}, {"t": END, "v": 32}]
     assert result["tx"] == [{"t": END - 600, "v": 16}, {"t": END, "v": 24}]
@@ -220,3 +222,27 @@ def test_librenms_failure_does_not_read_rrd(tmp_path, monkeypatch):
     client.get_device = fail
     monkeypatch.setattr(history, "_fetch", lambda *_: pytest.fail("no resolved identity"))
     assert history.read_port_history(context, IP, "101")["rx"] == []
+
+
+def test_remote_daemon_relative_name_and_local_cwd_resolve_same_file(tmp_path, monkeypatch):
+    context, _ = setup(tmp_path)
+    path = history._rrd_path(context.rrd_base_path, "switch.example", 42)
+    assert path is not None and path.is_absolute()
+    # Include a noncanonical base to lock canonical cwd rather than caller spelling.
+    base = context.rrd_base_path / ".." / "rrd"
+    def run(argv, **options):
+        assert argv[2] == "switch.example/port-id42.rrd"
+        assert options["cwd"] == context.rrd_base_path.resolve(strict=True)
+        assert (options["cwd"] / argv[2]).resolve(strict=True) == path
+        options["stdout"].write(raw().encode())
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(history.subprocess, "run", run)
+    assert history._fetch(path, base, END - 900, END) == raw()
+
+
+def test_fetch_rejects_absolute_file_outside_canonical_base(tmp_path, monkeypatch):
+    context, _ = setup(tmp_path)
+    outside = tmp_path / "outside.rrd"
+    outside.touch()
+    monkeypatch.setattr(history.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("outside root must not run"))
+    assert history._fetch(outside.resolve(), context.rrd_base_path, END - 900, END) is None
