@@ -357,6 +357,33 @@ def test_hillstone_exact_isp_join_and_conflict_do_not_guess(tmp_path):
     assert "WAN / ISP 资料已过期或不一致" in result["warnings"]
 
 
+def test_hillstone_wan_evidence_retries_publication_pair_once(monkeypatch, tmp_path):
+    client = PortsClient([{"ifIndex": 7, "ifName": "eth1"}],
+                         device={"device_id": 7, "ip": IP, "os": "stoneos"})
+    context, _ = context_for(tmp_path, client)
+    set_isp_inventory(context, [{"targets": ["198.51.100.1"], "labels": {
+        "metric_target": IP, "metric_ifindex": "7", "display_name": "ISP A",
+        "wan_ip": "198.51.100.2"}}])
+    coherent = network_read._read_isp_pair(context)
+    inventory, state, raw = coherent
+    calls = []
+
+    def publication_pair(_context):
+        calls.append(True)
+        if len(calls) == 1:
+            return inventory, {**state, "inventory_sha256": "old-published-digest"}, raw
+        return coherent
+
+    monkeypatch.setattr(network_ports, "_read_isp_pair", publication_pair)
+    result = network_ports.read_ports(context, IP)
+    assert len(calls) == 2, "a transient pair mismatch gets one bounded re-read"
+    assert result["ports"][0]["wanEvidence"] == {
+        "authority": "isp-inventory", "name": "ISP A",
+        "wanIp": "198.51.100.2", "gateway": "198.51.100.1",
+    }
+    assert "WAN / ISP 资料已过期或不一致" not in result["warnings"]
+
+
 def test_hillstone_metric_budget_and_bounds(monkeypatch, tmp_path):
     client = PortsClient([{"ifIndex": 1, "ifName": "X" * 300}],
                          device={"device_id": 7, "ip": IP, "os": "stoneos"})

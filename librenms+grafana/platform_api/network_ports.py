@@ -176,6 +176,8 @@ def _current_metrics(context: NetworkReadContext, ip: str, warnings: list[str],
 def _wan_evidence(context: NetworkReadContext, ip: str, warnings: list[str]) -> dict[int, dict[str, Any]]:
     try:
         inventory, state, raw = _read_isp_pair(context)
+        if not _isp_pair_consistent(inventory, state, raw):
+            inventory, state, raw = _read_isp_pair(context)
     except NetworkReadError:
         warnings.append("WAN / ISP 资料暂不可用")
         return {}
