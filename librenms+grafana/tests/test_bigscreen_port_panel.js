@@ -148,13 +148,15 @@ panel.open(hillstone);
 assert.ok(root.innerHTML.includes('接口 2 · 在线 1 · 离线 1 · 未知 0 · 管理关闭 1'));
 assert.ok(root.innerHTML.includes('WAN / ISP') && root.innerHTML.includes('其他接口'));
 assert.ok(root.innerHTML.includes('当前防火墙 IF-MIB 无有效覆盖'));
-assert.ok(root.innerHTML.includes('RX — · TX —'));
+assert.ok(root.innerHTML.includes('port-interface-tile'));
 assert.ok(root.innerHTML.includes('历史累计证据，不等于当前故障'));
 assert.ok(!root.innerHTML.includes('port-member') && !root.innerHTML.includes('port-bank'),
   'Hillstone must not reuse Cisco physical or StackWise layout');
 first.dataset.portIndex = '0';
 root.onfocusin({ target: first });
 assert.ok(root.card.innerHTML.includes('ISP A'));
+assert.ok(root.card.innerHTML.includes('RX</dt><dd>—</dd>'));
+assert.ok(root.card.innerHTML.includes('TX</dt><dd>—</dd>'));
 assert.ok(root.card.innerHTML.includes('邻接资料暂不可用'));
 root.onclick({ target: first });
 assert.ok(root.pinned.innerHTML.includes('WAN IP 198.51.100.2'));
@@ -168,12 +170,14 @@ assert.ok(!root.innerHTML.includes('WAN / ISP'), 'no exact WAN evidence means no
 panel.open({ ...hillstone, kind: 'generic-switch', model: null, ports: [
   port('Gi1/0/1', 1, 1, { metricSource: 'LibreNMS poller', metricAgeSeconds: 30, rxBps: 80, txBps: null })
 ] });
-assert.ok(root.innerHTML.includes('LibreNMS poller · 30 秒前'));
-assert.ok(root.innerHTML.includes('型号 —') && root.innerHTML.includes('TX —'));
+assert.ok(!root.innerHTML.includes('LibreNMS poller · 30 秒前'));
+assert.ok(root.innerHTML.includes('型号 —'));
 assert.ok(!root.innerHTML.includes('port-member') && !root.innerHTML.includes('port-bank'));
 root.onfocusin({ target: first });
 root.onclick({ target: first });
 assert.ok(root.pinned.innerHTML.includes('指标来源'));
+assert.ok(root.pinned.innerHTML.includes('LibreNMS poller · 30 秒前'));
+assert.ok(root.pinned.innerHTML.includes('TX</dt><dd>—</dd>'));
 assert.strictEqual(networkReads, 0);
 
 panel.open({ ...payload, kind: 'cisco', warnings: ['Prometheus IF-MIB 无有效覆盖，已使用 LibreNMS poller'], ports: [
@@ -242,6 +246,40 @@ for (const kind of ['cisco', 'hillstone', 'generic-switch']) {
 }
 assert.strictEqual(networkReads, 0, 'all pin lifecycle actions stay payload-only');
 
+const longName = 'ethernet-' + 'x'.repeat(100);
+const longAlias = 'full alias ' + 'y'.repeat(100);
+for (const kind of ['hillstone', 'generic-switch']) {
+  const ports = Array.from({ length: 30 }, (_, index) => port(index === 0 ? longName : `eth${index}`, null, null, {
+    ifAlias: longAlias, ifDescr: 'full description', metricSource: 'LibreNMS poller', metricAgeSeconds: 113,
+    rxBps: 800, txBps: 1600, inputErrorsTotal: index === 0 ? 4 : 0,
+    outputErrorsTotal: 0, inputDiscardsTotal: null, outputDiscardsTotal: null,
+    wanEvidence: index < 2 ? { authority: 'isp-inventory', name: 'ISP A' } : null,
+    vlanEvidence: { authority: 'observed', memberships: [{ vlanId: 42, untagged: true }] }, neighbors: []
+  }));
+  panel.open({ ...payload, kind, ports });
+  assert.strictEqual((root.innerHTML.match(/class="port-face port-interface-tile /g) || []).length, 30);
+  const sections = [...root.innerHTML.matchAll(/<div class="port-interface-list">([\s\S]*?)<\/div>/g)];
+  assert.strictEqual(sections.length, 2, 'WAN and remaining interfaces share the same grid container');
+  assert.strictEqual((sections[0][1].match(/port-interface-tile/g) || []).length, 2);
+  assert.strictEqual((sections[1][1].match(/port-interface-tile/g) || []).length, 28);
+  assert.ok(!root.innerHTML.includes('port-interface-row') && !root.innerHTML.includes('port-bank'));
+  assert.ok(root.innerHTML.includes('port-interface-summary') && root.innerHTML.includes('在线 · 1G'));
+  assert.ok(!root.innerHTML.includes(longAlias));
+  assert.ok(!root.innerHTML.includes('113 秒前'));
+  assert.strictEqual((root.innerHTML.match(/class="port-face-counter"/g) || []).length, 1);
+  first.dataset.portIndex = '0';
+  root.onfocusin({ target: first });
+  assert.ok(root.card.innerHTML.includes(longName) && root.card.innerHTML.includes(longAlias));
+  assert.ok(root.card.innerHTML.includes('LibreNMS poller · 113 秒前'));
+  assert.ok(root.card.innerHTML.includes('RX</dt><dd>800 b/s</dd>'));
+  root.onclick({ target: first });
+  assert.ok(root.pinned.innerHTML.includes(longAlias) && root.pinned.innerHTML.includes('full description'));
+  assert.ok(root.pinned.innerHTML.includes('VLAN 观测数据 / 非配置权威'));
+  root.onclick({ target: first });
+  assert.strictEqual(root.pinned.hidden, true);
+  assert.strictEqual(networkReads, 0);
+}
+
 const dense = { ...payload, ports: Array.from({ length: 338 }, (_, index) =>
   port(`Port-channel${index + 1}`, null, null, { speedBps: null })) };
 panel.open(dense);
@@ -251,7 +289,10 @@ const css = fs.readFileSync(path.join(__dirname, '../bigscreen/style.css'), 'utf
 assert.ok(css.includes('width: min(900px, calc(100% - 36px))'));
 assert.ok(css.includes('.topology-port-panel[data-panel-mode="interfaces"] { width: min(740px, calc(100% - 36px)); }'));
 assert.ok(css.includes('.topology-port-panel[data-panel-mode="interfaces"] { width: auto; }'));
-assert.ok(css.includes('grid-template-columns: repeat(3, minmax(0, 1fr))'));
+assert.ok(css.includes('grid-template-columns: repeat(auto-fill, minmax(min(120px, 100%), 1fr))'));
+assert.ok(css.includes('.port-interface-tile { width: 100%; height: 54px; min-width: 0;'));
+assert.ok(!css.includes('.port-interface-row'));
+assert.ok(css.includes('text-overflow: ellipsis; white-space: nowrap;'));
 assert.ok(css.includes('text-overflow: ellipsis'));
 assert.ok(css.includes('.port-other-grid {') && css.includes('max-height: 180px'));
 assert.ok(css.includes('.port-bank-two-row .port-bank-row { min-width: 760px'));

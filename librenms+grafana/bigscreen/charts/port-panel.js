@@ -130,22 +130,18 @@
       </dl></div>`;
     }
 
-    function interfaceRow(port, index) {
+    function interfaceTile(port, index) {
       const state = portState(port);
-      const description = [port.ifAlias, port.ifDescr].filter((value, i, values) => value &&
-        value !== port.ifName && values.indexOf(value) === i).join(' · ');
-      return `<button type="button" class="port-face port-interface-row port-state-${state.key}" data-port-index="${index}"
+      return `<button type="button" class="port-face port-interface-tile port-state-${state.key}" data-port-index="${index}"
         aria-label="${safe(port.ifName)} ${state.label}">
         <span class="port-interface-name">${safe(port.ifName)}</span>
-        <span class="port-interface-description">${safe(description)}</span>
-        <span class="port-interface-state">${state.label} · ${safe(port.adminState)}</span>
-        <span>${speed(port.speedBps)}</span><span>RX ${rate(port.rxBps)} · TX ${rate(port.txBps)}<br>${safe(sourceText(port))}</span>
-        <span>${cumulative(port) ? '累计 errors/discards 非 0' : '累计 —'}</span>
+        <span class="port-interface-summary">${state.label}${Number.isFinite(port.speedBps) ? ` · ${speed(port.speedBps)}` : ''}</span>
+        ${cumulative(port) ? '<span class="port-face-counter" aria-label="存在非零累计计数">·</span>' : ''}
       </button>`;
     }
 
     function interfaceSection(title, items) {
-      return `<section class="port-interface-section"><h3>${safe(title)}</h3><div class="port-interface-list">${items.map(({ port, index }) => interfaceRow(port, index)).join('')}</div></section>`;
+      return `<section class="port-interface-section"><h3>${safe(title)}</h3><div class="port-interface-list">${items.map(({ port, index }) => interfaceTile(port, index)).join('')}</div></section>`;
     }
 
     function openInterfaces(data, counts) {
