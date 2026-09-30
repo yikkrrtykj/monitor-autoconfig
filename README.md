@@ -192,7 +192,7 @@ http://服务器IP:8088/control
 
 已登录的 Hillstone 防火墙详情可通过“查看接口”打开接口列表。列表保留 LibreNMS 中的全部接口，优先使用现有 `firewall-snmp` 中与该管理 IP 精确匹配的新鲜 IF-MIB 数据。只有 ISP inventory 的目标 IP 与 ifIndex 均精确、唯一匹配时，接口才进入 WAN / ISP 区域。接口流量不用于推断 HA 主备角色，接口列表也不模拟 Cisco 物理面板。
 
-Cisco Small Business（`ciscosb`，兼容旧 `cisco-access`）详情使用“查看接口”和通用交换机接口列表，不模拟堆叠物理布局；其他未支持的 OS 不默认为 Cisco，也不显示详细接口按钮。型号缺失显示“—”。Hillstone / Small Business 的接口没有精确 Prometheus 当前指标时，使用同一次 LibreNMS 端口读取中的 poller 统计作为备用：仅接受数字 epoch `poll_time`，年龄须为 0–600 秒（现有约 5 分钟轮询的两个周期）；字节速率乘 8 转为 bps，累计错误/丢弃保留累计语义，利用率须有可信速率。缺失、过期或无效数据保持“—”并提示，界面标明 Prometheus / LibreNMS poller 来源与可用的 poller 年龄。数据不跨设备或 HA 节点借用；本功能不增加 SNMP 目标、任务或采集频率。
+Cisco Small Business（`ciscosb`，兼容旧 `cisco-access`）详情使用“查看接口”和通用交换机接口列表，不模拟堆叠物理布局；其他未支持的 OS 不默认为 Cisco，也不显示详细接口按钮。型号缺失显示“—”。Hillstone / Small Business 的接口没有精确 Prometheus 当前指标时，使用同一次 LibreNMS 端口读取中的 poller 统计作为备用：仅接受数字 epoch `poll_time`，年龄须为 0–600 秒（现有约 5 分钟轮询的两个周期）；字节速率乘 8 转为 bps，备用累计错误保留累计语义；丢弃计数只使用 Prometheus，LibreNMS 备用丢弃值保持“—”（device-ports API 不读取 statistics 表）。利用率须有可信速率。缺失、过期或无效数据保持“—”并提示，界面标明 Prometheus / LibreNMS poller 来源与可用的 poller 年龄。数据不跨设备或 HA 节点借用；本功能不增加 SNMP 目标、任务或采集频率。
 
 ### DHCP 地址池页面
 

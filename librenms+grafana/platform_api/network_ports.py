@@ -23,10 +23,15 @@ NEIGHBOR_LIMIT = 8
 METRIC_STALE_SECONDS = 120
 # Existing LibreNMS 300-second poll cadence; allow two intervals, never unbounded.
 POLLER_STALE_SECONDS = 600
+CURRENT_FIELDS = (
+    "rxBps", "txBps", "inputErrorsTotal", "outputErrorsTotal",
+    "inputDiscardsTotal", "outputDiscardsTotal",
+)
+# device-ports validates against ports, not ports_statistics; discards are
+# Prometheus-only here. Do not request a second statistics read.
 POLLER_FIELDS = {
     "rxBps": "ifInOctets_rate", "txBps": "ifOutOctets_rate",
     "inputErrorsTotal": "ifInErrors", "outputErrorsTotal": "ifOutErrors",
-    "inputDiscardsTotal": "ifInDiscards", "outputDiscardsTotal": "ifOutDiscards",
 }
 PORT_COLUMNS = ("device_id,ifIndex,ifName,ifDescr,ifAlias,ifAdminStatus,ifOperStatus,ifSpeed,"
                 "poll_time,poll_period," + ",".join(POLLER_FIELDS.values()))
@@ -319,7 +324,7 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
         if speed is None and high_speed is not None and 0 < high_speed <= 1_000_000:
             speed = _speed(int(high_speed * 1_000_000))
         values = {field: metrics.get(field, {}).get(index) if index is not None else None
-                  for field in POLLER_FIELDS}
+                  for field in CURRENT_FIELDS}
         source = "Prometheus" if any(value is not None for value in values.values()) else None
         age = None
         # Do not mix sources within a row or borrow another device/HA member.
@@ -331,8 +336,9 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
             if (age is not None and 0 <= age <= POLLER_STALE_SECONDS
                     and (row.get("device_id") is None or
                          str(row["device_id"]) == str(candidate.get("device_id")))):
-                values = {field: _number(row.get(column)) if not isinstance(row.get(column), bool) else None
-                          for field, column in POLLER_FIELDS.items()}
+                values = dict.fromkeys(CURRENT_FIELDS)
+                values.update({field: _number(row.get(column)) if not isinstance(row.get(column), bool) else None
+                               for field, column in POLLER_FIELDS.items()})
                 for field in ("rxBps", "txBps"):
                     if values[field] is not None:
                         values[field] *= 8
