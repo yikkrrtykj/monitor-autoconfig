@@ -536,3 +536,55 @@ def test_ports_route_rejects_unauthenticated_before_any_read(monkeypatch, tmp_pa
     with pytest.raises(PermissionError):
         read_api.handle_get(object(), f"/network/nodes/{IP}/ports", router)
     assert events == ["auth"]
+
+
+@pytest.mark.parametrize("os_name", ["ciscosb", "cisco-access", "hillstone"])
+def test_fresh_poller_fallback_is_single_read_and_device_local(tmp_path, os_name):
+    row = {"device_id": 7, "ifIndex": 1, "ifName": "Gi1/0/1", "ifSpeed": 1000,
+           "poll_time": time.time() - 30, "ifInOctets_rate": 10,
+           "ifOutOctets_rate": 20, "ifInErrors": 3}
+    client = PortsClient([row], {"device_id": 7, "ip": IP, "os": os_name})
+    context, _ = context_for(tmp_path, client)
+    result = network_ports.read_ports(context, IP)
+    port = result["ports"][0]
+    assert port["rxBps"] == 80 and port["txBps"] == 160
+    assert port["rxUtilization"] == .08 and port["inputErrorsTotal"] == 3
+    assert port["outputErrorsTotal"] is None
+    assert port["metricSource"] == "LibreNMS poller"
+    assert 29 <= port["metricAgeSeconds"] <= 31
+    assert port["stackMember"] is None and port["portNumber"] is None
+    assert len([call for call in client.calls if call[0] == "ports"]) == 1
+    row["device_id"] = 99
+    port = network_ports.read_ports(context, IP)["ports"][0]
+    assert port["rxBps"] is None and port["metricSource"] is None
+
+
+@pytest.mark.parametrize("poll", [None, "invalid", "2026-09-30T00:00:00Z", True,
+                                 float("nan"), float("inf"), 0, -1,
+                                 time.time() - 700, time.time() + 60])
+def test_invalid_poller_time_never_populates_current_values(tmp_path, poll):
+    client = PortsClient([{"ifIndex": 1, "poll_time": poll, "ifInOctets_rate": 10,
+                           "ifOutOctets_rate": 20, "ifInErrors": 3}],
+                         {"device_id": 7, "ip": IP, "os": "ciscosb"})
+    result = network_ports.read_ports(context_for(tmp_path, client)[0], IP)
+    port = result["ports"][0]
+    assert all(port[field] is None for field in network_ports.POLLER_FIELDS)
+    assert port["metricSource"] is None
+    assert any("poller" in warning for warning in result["warnings"])
+
+
+@pytest.mark.parametrize("os_name", ["ciscosb", "hillstone"])
+def test_exact_prometheus_wins_and_peer_cannot_supply_fallback(tmp_path, os_name):
+    client = PortsClient([{"ifIndex": 1, "poll_time": time.time() - 30,
+                           "ifInOctets_rate": 999}],
+                         {"device_id": 7, "ip": IP, "os": os_name})
+    templates = network_ports.FIREWALL_METRICS if os_name == "hillstone" else network_ports.METRICS
+    make_sample = firewall_sample if os_name == "hillstone" else sample
+    query = templates["rxBps"].replace("{ip}", IP)
+    context, _ = context_for(tmp_path, client, metrics={query: [make_sample(1, 80)]})
+    port = network_ports.read_ports(context, IP)["ports"][0]
+    assert port["rxBps"] == 80 and port["metricSource"] == "Prometheus"
+    assert port["metricAgeSeconds"] is None
+    context, _ = context_for(tmp_path, client, metrics={query: [make_sample(1, 80, ip="192.0.2.99")]})
+    port = network_ports.read_ports(context, IP)["ports"][0]
+    assert port["rxBps"] == 999 * 8 and port["metricSource"] == "LibreNMS poller"

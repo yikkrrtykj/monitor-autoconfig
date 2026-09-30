@@ -340,3 +340,14 @@ def test_single_node_get_route_authenticates_before_read(monkeypatch, tmp_path):
     read_api.handle_get(Handler(), "/network/nodes/192.0.2.7/inspector", router)
     assert events == [("auth",), ("read", "192.0.2.7"),
                       ("response", 200, {"ok": True, "ip": "192.0.2.7"})]
+
+
+@pytest.mark.parametrize("os_name,expected", [("ciscosb", "generic-switch"),
+    ("cisco-access", "generic-switch"), ("linux", "unknown"),
+    ("", "unknown"), ("iosxe", "cisco")])
+def test_inspector_explicit_os_classification(tmp_path, os_name, expected):
+    ip = "192.0.2.7"
+    client = InspectorClient([{"device_id": 7, "ip": ip, "os": os_name}])
+    payload = network_inspector.read_inspector(context_for(tmp_path, client), ip)
+    assert payload["kind"] == expected
+    assert payload["model"] is None

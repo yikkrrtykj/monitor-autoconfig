@@ -21,7 +21,15 @@ TEXT_LIMIT = 160
 VLAN_LIMIT = 128
 NEIGHBOR_LIMIT = 8
 METRIC_STALE_SECONDS = 120
-PORT_COLUMNS = "ifIndex,ifName,ifDescr,ifAlias,ifAdminStatus,ifOperStatus,ifSpeed"
+# Existing LibreNMS 300-second poll cadence; allow two intervals, never unbounded.
+POLLER_STALE_SECONDS = 600
+POLLER_FIELDS = {
+    "rxBps": "ifInOctets_rate", "txBps": "ifOutOctets_rate",
+    "inputErrorsTotal": "ifInErrors", "outputErrorsTotal": "ifOutErrors",
+    "inputDiscardsTotal": "ifInDiscards", "outputDiscardsTotal": "ifOutDiscards",
+}
+PORT_COLUMNS = ("device_id,ifIndex,ifName,ifDescr,ifAlias,ifAdminStatus,ifOperStatus,ifSpeed,"
+                "poll_time,poll_period," + ",".join(POLLER_FIELDS.values()))
 
 
 def _fresh_metric(metric: str, *, rate: bool = False) -> str:
@@ -59,6 +67,7 @@ FIREWALL_METRICS = {
 }
 STACK_PORT = re.compile(r"^(?:Gi|Te|Fa|Hu|Fo|Twe|Eth)([1-9]\d?)/\d{1,2}/([1-9]\d{0,2})$")
 CISCO_OS = frozenset(("ios", "iosxe", "iosxr", "nxos"))
+SMALL_BUSINESS_OS = frozenset(("ciscosb", "cisco-access"))
 HILLSTONE_OS = frozenset(("hillstone", "stoneos"))
 
 
@@ -130,8 +139,8 @@ def _current_metrics(context: NetworkReadContext, ip: str, warnings: list[str],
     failed = False
     covered = False
     deadline = time.monotonic() + context.http_timeout
-    templates = METRICS if kind == "cisco" else FIREWALL_METRICS
-    identity_label = "target_ip" if kind == "cisco" else "instance"
+    templates = FIREWALL_METRICS if kind == "hillstone" else METRICS
+    identity_label = "instance" if kind == "hillstone" else "target_ip"
     for field, template in templates.items():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -283,6 +292,8 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
     os_name = str(candidate.get("os") or "").lower()
     if os_name in CISCO_OS:
         kind = "cisco"
+    elif os_name in SMALL_BUSINESS_OS:
+        kind = "generic-switch"
     elif os_name in HILLSTONE_OS:
         kind = "hillstone"
     else:
@@ -307,9 +318,33 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
         high_speed = metrics.get("highSpeedMbps", {}).get(index) if index is not None else None
         if speed is None and high_speed is not None and 0 < high_speed <= 1_000_000:
             speed = _speed(int(high_speed * 1_000_000))
-        rx = metrics.get("rxBps", {}).get(index) if index is not None else None
-        tx = metrics.get("txBps", {}).get(index) if index is not None else None
-        current = lambda field: metrics.get(field, {}).get(index) if index is not None else None
+        values = {field: metrics.get(field, {}).get(index) if index is not None else None
+                  for field in POLLER_FIELDS}
+        source = "Prometheus" if any(value is not None for value in values.values()) else None
+        age = None
+        # Do not mix sources within a row or borrow another device/HA member.
+        if source is None and kind in ("hillstone", "generic-switch"):
+            now = context.clock()
+            raw_poll = row.get("poll_time")
+            poll = _number(raw_poll) if not isinstance(raw_poll, bool) else None
+            age = now - poll if poll is not None and poll > 0 else None
+            if (age is not None and 0 <= age <= POLLER_STALE_SECONDS
+                    and (row.get("device_id") is None or
+                         str(row["device_id"]) == str(candidate.get("device_id")))):
+                values = {field: _number(row.get(column)) if not isinstance(row.get(column), bool) else None
+                          for field, column in POLLER_FIELDS.items()}
+                for field in ("rxBps", "txBps"):
+                    if values[field] is not None:
+                        values[field] *= 8
+                        if not math.isfinite(values[field]):
+                            values[field] = None
+                if any(value is not None for value in values.values()):
+                    source = "LibreNMS poller"
+            else:
+                warnings.append("LibreNMS poller 时间缺失、无效或已过期，当前指标不可用")
+                age = age if age is not None and age >= 0 else None
+        rx, tx = values["rxBps"], values["txBps"]
+        current = values.get
         port = {
             "ifIndex": index, "ifName": name,
             "ifDescr": _text(row.get("ifDescr")), "ifAlias": _text(row.get("ifAlias")),
@@ -319,6 +354,7 @@ def read_ports(context: NetworkReadContext, management_ip: str) -> dict[str, Any
             "operState": _state(row.get("ifOperStatus")),
             "speedBps": speed,
             "rxBps": rx, "txBps": tx,
+            "metricSource": source, "metricAgeSeconds": age,
             "rxUtilization": rx / speed if rx is not None and speed else None,
             "txUtilization": tx / speed if tx is not None and speed else None,
             "inputErrorsTotal": current("inputErrorsTotal"),

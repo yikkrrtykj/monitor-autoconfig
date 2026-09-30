@@ -587,6 +587,22 @@ console.log('bigscreen Topology panel tests passed');
   assert.strictEqual(portEvents.filter((event) => event === 'open:10.0.0.3').length, 0,
     'closing Hillstone Inspector invalidates its pending Interface Panel');
 
+  for (const kind of ['generic-switch', 'unknown']) {
+    const switchPanel = topologyPanelModule.createTopologyPanel({
+      document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+      buildTopologyLayers, topologyLayout, renderTopologySvg,
+      topologyNodeKindLabel: (value) => value, topologyLatencyIp: (node) => node.ip,
+      escapeHtml, formatPingText, portPanel,
+      fetchNodeInspector: () => Promise.resolve({ kind, ip: '10.0.0.4' }),
+      fetchNodePorts: () => Promise.resolve({ kind, ports: [] })
+    });
+    switchPanel.render(switchPanel.prepare([{ kind: 'core', ip: '10.0.0.4', name: 'SG220' }], []));
+    canvas.nodes[0].dispatch('click');
+    await Promise.resolve();
+    assert.strictEqual(detail.innerHTML.includes('查看接口'), kind === 'generic-switch');
+    assert.ok(!detail.innerHTML.includes('查看端口'));
+  }
+
   const anonymousPanel = topologyPanelModule.createTopologyPanel({
     document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
     buildTopologyLayers, topologyLayout, renderTopologySvg,

@@ -110,6 +110,8 @@
       }).join('；');
     }
 
+    const sourceText = (port) => [port.metricSource || '—', Number.isFinite(port.metricAgeSeconds) ? `${number(port.metricAgeSeconds, 0)} 秒前` : ''].filter(Boolean).join(' · ');
+
     function detailHtml(port) {
       const vlan = port.vlanEvidence && Array.isArray(port.vlanEvidence.memberships)
         ? port.vlanEvidence.memberships.map((item) => `${item.vlanId}${item.untagged === true ? '（未标记）' : ''}`).join(', ') || '—'
@@ -118,7 +120,7 @@
         ${row('别名', port.ifAlias)}${row('描述', port.ifDescr)}
         ${row('管理状态', port.adminState)}${row('链路状态', port.operState)}
         ${row('速率', speed(port.speedBps))}${row('RX', rate(port.rxBps))}${row('TX', rate(port.txBps))}
-        ${row('RX 利用率', percent(port.rxUtilization))}${row('TX 利用率', percent(port.txUtilization))}
+        ${row('指标来源', sourceText(port))}${row('RX 利用率', percent(port.rxUtilization))}${row('TX 利用率', percent(port.txUtilization))}
         ${row('输入错误（累计）', port.inputErrorsTotal)}${row('输出错误（累计）', port.outputErrorsTotal)}
         ${row('输入丢弃（累计）', port.inputDiscardsTotal)}${row('输出丢弃（累计）', port.outputDiscardsTotal)}
         ${row('VLAN 观测数据 / 非配置权威', vlan)}${row('当前邻接', neighborsText(port.neighbors))}
@@ -138,7 +140,7 @@
         <span class="port-interface-description">${safe(description)}</span>
         <span class="port-interface-state">${state.label} · ${safe(port.adminState)}</span>
         <span>${speed(port.speedBps)}</span><span>RX ${rate(port.rxBps)} · TX ${rate(port.txBps)}</span>
-        <span>${cumulative(port) ? '累计 errors/discards 非 0' : '累计 —'}</span>
+        <span>${safe(sourceText(port))}</span><span>${cumulative(port) ? '累计 errors/discards 非 0' : '累计 —'}</span>
       </button>`;
     }
 
@@ -152,7 +154,7 @@
       data.ports.forEach((port, index) => (port.wanEvidence ? wan : other).push({ port, index }));
       const root = element();
       root.hidden = false;
-      root.innerHTML = `<header><div><strong>${safe(data.name || data.ip)}</strong><p>${safe(data.model)} · ${safe(data.ip)}</p></div><button class="port-panel-close" type="button" aria-label="关闭接口面板">×</button></header>
+      root.innerHTML = `<header><div><strong>${safe(data.name || data.ip)}</strong><p>型号 ${safe(data.model)} · ${safe(data.ip)}</p></div><button class="port-panel-close" type="button" aria-label="关闭接口面板">×</button></header>
         <div class="port-panel-summary">接口 ${data.ports.length} · 在线 ${counts.up} · 离线 ${counts.down} · 未知 ${counts.unknown} · 管理关闭 ${counts.disabled}</div>
         <div class="port-panel-legend">累计 errors/discards 非 0 是历史累计证据，不等于当前故障</div>
         ${data.degraded ? '<div class="port-panel-degraded">接口资料部分降级</div>' : ''}
@@ -224,7 +226,7 @@
       close();
       const root = element();
       root.hidden = false;
-      root.innerHTML = `<header><strong>${kind === 'hillstone' ? '接口' : '端口'}面板 · ${safe(ip)}</strong><button class="port-panel-close" type="button" aria-label="关闭面板">×</button></header><p>正在读取${kind === 'hillstone' ? '接口' : '端口'}…</p>`;
+      root.innerHTML = `<header><strong>${kind !== 'cisco' ? '接口' : '端口'}面板 · ${safe(ip)}</strong><button class="port-panel-close" type="button" aria-label="关闭面板">×</button></header><p>正在读取${kind !== 'cisco' ? '接口' : '端口'}…</p>`;
       installEvents();
     }
 
@@ -238,12 +240,12 @@
         counts[oper === 'up' || oper === 'down' ? oper : 'unknown'] += 1;
         if (port.adminState === 'down') counts.disabled += 1;
       });
-      if (data.kind === 'hillstone') { openInterfaces(data, counts); return; }
+      if (['hillstone', 'generic-switch'].includes(data.kind)) { openInterfaces(data, counts); return; }
       const { members, banks, other } = groupPorts(data.ports);
       const physicalCount = banks.reduce((count, bank) => count + bank.items.length, 0);
       const root = element();
       root.hidden = false;
-      root.innerHTML = `<header><div><strong>${safe(data.name || data.ip)}</strong><p>${safe(data.model)} · ${safe(data.ip)}</p></div><button class="port-panel-close" type="button" aria-label="关闭端口面板">×</button></header>
+      root.innerHTML = `<header><div><strong>${safe(data.name || data.ip)}</strong><p>型号 ${safe(data.model)} · ${safe(data.ip)}</p></div><button class="port-panel-close" type="button" aria-label="关闭端口面板">×</button></header>
         <div class="port-panel-summary">接口 ${data.ports.length} · 物理可识别 ${physicalCount} · 其他 ${other.length} · 运行在线 ${counts.up} · 运行离线 ${counts.down} · 运行未知 ${counts.unknown} · 管理关闭 ${counts.disabled}</div>
         <div class="port-panel-legend" aria-label="端口状态图例">
           <span><i class="port-legend-dot port-state-up"></i>在线</span><span><i class="port-legend-dot port-state-down"></i>链路断开</span>
