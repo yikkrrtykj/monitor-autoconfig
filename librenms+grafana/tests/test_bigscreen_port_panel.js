@@ -165,6 +165,17 @@ assert.strictEqual(networkReads, 0, 'Hillstone hover, focus and pin use only loa
 panel.open({ ...hillstone, ports: [{ ...hillstone.ports[1] }], warnings: [] });
 assert.ok(!root.innerHTML.includes('WAN / ISP'), 'no exact WAN evidence means no WAN section');
 
+panel.open({ ...hillstone, kind: 'generic-switch', model: null, ports: [
+  port('Gi1/0/1', 1, 1, { metricSource: 'LibreNMS poller', metricAgeSeconds: 30, rxBps: 80, txBps: null })
+] });
+assert.ok(root.innerHTML.includes('LibreNMS poller · 30 秒前'));
+assert.ok(root.innerHTML.includes('型号 —') && root.innerHTML.includes('TX —'));
+assert.ok(!root.innerHTML.includes('port-member') && !root.innerHTML.includes('port-bank'));
+root.onfocusin({ target: first });
+root.onclick({ target: first });
+assert.ok(root.pinned.innerHTML.includes('指标来源'));
+assert.strictEqual(networkReads, 0);
+
 const dense = { ...payload, ports: Array.from({ length: 338 }, (_, index) =>
   port(`Port-channel${index + 1}`, null, null, { speedBps: null })) };
 panel.open(dense);
