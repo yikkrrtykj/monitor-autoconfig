@@ -18,6 +18,7 @@ from . import (
     network_read,
     network_inspector,
     network_ports,
+    network_port_history,
 )
 
 
@@ -76,6 +77,13 @@ def handle_get(handler: Any, request_target: str, context: ReadApiContext) -> No
             handler._send_json(exc.payload, exc.status)
         else:
             handler._send_json(payload)
+    elif path.startswith("/network/nodes/") and path.endswith("/history"):
+        def history_reader(network_context):
+            parts = path.removeprefix("/network/nodes/").split("/")
+            if len(parts) != 4 or parts[1] != "ports" or parts[3] != "history":
+                raise network_read.NetworkReadError(400, "invalid_port_history", "Invalid interface history identity")
+            return network_port_history.read_port_history(network_context, parts[0], parts[2])
+        _handle_network_read(handler, context, history_reader)
     elif path.startswith("/network/nodes/") and path.endswith("/ports"):
         if context.network_require_auth is None or context.network_context is None:
             raise RuntimeError("network read API is not configured")

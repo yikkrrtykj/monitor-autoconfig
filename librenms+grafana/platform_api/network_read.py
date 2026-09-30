@@ -52,6 +52,8 @@ class NetworkReadContext:
     device_limit: int = DEVICE_LIMIT
     topology_edge_limit: int = TOPOLOGY_EDGE_LIMIT
     isp_limit: int = ISP_LIMIT
+    rrd_base_path: Path = Path("/data/db")
+    librenms_history_client_factory: Callable[[], Any] | None = None
 
 
 def _iso_timestamp(value: float) -> str:

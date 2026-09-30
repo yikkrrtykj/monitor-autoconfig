@@ -56,7 +56,7 @@
     return { members: [...memberGroups.values()], banks, other };
   }
 
-  function createPortPanel({ document, window, escapeHtml, fetchPortHistory, renderLineChart, formatBits, setTimeout: delay = setTimeout,
+  function createPortPanel({ document, window, escapeHtml, fetchPortHistory, fetchPortHistoryFallback, renderLineChart, formatBits, setTimeout: delay = setTimeout,
                              clearTimeout: cancel = clearTimeout }) {
     const element = () => document.getElementById('topologyPortPanel');
     let payload = null;
@@ -203,15 +203,27 @@
       const active = () => generation === historyGeneration && payload === device && selectedIndex === index;
       try {
         if (!fetchPortHistory) throw new Error('历史查询不可用');
-        const history = await fetchPortHistory(device, port);
+        let history;
+        try {
+          history = await fetchPortHistory(device, port);
+        } catch (error) {
+          if (!active()) return;
+          if (!fetchPortHistoryFallback) throw error;
+        }
+        if (!active()) return;
+        if ((!history || (!history.rx.length && !history.tx.length)) && fetchPortHistoryFallback) {
+          history = await fetchPortHistoryFallback(device.ip, port.ifIndex);
+        }
         if (!active()) return;
         const detail = element().querySelector('.port-pinned-detail');
         const status = detail.querySelector('.port-history-status');
+        const title = detail.querySelector('.port-history h4');
+        if (title) title.textContent = `最近 15 分钟 RX/TX · ${history.source || 'Prometheus'}`;
         const chart = detail.querySelector('.port-history-chart');
         const ambiguous = ['rx', 'tx'].filter((key) => history.coverage[key] === 'ambiguous');
         const missing = ['rx', 'tx'].filter((key) => !history[key].length);
         if (missing.length === 2) {
-          status.textContent = ambiguous.length ? 'Prometheus 接口历史存在重复序列，无法确定覆盖' :
+          status.textContent = history.source === 'LibreNMS RRD' ? 'Prometheus 与 LibreNMS RRD 均暂无该接口历史 RX/TX 覆盖' : ambiguous.length ? 'Prometheus 接口历史存在重复序列，无法确定覆盖' :
             `${port.metricSource === 'LibreNMS poller' ? '当前值来自 LibreNMS poller；' : ''}Prometheus 暂无该接口历史 RX/TX 覆盖`;
           return;
         }
@@ -225,7 +237,7 @@
       } catch (error) {
         if (!active()) return;
         const status = element().querySelector('.port-pinned-detail').querySelector('.port-history-status');
-        status.textContent = 'Prometheus 接口历史暂不可用，请稍后重新选择';
+        status.textContent = '接口历史暂不可用，请稍后重新选择';
       }
     }
 

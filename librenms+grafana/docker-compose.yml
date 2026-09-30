@@ -874,6 +874,8 @@ services:
       - ./:/workspace
       - ../VERSION:/workspace/VERSION:ro
       - ./librenms-data:/librenms-data:ro
+      # Match rrdcached absolute paths for flush-before-fetch.
+      - ./librenms-data/rrd:/data/db:ro
       - topology-data:/etc/prometheus/targets/topology:ro
       - platform-state:/workspace/platform-state
       - /var/run/docker.sock:/var/run/docker.sock
@@ -903,6 +905,7 @@ services:
       PLATFORM_NETWORK_TOPOLOGY_FILE: "${PLATFORM_NETWORK_TOPOLOGY_FILE:-/etc/prometheus/targets/topology/edges.json}"
       PLATFORM_NETWORK_ISP_INVENTORY_FILE: "${PLATFORM_NETWORK_ISP_INVENTORY_FILE:-/etc/prometheus/targets/topology/isp_targets.json}"
       PLATFORM_NETWORK_ISP_STATE_FILE: "${PLATFORM_NETWORK_ISP_STATE_FILE:-/etc/prometheus/targets/topology/isp-discovery-state.json}"
+      PLATFORM_NETWORK_RRD_BASE_PATH: "/data/db"
       PLATFORM_NETWORK_HTTP_TIMEOUT: "${PLATFORM_NETWORK_HTTP_TIMEOUT:-5}"
       PLATFORM_WRITE_ENABLED: "${PLATFORM_WRITE_ENABLED:-true}"
       PLATFORM_AUTH_ENABLED: "${PLATFORM_AUTH_ENABLED:-true}"

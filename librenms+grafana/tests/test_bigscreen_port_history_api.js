@@ -68,5 +68,30 @@ const row = (kind, ip = device.ip, index = '7', values = [[end - 30, '0'], [end,
   global.fetch = async (url) => { requests.push(url); throw new Error('offline'); };
   await assert.rejects(api.fetchPortHistory(device, port));
   assert.strictEqual(requests.length, 2, 'two independent bounded directions, no retries');
+  requests = [];
+  global.fetch = async (url) => {
+    requests.push(url);
+    if (url.includes('ifHCOutOctets')) throw new Error('one direction unavailable');
+    return { ok: true, json: async () => ({ status: 'success', data: { result: [row('cisco')] } }) };
+  };
+  const partlyFailed = await api.fetchPortHistory(device, port);
+  assert.strictEqual(partlyFailed.coverage.rx, 'available');
+  assert.strictEqual(partlyFailed.coverage.tx, 'unavailable');
+  assert.strictEqual(requests.length, 2);
+  requests = [];
+  global.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return { ok: true, json: async () => ({ ok: true, source: 'LibreNMS RRD', ip: device.ip, ifIndex: 7,
+      rx: [], tx: [], coverage: { rx: 'empty', tx: 'empty' } }) };
+  };
+  await api.fetchPortHistoryFallback(device.ip, 7);
+  assert.strictEqual(requests.length, 1);
+  assert.strictEqual(requests[0].url, `/platform-api/network/nodes/${device.ip}/ports/7/history`);
+  assert.ok(requests[0].options.signal instanceof AbortSignal);
+  await assert.rejects(api.fetchPortHistoryFallback(device.ip, '7'));
+  await assert.rejects(api.fetchPortHistoryFallback('../other', 7));
+  assert.strictEqual(requests.length, 1);
+  global.fetch = async () => ({ ok: true, json: async () => ({ ok: true, source: 'LibreNMS RRD', ip: '192.0.2.99', ifIndex: 7, rx: [], tx: [], coverage: {} }) });
+  await assert.rejects(api.fetchPortHistoryFallback(device.ip, 7));
   console.log('bigscreen port history API tests passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

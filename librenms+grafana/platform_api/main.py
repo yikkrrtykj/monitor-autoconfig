@@ -380,6 +380,12 @@ def _network_read_context() -> platform_network_read.NetworkReadContext:
             timeout=NETWORK_HTTP_TIMEOUT,
             max_response_bytes=platform_network_read.HTTP_BYTE_LIMIT,
         ),
+        librenms_history_client_factory=lambda: LibreNMSClient(
+            base_url=NETWORK_LIBRENMS_URL, token_file=NETWORK_LIBRENMS_TOKEN_FILE,
+            timeout=min(3.0, NETWORK_HTTP_TIMEOUT), max_attempts=1,
+            max_response_bytes=platform_network_read.HTTP_BYTE_LIMIT,
+        ),
+        rrd_base_path=Path(os.environ.get("PLATFORM_NETWORK_RRD_BASE_PATH", "/data/db")),
         prometheus_url=NETWORK_PROMETHEUS_URL,
         topology_path=NETWORK_TOPOLOGY_PATH,
         isp_inventory_path=NETWORK_ISP_INVENTORY_PATH,
