@@ -4,7 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from pathlib import Path
 
-import yaml
+import shutil
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -189,11 +189,18 @@ def test_route_requires_auth_before_identity_and_read(tmp_path, monkeypatch, aut
 
 def test_storage_wiring_matches_rrdcached_read_only():
     root = Path(__file__).resolve().parents[1]
-    compose = yaml.safe_load((root / "docker-compose.yml").read_text(encoding="utf-8"))
+    if shutil.which("docker") is None:
+        pytest.skip("Docker Compose is unavailable on this host")
+    result = subprocess.run(["docker", "compose", "--env-file", str(root / ".env.example"),
+                             "-f", str(root / "docker-compose.yml"), "config", "--format", "json"],
+                            capture_output=True, text=True, timeout=30, check=True)
+    compose = json.loads(result.stdout)
     api = compose["services"]["platform-api"]
     cached = compose["services"]["librenms-rrdcached"]
-    assert "./librenms-data/rrd:/data/db:ro" in api["volumes"]
-    assert "./librenms-data/rrd:/data/db" in cached["volumes"]
+    mount = next(item for item in api["volumes"] if item["target"] == "/data/db")
+    cached_mount = next(item for item in cached["volumes"] if item["target"] == "/data/db")
+    assert mount["type"] == "bind" and mount["read_only"] is True
+    assert mount["source"] == cached_mount["source"]
     assert api["environment"]["PLATFORM_NETWORK_RRD_BASE_PATH"] == "/data/db"
     assert "iperf3 rrdtool" in (root / "docker/platform-api/Dockerfile").read_text()
 
