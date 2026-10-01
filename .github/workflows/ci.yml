@@ -42,11 +42,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check Shell scripts
-        # Keep existing warnings non-blocking; parsing and other definite
-        # errors still fail the job.
+        # D-04: warnings are now blocking after the current warning inventory
+        # is cleaned. Keep this gate at warning severity going forward.
         run: >-
           find librenms+grafana -type f -name '*.sh' -print0
-          | xargs -0 shellcheck --severity=error
+          | xargs -0 shellcheck --severity=warning
 
   shell-syntax:
     name: Shell syntax
