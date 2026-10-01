@@ -31,6 +31,7 @@ function harness(options = {}) {
   const renderedAp = [];
   let apVisible = Boolean(options.apVisible);
   let apRequestCount = 0;
+  let renderCount = 0;
   const errors = [];
   const protectedPanel = { open: false, generation: 0 };
   const noop = () => {};
@@ -78,8 +79,8 @@ function harness(options = {}) {
     isApVisible: () => apVisible,
     clearDetail: () => { protectedPanel.open = false; protectedPanel.generation += 1; },
     resetView: noop,
-    prepare: (_, edges, apData) => { renderedEdges.push(edges); renderedAp.push(apVisible ? apData : null); return { layout: { nodes: [] }, width: 100 }; },
-    render: noop, updateLatency: noop, updateStatus: noop,
+    prepare: (_, edges, apData) => { renderedEdges.push(edges); renderedAp.push(apVisible ? apData : null); return { layout: { nodes: options.nodes || [] }, width: 100 }; },
+    render: () => renderCount++, updateLatency: noop, updateStatus: noop,
     showError: (message) => errors.push(message)
   }); } };
   window.BSPortPanel = { createPortPanel: () => noOpPanel };
@@ -109,6 +110,7 @@ function harness(options = {}) {
     callbacks, lifecycle, navigate, poll, renderedEdges, renderedAp, errors, element, protectedPanel,
     setApVisible: (value) => { apVisible = value; callbacks.apToggle(); },
     apRequestCount: () => apRequestCount,
+    renderCount: () => renderCount,
     openProtectedPortPanel: () => { protectedPanel.open = true; return protectedPanel.generation; },
     failTopology: (status) => { topologyFailure = status; },
     failDevices: (status) => { deviceFailure = status; }
@@ -195,6 +197,17 @@ async function run() {
   assert.strictEqual(pending.renderedAp.length, writesBefore, 'old pending AP response cannot overwrite the OFF refresh');
   pending.navigate('/'); pending.navigate('/topology'); await settle();
   assert.strictEqual(pending.renderedAp.at(-1), null, 'OFF survives SPA re-entry');
+  const apNode = { kind: 'ap', ip: '10.1.0.1', name: 'AP-1', level: 'good', clients: 0,
+    parentIp: '10.0.0.11', parentIfindex: 1, switchPort: 'Gi1/0/1' };
+  const ownership = harness({ apVisible: true, nodes: [apNode] });
+  ownership.navigate('/topology'); await settle();
+  const initialRenderCount = ownership.renderCount();
+  apNode.parentIp = '10.0.0.12';
+  ownership.poll(); await settle();
+  assert.strictEqual(ownership.renderCount(), initialRenderCount + 1, 'new authoritative parent redraws AP even when wired edges and AP status are unchanged');
+  apNode.parentIfindex = 2; apNode.switchPort = 'Gi1/0/2';
+  ownership.poll(); await settle();
+  assert.strictEqual(ownership.renderCount(), initialRenderCount + 2, 'new proven access port redraws AP edge labels');
   console.log("bigscreen app edge lifecycle: PASS");
 }
 

@@ -40,6 +40,7 @@
     let right = 24;
     resolved.forEach(({ ap, row, parent }) => {
       const node = { kind: 'ap', ip: ap.ip, name: ap.name || ap.ip, model: ap.model, clients: ap.clients,
+        parentIp: row.switch_ip, parentIfindex: row.switch_ifindex, switchPort: row.switch_port,
         success: ap.online, level: ap.online === true ? 'good' : ap.online === false ? 'bad' : 'none',
         x: Math.max(right, parent.x), y, w: 192, h: 74 };
       right = node.x + node.w + 24;

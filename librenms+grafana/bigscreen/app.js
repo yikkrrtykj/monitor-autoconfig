@@ -1096,7 +1096,7 @@
   // latency is excluded on purpose -- it jitters every sample and is patched
   // into the existing DOM through the panel's incremental update instead.
   function topologySignature(layout, width, edges) {
-    const nodesSig = layout.nodes.map((node) => `${node.kind}|${node.ip || ""}|${node.name}|${node.level}|${node.kind === "ap" ? `${node.model}|${node.clients}` : ""}`).join("#");
+    const nodesSig = layout.nodes.map((node) => `${node.kind}|${node.ip || ""}|${node.name}|${node.level}|${node.kind === "ap" ? `${node.model}|${node.clients}|${node.parentIp}|${node.parentIfindex}|${node.switchPort}` : ""}`).join("#");
     const edgesSig = (edges || []).map((edge) => [
       edge.from_ip, edge.from_port, (edge.from_member_ports || []).join(","), edge.from_aggregate_port,
       edge.to_ip, edge.to_port, (edge.to_member_ports || []).join(","), edge.to_aggregate_port,
