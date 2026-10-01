@@ -97,6 +97,32 @@ def test_full_inventory_includes_down_ports_and_observed_vlan_evidence(tmp_path)
     assert len(queries) == len(network_ports.METRICS)
 
 
+def test_cisco_standalone_two_part_ports_preserve_physical_identity(tmp_path):
+    client = PortsClient([
+        {"ifIndex": 101, "ifName": "Gi0/1"},
+        {"ifIndex": 109, "ifName": "Gi0/9"},
+        {"ifIndex": 110, "ifName": "Gi0/10"},
+        {"ifIndex": 201, "ifName": "Vlan1"},
+        {"ifIndex": 202, "ifName": "Port-channel1"},
+        {"ifIndex": 203, "ifName": "Loopback0"},
+    ])
+    result = network_ports.read_ports(context_for(tmp_path, client)[0], IP)
+    identities = [(port["ifName"], port["stackMember"], port["portNumber"])
+                  for port in result["ports"]]
+    assert identities == [
+        ("Gi0/1", 1, 1),
+        ("Gi0/9", 1, 9),
+        ("Gi0/10", 1, 10),
+        ("Vlan1", None, None),
+        ("Port-channel1", None, None),
+        ("Loopback0", None, None),
+    ]
+    assert network_ports._stack_parts("Gi0/0") == (None, None)
+    assert network_ports._stack_parts("Gi0/257") == (None, None)
+    assert network_ports._stack_parts("Gi1/0/17") == (1, 17)
+    assert network_ports._stack_parts("Gi2/0/3") == (2, 3)
+
+
 def test_current_metrics_rate_capacity_and_cumulative_counters_are_limited_to_matching_ifindex(tmp_path):
     client = PortsClient([
         {"ifIndex": 101, "ifName": "Gi1/0/17", "ifSpeed": 1000000000},
