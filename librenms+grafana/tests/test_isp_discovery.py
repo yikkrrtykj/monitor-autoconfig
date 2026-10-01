@@ -1688,3 +1688,14 @@ if __name__ == "__main__":
     test_foreign_carrier_names_match_by_keyword()
     test_target_ips_parses_named_lists()
     print("ISP discovery tests passed")
+
+
+@pytest.mark.parametrize("timestamp,expected", [("2026-09-29 16:16:49", "fresh"),
+    ("2026-09-29 16:16:48", "stale"), ("2026-09-29 16:26:50", "stale"), ("bad", "unknown")])
+def test_isp_local_inventory_freshness(monkeypatch, timestamp, expected):
+    from librenms_client import age_seconds
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setenv("ISP_LIBRENMS_POLL_MAX_AGE_SECONDS", "600")
+    now = datetime(2026, 9, 29, 8, 26, 49, tzinfo=timezone.utc)
+    monkeypatch.setattr(disco, "age_seconds", lambda value: age_seconds(value, now=now))
+    assert disco.inventory_freshness({"last_polled": timestamp}) == expected

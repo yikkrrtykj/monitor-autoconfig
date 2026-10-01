@@ -359,3 +359,6 @@ docker compose up -d
 ```
 
 `librenms-data`、`librenms-db-data`、`librenms-rrdcached-journal` 是宿主机目录；Prometheus、Grafana、Loki 等使用 Docker 命名卷。两类数据都不要随便删除，尤其不要在保留数据时执行 `docker compose down -v`。
+
+
+LibreNMS 无时区 SQL 时间及 naive Python datetime 按 `LIBRENMS_TIMEZONE`（可选 IANA 名称）优先、运行时 `TZ` 次之解释；没有可用命名时区时采用该日期的运行时本地时区，不默认为 UTC。带 Z/偏移/时区的时间及 Unix epoch 保持绝对时间含义；未来时间仍不能通过 freshness 或删除年龄门槛。Bridge 与 topology-collector 只读挂载主机 `/usr/share/zoneinfo`，部署前须确认主机数据库完整且容器能解析有效来源时区。共享模块是单文件 bind mount，更新代码后须定向 recreate 使用年龄判断的这两个服务并验证源码/容器 SHA；普通 Git 更新或 restart 不保证既有挂载 inode/进程模块已更新。platform-api 不使用共享时间年龄判断，无需因此刷新。轮询/发现间隔、离线阈值及 Auto Delete 四开关不变。

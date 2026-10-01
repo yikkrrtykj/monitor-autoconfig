@@ -616,3 +616,25 @@ def test_device_record_delete_uses_librenms_api_without_inventory_get(
         "token", device(device_id=42)
     ) is True
     assert requests == [("DELETE", "http://librenms/api/v0/devices/42", 10)]
+
+
+@pytest.mark.parametrize("offset,expected", [(WEEK, 1), (WEEK - 1, 0), (-1, 0), (None, 0)])
+def test_local_sql_age_preserves_auto_delete_dry_run(monkeypatch, offset, expected, capsys):
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "Asia/Shanghai")
+    current = datetime(2026, 9, 29, 8, 16, 49, tzinfo=timezone.utc)
+    timestamp = (current - timedelta(seconds=offset)).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S") if offset is not None else "bad"
+    deletes, probes = [], []
+    stats = bridge.run_device_auto_delete_cycle(now=current.timestamp(), devices=[device(last_polled=timestamp)],
+        token="test-token", probe=lambda ip: probes.append(ip) or False,
+        delete=lambda *_args: deletes.append(True) or True)
+    assert stats["candidates"] == expected
+    assert stats["dry_run"] == expected
+    assert deletes == []
+    assert len(probes) == expected
+    if expected:
+        assert f"offline_seconds={WEEK}" in capsys.readouterr().err
+    assert bridge.DEVICE_AUTO_DELETE_AFTER_SECONDS == WEEK
+    assert bridge.DEVICE_AUTO_DELETE_DRY_RUN is True
+    assert bridge.DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY is False

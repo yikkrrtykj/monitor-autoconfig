@@ -2233,3 +2233,13 @@ def test_librenms_source_patch_checks_content_instead_of_fixed_line_numbers():
     assert "rrd_echo_count" in entrypoint
     assert "55s/echo" not in entrypoint
     assert "82s/echo" not in entrypoint
+
+
+def test_timestamp_consumers_have_read_only_timezone_database_and_override():
+    import re
+    compose = read("docker-compose.yml")
+    services = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(.*?)(?=^  [a-z][a-z0-9-]*:|\Z)", compose, re.M | re.S))
+    for name in ("alertmanager-feishu-bridge", "topology-collector"):
+        assert "/usr/share/zoneinfo:/usr/share/zoneinfo:ro" in services[name]
+        assert 'LIBRENMS_TIMEZONE: "${LIBRENMS_TIMEZONE:-}"' in services[name]
+        assert "TZ: Asia/Shanghai" in services[name]
