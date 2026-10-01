@@ -625,6 +625,32 @@
     return Array.from(map.values());
   }
 
+  async function fetchApAttachments() {
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch("/topology/ap-attachments.json", { cache: "no-store", signal: controller.signal });
+      if (!response.ok) return null;
+      const reader = response.body.getReader();
+      const chunks = [];
+      let bytes = 0;
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > 4 * 1024 * 1024) { await reader.cancel(); return null; }
+          chunks.push(chunk.value);
+        }
+      } finally { reader.releaseLock(); }
+      const body = new Uint8Array(bytes);
+      let offset = 0;
+      chunks.forEach((chunk) => { body.set(chunk, offset); offset += chunk.byteLength; });
+      return JSON.parse(new TextDecoder().decode(body));
+    } catch (error) { return null; }
+    finally { clearTimeout(deadline); }
+  }
+
   async function fetchTopologyEdges(options = {}) {
     try {
       const response = await fetchWithTimeout("/topology/edges.json", { cache: "no-store" });
@@ -898,6 +924,7 @@
     partitionInfraPingItems,
     fetchTopologyTargets,
     fetchTopologyEdges,
+    fetchApAttachments,
     fetchNetworkOverview,
     fetchNetworkDevices,
     fetchNetworkTopology,

@@ -623,6 +623,7 @@ def test_server_librenms_source_is_independent_from_direct_adjacency(
     monkeypatch.setenv("SERVER_PING", "server-1:192.168.42.201")
     monkeypatch.setenv("TOPOLOGY_POLL_WORKERS", "1")
 
+    monkeypatch.setattr(gte, "fetch_current_aps", lambda: [])
     assert gte._run_collection() == 0
     log = capsys.readouterr().err
     assert "adjacency stats: api_requests=0" in log

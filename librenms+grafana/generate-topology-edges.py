@@ -41,6 +41,7 @@ Env vars:
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from ap_topology import fetch_current_aps, build_ap_artifact
 import json
 import os
 import re
@@ -2793,7 +2794,7 @@ def collect_server_arp(devices, arp_device_ips, servers, community, mode,
         resolved.update(server_ip for server_ip in direct if server_ip in servers)
 
 
-def build_librenms_fdb_candidates(devices, edges, client, librenms_ready):
+def collect_librenms_fdb_inventory(devices, edges, client, librenms_ready):
     """Build a read-only MAC candidate index, one FDB API call per switch."""
     index = {}
     status = {"usable_switches": 0, "failed_switches": 0}
@@ -2828,11 +2829,8 @@ def build_librenms_fdb_candidates(devices, edges, client, librenms_ready):
             continue
         status["usable_switches"] += 1
         for row in rows:
-            if librenms_freshness(
-                _first_row_timestamp(row, metadata, "last_discovered"),
-                topology_librenms_fdb_max_age(),
-            ) == "stale":
-                continue
+            timestamp = _first_row_timestamp(row, metadata, "last_discovered")
+            observed_at = time.time()
             mac = normalize_mac(
                 row.get("mac_address") or row.get("mac") or row.get("mac_addr")
             )
@@ -2845,7 +2843,6 @@ def build_librenms_fdb_candidates(devices, edges, client, librenms_ready):
                 ifindex is None
                 or not is_physical_interface_name(port_name)
                 or normalize_port_name(port_name).startswith("agg")
-                or device.get("ifoper", {}).get(ifindex) not in (None, 1)
                 or (ip, ifindex) in endpoints
             ):
                 continue
@@ -2856,8 +2853,42 @@ def build_librenms_fdb_candidates(devices, edges, client, librenms_ready):
                 "mac": mac,
                 "vlan": _record_vlan(row, port),
                 "depth": depths.get(ip, -1),
+                "evidence_age_seconds": age_seconds(timestamp, now=observed_at),
+                "evidence_observed_at": observed_at,
+                "server_freshness": librenms_freshness(timestamp, topology_librenms_fdb_max_age()),
+                "firewall": str(metadata.get("os", "")).lower() in ("stoneos", "hillstone")
+                    or str(metadata.get("type", "")).lower() == "firewall"
+                    or ip in set(_env_target_ips("FIREWALL_UNIT_SNMP_TARGETS")),
+                "aggregate_member": ifindex in device.get("ifstack", {})
+                    or any(ifindex in members for members in device.get("ifstack", {}).values()),
+                "server_port_eligible": device.get("ifoper", {}).get(ifindex) in (None, 1),
+                "confirmed_down": device.get("ifoper", {}).get(ifindex) not in (None, 1, 4)
+                    or _if_oper_status_value(port.get("ifOperStatus")) not in (None, 1, 4),
             })
     return index, status
+
+
+def build_librenms_fdb_candidates(devices, edges, client, librenms_ready, inventory=None):
+    """服务器视图保留原 900 秒与 unknown 行为，AP 共用原始 FDB。"""
+    raw, status = inventory if inventory is not None else collect_librenms_fdb_inventory(
+        devices, edges, client, librenms_ready)
+    fields = ("switch_ip", "ifindex", "port_name", "mac", "vlan", "depth")
+    index = {}
+    for mac, rows in raw.items():
+        current = [{key: row[key] for key in fields} for row in rows
+                   if row["server_freshness"] != "stale" and row["server_port_eligible"]]
+        if current:
+            index[mac] = current
+    return index, status
+
+
+def write_current_ap_artifact(output_dir, aps, inventory):
+    try:
+        excluded = _env_target_ips("CORE_SWITCH_PING") + _env_target_ips("FIREWALL_PING")
+        artifact = build_ap_artifact(aps, inventory, excluded)
+        write_json_atomic(os.path.join(output_dir, "ap-attachments.json"), artifact, sort_keys=True)
+    except Exception as exc:
+        print(f"[WARN] AP artifact write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
 
 
 def discover_server_edges_direct(devices, edges, servers, community, cached_edges=None):
@@ -3718,8 +3749,14 @@ def _run_collection():
     community = os.environ.get("TOPOLOGY_SNMP_COMMUNITY", "").strip() or os.environ.get("SNMP_COMMUNITY", "global").strip()
     output_dir = os.environ.get("TOPOLOGY_OUTPUT_DIR", "/etc/prometheus/targets/topology")
 
+    try:
+        aps = fetch_current_aps()
+    except Exception as exc:
+        print(f"[WARN] AP inventory unavailable ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
+        aps = []
     device_ips = load_device_list()
     if not device_ips:
+        write_current_ap_artifact(output_dir, aps, {})
         print(
             "[INFO] TOPOLOGY_DEVICES empty and no infra ping envs set; "
             "retaining the last confirmed topology",
@@ -3748,7 +3785,7 @@ def _run_collection():
     librenms = None
     librenms_ready = False
     needs_librenms = (
-        data_source != "direct-snmp"
+        bool(aps) or data_source != "direct-snmp"
         or (bool(servers) and server_source != "direct-snmp")
     )
     if needs_librenms:
@@ -3896,9 +3933,15 @@ def _run_collection():
     )
     fdb_candidates = None
     fdb_status = {"usable_switches": 0, "failed_switches": 0}
+    shared_fdb = ({}, fdb_status)
+    if aps or (servers and server_source != "direct-snmp"):
+        try:
+            shared_fdb = collect_librenms_fdb_inventory(devices, edges, librenms, librenms_ready)
+        except Exception as exc:
+            print(f"[WARN] FDB inventory unavailable ({type(exc).__name__}); AP evidence omitted", file=sys.stderr)
     if servers and server_source != "direct-snmp":
         fdb_candidates, fdb_status = build_librenms_fdb_candidates(
-            devices, edges, librenms, librenms_ready
+            devices, edges, librenms, librenms_ready, inventory=shared_fdb
         )
     server_stats = {"full_fallbacks": 0}
     # Always run the exact ARP+FDB ownership lookup.  A weaker LLDP/CDP edge
@@ -3938,6 +3981,7 @@ def _run_collection():
     ) + server_edges
     write_json_atomic(edges_path, edges, sort_keys=True)
     write_json_atomic(attachments_path, confirmed_server_edges, sort_keys=True)
+    write_current_ap_artifact(output_dir, aps, shared_fdb[0])
     try:
         write_topology_diagnostics(
             diagnostics_path, diagnostics_records,

@@ -1095,6 +1095,17 @@ body {
 .dot.bad   { background: #f87171; box-shadow: 0 0 10px rgba(248, 113, 113, 0.7); }
 .dot.none  { background: #475569; }
 
+#topologyApToggle {
+  background: rgba(20, 30, 48, 0.85);
+  color: #c9d4e8;
+  border: 1px solid rgba(105, 160, 255, 0.4);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+#topologyApToggle[aria-pressed="true"] { border-color: #4ade80; }
+#topologyApToggle:focus-visible { outline: 2px solid #93c5fd; }
+
 .topology-updated { color: #94a3b8; }
 
 .topology-canvas {

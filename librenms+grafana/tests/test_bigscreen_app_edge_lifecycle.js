@@ -8,7 +8,7 @@ const appSource = fs.readFileSync(path.resolve(__dirname, "../bigscreen/app.js")
 const apiEdges = [{ from_ip: "10.0.0.1", to_ip: "10.0.0.2" }];
 const unavailable = { source: "none", data: null };
 
-function harness() {
+function harness(options = {}) {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
@@ -28,6 +28,10 @@ function harness() {
   let topologyFailure = null;
   let deviceFailure = null;
   const renderedEdges = [];
+  const renderedAp = [];
+  let apVisible = Boolean(options.apVisible);
+  let apRequestCount = 0;
+  let renderCount = 0;
   const errors = [];
   const protectedPanel = { open: false, generation: 0 };
   const noop = () => {};
@@ -53,6 +57,7 @@ function harness() {
   window.BSApi = new Proxy({}, { get: (_, key) => {
     if (key === "fetchPlatformAuthStatus") return async () => ({ authenticated: true });
     if (key === "fetchTopologyTargets") return async () => [];
+    if (key === "fetchApAttachments") return async () => { apRequestCount++; return { source: 'librenms-fdb', attachments: [] }; };
     if (key === "prometheusInstant") return async () => [];
     if (key === "activeInfraPingQuery") return () => "probe_success";
     if (key === "activeSeriesNames") return () => new Set();
@@ -67,14 +72,17 @@ function harness() {
     if (key === "fetchNetworkIsp") return async () => ({ ok: true, isps: [] });
     return noop;
   } });
-  window.BSTopologyPanel = { createTopologyPanel: () => ({
+  window.BSTopologyPanel = { createTopologyPanel: (dependencies) => {
+    callbacks.apToggle = dependencies.onApVisibilityChange;
+    return ({
     isAvailable: () => true,
+    isApVisible: () => apVisible,
     clearDetail: () => { protectedPanel.open = false; protectedPanel.generation += 1; },
     resetView: noop,
-    prepare: (_, edges) => { renderedEdges.push(edges); return { layout: { nodes: [] }, width: 100 }; },
-    render: noop, updateLatency: noop, updateStatus: noop,
+    prepare: (_, edges, apData) => { renderedEdges.push(edges); renderedAp.push(apVisible ? apData : null); return { layout: { nodes: options.nodes || [] }, width: 100 }; },
+    render: () => renderCount++, updateLatency: noop, updateStatus: noop,
     showError: (message) => errors.push(message)
-  }) };
+  }); } };
   window.BSPortPanel = { createPortPanel: () => noOpPanel };
   window.BSAuthController = {
     createAuthController: (options) => { callbacks.auth = options; return { invalidate: noop, ensureAuthenticated: async () => false }; },
@@ -85,9 +93,11 @@ function harness() {
     "BSEvidencePanel", "BSIncidentPanel", "BSWirelessPanel", "BSTournamentPanel", "BSIperfController",
     "BSDeliveryPanel", "BSIncidentRegistry", "BSInfraController", "BSDhcpPanel", "BSIspCarousel"];
   for (const name of factories) window[name] = ns(() => noOpPanel);
-  for (const name of ["BSTopology", "BSPlayers", "BSPlatform", "BSIncident", "BSIperf", "BSDhcpModel", "BSConfigModel", "BSPingTransform"]) {
+  for (const name of ["BSApTopology", "BSTopology", "BSPlayers", "BSPlatform", "BSIncident", "BSIperf", "BSDhcpModel", "BSConfigModel", "BSPingTransform"]) {
     window[name] = new Proxy({}, { get: () => noop });
   }
+  window.BSWirelessPanel = { createWirelessPanel: () => ({ start: noop, stop: noop, clearInspector: noop,
+    fetchApStatus: () => options.apPromise || Promise.resolve([]) }) };
   vm.runInNewContext(appSource, { window, document, console: { warn: noop, error: noop },
     Blob, URL, URLSearchParams, Date, fetch: noop }, { filename: "app.js" });
   const navigate = (pathname) => { window.location.pathname = pathname; callbacks.popstate(); };
@@ -97,7 +107,10 @@ function harness() {
     timer.fn();
   };
   return {
-    callbacks, lifecycle, navigate, poll, renderedEdges, errors, element, protectedPanel,
+    callbacks, lifecycle, navigate, poll, renderedEdges, renderedAp, errors, element, protectedPanel,
+    setApVisible: (value) => { apVisible = value; callbacks.apToggle(); },
+    apRequestCount: () => apRequestCount,
+    renderCount: () => renderCount,
     openProtectedPortPanel: () => { protectedPanel.open = true; return protectedPanel.generation; },
     failTopology: (status) => { topologyFailure = status; },
     failDevices: (status) => { deviceFailure = status; }
@@ -167,6 +180,34 @@ async function run() {
   assert.strictEqual(transient.element("topologyNetworkStatus").textContent, "拓扑不可用",
     "retained API edges remain visibly unavailable");
   assert.strictEqual(transient.lifecycle.readEdges(unavailable)[0].from_ip, apiEdges[0].from_ip);
+  const enabled = harness({ apVisible: true });
+  enabled.navigate('/topology'); await settle();
+  assert.strictEqual(enabled.apRequestCount(), 1, 'ON fetches the separate AP artifact');
+  assert.strictEqual(enabled.renderedAp.at(-1).artifact.source, 'librenms-fdb');
+  enabled.setApVisible(false); await settle();
+  enabled.poll(); await settle();
+  assert.strictEqual(enabled.apRequestCount(), 1, 'OFF survives periodic refresh without AP fetch');
+  assert.strictEqual(enabled.renderedAp.at(-1), null);
+  let resolveAp;
+  const pending = harness({ apVisible: true, apPromise: new Promise((resolve) => { resolveAp = resolve; }) });
+  pending.navigate('/topology'); await settle();
+  pending.setApVisible(false); await settle();
+  const writesBefore = pending.renderedAp.length;
+  resolveAp([{ ip: '10.1.0.1', mac: '02:00:00:00:00:01' }]); await settle();
+  assert.strictEqual(pending.renderedAp.length, writesBefore, 'old pending AP response cannot overwrite the OFF refresh');
+  pending.navigate('/'); pending.navigate('/topology'); await settle();
+  assert.strictEqual(pending.renderedAp.at(-1), null, 'OFF survives SPA re-entry');
+  const apNode = { kind: 'ap', ip: '10.1.0.1', name: 'AP-1', level: 'good', clients: 0,
+    parentIp: '10.0.0.11', parentIfindex: 1, switchPort: 'Gi1/0/1' };
+  const ownership = harness({ apVisible: true, nodes: [apNode] });
+  ownership.navigate('/topology'); await settle();
+  const initialRenderCount = ownership.renderCount();
+  apNode.parentIp = '10.0.0.12';
+  ownership.poll(); await settle();
+  assert.strictEqual(ownership.renderCount(), initialRenderCount + 1, 'new authoritative parent redraws AP even when wired edges and AP status are unchanged');
+  apNode.parentIfindex = 2; apNode.switchPort = 'Gi1/0/2';
+  ownership.poll(); await settle();
+  assert.strictEqual(ownership.renderCount(), initialRenderCount + 2, 'new proven access port redraws AP edge labels');
   console.log("bigscreen app edge lifecycle: PASS");
 }
 

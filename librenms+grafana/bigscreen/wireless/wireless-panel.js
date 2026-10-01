@@ -135,7 +135,7 @@
     // UniFi AP 状态（来自 unpoller / UniFi 控制器 API）。
     // device_info 可能包含离线 AP，所以不能把“有 info”直接当在线；优先看在线/uptime
     // 指标或状态 label，最后才兜底为在线，避免无 UniFi 状态指标时整段空掉。
-    async function fetchApStatus() {
+    async function fetchApStatus(options = {}) {
       let infos;
       let stations;
       try {
@@ -157,19 +157,25 @@
         optionalPrometheusQuery('max by (name) (unpoller_device_uptime{type="uap"} > bool 0)')
       ]);
       const onlineByName = new Map();
+      const nameCounts = new Map();
+      infos.forEach((info) => nameCounts.set(info.metric.name, (nameCounts.get(info.metric.name) || 0) + 1));
       onlineMaps.forEach((items) => mergeApOnlineMap(onlineByName, items));
 
       return infos
         .map((i) => {
           const name = i.metric.name || "?";
           const labelState = apOnlineFromLabels(i.metric);
-          const online = onlineByName.has(name) ? onlineByName.get(name) : (labelState == null ? true : labelState);
+          const online = options.topology && nameCounts.get(name) > 1 ? labelState
+            : onlineByName.has(name) ? onlineByName.get(name) : (labelState == null ? (options.topology ? null : true) : labelState);
           return {
             name,
             ip: i.metric.ip || "",
             model: i.metric.model || "",
+            mac: i.metric.mac || "",
+            site: i.metric.site || "",
             online,
-            clients: online && clients[name] != null ? clients[name] : 0
+            clients: options.topology ? (nameCounts.get(name) > 1 || clients[name] == null ? null : online === false ? 0 : clients[name])
+              : online && clients[name] != null ? clients[name] : 0
           };
         })
         .filter((ap) => ap.name && ap.name !== "?")
@@ -263,7 +269,7 @@
       return Boolean(wirelessTimer);
     }
 
-    return { start, stop, hasScheduledRefresh, clearInspector };
+    return { start, stop, hasScheduledRefresh, clearInspector, fetchApStatus };
   }
 
   const ns = { createWirelessPanel };

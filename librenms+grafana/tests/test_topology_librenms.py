@@ -1505,6 +1505,7 @@ def test_full_librenms_cycle_reports_zero_adjacency_snmp_and_compatible_schema(
     monkeypatch.setenv("FIREWALL_PING", "")
     monkeypatch.setenv("SERVER_PING", "")
 
+    monkeypatch.setattr(gte, "fetch_current_aps", lambda: [])
     assert gte._run_collection() == 0
 
     log = capsys.readouterr().err
@@ -1557,6 +1558,7 @@ def test_diagnostics_write_failure_does_not_block_production_outputs(
     monkeypatch.setenv("CORE_SWITCH_PING", "")
     monkeypatch.setenv("FIREWALL_PING", "")
 
+    monkeypatch.setattr(gte, "fetch_current_aps", lambda: [])
     assert gte._run_collection() == 0
 
     assert (tmp_path / "edges.json").exists()

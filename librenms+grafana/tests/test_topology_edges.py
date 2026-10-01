@@ -1259,6 +1259,7 @@ def test_empty_discovery_cycle_does_not_erase_confirmed_topology(tmp_path, monke
     monkeypatch.setenv("FIREWALL_PING", "")
     monkeypatch.setenv("TOURNAMENT_SWITCHES", "")
 
+    monkeypatch.setattr(gte, "fetch_current_aps", lambda: [])
     assert gte.main() == 0
     assert _json.loads(edges_path.read_text(encoding="utf-8")) == previous_edges
     assert _json.loads(attachments_path.read_text(encoding="utf-8")) == previous_edges

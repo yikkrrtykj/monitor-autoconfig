@@ -34,12 +34,12 @@ const topologySection = indexSource.match(
 assert.ok(topologySection.includes('id="topologyCanvas"'));
 assert.ok(topologySection.includes('id="topologyUpdated"'));
 assert.ok(topologySection.includes('在线'));
-assert.strictEqual((topologySection.match(/<button\b/g) || []).length, 0);
+assert.strictEqual((topologySection.match(/<button\b/g) || []).length, 1);
 assert.ok(!topologySection.includes('>Operations<'));
 assert.ok(!topologySection.includes('>Physical<'));
 const topologyScripts = Array.from(indexSource.matchAll(/<script src="([^"]+)"/g), (match) => match[1]);
 assert.ok(topologyScripts.every((src) => !/physical/i.test(src)), 'no retired projection script is loaded');
-const prepareBody = panelSource.match(/function prepare\(targets, edges\) \{[\s\S]*?\n    \}/)[0];
+const prepareBody = panelSource.match(/function prepare\(targets, edges, apData\) \{[\s\S]*?\n    \}/)[0];
 const renderBody = panelSource.match(/function render\(frame\) \{[\s\S]*?\n    \}/)[0];
 assert.ok(prepareBody.includes('buildTopologyLayers(targets)'));
 assert.ok(prepareBody.includes('topologyLayout(layers, width, height, edges)'));
