@@ -9,14 +9,23 @@
   }
 
   function physicalParts(port) {
-    const match = /^(Gi|Te|Fa|Hu|Fo|Twe|Eth)([1-9]\d?)\/(\d{1,2})\/([1-9]\d{0,2})$/.exec(port.ifName || '');
-    if (!match) return null;
-    const member = Number(match[2]);
-    const slot = Number(match[3]);
-    const number = Number(match[4]);
-    if (member !== port.stackMember || number !== port.portNumber ||
-        member > 16 || number > 256) return null;
-    return { family: match[1], member, slot, number };
+    const stacked = /^(Gi|Te|Fa|Hu|Fo|Twe|Eth)([1-9]\d?)\/(\d{1,2})\/([1-9]\d{0,2})$/.exec(port.ifName || '');
+    if (stacked) {
+      const member = Number(stacked[2]);
+      const slot = Number(stacked[3]);
+      const number = Number(stacked[4]);
+      if (member !== port.stackMember || number !== port.portNumber ||
+          member > 16 || number > 256) return null;
+      return { family: stacked[1], member, slot, number };
+    }
+
+    const standalone = /^(Gi|Te|Fa|Hu|Fo|Twe|Eth)0\/([1-9]\d{0,2})$/.exec(port.ifName || '');
+    if (!standalone) return null;
+    const member = 1;
+    const slot = 0;
+    const number = Number(standalone[2]);
+    if (member !== port.stackMember || number !== port.portNumber || number > 256) return null;
+    return { family: standalone[1], member, slot, number };
   }
 
   function groupPorts(ports) {
