@@ -200,6 +200,7 @@ class LibreNMSClient:
         token_file: str | os.PathLike[str] | None = None,
         timeout: float | None = None,
         max_response_bytes: int | None = None,
+        max_attempts: int | None = None,
     ):
         self.base_url = str(
             os.environ.get("LIBRENMS_URL", DEFAULT_BASE_URL) if base_url is None else base_url
@@ -218,7 +219,8 @@ class LibreNMSClient:
             if max_response_bytes is not None else None
         )
         self.max_attempts = _positive_int(
-            os.environ.get("LIBRENMS_API_ATTEMPTS", DEFAULT_MAX_ATTEMPTS),
+            os.environ.get("LIBRENMS_API_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)
+            if max_attempts is None else max_attempts,
             DEFAULT_MAX_ATTEMPTS,
         )
         self.retry_delay = _positive_float(

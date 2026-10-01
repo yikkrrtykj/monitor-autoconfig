@@ -49,8 +49,7 @@ def clean_librenms_env(monkeypatch):
 
 
 def make_client(*, token="test-token", max_attempts=3):
-    client = LibreNMSClient(base_url="http://librenms:8000/", token=token, timeout=2)
-    client.max_attempts = max_attempts
+    client = LibreNMSClient(base_url="http://librenms:8000/", token=token, timeout=2, max_attempts=max_attempts)
     client.retry_delay = 0
     client._sleep = lambda _seconds: None
     return client
@@ -544,3 +543,53 @@ def test_age_and_freshness_use_only_the_callers_threshold():
     assert is_fresh(timestamp, 120, now=now)
     assert not is_fresh(timestamp, 119, now=now)
     assert not is_fresh("bad", 120, now=now)
+
+
+def test_explicit_retry_budget_overrides_environment(monkeypatch):
+    monkeypatch.setenv("LIBRENMS_API_ATTEMPTS", "9")
+    client = LibreNMSClient(token="test-token", max_attempts=1)
+    assert client.max_attempts == 1
+    calls = attach_sequence(client, [urlerror.URLError("offline")])
+    client._sleep = lambda _: pytest.fail("one attempt must not sleep/retry")
+    with pytest.raises(LibreNMSUnavailable): client.get_json("/api/v0/devices")
+    assert len(calls) == client.request_count == 1
+
+
+@pytest.mark.parametrize("value,expected", [(None, 3), ("5", 5), ("0", 3), ("invalid", 3)])
+def test_omitted_retry_budget_preserves_env_default(monkeypatch, value, expected):
+    if value is not None: monkeypatch.setenv("LIBRENMS_API_ATTEMPTS", value)
+    assert LibreNMSClient(token="test-token").max_attempts == expected
+    assert LibreNMSClient(token="test-token", max_attempts=None).max_attempts == expected
+
+
+@pytest.mark.parametrize("value", [0, -1, "0", "invalid", 0.5])
+def test_invalid_explicit_retry_budget_uses_existing_positive_int_default(monkeypatch, value):
+    monkeypatch.setenv("LIBRENMS_API_ATTEMPTS", "9")
+    assert LibreNMSClient(token="test-token", max_attempts=value).max_attempts == 3
+
+
+@pytest.mark.parametrize("timeout", [2, 15])
+def test_real_platform_history_factory_constructs_one_attempt_client(tmp_path, monkeypatch, timeout):
+    import importlib.util
+    from pathlib import Path
+    monkeypatch.setenv("PLATFORM_WORKDIR", str(tmp_path))
+    monkeypatch.setenv("PLATFORM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("PLATFORM_NETWORK_HTTP_TIMEOUT", str(timeout))
+    token_file = tmp_path / "token"
+    token_file.write_text("fixture-token", encoding="utf-8")
+    monkeypatch.setenv("PLATFORM_NETWORK_LIBRENMS_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("LIBRENMS_API_ATTEMPTS", "9")
+    spec = importlib.util.spec_from_file_location("history_factory_wiring_test", Path(__file__).resolve().parents[1] / "platform_api/main.py")
+    main = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(main)
+    context = main._network_read_context()
+    client = context.librenms_history_client_factory()
+    assert isinstance(client, LibreNMSClient)
+    assert client.max_attempts == 1 and client.timeout == min(3, timeout)
+    assert context.librenms_client_factory().max_attempts == 9
+    calls = attach_sequence(client, [urlerror.URLError("offline")])
+    client._sleep = lambda _: pytest.fail("history factory must not retry")
+    with pytest.raises(LibreNMSUnavailable): client.get_device("192.0.2.7")
+    assert len(calls) == client.request_count == 1
+    assert calls[0]["timeout"] <= 3
+    assert not (tmp_path / "state").exists(), "factory must not initialize runtime or write state"
