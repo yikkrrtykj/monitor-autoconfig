@@ -250,7 +250,7 @@ const panel = topologyPanelModule.createTopologyPanel({
 
 assert.deepStrictEqual(
   Object.keys(panel),
-  ['isAvailable', 'prepare', 'render', 'updateLatency', 'updateStatus', 'showError', 'clearDetail', 'resetView'],
+  ['isAvailable', 'isApVisible', 'prepare', 'render', 'updateLatency', 'updateStatus', 'showError', 'clearDetail', 'resetView'],
   'the controller API is explicit and contains no fetch, timer or cache methods'
 );
 assert.strictEqual(panel.isAvailable(), true, 'the panel owns the Topology canvas availability check');
@@ -721,5 +721,26 @@ console.log('bigscreen Topology panel tests passed');
     detail.querySelector('.topology-detail-close').onclick();
     assert.strictEqual(detail.hidden, true, 'failure detail remains closable');
   }
+  const apRequests = [];
+  const apPanel = topologyPanelModule.createTopologyPanel({
+    document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+    buildTopologyLayers, topologyLayout, renderTopologySvg,
+    topologyNodeKindLabel: (kind) => kind, topologyLatencyIp: (node) => node.ip,
+    escapeHtml, formatPingText,
+    fetchNodeInspector: async (ip) => {
+      apRequests.push(ip);
+      return { kind: 'unifi-ap', ip, name: 'AP-1', online: 'up', clients: 0,
+        model: 'U6-Pro', uplink: '1 Gbps', radio: '频道利用率最高 20%' };
+    }
+  });
+  apPanel.render({ width: 800, layout: { height: 500, nodes: [{ kind: 'ap', ip: '10.1.0.1', name: 'AP-1' }] } });
+  canvas.nodes[0].dispatch('click');
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepStrictEqual(apRequests, ['10.1.0.1'], 'AP click reuses the existing IP Inspector');
+  assert.ok(detail.innerHTML.includes('U6-Pro'));
+  assert.ok(detail.innerHTML.includes('<dt>客户端</dt><dd>0</dd>'));
+  assert.ok(detail.innerHTML.includes('1 Gbps'));
+  assert.ok(detail.innerHTML.includes('频道利用率最高 20%'));
+  assert.ok(!detail.innerHTML.includes('topology-view-ports'));
   console.log('bigscreen Node Inspector lifecycle tests passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

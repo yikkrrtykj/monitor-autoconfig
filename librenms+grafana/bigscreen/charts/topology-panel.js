@@ -39,6 +39,29 @@
       portPanel
     } = dependencies;
 
+    let apVisible = false;
+    const apStorage = () => dependencies.getSessionStorage ? dependencies.getSessionStorage() : dependencies.sessionStorage;
+    try { apVisible = apStorage()?.getItem("topology-ap-visible") === "on"; } catch (error) {}
+    const apToggle = document.getElementById("topologyApToggle");
+    const apCount = document.getElementById("topologyApCount");
+    const updateApControl = () => {
+      if (apToggle) {
+        apToggle.textContent = apVisible ? "AP: 显示" : "AP: 隐藏";
+        apToggle.setAttribute("aria-pressed", String(apVisible));
+      }
+      if (apCount) apCount.hidden = !apVisible;
+    };
+    updateApControl();
+    if (apToggle) apToggle.onclick = () => {
+      apVisible = !apVisible;
+      try { apStorage()?.setItem("topology-ap-visible", apVisible ? "on" : "off"); } catch (error) {}
+      updateApControl();
+      clearDetail(true);
+      // Remove AP nodes immediately; an older pending response cannot restore them.
+      if (!apVisible && lastWiredFrame) render(lastWiredFrame);
+      if (dependencies.onApVisibilityChange) dependencies.onApVisibilityChange();
+    };
+    let lastWiredFrame = null;
     let topologyNodes = [];
     let inspectorRequest = 0;
     let portsRequest = 0;
@@ -91,7 +114,7 @@
               <dt>状态</dt><dd>${node.success === null ? "状态未知" : (node.success === undefined ? "无数据" : (node.success ? "在线" : "离线"))}</dd>
               <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
             </dl>${actions}`;
-          const hasInspector = Boolean(node.ip && ["core", "dist", "device", "firewall"].includes(node.kind) && fetchNodeInspector);
+          const hasInspector = Boolean(node.ip && ["core", "dist", "device", "firewall", "ap"].includes(node.kind) && fetchNodeInspector);
           const bindClose = () => {
             detail.querySelector(".topology-detail-close").onclick = () => { inspectorRequest += 1; closePorts(); detail.hidden = true; };
           };
@@ -118,6 +141,7 @@
               <dl>
                 ${row("Hostname", inspector.hostname)}${row("管理 IP", inspector.ip)}${row("型号", inspector.model)}
                 ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : null)}
+                ${inspector.kind === "unifi-ap" ? row("客户端", inspector.clients) + row("上联", inspector.uplink) + row("无线电", inspector.radio) : ""}
                 ${row("端口", ports ? `在线 ${ports.up} / 离线 ${ports.down} / 未知 ${ports.unknown}` : null)}
                 ${row("连接摘要", connectionSummary)}
                 ${inspector.kind === "hillstone" ? haRows(inspector).map(([label, value]) => row(label, value, true)).join('') : node.kind === "firewall" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
@@ -282,7 +306,7 @@
       canvas.addEventListener("dragstart", (event) => event.preventDefault());
     }
 
-    function prepare(targets, edges) {
+    function prepare(targets, edges, apData) {
       const canvas = canvasElement();
       const layers = buildTopologyLayers(targets);
       const containerWidth = Math.max(640, canvas.clientWidth || 1200);
@@ -299,7 +323,10 @@
       );
       const width = Math.max(containerWidth, maxRow * 168 + 48);
       const layout = topologyLayout(layers, width, height, edges);
-      return { layout, width };
+      lastWiredFrame = { layout, width };
+      const frame = apVisible && dependencies.appendApLeaves ? dependencies.appendApLeaves(lastWiredFrame, apData) : lastWiredFrame;
+      if (apCount && apVisible) apCount.textContent = `AP ${frame.apCount?.located || 0}/${frame.apCount?.total || 0} 已定位`;
+      return frame;
     }
 
     function render(frame) {
@@ -317,7 +344,7 @@
       canvas.querySelectorAll(".topology-node").forEach((el) => {
         const node = topologyNodes[Number(el.dataset.idx)];
         const text = el.querySelector(".topology-node-latency");
-        if (!node || !text) return;
+        if (!node || !text || node.kind === "ap") return;
         text.textContent = node.success === null ? "状态未知" : Number.isFinite(node.latency)
           ? formatPingText(node.latency)
           : (node.kind === "isp" && node.success === true ? "在线" : "");
@@ -329,10 +356,12 @@
     }
 
     function showError(message) {
+      lastWiredFrame = null;
       canvasElement().innerHTML = `<div class="topology-error">拓扑数据拉取失败: ${escapeHtml(message || "")}</div>`;
     }
 
-    function clearDetail() {
+    function clearDetail(preserveWired = false) {
+      if (!preserveWired) lastWiredFrame = null;
       inspectorRequest += 1;
       closePorts();
       const detail = detailElement();
@@ -343,6 +372,7 @@
 
     return {
       isAvailable,
+      isApVisible: () => apVisible,
       prepare,
       render,
       updateLatency,

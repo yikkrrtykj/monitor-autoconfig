@@ -746,11 +746,11 @@
   }
 
   function topologyNodeIcon(kind) {
-    return { isp: "🌐", firewall: "🛡", core: "★", dist: "▦", device: "◇", server: "⚙" }[kind] || "?";
+    return { isp: "🌐", firewall: "🛡", core: "★", dist: "▦", device: "◇", ap: "◉", server: "⚙" }[kind] || "?";
   }
 
   function topologyNodeKindLabel(kind) {
-    return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", device: "设备 · 类型未确认", server: "服务器" }[kind] || kind;
+    return { isp: "ISP", firewall: "防火墙", core: "核心", dist: "接入", device: "设备 · 类型未确认", ap: "AP", server: "服务器" }[kind] || kind;
   }
 
   function topologyTextWidth(text) {
@@ -763,12 +763,12 @@
 
   function renderTopologyNodes(nodes) {
     return (nodes || []).map((node, idx) => {
-      const latencyText = node.success === null ? "状态未知" : Number.isFinite(node.latency)
+      const latencyText = node.kind === "ap" ? (node.success === true ? "在线" : node.success === false ? "离线" : "未知") : node.success === null ? "状态未知" : Number.isFinite(node.latency)
         ? formatPingText(node.latency)
         : (node.kind === "isp" && node.success === true ? "在线" : "");
       const dataAttrs = `data-idx="${idx}" data-kind="${escapeHtml(node.kind)}" data-name="${escapeHtml(node.name)}" data-ip="${escapeHtml(node.ip || "")}" data-level="${escapeHtml(node.level)}"`;
       const subline = node.ip
-        ? `<text class="topology-node-ip" x="14" y="${node.h - 8}">${escapeHtml(node.ip)}</text>`
+        ? `<text class="topology-node-ip" x="14" y="${node.h - 8}">${escapeHtml(node.kind === "ap" ? `${node.model || "型号未知"} · ${Number.isFinite(node.clients) ? node.clients : "?"} 客户端` : node.ip)}</text>`
         : "";
       const nodeName = String(node.name || "?");
       const nameMaxW = node.w - 42;

@@ -45,7 +45,7 @@
     activeInfraPingQuery, activeSeriesNames,
     fetchIspInventory, ispTrafficQuery, fetchIspTraffic, ispChartMaxBps,
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
-    fetchTopologyTargets, fetchTopologyEdges, fetchRuntimeStatus,
+    fetchTopologyTargets, fetchTopologyEdges, fetchApAttachments, fetchRuntimeStatus,
     fetchNetworkOverview, fetchNetworkDevices, fetchNetworkTopology, fetchNodeInspector, fetchNodePorts, fetchPortHistory, fetchPortHistoryFallback, fetchNetworkIsp,
     fetchPlatformAuthStatus, loginPlatformAuth, logoutPlatformAuth,
     fetchPlatformConfig, fetchPlatformVersion, fetchApplyStatus, postPlatform, fetchRetirePending, patchPlatform, fetchIncidents,
@@ -382,6 +382,9 @@
     setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window) });
   const topologyPanel = createTopologyPanel({
     document,
+    getSessionStorage: () => window.sessionStorage,
+    appendApLeaves: window.BSApTopology.appendApLeaves,
+    onApVisibilityChange: () => refreshTopology(),
     location: window.location,
     buildTopologyLayers,
     topologyLayout,
@@ -1036,10 +1039,15 @@
         (targets) => ({ targets, failed: false }),
         (error) => ({ error, failed: true })
       );
-      const [networkRead, probeResult, seenItems] = await Promise.all([
+      const apRequest = topologyPanel.isApVisible()
+        ? Promise.all([wirelessPanel.fetchApStatus({ topology: true }), fetchApAttachments()])
+          .then(([aps, artifact]) => ({ aps, artifact })).catch(() => null)
+        : Promise.resolve(null);
+      const [networkRead, probeResult, seenItems, apData] = await Promise.all([
         readTopologyNetwork(enrichmentRequest),
         enrichmentResult,
-        prometheusInstant(activeInfraPingQuery()).catch(() => [])
+        prometheusInstant(activeInfraPingQuery()).catch(() => []),
+        apRequest
       ]);
       if (!topologyLifecycle.isCurrent(seq)) return;
       if (networkRead.authExpired) {
@@ -1061,7 +1069,7 @@
       // 与网络总览一致：隐藏从没上线过的设备（按 instance 名匹配 seen-up 集合）。
       const seenUp = activeSeriesNames(seenItems);
       const targets = topologyNetworkTargets({ ...networkRead.domains, authenticated: networkRead.authenticated }, enrichment, seenUp);
-      const { layout, width } = topologyPanel.prepare(targets, edges);
+      const { layout, width } = topologyPanel.prepare(targets, edges, apData);
       if (shouldRender("topology", topologySignature(layout, width, edges))) {
         topologyPanel.render({ layout, width });
       } else {
@@ -1088,7 +1096,7 @@
   // latency is excluded on purpose -- it jitters every sample and is patched
   // into the existing DOM through the panel's incremental update instead.
   function topologySignature(layout, width, edges) {
-    const nodesSig = layout.nodes.map((node) => `${node.kind}|${node.ip || ""}|${node.name}|${node.level}`).join("#");
+    const nodesSig = layout.nodes.map((node) => `${node.kind}|${node.ip || ""}|${node.name}|${node.level}|${node.kind === "ap" ? `${node.model}|${node.clients}` : ""}`).join("#");
     const edgesSig = (edges || []).map((edge) => [
       edge.from_ip, edge.from_port, (edge.from_member_ports || []).join(","), edge.from_aggregate_port,
       edge.to_ip, edge.to_port, (edge.to_member_ports || []).join(","), edge.to_aggregate_port,
