@@ -391,6 +391,8 @@ fi
 
 # Run required one-shots separately so startup does not run them twice.
 . "$SCRIPT_DIR/deployment-tasks.sh"
+# Used by deployment_compose() from the sourced deployment-tasks.sh.
+# shellcheck disable=SC2034
 COMPOSE_CMD="docker compose"
 task_budget=${LIBRENMS_CONFIG_TIMEOUT:-180}
 check_budget=${DEPLOY_CHECK_TIMEOUT:-180}
