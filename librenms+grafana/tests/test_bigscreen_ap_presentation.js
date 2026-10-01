@@ -55,6 +55,48 @@ assert(!svg.includes('142'), 'internal VLAN FK is not rendered');
 assert(svg.includes('textLength="144"'), 'long names stay in their reserved label width');
 assert(svg.includes('class="topology-ap-port" x="26" y="-8"'), 'port label moves with AP above its circle');
 
+// Dense three-level chamber: adjacent access/server cards close both sides
+// and the downward lane. The old router escaped upward through its parent.
+const denseParent = { kind: 'dist', ip: '10.0.0.11', x: 300, y: 150, w: 144, h: 58 };
+const denseWired = { width: 800, layout: { height: 680, links: [], nodes: [denseParent,
+  ...[170, 240, 310].flatMap((y, i) => [
+    { kind: 'dist', ip: `10.0.1.${i + 1}`, x: 151, y, w: 144, h: 58 },
+    { kind: 'server', ip: `10.0.2.${i + 1}`, x: 448, y, w: 144, h: 58 }
+  ]),
+  { kind: 'dist', ip: '10.0.3.1', x: 300, y: 250, w: 144, h: 58 },
+  { kind: 'server', ip: '10.0.3.2', x: 300, y: 390, w: 144, h: 58 }
+] } };
+const denseSnapshot = JSON.stringify(denseWired);
+const denseData = { aps: aps.slice(0, 2), artifact: { ...artifact, attachments: artifact.attachments.slice(0, 2).map((row) => ({ ...row, switch_ip: denseParent.ip })) } };
+const denseFrame = appendApLeaves(denseWired, denseData, 10000);
+assert.strictEqual(denseFrame.layout.apBuses.length, 0, 'closed downward chamber cannot escape upward through parent');
+assert.strictEqual(denseFrame.layout.links.length, 0, 'no unsafe partial AP route');
+assert.deepStrictEqual(denseFrame.apCount, { located: 0, total: 2 }, 'no safe path fails closed');
+assert.strictEqual(JSON.stringify(denseWired), denseSnapshot);
+const blockedEgress = { ...denseWired, layout: { ...denseWired.layout,
+  nodes: denseWired.layout.nodes.map((n) => n.ip === '10.0.3.1' ? { ...n, y: 220 } : n) } };
+const blockedFrame = appendApLeaves(blockedEgress, denseData, 10000);
+assert.deepStrictEqual(blockedFrame.apCount, { located: 0, total: 2 }, 'blocked initial downward egress fails closed');
+assert.strictEqual(blockedFrame.layout.apBuses.length, 0);
+assert.strictEqual(blockedFrame.layout.links.length, 0);
+
+// Open one side while retaining the downward obstacle and other levels.
+// Routing must now succeed outward and retain every remaining obstacle.
+const openWired = { ...denseWired, layout: { ...denseWired.layout,
+  nodes: denseWired.layout.nodes.filter((n) => !n.ip.startsWith('10.0.1.')) } };
+const openFrame = appendApLeaves(openWired, denseData, 10000);
+assert.deepStrictEqual(openFrame.apCount, { located: 2, total: 2 });
+openFrame.layout.apBuses.forEach((bus) => {
+  const [source, egress] = bus.points;
+  assert.deepStrictEqual(source, [denseParent.x + denseParent.w / 2, denseParent.y + denseParent.h]);
+  assert.strictEqual(egress[0], source[0], 'first egress can only move down');
+  assert(egress[1] > source[1]);
+  assert(bus.points.every((point) => point[1] >= source[1]), 'no waypoint returns above parent bottom');
+  bus.points.slice(1).forEach((point, i) => openFrame.layout.nodes.forEach((n) => {
+    assert(!segmentHits(bus.points[i], point, bounds(n)), 'dense route avoids parent, unrelated cards and AP label/body reservations');
+  }));
+});
+
 // Exercise the real controller and SVG renderer. Project the actual wired
 // viewBox into the fixed viewport, including meet letterboxing and pan/zoom.
 const elements = new Map();

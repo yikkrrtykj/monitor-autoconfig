@@ -18,15 +18,21 @@
   // Rectilinear visibility grid: only adjacent coordinates are searched. All
   // obstacles include labels/metadata, not just the device body.
   function route(start, end, obstacles, width) {
+    const source = start;
+    // Leave the parent's bottom vertically before any general route. The
+    // remaining route cannot backtrack above this egress, even in a maze.
+    const minY = source[1] + 16;
+    start = [source[0], minY];
     const boxes = obstacles.map((r) => ({ x: r.x - 8, y: r.y - 8, w: r.w + 16, h: r.h + 16 }));
     const xs = [...new Set([0, width, start[0], end[0], ...boxes.flatMap((r) => [r.x, r.x + r.w])])].filter((x) => x >= 0 && x <= width).sort((a, b) => a - b);
-    const ys = [...new Set([start[1], end[1], ...boxes.flatMap((r) => [r.y, r.y + r.h])])].sort((a, b) => a - b);
+    const ys = [...new Set([start[1], end[1], ...boxes.flatMap((r) => [r.y, r.y + r.h])])].filter((y) => y >= minY).sort((a, b) => a - b);
     const clear = (a, b) => !boxes.some((r) => a[0] === b[0]
       ? a[0] > r.x && a[0] < r.x + r.w && Math.max(a[1], b[1]) > r.y && Math.min(a[1], b[1]) < r.y + r.h
       : a[1] > r.y && a[1] < r.y + r.h && Math.max(a[0], b[0]) > r.x && Math.min(a[0], b[0]) < r.x + r.w);
+    if (end[1] < minY || !clear(source, start)) return null;
     // Most local branches need one bend; avoid a full grid for large AP sets.
     const simple = [[start, [start[0], end[1]], end], [start, [end[0], start[1]], end]];
-    for (const points of simple) if (points.slice(1).every((point, i) => clear(points[i], point))) return points;
+    for (const points of simple) if (points.slice(1).every((point, i) => clear(points[i], point))) return [source, ...points];
     const key = (x, y) => y * xs.length + x;
     const first = key(xs.indexOf(start[0]), ys.indexOf(start[1]));
     const last = key(xs.indexOf(end[0]), ys.indexOf(end[1]));
@@ -47,7 +53,7 @@
     if (!previous.has(last)) return null;
     const points = [];
     for (let k = last; k !== null; k = previous.get(k)) points.unshift([xs[k % xs.length], ys[Math.floor(k / xs.length)]]);
-    return points;
+    return [source, ...points];
   }
   function appendApLeaves(frame, data, now = Date.now() / 1000) {
     const aps = identities(data && data.aps);
