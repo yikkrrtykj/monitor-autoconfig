@@ -176,8 +176,9 @@
       if (items.length === 1) {
         const node = nodes[0];
         // A lone AP stays centered under its parent. Its own final label/body
-        // approach is allowed; every unrelated bound remains an obstacle.
-        const obstacles = reserved.filter((r) => r !== parent);
+        // label approach is allowed; its own body below the top is protected.
+        const obstacles = [...reserved.filter((r) => r !== parent),
+          { x: node.x - 46, y: node.y + 8, w: 144, h: 120 }];
         const points = route([center, parent.y + parent.h], [node.x + 26, node.y], obstacles, frame.width, true);
         if (!points) return;
         const apPoints = compactPath(points);

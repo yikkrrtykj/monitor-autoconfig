@@ -765,6 +765,7 @@ console.log('bigscreen Topology panel tests passed');
   anonymousApPanel.render({ width: 800, layout: { height: 500, nodes: [{ kind: 'ap', ip: '10.1.0.1', name: 'AP', model: 'U6-Pro', clients: 0 }] } });
   canvas.nodes[0].dispatch('click');
   assert.deepStrictEqual([...detail.innerHTML.matchAll(/<dt>(.*?)<\/dt>/g)].map((m) => m[1]), apRows, 'anonymous AP detail keeps the same eight rows');
+  assert.ok(detail.innerHTML.includes('<dt>Hostname</dt><dd>—</dd>'), 'friendly display name is not invented as a hostname');
   assert.ok(detail.innerHTML.includes('<dt>客户端</dt><dd>0</dd>'));
   console.log('bigscreen Node Inspector lifecycle tests passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

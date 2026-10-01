@@ -109,7 +109,7 @@
           const header = (name) => `<header><strong>${escapeHtml(name)}</strong><button class="topology-detail-close" type="button" aria-label="关闭详情">×</button></header>`;
           const legacyCard = `${header(node.name)}
             <dl>
-              ${node.kind === "ap" ? `<dt>Hostname</dt><dd>${escapeHtml(node.name || "—")}</dd>
+              ${node.kind === "ap" ? `<dt>Hostname</dt><dd>${escapeHtml(node.hostname || "—")}</dd>
               <dt>管理 IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
               <dt>型号</dt><dd>${escapeHtml(node.model || "—")}</dd>
               <dt>状态</dt><dd>${node.success === true ? "在线" : node.success === false ? "离线" : "未知"}</dd>

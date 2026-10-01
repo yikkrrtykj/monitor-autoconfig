@@ -27,6 +27,7 @@ const validate = (frame) => {
     assert.notDeepStrictEqual(a, b);
     assert(b[1] >= points[0][1] + 16, 'no return above egress');
     frame.layout.nodes.filter((n) => n !== link.to).forEach((n) => assert(!hits(a, b, n), 'no re-entry or crossing unrelated bound'));
+    assert(!hits(a, b, { x: link.to.x - 54, y: link.to.y, w: 160, h: 136 }), 'cannot detour below AP top through its own body/name');
     if (i > 0) {
       const previous = points[i - 1];
       assert(!(previous[0] === a[0] && a[0] === b[0]) && !(previous[1] === a[1] && a[1] === b[1]), 'no redundant collinear vertices');
