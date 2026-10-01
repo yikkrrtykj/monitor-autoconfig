@@ -113,6 +113,7 @@
               <dt>IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
               <dt>状态</dt><dd>${node.success === null ? "状态未知" : (node.success === undefined ? "无数据" : (node.success ? "在线" : "离线"))}</dd>
               <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
+              ${node.kind === "ap" ? `<dt>VLAN</dt><dd>${node.vlan || "—"}</dd><dt>上联端口</dt><dd>${escapeHtml(node.switchPort || "—")}</dd>` : ""}
             </dl>${actions}`;
           const hasInspector = Boolean(node.ip && ["core", "dist", "device", "firewall", "ap"].includes(node.kind) && fetchNodeInspector);
           const bindClose = () => {
@@ -140,7 +141,8 @@
               ${header(inspector.name || node.name)}
               <dl>
                 ${row("Hostname", inspector.hostname)}${row("管理 IP", inspector.ip)}${row("型号", inspector.model)}
-                ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : null)}
+                ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : node.kind === "ap" && Number.isFinite(node.latency) ? formatPingText(node.latency) : null)}
+                ${node.kind === "ap" ? row("VLAN", node.vlan) + row("上联端口", node.switchPort) : ""}
                 ${inspector.kind === "unifi-ap" ? row("客户端", inspector.clients) + row("上联", inspector.uplink) + row("无线电", inspector.radio) : ""}
                 ${row("端口", ports ? `在线 ${ports.up} / 离线 ${ports.down} / 未知 ${ports.unknown}` : null)}
                 ${row("连接摘要", connectionSummary)}
@@ -332,7 +334,17 @@
     function render(frame) {
       const canvas = canvasElement();
       topologyNodes = frame.layout.nodes;
-      canvas.innerHTML = renderTopologySvg(frame.layout, frame.width);
+      // Keep the original wired SVG viewport, aspect ratio, and pan/zoom. APs
+      // overflow into extra scroll space; enlarging the viewBox would re-fit it.
+      canvas.innerHTML = `<div class="topology-additive-frame">${renderTopologySvg(frame.layout, frame.width)}</div>`;
+      const svg = canvas.querySelector(".topology-svg");
+      const holder = canvas.querySelector(".topology-additive-frame");
+      const viewportHeight = Math.max(420, canvas.clientHeight || 680);
+      if (svg?.style) svg.style.height = `${viewportHeight}px`;
+      if (holder?.style) {
+        const fit = Math.min((canvas.clientWidth || 1200) / frame.width, viewportHeight / (frame.layout.wiredHeight || frame.layout.height));
+        holder.style.height = `${viewportHeight + Math.max(0, frame.layout.height - (frame.layout.wiredHeight || frame.layout.height)) * fit * topoView.scale}px`;
+      }
       bindTopologyNodeEvents();
       setupTopoPanZoom();
       applyTopoView();
@@ -344,7 +356,12 @@
       canvas.querySelectorAll(".topology-node").forEach((el) => {
         const node = topologyNodes[Number(el.dataset.idx)];
         const text = el.querySelector(".topology-node-latency");
-        if (!node || !text || node.kind === "ap") return;
+        if (!node || !text) return;
+        if (node.kind === "ap") {
+          const ping = Number.isFinite(node.latency) ? formatPingText(node.latency) : node.success === true ? "在线" : node.success === false ? "离线" : "未知";
+          text.textContent = `${ping}${node.vlan ? ` · VLAN ${node.vlan}` : ""}`;
+          return;
+        }
         text.textContent = node.success === null ? "状态未知" : Number.isFinite(node.latency)
           ? formatPingText(node.latency)
           : (node.kind === "isp" && node.success === true ? "在线" : "");

@@ -3796,6 +3796,14 @@ def _run_collection():
     except Exception as exc:
         print(f"[WARN] AP inventory unavailable ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
         aps = []
+    # 与 attachment 共用本轮身份；失败也发布空清单，不保留旧 AP ping targets。
+    try:
+        write_json_atomic(os.path.join(output_dir, "ap-ping-targets.json"), [
+            {"targets": [ap["ip"]], "labels": {"display_name": ap["ip"]}}
+            for ap in aps
+        ], sort_keys=True)
+    except Exception as exc:
+        print(f"[WARN] AP ping targets write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
     device_ips = load_device_list()
     if not device_ips:
         write_current_ap_artifact(output_dir, aps, {})

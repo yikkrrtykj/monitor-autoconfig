@@ -1126,6 +1126,14 @@ body {
 .topology-canvas.topology-grabbing {
   cursor: grabbing;
 }
+.topology-canvas { overflow: auto; scrollbar-gutter: stable; }
+.topology-additive-frame { position: relative; }
+.topology-additive-frame .topology-svg { overflow: visible; }
+.topology-ap-node circle { fill: #0f1727; stroke: #4ade80; stroke-width: 1.5; }
+.topology-ap-node.node-bad circle { stroke: #f87171; }
+.topology-ap-node.node-none circle { stroke: #475569; stroke-dasharray: 3 3; }
+.topology-ap-node:hover circle, .topology-ap-node:focus circle { stroke-width: 3; filter: drop-shadow(0 0 5px #69a0ff); }
+.topology-ap-port { fill: #c9d4e8; font-size: 10px; paint-order: stroke; stroke: #0f1727; stroke-width: 3px; }
 
 .topology-svg {
   width: 100%;
