@@ -29,7 +29,7 @@
   }
   // Rectilinear visibility grid: only adjacent coordinates are searched. All
   // obstacles include labels/metadata, not just the device body.
-  function route(start, end, obstacles, width) {
+  function route(start, end, obstacles, width, shortest = false) {
     const source = start;
     // Leave the parent's bottom vertically before any general route. The
     // remaining route cannot backtrack above this egress, even in a maze.
@@ -48,6 +48,61 @@
     const key = (x, y) => y * xs.length + x;
     const first = key(xs.indexOf(start[0]), ys.indexOf(start[1]));
     const last = key(xs.indexOf(end[0]), ys.indexOf(end[1]));
+    if (shortest) {
+      // A lone AP has no fan-out: minimize length, then turns. Grid-hop BFS
+      // can otherwise prefer a longer detour when obstacle spacing differs.
+      const less = (a, b) => a.distance < b.distance || (a.distance === b.distance && a.turns < b.turns);
+      const heap = [];
+      const push = (item) => {
+        heap.push(item);
+        let i = heap.length - 1;
+        while (i > 0) {
+          const parent = Math.floor((i - 1) / 2);
+          if (!less(heap[i], heap[parent])) break;
+          [heap[i], heap[parent]] = [heap[parent], heap[i]]; i = parent;
+        }
+      };
+      const pop = () => {
+        const item = heap[0], tail = heap.pop();
+        if (heap.length) {
+          heap[0] = tail;
+          let i = 0;
+          while (i * 2 + 1 < heap.length) {
+            let child = i * 2 + 1;
+            if (child + 1 < heap.length && less(heap[child + 1], heap[child])) child++;
+            if (!less(heap[child], heap[i])) break;
+            [heap[i], heap[child]] = [heap[child], heap[i]]; i = child;
+          }
+        }
+        return item;
+      };
+      const initial = { id: first * 2, distance: 0, turns: 0, previous: null };
+      const best = new Map([[initial.id, initial]]);
+      push(initial);
+      while (heap.length) {
+        const current = pop();
+        if (best.get(current.id) !== current) continue;
+        const cell = Math.floor(current.id / 2), direction = current.id % 2;
+        if (cell === last) {
+          const points = [];
+          for (let item = current; item; item = item.previous) {
+            const index = Math.floor(item.id / 2);
+            points.unshift([xs[index % xs.length], ys[Math.floor(index / xs.length)]]);
+          }
+          return [source, ...points];
+        }
+        const x = cell % xs.length, y = Math.floor(cell / xs.length);
+        for (const [nx, ny] of [[x, y + 1], [x - 1, y], [x + 1, y], [x, y - 1]]) {
+          if (nx < 0 || ny < 0 || nx >= xs.length || ny >= ys.length || !clear([xs[x], ys[y]], [xs[nx], ys[ny]])) continue;
+          const nextDirection = nx === x ? 0 : 1;
+          const next = { id: key(nx, ny) * 2 + nextDirection,
+            distance: current.distance + Math.abs(xs[nx] - xs[x]) + Math.abs(ys[ny] - ys[y]),
+            turns: current.turns + (direction === nextDirection ? 0 : 1), previous: current };
+          if (!best.has(next.id) || less(next, best.get(next.id))) { best.set(next.id, next); push(next); }
+        }
+      }
+      return null;
+    }
     const previous = new Map([[first, null]]);
     const queue = [first];
     for (let cursor = 0; cursor < queue.length; cursor++) {
@@ -105,7 +160,7 @@
       const right = nextParent ? (nextParent.x + nextParent.w / 2 + center) / 2 : frame.width - 20;
       const cols = Math.min(3, items.length, Math.max(1, Math.floor((right - left - 32) / 160)));
       const groupWidth = cols * 160;
-      const x = Math.max(20, Math.min(frame.width - groupWidth - 20, center - groupWidth / 2));
+      const x = items.length === 1 ? center - 80 : Math.max(20, Math.min(frame.width - groupWidth - 20, center - groupWidth / 2));
       const box = { x, y: parent.y + parent.h + 64, w: groupWidth, h: Math.ceil(items.length / cols) * 144 };
       // A group's complete label/body/metadata area is reserved before routing.
       while (reserved.some((r) => intersects(box, { x: r.x - 16, y: r.y - 16, w: r.w + 32, h: r.h + 32 }))) box.y += 32;
@@ -118,6 +173,27 @@
           x: x + (idx % cols) * 160 + 54, y: box.y + Math.floor(idx / cols) * 144 + 28, w: 52, h: 52 };
         return node;
       });
+      if (items.length === 1) {
+        const node = nodes[0];
+        // A lone AP stays centered under its parent. Its own final label/body
+        // label approach is allowed; its own body below the top is protected.
+        const obstacles = [...reserved.filter((r) => r !== parent),
+          { x: node.x - 46, y: node.y + 8, w: 144, h: 120 }];
+        const points = route([center, parent.y + parent.h], [node.x + 26, node.y], obstacles, frame.width, true);
+        if (!points) return;
+        const apPoints = compactPath(points);
+        result.layout.links.push({ from: parent, to: node, severity: node.level, apLink: true, apPoints });
+        result.layout.nodes.push(node);
+        reserved.push(box);
+        apPoints.slice(1).forEach((point, idx) => {
+          const previous = apPoints[idx];
+          reserved.push({ x: Math.min(point[0], previous[0]), y: Math.min(point[1], previous[1]),
+            w: Math.max(1, Math.abs(point[0] - previous[0])), h: Math.max(1, Math.abs(point[1] - previous[1])) });
+        });
+        result.layout.height = Math.max(result.layout.height, box.y + box.h + 24);
+        result.apCount.located += 1;
+        return;
+      }
       // Each row fans out from a local bus. Route around all unrelated cards.
       const buses = [];
       const links = [];

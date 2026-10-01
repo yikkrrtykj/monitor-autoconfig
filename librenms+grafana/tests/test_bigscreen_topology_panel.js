@@ -92,6 +92,7 @@ class FakeElement {
   }
 
   querySelector(selector) {
+    if (selector === ".topology-view-ports" && !(this.innerHTML || "").includes('class="topology-view-ports"')) return null;
     if (!this.children) this.children = new Map();
     if (!this.children.has(selector)) this.children.set(selector, new FakeElement('BUTTON'));
     return this.children.get(selector);
@@ -739,11 +740,42 @@ console.log('bigscreen Topology panel tests passed');
   assert.deepStrictEqual(apRequests, ['10.1.0.1'], 'AP click reuses the existing IP Inspector');
   assert.ok(detail.innerHTML.includes('U6-Pro'));
   assert.ok(detail.innerHTML.includes('<dt>客户端</dt><dd>0</dd>'));
-  assert.ok(detail.innerHTML.includes('1 Gbps'));
-  assert.ok(detail.innerHTML.includes('频道利用率最高 20%'));
+  assert.deepStrictEqual([...detail.innerHTML.matchAll(/<dt>(.*?)<\/dt>/g)].map((m) => m[1]),
+    ['Hostname', '管理 IP', '型号', '状态', '延迟', 'VLAN', '上联端口', '客户端']);
+  assert.ok(!detail.innerHTML.includes('1 Gbps') && !detail.innerHTML.includes('频道利用率最高 20%'));
   assert.ok(detail.innerHTML.includes('<dt>VLAN</dt><dd>200</dd>'));
   assert.ok(detail.innerHTML.includes('<dt>上联端口</dt><dd>Gi6/0/1</dd>'));
   assert.ok(detail.innerHTML.includes('<dt>延迟</dt><dd>1ms</dd>'), 'AP exact-IP node RTT is Inspector fallback');
   assert.ok(!detail.innerHTML.includes('topology-view-ports'));
+  const apRows = ['Hostname', '管理 IP', '型号', '状态', '延迟', 'VLAN', '上联端口', '客户端'];
+  for (const [nodeKind, inspectorKind] of [['ap', 'generic-switch'], ['ap', 'hillstone'], ['ap', 'cisco'], ['device', 'unifi-ap']]) {
+    let apPortReads = 0;
+    const beforePortEvents = portEvents.length;
+    const classifiedPanel = topologyPanelModule.createTopologyPanel({
+      document, location: {}, buildTopologyLayers, topologyLayout, renderTopologySvg,
+      topologyNodeKindLabel: (kind) => kind, topologyLatencyIp: (node) => node.ip, escapeHtml, formatPingText, portPanel,
+      fetchNodePorts: () => { apPortReads++; return Promise.resolve({ ports: [] }); },
+      fetchNodeInspector: async (ip) => ({ kind: inspectorKind, ip, online: 'up', clients: 0,
+        ports: { up: 9, down: 0, unknown: 0 }, connections: { peers: 3, aggregates: 1 } })
+    });
+    classifiedPanel.render({ width: 800, layout: { height: 500, nodes: [{ kind: nodeKind, ip: '10.1.0.1', name: 'AP' }] } });
+    canvas.nodes[0].dispatch('click'); await Promise.resolve(); await Promise.resolve();
+    assert.deepStrictEqual([...detail.innerHTML.matchAll(/<dt>(.*?)<\/dt>/g)].map((m) => m[1]), apRows, 'either AP classification omits generic rows even if populated');
+    const button = detail.querySelector('.topology-view-ports');
+    if (button) button.onclick();
+    await Promise.resolve(); await Promise.resolve();
+    assert.strictEqual(button, null, 'AP classification suppresses physical port action');
+    assert.strictEqual(apPortReads, 0, 'AP classification never fetches physical ports');
+    assert(!portEvents.slice(beforePortEvents).some((event) => event.startsWith('loading:') || event.startsWith('open:')), 'AP does not open port panel');
+  }
+  const anonymousApPanel = topologyPanelModule.createTopologyPanel({
+    document, location: {}, buildTopologyLayers, topologyLayout, renderTopologySvg,
+    topologyNodeKindLabel: (kind) => kind, topologyLatencyIp: (node) => node.ip, escapeHtml, formatPingText
+  });
+  anonymousApPanel.render({ width: 800, layout: { height: 500, nodes: [{ kind: 'ap', ip: '10.1.0.1', name: 'AP', model: 'U6-Pro', clients: 0 }] } });
+  canvas.nodes[0].dispatch('click');
+  assert.deepStrictEqual([...detail.innerHTML.matchAll(/<dt>(.*?)<\/dt>/g)].map((m) => m[1]), apRows, 'anonymous AP detail keeps the same eight rows');
+  assert.ok(detail.innerHTML.includes('<dt>Hostname</dt><dd>—</dd>'), 'friendly display name is not invented as a hostname');
+  assert.ok(detail.innerHTML.includes('<dt>客户端</dt><dd>0</dd>'));
   console.log('bigscreen Node Inspector lifecycle tests passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

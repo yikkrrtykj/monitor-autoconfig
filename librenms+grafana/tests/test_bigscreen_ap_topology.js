@@ -16,8 +16,8 @@ assert.strictEqual(frame.layout.links[0].from, wired.layout.nodes[0]);
 assert.strictEqual(JSON.stringify(wired), snapshot, 'AP overlay never mutates wired layout/cache');
 const svg = require('../bigscreen/topology.js').renderTopologySvg(frame.layout, frame.width);
 assert(svg.includes('AP &lt;one&gt;'));
-assert(svg.includes('U6-Pro · 0 客户端'));
-assert(svg.includes('在线'));
+assert(!svg.includes('U6-Pro') && !svg.includes('客户端') && !svg.includes('在线'));
+assert.strictEqual(frame.layout.nodes[1].model, 'U6-Pro', 'model remains in data');
 assert(!svg.includes('NaN'));
 
 for (const evidence of [null, { ...artifact, attachments: [] }, { ...artifact, source: 'cache' }, { ...artifact, source: 'librenms-fdb' }, { ...artifact, candidate_source: 'cache' },

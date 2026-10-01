@@ -40,6 +40,8 @@
     await settle();
     const detail = document.getElementById('topologyDetail');
     check(!detail.hidden && detail.textContent.includes('VLAN200') && detail.textContent.includes('上联端口Gi6/0/1'), 'Inspector retains validated VLAN/port');
+    check(JSON.stringify([...detail.querySelectorAll('dt')].map((n) => n.textContent)) === JSON.stringify(['Hostname', '管理 IP', '型号', '状态', '延迟', 'VLAN', '上联端口', '客户端']), 'AP Inspector exact eight rows');
+    check([...canvas.querySelectorAll('.topology-ap-node')].every((n) => n.querySelectorAll('text').length === 2), 'AP node only name and port text');
     same(before, snapshot(), 'Inspector open');
     for (const n of canvas.querySelectorAll('.topology-node[data-kind="core"],.topology-node[data-kind="dist"],.topology-node[data-kind="device"]')) {
       check(!n.querySelector('.topology-node-ip,.topology-node-kind,.topology-node-latency'), 'wired card has no secondary summary');
