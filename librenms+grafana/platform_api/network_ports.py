@@ -71,6 +71,7 @@ FIREWALL_METRICS = {
     "outputDiscardsTotal": _fresh_firewall_metric("ifOutDiscards"),
 }
 STACK_PORT = re.compile(r"^(?:Gi|Te|Fa|Hu|Fo|Twe|Eth)([1-9]\d?)/\d{1,2}/([1-9]\d{0,2})$")
+STANDALONE_PORT = re.compile(r"^(?:Gi|Te|Fa|Hu|Fo|Twe|Eth)0/([1-9]\d{0,2})$")
 CISCO_OS = frozenset(("ios", "iosxe", "iosxr", "nxos"))
 SMALL_BUSINESS_OS = frozenset(("ciscosb", "cisco-access"))
 HILLSTONE_OS = frozenset(("hillstone", "stoneos"))
@@ -113,10 +114,18 @@ def _state(value: Any) -> str:
 
 def _stack_parts(name: str | None) -> tuple[int | None, int | None]:
     match = STACK_PORT.fullmatch(name or "")
+    if match:
+        member, port = int(match.group(1)), int(match.group(2))
+        return (member, port) if member <= 16 and port <= 256 else (None, None)
+
+    # Fixed standalone Cisco IOS switches use Gi0/1-style names. Normalize
+    # them to one presentation member so the Port Panel can reuse the same
+    # physical-bank layout without inventing StackWise topology.
+    match = STANDALONE_PORT.fullmatch(name or "")
     if not match:
         return None, None
-    member, port = int(match.group(1)), int(match.group(2))
-    return (member, port) if member <= 16 and port <= 256 else (None, None)
+    port = int(match.group(1))
+    return (1, port) if port <= 256 else (None, None)
 
 
 def _vlans(value: Any, warnings: list[str]) -> dict[str, Any] | None:
