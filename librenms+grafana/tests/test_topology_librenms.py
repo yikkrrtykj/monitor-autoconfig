@@ -1573,3 +1573,9 @@ def test_topology_local_poll_discovery_freshness(monkeypatch, timestamp, expecte
     monkeypatch.setenv("LIBRENMS_TIMEZONE", "Asia/Shanghai")
     now = datetime(2026, 9, 29, 8, 26, 49, tzinfo=timezone.utc)
     assert gte.librenms_freshness(timestamp, 600, now=now) == expected
+
+
+def test_dst_gap_topology_fails_closed(monkeypatch):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
+    assert gte.librenms_freshness("2026-03-08 02:30:00", 600,
+        now=datetime(2026, 3, 8, 7, 30, tzinfo=timezone.utc)) == "unknown"

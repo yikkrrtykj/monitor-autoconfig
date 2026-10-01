@@ -658,3 +658,19 @@ def test_posix_runtime_local_fallback(monkeypatch):
             assert parse_librenms_timestamp("2026-09-29 16:16:49") == datetime(2026, 9, 29, 21, 16, 49, tzinfo=timezone.utc)
     finally:
         time.tzset()
+
+
+@pytest.mark.parametrize("value", ["2026-11-01 01:30:00", datetime(2026, 11, 1, 1, 30), datetime(2026, 11, 1, 1, 30, fold=1)])
+def test_duplicate_wall_clock_chooses_later_instant(monkeypatch, value):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
+    expected = datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc)
+    assert parse_librenms_timestamp(value) == expected
+    assert age_seconds(value, now=datetime(2026, 11, 1, 7, 30, tzinfo=timezone.utc)) == 3600
+
+
+@pytest.mark.parametrize("value", ["2026-03-08 02:30:00", datetime(2026, 3, 8, 2, 30)])
+def test_nonexistent_wall_clock_is_invalid(monkeypatch, value):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
+    assert parse_librenms_timestamp(value) is None
+    assert age_seconds(value) is None
+    assert not is_fresh(value, 600)

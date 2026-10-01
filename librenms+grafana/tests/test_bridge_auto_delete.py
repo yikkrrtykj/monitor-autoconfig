@@ -638,3 +638,22 @@ def test_local_sql_age_preserves_auto_delete_dry_run(monkeypatch, offset, expect
     assert bridge.DEVICE_AUTO_DELETE_AFTER_SECONDS == WEEK
     assert bridge.DEVICE_AUTO_DELETE_DRY_RUN is True
     assert bridge.DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY is False
+
+
+@pytest.mark.parametrize("timestamp,current", [
+    ("2026-11-01 01:30:00", "2026-11-08T06:00:00+00:00"),
+    ("2026-03-08 02:30:00", "2026-03-16T07:30:00+00:00")])
+def test_dst_wall_clock_cannot_advance_delete_gate(monkeypatch, timestamp, current):
+    from datetime import datetime
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
+    # Even with actual-delete mode enabled in this isolated fixture, neither
+    # ambiguity near the threshold nor an invalid gap may reach any action.
+    monkeypatch.setattr(bridge, "DEVICE_AUTO_DELETE_DRY_RUN", False)
+    probes, deletes = [], []
+    stats = bridge.run_device_auto_delete_cycle(now=datetime.fromisoformat(current).timestamp(),
+        devices=[device(last_polled=timestamp)], token="test-token",
+        probe=lambda ip: probes.append(ip) or False,
+        delete=lambda *_args: deletes.append(True) or True)
+    assert stats["candidates"] == 0
+    assert stats["deleted"] == 0
+    assert probes == deletes == []

@@ -181,7 +181,15 @@ def parse_librenms_timestamp(value: object) -> datetime | None:
         if parsed.tzinfo is None:
             source_timezone = _naive_source_timezone()
             if source_timezone is not None:
-                parsed = parsed.replace(tzinfo=source_timezone)
+                # Both folds must round-trip to the original wall clock.
+                # Gaps have no valid instant; duplicated hours choose the
+                # later instant so destructive age gates cannot fire early.
+                candidates = set()
+                for fold in (0, 1):
+                    candidate = parsed.replace(tzinfo=source_timezone, fold=fold).astimezone(timezone.utc)
+                    if candidate.astimezone(source_timezone).replace(tzinfo=None) == parsed:
+                        candidates.add(candidate)
+                return max(candidates) if candidates else None
             # astimezone on a naive datetime uses local rules for that date,
             # retaining historical DST rather than today's fixed offset.
         return parsed.astimezone(timezone.utc)
