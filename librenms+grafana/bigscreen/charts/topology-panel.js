@@ -109,11 +109,18 @@
           const header = (name) => `<header><strong>${escapeHtml(name)}</strong><button class="topology-detail-close" type="button" aria-label="关闭详情">×</button></header>`;
           const legacyCard = `${header(node.name)}
             <dl>
-              <dt>类型</dt><dd>${escapeHtml(topologyNodeKindLabel(node.kind))}</dd>
+              ${node.kind === "ap" ? `<dt>Hostname</dt><dd>${escapeHtml(node.name || "—")}</dd>
+              <dt>管理 IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
+              <dt>型号</dt><dd>${escapeHtml(node.model || "—")}</dd>
+              <dt>状态</dt><dd>${node.success === true ? "在线" : node.success === false ? "离线" : "未知"}</dd>
+              <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
+              <dt>VLAN</dt><dd>${node.vlan || "—"}</dd>
+              <dt>上联端口</dt><dd>${escapeHtml(node.switchPort || "—")}</dd>
+              <dt>客户端</dt><dd>${Number.isFinite(node.clients) ? node.clients : "—"}</dd>` : `<dt>类型</dt><dd>${escapeHtml(topologyNodeKindLabel(node.kind))}</dd>
               <dt>IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
               <dt>状态</dt><dd>${node.success === null ? "状态未知" : (node.success === undefined ? "无数据" : (node.success ? "在线" : "离线"))}</dd>
               <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
-              ${node.kind === "ap" ? `<dt>VLAN</dt><dd>${node.vlan || "—"}</dd><dt>上联端口</dt><dd>${escapeHtml(node.switchPort || "—")}</dd>` : ""}
+              `}
             </dl>${actions}`;
           const hasInspector = Boolean(node.ip && ["core", "dist", "device", "firewall", "ap"].includes(node.kind) && fetchNodeInspector);
           const bindClose = () => {
@@ -128,6 +135,7 @@
           const request = inspectorRequest;
           fetchNodeInspector(node.ip).then((inspector) => {
             if (request !== inspectorRequest || detail.hidden) return;
+            const isAp = node.kind === "ap" || inspector.kind === "unifi-ap";
             const ports = inspector.ports;
             const warnings = Array.isArray(inspector.warnings) ? inspector.warnings : [];
             const connections = inspector.connections;
@@ -141,12 +149,10 @@
               ${header(inspector.name || node.name)}
               <dl>
                 ${row("Hostname", inspector.hostname)}${row("管理 IP", inspector.ip)}${row("型号", inspector.model)}
-                ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : node.kind === "ap" && Number.isFinite(node.latency) ? formatPingText(node.latency) : null)}
-                ${node.kind === "ap" ? row("VLAN", node.vlan) + row("上联端口", node.switchPort) : ""}
-                ${inspector.kind === "unifi-ap" ? row("客户端", inspector.clients) + row("上联", inspector.uplink) + row("无线电", inspector.radio) : ""}
-                ${row("端口", ports ? `在线 ${ports.up} / 离线 ${ports.down} / 未知 ${ports.unknown}` : null)}
-                ${row("连接摘要", connectionSummary)}
-                ${inspector.kind === "hillstone" ? haRows(inspector).map(([label, value]) => row(label, value, true)).join('') : node.kind === "firewall" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
+                ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : isAp && Number.isFinite(node.latency) ? formatPingText(node.latency) : null)}
+                ${isAp ? row("VLAN", node.vlan) + row("上联端口", node.switchPort) + row("客户端", inspector.clients)
+                  : row("端口", ports ? `在线 ${ports.up} / 离线 ${ports.down} / 未知 ${ports.unknown}` : null) + row("连接摘要", connectionSummary)}
+                ${!isAp && inspector.kind === "hillstone" ? haRows(inspector).map(([label, value]) => row(label, value, true)).join('') : !isAp && node.kind === "firewall" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
               </dl>
               ${warnings.length ? `<div class="topology-inspector-warnings">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
               ${actions}

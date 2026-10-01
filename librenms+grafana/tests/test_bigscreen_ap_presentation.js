@@ -50,7 +50,13 @@ assert(frame.layout.apBuses.length >= 2, 'one parent with multiple APs uses shar
 const svg = renderTopologySvg(frame.layout, frame.width);
 assert(svg.includes('<circle cx="26" cy="26" r="26" />'));
 assert(apNodes.every((n) => n.w === 52 && n.w < wired.layout.nodes[0].w));
-assert(svg.includes('1.2 ms · VLAN 200') && svg.includes('UAL6 · 4 客户端'));
+assert(!svg.includes('1.2 ms') && !svg.includes('VLAN') && !svg.includes('UAL6') && !svg.includes('客户端'));
+apNodes.forEach((n) => {
+  const card = renderTopologySvg({ height: 680, nodes: [n], links: [] }, 1100);
+  assert.strictEqual((card.match(/<text /g) || []).length, 2, 'only AP port and name text');
+  assert.strictEqual(n.latency, 0.0012); assert.strictEqual(n.vlan, 200);
+  assert.strictEqual(n.model, 'UAL6'); assert.strictEqual(n.clients, 4);
+});
 assert(!svg.includes('142'), 'internal VLAN FK is not rendered');
 assert(svg.includes('textLength="144"'), 'long names stay in their reserved label width');
 assert(svg.includes('class="topology-link-label" x="26" y="-8"'), 'shared wired label renderer moves with AP above its circle');

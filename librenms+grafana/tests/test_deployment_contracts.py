@@ -1611,10 +1611,10 @@ def test_topology_browser_controller_is_extracted_without_owning_refresh_or_data
     assert "topologySignature" not in panel
     assert "shouldRender" not in panel
     assert "charts/port-panel.js?v=20260930a" in index
-    assert "charts/topology-panel.js?v=20261001c" in index
-    assert index.index("topology.js?v=20261001d") < index.index("charts/port-panel.js?v=20260930a")
-    assert index.index("charts/port-panel.js?v=20260930a") < index.index("charts/topology-panel.js?v=20261001c")
-    assert index.index("charts/topology-panel.js?v=20261001c") < index.index("app.js?v=20261001c")
+    assert "charts/topology-panel.js?v=20261001e" in index
+    assert index.index("topology.js?v=20261001e") < index.index("charts/port-panel.js?v=20260930a")
+    assert index.index("charts/port-panel.js?v=20260930a") < index.index("charts/topology-panel.js?v=20261001e")
+    assert index.index("charts/topology-panel.js?v=20261001e") < index.index("app.js?v=20261001c")
 
 
 def test_grafana_device_names_survive_low_frequency_snmp_scrapes():

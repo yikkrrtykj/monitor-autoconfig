@@ -771,15 +771,11 @@
   function renderTopologyNodes(nodes) {
     return (nodes || []).map((node, idx) => {
       if (node.kind === "ap") {
-        const ping = Number.isFinite(node.latency) ? formatPingText(node.latency) : node.success === true ? "在线" : node.success === false ? "离线" : "未知";
         const fitted = (text, y, cls) => `<text class="${cls}" x="26" y="${y}" text-anchor="middle"${topologyTextWidth(text) > 144 ? ' textLength="144" lengthAdjust="spacingAndGlyphs"' : ''}>${escapeHtml(text)}</text>`;
         return `<g class="topology-node topology-ap-node node-${node.level}" transform="translate(${node.x},${node.y})" data-idx="${idx}" data-kind="ap" data-ip="${escapeHtml(node.ip)}" role="button" tabindex="0" aria-label="${escapeHtml(node.name)} AP">
           ${renderPortLabel(node.switchPort || "", 26, -8, "middle", false, 144)}
           <circle cx="26" cy="26" r="26" />
-          <text class="topology-node-kind" x="26" y="30" text-anchor="middle">AP</text>
           ${fitted(node.name || node.ip, 70, "topology-node-name")}
-          ${fitted(`${ping}${node.vlan ? ` · VLAN ${node.vlan}` : ""}`, 88, "topology-node-latency")}
-          ${fitted(`${node.model || "型号未知"} · ${Number.isFinite(node.clients) ? node.clients : "?"} 客户端`, 106, "topology-node-ip")}
         </g>`;
       }
       const latencyText = node.kind === "ap" ? (node.success === true ? "在线" : node.success === false ? "离线" : "未知") : node.success === null ? "状态未知" : Number.isFinite(node.latency)
@@ -836,7 +832,8 @@
       let d;
       if (link.apLink) {
         const x = nodeCenterX(link.to);
-        d = `M ${x} ${link.apBusY} L ${x} ${link.to.y}`;
+        d = link.apPoints ? link.apPoints.map(([px, py], i) => `${i ? "L" : "M"} ${px} ${py}`).join(" ")
+          : `M ${x} ${link.apBusY} L ${x} ${link.to.y}`;
       } else if (link.branchBus) {
         const childNode = link.from.y > link.to.y ? link.from : link.to;
         const x = nodeCenterX(childNode);
