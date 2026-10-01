@@ -16,7 +16,7 @@ def read(name: str) -> str:
     return (ROOT / name).read_text(encoding="utf-8")
 
 
-def _render_prometheus_config(tmp_path: Path, auto_value: str) -> str:
+def _render_prometheus_config(tmp_path: Path, auto_value: str, overrides=None) -> str:
     tmp_path.mkdir(parents=True, exist_ok=True)
     shell = shutil.which("sh")
     if not shell:
@@ -44,6 +44,7 @@ def _render_prometheus_config(tmp_path: Path, auto_value: str) -> str:
         "SERVER_PING": "",
         "UNIFI_CONTROLLER_URL": "",
     })
+    env.update(overrides or {})
     completed = subprocess.run(
         [shell, str(harness)], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=20, check=False,
@@ -57,6 +58,50 @@ def test_prometheus_auto_isp_uses_only_discovered_file_targets(tmp_path):
         rendered = _render_prometheus_config(tmp_path / enabled.lower(), enabled)
         assert "203.0.113.2" not in rendered
         assert "isp_targets.json" in rendered
+
+
+def test_hillstone_ha_scalar_job_preserves_switch_and_uptime_contract(tmp_path):
+    rendered = _render_prometheus_config(tmp_path, "true", {
+        "CORE_SWITCH_PING": "core:192.0.2.20", "DIST_SWITCH_PING": "edge:192.0.2.21",
+        "INTERCONNECT_SNMP_TARGETS": "stack:192.0.2.22",
+        "FIREWALL_PING": "vip:192.0.2.1", "FIREWALL_SNMP_TARGETS": "192.0.2.1",
+        "FIREWALL_UNIT_SNMP_TARGETS": "fw-a:192.0.2.11,fw-b:192.0.2.12",
+        "SNMP_UPTIME_SCRAPE_INTERVAL": "600s", "SWITCH_IFMIB_SCRAPE_INTERVAL": "30s",
+    })
+    def job(name):
+        return rendered.split(f'  - job_name: "{name}"', 1)[1].split('  - job_name:', 1)[0]
+    ha = job("infra-fw-ha-snmp")
+    assert "scrape_interval: 60s" in ha and "module: [hillstone_ha]" in ha
+    assert '"192.0.2.11"' in ha and '"192.0.2.12"' in ha
+    assert 'display_name: "fw-a"' in ha and 'display_name: "fw-b"' in ha
+    assert 'target_label: target_ip' in ha and 'source_labels: [__param_target]' in ha
+    assert all(ip not in ha for ip in ("192.0.2.1\"", "192.0.2.20", "192.0.2.21", "192.0.2.22"))
+    assert "file_sd_configs" not in ha and "if_mib" not in ha
+    uptime = job("infra-fw-unit-snmp")
+    assert "scrape_interval: 600s" in uptime and "module: [system_uptime]" in uptime
+    assert '"192.0.2.11"' in uptime and '"192.0.2.12"' in uptime
+    switch = job("infra-switch-ifmib")
+    assert "scrape_interval: 30s" in switch and "module: [if_mib, if_stack]" in switch
+    assert '"192.0.2.22"' in switch and '"192.0.2.20"' not in switch
+    assert "scrape_interval: 600s" in job("infra-switch-snmp")
+    assert 'module: [if_mib]' in job("firewall-snmp")
+    assert "hillstone_ha" not in job("firewall-snmp")
+    empty = _render_prometheus_config(tmp_path / "empty", "true")
+    empty_ha = empty.split('  - job_name: "infra-fw-ha-snmp"', 1)[1].split('  - job_name:', 1)[0]
+    assert "targets: []" in empty_ha
+
+
+def test_hillstone_ha_exporter_loads_one_get_no_walk_or_retries():
+    compose = read("docker-compose.yml")
+    fragment = compose.split("cat > /tmp/snmp-hillstone-ha.yml <<'EOF'", 1)[1].split("        EOF", 1)[0]
+    assert "hillstone_ha:" in fragment
+    get = fragment.split("get:", 1)[1].split("retries:", 1)[0]
+    assert get.strip() == "- 1.3.6.1.4.1.28557.2.2.1.8.0"
+    assert "walk:" not in fragment and "retries: 0" in fragment and "timeout: 2s" in fragment
+    assert fragment.count("- name:") == 1 and "- name: sysHAStatus" in fragment
+    assert "oid: 1.3.6.1.4.1.28557.2.2.1.8\n" in fragment
+    assert "type: gauge" in fragment
+    assert "--config.file=/tmp/snmp-hillstone-ha.yml" in compose
 
 
 def test_prometheus_manual_isp_retains_public_ip_fallback(tmp_path):

@@ -1,6 +1,18 @@
 ;(function () {
   'use strict';
 
+  function haText(ha) {
+    if (!ha || ha.source !== 'Hillstone sysHAStatus' || !Array.isArray(ha.units) || !ha.units.length) {
+      return '未知（暂无可信数据源）';
+    }
+    const states = { none: 'None', init: 'Init', hello: 'Hello', backup: 'Backup', master: 'Master', 'AA-mode': 'AA-mode' };
+    return ha.units.slice(0, 16).map((unit) => {
+      const state = unit.fresh === true ? states[unit.state] : null;
+      const text = state || (unit.fresh === true && unit.state === 'vendor-unknown' ? '未知（厂商 slase / 5）' : '未知');
+      return `${unit.name || unit.ip || '单元'} ${text}`;
+    }).join(' · ');
+  }
+
   function createTopologyPanel(dependencies) {
     const {
       document,
@@ -98,7 +110,7 @@
                 ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : null)}
                 ${row("端口", ports ? `在线 ${ports.up} / 离线 ${ports.down} / 未知 ${ports.unknown}` : null)}
                 ${row("连接摘要", connectionSummary)}
-                ${node.kind === "firewall" || inspector.kind === "hillstone" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
+                ${inspector.kind === "hillstone" ? row("HA 角色", haText(inspector.ha)) : node.kind === "firewall" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
               </dl>
               ${warnings.length ? `<div class="topology-inspector-warnings">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
               ${actions}
