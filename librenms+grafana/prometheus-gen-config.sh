@@ -152,6 +152,9 @@ write_ping_job() {
   if [ "$job_name" = "infra-isp-ping" ]; then
     interval="$ISP_PING_SCRAPE_INTERVAL"
   fi
+  if [ "$job_name" = "infra-ap-ping" ]; then
+    interval="5s"
+  fi
 
   cat >> "$CONFIG_FILE" <<EOF
   - job_name: "${job_name}"
@@ -322,6 +325,8 @@ write_ping_job "infra-fw-ping"    "$FIREWALL_PING"
 # （拓扑只画 infra-fw-ping 的防火墙节点）。
 write_ping_job "infra-fw-unit-ping" "$FIREWALL_UNIT_SNMP_TARGETS"
 write_ping_job "infra-srv-ping"   "$SERVER_PING"
+# 可视化专用 AP RTT；身份文件由既有 collector 原子更新，不进入设备告警。
+write_ping_job "infra-ap-ping" "" "/etc/prometheus/targets/topology/ap-ping-targets.json"
 
 # Infrastructure SNMP jobs for device uptime
 SWITCH_SNMP_TARGETS="${CORE_SWITCH_PING}${CORE_SWITCH_PING:+,}${DIST_SWITCH_PING}"

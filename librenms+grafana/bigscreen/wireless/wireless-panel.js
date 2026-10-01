@@ -161,6 +161,25 @@
       infos.forEach((info) => nameCounts.set(info.metric.name, (nameCounts.get(info.metric.name) || 0) + 1));
       onlineMaps.forEach((items) => mergeApOnlineMap(onlineByName, items));
 
+      const pingByIp = new Map();
+      if (options.topology) {
+        const [success, rtt] = await Promise.all([
+          optionalPrometheusQuery('probe_success{job="infra-ap-ping"}'),
+          optionalPrometheusQuery('probe_icmp_duration_seconds{job="infra-ap-ping",phase="rtt"}')
+        ]);
+        const exact = (items, ip) => items.filter((item) => item.metric?.target_ip === ip);
+        infos.forEach((info) => {
+          const ip = info.metric.ip;
+          const sameIp = infos.filter((other) => other.metric.ip === ip);
+          const reachable = exact(success, ip);
+          const latency = exact(rtt, ip);
+          if (ip && sameIp.length === 1 && reachable.length === 1 && reachable[0].value === 1
+            && latency.length === 1 && Number.isFinite(latency[0].value) && latency[0].value >= 0) {
+            pingByIp.set(ip, latency[0].value);
+          }
+        });
+      }
+
       return infos
         .map((i) => {
           const name = i.metric.name || "?";
@@ -174,6 +193,7 @@
             mac: i.metric.mac || "",
             site: i.metric.site || "",
             online,
+            ...(options.topology ? { latency: pingByIp.get(i.metric.ip) ?? null } : {}),
             clients: options.topology ? (nameCounts.get(name) > 1 || clients[name] == null ? null : online === false ? 0 : clients[name])
               : online && clients[name] != null ? clients[name] : 0
           };

@@ -733,7 +733,7 @@ console.log('bigscreen Topology panel tests passed');
         model: 'U6-Pro', uplink: '1 Gbps', radio: '频道利用率最高 20%' };
     }
   });
-  apPanel.render({ width: 800, layout: { height: 500, nodes: [{ kind: 'ap', ip: '10.1.0.1', name: 'AP-1' }] } });
+  apPanel.render({ width: 800, layout: { height: 500, nodes: [{ kind: 'ap', ip: '10.1.0.1', name: 'AP-1', vlan: 200, switchPort: 'Gi6/0/1', latency: 0.0012 }] } });
   canvas.nodes[0].dispatch('click');
   await Promise.resolve(); await Promise.resolve();
   assert.deepStrictEqual(apRequests, ['10.1.0.1'], 'AP click reuses the existing IP Inspector');
@@ -741,6 +741,9 @@ console.log('bigscreen Topology panel tests passed');
   assert.ok(detail.innerHTML.includes('<dt>客户端</dt><dd>0</dd>'));
   assert.ok(detail.innerHTML.includes('1 Gbps'));
   assert.ok(detail.innerHTML.includes('频道利用率最高 20%'));
+  assert.ok(detail.innerHTML.includes('<dt>VLAN</dt><dd>200</dd>'));
+  assert.ok(detail.innerHTML.includes('<dt>上联端口</dt><dd>Gi6/0/1</dd>'));
+  assert.ok(detail.innerHTML.includes('<dt>延迟</dt><dd>1ms</dd>'), 'AP exact-IP node RTT is Inspector fallback');
   assert.ok(!detail.innerHTML.includes('topology-view-ports'));
   console.log('bigscreen Node Inspector lifecycle tests passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

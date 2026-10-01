@@ -763,6 +763,18 @@
 
   function renderTopologyNodes(nodes) {
     return (nodes || []).map((node, idx) => {
+      if (node.kind === "ap") {
+        const ping = Number.isFinite(node.latency) ? formatPingText(node.latency) : node.success === true ? "在线" : node.success === false ? "离线" : "未知";
+        const fitted = (text, y, cls) => `<text class="${cls}" x="26" y="${y}" text-anchor="middle"${topologyTextWidth(text) > 144 ? ' textLength="144" lengthAdjust="spacingAndGlyphs"' : ''}>${escapeHtml(text)}</text>`;
+        return `<g class="topology-node topology-ap-node node-${node.level}" transform="translate(${node.x},${node.y})" data-idx="${idx}" data-kind="ap" data-ip="${escapeHtml(node.ip)}" role="button" tabindex="0" aria-label="${escapeHtml(node.name)} AP">
+          ${fitted(node.switchPort || "", -8, "topology-ap-port")}
+          <circle cx="26" cy="26" r="26" />
+          <text class="topology-node-kind" x="26" y="30" text-anchor="middle">AP</text>
+          ${fitted(node.name || node.ip, 70, "topology-node-name")}
+          ${fitted(`${ping}${node.vlan ? ` · VLAN ${node.vlan}` : ""}`, 88, "topology-node-latency")}
+          ${fitted(`${node.model || "型号未知"} · ${Number.isFinite(node.clients) ? node.clients : "?"} 客户端`, 106, "topology-node-ip")}
+        </g>`;
+      }
       const latencyText = node.kind === "ap" ? (node.success === true ? "在线" : node.success === false ? "离线" : "未知") : node.success === null ? "状态未知" : Number.isFinite(node.latency)
         ? formatPingText(node.latency)
         : (node.kind === "isp" && node.success === true ? "在线" : "");
@@ -814,7 +826,10 @@
       let labelAnchor = "middle";
       let labelPositions = null;
       let d;
-      if (link.branchBus) {
+      if (link.apLink) {
+        const x = nodeCenterX(link.to);
+        d = `M ${x} ${link.apBusY} L ${x} ${link.to.y}`;
+      } else if (link.branchBus) {
         const childNode = link.from.y > link.to.y ? link.from : link.to;
         const x = nodeCenterX(childNode);
         const busY = link.branchBus.y;
@@ -949,6 +964,7 @@
     }).join("");
 
     const nodes = renderTopologyNodes(layout.nodes);
+    const apBuses = (layout.apBuses || []).map((bus) => `<path class="topology-link topology-ap-bus link-${bus.severity}" d="${bus.points.map(([x, y], i) => `${i ? 'L' : 'M'} ${x} ${y}`).join(' ')}" />`).join('');
 
     const haBonds = (layout.haBonds || []).map((bond) => {
       const x1 = bond.from.x + bond.from.w;
@@ -965,7 +981,7 @@
     }).join("");
 
     return `
-      <svg class="topology-svg" viewBox="0 0 ${canvasWidth} ${layout.height}" data-base-width="${canvasWidth}" data-base-height="${layout.height}" preserveAspectRatio="xMidYMid meet" focusable="false">
+      <svg class="topology-svg" viewBox="0 0 ${canvasWidth} ${layout.wiredHeight || layout.height}" data-base-width="${canvasWidth}" data-base-height="${layout.wiredHeight || layout.height}" data-extra-height="${Math.max(0, layout.height - (layout.wiredHeight || layout.height))}" preserveAspectRatio="xMidYMid meet" focusable="false">
         <defs>
           <filter id="topology-glow" x="-20%" y="-20%" width="140%" height="140%">
             <feGaussianBlur stdDeviation="2.5" result="blur" />
@@ -974,6 +990,7 @@
         </defs>
         ${coreBus}
         ${branchBuses}
+        ${apBuses}
         ${linkPaths}
         ${haBonds}
         ${nodes}
@@ -997,4 +1014,3 @@
     window.BSTopology = ns;
   }
 }());
-
