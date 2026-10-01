@@ -571,7 +571,7 @@ console.log('bigscreen Topology panel tests passed');
   ], []));
   canvas.nodes[0].dispatch('click');
   await Promise.resolve();
-  assert.ok(detail.innerHTML.includes('HA 角色</dt><dd>未知（暂无可信数据源）'));
+  assert.ok(detail.innerHTML.includes('HA 角色</dt><dd class="topology-ha-value">未知（暂无可信数据源）'));
   detail.querySelector('.topology-view-ports').onclick();
   assert.deepStrictEqual(hillstoneReads.map((read) => read.ip), ['10.0.0.3']);
   canvas.nodes[1].dispatch('click');
@@ -618,12 +618,58 @@ console.log('bigscreen Topology panel tests passed');
     canvas.nodes[0].dispatch('click');
     await Promise.resolve();
     assert.ok(detail.innerHTML.includes(expected), expected);
+    if (ha.source === 'Hillstone sysHAStatus' && ha.units.length) {
+      assert.ok(detail.innerHTML.includes('HA 集群</dt><dd class="topology-ha-value">'));
+      assert.ok(!detail.innerHTML.includes('HA 角色</dt>'), 'VIP never receives a physical role');
+    }
     assert.ok(detail.innerHTML.includes('查看接口'));
     assert.strictEqual(portReads, 0, 'lightweight HA Inspector does not eagerly read full interfaces/history');
     detail.querySelector('.topology-view-ports').onclick();
     await Promise.resolve();
     assert.strictEqual(portReads, 1, 'existing on-demand Interface Panel entry is reused');
   }
+
+  const physicalPair = [
+    { ip: '10.0.0.11', state: 'master', fresh: true },
+    { ip: '10.0.0.12', state: 'backup', fresh: true }
+  ];
+  const selectedCases = [
+    ['10.0.0.11', physicalPair, 'Master', '10.0.0.12 Backup'],
+    ['10.0.0.12', physicalPair, 'Backup', '10.0.0.11 Master'],
+    ['10.0.0.11', [physicalPair[0], { ...physicalPair[1], fresh: false }], 'Master', '10.0.0.12 未知'],
+    ['10.0.0.11', [physicalPair[0], { ip: '10.0.0.12' }], 'Master', '10.0.0.12 未知'],
+    ['10.0.0.11', [{ ...physicalPair[0], state: 'unknown', fresh: false }, physicalPair[1]], '未知', '10.0.0.12 Backup'],
+    ['10.0.0.11', [{ ...physicalPair[0], state: 'vendor-unknown', code: 5 }, physicalPair[1]], '未知（厂商 slase / 5）', '10.0.0.12 Backup'],
+    ['10.0.0.11', [{ ...physicalPair[0], state: 'AA-mode' }, physicalPair[1]], 'AA-mode', '10.0.0.12 Backup'],
+    ['10.0.0.11', [physicalPair[0], { ...physicalPair[1], name: '<img src=x onerror=alert(1)>' }], 'Master', '&lt;img src=x onerror=alert(1)&gt; Backup'],
+    ['10.0.0.11', [physicalPair[0], { ...physicalPair[1], ip: '<svg onload=alert(1)>' }], 'Master', '&lt;svg onload=alert(1)&gt; Backup'],
+    ['10.0.0.11', [physicalPair[0], { ...physicalPair[1], name: 'long-peer-name-'.repeat(10) }], 'Master', `${'long-peer-name-'.repeat(10)} Backup`]
+  ];
+  for (const [ip, units, own, peer] of selectedCases) {
+    const selectedPanel = topologyPanelModule.createTopologyPanel({
+      document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+      buildTopologyLayers, topologyLayout, renderTopologySvg,
+      topologyNodeKindLabel: (kind) => kind, topologyLatencyIp: (node) => node.ip,
+      escapeHtml, formatPingText, portPanel,
+      fetchNodeInspector: () => Promise.resolve({ kind: 'hillstone', ip, hostname: 'compact-host',
+        ha: { source: 'Hillstone sysHAStatus', units } })
+    });
+    selectedPanel.render(selectedPanel.prepare([{ kind: 'firewall', ip, name: 'Physical unit' }], []));
+    canvas.nodes[0].dispatch('click');
+    await Promise.resolve();
+    assert.ok(detail.innerHTML.includes(`HA 角色</dt><dd class="topology-ha-value">${own}</dd>`));
+    assert.ok(detail.innerHTML.includes(`HA 对端</dt><dd class="topology-ha-value">${peer}</dd>`));
+    assert.ok(!detail.innerHTML.includes('HA 集群'), 'a physical unit retains its own identity');
+    assert.ok(!detail.innerHTML.includes('<img'), 'unit labels remain escaped');
+    assert.ok(detail.innerHTML.includes('Hostname</dt><dd>compact-host</dd>'), 'ordinary rows keep compact styling');
+  }
+
+  const css = require('fs').readFileSync(require('path').join(__dirname, '../bigscreen/style.css'), 'utf8');
+  const genericStyle = css.match(/\.topology-detail dd\s*\{([^}]+)\}/)[1];
+  const haStyle = css.match(/\.topology-detail dd\.topology-ha-value\s*\{([^}]+)\}/)[1];
+  assert.ok(/white-space:\s*nowrap/.test(genericStyle) && /text-overflow:\s*ellipsis/.test(genericStyle));
+  assert.ok(/white-space:\s*normal/.test(haStyle) && /overflow:\s*visible/.test(haStyle));
+  assert.ok(/text-overflow:\s*clip/.test(haStyle) && /overflow-wrap:\s*anywhere/.test(haStyle), 'long HA values wrap instead of ellipsis');
 
   for (const kind of ['generic-switch', 'unknown']) {
     const switchPanel = topologyPanelModule.createTopologyPanel({

@@ -1306,6 +1306,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.topology-detail dd.topology-ha-value {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
 .topology-detail .detail-link {
   display: inline-block;
   color: #69a0ff;
