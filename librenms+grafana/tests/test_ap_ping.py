@@ -2,7 +2,6 @@
 import json
 
 import pytest
-import yaml
 import ap_topology as ap
 from .test_ap_topology import identity
 from .test_topology_server_librenms import gte
@@ -47,14 +46,14 @@ def test_inventory_failure_clears_stale_ping_targets(tmp_path, monkeypatch):
 
 
 def test_ping_config_uses_only_file_sd_and_is_alert_isolated(tmp_path):
-    config = yaml.safe_load(_render_prometheus_config(tmp_path, "true"))
-    jobs = config["scrape_configs"]
-    job = next(j for j in jobs if j["job_name"] == "infra-ap-ping")
-    assert job["scrape_interval"] == "5s"
-    assert job["params"] == {"module": ["icmp"]}
-    assert job["static_configs"] == [{"targets": []}]
-    assert job["file_sd_configs"][0]["files"] == ["/etc/prometheus/targets/topology/ap-ping-targets.json"]
-    assert {"source_labels": ["__param_target"], "target_label": "target_ip"} in job["relabel_configs"]
+    rendered = _render_prometheus_config(tmp_path, "true")
+    job = rendered.split('  - job_name: "infra-ap-ping"', 1)[1].split('  - job_name:', 1)[0]
+    assert "scrape_interval: 5s" in job
+    assert "module: [icmp]" in job and "metrics_path: /probe" in job
+    assert "static_configs:\n      - targets: []" in job
+    assert 'file_sd_configs:\n      - files:\n          - "/etc/prometheus/targets/topology/ap-ping-targets.json"' in job
+    assert "source_labels: [__param_target]\n        target_label: target_ip" in job
+    assert "replacement: blackbox-exporter:9115" in job
     for name in ["docker-compose.yml", ".env.example"]:
         down_jobs = [line for line in read(name).splitlines() if "DEVICE_DOWN_JOBS" in line]
         assert down_jobs and all("infra-ap-ping" not in line for line in down_jobs)
