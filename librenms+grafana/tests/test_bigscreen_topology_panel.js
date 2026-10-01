@@ -92,6 +92,7 @@ class FakeElement {
   }
 
   querySelector(selector) {
+    if (selector === ".topology-view-ports" && !(this.innerHTML || "").includes('class="topology-view-ports"')) return null;
     if (!this.children) this.children = new Map();
     if (!this.children.has(selector)) this.children.set(selector, new FakeElement('BUTTON'));
     return this.children.get(selector);
