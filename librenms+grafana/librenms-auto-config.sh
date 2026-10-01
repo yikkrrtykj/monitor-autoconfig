@@ -808,7 +808,6 @@ add_device_api() {
     -H "Content-Type: application/json" \
     -d "$payload" 2>/dev/null)
 
-  msg=$(printf '%s' "$result" | api_result_field message)
   status=$(printf '%s' "$result" | api_result_field status)
   if [ "$status" = "ok" ]; then
     echo "  ${name:-$ip} ($ip): added; API diagnostic output masked"
