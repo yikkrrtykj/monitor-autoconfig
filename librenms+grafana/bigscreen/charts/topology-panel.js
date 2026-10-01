@@ -156,7 +156,7 @@
               </dl>
               ${warnings.length ? `<div class="topology-inspector-warnings">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
               ${actions}
-              ${fetchNodePorts && portPanel && (["hillstone", "generic-switch"].includes(inspector.kind) ||
+              ${!isAp && fetchNodePorts && portPanel && (["hillstone", "generic-switch"].includes(inspector.kind) ||
                 (inspector.kind === "cisco" && ["core", "dist"].includes(node.kind)))
                 ? `<div class="topology-detail-actions"><button type="button" class="topology-view-ports">${inspector.kind !== "cisco" ? "查看接口" : "查看端口"}</button></div>` : ''}
             `;
