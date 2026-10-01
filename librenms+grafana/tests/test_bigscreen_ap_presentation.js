@@ -53,7 +53,34 @@ assert(apNodes.every((n) => n.w === 52 && n.w < wired.layout.nodes[0].w));
 assert(svg.includes('1.2 ms · VLAN 200') && svg.includes('UAL6 · 4 客户端'));
 assert(!svg.includes('142'), 'internal VLAN FK is not rendered');
 assert(svg.includes('textLength="144"'), 'long names stay in their reserved label width');
-assert(svg.includes('class="topology-ap-port" x="26" y="-8"'), 'port label moves with AP above its circle');
+assert(svg.includes('class="topology-link-label" x="26" y="-8"'), 'shared wired label renderer moves with AP above its circle');
+assert(!svg.includes('topology-ap-port'), 'no separate AP label typography');
+frame.layout.apBuses.forEach((bus) => {
+  const children = frame.layout.links.filter((link) => link.apBusY === bus.y).map((link) => link.to);
+  assert.deepStrictEqual(bus.childXs, children.map((n) => n.x + n.w / 2), 'bus extent contains only participating child anchors');
+  assert.deepStrictEqual(bus.childRoutes.map((r) => r.apIp), children.map((n) => n.ip));
+  const cuts = [...new Set([...bus.childXs, bus.junctionX])].sort((a, b) => a - b);
+  const segments = [...bus.points.slice(1).map((point, i) => [bus.points[i], point]),
+    ...cuts.slice(1).map((x, i) => [[cuts[i], bus.y], [x, bus.y]])];
+  const covers = (a, b, c, d) => a[0] === b[0] && c[0] === d[0] && a[0] === c[0]
+    ? Math.min(c[1], d[1]) <= Math.min(a[1], b[1]) && Math.max(c[1], d[1]) >= Math.max(a[1], b[1])
+    : a[1] === b[1] && c[1] === d[1] && a[1] === c[1]
+      && Math.min(c[0], d[0]) <= Math.min(a[0], b[0]) && Math.max(c[0], d[0]) >= Math.max(a[0], b[0]);
+  segments.forEach(([a, b]) => {
+    assert.notDeepStrictEqual(a, b, 'no empty terminal segment');
+    assert(bus.childRoutes.some((r) => r.points.slice(1).some((point, i) => covers(a, b, r.points[i], point))), 'every rendered segment belongs to a validated child route');
+    frame.layout.nodes.forEach((n) => assert(!segmentHits(a, b, bounds(n)), 'trunk and exact participating bus span avoid all card/label bounds'));
+  });
+  bus.childRoutes.forEach((r, i) => assert.deepStrictEqual(r.points[r.points.length - 1], [children[i].x + 26, children[i].y], 'route terminates at its own real AP'));
+});
+assert(frame.layout.apBuses.some((bus) => bus.childXs.length === 1), 'fixture includes a partial last row with one AP and no horizontal bus');
+for (const kind of ['core', 'dist', 'device']) {
+  const minimalNode = { ...wired.layout.nodes[0], kind, name: 'Minimal switch', latency: 0.002, success: true, level: 'good' };
+  const card = renderTopologySvg({ height: 680, nodes: [minimalNode], links: [] }, 1100);
+  assert(card.includes('Minimal switch') && card.includes('topology-node-icon'));
+  for (const cls of ['topology-node-kind', 'topology-node-ip', 'topology-node-latency']) assert(!card.includes(`class="${cls}"`), 'wired switch/device card has no secondary summary');
+  assert.strictEqual(minimalNode.latency, 0.002, 'Inspector data is retained');
+}
 
 // Dense three-level chamber: adjacent access/server cards close both sides
 // and the downward lane. The old router escaped upward through its parent.

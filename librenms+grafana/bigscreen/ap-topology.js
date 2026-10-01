@@ -15,6 +15,18 @@
       && parsed.filter((other) => other.mac === ap.mac).length === 1);
   }
   const intersects = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  function compactPath(points) {
+    const result = [];
+    points.forEach((point) => {
+      const last = result[result.length - 1];
+      if (last && point[0] === last[0] && point[1] === last[1]) return;
+      const previous = result[result.length - 2];
+      if (previous && ((previous[0] === last[0] && last[0] === point[0] && (last[1] - previous[1]) * (point[1] - last[1]) >= 0)
+        || (previous[1] === last[1] && last[1] === point[1] && (last[0] - previous[0]) * (point[0] - last[0]) >= 0))) result.pop();
+      result.push(point);
+    });
+    return result;
+  }
   // Rectilinear visibility grid: only adjacent coordinates are searched. All
   // obstacles include labels/metadata, not just the device body.
   function route(start, end, obstacles, width) {
@@ -112,13 +124,18 @@
       for (let i = 0; i < nodes.length; i += cols) {
         const children = nodes.slice(i, i + cols);
         const busY = children[0].y - 28;
-        const busX = x + 8;
+        const childXs = children.map((node) => node.x + node.w / 2);
+        const junctionX = Math.max(childXs[0], Math.min(childXs[childXs.length - 1], center));
         const obstacles = reserved.filter((r) => r !== parent);
         // The route must also avoid this group's own circles and metadata.
         nodes.forEach((n) => obstacles.push({ x: n.x - 46, y: n.y - 20, w: 144, h: 128 }));
-        const points = route([parent.x + parent.w / 2, parent.y + parent.h], [busX, busY], obstacles, frame.width);
+        const points = route([center, parent.y + parent.h], [junctionX, busY], obstacles, frame.width);
         if (!points) return; // Never draw a guessed diagonal through a card.
-        const bus = { points: [...points, [children[children.length - 1].x + 26, busY]], severity: 'good' };
+        // Trunk ends inside the participating span, never at an empty slot.
+        // A partial row has only its real children, and a single AP has no bus.
+        const bus = { points: compactPath(points), severity: 'good', y: busY,
+          childXs, junctionX, childRoutes: children.map((node) => ({ apIp: node.ip,
+            points: compactPath([...points, [node.x + node.w / 2, busY], [node.x + node.w / 2, node.y]]) })) };
         buses.push(bus);
         children.forEach((node) => links.push({ from: parent, to: node, severity: node.level, apLink: true, apBusY: busY }));
       }
@@ -126,8 +143,8 @@
       result.layout.links.push(...links);
       result.layout.nodes.push(...nodes);
       reserved.push(box);
-      buses.forEach((bus) => bus.points.slice(1).forEach((point, idx) => {
-        const previous = bus.points[idx];
+      buses.forEach((bus) => [...bus.points.slice(1).map((point, idx) => [bus.points[idx], point]),
+        [[bus.childXs[0], bus.y], [bus.childXs[bus.childXs.length - 1], bus.y]]].forEach(([previous, point]) => {
         reserved.push({ x: Math.min(point[0], previous[0]), y: Math.min(point[1], previous[1]),
           w: Math.max(1, Math.abs(point[0] - previous[0])), h: Math.max(1, Math.abs(point[1] - previous[1])) });
       }));
