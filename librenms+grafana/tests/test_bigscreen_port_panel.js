@@ -43,6 +43,17 @@ assert.strictEqual(groupPorts(Array.from({ length: 12 }, (_, index) =>
   port(`Te1/1/${index + 1}`, 1, index + 1))).banks[0].twoRow, false,
 'a twelve-port modular bank remains compact');
 
+const standalonePorts = [
+  port('Gi0/1', 1, 1), port('Gi0/8', 1, 8), port('Gi0/9', 1, 9), port('Gi0/10', 1, 10),
+  port('Vlan1', null, null), port('Port-channel1', null, null)
+];
+const standalone = groupPorts(standalonePorts);
+assert.strictEqual(standalone.members.length, 1, 'standalone Cisco uses one presentation member');
+assert.strictEqual(standalone.banks.length, 1);
+assert.strictEqual(`${standalone.banks[0].family} ${standalone.banks[0].member}/${standalone.banks[0].slot}`, 'Gi 1/0');
+assert.deepStrictEqual(standalone.banks[0].items.map((item) => item.port.portNumber), [1, 8, 9, 10]);
+assert.strictEqual(standalone.other.length, 2, 'logical interfaces stay outside the physical bank');
+
 class FakeNode {
   constructor() { this.hidden = false; this.innerHTML = ''; this.style = {}; this.dataset = {};
     this.attributes = {}; this.offsetHeight = 250; }
@@ -136,6 +147,13 @@ assert.strictEqual((root.innerHTML.match(/<section class="port-member">/g) || []
 assert.ok(root.innerHTML.includes('Te 1/0') && root.innerHTML.includes('Te 1/1'));
 assert.strictEqual((root.innerHTML.match(/class="port-face-number">1</g) || []).length, 2,
   'equal slot numbers are separated by distinct sub-bank labels');
+
+panel.open({ ...payload, model: 'WS-C2960L-8TS-LL', ports: standalonePorts });
+assert.ok(root.innerHTML.includes('接口 6 · 物理可识别 4 · 其他 2'));
+assert.ok(root.innerHTML.includes('Gi 1/0'));
+assert.ok(root.innerHTML.includes('aria-label="Gi0/9 在线"'));
+assert.ok(root.innerHTML.includes('其他接口 (2)'));
+assert.ok(root.innerHTML.includes('Vlan1') && root.innerHTML.includes('Port-channel1'));
 
 const hillstone = { ...payload, kind: 'hillstone', name: 'FW A', model: 'SG-6000',
   warnings: ['当前防火墙 IF-MIB 无有效覆盖', '已省略过期邻接'], ports: [
