@@ -587,6 +587,44 @@ console.log('bigscreen Topology panel tests passed');
   assert.strictEqual(portEvents.filter((event) => event === 'open:10.0.0.3').length, 0,
     'closing Hillstone Inspector invalidates its pending Interface Panel');
 
+  const haCases = [
+    [{ source: 'Hillstone sysHAStatus', fresh: true, units: [
+      { ip: '10.0.0.11', name: 'fw-a', state: 'master', fresh: true },
+      { ip: '10.0.0.12', name: 'fw-b', state: 'backup', fresh: true }
+    ] }, 'fw-a Master · fw-b Backup'],
+    [{ source: 'Hillstone sysHAStatus', fresh: false, units: [
+      { name: 'fw-a', state: 'master', fresh: true }, { name: 'fw-b', state: 'backup', fresh: false }
+    ] }, 'fw-a Master · fw-b 未知'],
+    [{ source: 'Hillstone sysHAStatus', fresh: true, units: [
+      { name: 'fw-a', state: 'AA-mode', fresh: true }
+    ] }, 'fw-a AA-mode'],
+    [{ source: 'Hillstone sysHAStatus', fresh: true, units: [
+      { name: '<fw-a>', state: 'vendor-unknown', code: 5, fresh: true }
+    ] }, '&lt;fw-a&gt; 未知（厂商 slase / 5）'],
+    [{ source: 'Hillstone sysHAStatus', fresh: false, units: [] }, '未知（暂无可信数据源）'],
+    [{ source: 'traffic guess', fresh: true, units: [{ name: 'fw-a', state: 'master', fresh: true }] }, '未知（暂无可信数据源）']
+  ];
+  for (const [ha, expected] of haCases) {
+    let portReads = 0;
+    const haPanel = topologyPanelModule.createTopologyPanel({
+      document, location: { protocol: 'http:', hostname: 'bigscreen.local' },
+      buildTopologyLayers, topologyLayout, renderTopologySvg,
+      topologyNodeKindLabel: (kind) => kind, topologyLatencyIp: (node) => node.ip,
+      escapeHtml, formatPingText, portPanel,
+      fetchNodeInspector: () => Promise.resolve({ kind: 'hillstone', ip: '10.0.0.3', ha }),
+      fetchNodePorts: () => { portReads += 1; return Promise.resolve({ kind: 'hillstone', ports: [] }); }
+    });
+    haPanel.render(haPanel.prepare([{ kind: 'firewall', ip: '10.0.0.3', name: 'VIP' }], []));
+    canvas.nodes[0].dispatch('click');
+    await Promise.resolve();
+    assert.ok(detail.innerHTML.includes(expected), expected);
+    assert.ok(detail.innerHTML.includes('查看接口'));
+    assert.strictEqual(portReads, 0, 'lightweight HA Inspector does not eagerly read full interfaces/history');
+    detail.querySelector('.topology-view-ports').onclick();
+    await Promise.resolve();
+    assert.strictEqual(portReads, 1, 'existing on-demand Interface Panel entry is reused');
+  }
+
   for (const kind of ['generic-switch', 'unknown']) {
     const switchPanel = topologyPanelModule.createTopologyPanel({
       document, location: { protocol: 'http:', hostname: 'bigscreen.local' },

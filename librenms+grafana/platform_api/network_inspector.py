@@ -7,6 +7,7 @@ from typing import Any
 
 from librenms_client import LibreNMSError
 
+from .network_ha import read_ha
 from .network_read import (
     NetworkReadContext, NetworkReadError, _prometheus_query, read_topology,
 )
@@ -279,6 +280,14 @@ def read_inspector(context: NetworkReadContext, management_ip: str) -> dict[str,
                 warnings.append("已省略过期邻接")
         except NetworkReadError:
             warnings.append("邻接资料暂不可用")
+    if kind == "hillstone":
+        result["ha"] = read_ha(context)
+        own = next((unit for unit in result["ha"]["units"] if unit["ip"] == ip), None)
+        if own:
+            result["haRole"] = own["state"]
+        if not result["ha"]["fresh"] or any(
+                unit["state"] == "vendor-unknown" for unit in result["ha"]["units"]):
+            warnings.append("HA 状态未知或不完整")
     result["warnings"] = warnings[:8]
     result["degraded"] = bool(warnings)
     return result
