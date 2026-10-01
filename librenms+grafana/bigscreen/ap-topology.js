@@ -18,7 +18,7 @@
     const aps = identities(data && data.aps);
     const artifact = data && data.artifact;
     const result = { ...frame, layout: { ...frame.layout, nodes: [...frame.layout.nodes], links: [...frame.layout.links] }, apCount: { located: 0, total: aps.length } };
-    if (!aps.length || !artifact || artifact.source !== 'librenms-fdb' || !Array.isArray(artifact.attachments)
+    if (!aps.length || !artifact || artifact.source !== 'librenms-fdb+snmp-exact' || artifact.candidate_source !== 'librenms-fdb' || !Array.isArray(artifact.attachments)
       || artifact.attachments.length > MAX_APS || !Number.isFinite(artifact.generated_at)
       || !Number.isFinite(artifact.max_age_seconds) || artifact.max_age_seconds < 0) return result;
     const elapsed = now - artifact.generated_at;

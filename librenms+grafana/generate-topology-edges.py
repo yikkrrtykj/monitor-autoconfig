@@ -41,7 +41,8 @@ Env vars:
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from ap_topology import fetch_current_aps, build_ap_artifact
+from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidates,
+                         vlan_fk_mapping, validate_ap_candidates)
 import json
 import os
 import re
@@ -109,6 +110,8 @@ _collection_stats = {
     "direct_snmp_walks": 0,
     "server_snmp_gets": 0,
     "server_snmp_walks": 0,
+    "ap_snmp_gets": 0,
+    "ap_snmp_walks": 0,
 }
 _snmp_context = threading.local()
 
@@ -126,7 +129,7 @@ def collection_stats_snapshot():
 
 def _record_snmp_call(kind):
     phase = getattr(_snmp_context, "phase", "topology")
-    prefix = "server" if phase == "server" else "direct"
+    prefix = phase if phase in ("server", "ap") else "direct"
     key = f"{prefix}_snmp_{kind}"
     with _collection_stats_lock:
         _collection_stats[key] += 1
@@ -2625,7 +2628,8 @@ def _graph_depths(edges, root_ips):
 
 
 def _server_snmpget(ip, community, oid):
-    with snmp_phase("server"):
+    phase = "ap" if getattr(_snmp_context, "phase", "topology") == "ap" else "server"
+    with snmp_phase(phase):
         return snmpget(ip, community, oid)
 
 
@@ -2852,6 +2856,8 @@ def collect_librenms_fdb_inventory(devices, edges, client, librenms_ready):
                 "port_name": port_name,
                 "mac": mac,
                 "vlan": _record_vlan(row, port),
+                "librenms_vlan_id": _as_positive_int(row.get("vlan_id")),
+                "device_id": _as_positive_int(metadata.get("device_id")),
                 "depth": depths.get(ip, -1),
                 "evidence_age_seconds": age_seconds(timestamp, now=observed_at),
                 "evidence_observed_at": observed_at,
@@ -2880,6 +2886,42 @@ def build_librenms_fdb_candidates(devices, edges, client, librenms_ready, invent
         if current:
             index[mac] = current
     return index, status
+
+
+def collect_validated_ap_inventory(aps, inventory, devices, edges, client, community):
+    """AP 独立候选窗口、共享 VLAN FK 清单、精确 GET；失败不影响 wired。"""
+    excluded = _env_target_ips("CORE_SWITCH_PING") + _env_target_ips("FIREWALL_PING")
+    candidates = ap_candidates(aps, inventory, excluded)
+    if not any(candidates.values()) or client is None:
+        return {}
+    try:
+        vlan_map = vlan_fk_mapping(client.get_vlan_inventory())
+    except Exception as exc:
+        print(f"[WARN] AP VLAN mapping unavailable ({type(exc).__name__}); AP edges omitted", file=sys.stderr)
+        return {}
+    endpoints = {(edge.get(f"{side}_ip"), edge.get(f"{side}_ifindex"))
+                 for edge in edges for side in ("from", "to")}
+
+    def port_check(ip, ifindex):
+        device = devices.get(ip, {})
+        name = device.get("ifname", {}).get(ifindex, "")
+        if (ifindex is None or not is_physical_interface_name(name)
+                or normalize_port_name(name).startswith("agg")
+                or (ip, ifindex) in endpoints
+                or device.get("ifoper", {}).get(ifindex) not in (None, 1, 4)
+                or ifindex in device.get("ifstack", {})
+                or any(ifindex in members for members in device.get("ifstack", {}).values())):
+            return None
+        for row in device.get("port_by_id", {}).values():
+            if _as_positive_int(row.get("ifIndex")) == ifindex and _if_oper_status_value(row.get("ifOperStatus")) not in (None, 1, 4):
+                return None
+        return name
+
+    def exact_lookup(ip, vlan, mac):
+        with snmp_phase("ap"):
+            return lookup_fdb_ifindex(ip, community, vlan, mac, devices[ip].get("ifname", {}))
+
+    return validate_ap_candidates(candidates, vlan_map, exact_lookup, port_check)
 
 
 def write_current_ap_artifact(output_dir, aps, inventory):
@@ -3981,7 +4023,14 @@ def _run_collection():
     ) + server_edges
     write_json_atomic(edges_path, edges, sort_keys=True)
     write_json_atomic(attachments_path, confirmed_server_edges, sort_keys=True)
-    write_current_ap_artifact(output_dir, aps, shared_fdb[0])
+    ap_api_start = librenms.request_count if librenms is not None else 0
+    try:
+        validated_ap = collect_validated_ap_inventory(aps, shared_fdb[0], devices, network_edges, librenms, community)
+    except Exception as exc:
+        print(f"[WARN] AP validation unavailable ({type(exc).__name__}); AP edges omitted", file=sys.stderr)
+        validated_ap = {}
+    write_current_ap_artifact(output_dir, aps, validated_ap)
+    ap_api_requests = librenms.request_count - ap_api_start if librenms is not None else 0
     try:
         write_topology_diagnostics(
             diagnostics_path, diagnostics_records,
@@ -3996,7 +4045,7 @@ def _run_collection():
 
     stats = collection_stats_snapshot()
     server_api_requests = (
-        librenms.request_count - server_api_start if librenms is not None else 0
+        librenms.request_count - server_api_start - ap_api_requests if librenms is not None else 0
     )
     print(
         f"[INFO] adjacency stats: api_requests={adjacency_api_requests} "
@@ -4014,6 +4063,8 @@ def _run_collection():
         file=sys.stderr,
     )
 
+    print(f"[INFO] AP validation stats: vlan_api_requests={ap_api_requests} ap_snmp_gets={stats['ap_snmp_gets']} "
+          f"ap_snmp_walks={stats['ap_snmp_walks']}", file=sys.stderr)
     print(
         f"[INFO] wrote {len(edges)} edge(s), "
         f"cycle={time.monotonic() - cycle_started:.1f}s",

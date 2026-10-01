@@ -57,7 +57,7 @@ function harness(options = {}) {
   window.BSApi = new Proxy({}, { get: (_, key) => {
     if (key === "fetchPlatformAuthStatus") return async () => ({ authenticated: true });
     if (key === "fetchTopologyTargets") return async () => [];
-    if (key === "fetchApAttachments") return async () => { apRequestCount++; return { source: 'librenms-fdb', attachments: [] }; };
+    if (key === "fetchApAttachments") return async () => { apRequestCount++; return { source: 'librenms-fdb+snmp-exact', candidate_source: 'librenms-fdb', attachments: [] }; };
     if (key === "prometheusInstant") return async () => [];
     if (key === "activeInfraPingQuery") return () => "probe_success";
     if (key === "activeSeriesNames") return () => new Set();
@@ -183,7 +183,7 @@ async function run() {
   const enabled = harness({ apVisible: true });
   enabled.navigate('/topology'); await settle();
   assert.strictEqual(enabled.apRequestCount(), 1, 'ON fetches the separate AP artifact');
-  assert.strictEqual(enabled.renderedAp.at(-1).artifact.source, 'librenms-fdb');
+  assert.strictEqual(enabled.renderedAp.at(-1).artifact.source, 'librenms-fdb+snmp-exact');
   enabled.setApVisible(false); await settle();
   enabled.poll(); await settle();
   assert.strictEqual(enabled.apRequestCount(), 1, 'OFF survives periodic refresh without AP fetch');

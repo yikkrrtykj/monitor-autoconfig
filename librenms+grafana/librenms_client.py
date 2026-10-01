@@ -279,6 +279,7 @@ class LibreNMSClient:
         self,
         path: str,
         params: Mapping[str, Any] | Iterable[tuple[str, Any]] | None = None,
+        *, max_response_bytes: int | None = None,
     ) -> dict[str, Any]:
         """GET and validate a LibreNMS JSON response without leaking secrets."""
         if not self.token:
@@ -289,6 +290,9 @@ class LibreNMSClient:
             headers={"Accept": "application/json", "X-Auth-Token": self.token},
         )
         raw = b""
+        limit = self.max_response_bytes
+        if max_response_bytes is not None:
+            limit = min(limit, max_response_bytes) if limit is not None else max_response_bytes
         for attempt in range(self.max_attempts):
             try:
                 with self._request_count_lock:
@@ -311,13 +315,13 @@ class LibreNMSClient:
                             f"LibreNMS request failed with HTTP {status}", status_code=status
                         )
                     raw = (
-                        response.read(self.max_response_bytes + 1)
-                        if self.max_response_bytes is not None
+                        response.read(limit + 1)
+                        if limit is not None
                         else response.read()
                     )
                     if (
-                        self.max_response_bytes is not None
-                        and len(raw) > self.max_response_bytes
+                        limit is not None
+                        and len(raw) > limit
                     ):
                         raise LibreNMSInvalidResponse(
                             "LibreNMS response exceeded the configured byte limit"
@@ -445,6 +449,14 @@ class LibreNMSClient:
     def get_device_fdb(self, device: object) -> list[dict[str, Any]]:
         payload = self.get_json(f"/api/v0/devices/{self._device_ref(device)}/fdb")
         return _normalise_rows(payload, "ports_fdb")
+
+    def get_vlan_inventory(self) -> list[dict[str, Any]]:
+        """共享有界 FK 映射；device /vlans 不保证包含内部 vlan_id。"""
+        payload = self.get_json("/api/v0/resources/vlans", max_response_bytes=4 * 1024 * 1024)
+        rows = _strict_rows(payload, "vlans")
+        if len(rows) > 16384:
+            raise LibreNMSInvalidResponse("LibreNMS VLAN inventory exceeded row limit")
+        return rows
 
     def get_device_links(self, device: object) -> list[dict[str, Any]]:
         payload = self.get_json(f"/api/v0/devices/{self._device_ref(device)}/links")
