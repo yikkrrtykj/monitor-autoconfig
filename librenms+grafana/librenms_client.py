@@ -9,6 +9,7 @@ rules such as acceptable FDB age remain in the caller.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import json
 import os
 from pathlib import Path
@@ -137,6 +138,18 @@ def _has_strict_device_identity(device: Mapping[str, Any]) -> bool:
     )
 
 
+def _naive_source_timezone() -> ZoneInfo | None:
+    """Resolve named source timezone; None delegates to runtime local rules."""
+    for variable in ("LIBRENMS_TIMEZONE", "TZ"):
+        name = os.environ.get(variable, "").strip()
+        if name:
+            try:
+                return ZoneInfo(name)
+            except (ZoneInfoNotFoundError, ValueError):
+                continue
+    return None
+
+
 def parse_librenms_timestamp(value: object) -> datetime | None:
     """Parse common LibreNMS timestamps as timezone-aware UTC datetimes."""
     if value is None or value == "":
@@ -164,9 +177,24 @@ def parse_librenms_timestamp(value: object) -> datetime | None:
                     continue
             if parsed is None:
                 return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    try:
+        if parsed.tzinfo is None:
+            source_timezone = _naive_source_timezone()
+            if source_timezone is not None:
+                # Both folds must round-trip to the original wall clock.
+                # Gaps have no valid instant; duplicated hours choose the
+                # later instant so destructive age gates cannot fire early.
+                candidates = set()
+                for fold in (0, 1):
+                    candidate = parsed.replace(tzinfo=source_timezone, fold=fold).astimezone(timezone.utc)
+                    if candidate.astimezone(source_timezone).replace(tzinfo=None) == parsed:
+                        candidates.add(candidate)
+                return max(candidates) if candidates else None
+            # astimezone on a naive datetime uses local rules for that date,
+            # retaining historical DST rather than today's fixed offset.
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OSError, OverflowError):
+        return None
 
 
 def age_seconds(timestamp: object, now: object = None) -> float | None:

@@ -526,7 +526,8 @@ def test_null_and_empty_results_normalize_to_empty_lists():
     assert client.get_device_fdb({"device_id": 7}) == []
 
 
-def test_timestamp_parsing_supports_librenms_sql_iso_and_epoch_formats():
+def test_timestamp_parsing_supports_librenms_sql_iso_and_epoch_formats(monkeypatch):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "UTC")
     expected = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
 
     assert parse_librenms_timestamp("2026-08-10 12:00:00") == expected
@@ -535,7 +536,8 @@ def test_timestamp_parsing_supports_librenms_sql_iso_and_epoch_formats():
     assert parse_librenms_timestamp("not-a-time") is None
 
 
-def test_age_and_freshness_use_only_the_callers_threshold():
+def test_age_and_freshness_use_only_the_callers_threshold(monkeypatch):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "UTC")
     now = datetime(2026, 8, 10, 12, 2, tzinfo=timezone.utc)
     timestamp = "2026-08-10 12:00:00"
 
@@ -593,3 +595,82 @@ def test_real_platform_history_factory_constructs_one_attempt_client(tmp_path, m
     assert len(calls) == client.request_count == 1
     assert calls[0]["timeout"] <= 3
     assert not (tmp_path / "state").exists(), "factory must not initialize runtime or write state"
+
+
+@pytest.mark.parametrize("value", ["2026-09-29 16:16:49", datetime(2026, 9, 29, 16, 16, 49)])
+def test_naive_local_timestamp_uses_named_override(monkeypatch, value):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setenv("TZ", "UTC")
+    assert parse_librenms_timestamp(value) == datetime(2026, 9, 29, 8, 16, 49, tzinfo=timezone.utc)
+
+
+def test_timestamp_source_resolution_and_absolute_semantics(monkeypatch):
+    monkeypatch.delenv("LIBRENMS_TIMEZONE", raising=False)
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    expected = datetime(2026, 9, 29, 8, 16, 49, 123456, tzinfo=timezone.utc)
+    assert parse_librenms_timestamp("2026-09-29 16:16:49.123456") == expected
+    for value in ["2026-09-29T16:16:49.123456+08:00", "2026-09-29T08:16:49.123456Z", expected, expected.timestamp()]:
+        assert parse_librenms_timestamp(value) == expected
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "invalid/timezone")
+    assert parse_librenms_timestamp("2026-09-29 16:16:49.123456") == expected
+    assert parse_librenms_timestamp("bad") is None
+
+
+def test_local_timestamp_freshness_boundaries(monkeypatch):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "Asia/Shanghai")
+    now = datetime(2026, 9, 29, 8, 26, 49, tzinfo=timezone.utc)
+    assert age_seconds("2026-09-29 16:16:49", now=now) == 600
+    assert is_fresh("2026-09-29 16:16:49", 600, now=now)
+    assert not is_fresh("2026-09-29 16:16:48", 600, now=now)
+    assert not is_fresh("2026-09-29 16:26:50", 600, now=now)
+    assert not is_fresh(None, 600, now=now)
+
+
+def test_unusable_named_timezone_delegates_to_runtime_local(monkeypatch):
+    import librenms_client as client_module
+    class LocalDatetime(datetime):
+        def astimezone(self, tz=None):
+            if self.tzinfo is None:
+                from datetime import timedelta
+                return self.replace(tzinfo=timezone(timedelta(hours=-5))).astimezone(tz)
+            return super().astimezone(tz)
+    monkeypatch.setattr(client_module, "datetime", LocalDatetime)
+    for key in ("TZ", "LIBRENMS_TIMEZONE"):
+        monkeypatch.setenv(key, "invalid/timezone")
+    assert parse_librenms_timestamp("2026-09-29 16:16:49") == datetime(2026, 9, 29, 21, 16, 49, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("local,utc_hour", [("2026-01-15 12:00:00", 17), ("2026-07-15 12:00:00", 16)])
+def test_named_timezone_uses_historical_dst_not_fixed_offset(monkeypatch, local, utc_hour):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
+    assert parse_librenms_timestamp(local).hour == utc_hour
+
+
+def test_posix_runtime_local_fallback(monkeypatch):
+    import time
+    if not hasattr(time, "tzset"):
+        pytest.skip("POSIX tzset is unavailable; deterministic local fallback covered separately")
+    try:
+        with monkeypatch.context() as context:
+            context.delenv("LIBRENMS_TIMEZONE", raising=False)
+            context.setenv("TZ", "EST5")
+            time.tzset()
+            assert parse_librenms_timestamp("2026-09-29 16:16:49") == datetime(2026, 9, 29, 21, 16, 49, tzinfo=timezone.utc)
+    finally:
+        time.tzset()
+
+
+@pytest.mark.parametrize("value", ["2026-11-01 01:30:00", datetime(2026, 11, 1, 1, 30), datetime(2026, 11, 1, 1, 30, fold=1)])
+def test_duplicate_wall_clock_chooses_later_instant(monkeypatch, value):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
+    expected = datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc)
+    assert parse_librenms_timestamp(value) == expected
+    assert age_seconds(value, now=datetime(2026, 11, 1, 7, 30, tzinfo=timezone.utc)) == 3600
+
+
+@pytest.mark.parametrize("value", ["2026-03-08 02:30:00", datetime(2026, 3, 8, 2, 30)])
+def test_nonexistent_wall_clock_is_invalid(monkeypatch, value):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
+    assert parse_librenms_timestamp(value) is None
+    assert age_seconds(value) is None
+    assert not is_fresh(value, 600)

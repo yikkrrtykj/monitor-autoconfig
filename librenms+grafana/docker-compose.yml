@@ -140,6 +140,7 @@ services:
     container_name: alertmanager-feishu-bridge
     restart: unless-stopped
     volumes:
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
       - ./alertmanager-feishu-bridge.py:/app/bridge.py:ro
       - ./feishu_bridge:/app/feishu_bridge:ro
       - ./lag_ownership.py:/app/lag_ownership.py:ro
@@ -154,6 +155,7 @@ services:
       - topology-data:/etc/prometheus/targets/topology:ro
     environment:
       TZ: Asia/Shanghai
+      LIBRENMS_TIMEZONE: "${LIBRENMS_TIMEZONE:-}"
       FEISHU_BRIDGE_PORT: "5005"
       # Root-cause suppression: alert only the upstream switch, fold its downstream
       # victim switches into that one card. Needs the core IP + LLDP topology.
@@ -737,6 +739,7 @@ services:
     networks:
       - monitor
     volumes:
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
       - topology-data:/targets
       - ./ap_topology.py:/ap_topology.py:ro
       - ./generate-topology-edges.py:/generate-topology-edges.py:ro
@@ -754,6 +757,7 @@ services:
       - ./librenms-data:/librenms-data:ro
     environment:
       TZ: Asia/Shanghai
+      LIBRENMS_TIMEZONE: "${LIBRENMS_TIMEZONE:-}"
       SNMP_COMMUNITY: "${SNMP_COMMUNITY:-global}"
       TOPOLOGY_DEVICES: "${TOPOLOGY_DEVICES:-}"
       TOPOLOGY_SNMP_COMMUNITY: "${TOPOLOGY_SNMP_COMMUNITY:-}"

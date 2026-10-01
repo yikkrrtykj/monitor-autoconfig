@@ -1277,6 +1277,7 @@ def test_freshness_states_are_independent_and_missing_is_unknown():
 
 
 def test_explicit_fresh_poll_and_discovery_metadata_stays_librenms(monkeypatch):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "UTC")
     client = FixtureClient()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     client.devices[0]["last_polled"] = now
@@ -1564,3 +1565,17 @@ def test_diagnostics_write_failure_does_not_block_production_outputs(
     assert (tmp_path / "edges.json").exists()
     assert (tmp_path / "server-attachments.json").exists()
     assert "topology diagnostics write failed (OSError)" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("timestamp,expected", [("2026-09-29 16:16:49", "fresh"),
+    ("2026-09-29 16:16:48", "stale"), ("2026-09-29 16:26:50", "unknown"), ("bad", "unknown")])
+def test_topology_local_poll_discovery_freshness(monkeypatch, timestamp, expected):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "Asia/Shanghai")
+    now = datetime(2026, 9, 29, 8, 26, 49, tzinfo=timezone.utc)
+    assert gte.librenms_freshness(timestamp, 600, now=now) == expected
+
+
+def test_dst_gap_topology_fails_closed(monkeypatch):
+    monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
+    assert gte.librenms_freshness("2026-03-08 02:30:00", 600,
+        now=datetime(2026, 3, 8, 7, 30, tzinfo=timezone.utc)) == "unknown"
