@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
-    <link rel="stylesheet" href="./style.css?v=20261001c" />
+    <link rel="stylesheet" href="./style.css?v=20261001d" />
     <link rel="stylesheet" href="./platform.css?v=20260908a" />
   </head>
   <body>
@@ -237,17 +237,19 @@
         <div class="dhcp-footnote" id="dhcpFootnote"></div>
       </section>
       <section class="topology-panel" id="topologyPanel" aria-label="网络拓扑" hidden>
-        <div class="network-read-status" id="topologyNetworkStatus" role="status" hidden></div>
-        <div class="topology-toolbar">
-          <span class="topology-legend">
-            <i class="dot good"></i> 在线
-            <i class="dot warn"></i> 高延迟
-            <i class="dot bad"></i> 离线
-            <i class="dot none"></i> 无数据
-          </span>
-          <button type="button" id="topologyApToggle" aria-pressed="false">AP: 隐藏</button>
-          <span id="topologyApCount" hidden></span>
-          <span class="topology-updated" id="topologyUpdated"></span>
+        <div class="topology-header">
+          <div class="network-read-status" id="topologyNetworkStatus" role="status" hidden></div>
+          <div class="topology-toolbar">
+            <span class="topology-legend">
+              <i class="dot good"></i> 在线
+              <i class="dot warn"></i> 高延迟
+              <i class="dot bad"></i> 离线
+              <i class="dot none"></i> 无数据
+            </span>
+            <button type="button" id="topologyApToggle" aria-pressed="false">AP: 隐藏</button>
+            <span id="topologyApCount" hidden></span>
+            <span class="topology-updated" id="topologyUpdated"></span>
+          </div>
         </div>
         <div class="topology-canvas" id="topologyCanvas"></div>
         <aside class="topology-detail" id="topologyDetail"></aside>
@@ -317,8 +319,8 @@
     <script src="./wireless/wireless-panel.js?v=20261001c"></script>
     <script src="./incident.js?v=20260904a"></script>
     <script src="./incident/incident-panel.js?v=20260905a"></script>
-    <script src="./ap-topology.js?v=20261001c"></script>
-    <script src="./topology.js?v=20261001c"></script>
+    <script src="./ap-topology.js?v=20261001d"></script>
+    <script src="./topology.js?v=20261001d"></script>
     <script src="./charts/port-panel.js?v=20260930a"></script>
     <script src="./charts/topology-panel.js?v=20261001c"></script>
     <script src="./platform.js?v=20260911a"></script>

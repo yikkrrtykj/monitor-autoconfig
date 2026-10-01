@@ -761,13 +761,20 @@
     return width;
   }
 
+  function renderPortLabel(text, x, y, anchor = "middle", stacked = false, maxWidth = null) {
+    const fit = maxWidth && !Array.isArray(text) && topologyTextWidth(text) > maxWidth
+      ? ` textLength="${maxWidth}" lengthAdjust="spacingAndGlyphs"` : "";
+    const content = Array.isArray(text) ? text.map((line, idx) => `<tspan x="${x}" dy="${idx ? 12 : 0}">${escapeHtml(line)}</tspan>`).join("") : escapeHtml(text);
+    return `<text class="topology-link-label${stacked ? ' topology-link-label-stack' : ''}" x="${x}" y="${y}" text-anchor="${anchor}"${fit}>${content}</text>`;
+  }
+
   function renderTopologyNodes(nodes) {
     return (nodes || []).map((node, idx) => {
       if (node.kind === "ap") {
         const ping = Number.isFinite(node.latency) ? formatPingText(node.latency) : node.success === true ? "在线" : node.success === false ? "离线" : "未知";
         const fitted = (text, y, cls) => `<text class="${cls}" x="26" y="${y}" text-anchor="middle"${topologyTextWidth(text) > 144 ? ' textLength="144" lengthAdjust="spacingAndGlyphs"' : ''}>${escapeHtml(text)}</text>`;
         return `<g class="topology-node topology-ap-node node-${node.level}" transform="translate(${node.x},${node.y})" data-idx="${idx}" data-kind="ap" data-ip="${escapeHtml(node.ip)}" role="button" tabindex="0" aria-label="${escapeHtml(node.name)} AP">
-          ${fitted(node.switchPort || "", -8, "topology-ap-port")}
+          ${renderPortLabel(node.switchPort || "", 26, -8, "middle", false, 144)}
           <circle cx="26" cy="26" r="26" />
           <text class="topology-node-kind" x="26" y="30" text-anchor="middle">AP</text>
           ${fitted(node.name || node.ip, 70, "topology-node-name")}
@@ -790,14 +797,15 @@
       const nodeKindLabel = node.kind === "server" && node.unlocated
         ? "服务器 · 未定位"
         : topologyNodeKindLabel(node.kind);
+      const minimal = ["core", "dist", "device"].includes(node.kind);
       return `
         <g class="topology-node node-${node.level}${node.unlocated ? " node-unlocated" : ""}" transform="translate(${node.x},${node.y})" ${dataAttrs} role="button" tabindex="0">
           <rect width="${node.w}" height="${node.h}" rx="10" />
-          <text class="topology-node-icon" x="14" y="22">${topologyNodeIcon(node.kind)}</text>
-          <text class="topology-node-name" x="34" y="22"${nameFitAttr}>${escapeHtml(nodeName)}</text>
-          <text class="topology-node-kind" x="34" y="38">${escapeHtml(nodeKindLabel)}</text>
+          <text class="topology-node-icon" x="14" y="${minimal ? 34 : 22}">${topologyNodeIcon(node.kind)}</text>
+          <text class="topology-node-name" x="34" y="${minimal ? 34 : 22}"${nameFitAttr}>${escapeHtml(nodeName)}</text>
+          ${minimal ? "" : `<text class="topology-node-kind" x="34" y="38">${escapeHtml(nodeKindLabel)}</text>
           <text class="topology-node-latency" x="${node.w - 10}" y="38" text-anchor="end">${escapeHtml(latencyText)}</text>
-          ${subline}
+          ${subline}`}
         </g>
       `;
     }).join("");
@@ -949,14 +957,14 @@
         ? link.labelLines
         : (link.label ? [link.label] : []);
       const positionedLabels = labelPositions
-        ? labelPositions.filter((item) => item.text).map((item) => `<text class="topology-link-label topology-link-label-stack" x="${item.x}" y="${item.y}" text-anchor="${item.anchor}">${escapeHtml(item.text)}</text>`).join("")
+        ? labelPositions.filter((item) => item.text).map((item) => renderPortLabel(item.text, item.x, item.y, item.anchor, true)).join("")
         : "";
       const linkLabel = positionedLabels || (labelLines.length
-        ? `<text class="topology-link-label${labelLines.length > 1 ? " topology-link-label-stack" : ""}" x="${labelX}" y="${labelY}" text-anchor="${labelAnchor}">${labelLines.map((line, idx) => `<tspan x="${labelX}" dy="${idx ? 12 : 0}">${escapeHtml(line)}</tspan>`).join("")}</text>`
+        ? renderPortLabel(labelLines, labelX, labelY, labelAnchor, labelLines.length > 1)
         : "");
       const linkClass = `topology-link link-${link.severity} ${link.logical ? "link-logical" : "link-fallback"}${link.aggregated ? " link-aggregated" : ""}${link.serverAttachment ? " link-attachment" : ""}`;
       return `
-        <g class="topology-link-group">
+        <g class="topology-link-group${link.apLink ? ' topology-ap-link-group' : ''}">
           <path class="${linkClass}" d="${d}" />
           ${linkLabel}
         </g>
@@ -964,7 +972,10 @@
     }).join("");
 
     const nodes = renderTopologyNodes(layout.nodes);
-    const apBuses = (layout.apBuses || []).map((bus) => `<path class="topology-link topology-ap-bus link-${bus.severity}" d="${bus.points.map(([x, y], i) => `${i ? 'L' : 'M'} ${x} ${y}`).join(' ')}" />`).join('');
+    const apBuses = (layout.apBuses || []).map((bus) => {
+      const span = bus.childXs.length > 1 ? ` M ${bus.childXs[0]} ${bus.y} L ${bus.childXs[bus.childXs.length - 1]} ${bus.y}` : '';
+      return `<path class="topology-link topology-ap-bus link-${bus.severity}" d="${bus.points.map(([x, y], i) => `${i ? 'L' : 'M'} ${x} ${y}`).join(' ')}${span}" />`;
+    }).join('');
 
     const haBonds = (layout.haBonds || []).map((bond) => {
       const x1 = bond.from.x + bond.from.w;

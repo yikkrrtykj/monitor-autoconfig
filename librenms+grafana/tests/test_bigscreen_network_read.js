@@ -58,7 +58,7 @@ async function run() {
   assert.strictEqual(unknownNode.kind, "device", "missing metric metadata does not invent a device type");
   assert.strictEqual(unknownNode.level, "none", "unknown topology node remains neutral");
   assert.strictEqual(unknownNode.success, null);
-  assert(topologyView.renderTopologySvg(topologyView.topologyLayout(topologyView.buildTopologyLayers(topologyTargets), 1200, 700, []), 1200).includes("状态未知"));
+  assert(topologyView.renderTopologySvg(topologyView.topologyLayout(topologyView.buildTopologyLayers(topologyTargets), 1200, 700, []), 1200).includes("node-none"), "minimal wired cards retain unknown status styling");
   assert.strictEqual(network.mergeNetworkDevices([{ ip: "10.0.0.11", status: "down" }], [{ targetIp: "10.0.0.11", success: true }])[0].success, false);
   assert.strictEqual(network.mergeNetworkDevices([{ ip: "10.0.0.11", status: "up" }], [{ targetIp: "10.0.0.11", success: false }])[0].success, true);
   const physicalTargets = [

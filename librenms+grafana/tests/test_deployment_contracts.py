@@ -1612,7 +1612,7 @@ def test_topology_browser_controller_is_extracted_without_owning_refresh_or_data
     assert "shouldRender" not in panel
     assert "charts/port-panel.js?v=20260930a" in index
     assert "charts/topology-panel.js?v=20261001c" in index
-    assert index.index("topology.js?v=20261001c") < index.index("charts/port-panel.js?v=20260930a")
+    assert index.index("topology.js?v=20261001d") < index.index("charts/port-panel.js?v=20260930a")
     assert index.index("charts/port-panel.js?v=20260930a") < index.index("charts/topology-panel.js?v=20261001c")
     assert index.index("charts/topology-panel.js?v=20261001c") < index.index("app.js?v=20261001c")
 
@@ -1896,7 +1896,7 @@ def test_bigscreen_ping_legend_uses_authoritative_series_status():
     assert 'label: "OFFLINE"' in utils
     assert 'label: "--"' in utils
     assert 'const currentStatus = item.currentStatus === undefined ? "" : `#${item.currentStatus}`;' in utils
-    assert "style.css?v=20261001c" in index
+    assert "style.css?v=20261001d" in index
     assert "utils.js?v=20260904a" in index
     assert "app.js?v=20261001c" in index
 
@@ -1980,7 +1980,7 @@ def test_large_ping_trend_keeps_every_switch_identifiable():
     assert ".compact-series .side-legend" in css
     assert ".ultra-series .side-legend" in css
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in css
-    assert "style.css?v=20261001c" in index
+    assert "style.css?v=20261001d" in index
     assert "app.js?v=20261001c" in index
 
 
