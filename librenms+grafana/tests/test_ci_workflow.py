@@ -26,7 +26,8 @@ def test_ci_runs_the_required_repository_checks():
     assert "pip install --disable-pip-version-check -r librenms+grafana/requirements-dev.txt" in workflow
     assert "run: pytest -q" in workflow
     assert "python -m compileall -q -f librenms+grafana" in workflow
-    assert "shellcheck --severity=error" in workflow
+    assert "shellcheck --severity=warning" in workflow
+    assert "shellcheck --severity=error" not in workflow
     assert 'bash -n "$script"' in workflow
     assert 'sh -n "$script"' in workflow
     assert "node --check" in workflow
