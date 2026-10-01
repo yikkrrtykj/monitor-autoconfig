@@ -1,16 +1,26 @@
 ;(function () {
   'use strict';
 
-  function haText(ha) {
+  function haRows(inspector) {
+    const ha = inspector.ha;
     if (!ha || ha.source !== 'Hillstone sysHAStatus' || !Array.isArray(ha.units) || !ha.units.length) {
-      return '未知（暂无可信数据源）';
+      return [['HA 角色', '未知（暂无可信数据源）']];
     }
     const states = { none: 'None', init: 'Init', hello: 'Hello', backup: 'Backup', master: 'Master', 'AA-mode': 'AA-mode' };
-    return ha.units.slice(0, 16).map((unit) => {
-      const state = unit.fresh === true ? states[unit.state] : null;
-      const text = state || (unit.fresh === true && unit.state === 'vendor-unknown' ? '未知（厂商 slase / 5）' : '未知');
-      return `${unit.name || unit.ip || '单元'} ${text}`;
-    }).join(' · ');
+    const units = ha.units.slice(0, 16).filter((unit) => unit && typeof unit === 'object');
+    const stateText = (unit) => {
+      const state = unit.fresh === true && Object.prototype.hasOwnProperty.call(states, unit.state) ? states[unit.state] : null;
+      return state || (unit.fresh === true && unit.state === 'vendor-unknown' ? '未知（厂商 slase / 5）' : '未知');
+    };
+    const summary = (items) => items.map((unit) => `${unit.name || unit.ip || '单元'} ${stateText(unit)}`).join(' · ');
+    const selected = units.filter((unit) => unit.ip === inspector.ip);
+    if (selected.length) {
+      const rows = [['HA 角色', selected.length === 1 ? stateText(selected[0]) : '未知']];
+      const peers = units.filter((unit) => unit.ip !== inspector.ip);
+      if (peers.length) rows.push(['HA 对端', summary(peers)]);
+      return rows;
+    }
+    return [['HA 集群', summary(units) || '未知（暂无可信数据源）']];
   }
 
   function createTopologyPanel(dependencies) {
@@ -102,7 +112,7 @@
             const connectionSummary = hasConnectionCounts && !warnings.includes("邻接资料暂不可用")
               ? `邻接 ${connections.peers} 台 · 聚合链路 ${connections.aggregates} 组` : "—";
             const state = inspector.online === "up" ? "在线" : inspector.online === "down" ? "离线" : "未知";
-            const row = (label, value) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value == null || value === "" ? "—" : String(value))}</dd>`;
+            const row = (label, value, haValue = false) => `<dt>${escapeHtml(label)}</dt><dd${haValue ? ' class="topology-ha-value"' : ''}>${escapeHtml(value == null || value === "" ? "—" : String(value))}</dd>`;
             detail.innerHTML = `
               ${header(inspector.name || node.name)}
               <dl>
@@ -110,7 +120,7 @@
                 ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : null)}
                 ${row("端口", ports ? `在线 ${ports.up} / 离线 ${ports.down} / 未知 ${ports.unknown}` : null)}
                 ${row("连接摘要", connectionSummary)}
-                ${inspector.kind === "hillstone" ? row("HA 角色", haText(inspector.ha)) : node.kind === "firewall" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
+                ${inspector.kind === "hillstone" ? haRows(inspector).map(([label, value]) => row(label, value, true)).join('') : node.kind === "firewall" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
               </dl>
               ${warnings.length ? `<div class="topology-inspector-warnings">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
               ${actions}
