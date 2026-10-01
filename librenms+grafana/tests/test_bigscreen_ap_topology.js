@@ -5,7 +5,7 @@ const { createWirelessPanel } = require('../bigscreen/wireless/wireless-panel.js
 const wired = { width: 640, layout: { height: 420, nodes: [{ kind: 'dist', ip: '10.0.0.11', x: 40, y: 80, w: 144, h: 58 }], links: [] } };
 const ap = { ip: '10.1.0.1', mac: '02:00:00:00:00:01', name: 'AP <one>', model: 'U6-Pro', online: true, clients: 0 };
 const attachment = { ap_ip: ap.ip, ap_mac: ap.mac, switch_ip: '10.0.0.11', switch_ifindex: 1, switch_port: 'Gi1/0/1', evidence_age_seconds: 6000 };
-const artifact = { source: 'librenms-fdb', generated_at: 10000, max_age_seconds: 7200, attachments: [attachment] };
+const artifact = { source: 'librenms-fdb+snmp-exact', candidate_source: 'librenms-fdb', generated_at: 10000, max_age_seconds: 7200, attachments: [attachment] };
 const overlay = (aps = [ap], evidence = artifact, base = wired, now = 10000) => appendApLeaves(base, { aps, artifact: evidence }, now);
 const snapshot = JSON.stringify(wired);
 let frame = overlay();
@@ -20,7 +20,7 @@ assert(svg.includes('U6-Pro · 0 客户端'));
 assert(svg.includes('在线'));
 assert(!svg.includes('NaN'));
 
-for (const evidence of [null, { ...artifact, attachments: [] }, { ...artifact, source: 'cache' },
+for (const evidence of [null, { ...artifact, attachments: [] }, { ...artifact, source: 'cache' }, { ...artifact, source: 'librenms-fdb' }, { ...artifact, candidate_source: 'cache' },
   { ...artifact, attachments: [attachment, attachment] },
   { ...artifact, attachments: [{ ...attachment, ap_mac: '02:00:00:00:00:02' }] },
   { ...artifact, attachments: [{ ...attachment, evidence_age_seconds: null }] }]) assert.strictEqual(overlay([ap], evidence).layout.links.length, 0);
