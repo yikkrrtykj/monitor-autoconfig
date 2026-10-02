@@ -271,7 +271,7 @@ cd librenms+grafana
 | 飞书应用 App ID / App Secret | 审批通过的企业自建应用凭据；普通告警优先使用应用机器人，旧 Token 作为失败回退 |
 | 告警及巡检群名称或 Chat ID | 多个独立赛事 VM 可以填写同一个群名称；也可填写 `oc_` 开头的 Chat ID，跳过群列表解析 |
 
-飞书企业自建应用审批通过后，在 `/control` 的“告警”区填写 App ID、App Secret，
+飞书企业自建应用审批通过后，在 `/control` 的“告警”区展开“飞书应用高级配置”，填写 App ID、App Secret，
 把应用机器人加入告警群，再点“应用配置”。旧版只写在 `.env` 的凭据会自动带入
 后台输入框。正式模型是“一场比赛 = 一台 Monitoring VM = 一套独立现场网络”；不在
 不同 VM 间共享告警状态或重复监控同一批设备。多个赛事 VM 可以共用 App ID、App Secret

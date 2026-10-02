@@ -884,8 +884,8 @@ def test_switch_editor_reserves_a_full_column_for_management_ip():
 
     assert 'data-config-list="access_switches"' in block
     assert (
-        "grid-template-columns: minmax(118px, 0.85fr) "
-        "minmax(138px, 1fr) 58px;"
+        "grid-template-columns: minmax(0, 0.85fr) "
+        "minmax(0, 1fr) 58px;"
     ) in block
 
 

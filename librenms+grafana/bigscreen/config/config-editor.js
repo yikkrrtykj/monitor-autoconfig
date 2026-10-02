@@ -383,6 +383,13 @@
         enablePassword: (document.getElementById("controlDhcpEnablePassword") || {}).value || "",
         port: (document.getElementById("controlDhcpPort") || {}).value || "23"
       } : null;
+      const previousFeishuAppConfig = document.getElementById("controlFeishuAppConfig");
+      const feishuAppOpen = Boolean(previousFeishuAppConfig && previousFeishuAppConfig.open);
+      const focusedAppInput = previousFeishuAppConfig
+        && previousFeishuAppConfig.contains(document.activeElement) ? document.activeElement : null;
+      const focusedAppInputId = focusedAppInput && focusedAppInput.id;
+      const selectionStart = focusedAppInput && focusedAppInput.selectionStart;
+      const selectionEnd = focusedAppInput && focusedAppInput.selectionEnd;
       const matchPages = pages.filter((item) => item.kind);
       lastEditableConfig = controlConfigDefaults(configValue);
       form.innerHTML = `
@@ -472,10 +479,15 @@
           <p class="config-section-note">一场比赛使用一台监控 VM。多个独立赛事 VM 可共用同一个飞书应用和群，但每台必须填写唯一“赛事名称”；共享群命令请带赛事名称。可靠路由需要 im:chat、im:message:readonly 和 im:message.group_msg。</p>
           <div class="config-fields">
             ${configInput("alerts.feishu_robot_token", "飞书机器人 Token")}
-            ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
-            ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
             ${configInput("alerts.feishu_chat_id", "告警及巡检群名称或 Chat ID", { placeholder: "共享群名，或 oc_ 开头的 Chat ID" })}
           </div>
+          <details class="config-advanced" id="controlFeishuAppConfig">
+            <summary>飞书应用高级配置（首次配置或更换应用时展开）</summary>
+            <div class="config-fields">
+              ${configInput("alerts.feishu_app_id", "飞书应用 App ID", { placeholder: "cli_ 开头" })}
+              ${configInput("alerts.feishu_app_secret", "飞书应用 App Secret", { inputType: "password" })}
+            </div>
+          </details>
         </section>
         <section class="config-section">
           <h3>安全</h3>
@@ -484,6 +496,16 @@
           </div>
         </section>
       `;
+      document.getElementById("controlFeishuAppConfig").open = feishuAppOpen;
+      if (focusedAppInputId) {
+        const restoredInput = document.getElementById(focusedAppInputId);
+        if (restoredInput) {
+          restoredInput.focus({ preventScroll: true });
+          if (selectionStart != null && selectionEnd != null) {
+            restoredInput.setSelectionRange(selectionStart, selectionEnd);
+          }
+        }
+      }
       if (telnetDraft) {
         document.getElementById("controlDhcpUsername").value = telnetDraft.username;
         document.getElementById("controlDhcpPassword").value = telnetDraft.password;

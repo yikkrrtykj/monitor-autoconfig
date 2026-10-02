@@ -57,3 +57,66 @@ def test_ap_toggle_real_browser_geometry_and_labels(tmp_path, width, height, cou
     result = json.loads(html.unescape(match.group(1)))
     assert result.get("pass"), result
     assert result["wiredNodes"] >= count and result["apNodes"] == 4 and result["scale"] > 0
+
+
+@pytest.mark.parametrize("width", [360, 760, 980, 1280, 1920])
+@pytest.mark.parametrize("form_width", [660, 1100])
+def test_config_cards_and_collapsed_app_real_browser(tmp_path, width, form_width):
+    scripts = "".join(f'<script src="{(ROOT / "bigscreen" / name).as_uri()}"></script>'
+                      for name in ("config/config-model.js", "config/config-editor.js"))
+    page = tmp_path / "config-browser.html"
+    page.write_text(f'''<!doctype html><meta charset="utf-8">
+<link rel="stylesheet" href="{(ROOT / "bigscreen/style.css").as_uri()}">
+<link rel="stylesheet" href="{(ROOT / "bigscreen/platform.css").as_uri()}">
+<form class="control-form" id="controlConfigForm" style="max-width: {form_width}px"></form>{scripts}
+<script>
+try {{
+  const editor = BSConfigEditor.createConfigEditor({{
+    document, window, HTMLInputElement, pages: [], teamLayouts: {{}},
+    escapeHtml: (value) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;'),
+    model: BSConfigModel
+  }});
+  editor.render({{ok: true, config: {{devices: {{stage_switches: [{{name: 'Fixture Switch', ip: '10.0.0.1'}}],
+    access_switches: [{{name: 'Fixture Access', ip: '10.0.0.2'}}]}},
+    alerts: {{feishu_app_id: 'cli_fixture', feishu_app_secret: 'fixture-secret'}}}}}});
+  const advanced = document.getElementById('controlFeishuAppConfig');
+  if (advanced.open || document.querySelector('[data-config-path="alerts.feishu_app_id"]').checkVisibility())
+    throw new Error('App configuration must be collapsed');
+  advanced.open = true;
+  const appInput = document.querySelector('[data-config-path="alerts.feishu_app_id"]');
+  appInput.focus(); appInput.setSelectionRange(1, 3);
+  editor.render({{ok: true, config: {{devices: {{stage_switches: [{{ip: '10.0.0.1'}}], access_switches: [{{ip: '10.0.0.2'}}]}}, alerts: {{feishu_app_id: 'cli_fixture'}}}}}});
+  const restored = document.querySelector('[data-config-path="alerts.feishu_app_id"]');
+  if (!document.getElementById('controlFeishuAppConfig').open || document.activeElement !== restored
+      || restored.selectionStart !== 1 || restored.selectionEnd !== 3)
+    throw new Error('Passive refresh lost expanded state, focus or selection');
+  for (const section of document.querySelectorAll('.config-section')) {{
+    const card = section.getBoundingClientRect();
+    for (const el of section.querySelectorAll('input, select, textarea, button')) {{
+      const rect = el.getBoundingClientRect();
+      if (rect.width && (rect.left < card.left - 1 || rect.right > card.right + 1))
+        throw new Error('Control escaped card: ' + (el.dataset.configPath || el.textContent));
+    }}
+  }}
+  const result = document.createElement('pre'); result.id = 'browserResult';
+  result.textContent = JSON.stringify({{pass: true}}); document.body.append(result);
+}} catch (error) {{
+  const result = document.createElement('pre'); result.id = 'browserResult';
+  result.textContent = JSON.stringify({{pass: false, error: error.message}}); document.body.append(result);
+}}
+</script>''', encoding="utf-8")
+    if os.name == "nt":
+        if not os.environ.get("PLAYWRIGHT_MODULE_PATH"):
+            pytest.skip("Windows browser driver requires an existing workspace Playwright runtime")
+        command = [shutil.which("node"), str(ROOT / "tests/browser-fixture-runner.js"), _browser(), page.as_uri(), str(width), "900"]
+    else:
+        command = [_browser(), "--headless", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
+                   f"--user-data-dir={tmp_path / 'profile'}", f"--window-size={width},900",
+                   "--virtual-time-budget=5000", "--dump-dom", page.as_uri()]
+    completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", timeout=30,
+                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    assert completed.returncode == 0, "headless browser failed"
+    match = re.search(r'<pre id="browserResult"[^>]*>(.*?)</pre>', completed.stdout, re.S)
+    assert match, "browser regression did not complete"
+    result = json.loads(html.unescape(match.group(1)))
+    assert result.get("pass"), result
