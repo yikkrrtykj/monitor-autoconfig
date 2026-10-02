@@ -808,7 +808,6 @@ add_device_api() {
     -H "Content-Type: application/json" \
     -d "$payload" 2>/dev/null)
 
-  msg=$(printf '%s' "$result" | api_result_field message)
   status=$(printf '%s' "$result" | api_result_field status)
   if [ "$status" = "ok" ]; then
     echo "  ${name:-$ip} ($ip): added; API diagnostic output masked"
@@ -885,7 +884,6 @@ add_ping_device_api() {
     -H "X-Auth-Token: $API_TOKEN" \
     -H "Content-Type: application/json" \
     -d "$payload" 2>/dev/null)
-  msg=$(printf '%s' "$result" | api_result_field message)
   status=$(printf '%s' "$result" | api_result_field status)
 
   # 早期版本会把这些明确的 Ping 目标用 force_add 建成 SNMP 设备。
