@@ -461,6 +461,27 @@ async function testRenderAndBinding() {
   assert.ok(escaped.form.innerHTML.includes('&lt;Finals &amp; &quot;Guests&quot;&gt;'));
 }
 
+async function testCollapsedFeishuAppRoundTrip() {
+  const harness = createHarness();
+  harness.editor.bind();
+  harness.editor.render(platformPayload(configFixture({ alerts: {
+    feishu_app_id: 'cli_fixture', feishu_app_secret: 'fixture-secret'
+  } })), dhcpPayload());
+  const advanced = harness.document.getElementById('controlFeishuAppConfig');
+  assert.ok(advanced, 'application credentials retain a configuration entry point');
+  assert.ok(!advanced.open, 'application credentials are collapsed by default');
+  assert.strictEqual(byPath(harness, 'alerts.feishu_app_id').parentElement.parentElement.parentElement, advanced);
+  byPath(harness, 'event.name').value = 'Updated Event';
+  await clickAction(harness, 'controlConfigSave');
+  const saved = JSON.parse(configPosts(harness, '/config/save')[0].payload.text);
+  assert.strictEqual(saved.alerts.feishu_app_id, 'cli_fixture');
+  assert.strictEqual(saved.alerts.feishu_app_secret, 'fixture-secret');
+  byPath(harness, 'alerts.feishu_app_secret').value = 'replacement-fixture';
+  await clickAction(harness, 'controlConfigSave');
+  const updated = JSON.parse(configPosts(harness, '/config/save')[1].payload.text);
+  assert.strictEqual(updated.alerts.feishu_app_secret, 'replacement-fixture');
+}
+
 async function testDirtyLifecycle() {
   const harness = createHarness();
   harness.editor.bind();
@@ -779,6 +800,7 @@ async function testDhcpPartialSuccess() {
 
 (async () => {
   await testRenderAndBinding();
+  await testCollapsedFeishuAppRoundTrip();
   await testDirtyLifecycle();
   await testConfigActionsAndStickyResult();
   await testHiddenAdvancedFieldsRoundTrip();

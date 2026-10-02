@@ -1684,7 +1684,7 @@
 
 .config-section-pair {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
   align-items: start;
   gap: 9px;
   min-width: 0;
@@ -1709,6 +1709,20 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
   min-width: 0;
+}
+
+.config-advanced {
+  min-width: 0;
+}
+
+.config-advanced summary {
+  color: var(--linear-ink-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.config-advanced[open] summary {
+  margin-bottom: 7px;
 }
 
 .team-order-editor {
@@ -1937,9 +1951,8 @@
 
 .config-list[data-config-list="stage_switches"] .config-list-row,
 .config-list[data-config-list="access_switches"] .config-list-row {
-  /* Two fields plus the remove button.  The old two-track definition put the
-     IP field into the 58px button track and forced Remove onto a second row. */
-  grid-template-columns: minmax(118px, 0.85fr) minmax(138px, 1fr) 58px;
+  /* Keep the remove button in its own track while allowing narrow cards to shrink. */
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1fr) 58px;
 }
 
 .config-list[data-config-list="servers"] .config-list-row {
@@ -1947,7 +1960,7 @@
 }
 
 .config-list[data-config-list="isp"] .config-list-row {
-  grid-template-columns: minmax(160px, 1fr) minmax(110px, 0.55fr) 58px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.55fr) 58px;
 }
 
 .config-list-row button,
