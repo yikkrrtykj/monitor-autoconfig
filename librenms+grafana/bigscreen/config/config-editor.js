@@ -383,6 +383,13 @@
         enablePassword: (document.getElementById("controlDhcpEnablePassword") || {}).value || "",
         port: (document.getElementById("controlDhcpPort") || {}).value || "23"
       } : null;
+      const previousFeishuAppConfig = document.getElementById("controlFeishuAppConfig");
+      const feishuAppOpen = Boolean(previousFeishuAppConfig && previousFeishuAppConfig.open);
+      const focusedAppInput = previousFeishuAppConfig
+        && previousFeishuAppConfig.contains(document.activeElement) ? document.activeElement : null;
+      const focusedAppInputId = focusedAppInput && focusedAppInput.id;
+      const selectionStart = focusedAppInput && focusedAppInput.selectionStart;
+      const selectionEnd = focusedAppInput && focusedAppInput.selectionEnd;
       const matchPages = pages.filter((item) => item.kind);
       lastEditableConfig = controlConfigDefaults(configValue);
       form.innerHTML = `
@@ -489,6 +496,16 @@
           </div>
         </section>
       `;
+      document.getElementById("controlFeishuAppConfig").open = feishuAppOpen;
+      if (focusedAppInputId) {
+        const restoredInput = document.getElementById(focusedAppInputId);
+        if (restoredInput) {
+          restoredInput.focus({ preventScroll: true });
+          if (selectionStart != null && selectionEnd != null) {
+            restoredInput.setSelectionRange(selectionStart, selectionEnd);
+          }
+        }
+      }
       if (telnetDraft) {
         document.getElementById("controlDhcpUsername").value = telnetDraft.username;
         document.getElementById("controlDhcpPassword").value = telnetDraft.password;

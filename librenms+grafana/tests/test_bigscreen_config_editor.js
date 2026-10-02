@@ -79,6 +79,10 @@ class FakeElement {
     this.parseInnerHtml = false;
   }
 
+  contains(element) {
+    return element === this || this.children.some((child) => child.contains(element));
+  }
+
   appendChild(child) {
     child.parentElement = this;
     this.children.push(child);
@@ -471,6 +475,18 @@ async function testCollapsedFeishuAppRoundTrip() {
   assert.ok(advanced, 'application credentials retain a configuration entry point');
   assert.ok(!advanced.open, 'application credentials are collapsed by default');
   assert.strictEqual(byPath(harness, 'alerts.feishu_app_id').parentElement.parentElement.parentElement, advanced);
+  advanced.open = true;
+  harness.editor.render(platformPayload(configFixture({ alerts: {
+    feishu_app_id: 'cli_fixture', feishu_app_secret: 'fixture-secret'
+  } })), dhcpPayload());
+  assert.strictEqual(harness.document.getElementById('controlFeishuAppConfig').open, true,
+    'passive refresh preserves expanded application configuration');
+  harness.document.getElementById('controlFeishuAppConfig').open = false;
+  harness.editor.render(platformPayload(configFixture({ alerts: {
+    feishu_app_id: 'cli_fixture', feishu_app_secret: 'fixture-secret'
+  } })), dhcpPayload());
+  assert.strictEqual(harness.document.getElementById('controlFeishuAppConfig').open, false,
+    'passive refresh preserves a deliberate collapse');
   byPath(harness, 'event.name').value = 'Updated Event';
   await clickAction(harness, 'controlConfigSave');
   const saved = JSON.parse(configPosts(harness, '/config/save')[0].payload.text);

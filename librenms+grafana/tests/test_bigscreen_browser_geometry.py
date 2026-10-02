@@ -83,6 +83,13 @@ try {{
   if (advanced.open || document.querySelector('[data-config-path="alerts.feishu_app_id"]').checkVisibility())
     throw new Error('App configuration must be collapsed');
   advanced.open = true;
+  const appInput = document.querySelector('[data-config-path="alerts.feishu_app_id"]');
+  appInput.focus(); appInput.setSelectionRange(1, 3);
+  editor.render({{ok: true, config: {{devices: {{stage_switches: [{{ip: '10.0.0.1'}}], access_switches: [{{ip: '10.0.0.2'}}]}}, alerts: {{feishu_app_id: 'cli_fixture'}}}}}});
+  const restored = document.querySelector('[data-config-path="alerts.feishu_app_id"]');
+  if (!document.getElementById('controlFeishuAppConfig').open || document.activeElement !== restored
+      || restored.selectionStart !== 1 || restored.selectionEnd !== 3)
+    throw new Error('Passive refresh lost expanded state, focus or selection');
   for (const section of document.querySelectorAll('.config-section')) {{
     const card = section.getBoundingClientRect();
     for (const el of section.querySelectorAll('input, select, textarea, button')) {{
