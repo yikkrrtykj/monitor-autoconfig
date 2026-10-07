@@ -173,14 +173,21 @@ def restore_config_snapshot(
     directory: Path,
 ) -> dict:
     metadata = read_json_file(directory / "metadata.json", {})
-    if not metadata:
+    if not isinstance(metadata, dict) or any(
+        type(metadata.get(key)) is not bool
+        for key in ("configExisted", "envExisted")
+    ):
         raise ValueError(f"invalid config snapshot: {directory}")
     restored = {"transactionId": metadata.get("id") or directory.name}
     config_backup = directory / "event-config.yml"
     env_backup = directory / ".env"
+    # Validate all backup inputs before mutating either live file. A missing
+    # flag is not evidence that the original file was absent.
+    config_text = config_backup.read_text(encoding="utf-8") if metadata["configExisted"] else None
+    env_text = env_backup.read_text(encoding="utf-8") if metadata["envExisted"] else None
     if metadata.get("configExisted"):
         atomic_write_text(
-            context.config_path, config_backup.read_text(encoding="utf-8"),
+            context.config_path, config_text,
         )
         restored["config"] = str(config_backup)
     elif context.config_path.exists():
@@ -188,7 +195,7 @@ def restore_config_snapshot(
         restored["config"] = "removed"
     if metadata.get("envExisted"):
         atomic_write_text(
-            context.env_path, env_backup.read_text(encoding="utf-8"),
+            context.env_path, env_text,
         )
         restored["env"] = str(env_backup)
     elif context.env_path.exists():

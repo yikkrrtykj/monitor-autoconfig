@@ -11,6 +11,8 @@ from http.server import HTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "platform_api" / "main.py"
 CONFIG_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "config"
@@ -53,6 +55,33 @@ def test_auth_store_defaults_and_password_change_rules():
         assert auth.password_strength_error(context, "global123!@#")
         assert auth.password_strength_error(context, "NoDigitsHere")
         assert auth.password_strength_error(context, "StrongPass2026") is None
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"username":', b'{}', b'null', b'[]',
+    b'{"username":"operator"}',
+    b'{"username":1,"passwordHash":"hash"}',
+    b'{"username":"operator","passwordHash":[]}',
+    b'\xff', b' ' * (64 * 1024 + 1),
+], ids=["truncated", "empty", "null", "list", "missing-hash", "bad-user",
+        "bad-hash", "invalid-utf8", "oversized"])
+def test_damaged_auth_store_never_resets_password_or_accepts_session(tmp_path, raw):
+    path = tmp_path / "auth.json"
+    path.write_bytes(raw)
+    context = auth.AuthContext(auth_path=path, default_password="SampleDefault2026")
+    token = auth.create_session(context, "operator")
+    handler = type("Handler", (), {"headers": {
+        "Cookie": f"{context.cookie_name}={token}",
+    }})()
+    for operation in (
+        lambda: auth.login_auth(context, "admin", "SampleDefault2026"),
+        lambda: auth.require_auth(context, handler),
+        lambda: auth.auth_status(context, handler),
+    ):
+        with pytest.raises(auth.AuthError) as error:
+            operation()
+        assert error.value.status == 503
+        assert path.read_bytes() == raw
 
 
 def test_session_lifecycle():

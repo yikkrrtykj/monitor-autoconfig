@@ -559,20 +559,9 @@ class InterconnectWatcher:
                     continue
                 if state.get("missing_since") is None:
                     state["missing_since"] = now
-                if now - state["missing_since"] < self.alert_for_seconds:
-                    continue
-                event = dict(state.get("last_port") or {})
-                event["down_members"] = state.get("down_members") or []
-                event["up_members"] = []
-                event["peer_switch"] = state.get("peer_switch") or ""
-                event["duration"] = max(0, now - (state.get("down_since") or now))
-                event["status"] = "healthy"
-                self.log(
-                    f"[LINK] RECOVER vanished aggregate "
-                    f"{event.get('device', '?')} {event.get('port', '?')}"
-                )
-                if self.send(self.build_card(event, recovered=True)):
-                    states.pop(key, None)
-                    self.save_alert_states(states)
+                    self.log(f"[LINK] active aggregate sample missing: {key}; retaining alert state")
+                # Scrape gaps, disabled interfaces and configuration changes
+                # all remove series. Absence cannot prove physical recovery.
+                # Only a verified healthy aggregate closes the alert above.
 
             self.sleep(self.poll_interval)
