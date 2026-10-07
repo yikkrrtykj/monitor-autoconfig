@@ -530,7 +530,11 @@ class InterconnectWatcher:
                             event = dict(port)
                             event["down_members"] = state.get("down_members") or []
                             event["up_members"] = [member["name"] for member in port["members"]]
-                            event["peer_switch"] = state.get("peer_switch") or ""
+                            event["peer_switch"] = resolve_peer_switch(
+                                peer_map, port["ip"],
+                                [member["name"] for member in port["members"]],
+                                self.audit_port_key, aggregate_port=port["port"],
+                            )
                             event["duration"] = max(0, now - (state["down_since"] or now))
                             event["status"] = "healthy"
                             self.log(

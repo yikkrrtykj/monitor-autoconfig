@@ -515,6 +515,8 @@ def test_company_bot_pending_delete_command_returns_interactive_cards(monkeypatc
 
 
 def test_reenrolled_device_sends_new_online_card_and_clears_old_outage(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_MODEL_WAIT_SECONDS", 0)
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "")
     enable_pending_delete(monkeypatch)
     state = {
         "alerting": False,
@@ -542,6 +544,8 @@ def test_reenrolled_device_sends_new_online_card_and_clears_old_outage(monkeypat
 
 
 def test_reenroll_waits_for_online_card_delivery(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_MODEL_WAIT_SECONDS", 0)
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "")
     enable_pending_delete(monkeypatch)
     state = {"alerting": False, "retired": True, "retired_at": 100, "down_since": None, "seen_up": True}
     monkeypatch.setattr(bridge, "send_device_online_new_lifecycle", lambda card, *identity: False)

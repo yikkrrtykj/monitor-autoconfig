@@ -372,3 +372,21 @@ def test_send_failure_does_not_complete_merge_or_persist_active_state(tmp_path):
     )
 
     assert events == ["find", "send"]
+
+
+@pytest.mark.parametrize("current_peers,expected", [(["new-peer"], "new-peer"), ([], ""), (["peer-a", "peer-b"], "")])
+def test_recovery_resolves_current_topology_instead_of_saved_peer(tmp_path, current_peers, expected):
+    state_file = tmp_path / "state.json"
+    save_json_dict(state_file, active_state())
+    sent = []
+    watcher = make_watcher(state_file, now=lambda: 200.0, send=lambda card: sent.append(card) or True,
+                           sleep=lambda seconds: None if seconds == 25 else (_ for _ in ()).throw(StopWatcher()))
+    watcher.fetch_interconnect_ports = lambda jobs: [interconnect_port("healthy")]
+    watcher.load_topology_edges = lambda: [
+        {"from_ip": "192.168.10.10", "from_port": "Te1/0/4", "to_sysname": peer}
+        for peer in current_peers
+    ]
+    with pytest.raises(StopWatcher):
+        watcher.run()
+    assert len(sent) == 1 and sent[0]["recovered"] is True
+    assert sent[0]["event"]["peer_switch"] == expected

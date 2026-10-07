@@ -4079,7 +4079,28 @@ def prepare_reenrolled_librenms_device(state, name, ip, now):
 
 def notify_device_reenrolled(state, name, ip):
     """Send the fresh online card and close the old outage only after delivery."""
-    card = build_device_online_card({"display": name, "ip": ip})
+    device = {"display": name, "ip": ip}
+    try:
+        token = _librenms_token()
+        if token:
+            candidates = [dev for dev in fetch_librenms_devices(token)
+                          if str(dev.get("ip") or "").strip() == ip
+                          or str(dev.get("hostname") or "").strip() == ip]
+            if len(candidates) == 1:
+                device = dict(candidates[0])
+                device["ip"] = ip
+                if not _has_meaningful_device_name(device) and _first_non_ip(name):
+                    device["display"] = name
+                device = _enrich_device_with_inventory(device, token)
+    except Exception:
+        log(f"[DOWN] REENROLL identity lookup unavailable for {ip}")
+    now = time.time()
+    if state.get("up_since") is None:
+        state["up_since"] = now
+    if not _has_meaningful_device_name(device) or not _best_device_model(device):
+        if now - state["up_since"] < DEVICE_MODEL_WAIT_SECONDS:
+            return False
+    card = build_device_online_card(device)
     if not send_device_online_new_lifecycle(card, name, ip):
         return False
     state["alerting"] = False
