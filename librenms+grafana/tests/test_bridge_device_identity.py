@@ -457,3 +457,44 @@ def test_controller_failure_uses_persisted_inventory(ap_identity_env, monkeypatc
 
 
 ap_identity_env_cache_function = bridge.fetch_unifi_controller_aps_cached
+
+
+def test_reenrolled_device_waits_then_uses_current_name_and_inventory(monkeypatch):
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "fixture")
+    monkeypatch.setattr(bridge, "next_event_title", lambda: "#fixture")
+    clock = [100.0]
+    monkeypatch.setattr(bridge.time, "time", lambda: clock[0])
+    devices = [{"device_id": 7, "ip": "192.0.2.7", "hostname": "192.0.2.7"}]
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda token: devices)
+    monkeypatch.setattr(bridge, "fetch_librenms_inventory", lambda token, device: [
+        {"entPhysicalClass": "chassis", "entPhysicalModelName": "WS-C2960X-24TS-L"}
+    ] if device.get("sysName") else [])
+    cards = []
+    monkeypatch.setattr(bridge, "send_device_online_new_lifecycle", lambda card, *keys: cards.append(card) or True)
+    state = {"retired": True, "up_since": None}
+    assert not bridge.notify_device_reenrolled(state, "192.0.2.7", "192.0.2.7")
+    assert cards == [] and state["retired"] is True
+    devices[0]["sysName"] = "current-switch"
+    clock[0] = 130.0
+    assert bridge.notify_device_reenrolled(state, "192.0.2.7", "192.0.2.7")
+    text = json.dumps(cards[0], ensure_ascii=False)
+    assert "current-switch" in text and "WS-C2960X-24TS-L" in text
+    assert state["retired"] is False
+
+
+def test_reenrolled_identity_failure_has_bounded_wait_and_keeps_failed_delivery(monkeypatch):
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "fixture")
+    monkeypatch.setattr(bridge, "fetch_librenms_devices", lambda token: (_ for _ in ()).throw(OSError("offline")))
+    clock = [100.0]
+    monkeypatch.setattr(bridge.time, "time", lambda: clock[0])
+    monkeypatch.setattr(bridge, "DEVICE_MODEL_WAIT_SECONDS", 300)
+    sends = []
+    monkeypatch.setattr(bridge, "send_device_online_new_lifecycle", lambda card, *keys: (sends.append(card), False)[1])
+    state = {"retired": True, "up_since": None}
+    assert not bridge.notify_device_reenrolled(state, "192.0.2.7", "192.0.2.7")
+    clock[0] = 399.0
+    assert not bridge.notify_device_reenrolled(state, "192.0.2.7", "192.0.2.7")
+    assert sends == []
+    clock[0] = 400.0
+    assert not bridge.notify_device_reenrolled(state, "192.0.2.7", "192.0.2.7")
+    assert len(sends) == 1 and state["retired"] is True

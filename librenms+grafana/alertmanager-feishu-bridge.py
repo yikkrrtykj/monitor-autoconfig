@@ -588,6 +588,7 @@ def load_device_down_states():
             "librenms_deleted": bool(value.get("librenms_deleted", False)),
             "librenms_readded": bool(value.get("librenms_readded", False)),
             "librenms_sync_last_attempt": _as_float(value.get("librenms_sync_last_attempt"), 0),
+            "reenroll_identity_wait_started": _as_float(value.get("reenroll_identity_wait_started")),
             "seen_up": bool(value.get("seen_up", True)),
             "ignored_initial_down": False,
             "last_up_at": _as_float(value.get("last_up_at")),
@@ -631,6 +632,7 @@ def _device_down_state_payload(states):
             "librenms_deleted": bool(state.get("librenms_deleted", False)),
             "librenms_readded": bool(state.get("librenms_readded", False)),
             "librenms_sync_last_attempt": state.get("librenms_sync_last_attempt"),
+            "reenroll_identity_wait_started": state.get("reenroll_identity_wait_started"),
             "last_up_at": state.get("last_up_at"),
             "seen_up": bool(state.get("seen_up", True)),
             "online_sent": bool(state.get("online_sent", False)),
@@ -4079,7 +4081,28 @@ def prepare_reenrolled_librenms_device(state, name, ip, now):
 
 def notify_device_reenrolled(state, name, ip):
     """Send the fresh online card and close the old outage only after delivery."""
-    card = build_device_online_card({"display": name, "ip": ip})
+    device = {"display": name, "ip": ip}
+    try:
+        token = _librenms_token()
+        if token:
+            candidates = [dev for dev in fetch_librenms_devices(token)
+                          if str(dev.get("ip") or "").strip() == ip
+                          or str(dev.get("hostname") or "").strip() == ip]
+            if len(candidates) == 1:
+                device = dict(candidates[0])
+                device["ip"] = ip
+                if not _has_meaningful_device_name(device) and _first_non_ip(name):
+                    device["display"] = name
+                device = _enrich_device_with_inventory(device, token)
+    except Exception:
+        log(f"[DOWN] REENROLL identity lookup unavailable for {ip}")
+    now = time.time()
+    if state.get("reenroll_identity_wait_started") is None:
+        state["reenroll_identity_wait_started"] = now
+    if not _has_meaningful_device_name(device) or not _best_device_model(device):
+        if now - state["reenroll_identity_wait_started"] < DEVICE_MODEL_WAIT_SECONDS:
+            return False
+    card = build_device_online_card(device)
     if not send_device_online_new_lifecycle(card, name, ip):
         return False
     state["alerting"] = False
@@ -4093,6 +4116,7 @@ def notify_device_reenrolled(state, name, ip):
     state["librenms_deleted"] = False
     state["librenms_readded"] = False
     state["librenms_sync_last_attempt"] = None
+    state["reenroll_identity_wait_started"] = None
     return True
 
 
@@ -4243,6 +4267,7 @@ def device_down_watcher():
                 # A dip cancels any in-progress recovery debounce: the link must
                 # restart its stable-up window before it counts as recovered.
                 state["up_since"] = None
+                state["reenroll_identity_wait_started"] = None
                 if DEVICE_DOWN_REQUIRE_SEEN_UP and not state["seen_up"] and not state["alerting"]:
                     if not state["ignored_initial_down"]:
                         log(f"[DOWN] waiting for first UP before alerting {job} {prom_name} ({ip})")

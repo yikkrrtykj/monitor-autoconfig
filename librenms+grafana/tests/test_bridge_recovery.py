@@ -515,6 +515,8 @@ def test_company_bot_pending_delete_command_returns_interactive_cards(monkeypatc
 
 
 def test_reenrolled_device_sends_new_online_card_and_clears_old_outage(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_MODEL_WAIT_SECONDS", 0)
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "")
     enable_pending_delete(monkeypatch)
     state = {
         "alerting": False,
@@ -542,6 +544,8 @@ def test_reenrolled_device_sends_new_online_card_and_clears_old_outage(monkeypat
 
 
 def test_reenroll_waits_for_online_card_delivery(monkeypatch):
+    monkeypatch.setattr(bridge, "DEVICE_MODEL_WAIT_SECONDS", 0)
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "")
     enable_pending_delete(monkeypatch)
     state = {"alerting": False, "retired": True, "retired_at": 100, "down_since": None, "seen_up": True}
     monkeypatch.setattr(bridge, "send_device_online_new_lifecycle", lambda card, *identity: False)
@@ -1329,3 +1333,28 @@ def test_gateway_mac_single_move_between_two_expected_ha_uplinks_is_not_alerted(
     assert frequent["gateway_mac"] is True
     assert frequent["move_count"] == 3
     assert "normal_port" not in frequent
+
+
+def test_reenroll_identity_wait_survives_restart_and_clears_after_delivery(monkeypatch, tmp_path):
+    enable_pending_delete(monkeypatch)
+    monkeypatch.setattr(bridge, "DEVICE_DOWN_STATE_FILE", str(tmp_path / "states.json"))
+    monkeypatch.setattr(bridge, "_librenms_token", lambda: "")
+    monkeypatch.setattr(bridge, "DEVICE_MODEL_WAIT_SECONDS", 300)
+    clock = [100.0]
+    monkeypatch.setattr(bridge.time, "time", lambda: clock[0])
+    sent = []
+    monkeypatch.setattr(bridge, "send_device_online_new_lifecycle", lambda card, *keys: sent.append(card) or True)
+    state = {"retired": True, "retired_at": 90, "name": "fixture", "ip": "192.0.2.7", "job": "infra-dist-ping"}
+    key = "infra-dist-ping|192.0.2.7"
+    assert not bridge.notify_device_reenrolled(state, "fixture", "192.0.2.7")
+    for now in (150.0, 250.0, 399.0):
+        bridge.save_device_down_states({key: state})
+        state = bridge.load_device_down_states()[key]
+        clock[0] = now
+        assert state["reenroll_identity_wait_started"] == 100.0
+        assert not bridge.notify_device_reenrolled(state, "fixture", "192.0.2.7")
+    clock[0] = 400.0
+    assert bridge.notify_device_reenrolled(state, "fixture", "192.0.2.7")
+    assert len(sent) == 1
+    assert state["reenroll_identity_wait_started"] is None
+    assert not state["retired"]
