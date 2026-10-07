@@ -138,6 +138,37 @@ def test_restore_missing_metadata_preserves_value_error(tmp_path):
     assert str(exc_info.value) == f"invalid config snapshot: {directory}"
 
 
+@pytest.mark.parametrize("metadata", [
+    {"id": "txn-incomplete"},
+    {"configExisted": False},
+    {"configExisted": None, "envExisted": False},
+    {"configExisted": False, "envExisted": "false"},
+])
+def test_restore_invalid_metadata_preserves_both_live_files(tmp_path, metadata):
+    context = make_context(tmp_path)
+    seed_pair(context)
+    directory = context.transaction_dir / "txn-invalid-0001"
+    directory.mkdir(parents=True)
+    config_transaction.write_json_file(directory / "metadata.json", metadata)
+    with pytest.raises(ValueError):
+        config_transaction.restore_config_snapshot(context, directory)
+    assert context.config_path.read_text() == "event: old\n"
+    assert context.env_path.read_text() == "EVENT_NAME=old\n"
+
+
+def test_restore_missing_env_backup_does_not_partially_restore_config(tmp_path):
+    context = make_context(tmp_path)
+    seed_pair(context)
+    snapshot = config_transaction.create_config_snapshot(context, "config.apply")
+    directory = Path(snapshot["path"])
+    (directory / ".env").unlink()
+    seed_pair(context, "event: current\n", "EVENT_NAME=current\n")
+    with pytest.raises(OSError):
+        config_transaction.restore_config_snapshot(context, directory)
+    assert context.config_path.read_text() == "event: current\n"
+    assert context.env_path.read_text() == "EVENT_NAME=current\n"
+
+
 def test_restore_removes_files_that_did_not_exist_at_snapshot_time(
     monkeypatch, tmp_path,
 ):

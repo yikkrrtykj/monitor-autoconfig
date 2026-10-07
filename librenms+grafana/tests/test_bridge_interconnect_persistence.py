@@ -311,19 +311,31 @@ def test_recovery_send_failure_retains_persisted_active_alert(tmp_path):
     assert observed["state"] == initial
 
 
-def test_restored_vanished_alert_uses_original_hold_and_clears_after_recovery(tmp_path):
+def test_restored_vanished_alert_never_manufactures_recovery(tmp_path):
+    initial = active_state("down", down_since=100.0)
     observed = run_watcher(
         tmp_path,
         [[], [], []],
         [200.0, 204.0, 205.0],
-        initial=active_state("down", down_since=100.0),
+        initial=initial,
         send_results=[True],
     )
 
+    assert observed["sent"] == []
+    assert observed["state"] == initial
+
+
+def test_missing_then_down_then_verified_healthy_retains_original_lifecycle(tmp_path):
+    observed = run_watcher(
+        tmp_path,
+        [[], [], [interconnect_port("down")], [interconnect_port("healthy")]],
+        [200.0, 205.0, 300.0, 400.0],
+        initial=active_state("down", down_since=100.0),
+        send_results=[True],
+    )
     assert len(observed["sent"]) == 1
     assert observed["sent"][0]["recovered"] is True
-    assert observed["sent"][0]["event"]["port"] == "Po3"
-    assert observed["sent"][0]["event"]["duration"] == 105
+    assert observed["sent"][0]["event"]["duration"] == 300
     assert observed["state"] == {}
 
 

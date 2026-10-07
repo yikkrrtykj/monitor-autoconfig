@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import hashlib
 import hmac
 from http import HTTPStatus
+import json
 from pathlib import Path
 import re
 import secrets
@@ -13,10 +14,11 @@ import threading
 import time
 from typing import Any, Callable
 
-from .storage import read_json_file, write_json_file
+from .storage import write_json_file
 
 
 PASSWORD_HASH_ITERATIONS = 260_000
+AUTH_STORE_MAX_BYTES = 64 * 1024
 
 
 class AuthError(Exception):
@@ -91,16 +93,26 @@ def ensure_auth_store(context: AuthContext) -> None:
 
 def read_auth_store(context: AuthContext) -> dict:
     ensure_auth_store(context)
-    store = read_json_file(context.auth_path, {})
-    if not store.get("username") or not store.get("passwordHash"):
-        store = {
-            "username": context.admin_user,
-            "passwordHash": hash_password(context.default_password),
-            "createdAt": int(time.time()),
-            "passwordChangedAt": None,
-        }
-        write_json_file(context.auth_path, store)
-    elif "mustChangePassword" in store:
+    # Existing credentials are authoritative. Damage must never turn into a
+    # default-password reset, including for already authenticated sessions.
+    try:
+        with context.auth_path.open("rb") as handle:
+            raw = handle.read(AUTH_STORE_MAX_BYTES + 1)
+        if len(raw) > AUTH_STORE_MAX_BYTES:
+            raise ValueError("auth store too large")
+        store = json.loads(raw.decode("utf-8"))
+        if not isinstance(store, dict) or any(
+            not isinstance(store.get(key), str) or not store[key].strip()
+            for key in ("username", "passwordHash")
+        ):
+            raise ValueError("invalid auth store")
+    except (OSError, ValueError) as exc:
+        raise AuthError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "登录凭据存储无法读取或格式损坏，请管理员检查；原文件未重置",
+            authenticated=False,
+        ) from exc
+    if "mustChangePassword" in store:
         # Older appliances persisted this first-login gate. Authentication now
         # depends only on the stored password hash and a valid session, so
         # migrate the obsolete field without resetting operator credentials.

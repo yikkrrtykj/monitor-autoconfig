@@ -162,6 +162,21 @@ function incident(overrides = {}) {
   normal.controller.render({ incidents: [incident()] });
   const normalHtml = normal.document.getElementById('controlIncidentList').innerHTML;
   assert.ok(normalHtml.includes('incident-record warn'));
+
+  const unsafeSeverity = createHarness();
+  unsafeSeverity.controller.render({ incidents: [incident({
+    severity: 'warn"><img src=x onerror="alert(1)">',
+  })] });
+  const safeHtml = unsafeSeverity.document.getElementById('controlIncidentList').innerHTML;
+  assert.ok(safeHtml.includes('incident-record warn'));
+  assert.ok(!safeHtml.includes('<img'));
+  assert.ok(!safeHtml.includes('onerror'));
+  for (const severity of ['info', 'good', 'warn', 'bad']) {
+    const supported = createHarness();
+    supported.controller.render({ incidents: [incident({ severity })] });
+    assert.ok(supported.document.getElementById('controlIncidentList').innerHTML
+      .includes(`incident-record ${severity}`));
+  }
   assert.ok(normalHtml.includes('#1 · open'));
   assert.ok(normalHtml.includes('链路异常'));
   assert.ok(normalHtml.includes('TS:1000 · 进行中 · 值班员'));
