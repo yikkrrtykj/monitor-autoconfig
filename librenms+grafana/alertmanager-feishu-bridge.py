@@ -588,6 +588,7 @@ def load_device_down_states():
             "librenms_deleted": bool(value.get("librenms_deleted", False)),
             "librenms_readded": bool(value.get("librenms_readded", False)),
             "librenms_sync_last_attempt": _as_float(value.get("librenms_sync_last_attempt"), 0),
+            "reenroll_identity_wait_started": _as_float(value.get("reenroll_identity_wait_started")),
             "seen_up": bool(value.get("seen_up", True)),
             "ignored_initial_down": False,
             "last_up_at": _as_float(value.get("last_up_at")),
@@ -631,6 +632,7 @@ def _device_down_state_payload(states):
             "librenms_deleted": bool(state.get("librenms_deleted", False)),
             "librenms_readded": bool(state.get("librenms_readded", False)),
             "librenms_sync_last_attempt": state.get("librenms_sync_last_attempt"),
+            "reenroll_identity_wait_started": state.get("reenroll_identity_wait_started"),
             "last_up_at": state.get("last_up_at"),
             "seen_up": bool(state.get("seen_up", True)),
             "online_sent": bool(state.get("online_sent", False)),
@@ -4095,10 +4097,10 @@ def notify_device_reenrolled(state, name, ip):
     except Exception:
         log(f"[DOWN] REENROLL identity lookup unavailable for {ip}")
     now = time.time()
-    if state.get("up_since") is None:
-        state["up_since"] = now
+    if state.get("reenroll_identity_wait_started") is None:
+        state["reenroll_identity_wait_started"] = now
     if not _has_meaningful_device_name(device) or not _best_device_model(device):
-        if now - state["up_since"] < DEVICE_MODEL_WAIT_SECONDS:
+        if now - state["reenroll_identity_wait_started"] < DEVICE_MODEL_WAIT_SECONDS:
             return False
     card = build_device_online_card(device)
     if not send_device_online_new_lifecycle(card, name, ip):
@@ -4114,6 +4116,7 @@ def notify_device_reenrolled(state, name, ip):
     state["librenms_deleted"] = False
     state["librenms_readded"] = False
     state["librenms_sync_last_attempt"] = None
+    state["reenroll_identity_wait_started"] = None
     return True
 
 
@@ -4264,6 +4267,7 @@ def device_down_watcher():
                 # A dip cancels any in-progress recovery debounce: the link must
                 # restart its stable-up window before it counts as recovered.
                 state["up_since"] = None
+                state["reenroll_identity_wait_started"] = None
                 if DEVICE_DOWN_REQUIRE_SEEN_UP and not state["seen_up"] and not state["alerting"]:
                     if not state["ignored_initial_down"]:
                         log(f"[DOWN] waiting for first UP before alerting {job} {prom_name} ({ip})")
