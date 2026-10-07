@@ -171,6 +171,12 @@ function incident(overrides = {}) {
   assert.ok(safeHtml.includes('incident-record warn'));
   assert.ok(!safeHtml.includes('<img'));
   assert.ok(!safeHtml.includes('onerror'));
+  for (const severity of ['info', 'good', 'warn', 'bad']) {
+    const supported = createHarness();
+    supported.controller.render({ incidents: [incident({ severity })] });
+    assert.ok(supported.document.getElementById('controlIncidentList').innerHTML
+      .includes(`incident-record ${severity}`));
+  }
   assert.ok(normalHtml.includes('#1 · open'));
   assert.ok(normalHtml.includes('链路异常'));
   assert.ok(normalHtml.includes('TS:1000 · 进行中 · 值班员'));

@@ -29,7 +29,7 @@
         return;
       }
       list.innerHTML = incidents.slice(0, 12).map((item) => {
-        const severity = ["good", "warn", "bad"].includes(item.severity) ? item.severity : "warn";
+        const severity = ["info", "good", "warn", "bad"].includes(item.severity) ? item.severity : "warn";
         const started = item.startedAt ? formatTimestampFull(item.startedAt) : "-";
         const duration = item.recoveredAt && item.startedAt ? `${Math.max(0, Math.round((item.recoveredAt - item.startedAt) / 60))} 分钟` : "进行中";
         return `
