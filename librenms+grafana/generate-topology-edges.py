@@ -1146,23 +1146,28 @@ def poll_snmp_lag(ip, community, ifname, ifoper, initial=None):
     # Some IOS releases return non-existent aggregator indexes on standalone ports.
     # Reject these claims before resolution so valid fallback evidence survives.
     invalid = set()
-    def existing_aggregates(mapping):
+    def existing_aggregates(mapping, require_aggregate=False):
         result = {}
         for index, value in mapping.items():
-            if str(ifname.get(index) or "").strip():
+            name = str(ifname.get(index) or "").strip()
+            aggregate_name = re.fullmatch(
+                r"(?i)(?:port[ _-]*channel|po|bundle[ _-]*ether|eth[ _-]*trunk|"
+                r"bridge[ _-]*aggregation|bridge[ _-]*agg|lag|trk|ae|be)\s*\d+", name
+            )
+            if name and (not require_aggregate or aggregate_name):
                 result[index] = value
             else:
                 invalid.add(index)
         return result
     resolution = resolve_aggregate_member_maps(
         existing_aggregates(ifstack),
-        pagp=existing_aggregates(pagp),
-        attached=existing_aggregates(attached),
-        aggregate_admin_keys=existing_aggregates(aggregate_keys),
+        pagp=existing_aggregates(pagp, require_aggregate=True),
+        attached=existing_aggregates(attached, require_aggregate=True),
+        aggregate_admin_keys=existing_aggregates(aggregate_keys, require_aggregate=True),
         physical_admin_keys=physical_keys,
     )
     if invalid:
-        print(f"[WARN] {ip}: ignored LAG claims for missing interfaces {sorted(invalid)}", file=sys.stderr)
+        print(f"[WARN] {ip}: ignored LAG claims for missing or non-aggregate interfaces {sorted(invalid)}", file=sys.stderr)
     if resolution["conflicts"]:
         details = ", ".join(
             f"ifIndex {member}: {data['reason']} {data.get('candidates', [])}"
