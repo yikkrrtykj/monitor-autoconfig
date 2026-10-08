@@ -42,32 +42,11 @@ UniFi AP 的部署通知与 AP 掉线/恢复以 MAC 作为物理身份；同 MAC
 
 以下命令在 **Linux 服务器的 root Bash 终端**执行，工作目录不限；适用于 Docker 官方支持的 Debian/Ubuntu 系统（示例为 Ubuntu 24.04 Noble）。其它发行版按 [Docker 官方安装文档](https://docs.docker.com/engine/install/)操作。已有 Docker 的服务器先验证版本，不必重新安装。
 
-#### 1.1 无法访问外网时：先连接 Clash
+#### 1.1 能直接访问外网：安装 Docker
 
-能正常访问外网可跳到 1.2。若出现 `curl: (35) Recv failure: Connection reset by peer`，说明下载连接失败；此时切换安装源参数不能修复脚本本身的下载。
+服务器能直接访问 `get.docker.com` 和 Docker 官方软件源时，无需配置代理，按下面顺序下载、安装、启动和验证。每步成功后再继续；下载或安装失败时停止，连接被重置、拒绝或超时可按 1.2 配置 Clash 后重试。
 
-**Clash 在同一局域网的电脑上：**
-
-1. 在 Clash 开启“允许局域网连接 / Allow LAN”，确认 **HTTP 或 Mixed 端口**，不要使用控制/API 端口或纯 SOCKS 端口。
-2. 在 Windows PowerShell 执行 `ipconfig`，找到服务器能够访问的电脑 IPv4 地址。防火墙仅允许需要使用代理的服务器访问该端口，不将代理开放到公网。
-3. 在服务器设置代理。下面的 `192.168.1.100:7890` 是示例，替换成你的电脑 IP 和实际端口；不要复制链接的 Markdown 方括号。
-
-```bash
-export http_proxy="http://192.168.1.100:7890"
-export https_proxy="$http_proxy"
-export HTTP_PROXY="$http_proxy"
-export HTTPS_PROXY="$http_proxy"
-export no_proxy="localhost,127.0.0.1,::1"
-export NO_PROXY="$no_proxy"
-```
-
-`https_proxy` 的值仍以 `http://` 开头，因为这里连接的是 HTTP 代理。电脑上的 `127.0.0.1` 不能直接当作服务器的代理地址。设置仅作用于当前终端及其子进程；换终端后需重新设置。Clash 配置含义见 [官方说明](https://wiki.metacubex.one/config/general/)。
-
-若 Clash 就运行在服务器本机，第一行使用其本机 HTTP/Mixed 地址，例如 `http://127.0.0.1:7890`。
-
-#### 1.2 下载、安装、启动：每步成功后再继续
-
-先下载脚本。成功时命令正常结束且文件非空；如果连接拒绝或超时，先检查 Clash 是否运行、IP/端口、Allow LAN、防火墙，不继续安装。
+先下载脚本，成功时命令正常结束且文件非空：
 
 ```bash
 curl -fL --connect-timeout 10 --max-time 120 \
@@ -75,7 +54,7 @@ curl -fL --connect-timeout 10 --max-time 120 \
   test -s /tmp/get-docker.sh
 ```
 
-下载成功后安装。已有可用代理时优先使用官方源：
+下载成功后，使用官方源安装 Docker 和 Compose v2 插件：
 
 ```bash
 bash /tmp/get-docker.sh
@@ -100,6 +79,31 @@ systemctl is-active docker
 预期两个版本命令均输出版本号，最后输出 `active`。`docker.service does not exist` 或 `docker: command not found` 表示 Docker 尚未装好，应排查前面的下载/安装错误。缺少 Compose v2 插件时，在已配置 Docker CE 软件源的 Debian/Ubuntu 上执行 `apt-get install -y docker-compose-plugin`，再验证；旧 `docker-compose` v1 不能替代 v2。
 
 安装脚本用于新服务器快速安装；生产环境的版本选择及手动安装方式见 [Docker Ubuntu 官方说明](https://docs.docker.com/engine/install/ubuntu/)。
+
+#### 1.2 无法访问外网时：先连接 Clash
+
+若出现 `curl: (35) Recv failure: Connection reset by peer`，说明下载连接失败；此时切换安装源参数不能修复脚本本身的下载。
+
+**Clash 在同一局域网的电脑上：**
+
+1. 在 Clash 开启“允许局域网连接 / Allow LAN”，确认 **HTTP 或 Mixed 端口**，不要使用控制/API 端口或纯 SOCKS 端口。
+2. 在 Windows PowerShell 执行 `ipconfig`，找到服务器能够访问的电脑 IPv4 地址。防火墙仅允许需要使用代理的服务器访问该端口，不将代理开放到公网。
+3. 在服务器设置代理。下面的 `192.168.1.100:7890` 是示例，替换成你的电脑 IP 和实际端口；不要复制链接的 Markdown 方括号。
+
+```bash
+export http_proxy="http://192.168.1.100:7890"
+export https_proxy="$http_proxy"
+export HTTP_PROXY="$http_proxy"
+export HTTPS_PROXY="$http_proxy"
+export no_proxy="localhost,127.0.0.1,::1"
+export NO_PROXY="$no_proxy"
+```
+
+`https_proxy` 的值仍以 `http://` 开头，因为这里连接的是 HTTP 代理。电脑上的 `127.0.0.1` 不能直接当作服务器的代理地址。设置仅作用于当前终端及其子进程；换终端后需重新设置。Clash 配置含义见 [官方说明](https://wiki.metacubex.one/config/general/)。
+
+若 Clash 就运行在服务器本机，第一行使用其本机 HTTP/Mixed 地址，例如 `http://127.0.0.1:7890`。
+
+代理设置完成后，在同一个服务器终端中执行 1.1 的下载、官方源安装、启动和验证命令。下载仍失败时，检查 Clash 是否运行、IP/端口、Allow LAN 和防火墙，不继续安装。安装成功后，若拉取镜像仍超时，再按第 3 节配置 Docker 服务代理。
 
 #### 1.3 阿里云索引报 “File has unexpected size”
 
@@ -159,7 +163,7 @@ EOF
 systemctl restart docker
 ```
 
-方法二：有代理时给 Docker daemon 配代理。第 1 步的终端代理不会自动传给 Docker 服务；`docker pull` 或部署拉镜像仍超时时，需要单独配置。代理地址沿用 1.1 中服务器可访问的 HTTP/Mixed 地址，并保持 Clash 及运行它的电脑或服务器在线。以下操作会重启 Docker，应在部署前或允许重启的维护时段执行；已有 `http-proxy.conf` 时先备份并编辑，不直接覆盖：
+方法二：有代理时给 Docker daemon 配代理。第 1 步的终端代理不会自动传给 Docker 服务；`docker pull` 或部署拉镜像仍超时时，需要单独配置。代理地址沿用 1.2 中服务器可访问的 HTTP/Mixed 地址，并保持 Clash 及运行它的电脑或服务器在线。以下操作会重启 Docker，应在部署前或允许重启的维护时段执行；已有 `http-proxy.conf` 时先备份并编辑，不直接覆盖：
 
 ```bash
 mkdir -p /etc/systemd/system/docker.service.d
