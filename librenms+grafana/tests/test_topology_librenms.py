@@ -1579,3 +1579,22 @@ def test_dst_gap_topology_fails_closed(monkeypatch):
     monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
     assert gte.librenms_freshness("2026-03-08 02:30:00", 600,
         now=datetime(2026, 3, 8, 7, 30, tzinfo=timezone.utc)) == "unknown"
+
+
+@pytest.mark.parametrize("invalid", [2, 49274684, 57159592])
+def test_snmp_lag_rejects_nonexistent_aggregator_and_keeps_real_fallback(monkeypatch, capsys, invalid):
+    def walk(ip, community, oid):
+        if oid == gte.DOT3AD_ATTACHED_AGG_ID_OID:
+            return f".{oid}.10101 = INTEGER: {invalid}\n.{oid}.10102 = INTEGER: {invalid}"
+        return ""
+    monkeypatch.setattr(gte, "snmpwalk", walk)
+    names = {10101: "Gi0/1", 10102: "Gi0/2", 500: "Port-channel1"}
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", names, {}) == {}
+    assert "ignored LAG claims" in capsys.readouterr().err
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", names, {}, initial={500: [10102]}) == {500: [10102]}
+
+
+def test_snmp_lag_keeps_real_attached_aggregator(monkeypatch):
+    monkeypatch.setattr(gte, "snmpwalk", lambda ip, community, oid:
+        f".{oid}.10101 = INTEGER: 500" if oid == gte.DOT3AD_ATTACHED_AGG_ID_OID else "")
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", {10101: "Gi0/1", 500: "Port-channel1"}, {}) == {500: [10101]}

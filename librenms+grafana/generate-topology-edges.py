@@ -1139,21 +1139,30 @@ def poll_snmp_lag(ip, community, ifname, ifoper, initial=None):
         initial or {},
         parse_if_stack_status(snmpwalk(ip, community, IF_STACK_STATUS_OID)),
     )
+    pagp = parse_member_aggregate_ifindex(snmpwalk(ip, community, PAGP_GROUP_IFINDEX_OID))
+    attached = parse_member_aggregate_ifindex(snmpwalk(ip, community, DOT3AD_ATTACHED_AGG_ID_OID))
+    aggregate_keys = parse_indexed_integer(snmpwalk(ip, community, DOT3AD_AGG_ACTOR_ADMIN_KEY_OID))
+    physical_keys = parse_indexed_integer(snmpwalk(ip, community, DOT3AD_PORT_ACTOR_ADMIN_KEY_OID))
+    # Some IOS releases return non-existent aggregator indexes on standalone ports.
+    # Reject these claims before resolution so valid fallback evidence survives.
+    invalid = set()
+    def existing_aggregates(mapping):
+        result = {}
+        for index, value in mapping.items():
+            if str(ifname.get(index) or "").strip():
+                result[index] = value
+            else:
+                invalid.add(index)
+        return result
     resolution = resolve_aggregate_member_maps(
-        ifstack,
-        pagp=parse_member_aggregate_ifindex(
-            snmpwalk(ip, community, PAGP_GROUP_IFINDEX_OID)
-        ),
-        attached=parse_member_aggregate_ifindex(
-            snmpwalk(ip, community, DOT3AD_ATTACHED_AGG_ID_OID)
-        ),
-        aggregate_admin_keys=parse_indexed_integer(
-            snmpwalk(ip, community, DOT3AD_AGG_ACTOR_ADMIN_KEY_OID)
-        ),
-        physical_admin_keys=parse_indexed_integer(
-            snmpwalk(ip, community, DOT3AD_PORT_ACTOR_ADMIN_KEY_OID)
-        ),
+        existing_aggregates(ifstack),
+        pagp=existing_aggregates(pagp),
+        attached=existing_aggregates(attached),
+        aggregate_admin_keys=existing_aggregates(aggregate_keys),
+        physical_admin_keys=physical_keys,
     )
+    if invalid:
+        print(f"[WARN] {ip}: ignored LAG claims for missing interfaces {sorted(invalid)}", file=sys.stderr)
     if resolution["conflicts"]:
         details = ", ".join(
             f"ifIndex {member}: {data['reason']} {data.get('candidates', [])}"
