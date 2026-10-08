@@ -63,17 +63,11 @@ export NO_PROXY="$no_proxy"
 
 `https_proxy` 的值仍以 `http://` 开头，因为这里连接的是 HTTP 代理。电脑上的 `127.0.0.1` 不能直接当作服务器的代理地址。设置仅作用于当前终端及其子进程；换终端后需重新设置。Clash 配置含义见 [官方说明](https://wiki.metacubex.one/config/general/)。
 
-**服务器在远程机房，不能直接访问电脑 IP：**在运行 Clash 的电脑上新开 PowerShell，建立 SSH 转发（替换服务器地址、SSH 用户和 Clash 端口）：
-
-```powershell
-ssh -N -o ExitOnForwardFailure=yes -R 17890:127.0.0.1:7890 root@服务器IP
-```
-
-保持该窗口和 Clash 运行。在服务器上执行上面的代理设置块，但将第一行改为 `export http_proxy="http://127.0.0.1:17890"`。此方式要求服务器允许 SSH TCP 转发，无需开启 Clash 的 Allow LAN。若 Clash 就运行在服务器本机，第一行使用其本机 HTTP/Mixed 地址，例如 `http://127.0.0.1:7890`。
+若 Clash 就运行在服务器本机，第一行使用其本机 HTTP/Mixed 地址，例如 `http://127.0.0.1:7890`。
 
 #### 1.2 下载、安装、启动：每步成功后再继续
 
-先下载脚本。成功时命令正常结束且文件非空；如果连接拒绝或超时，先检查 Clash 是否运行、IP/端口、Allow LAN、防火墙或 SSH 转发，不继续安装。
+先下载脚本。成功时命令正常结束且文件非空；如果连接拒绝或超时，先检查 Clash 是否运行、IP/端口、Allow LAN、防火墙，不继续安装。
 
 ```bash
 curl -fL --connect-timeout 10 --max-time 120 \
@@ -165,7 +159,7 @@ EOF
 systemctl restart docker
 ```
 
-方法二：有代理时给 Docker daemon 配代理。第 1 步的终端代理不会自动传给 Docker 服务；`docker pull` 或部署拉镜像仍超时时，需要单独配置。代理地址沿用 1.1 中服务器可访问的 HTTP/Mixed 地址；SSH 转发方式使用 `127.0.0.1:17890`，并保持电脑、Clash 和转发窗口运行。以下操作会重启 Docker，应在部署前或允许重启的维护时段执行；已有 `http-proxy.conf` 时先备份并编辑，不直接覆盖：
+方法二：有代理时给 Docker daemon 配代理。第 1 步的终端代理不会自动传给 Docker 服务；`docker pull` 或部署拉镜像仍超时时，需要单独配置。代理地址沿用 1.1 中服务器可访问的 HTTP/Mixed 地址，并保持 Clash 及运行它的电脑或服务器在线。以下操作会重启 Docker，应在部署前或允许重启的维护时段执行；已有 `http-proxy.conf` 时先备份并编辑，不直接覆盖：
 
 ```bash
 mkdir -p /etc/systemd/system/docker.service.d
