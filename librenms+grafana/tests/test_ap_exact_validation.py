@@ -242,3 +242,44 @@ def test_hard_candidate_cap_never_truncates(monkeypatch, count, gets):
     artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api))
     assert len(calls) == gets
     assert len(artifact["attachments"]) == int(gets > 0)
+
+@pytest.mark.parametrize("higher_name,expected", [("Vlan60", 1), ("Port-channel60", 0), ("", 0)])
+def test_vlan_layer_does_not_hide_verified_ap_but_lag_and_unknown_do(monkeypatch, higher_name, expected):
+    aps, _, devices, api = setup_inventory()
+    switch = devices["10.0.0.11"]
+    switch["ifname"][60] = higher_name
+    switch["ifstack"] = {60: [1]}
+    api.fdb = {switch["ip"]: [{"port_id": 1, "mac_address": aps[0]["mac"],
+                              "vlan_id": 142, "updated_at": time.time()}]}
+    shared, _ = gte.collect_librenms_fdb_inventory(devices, [], api, True)
+    calls = []
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex", lambda *args: calls.append(args) or 1)
+    current = validate(aps, shared, devices, api)
+    artifact = ap.build_ap_artifact(aps, current)
+    assert len(artifact["attachments"]) == expected
+    assert len(calls) == expected
+    servers, _ = gte.build_librenms_fdb_candidates(devices, [], api, True, inventory=(shared, {}))
+    assert servers[aps[0]["mac"]][0]["vlan"] == 142
+
+
+def test_exact_move_into_vlan_layer_port_is_still_allowed(monkeypatch):
+    aps, inventory, devices, api = setup_inventory(ports=[(1, 1, "Gi0/1", 1), (2, 2, "Gi0/2", 1)])
+    switch = devices["10.0.0.11"]
+    switch["ifname"][60] = "Vlan60"
+    switch["ifstack"] = {60: [2]}
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex", lambda *args: 2)
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api))
+    assert artifact["attachments"][0]["switch_port"] == "Gi0/2"
+
+
+def test_vlan_layer_does_not_override_real_lag_membership(monkeypatch):
+    aps, inventory, devices, api = setup_inventory()
+    switch = devices["10.0.0.11"]
+    switch["ifname"].update({60: "Vlan60", 100: "Port-channel1"})
+    switch["ifstack"] = {60: [1], 100: [1]}
+    assert gte.ap_port_has_aggregate_relationship(switch, 1)
+    calls = []
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex", lambda *args: calls.append(args) or 1)
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api))
+    assert artifact["attachments"] == []
+    assert len(calls) == 1

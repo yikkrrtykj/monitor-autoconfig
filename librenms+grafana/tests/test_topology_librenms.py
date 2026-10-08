@@ -1579,3 +1579,53 @@ def test_dst_gap_topology_fails_closed(monkeypatch):
     monkeypatch.setenv("LIBRENMS_TIMEZONE", "America/New_York")
     assert gte.librenms_freshness("2026-03-08 02:30:00", 600,
         now=datetime(2026, 3, 8, 7, 30, tzinfo=timezone.utc)) == "unknown"
+
+
+@pytest.mark.parametrize("invalid", [2, 49274684, 57159592])
+def test_snmp_lag_rejects_nonexistent_aggregator_and_keeps_real_fallback(monkeypatch, capsys, invalid):
+    def walk(ip, community, oid):
+        if oid == gte.DOT3AD_ATTACHED_AGG_ID_OID:
+            return f".{oid}.10101 = INTEGER: {invalid}\n.{oid}.10102 = INTEGER: {invalid}"
+        return ""
+    monkeypatch.setattr(gte, "snmpwalk", walk)
+    names = {10101: "Gi0/1", 10102: "Gi0/2", 500: "Port-channel1"}
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", names, {}) == {}
+    assert "ignored LAG claims" in capsys.readouterr().err
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", names, {}, initial={500: [10102]}) == {500: [10102]}
+
+
+def test_snmp_lag_keeps_real_attached_aggregator(monkeypatch):
+    monkeypatch.setattr(gte, "snmpwalk", lambda ip, community, oid:
+        f".{oid}.10101 = INTEGER: 500" if oid == gte.DOT3AD_ATTACHED_AGG_ID_OID else "")
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", {10101: "Gi0/1", 500: "Port-channel1"}, {}) == {500: [10101]}
+
+
+@pytest.mark.parametrize("invalid_name", ["Vlan9", "Gi0/9", "Loopback9", "unknown9"])
+def test_snmp_lag_rejects_attached_collision_and_preserves_real_fallback(monkeypatch, invalid_name):
+    monkeypatch.setattr(gte, "snmpwalk", lambda ip, community, oid:
+        f".{oid}.10101 = INTEGER: 9" if oid == gte.DOT3AD_ATTACHED_AGG_ID_OID else "")
+    names = {10101: "Gi0/1", 9: invalid_name, 500: "Port-channel1"}
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", names, {}) == {}
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", names, {}, initial={500: [10101]}) == {500: [10101]}
+
+
+@pytest.mark.parametrize("aggregate_name", ["Port-channel9", "Po9", "Bundle-Ether9", "Eth-Trunk9", "Bridge-Aggregation9", "ae9", "lag9", "trk9", "be9"])
+def test_snmp_lag_preserves_known_aggregate_names(monkeypatch, aggregate_name):
+    monkeypatch.setattr(gte, "snmpwalk", lambda ip, community, oid:
+        f".{oid}.10101 = INTEGER: 9" if oid == gte.DOT3AD_ATTACHED_AGG_ID_OID else "")
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", {10101: "Gi0/1", 9: aggregate_name}, {}) == {9: [10101]}
+
+
+@pytest.mark.parametrize("source", ["pagp", "admin-key"])
+@pytest.mark.parametrize("name,expected", [("Vlan9", {}), ("Gi0/9", {}), ("Port-channel9", {9: [10101]})])
+def test_snmp_lag_checks_other_direct_sources(monkeypatch, source, name, expected):
+    def walk(ip, community, oid):
+        if source == "pagp" and oid == gte.PAGP_GROUP_IFINDEX_OID:
+            return f".{oid}.10101 = INTEGER: 9"
+        if source == "admin-key" and oid == gte.DOT3AD_AGG_ACTOR_ADMIN_KEY_OID:
+            return f".{oid}.9 = INTEGER: 258"
+        if source == "admin-key" and oid == gte.DOT3AD_PORT_ACTOR_ADMIN_KEY_OID:
+            return f".{oid}.10101 = INTEGER: 258"
+        return ""
+    monkeypatch.setattr(gte, "snmpwalk", walk)
+    assert gte.poll_snmp_lag("10.0.0.1", "fixture", {10101: "Gi0/1", 9: name}, {}) == expected

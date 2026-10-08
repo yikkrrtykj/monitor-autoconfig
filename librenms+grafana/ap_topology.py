@@ -58,7 +58,7 @@ def ap_candidates(aps: list[dict], inventory: dict, excluded_ips=(), now=None) -
             age = row.get("evidence_age_seconds")
             if (age is None or not math.isfinite(age) or elapsed < 0 or age + elapsed < 0
                     or age + elapsed > ap_candidate_max_age() or row["switch_ip"] in excluded_ips
-                    or row.get("firewall") or row.get("aggregate_member") or row.get("confirmed_down")):
+                    or row.get("firewall") or row.get("ap_aggregate_member", row.get("aggregate_member")) or row.get("confirmed_down")):
                 continue
             key = (row["switch_ip"], row["ifindex"], row.get("librenms_vlan_id"))
             # shared inventory 的旧 vlan 字段属于服务器契约，不能作为 AP VLAN。
@@ -156,7 +156,7 @@ def build_ap_artifact(aps: list[dict], inventory: dict, excluded_ips=(), now=Non
             age = now - checked_at if checked_at is not None else None
             if (age is None or not math.isfinite(age) or age < 0 or age > maximum
                     or candidate["switch_ip"] in excluded
-                    or candidate.get("firewall") or candidate.get("aggregate_member")
+                    or candidate.get("firewall") or candidate.get("ap_aggregate_member", candidate.get("aggregate_member"))
                     or candidate.get("confirmed_down")):
                 continue
             key = (ap["mac"], candidate["switch_ip"], candidate["ifindex"])
