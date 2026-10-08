@@ -40,33 +40,101 @@ UniFi AP 的部署通知与 AP 掉线/恢复以 MAC 作为物理身份；同 MAC
 
 ### 1. 安装 Docker（含 compose 插件）
 
-国内服务器用阿里云安装源：
+以下命令在 **Linux 服务器的 root Bash 终端**执行，工作目录不限；适用于 Docker 官方支持的 Debian/Ubuntu 系统（示例为 Ubuntu 24.04 Noble）。其它发行版按 [Docker 官方安装文档](https://docs.docker.com/engine/install/)操作。已有 Docker 的服务器先验证版本，不必重新安装。
+
+#### 1.1 无法访问外网时：先连接 Clash
+
+能正常访问外网可跳到 1.2。若出现 `curl: (35) Recv failure: Connection reset by peer`，说明下载连接失败；此时切换安装源参数不能修复脚本本身的下载。
+
+**Clash 在同一局域网的电脑上：**
+
+1. 在 Clash 开启“允许局域网连接 / Allow LAN”，确认 **HTTP 或 Mixed 端口**，不要使用控制/API 端口或纯 SOCKS 端口。
+2. 在 Windows PowerShell 执行 `ipconfig`，找到服务器能够访问的电脑 IPv4 地址。防火墙仅允许需要使用代理的服务器访问该端口，不将代理开放到公网。
+3. 在服务器设置代理。下面的 `192.168.1.100:7890` 是示例，替换成你的电脑 IP 和实际端口；不要复制链接的 Markdown 方括号。
 
 ```bash
-curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
-systemctl enable --now docker
+export http_proxy="http://192.168.1.100:7890"
+export https_proxy="$http_proxy"
+export HTTP_PROXY="$http_proxy"
+export HTTPS_PROXY="$http_proxy"
+export no_proxy="localhost,127.0.0.1,::1"
+export NO_PROXY="$no_proxy"
 ```
 
-能正常访问外网的服务器直接：
+`https_proxy` 的值仍以 `http://` 开头，因为这里连接的是 HTTP 代理。电脑上的 `127.0.0.1` 不能直接当作服务器的代理地址。设置仅作用于当前终端及其子进程；换终端后需重新设置。Clash 配置含义见 [官方说明](https://wiki.metacubex.one/config/general/)。
+
+若 Clash 就运行在服务器本机，第一行使用其本机 HTTP/Mixed 地址，例如 `http://127.0.0.1:7890`。
+
+#### 1.2 下载、安装、启动：每步成功后再继续
+
+先下载脚本。成功时命令正常结束且文件非空；如果连接拒绝或超时，先检查 Clash 是否运行、IP/端口、Allow LAN、防火墙，不继续安装。
 
 ```bash
-curl -fsSL https://get.docker.com | bash
-systemctl enable --now docker
+curl -fL --connect-timeout 10 --max-time 120 \
+  https://get.docker.com -o /tmp/get-docker.sh &&
+  test -s /tmp/get-docker.sh
 ```
 
-验证（两条都要能出版本号）：
+下载成功后安装。已有可用代理时优先使用官方源：
 
 ```bash
-docker --version
-docker compose version
+bash /tmp/get-docker.sh
 ```
 
-`docker compose version` 报 “不是 docker 命令” 说明缺 v2 插件（老的 `docker-compose` v1 不行），单独补装：
+没有代理、但能够下载脚本且能访问阿里云软件源时，可改用下面这一条（与上一条二选一）：
 
 ```bash
-apt-get install -y docker-compose-plugin    # Debian/Ubuntu
-# yum install -y docker-compose-plugin      # CentOS/RHEL（需先配好 docker-ce 源）
+bash /tmp/get-docker.sh --mirror Aliyun
 ```
+
+**只有安装成功后**才执行启动与验证；下列命令用 `&&` 串联，失败时不继续后面的步骤：
+
+```bash
+systemctl daemon-reload &&
+systemctl enable --now docker &&
+docker --version &&
+docker compose version &&
+systemctl is-active docker
+```
+
+预期两个版本命令均输出版本号，最后输出 `active`。`docker.service does not exist` 或 `docker: command not found` 表示 Docker 尚未装好，应排查前面的下载/安装错误。缺少 Compose v2 插件时，在已配置 Docker CE 软件源的 Debian/Ubuntu 上执行 `apt-get install -y docker-compose-plugin`，再验证；旧 `docker-compose` v1 不能替代 v2。
+
+安装脚本用于新服务器快速安装；生产环境的版本选择及手动安装方式见 [Docker Ubuntu 官方说明](https://docs.docker.com/engine/install/ubuntu/)。
+
+#### 1.3 阿里云索引报 “File has unexpected size”
+
+如果 `apt-get update` 报阿里云 Docker 源的文件大小或哈希不匹配，说明索引与下载内容不一致，可能是镜像同步或缓存问题；不能据此认定代理失效，也不要跳过校验。先等待后重试，或在代理可用时切换到官方源。
+
+以下恢复命令仅适用于 **Debian/Ubuntu 上已有阿里云 Docker CE 源的情况**。先找出配置位置（没有匹配时不要继续）：
+
+```bash
+grep -nH -E 'mirrors\.aliyun\.com/docker-ce/linux/(ubuntu|debian)' \
+  /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
+  /etc/apt/sources.list.d/*.sources 2>/dev/null
+```
+
+将下面路径替换成上一条实际找到的文件；每个匹配文件分别处理。先备份，随后只替换 Docker 源域名和路径前缀，保留发行版代号、架构和 `Signed-By` 密钥配置：
+
+```bash
+source_file='/etc/apt/sources.list.d/docker.list'
+cp -p -- "$source_file" "${source_file}.bak-$(date +%Y%m%d-%H%M%S)" &&
+sed -i 's|https\?://mirrors\.aliyun\.com/docker-ce/linux/|https://download.docker.com/linux/|g' "$source_file"
+```
+
+保持当前终端的代理设置，刷新索引并安装。任一步失败，停止并保留报错，不重复启动未安装的服务：
+
+```bash
+apt-get -o APT::Update::Error-Mode=any update &&
+apt-get install -y docker-ce docker-ce-cli containerd.io \
+  docker-buildx-plugin docker-compose-plugin &&
+systemctl daemon-reload &&
+systemctl enable --now docker &&
+docker --version &&
+docker compose version &&
+systemctl is-active docker
+```
+
+安装时若只出现 `apt-news.service`、`esm-cache.service` 的 unit changed 警告，可执行 `systemctl daemon-reload` 刷新 unit；它不能修复软件源索引错误。
 
 ### 2. 安装 git 和 python3
 
@@ -91,7 +159,7 @@ EOF
 systemctl restart docker
 ```
 
-方法二：有代理时给 Docker daemon 配代理：
+方法二：有代理时给 Docker daemon 配代理。第 1 步的终端代理不会自动传给 Docker 服务；`docker pull` 或部署拉镜像仍超时时，需要单独配置。代理地址沿用 1.1 中服务器可访问的 HTTP/Mixed 地址，并保持 Clash 及运行它的电脑或服务器在线。以下操作会重启 Docker，应在部署前或允许重启的维护时段执行；已有 `http-proxy.conf` 时先备份并编辑，不直接覆盖：
 
 ```bash
 mkdir -p /etc/systemd/system/docker.service.d
@@ -104,6 +172,8 @@ EOF
 systemctl daemon-reload
 systemctl restart docker
 ```
+
+可用 `systemctl is-active docker` 确认服务状态，再用 `docker pull hello-world` 验证 Docker 服务能拉取镜像（仅下载，不运行容器）。配置依据见 [Docker 服务代理官方说明](https://docs.docker.com/engine/daemon/proxy/)。终端不再需要代理时可执行 `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY`；这不会移除 Docker 服务的代理配置。
 
 ### 4. 拉代码并启动
 
