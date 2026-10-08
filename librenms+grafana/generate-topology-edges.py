@@ -2798,6 +2798,17 @@ def collect_server_arp(devices, arp_device_ips, servers, community, mode,
         resolved.update(server_ip for server_ip in direct if server_ip in servers)
 
 
+def ap_port_has_aggregate_relationship(device, ifindex):
+    """VLAN layering is not LAG membership; unknown relationships stay excluded."""
+    names = device.get("ifname", {})
+    for higher, members in device.get("ifstack", {}).items():
+        if ifindex != higher and ifindex not in members:
+            continue
+        if re.fullmatch(r"(?i)vlan\s*\d+", str(names.get(higher) or "").strip()):
+            continue
+        return True
+    return False
+
 def collect_librenms_fdb_inventory(devices, edges, client, librenms_ready):
     """Build a read-only MAC candidate index, one FDB API call per switch."""
     index = {}
@@ -2867,6 +2878,7 @@ def collect_librenms_fdb_inventory(devices, edges, client, librenms_ready):
                     or ip in set(_env_target_ips("FIREWALL_UNIT_SNMP_TARGETS")),
                 "aggregate_member": ifindex in device.get("ifstack", {})
                     or any(ifindex in members for members in device.get("ifstack", {}).values()),
+                "ap_aggregate_member": ap_port_has_aggregate_relationship(device, ifindex),
                 "server_port_eligible": device.get("ifoper", {}).get(ifindex) in (None, 1),
                 "confirmed_down": device.get("ifoper", {}).get(ifindex) not in (None, 1, 4)
                     or _if_oper_status_value(port.get("ifOperStatus")) not in (None, 1, 4),
@@ -2909,8 +2921,7 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
                 or normalize_port_name(name).startswith("agg")
                 or (ip, ifindex) in endpoints
                 or device.get("ifoper", {}).get(ifindex) not in (None, 1, 4)
-                or ifindex in device.get("ifstack", {})
-                or any(ifindex in members for members in device.get("ifstack", {}).values())):
+                or ap_port_has_aggregate_relationship(device, ifindex)):
             return None
         for row in device.get("port_by_id", {}).values():
             if _as_positive_int(row.get("ifIndex")) == ifindex and _if_oper_status_value(row.get("ifOperStatus")) not in (None, 1, 4):
