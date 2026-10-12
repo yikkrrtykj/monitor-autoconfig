@@ -83,6 +83,11 @@ class OnlineIdentityService:
             items = set(self.load_set(self.state_file)) | self._pending
             if clean & items:
                 if self._pending or not clean.issubset(items):
+                    aliases = clean - items
+                    if len(self._pending | self._inflight | aliases) > self._pending_limit:
+                        logging.getLogger(__name__).warning("[ONLINE] pending identity capacity reached; alias persistence deferred")
+                        return False
+                    self._pending.update(aliases)
                     items.update(clean)
                     self._persist(items)
                 return True

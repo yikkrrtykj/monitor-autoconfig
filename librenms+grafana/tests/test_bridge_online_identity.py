@@ -376,3 +376,22 @@ def test_save_oserror_keeps_delivered_identity_and_warns(caplog):
     service.save_set = original
     assert service.known_identities() == {"one"}
     assert observed["stored"] == {"one"}
+
+
+
+def test_failed_alias_save_prevents_alias_only_redelivery():
+    service, observed = make_service(initial={"name"}, save_results=[False, False, True])
+    assert service.send_once("known", "name", "alias") is True
+    assert service.send_once("alias-only", "alias") is True
+    assert observed["sent"] == []
+    assert service.known_identities() == {"name", "alias"}
+    assert observed["stored"] == {"name", "alias"}
+
+
+def test_alias_pending_capacity_is_bounded():
+    service, observed = make_service(initial={"name"}, save_results=[False])
+    service._pending_limit = 1
+    assert service.send_once("known", "name", "alias") is True
+    assert service.send_once("overflow", "name", "another") is False
+    assert service._pending == {"alias"}
+    assert observed["sent"] == []
