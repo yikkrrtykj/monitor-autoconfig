@@ -315,3 +315,83 @@ def test_new_lifecycle_send_success_ignores_persistence_failure():
     assert service.send_new_lifecycle("card", "switch-1") is True
     assert observed["sent"] == ["card"]
     assert observed["stored"] == set()
+
+
+
+
+
+def test_delivered_save_failure_retries_storage_without_redelivery(caplog):
+    service, observed = make_service(save_results=[False, False, True])
+    assert service.send_once("first", "switch-1", "10.0.0.1") is False
+    assert service.known_identities() == {"switch-1", "10.0.0.1"}
+    assert service.send_once("duplicate", "switch-1", "alias") is True
+    assert observed["sent"] == ["first"]
+    assert observed["stored"] == {"switch-1", "10.0.0.1", "alias"}
+    assert "persistence failed" in caplog.text
+    restarted, after = make_service(initial=observed["stored"])
+    assert restarted.send_once("again", "10.0.0.1") is True
+    assert after["sent"] == []
+
+
+def test_pending_capacity_defers_new_delivery():
+    service, observed = make_service(save_results=[False])
+    service._pending_limit = 1
+    assert service.send_once("first", "one") is False
+    assert service.send_once("second", "two") is False
+    assert observed["sent"] == ["first"]
+
+
+def test_send_exception_releases_reservation():
+    import pytest
+    calls = []
+    def send(card):
+        calls.append(card)
+        if len(calls) == 1:
+            raise RuntimeError("fixture")
+        return True
+    service, _ = make_service(send=send)
+    with pytest.raises(RuntimeError):
+        service.send_once("first", "one")
+    assert service.send_once("retry", "one") is True
+
+
+
+def test_same_identity_retry_flushes_pending_without_resending():
+    service, observed = make_service(save_results=[False, True])
+    assert service.send_once("first", "one") is False
+    assert service.send_once("retry", "one") is True
+    assert observed["sent"] == ["first"]
+    assert observed["stored"] == {"one"}
+
+
+def test_save_oserror_keeps_delivered_identity_and_warns(caplog):
+    service, observed = make_service()
+    original = service.save_set
+    service.save_set = lambda *args: (_ for _ in ()).throw(OSError("sensitive fixture detail"))
+    assert service.send_once("first", "one") is False
+    assert service.send_once("retry", "one") is True
+    assert observed["sent"] == ["first"]
+    assert "persistence failed" in caplog.text
+    assert "sensitive fixture detail" not in caplog.text
+    service.save_set = original
+    assert service.known_identities() == {"one"}
+    assert observed["stored"] == {"one"}
+
+
+
+def test_failed_alias_save_prevents_alias_only_redelivery():
+    service, observed = make_service(initial={"name"}, save_results=[False, False, True])
+    assert service.send_once("known", "name", "alias") is True
+    assert service.send_once("alias-only", "alias") is True
+    assert observed["sent"] == []
+    assert service.known_identities() == {"name", "alias"}
+    assert observed["stored"] == {"name", "alias"}
+
+
+def test_alias_pending_capacity_is_bounded():
+    service, observed = make_service(initial={"name"}, save_results=[False])
+    service._pending_limit = 1
+    assert service.send_once("known", "name", "alias") is True
+    assert service.send_once("overflow", "name", "another") is False
+    assert service._pending == {"alias"}
+    assert observed["sent"] == []
