@@ -2916,7 +2916,8 @@ def build_librenms_fdb_candidates(devices, edges, client, librenms_ready, invent
 
 def collect_validated_ap_inventory(aps, inventory, devices, edges, client, community):
     """AP 独立候选窗口、共享 VLAN FK 清单、精确 GET；失败不影响 wired。"""
-    excluded = _env_target_ips("CORE_SWITCH_PING") + _env_target_ips("FIREWALL_PING")
+    # 核心也可能直连 AP；按接口排除互联端口，而不是排除整个核心设备。
+    excluded = _env_target_ips("FIREWALL_PING")
     candidates = ap_candidates(aps, inventory, excluded)
     if not any(candidates.values()) or client is None:
         return {}
@@ -2951,7 +2952,7 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
 
 def write_current_ap_artifact(output_dir, aps, inventory):
     try:
-        excluded = _env_target_ips("CORE_SWITCH_PING") + _env_target_ips("FIREWALL_PING")
+        excluded = _env_target_ips("FIREWALL_PING")
         artifact = build_ap_artifact(aps, inventory, excluded)
         write_json_atomic(os.path.join(output_dir, "ap-attachments.json"), artifact, sort_keys=True)
     except Exception as exc:
