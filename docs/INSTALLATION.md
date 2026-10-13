@@ -292,4 +292,3 @@ cd librenms+grafana
 python3 librenms+grafana/platform_config.py migrate librenms+grafana/event-config.yml
 python3 librenms+grafana/platform_config.py migrate librenms+grafana/event-config.yml --write
 ```
-
