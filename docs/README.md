@@ -4,6 +4,8 @@
 
 | 文档 | 职责 |
 |---|---|
+| [安装、更新和排障](INSTALLATION.md) | 两种安装方式、本机检查、软件源恢复和配置升级 |
+| [功能与配置参考](REFERENCE.md) | 控制台、配置字段、告警和采集细节 |
 | [AGENTS.md](../AGENTS.md) | Agent 必须遵守的启动、实施、交付、压缩顺序 |
 | [PROJECT_CONTEXT](PROJECT_CONTEXT.md) | 长期业务约束、冻结与安全边界、历史证据入口 |
 | [ENGINEERING](ENGINEERING.md) | 架构边界、代码、安全、测试与完成标准 |
