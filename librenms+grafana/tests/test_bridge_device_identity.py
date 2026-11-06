@@ -164,7 +164,12 @@ def test_new_device_card_prefers_inventory_model(monkeypatch):
 @pytest.fixture
 def ap_identity_env(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, "UNIFI_AP_INVENTORY_FILE", str(tmp_path / "aps.json"))
-    monkeypatch.setattr(bridge._ONLINE_IDENTITY, "state_file", str(tmp_path / "online.json"))
+    monkeypatch.setattr(bridge, "_ONLINE_IDENTITY", bridge.OnlineIdentityService(
+        state_file=str(tmp_path / "online.json"),
+        load_set=bridge._load_json_set,
+        save_set=bridge._save_json_set,
+        send=lambda card: bridge.send_feishu(card),
+    ))
     monkeypatch.setattr(bridge, "fetch_unifi_controller_aps_cached", lambda: {})
     monkeypatch.setattr(bridge, "next_event_title", lambda: "#test")
     sent = []
@@ -326,13 +331,20 @@ def test_frozen_legacy_alias_survives_inventory_update_and_restart(ap_identity_e
 def test_migration_write_failure_defers_delivery(ap_identity_env, monkeypatch):
     _write_inventory(_ap())
     bridge.mark_device_online_notified("192.0.2.10")
-    monkeypatch.setattr(bridge._ONLINE_IDENTITY, "save_set", lambda *args: False)
-    dev = bridge._enrich_device_with_unifi({"ip": "192.0.2.10"})
-    assert not bridge._migrate_unifi_device_online_identity(dev)
-    assert bridge._device_online_identity_values(dev) == ()
-    assert not bridge._send_pending_ap_deployment("AP-1", "192.0.2.10", "test", {"192.0.2.10"}, set(), "aabbccddeeff")
+    ledger = bridge._ONLINE_IDENTITY
+    expected = {"192.0.2.10", "unifi-ap:aabbccddeeff"}
+    with monkeypatch.context() as failed_save:
+        failed_save.setattr(ledger, "save_set", lambda *args: False)
+        dev = bridge._enrich_device_with_unifi({"ip": "192.0.2.10"})
+        assert not bridge._migrate_unifi_device_online_identity(dev)
+        assert bridge._device_online_identity_values(dev) == ()
+        assert not bridge._send_pending_ap_deployment("AP-1", "192.0.2.10", "test", {"192.0.2.10"}, set(), "aabbccddeeff")
+        assert ledger.known_identities() == expected
+        assert ledger.load_set(ledger.state_file) == {"192.0.2.10"}
+    assert ledger.known_identities() == expected
+    assert ledger.load_set(ledger.state_file) == expected
+    assert bridge.send_device_online_once({}, "unifi-ap:aabbccddeeff")
     assert ap_identity_env == []
-    assert bridge._ONLINE_IDENTITY.known_identities() == {"192.0.2.10"}
 
 
 @pytest.mark.parametrize("ap_first", [True, False])
