@@ -1213,6 +1213,11 @@ services:
       BIGSCREEN_TEAM_ORDERS: "${BIGSCREEN_TEAM_ORDERS:-}"
       BIGSCREEN_GRAFANA_ANONYMOUS: "${GRAFANA_ANONYMOUS_ENABLED:-true}"
       BIGSCREEN_PROMETHEUS_BASE_URL: "${BIGSCREEN_PROMETHEUS_BASE_URL:-}"
+      PLAYER_PING_SCRAPE_INTERVAL: "${PLAYER_PING_SCRAPE_INTERVAL:-5s}"
+      INFRA_PING_SCRAPE_INTERVAL: "${INFRA_PING_SCRAPE_INTERVAL:-2s}"
+      ISP_PING_SCRAPE_INTERVAL: "${ISP_PING_SCRAPE_INTERVAL:-1s}"
+      BIGSCREEN_PING_QUALITY_LOSS_PCT: "${BIGSCREEN_PING_QUALITY_LOSS_PCT:-5}"
+      BIGSCREEN_PING_QUALITY_RTT_MS: "${BIGSCREEN_PING_QUALITY_RTT_MS:-50}"
       BIGSCREEN_ISP_NAMES: "${BIGSCREEN_ISP_NAMES:-}"
       BIGSCREEN_ISP_IPS: "${BIGSCREEN_ISP_IPS:-}"
       ISP_GATEWAY_AUTO_DISCOVER: "${ISP_GATEWAY_AUTO_DISCOVER-${BIGSCREEN_ISP_AUTO_DISCOVER-true}}"
@@ -1250,6 +1255,11 @@ services:
         TEAM_ORDERS_B64="$$(b64 "$${BIGSCREEN_TEAM_ORDERS:-}")"
         GRAFANA_ANONYMOUS_B64="$$(b64 "$${BIGSCREEN_GRAFANA_ANONYMOUS:-true}")"
         PROMETHEUS_BASE_URL_B64="$$(b64 "$${BIGSCREEN_PROMETHEUS_BASE_URL:-}")"
+        PLAYER_PING_INTERVAL_B64="$$(b64 "$${PLAYER_PING_SCRAPE_INTERVAL:-5s}")"
+        INFRA_PING_INTERVAL_B64="$$(b64 "$${INFRA_PING_SCRAPE_INTERVAL:-2s}")"
+        ISP_PING_INTERVAL_B64="$$(b64 "$${ISP_PING_SCRAPE_INTERVAL:-1s}")"
+        PING_LOSS_B64="$$(b64 "$${BIGSCREEN_PING_QUALITY_LOSS_PCT:-5}")"
+        PING_RTT_B64="$$(b64 "$${BIGSCREEN_PING_QUALITY_RTT_MS:-50}")"
         ISP_NAMES_B64="$$(b64 "$${BIGSCREEN_ISP_NAMES:-}")"
         ISP_IPS_B64="$$(b64 "$${BIGSCREEN_ISP_IPS:-$${ISP_PING:-}}")"
         ISP_AUTO_DISCOVERY_B64="$$(b64 "$${ISP_GATEWAY_AUTO_DISCOVER-true}")"
@@ -1273,6 +1283,13 @@ services:
           teamOrders: decodeConfigValue("$$TEAM_ORDERS_B64"),
           grafanaAnonymous: decodeConfigValue("$$GRAFANA_ANONYMOUS_B64"),
           prometheusBaseUrl: decodeConfigValue("$$PROMETHEUS_BASE_URL_B64"),
+          pingIntervals: {
+            player: decodeConfigValue("$$PLAYER_PING_INTERVAL_B64"),
+            infra: decodeConfigValue("$$INFRA_PING_INTERVAL_B64"),
+            isp: decodeConfigValue("$$ISP_PING_INTERVAL_B64")
+          },
+          pingQualityLossPct: decodeConfigValue("$$PING_LOSS_B64"),
+          pingQualityRttMs: decodeConfigValue("$$PING_RTT_B64"),
           ispNames: decodeConfigValue("$$ISP_NAMES_B64"),
           ispIps: decodeConfigValue("$$ISP_IPS_B64"),
           ispAutoDiscovery: decodeConfigValue("$$ISP_AUTO_DISCOVERY_B64"),
@@ -1299,10 +1316,10 @@ services:
 
           # Page names may also be source directories. Never serve them as directories.
           # Canonical URLs omit the slash so relative assets resolve from the root.
-          location ~ ^/(control|infra|dhcp|latency|incident|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)/$$ {
+          location ~ ^/(control|infra|ping|dhcp|latency|incident|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)/$$ {
             return 302 /$$1$$is_args$$args;
           }
-          location ~ ^/(control|infra|dhcp|latency|incident|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)$$ {
+          location ~ ^/(control|infra|ping|dhcp|latency|incident|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)$$ {
             try_files /index.html =404;
           }
 
