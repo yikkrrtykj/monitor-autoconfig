@@ -48,7 +48,7 @@ def vlan_fk_mapping(rows: list[dict]) -> dict:
     return {key: value for key, value in mapping.items() if key not in conflicts}
 
 
-def ap_candidates(aps: list[dict], inventory: dict, excluded_ips=(), now=None) -> dict:
+def ap_candidates(aps: list[dict], inventory: dict, excluded_ips=(), now=None, *, port_allowed=None) -> dict:
     now = time.time() if now is None else now
     result = {}
     for ap in aps:
@@ -59,6 +59,8 @@ def ap_candidates(aps: list[dict], inventory: dict, excluded_ips=(), now=None) -
             if (age is None or not math.isfinite(age) or elapsed < 0 or age + elapsed < 0
                     or age + elapsed > ap_candidate_max_age() or row["switch_ip"] in excluded_ips
                     or row.get("firewall") or row.get("ap_aggregate_member", row.get("aggregate_member")) or row.get("confirmed_down")):
+                continue
+            if port_allowed is not None and not port_allowed(row["switch_ip"], row["ifindex"]):
                 continue
             key = (row["switch_ip"], row["ifindex"], row.get("librenms_vlan_id"))
             # shared inventory 的旧 vlan 字段属于服务器契约，不能作为 AP VLAN。
