@@ -1,5 +1,7 @@
 import threading
 
+import pytest
+
 from feishu_bridge.online_identity import OnlineIdentityService
 
 
@@ -18,6 +20,8 @@ def make_service(*, initial=(), save_results=(), send_results=(), send=None):
     def save_set(path, values):
         result = next(pending_save_results, True)
         saves.append((path, set(values), result))
+        if isinstance(result, OSError):
+            raise result
         if result:
             stored.clear()
             stored.update(values)
@@ -82,11 +86,17 @@ def test_mark_normalizes_and_persists_multiple_new_aliases():
     )]
 
 
-def test_mark_new_identity_returns_save_failure_without_mutating_store():
-    service, observed = make_service(initial={"existing"}, save_results=[False])
+@pytest.mark.parametrize("failure", [False, OSError("fixture")], ids=["false", "oserror"])
+def test_mark_new_identity_keeps_dedupe_until_storage_recovers(failure):
+    service, observed = make_service(initial={"existing"}, save_results=[failure, failure, True])
 
     assert service.mark_notified("switch-1") is False
     assert observed["stored"] == {"existing"}
+    assert service.send_once("duplicate", "switch-1") is True
+    assert observed["stored"] == {"existing"}
+    assert service.known_identities() == {"existing", "switch-1"}
+    assert observed["stored"] == {"existing", "switch-1"}
+    assert observed["sent"] == []
 
 
 def test_migrate_rejects_empty_primary_and_unknown_legacy():
@@ -111,11 +121,17 @@ def test_migrate_attaches_primary_without_removing_legacy():
     assert observed["stored"] == {"old-name", "unifi-ap:aabb"}
 
 
-def test_migrate_returns_save_failure_and_keeps_legacy_store():
-    service, observed = make_service(initial={"old-name"}, save_results=[False])
+@pytest.mark.parametrize("failure", [False, OSError("fixture")], ids=["false", "oserror"])
+def test_migrate_keeps_new_primary_until_storage_recovers(failure):
+    service, observed = make_service(initial={"old-name"}, save_results=[failure, failure, True])
 
     assert service.migrate("unifi-ap:aabb", "old-name") is False
     assert observed["stored"] == {"old-name"}
+    assert service.send_once("duplicate", "unifi-ap:aabb") is True
+    assert observed["stored"] == {"old-name"}
+    assert service.migrate("unifi-ap:aabb", "old-name") is True
+    assert observed["stored"] == {"old-name", "unifi-ap:aabb"}
+    assert observed["sent"] == []
 
 
 def test_send_once_empty_identities_returns_false_without_delivery():
@@ -269,35 +285,40 @@ def test_new_lifecycle_ignores_historical_dedupe_and_persists_identity():
     assert observed["stored"] == {"switch-1", "10.0.0.1"}
 
 
-def test_new_lifecycle_does_not_use_existing_inflight_reservation():
+@pytest.mark.parametrize("first_method, second_method", [
+    ("send_once", "send_new_lifecycle"),
+    ("send_new_lifecycle", "send_once"),
+    ("send_new_lifecycle", "send_new_lifecycle"),
+])
+def test_new_lifecycle_shares_inflight_reservation(first_method, second_method):
     entered = threading.Event()
     release = threading.Event()
     calls = []
 
     def send(card):
         calls.append(card)
-        if card == "ordinary":
+        if card == "first":
             entered.set()
             assert release.wait(3)
         return True
 
     service, observed = make_service(send=send)
-    ordinary_result = []
-    ordinary = threading.Thread(
-        target=lambda: ordinary_result.append(
-            service.send_once("ordinary", "switch-1")
+    result = []
+    first = threading.Thread(
+        target=lambda: result.append(
+            getattr(service, first_method)("first", "switch-1")
         )
     )
-    ordinary.start()
-    assert entered.wait(1)
+    first.start()
     try:
-        assert service.send_new_lifecycle("new-lifecycle", "switch-1") is True
+        assert entered.wait(1)
+        assert getattr(service, second_method)("overlap", "switch-1") is False
     finally:
         release.set()
-    ordinary.join(2)
+        first.join(2)
 
-    assert ordinary_result == [True]
-    assert calls == ["ordinary", "new-lifecycle"]
+    assert result == [True]
+    assert calls == ["first"]
     assert observed["stored"] == {"switch-1"}
 
 
@@ -309,12 +330,17 @@ def test_new_lifecycle_send_failure_does_not_persist():
     assert observed["stored"] == set()
 
 
-def test_new_lifecycle_send_success_ignores_persistence_failure():
-    service, observed = make_service(save_results=[False])
+@pytest.mark.parametrize("failure", [False, OSError("fixture")], ids=["false", "oserror"])
+def test_new_lifecycle_delivery_survives_persistence_failure(failure):
+    service, observed = make_service(save_results=[failure, failure, True])
 
     assert service.send_new_lifecycle("card", "switch-1") is True
-    assert observed["sent"] == ["card"]
     assert observed["stored"] == set()
+    assert service.send_once("duplicate", "switch-1") is True
+    assert observed["stored"] == set()
+    assert service.known_identities() == {"switch-1"}
+    assert observed["stored"] == {"switch-1"}
+    assert observed["sent"] == ["card"]
 
 
 
@@ -341,8 +367,8 @@ def test_pending_capacity_defers_new_delivery():
     assert observed["sent"] == ["first"]
 
 
-def test_send_exception_releases_reservation():
-    import pytest
+@pytest.mark.parametrize("method", ["send_once", "send_new_lifecycle"])
+def test_send_exception_releases_reservation(method):
     calls = []
     def send(card):
         calls.append(card)
@@ -351,8 +377,9 @@ def test_send_exception_releases_reservation():
         return True
     service, _ = make_service(send=send)
     with pytest.raises(RuntimeError):
-        service.send_once("first", "one")
+        getattr(service, method)("first", "one")
     assert service.send_once("retry", "one") is True
+    assert calls == ["first", "retry"]
 
 
 
@@ -395,3 +422,21 @@ def test_alias_pending_capacity_is_bounded():
     assert service.send_once("overflow", "name", "another") is False
     assert service._pending == {"alias"}
     assert observed["sent"] == []
+
+
+def test_pending_capacity_defers_mark_migration_and_lifecycle(caplog):
+    service, observed = make_service(initial={"legacy"}, save_results=[False, True])
+    service._pending_limit = 1
+    assert service.mark_notified("pending") is False
+
+    assert service.mark_notified("untracked-mark") is False
+    assert service.migrate("untracked-primary", "legacy") is False
+    assert service.send_new_lifecycle("overflow", "untracked-lifecycle") is False
+    assert observed["sent"] == []
+    assert observed["stored"] == {"legacy"}
+    assert service.known_identities() == {"legacy", "pending"}
+    assert service.send_new_lifecycle("later", "untracked-lifecycle") is True
+    assert observed["sent"] == ["later"]
+    assert observed["stored"] == {"legacy", "pending", "untracked-lifecycle"}
+    assert "pending identity capacity reached" in caplog.text
+    assert "untracked-" not in caplog.text
