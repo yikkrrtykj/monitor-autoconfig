@@ -2914,10 +2914,40 @@ def build_librenms_fdb_candidates(devices, edges, client, librenms_ready, invent
     return index, status
 
 
+def _confirmed_core_ap_ports(core_ips):
+    """Accept only explicitly confirmed, typed IF-MIB names on configured cores."""
+    raw = os.environ.get("TOPOLOGY_CORE_AP_PORTS", "")
+    if not raw.strip():
+        return set()
+    allowed = set()
+    try:
+        if len(raw) > 8192 or raw.count(",") >= 128:
+            raise ValueError
+        for entry in raw.split(","):
+            ip, _, name = (part.strip() for part in entry.partition(":"))
+            if ip not in core_ips or len(name) > 64 or not is_physical_interface_name(name):
+                raise ValueError
+            # Link matching can strip port types; confirmation must not equate Gi and Te.
+            allowed.add((ip, name.casefold()))
+    except ValueError:
+        print("[WARN] invalid TOPOLOGY_CORE_AP_PORTS; core AP attachments disabled", file=sys.stderr)
+        return set()
+    return allowed
+
+
 def collect_validated_ap_inventory(aps, inventory, devices, edges, client, community):
     """AP 独立候选窗口、共享 VLAN FK 清单、精确 GET；失败不影响 wired。"""
-    excluded = _env_target_ips("CORE_SWITCH_PING") + _env_target_ips("FIREWALL_PING")
-    candidates = ap_candidates(aps, inventory, excluded)
+    core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
+    confirmed = _confirmed_core_ap_ports(core_ips)
+    excluded = _env_target_ips("FIREWALL_PING")
+
+    def core_port_allowed(ip, ifindex):
+        if ip not in core_ips:
+            return True
+        name = devices.get(ip, {}).get("ifname", {}).get(ifindex)
+        return (ip, str(name or "").strip().casefold()) in confirmed
+
+    candidates = ap_candidates(aps, inventory, excluded, port_allowed=core_port_allowed)
     if not any(candidates.values()) or client is None:
         return {}
     try:
@@ -2934,6 +2964,7 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
         if (ifindex is None or not is_physical_interface_name(name)
                 or normalize_port_name(name).startswith("agg")
                 or (ip, ifindex) in endpoints
+                or not core_port_allowed(ip, ifindex)
                 or device.get("ifoper", {}).get(ifindex) not in (None, 1, 4)
                 or ap_port_has_aggregate_relationship(device, ifindex)):
             return None
@@ -2951,7 +2982,7 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
 
 def write_current_ap_artifact(output_dir, aps, inventory):
     try:
-        excluded = _env_target_ips("CORE_SWITCH_PING") + _env_target_ips("FIREWALL_PING")
+        excluded = _env_target_ips("FIREWALL_PING")
         artifact = build_ap_artifact(aps, inventory, excluded)
         write_json_atomic(os.path.join(output_dir, "ap-attachments.json"), artifact, sort_keys=True)
     except Exception as exc:

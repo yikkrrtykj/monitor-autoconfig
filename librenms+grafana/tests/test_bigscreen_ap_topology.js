@@ -25,7 +25,14 @@ for (const evidence of [null, { ...artifact, attachments: [] }, { ...artifact, s
   { ...artifact, attachments: [{ ...attachment, ap_mac: '02:00:00:00:00:02' }] },
   { ...artifact, attachments: [{ ...attachment, evidence_age_seconds: null }] }]) assert.strictEqual(overlay([ap], evidence).layout.links.length, 0);
 assert.strictEqual(overlay([ap], artifact, wired, 11201).layout.links.length, 0, 'age advances after collector snapshot');
-for (const kind of ['core', 'firewall', 'ap']) assert.strictEqual(overlay([ap], artifact, { ...wired, layout: { ...wired.layout, nodes: [{ ...wired.layout.nodes[0], kind }] } }).layout.links.length, 0);
+for (const kind of ['core', 'dist']) {
+  const frame = { ...wired, layout: { ...wired.layout, nodes: [{ ...wired.layout.nodes[0], kind }] } };
+  const result = overlay([ap], artifact, frame);
+  assert.strictEqual(result.layout.links.length, 1);
+  assert.strictEqual(result.layout.nodes.find((node) => node.kind === 'ap').parentIp, '10.0.0.11');
+  assert.deepStrictEqual(result.layout.nodes[0], frame.layout.nodes[0], 'AP overlay preserves wired parent coordinates');
+}
+for (const kind of ['firewall', 'ap']) assert.strictEqual(overlay([ap], artifact, { ...wired, layout: { ...wired.layout, nodes: [{ ...wired.layout.nodes[0], kind }] } }).layout.links.length, 0);
 for (const aps of [[ap, ap], [{ ...ap, mac: '' }], [{ ...ap, ip: '' }], []]) assert.strictEqual(overlay(aps).layout.links.length, 0);
 const aps17 = Array.from({ length: 17 }, (_, i) => ({ ...ap, ip: `10.1.0.${i + 1}`, mac: `0200000000${(i + 1).toString(16).padStart(2, '0')}` }));
 const rows7 = aps17.slice(0, 7).map((item, i) => ({ ...attachment, ap_ip: item.ip, ap_mac: item.mac, switch_ifindex: i + 1 }));

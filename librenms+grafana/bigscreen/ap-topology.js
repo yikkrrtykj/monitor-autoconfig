@@ -139,7 +139,7 @@
       const row = matches[0];
       if (!Number.isFinite(row.evidence_age_seconds) || row.evidence_age_seconds < 0
         || row.evidence_age_seconds + elapsed > artifact.max_age_seconds || !Number.isInteger(row.switch_ifindex) || row.switch_ifindex <= 0) return;
-      const parents = frame.layout.nodes.filter((node) => node.ip === row.switch_ip && node.kind === 'dist');
+      const parents = frame.layout.nodes.filter((node) => node.ip === row.switch_ip && ['core', 'dist'].includes(node.kind));
       if (parents.length === 1) resolved.push({ ap, row, parent: parents[0] });
     });
     // Ordering affects positions only, never attachment authority.

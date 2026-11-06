@@ -8,12 +8,12 @@ import ap_topology as ap
 from .test_ap_topology import identity, candidate
 from .test_topology_server_librenms import gte, device, ServerClient
 from .test_librenms_client import make_client, attach_sequence, FakeResponse
-from librenms_client import LibreNMSInvalidResponse
+from librenms_client import LibreNMSInvalidResponse, LibreNMSUnavailable
 
 
 @pytest.fixture(autouse=True)
 def settings(monkeypatch):
-    for key in ("CORE_SWITCH_PING", "FIREWALL_PING", "FIREWALL_UNIT_SNMP_TARGETS"):
+    for key in ("CORE_SWITCH_PING", "FIREWALL_PING", "FIREWALL_UNIT_SNMP_TARGETS", "TOPOLOGY_CORE_AP_PORTS"):
         monkeypatch.setenv(key, "")
     for key in ("TOPOLOGY_AP_FDB_CANDIDATE_MAX_AGE_SECONDS", "TOPOLOGY_AP_FDB_CANDIDATE_CAP", "TOPOLOGY_AP_FDB_MAX_AGE_SECONDS"):
         monkeypatch.delenv(key, raising=False)
@@ -172,10 +172,114 @@ def test_shared_fdb_preserves_server_vlan_and_window(monkeypatch):
     assert gte.topology_librenms_fdb_max_age() == 900
 
 
-@pytest.mark.parametrize("filter_kind", ["core", "firewall", "lag", "down", "uplink"])
+def test_core_direct_ap_survives_validation_and_artifact_output(tmp_path, monkeypatch):
+    aps, _, devices, api = setup_inventory()
+    monkeypatch.setenv("CORE_SWITCH_PING", "core:10.0.0.11")
+    monkeypatch.setenv("TOPOLOGY_CORE_AP_PORTS", "10.0.0.11:gi1/0/1")
+    api.fdb = {"10.0.0.11": [{"port_id": 1, "mac_address": aps[0]["mac"],
+                             "vlan_id": 142, "updated_at": time.time()}]}
+    shared, _ = gte.collect_librenms_fdb_inventory(devices, [], api, True)
+    calls = []
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex",
+                        lambda ip, community, vlan, mac, names: calls.append((ip, vlan, mac)) or 1)
+    current = validate(aps, shared, devices, api)
+    gte.write_current_ap_artifact(str(tmp_path), aps, current)
+    artifact = json.loads((tmp_path / "ap-attachments.json").read_text())
+    assert calls == [("10.0.0.11", 200, aps[0]["mac"])]
+    assert len(artifact["attachments"]) == 1
+    assert artifact["attachments"][0]["switch_ip"] == "10.0.0.11"
+    assert artifact["attachments"][0]["switch_port"] == "Gi1/0/1"
+
+
+@pytest.mark.parametrize("core_result", [2, 1])
+def test_core_forwarding_or_ambiguous_evidence_cannot_steal_downstream_ap(monkeypatch, core_result):
+    aps, _, devices, api = setup_inventory(ports=[(1, 1, "Gi1/0/1", 1), (2, 2, "Gi1/0/2", 1)])
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+    monkeypatch.setenv("TOPOLOGY_CORE_AP_PORTS", "10.0.0.11:Gi1/0/1,10.0.0.11:Gi1/0/2")
+    devices["10.0.0.12"] = device("10.0.0.12", "access", [(3, 3, "Gi0/3", 1)], device_id=11)
+    api.get_vlan_inventory = lambda: [
+        {"device_id": 10, "vlan_id": 142, "vlan_vlan": 200},
+        {"device_id": 11, "vlan_id": 143, "vlan_vlan": 200}]
+    api.fdb = {
+        "10.0.0.11": [{"port_id": n, "mac_address": aps[0]["mac"], "vlan_id": 142,
+                       "updated_at": time.time()} for n in (1, 2)],
+        "10.0.0.12": [{"port_id": 3, "mac_address": aps[0]["mac"], "vlan_id": 143,
+                       "updated_at": time.time()}]}
+    edges = [{"from_ip": "10.0.0.11", "from_ifindex": 2,
+              "to_ip": "10.0.0.12", "to_ifindex": 9}]
+    shared, _ = gte.collect_librenms_fdb_inventory(devices, edges, api, True)
+    assert len(shared[aps[0]["mac"]]) == 2, "known inter-switch port excluded before GET"
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex",
+                        lambda ip, *args: core_result if ip == "10.0.0.11" else 3)
+    artifact = ap.build_ap_artifact(aps, validate(aps, shared, devices, api, edges))
+    if core_result == 2:
+        assert len(artifact["attachments"]) == 1
+        assert artifact["attachments"][0]["switch_ip"] == "10.0.0.12"
+    else:
+        assert artifact["attachments"] == []
+        assert artifact["ambiguous_count"] == 1
+
+
+@pytest.mark.parametrize("fdb_unavailable", [True, False])
+def test_core_forwarding_stays_unresolved_until_access_fdb_recovers(monkeypatch, fdb_unavailable):
+    aps, _, devices, api = setup_inventory(ports=[(1, 1, "Gi1/0/1", 1), (2, 2, "Gi1/0/2", 1)])
+    core, access = "10.0.0.11", "10.0.0.12"
+    monkeypatch.setenv("CORE_SWITCH_PING", core)
+    monkeypatch.setenv("TOPOLOGY_CORE_AP_PORTS", f"{core}:Gi1/0/1")
+    devices[access] = device(access, "access", [(3, 3, "Gi0/3", 1)], device_id=11)
+    api.get_vlan_inventory = lambda: [
+        {"device_id": 10, "vlan_id": 142, "vlan_vlan": 200},
+        {"device_id": 11, "vlan_id": 143, "vlan_vlan": 200}]
+    mac = aps[0]["mac"]
+    api.fdb = {core: [{"port_id": 2, "mac_address": mac, "vlan_id": 142, "updated_at": time.time()}]}
+    if fdb_unavailable:
+        api.failures[(access, "fdb")] = LibreNMSUnavailable("fixture FDB unavailable")
+    calls = []
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex", lambda ip, *args: calls.append(ip) or (2 if ip == core else 3))
+
+    shared, status = gte.collect_librenms_fdb_inventory(devices, [], api, True)
+    assert status["failed_switches"] == int(fdb_unavailable)
+    assert [row["switch_ip"] for row in shared[mac]] == [core]
+    artifact = ap.build_ap_artifact(aps, validate(aps, shared, devices, api))
+    assert artifact["attachments"] == []
+    assert artifact["unresolved_count"] == 1
+    assert calls == []
+
+    api.failures.clear()
+    api.fdb[access] = [{"port_id": 3, "mac_address": mac, "vlan_id": 143, "updated_at": time.time()}]
+    shared, _ = gte.collect_librenms_fdb_inventory(devices, [], api, True)
+    artifact = ap.build_ap_artifact(aps, validate(aps, shared, devices, api))
+    assert [(row["switch_ip"], row["switch_port"]) for row in artifact["attachments"]] == [(access, "Gi0/3")]
+    assert calls == [access]
+
+
+@pytest.mark.parametrize("allowlist", ["", "10.0.0.11:Po1", "10.0.0.12:Gi1/0/1", "10.0.0.11:Gi1/0/1,bad"])
+def test_core_without_valid_confirmation_does_not_query_snmp(monkeypatch, allowlist):
+    aps, inventory, devices, api = setup_inventory()
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+    monkeypatch.setenv("TOPOLOGY_CORE_AP_PORTS", allowlist)
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex", lambda *args: pytest.fail("unconfirmed core port must not query SNMP"))
+    assert validate(aps, inventory, devices, api) == {}
+
+
+@pytest.mark.parametrize("block", ["moved", "aged", "aggregate-member", "down"])
+def test_core_confirmation_does_not_bypass_current_port_and_freshness_checks(monkeypatch, block):
+    # Gi and Te may share their numeric suffix; confirmation identifies the typed ifName.
+    aps, inventory, devices, api = setup_inventory(
+        rows=[seed(age=28801 if block == "aged" else 0)],
+        ports=[(1, 1, "Gi1/0/1", 2 if block == "down" else 1), (2, 2, "Te1/0/1", 1)],
+    )
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+    monkeypatch.setenv("TOPOLOGY_CORE_AP_PORTS", "10.0.0.11:Gi1/0/1")
+    if block == "aggregate-member":
+        devices["10.0.0.11"]["ifstack"] = {4: [1]}
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex", lambda *args: 2 if block == "moved" else 1)
+    assert ap.build_ap_artifact(aps, validate(aps, inventory, devices, api))["attachments"] == []
+
+
+@pytest.mark.parametrize("filter_kind", ["firewall", "lag", "down", "uplink"])
 def test_structural_seeds_rejected_before_exact_get(monkeypatch, filter_kind):
     aps, _, devices, api = setup_inventory(ports=[(1, 1, "Po1" if filter_kind == "lag" else "Gi1/0/1", 2 if filter_kind == "down" else 1)])
-    if filter_kind == "core": monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
     if filter_kind == "firewall": devices["10.0.0.11"]["librenms_metadata"]["os"] = "stoneos"
     edges = [{"from_ip": "10.0.0.11", "from_ifindex": 1, "to_ip": "10.0.0.12"}] if filter_kind == "uplink" else []
     api.fdb = {"10.0.0.11": [{"port_id": 1, "mac_address": aps[0]["mac"], "vlan_id": 142, "updated_at": time.time()}]}
