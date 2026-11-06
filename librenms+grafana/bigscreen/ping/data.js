@@ -49,9 +49,12 @@
 
   function createPingData({ query, settings }) {
     const all = matcher("job", allJobs);
-    const inventorySeconds = Math.min(1800, Math.max(300, Math.ceil(Math.max(...Object.values(settings.intervals)) * 3)));
+    const { inventorySeconds } = model;
+    // Keep the preceding five minutes separate so an expiring target still
+    // leaves a coverage notice, including on reload. Neither window proves intent.
     const summaryQuery = [
       tagged("target", `last_over_time(up{${all}}[${inventorySeconds}s])`),
+      tagged("aged_out", `last_over_time(up{${all}}[300s] offset ${inventorySeconds}s)`),
       ...currentFields(all),
       ...lossFields(matcher("job", fastJobs), 60),
       ...lossFields(matcher("job", slowJobs), 300)
@@ -59,8 +62,17 @@
 
     async function summary(at, signal) {
       const result = await query(summaryQuery, { time: at }, signal);
-      if (result.length > 9 * 3000) throw new Error("监控目标超出列表上限");
-      return model.snapshot(result, at, settings);
+      if (result.length > 10 * 3000) throw new Error("监控目标超出列表上限");
+      const targets = model.snapshot(result, at, settings);
+      const keys = new Set(targets.map(({ key }) => key));
+      const agedOut = new Set();
+      for (const { metric } of result) {
+        if (metric.ping_field !== "aged_out") continue;
+        const key = model.identity(metric);
+        if (!keys.has(key)) agedOut.add(key);
+      }
+      if (targets.length + agedOut.size > 3000) throw new Error("监控目标超出列表上限");
+      return { targets, agedOut: agedOut.size };
     }
 
     async function raw(targets, start, end, signal) {

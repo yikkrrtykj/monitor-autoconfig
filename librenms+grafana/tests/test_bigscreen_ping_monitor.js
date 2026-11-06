@@ -98,6 +98,74 @@ test("P95, population STDDEV, max and coverage use raw samples before display bu
   assert.deepEqual(model.bucketRows(points, at, at + 40, 10, 1).map(({ total }) => total), [10, 10, 10, 10]);
 });
 
+function observedInventory(readings) {
+  const api = createPingData({ settings, query: async (expr, { time }) => {
+    // Simulate Prometheus 2.53 range boundaries with fixture scrape times.
+    // Derive the ranges from the request so a shortened lookback fails here.
+    const ranges = [...expr.matchAll(/last_over_time\(up\{[^}]+\}\[(\d+)s\](?: offset (\d+)s)?\), "ping_field", "([^"]+)"/g)];
+    return readings.flatMap(({ metric, scrapes, success = 1 }) => {
+      const fields = {};
+      for (const [, seconds, offset, field] of ranges) {
+        const end = time - Number(offset || 0);
+        if (scrapes.some((timestamp) => timestamp >= end - Number(seconds) && timestamp <= end)) fields[field] = 1;
+      }
+      const latest = scrapes.findLast((timestamp) => timestamp <= time);
+      if (latest !== undefined && time - latest <= 300) {
+        Object.assign(fields, { source: 1, source_at: latest, probe: success, probe_at: latest,
+          rtt: success ? 0.003 : 0, rtt_at: latest, count: 30, ok: success ? 30 : 29 });
+      }
+      return vector(metric, fields);
+    });
+  } });
+  return (time) => api.summary(time, new AbortController().signal);
+}
+
+test("partial discovery loss after five minutes keeps all 20 rows and distinguishes an ICMP failure", async () => {
+  const beforeLoss = at - 360;
+  const readings = Array.from({ length: 20 }, (_, index) => ({
+    metric: { ...player, instance: `192.0.2.${index + 1}`, seat: String(index + 1) },
+    scrapes: index < 5 ? [beforeLoss] : [beforeLoss, at - 2],
+    success: index === 5 ? 0 : 1
+  }));
+  const { targets, agedOut } = await observedInventory(readings)(at);
+  assert.equal(targets.length, 20);
+  assert.equal(agedOut, 0);
+  const missing = targets.filter(({ status }) => status === "UNKNOWN");
+  assert.equal(missing.length, 5);
+  assert.ok(missing.every(({ rtt, loss }) => rtt === null && loss.loss === null));
+  assert.equal(targets.filter(({ status }) => status === "UP").length, 14);
+  assert.equal(targets.filter(({ status }) => status === "DOWN").length, 1);
+});
+
+test("complete discovery loss stays unknown and rediscovery restores the same identity", async () => {
+  const read = observedInventory([
+    { metric: core, scrapes: [at - 360, at + 9] },
+    { metric: player, scrapes: [at - 360, at + 9] }
+  ]);
+  const missing = await read(at);
+  assert.deepEqual(missing.targets.map(({ status }) => status), ["UNKNOWN", "UNKNOWN"]);
+  const recovered = await read(at + 10);
+  assert.deepEqual(recovered.targets.map(({ key }) => key), missing.targets.map(({ key }) => key));
+  assert.deepEqual(recovered.targets.map(({ status }) => status), ["UP", "UP"]);
+  assert.equal(recovered.agedOut, 0);
+});
+
+test("a removed target ages out with a notice, then disappears from the bounded inventory", async () => {
+  const read = observedInventory([
+    { metric: core, scrapes: [at] },
+    { metric: player, scrapes: [at, at + 1798, at + 1800, at + 2100] }
+  ]);
+  const retained = await read(at + 1799);
+  assert.deepEqual(retained.targets.map(({ status }) => status), ["UNKNOWN", "UP"]);
+  const expired = await read(at + 1801);
+  assert.deepEqual(expired.targets.map(({ key }) => key), [model.identity(player)]);
+  assert.equal(expired.agedOut, 1);
+  const later = await read(at + 2101);
+  assert.deepEqual(later.targets.map(({ key }) => key), [model.identity(player)]);
+  assert.equal(later.agedOut, 0);
+  assert.deepEqual(await observedInventory([{ metric: core, scrapes: [at] }])(at + 2101), { targets: [], agedOut: 0 });
+});
+
 test("long queries use bounded count/sum windows and keep display samples out of exact stats", async () => {
   const original = target(core);
   const calls = [];

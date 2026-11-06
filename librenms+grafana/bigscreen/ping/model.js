@@ -18,6 +18,7 @@
   const maxHistory = 7 * 86400;
   const maxRaw = 3600;
   const defaultStats = 300;
+  const inventorySeconds = 30 * 60;
   const maxCompared = 4;
   const pageSize = 12;
 
@@ -199,7 +200,7 @@
     });
   }
 
-  const ns = { jobs, minCoverage, minRttSamples, maxHistory, maxRaw, defaultStats, maxCompared, pageSize,
+  const ns = { jobs, minCoverage, minRttSamples, maxHistory, maxRaw, defaultStats, inventorySeconds, maxCompared, pageSize,
     policy, identity, number, lossStats, rttMs, snapshot, rawRows, rawStats, bucketRows };
   if (typeof module !== "undefined" && module.exports) module.exports = ns;
   else window.BSPingModel = ns;

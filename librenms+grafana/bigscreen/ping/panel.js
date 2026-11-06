@@ -34,6 +34,7 @@
     let active = false;
     let timer = null;
     let targets = [];
+    let agedOut = 0;
     let visible = [];
     let page = 0;
     let lastSuccess = null;
@@ -110,13 +111,21 @@
     }
 
     function renderSnapshot() {
-      const available = dataState === "ready" && targets.some((target) => target.status !== "UNKNOWN");
-      byId("Source").dataset.state = available ? "UP" : "UNKNOWN";
-      byId("Source").textContent = dataState === "loading" ? "正在读取" :
-        !available
-          ? "Monitoring Unavailable" : snapshotAt !== null ? "历史快照" : "实时监控";
-      byId("Counts").textContent = Object.entries(states).map(([key, label]) =>
-        `${label} ${targets.filter(({ status }) => status === key).length}`).join(" · ");
+      const counts = { UP: 0, DOWN: 0, DEGRADED: 0, UNKNOWN: 0 };
+      for (const { status } of targets) counts[status] += 1;
+      const available = dataState === "ready" && targets.length > counts.UNKNOWN;
+      const partial = counts.UNKNOWN > 0 || agedOut > 0;
+      const mode = snapshotAt === null ? "实时监控" : "历史快照";
+      const source = byId("Source");
+      source.dataset.state = !available ? "UNKNOWN" : partial ? "DEGRADED" : "UP";
+      source.textContent = dataState === "loading" ? "正在读取" :
+        !available ? "Monitoring Unavailable" : partial ? `${mode} · 部分不可用` : mode;
+      byId("Counts").textContent = Object.entries(states).map(([key, label]) => `${label} ${counts[key]}`).join(" · ");
+      const coverage = byId("Coverage");
+      const coverageText = agedOut
+        ? `${agedOut} 个目标已超出 ${model.inventorySeconds / 60} 分钟观察窗口并移出列表，消失原因未知。`
+        : `清单依据最近 ${model.inventorySeconds / 60} 分钟的抓取记录。消失的目标显示 UNKNOWN，超出窗口后移出列表。`;
+      if (coverage.textContent !== coverageText) coverage.textContent = coverageText;
       byId("Updated").textContent = `最后成功更新 ${lastSuccess === null ? "—" : charts.formatTime(lastSuccess)}`;
       list();
     }
@@ -151,13 +160,9 @@
       clearTimeout(timer);
       const at = snapshotAt ?? now();
       const applied = await run("summary", (signal) => data.summary(at, signal), (result) => {
-        if (!result.length) {
-          unavailable("监控查询无结果");
-          return;
-        }
-        dataState = "ready";
-        targets = result;
-        if (result.some((target) => target.sourceAt !== null)) lastSuccess = now();
+        ({ targets, agedOut } = result);
+        dataState = targets.length ? "ready" : "unavailable";
+        if (targets.some((target) => target.sourceAt !== null)) lastSuccess = now();
         renderSnapshot();
         refreshTrends();
         const deepTarget = targets.find((target) => target.key === routeTarget);
@@ -316,6 +321,7 @@
       trends = null;
       dataState = "loading";
       targets = [];
+      agedOut = 0;
       page = 0;
       lastSuccess = null;
       renderSnapshot();
