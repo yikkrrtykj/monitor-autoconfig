@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+USER_REFERENCE = "../docs/REFERENCE.md"
 
 
 def read(name: str) -> str:
@@ -252,7 +253,6 @@ def test_user_facing_default_password_is_exact_across_deployment_sources():
     librenms_setup = read("librenms-auto-config.sh")
     grafana_setup = read("grafana-setup.sh")
     pre_match = read("pre-match-check.sh")
-    readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
 
     for key in (
         "GRAFANA_PASSWORD",
@@ -269,8 +269,14 @@ def test_user_facing_default_password_is_exact_across_deployment_sources():
     assert "$password = getenv('LIBRENMS_ADMIN_PASSWORD') ?: 'global123!@#';" in librenms_setup
     assert 'GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-global123!@#}"' in grafana_setup
     assert 'GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-global123!@#}"' in pre_match
-    for product in ("Grafana", "LibreNMS", "赛事控制台"):
-        assert f"| {product} | `admin / {password}` |" in readme
+    for document in ("../README.md", USER_REFERENCE):
+        account_line = next(
+            (line for line in read(document).splitlines() if "默认密码" in line),
+            "",
+        )
+        for product in ("Grafana", "LibreNMS", "控制台"):
+            assert product in account_line, document
+        assert "`admin`" in account_line and f"`{password}`" in account_line, document
 
     # User-facing password convergence must not change internal MariaDB or SNMP credentials.
     assert "SNMP_COMMUNITY=global\n" in example
@@ -976,10 +982,10 @@ def test_pending_delete_is_deployment_gated_without_hiding_feishu_app_config():
     assert '"/retire/resolve"' in bridge
     assert "pending_interactive_notified" not in bridge
 
-    readme = read("../README.md")
-    assert "DEVICE_PENDING_DELETE_ENABLED=false" in readme
-    assert "DEVICE_PENDING_DELETE_ENABLED=true" in readme
-    assert "公司服务器升级前必须补上" in readme
+    reference = read(USER_REFERENCE)
+    assert "DEVICE_PENDING_DELETE_ENABLED=false" in reference
+    assert "DEVICE_PENDING_DELETE_ENABLED=true" in reference
+    assert "公司服务器升级前必须补上" in reference
 
 
 def test_manual_feishu_feature_flags_survive_config_merge(tmp_path):
@@ -1027,9 +1033,10 @@ def test_device_auto_delete_defaults_are_safe_and_bridge_scoped():
     assert "DEVICE_PENDING_DELETE_ENABLED and DEVICE_AUTO_DELETE_ENABLED" in read(
         "alertmanager-feishu-bridge.py"
     )
-    assert "DEVICE_AUTO_DELETE_DRY_RUN=true" in read("../README.md")
-    assert "DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY=true" in read("../README.md")
-    assert "DEVICE_AUTO_DELETE_ENABLED=true" in read("../README.md")
+    reference = read(USER_REFERENCE)
+    assert "DEVICE_AUTO_DELETE_DRY_RUN=true" in reference
+    assert "DEVICE_AUTO_DELETE_DRY_RUN_NOTIFY=true" in reference
+    assert "DEVICE_AUTO_DELETE_ENABLED=true" in reference
     assert "DELETE FROM devices" not in read("alertmanager-feishu-bridge.py")
 
 
@@ -2211,15 +2218,16 @@ def test_platform_diagnostics_remain_wired_but_normal_console_summary_is_simple(
 def test_abandoned_offline_bundle_workflow_is_not_shipped():
     client = read("bigscreen/api.js")
     config_editor = read("bigscreen/config/config-editor.js")
-    readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
 
     assert not (ROOT / "offline-package.sh").exists()
     assert not (ROOT / "install-offline.sh").exists()
     assert "fetchDeliveryManifest" not in client
-    assert "offline-package.sh" not in readme
-    assert "install-offline.sh" not in readme
-    assert "VM/OVA" in readme
-    assert "事故和部署清单" not in readme
+    for document in ("../README.md", "../docs/INSTALLATION.md", USER_REFERENCE):
+        content = read(document)
+        assert "offline-package.sh" not in content, document
+        assert "install-offline.sh" not in content, document
+        assert "事故和部署清单" not in content, document
+    assert "VM/OVA" in read(USER_REFERENCE)
     assert '/\\.zip$/i.test(file.name)' in config_editor
     assert 'text.slice(0, 2) === "PK"' in config_editor
     assert "不支持导入压缩包" in config_editor
