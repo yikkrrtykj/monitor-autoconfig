@@ -1,0 +1,114 @@
+.ping-workspace {
+  min-height: 0;
+  overflow: auto;
+  background: #0a1018;
+  color: #e8f1f8;
+  font-size: 14px;
+}
+
+.ping-workspace [hidden], .ping-workspace[hidden] { display: none; }
+.ping-workspace a { color: #87d7eb; }
+.ping-shell { max-width: 1560px; margin: auto; padding: clamp(12px, 2vw, 28px); }
+.ping-heading, .ping-detail-header, .ping-feed, .ping-list-footer, .ping-list-footer > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.ping-heading, .ping-detail-header, .ping-list-footer { justify-content: space-between; }
+.ping-heading { margin-bottom: 16px; }
+.ping-workspace h2, .ping-workspace h3, .ping-workspace h4 { margin: 0; line-height: 1.35; }
+.ping-workspace h2 { font-size: 28px; }
+.ping-workspace h3 { font-size: 22px; }
+.ping-workspace h4 { font-size: 14px; }
+.ping-workspace p { margin: 0; color: #a7b9c9; }
+.ping-workspace .ping-kicker { margin-bottom: 4px; color: #7fd3e5; font: 700 11px/1.5 ui-monospace, Consolas, monospace; letter-spacing: .13em; }
+.ping-feed time { color: #abbccc; font-variant-numeric: tabular-nums; }
+.ping-surface { padding: clamp(10px, 1.3vw, 20px); border: 1px solid #2b3b4c; border-radius: 12px; background: #111b27; }
+.ping-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 9px 14px; }
+.ping-toolbar label { display: grid; gap: 5px; min-width: 0; color: #b2c4d4; font-size: 12px; font-weight: 600; }
+.ping-toolbar .ping-search { flex: 1 1 210px; }
+.ping-workspace :where(button, select, input:not([type="checkbox"])) {
+  min-height: 35px;
+  max-width: 100%;
+  padding: 5px 9px;
+  border: 1px solid #3a5065;
+  border-radius: 5px;
+  background: #0c1520;
+  color: #eef6fa;
+  font: inherit;
+}
+.ping-workspace button { cursor: pointer; }
+.ping-workspace button:hover:not(:disabled) { border-color: #85dcf0; }
+.ping-workspace button:disabled { opacity: .48; cursor: default; }
+.ping-workspace :focus-visible { outline: 2px solid #9be8f5; outline-offset: 2px; }
+.ping-workspace .ping-custom { margin-top: 10px; }
+.ping-workspace .ping-check { display: inline-flex; align-items: center; gap: 5px; }
+.ping-workspace .ping-error { color: #ffb0b5; margin-top: 8px; }
+.ping-workspace .ping-error:empty, .ping-workspace .ping-empty:empty { display: none; }
+.ping-workspace .ping-counts { margin: 14px 0 9px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ping-workspace .ping-scroll-tip { display: none; }
+.ping-table-wrap { overflow-x: auto; }
+.ping-table { width: 100%; min-width: 670px; border-collapse: collapse; text-align: left; }
+.ping-table :is(td, th) { padding: 5px 9px; border-bottom: 1px solid #2a3949; vertical-align: middle; }
+.ping-table thead { background: #1b2938; color: #c9dbeb; white-space: nowrap; }
+.ping-table tbody tr:hover { background: #182735; }
+.ping-table td { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ping-table th[scope="row"] { min-width: 145px; width: 30%; font-weight: 500; overflow-wrap: anywhere; }
+.ping-table small { color: #a7b9c9; }
+.ping-table th[scope="row"] small { display: block; margin-top: 3px; }
+.ping-table .ping-target { min-height: 0; padding: 0; border: 0; background: transparent; color: #ade7f5; text-align: left; font-weight: 700; overflow-wrap: anywhere; }
+.ping-table button[data-action="compare"] { min-height: 26px; padding: 2px 8px; }
+.ping-badge { display: inline-block; border-radius: 4px; padding: 3px 7px; font-size: 12px; font-weight: 750; white-space: nowrap; }
+.ping-badge[data-state="UP"] { background: #173829; color: #9ae7bd; }
+.ping-badge[data-state="DOWN"] { background: #48232c; color: #ffc2c8; }
+.ping-badge[data-state="DEGRADED"] { background: #473821; color: #ffdc95; }
+.ping-badge[data-state="UNKNOWN"] { background: #273546; color: #d0ddeb; }
+.ping-sparkline { width: 92px; height: 22px; vertical-align: middle; }
+.ping-sparkline path { fill: none; stroke: #75d3e9; stroke-width: 1.7; }
+.ping-workspace .ping-empty { padding: 13px 2px; }
+.ping-list-footer { margin-top: 12px; color: #a7b9c9; font-size: 12px; }
+.ping-detail { margin-top: 16px; }
+.ping-detail p { margin: 7px 0; font-size: 13px; line-height: 1.55; }
+.ping-selection { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.ping-selection button { border-left: 3px solid var(--ping-series); overflow-wrap: anywhere; }
+.ping-chart { display: block; width: 100%; max-height: 275px; margin-bottom: 10px; }
+.ping-chart[data-chart-start] { cursor: crosshair; }
+.ping-chart text { fill: #afc1d2; font: 13px ui-monospace, Consolas, monospace; }
+.ping-gridline { stroke: #3b4b5e; }
+.ping-cursor { stroke: #e7f3f9; opacity: .75; stroke-dasharray: 3 4; }
+.ping-heat-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.ping-heat-legend span { padding: 1px 6px; border-radius: 3px; font-size: 11px; color: #10151a; }
+.ping-heat-row { display: grid; grid-template-columns: minmax(50px, 125px) minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 3px; }
+.ping-heat-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ping-series); }
+.ping-heat-track { display: flex; }
+.ping-heat-track .ping-heat-cell { flex-basis: 0; min-width: 0; min-height: 15px; padding: 0; border: 0; border-radius: 0; }
+.ping-heat-track .ping-heat-cell:hover { outline: 1px solid white; z-index: 1; }
+.ping-workspace .clear { background: #7bc4a2; }
+.ping-workspace .loss { background: #edc26e; }
+.ping-workspace .high { background: #ef8d9a; }
+.ping-workspace .unknown { background: #a9b7c9; }
+.ping-detail-toolbar { margin-top: 15px; padding-top: 12px; border-top: 1px solid #2b3b4c; }
+.ping-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 8px; }
+.ping-metrics-card { border: 1px solid #314456; border-top: 2px solid var(--ping-series); border-radius: 5px; padding: 10px; overflow-wrap: anywhere; }
+.ping-metrics-card dl { display: flex; flex-wrap: wrap; gap: 10px; margin: 9px 0; }
+.ping-metrics-card dt, .ping-metrics-card small { color: #a7b9c9; font-size: 11px; }
+.ping-metrics-card dd { margin: 3px 0 0; font-weight: 750; font-variant-numeric: tabular-nums; }
+.ping-distribution, .ping-events { margin-top: 14px; }
+.ping-events summary { cursor: pointer; margin-bottom: 8px; }
+.ping-events .ping-check { margin-bottom: 8px; }
+.ping-workspace .ping-policy { margin-top: 12px; font-size: 12px; line-height: 1.5; }
+
+@media (max-width: 720px) {
+  .screen.ping-mode { grid-template-rows: auto minmax(0, 1fr); }
+  .ping-mode .topbar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 4px; }
+  .ping-mode .brand { display: none; }
+  .ping-mode .headline { text-align: left; }
+  .ping-mode .headline h1 { font-size: 17px; }
+  .ping-mode .headline .subtitle { display: none; }
+  .ping-mode .clock { font-size: 10px; }
+  .ping-mode .clock strong { font-size: 17px; }
+  .ping-workspace .ping-scroll-tip { display: block; margin-bottom: 7px; font-size: 12px; }
+  .ping-chart text { font-size: 20px; }
+  .ping-heat-row { grid-template-columns: minmax(50px, 78px) minmax(0, 1fr); }
+}

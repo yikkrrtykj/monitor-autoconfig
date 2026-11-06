@@ -107,6 +107,24 @@
     return prometheusRangeFor(query, rangeWindow(step), nameGetter);
   }
 
+  async function prometheusSamples(query, window, signal) {
+    const ranged = Object.hasOwn(window, "step");
+    const params = new URLSearchParams({ query, ...window, timeout: "7s" });
+    const endpoint = ranged ? "query_range" : "query";
+    const url = `${prometheusBaseUrl()}/api/v1/${endpoint}?${params}`;
+    if (url.length > 7600) throw new Error("监控查询超出长度限制");
+    const response = await fetch(url, {
+      cache: "no-store", signal: AbortSignal.any([signal, AbortSignal.timeout(9000)])
+    });
+    if (!response.ok) throw new Error("监控数据查询失败");
+    const payload = await response.json();
+    const type = payload.data?.resultType;
+    if (payload.status !== "success" || payload.warnings?.length ||
+        !["matrix", "vector"].includes(type) || (ranged && type !== "matrix") ||
+        !Array.isArray(payload.data.result)) throw new Error("监控数据不可用");
+    return payload.data.result;
+  }
+
   // Incremental range cache: the first call fetches the whole 15-minute window;
   // subsequent calls re-fetch a short overlap at the live edge, then merge +
   // trim to the sliding window. Prometheus can fill/correct the most recent
@@ -895,6 +913,7 @@
   }
 
   const ns = {
+    prometheusSamples,
     prometheusBaseUrl,
     rangeWindow,
     fetchWithTimeout,

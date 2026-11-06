@@ -942,7 +942,7 @@
     tournamentPanel.start(page);
   }
 
-  function showEvidence() {
+  function showHistoryPage(page) {
     const screen = document.querySelector(".screen");
     infraController.stop();
     tournamentPanel.stop();
@@ -950,17 +950,26 @@
     stopControlRefresh();
     dhcpPanel.stop();
     stopTopologyRefresh();
-    screen.className = "screen evidence-mode";
+    screen.className = `screen ${page.id}-mode`;
     setVisible("homePanel", false);
     setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
-    setVisible("evidencePanel", true);
+    setVisible("evidencePanel", page.id === "evidence");
     setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
-    evidencePanel.start();
+    if (page.id === "ping") {
+      if (!pingPanel) {
+        const settings = window.BSPingModel.policy(config);
+        const data = window.BSPingData.createPingData({ query: window.BSApi.prometheusSamples, settings });
+        pingPanel = window.BSPingPanel.createPingPanel(document.getElementById("pingWorkspace"), data, settings);
+      }
+      pingPanel.start(new URLSearchParams(window.location.search));
+    } else {
+      evidencePanel.start();
+    }
   }
 
   function showWireless(page) {
@@ -1154,6 +1163,8 @@
     dhcpPanel.start();
   }
 
+  let pingPanel = null;
+
   function renderPage() {
     const page = pageFromPath();
     renderHeader(page);
@@ -1164,6 +1175,8 @@
     activeRoute = routeKey;
     if (page.id !== "evidence") evidencePanel.stop();
     if (page.id !== "incident") incidentPanel.stop();
+    if (page.id !== "ping") pingPanel?.stop();
+    setVisible("pingWorkspace", page.id === "ping");
     // SPA route changes otherwise preserve the long mobile home page's scroll
     // offset and can open a dashboard halfway down its content.
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -1173,8 +1186,8 @@
       showControl();
     } else if (page.id === "dhcp") {
       showDhcp();
-    } else if (page.id === "evidence") {
-      showEvidence();
+    } else if (page.id === "evidence" || page.id === "ping") {
+      showHistoryPage(page);
     } else if (page.id === "incident") {
       showIncident();
     } else if (page.id === "topology") {
