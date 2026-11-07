@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="./style.css?v=20261001d" />
     <link rel="stylesheet" href="./platform.css?v=20260908a" />
     <link rel="stylesheet" href="./ping/ping.css?v=20261107a" />
+    <link rel="stylesheet" href="./infra/overview.css?v=20261107a" />
   </head>
   <body>
     <main class="screen">
@@ -29,8 +30,42 @@
         </time>
       </header>
 
+      <section class="infra-overview" id="infraOverview" aria-labelledby="overviewTitle" hidden>
+        <header class="overview-heading">
+          <div><p class="overview-eyebrow">赛事监控 / NETWORK OPERATIONS</p><h2 id="overviewTitle">网络总览</h2></div>
+          <a href="/ping" class="overview-primary-link">打开 Ping 历史 ↗</a>
+        </header>
+        <div class="overview-summary" aria-label="采集摘要">
+          <div><span>基础设施 · ICMP 目标</span><strong data-overview="infra">—</strong></div>
+          <div><span>ISP 网关 · ICMP</span><strong data-overview="isp">—</strong></div>
+          <div><span>关键目标质量异常</span><strong data-overview="quality">—</strong></div>
+          <div><span>最后可信探测</span><strong data-overview="updated">—</strong></div>
+        </div>
+        <p class="overview-coverage" data-overview="coverage"></p>
+        <section class="overview-panel overview-bandwidth" aria-labelledby="overviewWanTitle">
+          <div class="overview-section-title"><h3 id="overviewWanTitle">网络流量 <small>Bandwidth</small></h3>
+            <span data-overview="wan-source"></span></div>
+          <div class="overview-wan-grid" data-overview="bandwidth"></div>
+          <details class="overview-vlan"><summary>业务 VLAN · 流量来源待核实</summary>
+            <p>预留最多 8 个重点业务网络。确认 VLAN 与可信计数接口的映射及计量范围后再接入。</p>
+          </details>
+        </section>
+        <div class="overview-lower">
+          <section class="overview-panel" aria-labelledby="overviewFaultTitle">
+            <div class="overview-section-title"><h3 id="overviewFaultTitle">设备故障 <small>Devices Down</small></h3>
+              <strong class="overview-health" data-overview="health" role="status"></strong></div>
+            <div data-overview="faults"></div>
+            <p class="overview-note">故障区为 ICMP 观察。AP 控制器在线状态见 <a href="/wireless">无线总览</a>。</p>
+          </section>
+          <section class="overview-panel" aria-labelledby="overviewGatewayTitle">
+            <div class="overview-section-title"><h3 id="overviewGatewayTitle">网关状态 <small>Gateway Status</small></h3>
+              <a href="/ping">完整列表 ↗</a></div>
+            <div data-overview="gateways"></div>
+            <p class="overview-note">ISP 网关状态仅表示探针到网关的可达性。</p>
+          </section>
+        </div>
+      </section>
       <section class="panel-grid" id="panelGrid" aria-label="监控面板">
-        <div class="network-read-status" id="infraNetworkStatus" role="status" hidden></div>
         <section class="panel custom-panel ping-panel" aria-labelledby="pingTitle">
           <h2 id="pingTitle">Ping</h2>
           <div class="gauge-subhead">网络设备</div>
@@ -394,6 +429,10 @@
     <script src="./ping/data.js?v=20261107b"></script>
     <script src="./ping/charts.js?v=20261107a"></script>
     <script src="./ping/panel.js?v=20261107b"></script>
+    <script src="./infra/overview-model.js?v=20261107c"></script>
+    <script src="./infra/overview-data.js?v=20261107a"></script>
+    <script src="./infra/overview-controller.js?v=20261107a"></script>
+    <script src="./infra/overview-view.js?v=20261107b"></script>
     <script src="./network-read.js?v=20260929a"></script>
     <script src="./players.js?v=20260802a"></script>
     <script src="./tournament/tournament-panel.js?v=20260828a"></script>

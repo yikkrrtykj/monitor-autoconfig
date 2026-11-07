@@ -54,7 +54,7 @@
   const {
     mergeNetworkDevices, mergeIspInventory, mergeLegacyIspInventory, topologyNetworkTargets,
     createTopologyTargetCache, createTopologyLifecycle, topologyReadStatus, renderNetworkIssue,
-    readApiOverview, readApiIspTraffic, apiControlTargets,
+    readApiOverview, apiControlTargets,
     createNetworkSession, loadNetworkDomains, isAuthError
   } = window.BSNetworkRead;
   const {
@@ -86,7 +86,6 @@
   let lastControlReport = null;
   const controlRefreshLifecycle = createControlRefreshLifecycle();
   const networkSession = createNetworkSession(fetchPlatformAuthStatus);
-  let infraIspRequestSeq = 0;
   const DATA_STALE_AFTER_MS = 20000;
   const CONTROL_LAYOUT_STORAGE_KEY = "bigscreen.controlLayout.v1";
   function shouldRender(key, signature) {
@@ -108,24 +107,6 @@
     const element = document.getElementById(id);
     if (!element) return;
     renderNetworkIssue(element, status && status.domains);
-  }
-
-  async function fetchInfraIspTraffic() {
-    const seq = ++infraIspRequestSeq;
-    if (!await networkSession.canRead()) {
-      const traffic = await fetchIspTraffic();
-      if (seq === infraIspRequestSeq) renderIspNetworkStatus("unauthenticated");
-      return traffic;
-    }
-    const { domain, traffic } = await readApiIspTraffic(fetchNetworkIsp, fetchIspTraffic, () => networkSession.expired());
-    if (seq === infraIspRequestSeq) renderIspNetworkStatus(domain.state);
-    return traffic;
-  }
-
-  function renderIspNetworkStatus(state) {
-    const element = document.getElementById("infraNetworkStatus");
-    if (!element || activePageId !== "infra") return;
-    renderNetworkIssue(element, { isp: { state } });
   }
 
   async function readNetworkOverview() {
@@ -217,7 +198,7 @@
     renameListWithInfraMap,
     partitionInfraPingItems,
     fetchTopologyTargets,
-    fetchIspTraffic: () => activePageId === "infra" ? fetchInfraIspTraffic() : fetchIspTraffic(),
+    fetchIspTraffic,
     buildInfrastructurePingPresentation,
     renderPingChart,
     renderLossHeatmap,
@@ -901,15 +882,15 @@
 
   function showInfra() {
     const screen = document.querySelector(".screen");
+    infraController.stop();
     tournamentPanel.stop();
     wirelessPanel.stop();
     stopControlRefresh();
     dhcpPanel.stop();
     stopTopologyRefresh();
     screen.className = "screen infra-mode";
-    infraController.enterInfraMode();
     setVisible("homePanel", false);
-    setVisible("panelGrid", true);
+    setVisible("panelGrid", false);
     setVisible("tournamentPanel", false);
     setVisible("evidencePanel", false);
     setVisible("wirelessPanel", false);
@@ -917,7 +898,21 @@
     setVisible("dhcpPanel", false);
     setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
-    infraController.start();
+    if (!overviewPanel) {
+      const query = window.BSApi.prometheusSamples;
+      const settings = window.BSPingModel.policy(config);
+      const pingData = window.BSPingData.createPingData({ query, settings, inventoryMaxAge: 30 });
+      const data = window.BSOverviewData.createOverviewData({
+        pingData,
+        query: (expr, range, signal) => query(expr, range, signal, { ifMibCounterNames: true }),
+        autoDiscovery: ["1", "true", "yes", "on"].includes(String(config.ispAutoDiscovery || "").trim().toLowerCase()),
+        configuredNames: window.BSApi.getConfiguredIspNames(),
+        bandwidthConfig: config.ispMaxBandwidthMbps
+      });
+      const render = window.BSOverviewView.createOverviewView(document.getElementById("infraOverview"));
+      overviewPanel = window.BSOverviewController.createOverviewController({ data, render });
+    }
+    overviewPanel.start();
   }
 
   function showTournament(page) {
@@ -1164,6 +1159,7 @@
   }
 
   let pingPanel = null;
+  let overviewPanel = null;
 
   function renderPage() {
     const page = pageFromPath();
@@ -1176,7 +1172,9 @@
     if (page.id !== "evidence") evidencePanel.stop();
     if (page.id !== "incident") incidentPanel.stop();
     if (page.id !== "ping") pingPanel?.stop();
+    if (page.id !== "infra") overviewPanel?.stop();
     setVisible("pingWorkspace", page.id === "ping");
+    setVisible("infraOverview", page.id === "infra");
     // SPA route changes otherwise preserve the long mobile home page's scroll
     // offset and can open a dashboard halfway down its content.
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -1252,6 +1250,10 @@
   tick();
   window.setInterval(tick, 1000);
   window.addEventListener("popstate", renderPage);
+  window.addEventListener("pagehide", () => overviewPanel?.stop());
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted && activePageId === "infra") overviewPanel?.start();
+  });
   // Charts are sized from the container, so a resize must force a full repaint
   // even when the underlying data is unchanged. Repaint right after the drag
   // settles instead of waiting for the next 5s tick -- the range cache makes
