@@ -41,7 +41,7 @@ http://服务器IP:8088/control
 
 WAN 从现有 `isp_targets.json` 和 `isp-discovery-state.json` 读取已发布接口身份，发现状态超过 300 秒或异常时提示不可用；安全浏览器环境另核对发布文件 SHA-256。手工 ISP 名称通过现有 IF-MIB 唯一绑定到接口。流量按管理地址与 ifIndex 精确对应，每 15 秒读取 15 分钟历史，入站/出站沿用 WAN 接口收发方向；抓取失败、样本超过 35 秒、接口歧义或计数重置显示 N/A。只有名称唯一且明确写入 `BIGSCREEN_ISP_MAX_BANDWIDTH` 的逐线路容量显示利用率，缺省全局 1000 Mbps 继续用于既有赛事图表。当前 VLAN 区域显示来源待核实；SVI 计数和 trunk 汇总需要单独确认计量范围。
 
-每张 WAN 卡片分别显示流量与探测关联。探测依据已发布的 gateway 地址，或目标标签中明确的 `metric_target + metric_ifindex` 接口绑定。手动 `ISP_PING` 可按相同地址规则匹配已发布的 gateway。只有同名信息时，关联状态为待核实。WAN 未提供 gateway、未匹配探测或关联存在歧义时，页面提示覆盖不足并保留有效流量。已确认的 DOWN/DEGRADED 与数据域不可用同时发生时，状态标题并列显示网络异常和监控可用性。
+每张 WAN 卡片分别显示流量与探测关联。探测依据已发布的 gateway 地址，或目标标签中明确的 `metric_target + metric_ifindex` 接口绑定。手动 `ISP_PING` 可按相同地址规则匹配已发布的 gateway；若多个不同 WAN 接口共用该地址，未绑定接口的同一探针不能重复作为覆盖证据，各卡片显示关联歧义，需各自唯一的 canonical 接口绑定探针才能确认覆盖。只有同名信息时，关联状态为待核实。WAN 未提供 gateway、未匹配探测或关联存在歧义时，页面提示覆盖不足并保留有效流量。已确认的 DOWN/DEGRADED 与数据域不可用同时发生时，状态标题并列显示网络异常和监控可用性。
 
 拓扑的“AP: 显示 / 隐藏”默认隐藏，手动选择仅在当前浏览器会话中保存；刷新和页面切换不会重新打开。AP 身份与运行状态沿用 unpoller，LibreNMS FDB 只提供历史候选，只有当前 exact MAC/VLAN SNMP GET 唯一确认后才显示接入交换机叶节点，并显示“AP 已定位数/总数”。缺失、歧义、过期证据不连线。`TOPOLOGY_AP_FDB_CANDIDATE_MAX_AGE_SECONDS` 默认 28800 秒（0–28800），每 AP `TOPOLOGY_AP_FDB_CANDIDATE_CAP` 默认上限 8（0–8；超限整台不定位）。内部 LibreNMS `vlan_id` 按设备 FK 映射为真实 VLAN 后才验证；同交换机移位须重新检查端口，跨交换机移位等待新候选。`TOPOLOGY_AP_FDB_MAX_AGE_SECONDS` 默认 7200 秒（非负整数），用于当前 exact 验证证据在输出和浏览器中的有效期，独立于服务器 FDB 的 900 秒窗口；`ap-attachments.json` 每轮覆盖，无旧所有权和 24 小时保留，AP 验证仅使用有界 GET，计入独立 `ap_snmp_gets` / `ap_snmp_walks`（后者必须为 0）；不新增 FDB walk 或改变既有 SNMP/发现频率。
 

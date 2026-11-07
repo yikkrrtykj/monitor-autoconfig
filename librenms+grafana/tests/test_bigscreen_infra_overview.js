@@ -117,8 +117,8 @@ test("each WAN needs its own verified probe association, including a WAN without
   const wrongInterface = { ...canonical, metric_ifindex: "5" };
   assert.equal(overview.overviewState(status(targets(core, isp, wrongInterface), cards), now).health, "partial");
 
-  const restored = cards.map((wan) => ({ ...wan, gateway: "192.0.2.10" }));
-  assert.equal(overview.overviewState(status(current, restored), now).health, "healthy");
+  const restored = cards.map((wan, index) => ({ ...wan, gateway: index ? "192.0.2.100" : "192.0.2.10" }));
+  assert.equal(overview.overviewState(status(targets(core, isp, unboundManual), restored), now).health, "healthy");
   const unmatched = cards.map((wan) => ({ ...wan, gateway: "192.0.2.200" }));
   const uncovered = overview.overviewState(status(current, unmatched), now);
   assert.equal(uncovered.uncovered, 2);
@@ -131,6 +131,56 @@ test("each WAN needs its own verified probe association, including a WAN without
   const wrongBinding = overview.overviewState(status(targets(core, conflictingProbe)), now);
   assert.equal(wrongBinding.wans[0].probeCoverage.state, "missing");
   assert.equal(wrongBinding.total.DOWN, 0);
+});
+
+const pairedWanCards = (secondGateway = "192.0.2.10") => overview.wanCards(overview.inventoryRows([
+  inventoryItem("WAN A", "3", { gateway: "192.0.2.10" }),
+  inventoryItem("WAN B", "4", { gateway: secondGateway })
+]), [...source(), ...interfaceFields("3"), ...interfaceFields("4")], now, 15, "");
+
+test("one address-only probe cannot cover different WAN interfaces sharing a gateway", () => {
+  const cards = pairedWanCards();
+  const state = overview.overviewState(status(targets(core, isp), cards), now);
+  assert.equal(state.health, "partial");
+  assert.equal(state.availability, "partial");
+  assert.equal(state.ambiguous, 2);
+  assert.deepEqual(state.wans.map((wan) => wan.probeCoverage.state), ["ambiguous", "ambiguous"]);
+  assert.deepEqual(state.wans.map((wan) => [wan.in.bps, wan.out.bps]), [[12e6, 3e6], [12e6, 3e6]]);
+  assert.equal(state.total.DOWN, 0);
+  assert.deepEqual(state.faults, []);
+});
+
+test("distinct canonical probes cover WANs sharing a gateway with their exact interface identities", () => {
+  const canonical = ["3", "4"].map((metric_ifindex) => ({
+    ...isp, metric_target: "192.0.2.1", metric_ifindex
+  }));
+  const state = overview.overviewState(status(targets(core, ...canonical), pairedWanCards()), now);
+  assert.equal(state.health, "healthy");
+  assert.equal(state.ambiguous, 0);
+  assert.deepEqual(state.wans.map((wan) => wan.probeCoverage.target.key), canonical.map(ping.identity));
+  assert.deepEqual(state.wans.map((wan) => wan.probeCoverage.state), ["matched", "matched"]);
+});
+
+test("unique address-only probes still cover WANs with different published gateways", () => {
+  const other = { ...isp, instance: "WAN B", target_ip: "192.0.2.11" };
+  const state = overview.overviewState(status(targets(core, isp, other), pairedWanCards(other.target_ip)), now);
+  assert.equal(state.health, "healthy");
+  assert.deepEqual(state.wans.map((wan) => wan.probeCoverage.target.key), [isp, other].map(ping.identity));
+});
+
+test("shared gateway ambiguity clears after independent probes arrive without changing WAN traffic", () => {
+  const cards = pairedWanCards();
+  const ambiguous = overview.overviewState(status(targets(core, isp), cards), now);
+  const canonical = ["3", "4"].map((metric_ifindex) => ({
+    ...isp, metric_target: "192.0.2.1", metric_ifindex
+  }));
+  const recovered = overview.overviewState(status(targets(core, ...canonical), cards), now);
+  assert.equal(ambiguous.health, "partial");
+  assert.equal(recovered.health, "healthy");
+  assert.equal(recovered.total.DOWN, 0);
+  assert.equal(recovered.ambiguous, 0);
+  assert.deepEqual(recovered.wans.map((wan) => [wan.in.bps, wan.out.bps]), ambiguous.wans.map((wan) => [wan.in.bps, wan.out.bps]));
+  assert.deepEqual(ambiguous.wans.map((wan) => wan.probeCoverage.state), ["ambiguous", "ambiguous"]);
 });
 
 test("confirmed faults remain visible alongside an unavailable data domain", () => {

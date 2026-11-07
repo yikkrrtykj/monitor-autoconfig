@@ -137,7 +137,7 @@
     return { ...card, in: direction(card.in), out: direction(card.out) };
   }
 
-  function wanProbeCoverage(wan, gateways) {
+  function wanProbeCoverage(wan, gateways, wans) {
     const matches = gateways.filter((target) => {
       const { metric } = target;
       const declaredIdentity = Boolean(metric.metric_target || metric.metric_ifindex);
@@ -148,7 +148,16 @@
       return (wan.gateway ? target.ip === wan.gateway : sameInterface) &&
         (!declaredIdentity || sameInterface);
     });
-    if (matches.length === 1) return { state: "matched", target: matches[0] };
+    if (matches.length === 1) {
+      const [target] = matches;
+      if (!target.metric.metric_target && !target.metric.metric_ifindex) {
+        // An address-only probe cannot prove which WAN interface owns its route.
+        const owners = new Set(wans.filter((candidate) => candidate.gateway === target.ip)
+          .map(({ key }) => key).filter(Boolean));
+        if (owners.size > 1) return { state: "ambiguous" };
+      }
+      return { state: "matched", target };
+    }
     if (matches.length > 1) return { state: "ambiguous" };
     return { state: wan.gateway ? "missing" : "unconfigured" };
   }
@@ -158,7 +167,7 @@
     const infra = targets.filter((target) => target.category === "lan" || target.category === "server");
     const gateways = targets.filter((target) => target.category === "isp");
     const wans = (wanState.data || []).map((wan) => ({
-      ...freshWan(wan, wanState.state === "ready", at), probeCoverage: wanProbeCoverage(wan, gateways)
+      ...freshWan(wan, wanState.state === "ready", at), probeCoverage: wanProbeCoverage(wan, gateways, wanState.data)
     }));
     const critical = infra.concat(gateways);
     const infraCounts = countStates(infra);
