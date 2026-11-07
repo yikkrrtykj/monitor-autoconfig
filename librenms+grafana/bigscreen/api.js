@@ -107,7 +107,7 @@
     return prometheusRangeFor(query, rangeWindow(step), nameGetter);
   }
 
-  async function prometheusSamples(query, window, signal) {
+  async function prometheusSamples(query, window, signal, { ifMibCounterNames = false } = {}) {
     const ranged = Object.hasOwn(window, "step");
     const params = new URLSearchParams({ query, ...window, timeout: "7s" });
     const endpoint = ranged ? "query_range" : "query";
@@ -119,7 +119,11 @@
     if (!response.ok) throw new Error("监控数据查询失败");
     const payload = await response.json();
     const type = payload.data?.resultType;
-    if (payload.status !== "success" || payload.warnings?.length ||
+    const warnings = payload.warnings || [];
+    const counterNameInfo = /^PromQL info: metric might not be a counter, name does not end in _total\/_sum\/_count\/_bucket: "(?:ifHCInOctets|ifHCOutOctets)" \(\d+:\d+\)$/;
+    const unsafeWarnings = !Array.isArray(warnings) || warnings.some((warning) =>
+      !ifMibCounterNames || typeof warning !== "string" || !counterNameInfo.test(warning));
+    if (payload.status !== "success" || unsafeWarnings ||
         !["matrix", "vector"].includes(type) || (ranged && type !== "matrix") ||
         !Array.isArray(payload.data.result)) throw new Error("监控数据不可用");
     return payload.data.result;

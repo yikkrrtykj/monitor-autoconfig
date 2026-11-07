@@ -1329,7 +1329,7 @@ def test_infra_controller_owns_refresh_rendering_and_isp_lifecycle():
 
     assert "const { createInfraController } = window.BSInfraController;" in app
     assert "const infraController = createInfraController({" in app
-    assert "infraController.enterInfraMode();" in app
+    assert "overviewPanel.start();" in app
     assert "infraController.enterTournamentMode();" in app
     assert "infraController.start();" in app
     assert "infraController.stop();" in app

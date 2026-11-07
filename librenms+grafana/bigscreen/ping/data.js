@@ -47,31 +47,61 @@
     ];
   }
 
-  function createPingData({ query, settings }) {
+  function createPingData({ query, settings, inventoryMaxAge = 0 }) {
     const all = matcher("job", allJobs);
     const { inventorySeconds } = model;
     // Keep the preceding five minutes separate so an expiring target still
     // leaves a coverage notice, including on reload. Neither window proves intent.
-    const summaryQuery = [
+    const inventoryFields = [
       tagged("target", `last_over_time(up{${all}}[${inventorySeconds}s])`),
-      tagged("aged_out", `last_over_time(up{${all}}[300s] offset ${inventorySeconds}s)`),
+      tagged("aged_out", `last_over_time(up{${all}}[300s] offset ${inventorySeconds}s)`)
+    ];
+    const liveFields = [
       ...currentFields(all),
       ...lossFields(matcher("job", fastJobs), 60),
       ...lossFields(matcher("job", slowJobs), 300)
-    ].join(" or ");
+    ];
+    const liveQuery = liveFields.join(" or ");
+    const summaryQuery = [...inventoryFields, ...liveFields].join(" or ");
+    let inventory = null;
 
     async function summary(at, signal) {
-      const result = await query(summaryQuery, { time: at }, signal);
+      const cached = inventory && at >= inventory.at && at - inventory.at < inventoryMaxAge ? inventory : null;
+      const result = await query(cached ? liveQuery : summaryQuery, { time: at }, signal);
       if (result.length > 10 * 3000) throw new Error("监控目标超出列表上限");
-      const targets = model.snapshot(result, at, settings);
+      // The overview can reuse membership briefly, but always classifies
+      // with new measurements and admits newly observed identities at once.
+      const inventoryRows = cached?.rows || result.filter(({ metric }) =>
+        metric.ping_field === "target" || metric.ping_field === "aged_out");
+      const snapshotRows = cached ? [...inventoryRows, ...result] : result;
+      const addedTargets = [];
+      if (cached) {
+        const known = new Set(inventoryRows.filter(({ metric }) => metric.ping_field === "target")
+          .map(({ metric }) => model.identity(metric)));
+        for (const { metric, value } of result) {
+          if (metric.ping_field !== "source") continue;
+          const key = model.identity(metric);
+          if (!known.has(key)) {
+            const target = { metric: { ...metric, ping_field: "target" }, value };
+            known.add(key);
+            addedTargets.push(target);
+            snapshotRows.push(target);
+          }
+        }
+      }
+      const targets = model.snapshot(snapshotRows, at, settings);
       const keys = new Set(targets.map(({ key }) => key));
       const agedOut = new Set();
-      for (const { metric } of result) {
+      for (const { metric } of inventoryRows) {
         if (metric.ping_field !== "aged_out") continue;
         const key = model.identity(metric);
         if (!keys.has(key)) agedOut.add(key);
       }
       if (targets.length + agedOut.size > 3000) throw new Error("监控目标超出列表上限");
+      if (inventoryMaxAge > 0 && !cached && !signal?.aborted) inventory = { at, rows: inventoryRows };
+      if (cached && addedTargets.length && !signal?.aborted) inventory = {
+        at: cached.at, rows: [...inventoryRows, ...addedTargets]
+      };
       return { targets, agedOut: agedOut.size };
     }
 
