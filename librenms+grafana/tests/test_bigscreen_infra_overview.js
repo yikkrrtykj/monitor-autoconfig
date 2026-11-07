@@ -35,7 +35,7 @@ const interfaceFields = (index, changes = {}) => Object.entries({
   in: 12e6, out: 3e6, in_at: now - 1, out_at: now - 1, in_resets: 0, out_resets: 0, speed: 100,
   ...changes
 }).map(([name, value]) => field(name, value, index));
-const validCards = () => overview.wanCards(overview.inventoryRows([inventoryItem("WAN A", "3")]),
+const validCards = () => overview.wanCards(overview.inventoryRows([inventoryItem("WAN A", "3", { gateway: "192.0.2.10" })]),
   [...source(), ...interfaceFields("3")], now, 15, "WAN A:100/50");
 const status = (points, cards = validCards()) => ({
   pingState: { state: "ready", data: { targets: points, agedOut: 0 } },
@@ -86,6 +86,71 @@ test("true DOWN, quality loss and missing scrape remain separate; same IP links 
     assert.equal(new URL(overview.pingHref(target), "http://localhost").searchParams.get("target"), ping.identity(target.metric));
   }
   assert.notEqual(overview.pingHref(missing.gatewayRows[0]), overview.pingHref(missing.gatewayRows[1]));
+});
+
+test("each WAN needs its own verified probe association, including a WAN without a published gateway", () => {
+  const rows = overview.inventoryRows([
+    inventoryItem("WAN A", "3", { gateway: "192.0.2.10" }), inventoryItem("WAN B", "4")
+  ]);
+  const cards = overview.wanCards(rows, [...source(), ...interfaceFields("3"), ...interfaceFields("4")], now, 15, "");
+  const current = targets(core, isp);
+  const mixed = overview.overviewState(status(current, cards), now);
+  assert.equal(mixed.health, "partial");
+  assert.deepEqual(mixed.wans.map((wan) => wan.probeCoverage.state), ["matched", "unconfigured"]);
+  assert.equal(mixed.unconfigured, 1);
+  assert.equal(mixed.total.DOWN, 0);
+  assert.deepEqual(mixed.wans.map((wan) => [wan.in.bps, wan.out.bps]), [[12e6, 3e6], [12e6, 3e6]]);
+
+  const noGateways = cards.map((wan) => ({ ...wan, gateway: "" }));
+  const missing = overview.overviewState(status(current, noGateways), now);
+  assert.equal(missing.health, "partial");
+  assert.equal(missing.unconfigured, 2);
+  const unboundManual = { ...isp, instance: "WAN B", target_ip: "192.0.2.100" };
+  const namedOnly = overview.overviewState(status(targets(core, isp, unboundManual), noGateways), now);
+  assert.equal(namedOnly.unconfigured, 2);
+  assert.equal(namedOnly.total.DOWN, 0);
+
+  const canonical = { ...unboundManual, metric_target: "192.0.2.1", metric_ifindex: "4" };
+  const bound = overview.overviewState(status(targets(core, isp, canonical), cards), now);
+  assert.equal(bound.health, "healthy");
+  assert.equal(bound.wans[1].probeCoverage.target.key, ping.identity(canonical));
+  const wrongInterface = { ...canonical, metric_ifindex: "5" };
+  assert.equal(overview.overviewState(status(targets(core, isp, wrongInterface), cards), now).health, "partial");
+
+  const restored = cards.map((wan) => ({ ...wan, gateway: "192.0.2.10" }));
+  assert.equal(overview.overviewState(status(current, restored), now).health, "healthy");
+  const unmatched = cards.map((wan) => ({ ...wan, gateway: "192.0.2.200" }));
+  const uncovered = overview.overviewState(status(current, unmatched), now);
+  assert.equal(uncovered.uncovered, 2);
+  assert.equal(uncovered.total.DOWN, 0);
+  const duplicateProbe = { ...isp, instance: "Manual ISP", display_name: "WAN A" };
+  const ambiguous = overview.overviewState(status(targets(core, isp, duplicateProbe)), now);
+  assert.equal(ambiguous.health, "partial");
+  assert.equal(ambiguous.wans[0].probeCoverage.state, "ambiguous");
+  const conflictingProbe = { ...isp, metric_target: "192.0.2.1", metric_ifindex: "99" };
+  const wrongBinding = overview.overviewState(status(targets(core, conflictingProbe)), now);
+  assert.equal(wrongBinding.wans[0].probeCoverage.state, "missing");
+  assert.equal(wrongBinding.total.DOWN, 0);
+});
+
+test("confirmed faults remain visible alongside an unavailable data domain", () => {
+  for (const changes of [{ probe: 0 }, { ok: 50 }]) {
+    const points = ping.snapshot([...vector(core, { ...healthy, ...changes }), ...vector(isp, healthy)], now, ping.policy());
+    const current = status(points);
+    current.wanState.state = "error";
+    const combined = overview.overviewState(current, now);
+    assert.equal(combined.health, "fault");
+    assert.equal(combined.availability, "partial");
+    assert.equal(combined.faults[0].status, changes.probe === 0 ? "DOWN" : "DEGRADED");
+    assert.equal(combined.total.UNKNOWN, 0);
+  }
+  const current = status(targets(core, isp));
+  current.wanState.state = "error";
+  assert.equal(overview.overviewState(current, now).health, "partial");
+  current.pingState.state = "error";
+  const unavailable = overview.overviewState(current, now);
+  assert.equal(unavailable.health, "unavailable");
+  assert.equal(unavailable.total.DOWN, 0);
 });
 
 test("WAN direction and named capacity are exact, and name or identity ambiguity cannot guess utilization", () => {

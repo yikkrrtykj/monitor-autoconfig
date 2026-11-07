@@ -41,6 +41,8 @@ http://服务器IP:8088/control
 
 WAN 从现有 `isp_targets.json` 和 `isp-discovery-state.json` 读取已发布接口身份，发现状态超过 300 秒或异常时提示不可用；安全浏览器环境另核对发布文件 SHA-256。手工 ISP 名称通过现有 IF-MIB 唯一绑定到接口。流量按管理地址与 ifIndex 精确对应，每 15 秒读取 15 分钟历史，入站/出站沿用 WAN 接口收发方向；抓取失败、样本超过 35 秒、接口歧义或计数重置显示 N/A。只有名称唯一且明确写入 `BIGSCREEN_ISP_MAX_BANDWIDTH` 的逐线路容量显示利用率，缺省全局 1000 Mbps 继续用于既有赛事图表。当前 VLAN 区域显示来源待核实；SVI 计数和 trunk 汇总需要单独确认计量范围。
 
+每张 WAN 卡片分别显示流量与探测关联。探测依据已发布的 gateway 地址，或目标标签中明确的 `metric_target + metric_ifindex` 接口绑定。手动 `ISP_PING` 可按相同地址规则匹配已发布的 gateway。只有同名信息时，关联状态为待核实。WAN 未提供 gateway、未匹配探测或关联存在歧义时，页面提示覆盖不足并保留有效流量。已确认的 DOWN/DEGRADED 与数据域不可用同时发生时，状态标题并列显示网络异常和监控可用性。
+
 拓扑的“AP: 显示 / 隐藏”默认隐藏，手动选择仅在当前浏览器会话中保存；刷新和页面切换不会重新打开。AP 身份与运行状态沿用 unpoller，LibreNMS FDB 只提供历史候选，只有当前 exact MAC/VLAN SNMP GET 唯一确认后才显示接入交换机叶节点，并显示“AP 已定位数/总数”。缺失、歧义、过期证据不连线。`TOPOLOGY_AP_FDB_CANDIDATE_MAX_AGE_SECONDS` 默认 28800 秒（0–28800），每 AP `TOPOLOGY_AP_FDB_CANDIDATE_CAP` 默认上限 8（0–8；超限整台不定位）。内部 LibreNMS `vlan_id` 按设备 FK 映射为真实 VLAN 后才验证；同交换机移位须重新检查端口，跨交换机移位等待新候选。`TOPOLOGY_AP_FDB_MAX_AGE_SECONDS` 默认 7200 秒（非负整数），用于当前 exact 验证证据在输出和浏览器中的有效期，独立于服务器 FDB 的 900 秒窗口；`ap-attachments.json` 每轮覆盖，无旧所有权和 24 小时保留，AP 验证仅使用有界 GET，计入独立 `ap_snmp_gets` / `ap_snmp_walks`（后者必须为 0）；不新增 FDB walk 或改变既有 SNMP/发现频率。
 
 AP 使用 52 px 圆形叶节点，按已验证父交换机分组并使用避开其他节点的直角分支。上联端口显示在圆形上方；仅名称显示在下方，RTT、真实 VLAN、型号和客户端数保留在 Inspector；AP Inspector 仅展示 Hostname、管理 IP、型号、状态、延迟、VLAN、上联端口和客户端，不展示泛用上联/无线电/端口/连接摘要。单 AP 在父交换机下方居中，安全通道内使用直线，无总线；有真实障碍时使用最短安全直角路线，无安全路线则不绘制。AP 开关固定有线图的坐标、路线、屏幕缩放和位置，仅扩展可滚动空间。独立可视化 ICMP job `infra-ap-ping` 每 5 秒通过现有 blackbox ICMP 模块读取 RTT：collector 将同一轮当前唯一 UniFi 管理 IP 原子写入 `ap-ping-targets.json`（最多 512 个，查询失败清空，不保留旧目标）；Prometheus file_sd 每 60 秒读取。前端按精确 `target_ip` 关联成功的 RTT，缺失/重复/失败保持无延迟，不覆盖 UniFi 在线状态。该 job 不进入 `DEVICE_DOWN_JOBS`，不改变 AP 告警，不增加 SNMP。

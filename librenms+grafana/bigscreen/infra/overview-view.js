@@ -59,12 +59,18 @@
     const identity = card.instance && card.index ? `${card.instance} · ifIndex ${card.index}` : "接口待核实";
     const capacity = card.in.capacity !== null || card.out.capacity !== null ? "配置线路容量" :
       card.ambiguousName ? "同名接口 · 容量待核实" : "容量待核实";
+    const probe = card.probeCoverage;
+    const probeLabels = { missing: "网关未匹配探测", unconfigured: "未提供网关 · 探测关联待核实", ambiguous: "探测关联有歧义" };
+    const probeText = probe.state === "matched"
+      ? `<a href="${pingHref(probe.target)}">探测已关联 · ${probe.target.status}</a>`
+      : probeLabels[probe.state];
     return `<article class="overview-wan" data-wan-key="${esc(card.key || "")}">
       <h3 title="${esc(identity)}">${esc(card.name)}</h3>
       <p class="overview-wan-id">${esc(identity)}</p>
       <div class="overview-rates">${direction(card.in, "入站 ↓", "in")}${direction(card.out, "出站 ↑", "out")}</div>
       ${sparkline(card)}
       <p class="overview-wan-note${warning ? " overview-warning" : ""}">${esc(warning || capacity)}</p>
+      <p class="overview-wan-note${probe.state !== "matched" ? " overview-warning" : ""}" data-probe-coverage="${probe.state}">${probeText}</p>
     </article>`;
   }
 
@@ -114,7 +120,10 @@
     return function render(state, meta) {
       const health = select("health");
       health.dataset.health = state.health;
-      health.textContent = meta.pingState === "loading" ? "正在读取监控" : healthLabels[state.health];
+      health.dataset.availability = state.availability;
+      const healthText = state.health === "fault" && state.availability !== "ready"
+        ? `${healthLabels.fault} · ${healthLabels[state.availability]}` : healthLabels[state.health];
+      health.textContent = meta.pingState === "loading" ? "正在读取监控" : healthText;
       const infra = state.infraCounts;
       const isp = state.ispCounts;
       html("infra", `<b>${infra.UP + infra.DEGRADED} 在线</b> · <b>${infra.DOWN} 离线</b> · <b>${infra.UNKNOWN} 未知</b>`);
@@ -125,6 +134,8 @@
         "目标清单采用近 30 分钟抓取记录",
         state.agedOut ? `${state.agedOut} 个目标已超出观察窗口` : "",
         state.uncovered ? `${state.uncovered} 个 WAN 网关缺少探测覆盖` : "",
+        state.unconfigured ? `${state.unconfigured} 个 WAN 未提供网关，探测关联待核实` : "",
+        state.ambiguous ? `${state.ambiguous} 个 WAN 探测关联有歧义` : "",
         state.missingGroups ? "Core 或 ISP 网关覆盖不足" : "",
         state.incomplete ? "部分关键目标 RTT 或 Loss 样本不足" : "",
         state.statsUnavailable ? "STDDEV 查询不可用" : ""

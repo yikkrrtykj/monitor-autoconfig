@@ -137,28 +137,47 @@
     return { ...card, in: direction(card.in), out: direction(card.out) };
   }
 
+  function wanProbeCoverage(wan, gateways) {
+    const matches = gateways.filter((target) => {
+      const { metric } = target;
+      const declaredIdentity = Boolean(metric.metric_target || metric.metric_ifindex);
+      const sameInterface = Boolean(wan.key) &&
+        metric.metric_target === wan.instance && metric.metric_ifindex === wan.index;
+      // A published gateway can bind a manual ISP_PING target by address.
+      // Without one, only an explicit canonical interface binding is evidence.
+      return (wan.gateway ? target.ip === wan.gateway : sameInterface) &&
+        (!declaredIdentity || sameInterface);
+    });
+    if (matches.length === 1) return { state: "matched", target: matches[0] };
+    if (matches.length > 1) return { state: "ambiguous" };
+    return { state: wan.gateway ? "missing" : "unconfigured" };
+  }
+
   function overviewState({ pingState, wanState, statsState }, at) {
     const targets = (pingState.data?.targets || []).map((target) => freshTarget(target, pingState.state === "ready", at));
-    const wans = (wanState.data || []).map((wan) => freshWan(wan, wanState.state === "ready", at));
     const infra = targets.filter((target) => target.category === "lan" || target.category === "server");
     const gateways = targets.filter((target) => target.category === "isp");
+    const wans = (wanState.data || []).map((wan) => ({
+      ...freshWan(wan, wanState.state === "ready", at), probeCoverage: wanProbeCoverage(wan, gateways)
+    }));
     const critical = infra.concat(gateways);
     const infraCounts = countStates(infra);
     const ispCounts = countStates(gateways);
     const total = countStates(targets);
     const agedOut = pingState.data?.agedOut || 0;
-    const uncovered = new Set(wans.filter((wan) => wan.gateway &&
-      !gateways.some(({ ip }) => ip === wan.gateway)).map(({ gateway }) => gateway));
+    const uncovered = wans.filter(({ probeCoverage }) => probeCoverage.state === "missing").length;
+    const unconfigured = wans.filter(({ probeCoverage }) => probeCoverage.state === "unconfigured").length;
+    const ambiguous = wans.filter(({ probeCoverage }) => probeCoverage.state === "ambiguous").length;
     const incomplete = critical.some(({ status, rtt, loss }) => status === "UP" && (rtt == null || loss.loss == null));
     const missingGroups = !infra.some(({ job }) => job === "infra-core-ping") || !gateways.length;
     const wanUnavailable = wanState.state !== "ready" || !wans.length ||
       wans.some((wan) => wan.in.bps === null || wan.out.bps === null);
     const unavailable = pingState.state !== "ready" || !critical.some(({ status }) => status !== "UNKNOWN");
     const statsUnavailable = statsState.state === "error";
-    const partial = total.UNKNOWN > 0 || agedOut > 0 || uncovered.size > 0 || incomplete ||
+    const partial = total.UNKNOWN > 0 || agedOut > 0 || uncovered > 0 || unconfigured > 0 || ambiguous > 0 || incomplete ||
       missingGroups || wanUnavailable || statsUnavailable;
-    const health = unavailable ? "unavailable" : partial ? "partial" :
-      total.DOWN || total.DEGRADED ? "fault" : "healthy";
+    const availability = unavailable ? "unavailable" : partial ? "partial" : "ready";
+    const health = total.DOWN || total.DEGRADED ? "fault" : availability === "ready" ? "healthy" : availability;
     const faults = critical.filter(({ status }) => status !== "UP");
     const rank = { DOWN: 0, DEGRADED: 1, UNKNOWN: 2 };
     faults.sort((a, b) => rank[a.status] - rank[b.status]);
@@ -169,8 +188,8 @@
       ...target, stddev: target.status !== "UNKNOWN" && statsState.state === "ready" &&
         at - statsState.at <= 45 ? statsState.data.get(target.key) ?? null : null
     }));
-    return { health, infraCounts, ispCounts, total, wans, faults, gatewayRows, clients,
-      agedOut, uncovered: uncovered.size, missingGroups, incomplete, wanUnavailable, statsUnavailable,
+    return { health, availability, infraCounts, ispCounts, total, wans, faults, gatewayRows, clients,
+      agedOut, uncovered, unconfigured, ambiguous, missingGroups, incomplete, wanUnavailable, statsUnavailable,
       moreGateways: targets.filter(({ job }) => gatewayJobs.includes(job)).length - gatewayRows.length };
   }
 
