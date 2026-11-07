@@ -125,13 +125,22 @@ def test_validation_failures_omit_edge(monkeypatch, failure):
     assert ap.build_ap_artifact(aps, validate(aps, inventory, devices, api))["attachments"] == []
 
 
-def test_four_current_candidates_twelve_gets_no_walk_shared_vlans(monkeypatch):
-    aps = ap.current_ap_identities([identity(n) for n in range(1, 5)])
-    switch = device("10.0.0.11", "access", [(n, n, f"Gi1/0/{n}", 1) for n in range(1, 5)], device_id=10)
-    inventory = {a["mac"]: [{**seed(index=n), "mac": a["mac"]}] for n, a in enumerate(aps, 1)}
+@pytest.mark.parametrize("count,vlan,has_vlan_layer", [(4, 200, False), (5, 60, True)])
+def test_current_candidates_keep_exact_get_budget_and_share_vlan_inventory(monkeypatch, count, vlan, has_vlan_layer):
+    aps = ap.current_ap_identities([identity(n) for n in range(1, count + 1)])
+    switch = device("10.0.0.11", "access", [(n, n, f"Gi1/0/{n}", 1) for n in range(1, count + 1)], device_id=10)
+    if has_vlan_layer:
+        switch["ifname"][60] = "Vlan60"
+        switch["ifstack"] = {60: list(range(1, count + 1))}
+    devices = {switch["ip"]: switch}
     api = ServerClient({switch["ip"]: switch})
+    api.fdb = {switch["ip"]: [
+        {"port_id": n, "mac_address": row["mac"], "vlan_id": 142, "updated_at": time.time()}
+        for n, row in enumerate(aps, 1)
+    ]}
+    inventory, _ = gte.collect_librenms_fdb_inventory(devices, [], api, True)
     vlan_calls = []
-    api.get_vlan_inventory = lambda: vlan_calls.append(1) or [{"device_id": 10, "vlan_id": 142, "vlan_vlan": 200}]
+    api.get_vlan_inventory = lambda: vlan_calls.append(1) or [{"device_id": 10, "vlan_id": 142, "vlan_vlan": vlan}]
     commands = []
     def run(command, **kwargs):
         commands.append(command)
@@ -141,14 +150,17 @@ def test_four_current_candidates_twelve_gets_no_walk_shared_vlans(monkeypatch):
         value = "" if oid.startswith(gte.DOT1Q_TP_FDB_PORT_OID) else oid.split(".")[-1]
         return SimpleNamespace(stdout=value)
     monkeypatch.setattr(gte.subprocess, "run", run)
-    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, {switch["ip"]: switch}, api))
-    assert len(artifact["attachments"]) == 4 and vlan_calls == [1]
-    assert len(commands) == 12
-    assert gte.collection_stats_snapshot() == {"ap_snmp_gets": 12, "ap_snmp_walks": 0,
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api))
+    assert [(row["ap_mac"], row["switch_port"], row["vlan"]) for row in artifact["attachments"]] == [
+        (row["mac"], f"Gi1/0/{n}", vlan) for n, row in enumerate(aps, 1)
+    ]
+    assert vlan_calls == [1] and api.calls == [(switch["ip"], "fdb")]
+    assert len(commands) == 3 * count
+    assert gte.collection_stats_snapshot() == {"ap_snmp_gets": 3 * count, "ap_snmp_walks": 0,
         "direct_snmp_gets": 0, "direct_snmp_walks": 0, "server_snmp_gets": 0, "server_snmp_walks": 0}
-    gte.lookup_fdb_ifindex(switch["ip"], "fixture", 200, aps[0]["mac"], switch["ifname"])
+    gte.lookup_fdb_ifindex(switch["ip"], "fixture", vlan, aps[0]["mac"], switch["ifname"])
     assert gte.collection_stats_snapshot()["server_snmp_gets"] == 3
-    assert gte.collection_stats_snapshot()["ap_snmp_gets"] == 12
+    assert gte.collection_stats_snapshot()["ap_snmp_gets"] == 3 * count
 
 
 def test_exact_evidence_still_ages_out():
@@ -347,33 +359,79 @@ def test_hard_candidate_cap_never_truncates(monkeypatch, count, gets):
     assert len(calls) == gets
     assert len(artifact["attachments"]) == int(gets > 0)
 
-@pytest.mark.parametrize("higher_name,expected", [("Vlan60", 1), ("Port-channel60", 0), ("", 0)])
-def test_vlan_layer_does_not_hide_verified_ap_but_lag_and_unknown_do(monkeypatch, higher_name, expected):
+@pytest.mark.parametrize("higher_names,expected", [
+    (("Vlan60",), True),
+    (("VLAN-1002",), True),
+    (("Vl60",), True),
+    (("Vlanif60",), True),
+    (("VLAN_60",), True),
+    (("  vLaNiF -_ 60  ",), True),
+    (("Vl60", "VLAN_61"), True),
+    (("Port-channel60",), False),
+    (("Po60",), False),
+    (("LAG60",), False),
+    (("Eth-Trunk60",), False),
+    (("",), False),
+    ((None,), False),
+    (("Bridge60",), False),
+    (("Port-channel VLAN60",), False),
+    (("VLAN60 trunk",), False),
+    (("VLAN60.10",), False),
+    (("VLAN_60", "Po60"), False),
+    (("Eth-Trunk60", "Vl60"), False),
+    (("Vlanif60", None), False),
+])
+def test_ifstack_vlan_aliases_keep_exact_ap_attachment_without_changing_server_fdb(monkeypatch, higher_names, expected):
     aps, _, devices, api = setup_inventory()
     switch = devices["10.0.0.11"]
-    switch["ifname"][60] = higher_name
-    switch["ifstack"] = {60: [1]}
-    api.fdb = {switch["ip"]: [{"port_id": 1, "mac_address": aps[0]["mac"],
+    switch["ifstack"] = {}
+    for index, name in enumerate(higher_names, 60):
+        switch["ifstack"][index] = [1]
+        if name is not None:
+            switch["ifname"][index] = name
+    assert gte.ap_port_has_aggregate_relationship(switch, 1) is (not expected)
+    mac = aps[0]["mac"]
+    api.fdb = {switch["ip"]: [{"port_id": 1, "mac_address": mac,
                               "vlan_id": 142, "updated_at": time.time()}]}
+    api.get_vlan_inventory = lambda: [{"device_id": 10, "vlan_id": 142, "vlan_vlan": 60}]
     shared, _ = gte.collect_librenms_fdb_inventory(devices, [], api, True)
+    assert shared[mac][0]["ap_aggregate_member"] is (not expected)
+    assert shared[mac][0]["aggregate_member"] is True
+    assert bool(ap.ap_candidates(aps, shared).get(mac)) is expected
+
+    replies = {
+        f"{gte.DOT1Q_TP_FDB_PORT_OID}.60.2.0.0.0.0.1": "9",
+        f"{gte.DOT1D_BASE_PORT_IFINDEX_OID}.9": "1",
+    }
     calls = []
-    monkeypatch.setattr(gte, "lookup_fdb_ifindex", lambda *args: calls.append(args) or 1)
-    current = validate(aps, shared, devices, api)
-    artifact = ap.build_ap_artifact(aps, current)
-    assert len(artifact["attachments"]) == expected
-    assert len(calls) == expected
+
+    def run(command, **kwargs):
+        assert command[0] == "snmpget"
+        calls.append(command[-1])
+        return SimpleNamespace(stdout=replies[command[-1]])
+
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    artifact = ap.build_ap_artifact(aps, validate(aps, shared, devices, api))
+    assert [(row["switch_port"], row["vlan"]) for row in artifact["attachments"]] == (
+        [("Gi1/0/1", 60)] if expected else []
+    )
+    assert calls == (list(replies) if expected else [])
+    stats = gte.collection_stats_snapshot()
+    assert stats["ap_snmp_gets"] == len(calls)
+    assert stats["ap_snmp_walks"] == stats["server_snmp_gets"] == 0
     servers, _ = gte.build_librenms_fdb_candidates(devices, [], api, True, inventory=(shared, {}))
-    assert servers[aps[0]["mac"]][0]["vlan"] == 142
+    assert [(row["port_name"], row["vlan"]) for row in servers[mac]] == [("Gi1/0/1", 142)]
+    assert api.calls == [(switch["ip"], "fdb")]
 
 
 def test_exact_move_into_vlan_layer_port_is_still_allowed(monkeypatch):
     aps, inventory, devices, api = setup_inventory(ports=[(1, 1, "Gi0/1", 1), (2, 2, "Gi0/2", 1)])
     switch = devices["10.0.0.11"]
-    switch["ifname"][60] = "Vlan60"
+    switch["ifname"][60] = "Vlanif60"
     switch["ifstack"] = {60: [2]}
     monkeypatch.setattr(gte, "lookup_fdb_ifindex", lambda *args: 2)
     artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api))
-    assert artifact["attachments"][0]["switch_port"] == "Gi0/2"
+    assert [row["switch_port"] for row in artifact["attachments"]] == ["Gi0/2"]
 
 
 def test_vlan_layer_does_not_override_real_lag_membership(monkeypatch):

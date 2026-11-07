@@ -2818,7 +2818,8 @@ def ap_port_has_aggregate_relationship(device, ifindex):
     for higher, members in device.get("ifstack", {}).items():
         if ifindex != higher and ifindex not in members:
             continue
-        if re.fullmatch(r"(?i)vlan\s*\d+", str(names.get(higher) or "").strip()):
+        higher_name = str(names.get(higher) or "").strip()
+        if re.fullmatch(r"(?i)(?:vlanif|vlan|vl)[\s_-]*\d+", higher_name):
             continue
         return True
     return False
