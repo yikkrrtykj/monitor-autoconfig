@@ -10,7 +10,6 @@ const output=path.join(__dirname,"evidence");
 const head="690268a7401efdadcce97258e51c883505ecf539";
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const pct=(items,p=.95)=>{const a=[...items].sort((x,y)=>x-y);return a.length?Math.round(a[Math.ceil(a.length*p)-1]*100)/100:null};
-const setDigest=(a)=>a.length+" rows";
 let fixture=devices(50), calls=[], active=0, peak=0, missingVip=false, unitRestored=false, toggleCore=false, extraDelay=false, timeoutStatus=false, timeoutTrend=false;
 function vector(item,at){
   const t=Math.floor(at/item.interval)*item.interval;
@@ -58,7 +57,8 @@ const server=http.createServer(async(req,res)=>{
       if(res.destroyed)return;
       const resultType=raw||url.pathname.endsWith("query_range")?"matrix":"vector";
       // Inject an out-of-scope player row even in the summary to exercise the client's guard.
-      const result=summary?fixture.filter(x=>!missingVip||x.i!==1).flatMap(x=>vector(x,time)):
+      const result=summary?[...fixture.filter(x=>!missingVip||x.i!==1).flatMap(x=>vector(x,time)),
+        {metric:{job:playerJob,instance:"Retired-Player-Sentinel",ping_field:"aged_out"},value:[time,"1"]}]:
         raw?targets.flatMap(x=>matrix(x,time,span)):[];
       res.writeHead(200,{"content-type":"application/json","cache-control":"no-store"}).end(JSON.stringify({status:"success",data:{resultType,result}}));
       return;
@@ -104,6 +104,10 @@ async function main(){
   };
   const runtime=async()=>Object.fromEntries((await send("Performance.getMetrics")).metrics.map(({name,value})=>[name,value]));
   const processInfo=async()=> (await send("SystemInfo.getProcessInfo",{},true)).processInfo;
+  async function chromeRss(processes){
+    const reads=await Promise.all(processes.map(proc=>fs.readFile("/proc/"+proc.id+"/status","utf8").catch(()=>null)));
+    return Math.round(reads.reduce((s,t)=>s+Number(t?.match(/^VmRSS:\s+(\d+)/m)?.[1]||0),0)/1024*100)/100;
+  }
   const screen=(width,height)=>send("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:false});
   const navigate=(query)=>send("Page.navigate",{url:base+"/ping"+query});
   const cardCount='document.querySelectorAll(".ping-card").length';
@@ -162,12 +166,16 @@ async function main(){
     assert.equal(await evaluate('document.querySelectorAll(".ping-card[data-state=UP]").length'),0);
     assert.equal(await filter("#pingStatus",""),100);
     const total=await evaluate('document.querySelector("#pingCounts").textContent.match(/\\d+/g).map(Number).reduce((a,b)=>a+b,0)');
-    assert.equal(total,100);checks.push("AP remains, player excluded from list/search/count; state refresh preserves identity, order and focus; filters work");
+    assert.equal(total,100);
+    assert.equal(await evaluate('document.querySelector("#pingCoverage").textContent'),"");
+    checks.push("AP remains, player excluded from list/search/count; state refresh preserves identity, order and focus; filters work");
     await evaluate('[...document.querySelectorAll(".ping-card-compare")].slice(0,4).forEach(e=>e.click())');
     assert.equal(await evaluate('document.querySelectorAll("#pingSelected button").length'),4);
     assert.equal(await evaluate('document.querySelectorAll(".ping-card-compare")[4].disabled'),true);
     await click("#pingComparison");
     await wait('["P95","STDDEV"].every(x=>document.querySelector("#pingMetrics").textContent.includes(x))&&!document.querySelector("#pingExport").disabled');
+    const coreStats=await evaluate('[...document.querySelectorAll(".ping-metrics-card")].find(card=>card.textContent.includes("Core A")) && Object.fromEntries([...document.querySelectorAll(".ping-metrics-card")].find(card=>card.textContent.includes("Core A")).querySelectorAll("dt").values().map(dt=>[dt.textContent.trim(),Number.parseFloat(dt.nextElementSibling.textContent)]))');
+    assert.ok(coreStats?.P95>0&&coreStats?.STDDEV>0,"Core A P95 and STDDEV should both be numeric");
     await click("#pingExport");
     let csv;
     for(let i=0;i<25&&!csv;i++){csv=(await fs.readdir(output)).find(f=>/^ping.*\.csv$/.test(f));if(!csv)await sleep(80);}
@@ -218,12 +226,12 @@ async function main(){
       }
       assert.equal(duplicates,0);assert.ok(peak<=2,"trend concurrency "+peak);assert.ok(requests.every(r=>r.targets.length<=12));
       assert.equal(await evaluate(cardCount),n);
-      const samples={n,round,coldMs:Math.round(loaded-start),screenMs:Math.round(loaded-ready),coldTrend:cold.length,statusRequests:calls.filter(e=>e.kind==="summary").length,trend:requests.length,peak,aborts:requests.filter(e=>e.aborted).length,duplicates,frames:frames.length,frameP95:pct(frames),frameMax:pct(frames,1),jsMiB:Math.round(after.JSHeapUsedSize/1048576*100)/100,mainThreadPct:Math.round(10000*(after.TaskDuration-before.TaskDuration)/(after.Timestamp-before.Timestamp))/100,chromeCpuPct:Math.round(10000*procDelta/(after.Timestamp-before.Timestamp))/100};
+      const samples={n,round,chromeRssMiB:await chromeRss(procAfter),coldMs:Math.round(loaded-start),screenMs:Math.round(loaded-ready),coldTrend:cold.length,statusRequests:calls.filter(e=>e.kind==="summary").length,trend:requests.length,peak,aborts:requests.filter(e=>e.aborted).length,duplicates,frames:frames.length,frameP95:pct(frames),frameMax:pct(frames,1),jsMiB:Math.round(after.JSHeapUsedSize/1048576*100)/100,mainThreadPct:Math.round(10000*(after.TaskDuration-before.TaskDuration)/(after.Timestamp-before.Timestamp))/100,chromeCpuPct:Math.round(10000*procDelta/(after.Timestamp-before.Timestamp))/100};
       bench.push(samples);
       await fs.writeFile(path.join(__dirname,"browser-progress.json"),JSON.stringify({checks,bench},null,2));
     }
     assert.deepEqual(exceptions,[]);
-    const report={head,version:version.product,checks,bench,exceptions,backEnd:"synthetic HTTP",clients:1,notes:["CPU is CDP process CPU time delta as percent of one logical core; heap is JS only.", "First screen points >=20; explicit scroll pauses to test new viewport loads."]};
+    const report={head,version:version.product,checks,bench,exceptions,backEnd:"synthetic HTTP",clients:1,notes:["CPU is CDP process CPU time delta as percent of one logical core; heap is JS only.", "First screen points >=20; explicit scroll pauses to test new viewport loads.","Chromium RSS sums the browser process-tree RSS and may count shared pages more than once."]};
     await fs.writeFile(path.join(output,"pr112-browser-results.json"),JSON.stringify(report,null,2));
     return report;
   } finally {try{await send("Browser.close",{},true)}catch{chrome.kill();} server.closeAllConnections();server.close();}

@@ -45,9 +45,15 @@ jobs:
             .github/pr112-audit/browser-progress.json
           retention-days: 90
   prometheus:
-    name: Prometheus 2.53.1 repeated query load
+    name: Prometheus 2.53.1 / ${{ matrix.targets }} targets
+    strategy:
+      fail-fast: false
+      matrix:
+        targets: [50, 100, 300]
     runs-on: ubuntu-24.04
-    timeout-minutes: 14
+    timeout-minutes: 8
+    env:
+      PR112_N: ${{ matrix.targets }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -84,7 +90,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: pr112-690268a-prometheus
+          name: pr112-690268a-prometheus-${{ matrix.targets }}
           path: |
             .github/pr112-audit/evidence/pr112-prometheus-results.json
             .github/pr112-audit/evidence/pr112-prometheus-samples.csv
