@@ -1,0 +1,92 @@
+name: PR 112 audit evidence
+on:
+  push:
+    branches: ["codex/pr112-audit-evidence"]
+permissions:
+  contents: read
+env:
+  AUDIT_HEAD: "690268a7401efdadcce97258e51c883505ecf539"
+jobs:
+  browser:
+    name: Chromium 50 / 100 / 300
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check out exact review head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: "690268a7401efdadcce97258e51c883505ecf539"
+          path: tested
+          persist-credentials: false
+      - name: Run browser checks and capture PNGs
+        shell: bash
+        working-directory: .github/pr112-audit
+        run: |
+          set -euo pipefail
+          test "$(git -C "$GITHUB_WORKSPACE/tested" rev-parse HEAD)" = "$AUDIT_HEAD"
+          export PR112_BIGSCREEN="$GITHUB_WORKSPACE/tested/librenms+grafana/bigscreen"
+          export PR112_CHROME="$(command -v google-chrome || command -v chromium)"
+          test -x "$PR112_CHROME"
+          "$PR112_CHROME" --version
+          node --version
+          node browser-audit.cjs
+      - name: Upload exact-head browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pr112-690268a-chromium
+          path: |
+            .github/pr112-audit/evidence/pr112-690268a-*.png
+            .github/pr112-audit/evidence/pr112-browser-results.json
+            .github/pr112-audit/browser-progress.json
+          retention-days: 90
+  prometheus:
+    name: Prometheus 2.53.1 repeated query load
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check out exact review head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: "690268a7401efdadcce97258e51c883505ecf539"
+          path: tested
+          persist-credentials: false
+      - name: Load official Prometheus on isolated runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          source=https://github.com/prometheus/prometheus/releases/download/v2.53.1
+          archive=prometheus-2.53.1.linux-amd64.tar.gz
+          curl --fail --silent --show-error --location --retry 2 --max-time 120 "$source/sha256sums.txt" -o prometheus-checksums.txt
+          curl --fail --silent --show-error --location --retry 2 --max-time 120 "$source/$archive" -o "$archive"
+          grep -F "  $archive" prometheus-checksums.txt | sha256sum --check --strict
+          tar -xzf "$archive"
+          printf 'PR112_PROM=%s/prometheus-2.53.1.linux-amd64\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Run cold, warm, and sustained tests
+        shell: bash
+        working-directory: .github/pr112-audit
+        run: |
+          set -euo pipefail
+          test "$(git -C "$GITHUB_WORKSPACE/tested" rev-parse HEAD)" = "$AUDIT_HEAD"
+          export PR112_BIGSCREEN="$GITHUB_WORKSPACE/tested/librenms+grafana/bigscreen"
+          node --version
+          node prom-audit.cjs
+          node -e 'const r=require("./evidence/pr112-prometheus-results.json"); console.log(JSON.stringify(r));'
+      - name: Upload exact-head Prometheus measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pr112-690268a-prometheus
+          path: |
+            .github/pr112-audit/evidence/pr112-prometheus-results.json
+            .github/pr112-audit/evidence/pr112-prometheus-samples.csv
+            .github/pr112-audit/prom-partial.json
+            .github/pr112-audit/prom-progress.json
+          retention-days: 90
