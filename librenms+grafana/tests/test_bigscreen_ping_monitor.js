@@ -7,6 +7,7 @@ const settings = model.policy();
 const at = 1760000000;
 const core = { job: "infra-core-ping", instance: "Core-A", target_ip: "192.0.2.3" };
 const player = { job: "player-ping", instance: "192.0.2.3", team: "2", seat: "3", network: "wired" };
+const ap = { job: "infra-ap-ping", instance: "AP-A", target_ip: "192.0.2.4" };
 const target = (metric, interval = 2) => ({ metric, interval, job: metric.job, key: model.identity(metric) });
 const vector = (metric, fields) => Object.entries(fields).map(([ping_field, value]) => ({
   metric: { ...metric, ping_field }, value: [at, String(value)]
@@ -123,7 +124,7 @@ function observedInventory(readings) {
 test("partial discovery loss after five minutes keeps all 20 rows and distinguishes an ICMP failure", async () => {
   const beforeLoss = at - 360;
   const readings = Array.from({ length: 20 }, (_, index) => ({
-    metric: { ...player, instance: `192.0.2.${index + 1}`, seat: String(index + 1) },
+    metric: { ...core, instance: `192.0.2.${index + 1}`, target_ip: `192.0.2.${index + 1}` },
     scrapes: index < 5 ? [beforeLoss] : [beforeLoss, at - 2],
     success: index === 5 ? 0 : 1
   }));
@@ -140,7 +141,7 @@ test("partial discovery loss after five minutes keeps all 20 rows and distinguis
 test("complete discovery loss stays unknown and rediscovery restores the same identity", async () => {
   const read = observedInventory([
     { metric: core, scrapes: [at - 360, at + 9] },
-    { metric: player, scrapes: [at - 360, at + 9] }
+    { metric: ap, scrapes: [at - 360, at + 9] }
   ]);
   const missing = await read(at);
   assert.deepEqual(missing.targets.map(({ status }) => status), ["UNKNOWN", "UNKNOWN"]);
@@ -153,17 +154,37 @@ test("complete discovery loss stays unknown and rediscovery restores the same id
 test("a removed target ages out with a notice, then disappears from the bounded inventory", async () => {
   const read = observedInventory([
     { metric: core, scrapes: [at] },
-    { metric: player, scrapes: [at, at + 1798, at + 1800, at + 2100] }
+    { metric: ap, scrapes: [at, at + 1798, at + 1800, at + 2100] }
   ]);
   const retained = await read(at + 1799);
   assert.deepEqual(retained.targets.map(({ status }) => status), ["UNKNOWN", "UP"]);
   const expired = await read(at + 1801);
-  assert.deepEqual(expired.targets.map(({ key }) => key), [model.identity(player)]);
+  assert.deepEqual(expired.targets.map(({ key }) => key), [model.identity(ap)]);
   assert.equal(expired.agedOut, 1);
   const later = await read(at + 2101);
-  assert.deepEqual(later.targets.map(({ key }) => key), [model.identity(player)]);
+  assert.deepEqual(later.targets.map(({ key }) => key), [model.identity(ap)]);
   assert.equal(later.agedOut, 0);
   assert.deepEqual(await observedInventory([{ metric: core, scrapes: [at] }])(at + 2101), { targets: [], agedOut: 0 });
+});
+
+test("device summaries scope current and aged-out targets to the page", async () => {
+  const signal = new AbortController().signal;
+  for (const includeAp of [true, false]) {
+    const api = createPingData({ settings, includeAp, inventoryMaxAge: 30, query: async (expr) => {
+      assert.doesNotMatch(expr, /player-ping/);
+      assert.equal(expr.includes("infra-ap-ping"), includeAp);
+      const rows = [...vector(core, healthy), ...vector(ap, healthy),
+        ...vector(player, healthy), ...vector({ ...player, instance: "Old seat" }, { aged_out: 1 }),
+        ...vector({ ...ap, instance: "Old AP" }, { aged_out: 1 })];
+      return expr.includes("last_over_time(up") ? rows :
+        rows.filter(({ metric }) => !["target", "aged_out"].includes(metric.ping_field));
+    } });
+    for (const time of [at, at + 1]) {
+      const state = await api.summary(time, signal);
+      assert.deepEqual(state.targets.map(({ job }) => job), includeAp ? [core.job, ap.job] : [core.job]);
+      assert.equal(state.agedOut, includeAp ? 1 : 0);
+    }
+  }
 });
 
 test("long queries use bounded count/sum windows and keep display samples out of exact stats", async () => {

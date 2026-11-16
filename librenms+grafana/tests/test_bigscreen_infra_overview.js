@@ -49,7 +49,7 @@ test("only fresh, complete key coverage may produce All Good", () => {
   assert.equal(ready.health, "healthy");
   assert.equal(ready.infraCounts.UP, 2);
   assert.equal(ready.ispCounts.UP, 1);
-  assert.equal(ready.clients.find((client) => client.category === "ap").UP, 1);
+  assert.equal(ready.total.UP, 3);
   assert.equal(ready.gatewayRows.find(({ job }) => job === core.job).stddev, 0);
   assert.equal(ready.gatewayRows.some(({ job }) => job === ha.job), false);
   assert.equal(overview.overviewState(current, now + 20).health, "unavailable");
@@ -65,6 +65,57 @@ test("only fresh, complete key coverage may produce All Good", () => {
   assert.equal(failed.health, "unavailable");
   assert.equal(failed.infraCounts.UNKNOWN, 2);
   assert.equal(failed.wans[0].in.bps, 12e6);
+});
+
+test("overview excludes client noise but retains distribution faults outside the gateway table", () => {
+  const player = { job: "player-ping", instance: "192.0.2.42", team: "2", seat: "1" };
+  const dist = { job: "infra-dist-ping", instance: "Dist", target_ip: "192.0.2.12" };
+  const vip = { ...core, job: "infra-fw-ping" };
+  const down = { ...healthy, probe: 0, ok: 0 };
+  const read = (extra) => overview.overviewState(status(ping.snapshot([
+    ...[core, isp, vip].flatMap((metric) => vector(metric, healthy)),
+    ...vector(player, down), ...vector(ap, { target: 1 }), ...extra
+  ], now, ping.policy())), now);
+  const quiet = read([]);
+  assert.equal(quiet.health, "healthy");
+  assert.equal(quiet.total.DOWN, 0);
+  assert.equal(quiet.total.UNKNOWN, 0);
+  const fault = read(vector(dist, down));
+  assert.equal(fault.health, "fault");
+  assert.deepEqual(fault.faults.map(({ job }) => job), [dist.job]);
+  assert.deepEqual(fault.gatewayRows.map(({ job }) => job), [core.job, vip.job, isp.job]);
+});
+
+test("a configured firewall VIP stays required after its history disappears and recovers by exact identity", () => {
+  const firewall = { ...core, job: "infra-fw-ping", instance: "Edge VIP", target_ip: "192.0.2.1" };
+  const wrong = { ...firewall, target_ip: "192.0.2.9" };
+  const peer = { ...ha, target_ip: firewall.target_ip };
+  const read = (points, configured = "Logical VIP:192.0.2.1") =>
+    overview.overviewState(status(points), now, overview.firewallExpectations(configured));
+
+  assert.equal(read(targets(core, isp, firewall)).health, "healthy");
+  const missing = read(targets(core, isp, peer, wrong));
+  assert.equal(missing.agedOut, 0);
+  assert.equal(missing.health, "partial");
+  assert.equal(missing.availability, "partial");
+  assert.equal(missing.missingFirewallVips, 1);
+  assert.equal(missing.total.DOWN, 0);
+  assert.deepEqual([missing.wans[0].in.bps, missing.wans[0].out.bps], [12e6, 3e6]);
+
+  const stale = ping.snapshot([
+    ...vector(core, healthy), ...vector(isp, healthy), ...vector(firewall, { target: 1 })
+  ], now, ping.policy());
+  assert.equal(read(stale).health, "partial");
+  assert.equal(read(stale).faults[0].status, "UNKNOWN");
+  assert.equal(read(targets(core, isp, firewall)).health, "healthy");
+  assert.equal(read(targets(core, isp), "").health, "healthy");
+
+  const secondary = { ...firewall, instance: "Other VIP", target_ip: "192.0.2.2" };
+  assert.equal(read(targets(core, isp, firewall), "VIP:192.0.2.1-2").missingFirewallVips, 1);
+  assert.equal(read(targets(core, isp, firewall, secondary), "VIP:192.0.2.1-2,192.0.2.2").health, "healthy");
+  const invalid = read(targets(core, isp, firewall), "invalid-target,192.0.2.1");
+  assert.equal(invalid.firewallConfigInvalid, true);
+  assert.equal(invalid.health, "partial");
 });
 
 test("true DOWN, quality loss and missing scrape remain separate; same IP links keep job identity", () => {

@@ -10,7 +10,7 @@
   const count = (values) => values.UP + values.DOWN + values.DEGRADED + values.UNKNOWN;
 
   function targetLink(target) {
-    return `<a href="${pingHref(target)}">${esc(target.name)}</a>`;
+    return `<a href="${pingHref(target)}" title="${esc(target.ip)}">${esc(target.name)}</a>`;
   }
 
   function badge(status) {
@@ -37,7 +37,7 @@
       }).join("");
     };
     return `<svg viewBox="0 0 200 26" preserveAspectRatio="none" role="img" aria-label="最近 15 分钟 WAN 入站和出站趋势">
-      <path d="M0 24H200" class="overview-baseline" />
+      <path d="M0 23H200" class="overview-baseline" />
       <path d="${path(series[0])}" class="overview-rx" /><path d="${path(series[1])}" class="overview-tx" />
     </svg>`;
   }
@@ -46,18 +46,21 @@
     const valid = data.bps !== null;
     const mbps = valid ? data.bps / 1e6 : null;
     const percent = valid && data.capacity ? mbps * 100 / data.capacity : null;
+    const small = valid && data.bps > 0 && mbps < 0.1;
+    const rate = small ? number(data.bps / 1000, 1) : number(mbps, 1);
+    const rateText = small && rate === "0.0" ? "<0.1" : rate;
     return `<div class="overview-rate" data-direction="${color}" title="${esc(data.reason)}">
-      <span>${label}</span><strong>${number(mbps, 1)}${valid ? ' <small>Mbps</small>' : ""}</strong>
-      ${percent === null ? "" : `<div class="overview-util" aria-label="占配置容量 ${number(percent, 1)}%">
+      <span>${label}</span><strong>${esc(rateText)}${valid ? ` <small>${small ? "Kbps" : "Mbps"}</small>` : ""}</strong>
+      <div class="overview-capacity">${percent === null ? "" : `<div class="overview-util" aria-label="占配置容量 ${number(percent, 1)}%">
         <i style="width:${Math.min(100, percent)}%"></i></div>
-        <small>${number(percent, 1)}% / ${data.capacity} Mbps</small>`}
+        <small title="配置容量 ${data.capacity} Mbps">${number(percent, 1)}%<span class="overview-capacity-limit"> / ${data.capacity} Mbps</span></small>`}</div>
     </div>`;
   }
 
   function bandwidthCard(card) {
     const warning = card.in.reason || card.out.reason;
     const identity = card.instance && card.index ? `${card.instance} · ifIndex ${card.index}` : "接口待核实";
-    const capacity = card.in.capacity !== null || card.out.capacity !== null ? "配置线路容量" :
+    const capacity = card.in.capacity !== null || card.out.capacity !== null ? "" :
       card.ambiguousName ? "同名接口 · 容量待核实" : "容量待核实";
     const probe = card.probeCoverage;
     const probeLabels = { missing: "网关未匹配探测", unconfigured: "未提供网关 · 探测关联待核实", ambiguous: "探测关联有歧义" };
@@ -65,40 +68,45 @@
       ? `<a href="${pingHref(probe.target)}">探测已关联 · ${probe.target.status}</a>`
       : probeLabels[probe.state];
     return `<article class="overview-wan" data-wan-key="${esc(card.key || "")}">
-      <h3 title="${esc(identity)}">${esc(card.name)}</h3>
-      <p class="overview-wan-id">${esc(identity)}</p>
+      <h3 title="${esc(`${card.name} · ${identity}`)}">${esc(card.name)}</h3>
       <div class="overview-rates">${direction(card.in, "入站 ↓", "in")}${direction(card.out, "出站 ↑", "out")}</div>
       ${sparkline(card)}
-      <p class="overview-wan-note${warning ? " overview-warning" : ""}">${esc(warning || capacity)}</p>
+      ${warning || capacity ? `<p class="overview-wan-note${warning ? " overview-warning" : ""}">${esc(warning || capacity)}</p>` : ""}
       <p class="overview-wan-note${probe.state !== "matched" ? " overview-warning" : ""}" data-probe-coverage="${probe.state}">${probeText}</p>
     </article>`;
   }
 
   function faultsMarkup(state) {
-    const rows = state.faults.slice(0, maxFaults).map((target) => `<li>
-      <div>${targetLink(target)} <small>${esc(target.group)} · ${esc(target.ip)}</small></div>
-      ${badge(target.status)}<small>${target.status === "DOWN" ? "起始未知 · 时长未知" : esc(target.reason || "网络质量超阈值")}</small>
+    const down = state.faults.filter(({ status }) => status === "DOWN");
+    const rows = down.slice(0, maxFaults).map((target) => `<li>
+      <div>${targetLink(target)} <small>${esc(target.group)}</small></div>${badge(target.status)}
     </li>`).join("");
-    const clients = state.clients.map((client) => {
-      const category = client.category === "ap" ? "AP ICMP" : "选手";
-      return `<a href="/ping">${category} <strong>${client.DOWN} 离线</strong> · ${client.DEGRADED} 异常 · ${client.UNKNOWN} 未知</a>`;
+    const other = [["DEGRADED", "质量异常"], ["UNKNOWN", "探测未知"]].map(([status, label]) => {
+      const list = state.faults.filter((target) => target.status === status);
+      if (!list.length) return "";
+      return `<section class="overview-other-faults"><b>${label} ${list.length}</b>
+        <span>${list.slice(0, 3).map(targetLink).join(" · ")}${list.length > 3 ? ' · <a href="/ping">其余目标</a>' : ""}</span></section>`;
     }).join("");
-    const blank = state.health === "healthy" ? "关键目标状态新鲜，WAN 两个方向均有数据。" : "暂无明确的基础设施故障记录。请核对覆盖和数据源。";
-    return `${rows ? `<ul class="overview-faults">${rows}</ul>` : `<p class="overview-empty">${blank}</p>`}
-      ${state.faults.length > maxFaults ? '<p class="overview-note">其余异常见 <a href="/ping">完整 Ping 监控</a>。</p>' : ""}
-      <div class="overview-client-counts">${clients}</div>`;
+    return `${rows ? `<ul class="overview-faults">${rows}</ul>` : '<p class="overview-empty">暂无已确认离线设备</p>'}
+      ${down.length > maxFaults ? '<p class="overview-note"><a href="/ping">查看其余离线设备</a></p>' : ""}${other}`;
   }
 
   function gatewayMarkup(state) {
     if (!state.gatewayRows.length) return '<p class="overview-empty">暂无可用的网关探测目标。</p>';
+    const groups = [["内网 · 防火墙 / 核心", false], ["外网 · ISP", true]].map(([label, external]) => {
+      const rows = state.gatewayRows.filter(({ category }) => (category === "isp") === external);
+      if (!rows.length) return "";
+      return `<tbody><tr class="overview-gateway-group"><th scope="rowgroup" colspan="5">${label}</th></tr>
+        ${rows.map((target) => `<tr data-gateway>
+          <th scope="row">${targetLink(target)} <small>${esc(target.group)}</small></th>
+          <td>${badge(target.status)}</td><td>${number(target.rtt)}</td><td>${number(target.stddev)}</td>
+          <td>${target.loss.loss == null ? "N/A" : `${number(target.loss.loss, 1)}%`}</td>
+        </tr>`).join("")}</tbody>`;
+    }).join("");
     return `<div class="overview-table-wrap" tabindex="0" aria-label="滚动查看网关状态"><table><thead><tr>
       <th scope="col">Name</th><th scope="col">Status</th><th scope="col">RTT <small>ms</small></th>
       <th scope="col">STDDEV <small>ms</small></th><th scope="col">Loss <small>%</small></th>
-    </tr></thead><tbody>${state.gatewayRows.map((target) => `<tr data-gateway>
-      <th scope="row">${targetLink(target)} <small>${esc(target.group)} · ${esc(target.ip)}</small></th>
-      <td>${badge(target.status)}</td><td>${number(target.rtt)}</td><td>${number(target.stddev)}</td>
-      <td>${target.loss.loss == null ? "N/A" : `${number(target.loss.loss, 1)}%`}</td>
-    </tr>`).join("")}</tbody></table></div>
+    </tr></thead>${groups}</table></div>
     ${state.moreGateways ? `<p class="overview-note">另有 ${state.moreGateways} 个网关探测目标见 <a href="/ping">Ping 监控</a>。</p>` : ""}`;
   }
 
@@ -131,12 +139,13 @@
       select("quality").textContent = String(infra.DEGRADED + isp.DEGRADED);
       select("updated").textContent = meta.lastProbe === null ? "—" : formatTime.format(new Date(meta.lastProbe * 1000));
       const coverage = [
-        "目标清单采用近 30 分钟抓取记录",
         state.agedOut ? `${state.agedOut} 个目标已超出观察窗口` : "",
         state.uncovered ? `${state.uncovered} 个 WAN 网关缺少探测覆盖` : "",
         state.unconfigured ? `${state.unconfigured} 个 WAN 未提供网关，探测关联待核实` : "",
         state.ambiguous ? `${state.ambiguous} 个 WAN 探测关联有歧义` : "",
         state.missingGroups ? "Core 或 ISP 网关覆盖不足" : "",
+        state.missingFirewallVips ? `${state.missingFirewallVips} 个已配置的 FW VIP 缺少探测覆盖` : "",
+        state.firewallConfigInvalid ? "FW VIP 探测配置无效" : "",
         state.incomplete ? "部分关键目标 RTT 或 Loss 样本不足" : "",
         state.statsUnavailable ? "STDDEV 查询不可用" : ""
       ].filter(Boolean).join(" · ");

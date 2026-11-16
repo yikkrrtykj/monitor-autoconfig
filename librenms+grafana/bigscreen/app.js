@@ -28,7 +28,6 @@
   const { createIspChartRenderer } = window.BSIspChart;
   const { createEvidenceChartRenderer } = window.BSEvidenceChart;
   const { createEvidencePanel } = window.BSEvidencePanel;
-  const { createIncidentPanel } = window.BSIncidentPanel;
   const { createWirelessPanel } = window.BSWirelessPanel;
   const { createTournamentPanel } = window.BSTournamentPanel;
   const { createIperfController } = window.BSIperfController;
@@ -240,22 +239,6 @@
     prometheusInstant,
     prometheusRangeFor,
     renderEvidenceCharts
-  });
-  const incidentPanel = createIncidentPanel({
-    document,
-    window,
-    URLSearchParams,
-    Date,
-    console,
-    escapeHtml,
-    networkLabel,
-    formatPingText,
-    formatBits,
-    dateTimeInputValue,
-    fetchIspInventory,
-    ispTrafficQuery,
-    prometheusRangeFor,
-    analyzeIncident: window.BSIncident.analyzeIncident
   });
   const wirelessPanel = createWirelessPanel({
     document,
@@ -585,10 +568,8 @@
 
 
   function renderControlIncidentFlow(snapshot) {
-    const nowValue = dateTimeInputValue(new Date());
     const worst = snapshot.readiness.level;
     const flow = [
-      { label: "卡顿分析", href: `/incident?at=${encodeURIComponent(nowValue)}&window=5&threshold=0.05`, value: "当前时间" },
       { label: "比赛座位", href: snapshot.page ? snapshot.page.path : "/", value: `${snapshot.seatSummary.seats}/${snapshot.seatSummary.expectedSeats}` },
       { label: "拓扑", href: "/topology", value: snapshot.networkRead.domains.topology.source === "network-api" ? `${snapshot.edges.length} 边` : "不可用" },
       { label: "网络总览", href: "/infra", value: snapshot.networkRead.domains.devices.source === "network-api" && snapshot.networkRead.domains.isp.source === "network-api" ?
@@ -855,7 +836,6 @@
     setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
-    setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     renderHomeCards();
   }
@@ -875,7 +855,6 @@
     setVisible("wirelessPanel", false);
     setVisible("controlPanel", true);
     setVisible("dhcpPanel", false);
-    setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     startControlRefresh();
   }
@@ -896,12 +875,11 @@
     setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
-    setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     if (!overviewPanel) {
       const query = window.BSApi.prometheusSamples;
       const settings = window.BSPingModel.policy(config);
-      const pingData = window.BSPingData.createPingData({ query, settings, inventoryMaxAge: 30 });
+      const pingData = window.BSPingData.createPingData({ query, settings, inventoryMaxAge: 30, includeAp: false });
       const data = window.BSOverviewData.createOverviewData({
         pingData,
         query: (expr, range, signal) => query(expr, range, signal, { ifMibCounterNames: true }),
@@ -910,7 +888,7 @@
         bandwidthConfig: config.ispMaxBandwidthMbps
       });
       const render = window.BSOverviewView.createOverviewView(document.getElementById("infraOverview"));
-      overviewPanel = window.BSOverviewController.createOverviewController({ data, render });
+      overviewPanel = window.BSOverviewController.createOverviewController({ data, render, firewallPing: config.firewallPing });
     }
     overviewPanel.start();
   }
@@ -930,7 +908,6 @@
     setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
-    setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     document.getElementById("tournamentPanel").className = `tournament-panel ${page.kind === "match" ? "match-panel" : "multi-team-panel"} ${page.id}`;
     infraController.start();
@@ -953,7 +930,6 @@
     setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
-    setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     if (page.id === "ping") {
       if (!pingPanel) {
@@ -982,30 +958,8 @@
     setVisible("wirelessPanel", true);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
-    setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     wirelessPanel.start(page);
-  }
-
-  function showIncident() {
-    const screen = document.querySelector(".screen");
-    infraController.stop();
-    tournamentPanel.stop();
-    wirelessPanel.stop();
-    stopControlRefresh();
-    dhcpPanel.stop();
-    stopTopologyRefresh();
-    screen.className = "screen incident-mode";
-    setVisible("homePanel", false);
-    setVisible("panelGrid", false);
-    setVisible("tournamentPanel", false);
-    setVisible("evidencePanel", false);
-    setVisible("wirelessPanel", false);
-    setVisible("controlPanel", false);
-    setVisible("dhcpPanel", false);
-    setVisible("incidentPanel", true);
-    setVisible("topologyPanel", false);
-    incidentPanel.start();
   }
 
   // ---- Network topology ----
@@ -1131,7 +1085,6 @@
     setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", false);
-    setVisible("incidentPanel", false);
     setVisible("topologyPanel", true);
     topologyPanel.clearDetail();
     topologyPanel.resetView();
@@ -1153,7 +1106,6 @@
     setVisible("wirelessPanel", false);
     setVisible("controlPanel", false);
     setVisible("dhcpPanel", true);
-    setVisible("incidentPanel", false);
     setVisible("topologyPanel", false);
     dhcpPanel.start();
   }
@@ -1170,7 +1122,6 @@
     activePageId = page.id;
     activeRoute = routeKey;
     if (page.id !== "evidence") evidencePanel.stop();
-    if (page.id !== "incident") incidentPanel.stop();
     if (page.id !== "ping") pingPanel?.stop();
     if (page.id !== "infra") overviewPanel?.stop();
     setVisible("pingWorkspace", page.id === "ping");
@@ -1186,8 +1137,6 @@
       showDhcp();
     } else if (page.id === "evidence" || page.id === "ping") {
       showHistoryPage(page);
-    } else if (page.id === "incident") {
-      showIncident();
     } else if (page.id === "topology") {
       showTopology();
     } else if (page.id === "wireless") {

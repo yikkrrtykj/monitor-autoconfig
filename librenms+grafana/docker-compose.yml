@@ -1225,6 +1225,7 @@ services:
       BIGSCREEN_ISP_MAX_BANDWIDTH: "${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}"
       ISP_PING: "${ISP_PING:-}"
       SERVER_PING: "${SERVER_PING:-}"
+      FIREWALL_PING: "${FIREWALL_PING:-}"
       BIGSCREEN_STAGE_DEVICE_FILTER: "${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}"
       BIGSCREEN_WAN_IF_FILTER: "${FIREWALL_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}"
     volumes:
@@ -1265,6 +1266,7 @@ services:
         ISP_AUTO_DISCOVERY_B64="$$(b64 "$${ISP_GATEWAY_AUTO_DISCOVER-true}")"
         ISP_MAX_BANDWIDTH_B64="$$(b64 "$${BIGSCREEN_ISP_MAX_BANDWIDTH:-1000}")"
         SERVER_TARGETS_B64="$$(b64 "$${SERVER_PING:-}")"
+        FIREWALL_TARGETS_B64="$$(b64 "$${FIREWALL_PING:-}")"
         STAGE_FILTER_B64="$$(b64 "$${BIGSCREEN_STAGE_DEVICE_FILTER:-stage,wutai,舞台}")"
         WAN_FILTER_B64="$$(b64 "$${BIGSCREEN_WAN_IF_FILTER:-telecom,telcom,unicom,isp,WAN}")"
         cat > /usr/share/nginx/html/config.js <<EOF
@@ -1295,6 +1297,7 @@ services:
           ispAutoDiscovery: decodeConfigValue("$$ISP_AUTO_DISCOVERY_B64"),
           ispMaxBandwidthMbps: decodeConfigValue("$$ISP_MAX_BANDWIDTH_B64"),
           serverTargets: decodeConfigValue("$$SERVER_TARGETS_B64"),
+          firewallPing: decodeConfigValue("$$FIREWALL_TARGETS_B64"),
           stageDeviceFilter: decodeConfigValue("$$STAGE_FILTER_B64"),
           wanIfFilter: decodeConfigValue("$$WAN_FILTER_B64")
         };
@@ -1316,12 +1319,16 @@ services:
 
           # Page names may also be source directories. Never serve them as directories.
           # Canonical URLs omit the slash so relative assets resolve from the root.
-          location ~ ^/(control|infra|ping|dhcp|latency|incident|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)/$$ {
+          location ~ ^/(control|infra|ping|dhcp|latency|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)/$$ {
             return 302 /$$1$$is_args$$args;
           }
-          location ~ ^/(control|infra|ping|dhcp|latency|incident|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)$$ {
+          location ~ ^/(control|infra|ping|dhcp|latency|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)$$ {
             try_files /index.html =404;
           }
+
+          location = /incident { return 410; }
+          location = /incident.js { return 410; }
+          location ^~ /incident/ { return 410; }
 
           location / {
             try_files $$uri $$uri/ /index.html;

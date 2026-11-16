@@ -4,10 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
-    <link rel="stylesheet" href="./style.css?v=20261001d" />
-    <link rel="stylesheet" href="./platform.css?v=20260908a" />
-    <link rel="stylesheet" href="./ping/ping.css?v=20261107a" />
-    <link rel="stylesheet" href="./infra/overview.css?v=20261107a" />
+    <link rel="stylesheet" href="./style.css?v=20261116a" />
+    <link rel="stylesheet" href="./platform.css?v=20261116a" />
+    <link rel="stylesheet" href="./ping/ping.css?v=20261116a" />
+    <link rel="stylesheet" href="./infra/overview.css?v=20261116a" />
   </head>
   <body>
     <main class="screen">
@@ -32,7 +32,7 @@
 
       <section class="infra-overview" id="infraOverview" aria-labelledby="overviewTitle" hidden>
         <header class="overview-heading">
-          <div><p class="overview-eyebrow">赛事监控 / NETWORK OPERATIONS</p><h2 id="overviewTitle">网络总览</h2></div>
+          <h2 id="overviewTitle">网络总览</h2>
           <a href="/ping" class="overview-primary-link">打开 Ping 历史 ↗</a>
         </header>
         <div class="overview-summary" aria-label="采集摘要">
@@ -55,7 +55,7 @@
             <div class="overview-section-title"><h3 id="overviewFaultTitle">设备故障 <small>Devices Down</small></h3>
               <strong class="overview-health" data-overview="health" role="status"></strong></div>
             <div data-overview="faults"></div>
-            <p class="overview-note">故障区为 ICMP 观察。AP 控制器在线状态见 <a href="/wireless">无线总览</a>。</p>
+            <p class="overview-note"><a href="/wireless">无线总览 ↗</a></p>
           </section>
           <section class="overview-panel" aria-labelledby="overviewGatewayTitle">
             <div class="overview-section-title"><h3 id="overviewGatewayTitle">网关状态 <small>Gateway Status</small></h3>
@@ -113,13 +113,13 @@
             <div class="ping-toolbar">
               <label>设备分组<select id="pingCategory">
                 <option value="">所有设备</option><option value="lan">内网</option><option value="isp">ISP</option>
-                <option value="player">选手</option><option value="ap">AP</option><option value="server">服务器</option><option value="remote">远端</option>
+                <option value="ap">AP</option><option value="server">服务器</option><option value="remote">远端</option>
               </select></label>
               <label>探测状态<select id="pingStatus">
                 <option value="">全部状态</option><option value="UP">在线</option><option value="DOWN">离线</option>
                 <option value="DEGRADED">质量异常</option><option value="UNKNOWN">未知</option>
               </select></label>
-              <label class="ping-search">搜索<input id="pingSearch" type="search" placeholder="名称、IP 或座位" maxlength="160" /></label>
+              <label class="ping-search">搜索<input id="pingSearch" type="search" placeholder="名称或 IP" maxlength="160" /></label>
               <label>历史范围<select id="pingRange">
                 <option value="5m">5m</option><option value="1h">1h</option><option value="6h">6h</option>
                 <option value="24h">24h</option><option value="7d">7d</option><option value="custom">自定义</option>
@@ -176,7 +176,7 @@
               </table></div>
             </details>
           </section>
-          <p class="ping-policy" id="pingPolicy"></p>
+          <details class="ping-policy"><summary>统计说明</summary><p id="pingPolicy"></p></details>
         </div>
       </section>
       <section class="evidence-panel" id="evidencePanel" aria-label="延迟查询" hidden>
@@ -367,54 +367,13 @@
         <aside class="topology-detail" id="topologyDetail"></aside>
         <aside class="topology-port-panel" id="topologyPortPanel" aria-label="端口面板" hidden></aside>
       </section>
-      <section class="incident-panel" id="incidentPanel" aria-label="卡顿根因分析" hidden>
-        <form class="incident-controls" id="incidentForm">
-          <label>事发时间 <input id="incidentAt" type="datetime-local" /></label>
-          <label>分析窗口
-            <select id="incidentWindow">
-              <option value="2">前后 2 分钟</option>
-              <option value="5" selected>前后 5 分钟</option>
-              <option value="10">前后 10 分钟</option>
-              <option value="15">前后 15 分钟</option>
-            </select>
-          </label>
-          <label>抖动阈值
-            <select id="incidentThreshold">
-              <option value="0.02">20 ms</option>
-              <option value="0.03">30 ms</option>
-              <option value="0.05" selected>50 ms（推荐）</option>
-              <option value="0.08">80 ms</option>
-            </select>
-          </label>
-          <button type="submit">分析</button>
-        </form>
-        <div class="incident-verdict" id="incidentVerdict"></div>
-        <section class="incident-grid">
-          <article class="incident-card" aria-labelledby="incidentPlayersTitle">
-            <h2 id="incidentPlayersTitle">受影响选手</h2>
-            <div class="incident-card-body" id="incidentPlayers"></div>
-          </article>
-          <article class="incident-card" aria-labelledby="incidentInfraTitle">
-            <h2 id="incidentInfraTitle">基础设施</h2>
-            <div class="incident-card-body" id="incidentInfra"></div>
-          </article>
-          <article class="incident-card" aria-labelledby="incidentIspTitle">
-            <h2 id="incidentIspTitle">ISP / WAN 流量</h2>
-            <div class="incident-card-body" id="incidentIsp"></div>
-          </article>
-          <article class="incident-card" aria-labelledby="incidentStageTitle">
-            <h2 id="incidentStageTitle">按 Stage 分组</h2>
-            <div class="incident-card-body" id="incidentStage"></div>
-          </article>
-        </section>
-      </section>
     </main>
-    <script src="./config.js?v=20260623a"></script>
+    <script src="./config.js?v=20261116b"></script>
     <script src="./config/config-model.js?v=20260827a"></script>
     <script src="./config/config-editor.js?v=20260911a"></script>
     <script src="./dhcp/dhcp-model.js?v=20260827a"></script>
     <script src="./dhcp/dhcp-panel.js?v=20260911a"></script>
-    <script src="./pages.js?v=20260826a"></script>
+    <script src="./pages.js?v=20261116a"></script>
     <script src="./utils.js?v=20260904a"></script>
     <script src="./charts/line-chart.js?v=20260908a"></script>
     <script src="./charts/ping-chart.js?v=20260826a"></script>
@@ -426,19 +385,17 @@
     <script src="./isp-carousel.js?v=20260731a"></script>
     <script src="./api.js?v=20261001a"></script>
     <script src="./ping/model.js?v=20261107b"></script>
-    <script src="./ping/data.js?v=20261107b"></script>
+    <script src="./ping/data.js?v=20261116a"></script>
     <script src="./ping/charts.js?v=20261107a"></script>
-    <script src="./ping/panel.js?v=20261107b"></script>
-    <script src="./infra/overview-model.js?v=20261107c"></script>
+    <script src="./ping/panel.js?v=20261116a"></script>
+    <script src="./infra/overview-model.js?v=20261116b"></script>
     <script src="./infra/overview-data.js?v=20261107a"></script>
-    <script src="./infra/overview-controller.js?v=20261107a"></script>
-    <script src="./infra/overview-view.js?v=20261107b"></script>
+    <script src="./infra/overview-controller.js?v=20261116b"></script>
+    <script src="./infra/overview-view.js?v=20261116b"></script>
     <script src="./network-read.js?v=20260929a"></script>
     <script src="./players.js?v=20260802a"></script>
     <script src="./tournament/tournament-panel.js?v=20260828a"></script>
     <script src="./wireless/wireless-panel.js?v=20261001c"></script>
-    <script src="./incident.js?v=20260904a"></script>
-    <script src="./incident/incident-panel.js?v=20260905a"></script>
     <script src="./ap-topology.js?v=20261001e"></script>
     <script src="./topology.js?v=20261001e"></script>
     <script src="./charts/port-panel.js?v=20260930a"></script>
@@ -450,6 +407,6 @@
     <script src="./control/auth-controller.js?v=20260908a"></script>
     <script src="./control/incident-registry.js?v=20260828a"></script>
     <script src="./infra/infra-controller.js?v=20260828a"></script>
-    <script src="./app.js?v=20261001c"></script>
+    <script src="./app.js?v=20261116b"></script>
   </body>
 </html>

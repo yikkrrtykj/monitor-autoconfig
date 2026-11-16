@@ -4,15 +4,16 @@
   const common = typeof module !== "undefined" && module.exports;
   const model = common ? require("./overview-model.js") : window.BSOverviewModel;
 
-  function createOverviewController({ data, render, clock = () => Math.floor(Date.now() / 1000),
+  function createOverviewController({ data, render, firewallPing, clock = () => Math.floor(Date.now() / 1000),
     schedule = setInterval, cancel = clearInterval }) {
+    const expectedFirewall = model.firewallExpectations(firewallPing);
     let active = null;
     let timer = null;
     let domains;
     let lastProbe;
 
     function draw() {
-      render(model.overviewState(domains, clock()), {
+      render(model.overviewState(domains, clock(), expectedFirewall), {
         lastProbe, pingState: domains.pingState.state, wanState: domains.wanState.state
       });
     }
