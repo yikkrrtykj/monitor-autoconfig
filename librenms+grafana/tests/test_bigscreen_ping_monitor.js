@@ -1,7 +1,10 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const { readFileSync } = require("node:fs");
+const { runInNewContext } = require("node:vm");
 const model = require("../bigscreen/ping/model.js");
 const { createPingData } = require("../bigscreen/ping/data.js");
+const { createTrendLoader } = require("../bigscreen/ping/trends.js");
 
 const settings = model.policy();
 const at = 1760000000;
@@ -214,4 +217,129 @@ test("long queries use bounded count/sum windows and keep display samples out of
   await assert.rejects(api.overview(Array(5).fill(original), at - span, at, signal));
   await assert.rejects(api.raw([original], at - 3601, at, signal));
   assert.equal(calls.length, 2);
+});
+
+test("the wall reports a missing configured VIP even when other targets and HA members are healthy", () => {
+  const vip = { job: "infra-fw-ping", metric: { target_ip: "192.0.2.10" } };
+  const member = { ...vip, job: "infra-fw-unit-ping" };
+  const expected = new Set(["192.0.2.10"]);
+  assert.deepEqual(model.missingFirewall([target(core), member], expected), ["192.0.2.10"]);
+  assert.deepEqual(model.missingFirewall([vip, member], expected), []);
+  assert.deepEqual(model.missingFirewall([], new Set()), []);
+});
+
+test("raw keeps the target, time and sample budgets before any upstream call", async () => {
+  const api = createPingData({ settings, query: async () => assert.fail("raw limit bypassed") });
+  await assert.rejects(api.raw(Array(13).fill(target(core)), at - 300, at), /超出范围/);
+  await assert.rejects(api.raw(Array(12).fill(target(core, 1)), at - 3600, at), /样本过多/);
+  await assert.rejects(api.raw([target(core)], at - 3601, at), /超出范围/);
+});
+
+function trendFixture() {
+  const calls = [];
+  const updates = [];
+  const loader = createTrendLoader({
+    raw(targets, start, end, signal) {
+      return new Promise((resolve, reject) => calls.push({ targets, start, end, signal, resolve, reject }));
+    },
+    changed: (key, trend) => updates.push({ key, trend })
+  });
+  const finish = ({ targets, resolve }) => resolve(new Map(targets.map(({ key }) => [key, []])));
+  const devices = Array.from({ length: 300 }, (_, index) => target({ ...core, label: String(index) }));
+  return { calls, updates, loader, finish, devices };
+}
+
+const settle = () => new Promise(setImmediate);
+
+test("300-target inventory feeds only viewport and bounded trend batches; same-window requests deduplicate", async () => {
+  const { calls, updates, loader, finish, devices } = trendFixture();
+  const visible = devices.slice(25, 57);
+  loader.update(visible, at);
+  loader.update(visible, at);
+  assert.deepEqual(calls.map(({ targets }) => targets.length), [12, 12]);
+  finish(calls[0]);
+  finish(calls[1]);
+  await settle();
+  assert.deepEqual(calls.map(({ targets }) => targets.length), [12, 12, 8]);
+  finish(calls[2]);
+  await settle();
+  assert.equal(updates.length, 32);
+  assert.ok(updates.every(({ key }) => visible.some((device) => device.key === key)));
+  assert.equal(loader.get(visible[0].key).end, at);
+  loader.update(visible.slice(6), at);
+  loader.update(visible, at);
+  assert.equal(calls.length, 3);
+  loader.update(visible, at + 30);
+  assert.equal(calls.length, 5);
+  assert.equal(calls[3].start, at + 30 - 300);
+  loader.stop();
+});
+
+test("scroll, filter, time change and stop ignore superseded batches even if transport resolves after abort", async () => {
+  const { calls, updates, loader, finish, devices } = trendFixture();
+  loader.update(devices.slice(0, 30), at);
+  loader.update(devices.slice(240, 270), at);
+  assert.ok(calls.every(({ signal }) => signal.aborted));
+  assert.equal(calls.length, 2);
+  finish(calls[0]);
+  finish(calls[1]);
+  await settle();
+  assert.equal(updates.length, 0);
+  assert.equal(calls.length, 4);
+  loader.update(devices.slice(242, 243), at);
+  finish(calls[2]);
+  finish(calls[3]);
+  await settle();
+  assert.deepEqual(updates.map(({ key }) => key), [devices[242].key]);
+  loader.update([devices[242]], at - 30);
+  loader.stop();
+  assert.equal(calls[4].signal.aborted, true);
+  finish(calls[4]);
+  await settle();
+  assert.equal(updates.length, 1);
+  assert.equal(loader.get(devices[242].key), undefined);
+});
+
+test("partial viewport overlap reuses the in-flight batch and a timeout is distinct from no data", async () => {
+  const { calls, updates, loader, finish, devices } = trendFixture();
+  loader.update(devices.slice(0, 2), at);
+  loader.update(devices.slice(1, 3), at);
+  assert.equal(calls[0].signal.aborted, false);
+  assert.deepEqual(calls[1].targets, devices.slice(2, 3));
+  calls[0].reject(new DOMException("", "TimeoutError"));
+  finish(calls[1]);
+  await settle();
+  assert.deepEqual(updates.map(({ key, trend }) => [key, trend.error, trend.rows]), [
+    [devices[1].key, "查询超时", undefined], [devices[2].key, undefined, []]
+  ]);
+  loader.update(devices.slice(1, 3), at);
+  assert.equal(calls.length, 2);
+  loader.stop();
+});
+
+test("wall order keeps gateways ahead of access switches and does not rank by live status", () => {
+  const devices = [
+    { group: "Dist", status: "DOWN" }, { group: "FW Unit", status: "UP" },
+    { group: "AP", status: "UNKNOWN" }, { group: "FW", status: "UP" },
+    { group: "Core", status: "UP" }, { group: "Stage", status: "DEGRADED" }
+  ];
+  assert.deepEqual(devices.sort(model.wallOrder).map(model.groupLabel),
+    ["Core", "FW VIP", "FW Unit", "Stage", "Dist", "AP ICMP"]);
+});
+
+test("wall charts share RTT coordinates and break on missing, lost and failed scrapes", () => {
+  const window = { BSUtils: require("../bigscreen/utils.js") };
+  runInNewContext(readFileSync(require.resolve("../bigscreen/ping/charts.js"), "utf8"), { window });
+  const { sparkline } = window.BSPingCharts;
+  const points = [
+    { t: 1, rtt: 10, scrape: 1, success: 1 }, { t: 2, rtt: 10, scrape: 1, success: 1 },
+    { t: 4, rtt: 30, scrape: 1, success: 1 }, { t: 5, rtt: null, scrape: 0, success: null },
+    { t: 6, rtt: null, scrape: 1, success: 0 }, { t: 7, rtt: 3000, scrape: 1, success: 1 }
+  ];
+  const graph = sparkline(points, 0, 8, 1);
+  const trace = (svg) => svg.match(/class="ping-trace" d="([^"]+)"/)[1];
+  assert.equal(trace(graph).split("M")[1], trace(sparkline(points.slice(0, 2), 0, 8, 1)).split("M")[1]);
+  assert.equal(trace(graph).match(/M/g).length, 3);
+  for (const reason of ["loss", "scrape", "missing", "clipped"]) assert.match(graph, new RegExp("ping-mark-" + reason));
+  assert.match(sparkline([], 0, 8, 1), /最近 5 分钟无样本/);
 });

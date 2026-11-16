@@ -6,7 +6,7 @@
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20261116a" />
     <link rel="stylesheet" href="./platform.css?v=20261116a" />
-    <link rel="stylesheet" href="./ping/ping.css?v=20261116a" />
+    <link rel="stylesheet" href="./ping/ping.css?v=20261116b" />
     <link rel="stylesheet" href="./infra/overview.css?v=20261116a" />
   </head>
   <body>
@@ -106,17 +106,22 @@
       <section class="ping-workspace" id="pingWorkspace" aria-labelledby="pingWorkspaceTitle" hidden>
         <div class="ping-shell">
           <header class="ping-heading">
-            <div><p class="ping-kicker">NETWORK TELEMETRY / ICMP</p><h2 id="pingWorkspaceTitle">Ping 监控</h2></div>
+            <h2 id="pingWorkspaceTitle">Ping 监控墙</h2>
             <div class="ping-feed"><span class="ping-badge" id="pingSource" data-state="UNKNOWN"></span><time id="pingUpdated"></time></div>
           </header>
-          <section class="ping-surface" aria-label="设备探测列表">
+          <section class="ping-surface" aria-label="设备探测监控墙">
             <div class="ping-toolbar">
               <label>设备分组<select id="pingCategory">
-                <option value="">所有设备</option><option value="lan">内网</option><option value="isp">ISP</option>
-                <option value="ap">AP</option><option value="server">服务器</option><option value="remote">远端</option>
+                <option value="">所有设备</option>
+                <optgroup label="内网">
+                  <option value="lan">全部内网</option><option value="Core">Core</option><option value="FW">FW VIP</option>
+                  <option value="FW Unit">FW Unit</option><option value="Stage">Stage</option><option value="Dist">Dist / 交换机</option>
+                </optgroup>
+                <option value="isp">ISP</option><option value="ap">AP ICMP</option><option value="server">服务器</option>
               </select></label>
               <label>探测状态<select id="pingStatus">
-                <option value="">全部状态</option><option value="UP">在线</option><option value="DOWN">离线</option>
+                <option value="">全部状态</option><option value="abnormal">全部异常</option>
+                <option value="UP">在线</option><option value="DOWN">离线</option>
                 <option value="DEGRADED">质量异常</option><option value="UNKNOWN">未知</option>
               </select></label>
               <label class="ping-search">搜索<input id="pingSearch" type="search" placeholder="名称或 IP" maxlength="160" /></label>
@@ -125,6 +130,7 @@
                 <option value="24h">24h</option><option value="7d">7d</option><option value="custom">自定义</option>
               </select></label>
               <button type="button" id="pingRefresh">刷新</button>
+              <button type="button" id="pingComparison" disabled>查看历史 / 对比（0/4）</button>
             </div>
             <div class="ping-toolbar ping-custom" id="pingCustom" hidden>
               <label>起点<input id="pingStart" type="datetime-local" step="1" /></label>
@@ -133,24 +139,24 @@
               <label class="ping-check"><input id="pingHistoricalTargets" type="checkbox" /> 显示终点时的目标</label>
             </div>
             <p class="ping-error" id="pingError" role="alert"></p>
-            <p class="ping-counts" id="pingCounts"></p>
+            <div class="ping-wall-counts">
+              <p class="ping-counts" id="pingCounts"></p><p class="ping-counts" id="pingVisibleCount"></p>
+            </div>
             <p class="ping-counts" id="pingCoverage" role="status"></p>
-            <p class="ping-scroll-tip">横向滑动查看 RTT、丢包和对比。</p>
-            <div class="ping-table-wrap" tabindex="0" aria-label="横向滚动查看设备指标">
-              <table class="ping-table">
-                <thead><tr><th scope="col">名称 / IP</th><th scope="col">分组</th><th scope="col">状态</th><th scope="col">RTT <small>ms</small></th>
-                  <th scope="col">STDDEV <small>ms</small></th><th scope="col">Loss</th><th scope="col">近 5 分钟 RTT</th><th scope="col">对比</th></tr></thead>
-                <tbody id="pingRows"></tbody>
-              </table>
+            <div class="ping-wall-legend" aria-label="小图图例">
+              <span><i class="ping-legend-trace"></i>RTT · 共用刻度 0 / 25 / 100 / 500 / 2000 ms</span>
+              <span><i class="ping-legend-loss"></i>ICMP 丢包</span>
+              <span><i class="ping-legend-scrape"></i>抓取失败</span>
+              <span><i class="ping-legend-missing"></i>缺样</span>
+              <span><i class="ping-legend-clipped"></i>超过刻度</span>
             </div>
+            <p class="ping-wall-note">AP 仅显示 ICMP，控制器在线状态见 <a href="/wireless">无线总览</a>。</p>
+            <div class="ping-wall" id="pingWall"></div>
             <p class="ping-empty" id="pingEmpty" role="status"></p>
-            <div class="ping-list-footer">
-              <p>状态表示本探针到目标的 ICMP 结果。AP 在线状态见 <a href="/wireless">无线总览</a>。</p>
-              <div><button type="button" id="pingPrev">上一页</button><span id="pingPage"></span><button type="button" id="pingNext">下一页</button></div>
-            </div>
           </section>
           <section class="ping-surface ping-detail" id="pingDetail" aria-labelledby="pingHistoryTitle" hidden>
-            <header class="ping-detail-header"><div><p class="ping-kicker">PROBE HISTORY</p><h3 id="pingHistoryTitle">历史查询与对比</h3></div>
+            <header class="ping-detail-header"><h3 id="pingHistoryTitle" tabindex="-1">历史查询与对比</h3>
+              <button type="button" id="pingBackToWall">返回监控墙</button>
               <div class="ping-selection" id="pingSelected"></div></header>
             <p id="pingHistoryCaption"></p>
             <div id="pingOverviewChart"></div>
@@ -383,11 +389,13 @@
     <script src="./evidence/evidence-panel.js?v=20260911a"></script>
     <script src="./metrics/ping-transform.js?v=20260826b"></script>
     <script src="./isp-carousel.js?v=20260731a"></script>
-    <script src="./api.js?v=20261001a"></script>
-    <script src="./ping/model.js?v=20261107b"></script>
-    <script src="./ping/data.js?v=20261116a"></script>
-    <script src="./ping/charts.js?v=20261107a"></script>
-    <script src="./ping/panel.js?v=20261116a"></script>
+    <script src="./api.js?v=20261116b"></script>
+    <script src="./ping/model.js?v=20261116b"></script>
+    <script src="./ping/data.js?v=20261116b"></script>
+    <script src="./ping/charts.js?v=20261116b"></script>
+    <script src="./ping/trends.js?v=20261116b"></script>
+    <script src="./ping/wall.js?v=20261116b"></script>
+    <script src="./ping/panel.js?v=20261116b"></script>
     <script src="./infra/overview-model.js?v=20261116c"></script>
     <script src="./infra/overview-data.js?v=20261107a"></script>
     <script src="./infra/overview-controller.js?v=20261116b"></script>

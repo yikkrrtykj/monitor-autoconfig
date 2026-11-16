@@ -1779,7 +1779,7 @@ def test_bigscreen_ping_trend_uses_job_aware_rtt_presentation():
     assert pages.count("[30s]") == 3
     assert "pages.js?v=20261116a" in index
     assert "players.js?v=20260802a" in index
-    assert "api.js?v=20261001a" in index
+    assert "api.js?v=20261116b" in index
     assert "app.js?v=20261116b" in index
     assert "utils.js?v=20260904a" in index
     assert "charts/line-chart.js?v=20260908a" in index
