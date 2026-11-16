@@ -31,11 +31,39 @@
     return path;
   }
 
-  function sparkline(points, start, end, gap) {
-    const max = points.reduce((limit, point) => Math.max(limit, point.rtt || 0), 0);
-    if (!max) return "N/A";
-    const path = line(points, (t) => (t - start) * 111 / (end - start), (value) => 27 - value * 23 / max, gap);
-    return `<svg viewBox="0 0 112 30" class="ping-sparkline" role="img" aria-label="最近五分钟 RTT"><path d="${path}" /></svg>`;
+  // The shared scale gives LAN jitter room while retaining WAN context.
+  const wallTicks = [0, 25, 100, 500, 2000];
+  const wallY = (value) => {
+    const index = wallTicks.findIndex((tick) => value <= tick);
+    if (index <= 0) return index === 0 ? 52 : 4;
+    const from = wallTicks[index - 1];
+    return 52 - 12 * (index - 1 + (value - from) / (wallTicks[index] - from));
+  };
+
+  function sparkline(points, start, end, interval) {
+    const x = (t) => 1 + (t - start) * 298 / (end - start);
+    const gap = interval * 1.5;
+    const grid = wallTicks.map((tick) => `M1 ${wallY(tick)}H299`).join("");
+    const events = { loss: "", scrape: "", missing: "", clipped: "" };
+    let previous = start;
+    for (const point of points) {
+      const cx = x(point.t).toFixed(2);
+      if (point.t - previous > gap) {
+        events.missing += `M${x(previous + interval / 2).toFixed(2)} 60H${x(point.t - interval / 2).toFixed(2)}`;
+      }
+      if (point.scrape === 0) events.scrape += `M${cx} 55v5`;
+      else if (point.success === 0) events.loss += `M${cx} 55v5`;
+      else if (point.rtt === null) events.missing += `M${cx} 59h.5`;
+      if (point.rtt > wallTicks.at(-1)) events.clipped += `M${cx} 4v4`;
+      previous = point.t;
+    }
+    if (end - previous > gap) events.missing += `M${x(previous).toFixed(2)} 60H299`;
+    const path = line(points, x, wallY, gap);
+    const label = points.length ? "最近 5 分钟 RTT，共用刻度" : "最近 5 分钟无样本";
+    const marks = Object.entries(events).filter(([, value]) => value)
+      .map(([kind, value]) => `<path class="ping-mark-${kind}" d="${value}"/>`).join("");
+    return `<svg viewBox="0 0 300 62" preserveAspectRatio="none" class="ping-sparkline" role="img" aria-label="${label}">
+      <path class="ping-gridline" d="${grid}"/><path class="ping-trace" d="${path}"/>${marks}</svg>`;
   }
 
   function chart(series, start, end, cursor, { distribution = false, sampled = false } = {}) {

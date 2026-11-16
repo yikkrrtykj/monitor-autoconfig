@@ -12,6 +12,8 @@
     "player-ping": ["player", "Player", "player"]
   });
   const jobOrder = Object.keys(jobs);
+  const wallGroups = ["Core", "FW", "FW Unit", "ISP", "Stage", "Dist", "Server", "AP"];
+  const groupLabels = { FW: "FW VIP", AP: "AP ICMP" };
   const defaults = Object.freeze({ isp: 1, infra: 2, player: 5, ap: 5 });
   const minCoverage = 0.8;
   const minRttSamples = 30;
@@ -20,7 +22,7 @@
   const defaultStats = 300;
   const inventorySeconds = 30 * 60;
   const maxCompared = 4;
-  const pageSize = 12;
+  const maxRawTargets = 12;
 
   function durationSeconds(value) {
     const units = { y: 31536000, w: 604800, d: 86400, h: 3600, m: 60, s: 1, ms: 0.001 };
@@ -43,6 +45,15 @@
       rttThreshold: rtt > 0 && Number.isFinite(rtt) ? rtt : 50
     };
   }
+
+  function missingFirewall(targets, expected) {
+    const present = new Set(targets.filter(({ job }) => job === "infra-fw-ping")
+      .map(({ metric }) => metric.target_ip));
+    return [...expected].filter((ip) => !present.has(ip));
+  }
+
+  const groupLabel = ({ group }) => groupLabels[group] || group;
+  const wallOrder = (a, b) => wallGroups.indexOf(a.group) - wallGroups.indexOf(b.group);
 
   function identity(metric) {
     // Keep every target label. Removing a name or IP from the key would join
@@ -127,7 +138,8 @@
       }
       targets.push({
         ...target, status, rtt, loss: valid ? loss : { ...loss, loss: null },
-        reason: status !== "UNKNOWN" ? "" : !fresh ? "数据缺失或过期" : get("source") === 0 ? "Prometheus 抓取失败" : "探测结果缺失",
+        reason: status !== "UNKNOWN" ? "" : sourceAt === null ? "数据缺失" : !fresh ? "数据过期"
+          : get("source") === 0 ? "Prometheus 抓取失败" : "探测结果缺失",
         sourceAt: valid ? sourceAt : null
       });
     }
@@ -200,8 +212,8 @@
     });
   }
 
-  const ns = { jobs, minCoverage, minRttSamples, maxHistory, maxRaw, defaultStats, inventorySeconds, maxCompared, pageSize,
-    policy, identity, number, lossStats, rttMs, snapshot, rawRows, rawStats, bucketRows };
+  const ns = { jobs, minCoverage, minRttSamples, maxHistory, maxRaw, defaultStats, inventorySeconds, maxCompared, maxRawTargets,
+    policy, missingFirewall, groupLabel, wallOrder, identity, number, lossStats, rttMs, snapshot, rawRows, rawStats, bucketRows };
   if (typeof module !== "undefined" && module.exports) module.exports = ns;
   else window.BSPingModel = ns;
 })();

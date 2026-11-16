@@ -107,7 +107,7 @@
 
     async function raw(targets, start, end, signal) {
       const duration = Math.ceil(end - start);
-      if (!targets.length || targets.length > model.pageSize || duration < 1 || duration > model.maxRaw) {
+      if (!targets.length || targets.length > model.maxRawTargets || duration < 1 || duration > model.maxRaw) {
         throw new Error("原始样本查询超出范围");
       }
       const expected = targets.reduce((sum, target) => sum + duration / target.interval, 0);
@@ -166,6 +166,7 @@
     return { summary, raw, overview };
   }
 
-  if (common) module.exports = { createPingData };
-  else window.BSPingData = { createPingData };
+  const queryError = (error) => error?.name === "TimeoutError" ? "查询超时" : "查询失败";
+  if (common) module.exports = { createPingData, queryError };
+  else window.BSPingData = { createPingData, queryError };
 })();

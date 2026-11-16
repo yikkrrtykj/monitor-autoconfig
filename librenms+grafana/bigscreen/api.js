@@ -116,6 +116,13 @@
     const response = await fetch(url, {
       cache: "no-store", signal: AbortSignal.any([signal, AbortSignal.timeout(9000)])
     });
+    if (response.status === 408 || response.status === 504) {
+      throw new DOMException("监控查询超时", "TimeoutError");
+    }
+    if (response.status === 503 && response.headers.get("content-type")?.includes("application/json")) {
+      const error = await response.json();
+      if (error?.errorType === "timeout") throw new DOMException("监控查询超时", "TimeoutError");
+    }
     if (!response.ok) throw new Error("监控数据查询失败");
     const payload = await response.json();
     const type = payload.data?.resultType;

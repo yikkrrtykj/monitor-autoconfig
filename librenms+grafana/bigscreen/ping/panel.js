@@ -3,6 +3,8 @@
 
   const model = window.BSPingModel;
   const charts = window.BSPingCharts;
+  const { createTrendLoader, refreshSeconds } = window.BSPingTrends;
+  const { queryError } = window.BSPingData;
   const { escapeHtml: esc, buildCsv } = window.BSUtils;
   const intervals = { "5m": 300, "1h": 3600, "6h": 21600, "24h": 86400, "7d": model.maxHistory };
   const states = { UP: "在线", DOWN: "离线", DEGRADED: "质量异常", UNKNOWN: "未知" };
@@ -17,6 +19,7 @@
   const safeCsvText = (value) => /^[\t\r\n]|^\s*[=+\-@]/.test(value) ? "'" + value : value;
 
   function createPingPanel(root, data, settings) {
+    const firewall = window.BSOverviewModel.firewallExpectations(window.BIGSCREEN_CONFIG?.firewallPing);
     const byId = (id) => root.querySelector(`#ping${id}`);
     const category = byId("Category");
     const status = byId("Status");
@@ -27,7 +30,6 @@
     const cursorField = byId("Cursor");
     const statsField = byId("StatsWindow");
     const historical = byId("HistoricalTargets");
-    const rows = byId("Rows");
     const detail = byId("Detail");
     const requests = new Map();
     const selected = new Map();
@@ -35,17 +37,20 @@
     let timer = null;
     let targets = [];
     let agedOut = 0;
-    let visible = [];
-    let page = 0;
+    let visible = new Map();
+    let nearby = [];
     let lastSuccess = null;
     let dataState = "loading";
+    let dataError = "";
     let snapshotAt = null;
     let routeTarget = null;
-    let trends = null;
     let range = null;
     let cursor = null;
     let overview = null;
     let drill = null;
+    let wallFocus = null;
+    const wall = window.BSPingWall.createPingWall({ root, grid: byId("Wall"), viewportChanged });
+    const trends = createTrendLoader({ raw: data.raw, changed: wall.paint });
 
     function cancel(name) {
       requests.get(name)?.abort();
@@ -61,9 +66,9 @@
         if (!active || requests.get(name) !== controller) return false;
         done(result);
         return true;
-      } catch {
+      } catch (error) {
         if (!active || requests.get(name) !== controller) return false;
-        failed();
+        failed(error);
         return true;
       } finally {
         if (requests.get(name) === controller) requests.delete(name);
@@ -73,84 +78,64 @@
     function list() {
       const term = search.value.trim().toLowerCase();
       const filtered = targets.filter((target) =>
-        (!category.value || category.value === target.category) &&
-        (!status.value || status.value === target.status) &&
-        (!term || [target.name, target.ip, target.subtitle, target.group].some((value) => value.toLowerCase().includes(term))));
-      const pages = Math.max(1, Math.ceil(filtered.length / model.pageSize));
-      page = Math.min(page, pages - 1);
-      visible = filtered.slice(page * model.pageSize, (page + 1) * model.pageSize);
-      const focus = document.activeElement;
-      const focusRow = rows.contains(focus) ? [visible.findIndex((target) => target.key === focus.dataset.key), focus.dataset.action] : null;
-      rows.innerHTML = visible.map((target, index) => {
-        const cache = dataState === "ready" && trends?.rows.get(target.key);
-        const stats = cache && model.rawStats(cache, model.defaultStats, target.interval);
-        const lossTitle = `${target.lossWindow / 60} 分钟 · 成功 ${target.loss.success} · 失败 ${target.loss.failed} · 总计 ${target.loss.total} · 覆盖 ${percent(target.loss.coverage * 100)}`;
-        const picked = selected.has(target.key);
-        return `<tr data-row="${index}">
-          <th scope="row"><button type="button" class="ping-target" data-action="open" data-index="${index}" data-key="${esc(target.key)}">${esc(target.name)}</button>
-            <small>${esc(target.ip)}${target.subtitle ? " · " + esc(target.subtitle) : ""}</small></th>
-          <td>${esc(target.group)}</td>
-          <td><span class="ping-badge" data-state="${target.status}" title="${esc(target.reason)}">${target.status}</span></td>
-          <td>${fmt(target.rtt)}</td>
-          <td title="${stats?.stddev == null ? "样本不足或查询不可用" : `${stats.rttSamples} 个有效 RTT 样本`}">${fmt(stats?.stddev)}</td>
-          <td title="${lossTitle}">${percent(target.loss.loss)}</td>
-          <td>${cache ? charts.sparkline(cache, trends.at - model.defaultStats, trends.at, target.interval * 2.5) : "N/A"}</td>
-          <td><button type="button" data-action="compare" data-index="${index}" data-key="${esc(target.key)}" aria-pressed="${picked}" aria-label="${picked ? "移除" : "对比"} ${esc(target.name)}" ${!picked && selected.size >= model.maxCompared ? "disabled" : ""}>${picked ? "已选" : "+"}</button></td>
-        </tr>`;
-      }).join("");
-      if (focusRow && focusRow[0] >= 0) {
-        rows.querySelector(`[data-index="${focusRow[0]}"][data-action="${focusRow[1]}"]`)?.focus({ preventScroll: true });
-      }
-      const empty = category.value === "remote" ? "远端监控未配置" :
-        dataState === "loading" ? "正在读取监控目标…" :
+        (!category.value || category.value === target.category || category.value === target.group) &&
+        (!status.value || (status.value === "abnormal" ? target.status !== "UP" : status.value === target.status)) &&
+        (!term || [target.name, target.ip, target.subtitle, target.group, model.groupLabel(target)].some((value) => value.toLowerCase().includes(term))));
+      visible = new Map(filtered.map((target) => [target.key, target]));
+      wall.render(visible, selected);
+      const empty = dataState === "loading" ? "正在读取监控目标…" :
         dataState === "unavailable" ? "Monitoring Unavailable · 监控数据不可用" : "没有符合条件的目标";
-      byId("Empty").textContent = visible.length ? "" : empty;
-      byId("Prev").disabled = page === 0;
-      byId("Next").disabled = page + 1 >= pages;
-      byId("Page").textContent = `第 ${page + 1} / ${pages} 页 · ${filtered.length} 个目标`;
+      byId("Empty").textContent = visible.size ? "" : empty;
+      byId("VisibleCount").textContent = `显示 ${visible.size} / ${targets.length} 个目标`;
+      byId("Comparison").disabled = !selected.size;
+      byId("Comparison").textContent = `查看历史 / 对比（${selected.size}/${model.maxCompared}）`;
+      refreshTrends();
     }
 
     function renderSnapshot() {
       const counts = { UP: 0, DOWN: 0, DEGRADED: 0, UNKNOWN: 0 };
       for (const { status } of targets) counts[status] += 1;
       const available = dataState === "ready" && targets.length > counts.UNKNOWN;
-      const partial = counts.UNKNOWN > 0 || agedOut > 0;
+      const missing = dataState === "ready" ? model.missingFirewall(targets, firewall.ips) : [];
+      const partial = counts.UNKNOWN > 0 || agedOut > 0 || missing.length > 0 || firewall.invalid;
       const mode = snapshotAt === null ? "实时监控" : "历史快照";
       const source = byId("Source");
       source.dataset.state = !available ? "UNKNOWN" : partial ? "DEGRADED" : "UP";
       source.textContent = dataState === "loading" ? "正在读取" :
-        !available ? "Monitoring Unavailable" : partial ? `${mode} · 部分不可用` : mode;
+        !available ? ["Monitoring Unavailable", dataError].filter(Boolean).join(" · ") : partial ? `${mode} · 部分不可用` : mode;
       byId("Counts").textContent = Object.entries(states).map(([key, label]) => `${label} ${counts[key]}`).join(" · ");
       const coverage = byId("Coverage");
-      const coverageText = agedOut
-        ? `${agedOut} 个目标已超出 ${model.inventorySeconds / 60} 分钟观察窗口并移出列表，消失原因未知。`
-        : "";
+      const coverageText = [
+        firewall.invalid ? "FW VIP 配置无法完整核对" : "",
+        missing.length ? `已配置 FW VIP 缺少 ${missing.length} 个监控目标` : "",
+        agedOut ? `${agedOut} 个目标已超出 ${model.inventorySeconds / 60} 分钟观察窗口并移出列表，消失原因未知。` : ""
+      ].filter(Boolean).join(" · ");
       if (coverage.textContent !== coverageText) coverage.textContent = coverageText;
       byId("Updated").textContent = `最后成功更新 ${lastSuccess === null ? "—" : charts.formatTime(lastSuccess)}`;
       list();
     }
 
+    function viewportChanged(targets) {
+      nearby = targets;
+      refreshTrends();
+    }
+
     function refreshTrends() {
-      if (!active || dataState !== "ready" || !visible.length) return;
-      const at = snapshotAt ?? now();
-      const current = visible.slice();
-      const signature = JSON.stringify(current.map(({ key }) => key));
-      if (requests.has("trends") && requests.get("trends").signature === signature) return;
-      if (trends && trends.signature === signature && at - trends.at < 30) return;
-      run("trends", (signal) => data.raw(current, at - model.defaultStats, at, signal), (result) => {
-        trends = { at, rows: result, signature };
-        list();
-      }, () => {
-        trends = null;
-        list();
-      });
-      requests.get("trends").signature = signature;
+      if (!active) return;
+      if (dataState !== "ready") {
+        trends.update([], null);
+        return;
+      }
+      const end = snapshotAt ?? Math.floor(now() / refreshSeconds) * refreshSeconds;
+      const current = nearby.map(({ key }) => visible.get(key)).filter(Boolean);
+      trends.update(current, end);
+      for (const { key } of current) wall.paint(key, trends.get(key));
     }
 
     function unavailable(reason) {
       dataState = "unavailable";
-      cancel("trends");
-      trends = null;
+      dataError = reason;
+      trends.stop();
       targets = targets.map((target) => ({ ...target, status: "UNKNOWN", rtt: null, sourceAt: null,
         loss: { ...target.loss, total: 0, success: 0, failed: 0, coverage: 0, loss: null }, reason }));
       renderSnapshot();
@@ -160,17 +145,18 @@
       clearTimeout(timer);
       const at = snapshotAt ?? now();
       const applied = await run("summary", (signal) => data.summary(at, signal), (result) => {
-        ({ targets, agedOut } = result);
+        agedOut = result.agedOut;
+        targets = result.targets.sort(model.wallOrder);
         dataState = targets.length ? "ready" : "unavailable";
+        dataError = "";
         if (targets.some((target) => target.sourceAt !== null)) lastSuccess = now();
         renderSnapshot();
-        refreshTrends();
         const deepTarget = targets.find((target) => target.key === routeTarget);
         if (deepTarget) {
           routeTarget = null;
           choose(deepTarget, false);
         }
-      }, () => unavailable("监控查询失败"));
+      }, (error) => unavailable(`监控${queryError(error)}`));
       if (applied && active && !requests.has("summary") && snapshotAt === null) {
         clearTimeout(timer);
         timer = setTimeout(refreshSnapshot, Math.max(500, 5000 - (now() - at) * 1000));
@@ -317,18 +303,24 @@
 
     function switchSnapshot() {
       snapshotAt = historical.checked ? range.end : null;
-      cancel("trends");
-      trends = null;
+      trends.stop();
+      nearby = [];
       dataState = "loading";
+      dataError = "";
       targets = [];
       agedOut = 0;
-      page = 0;
       lastSuccess = null;
       renderSnapshot();
       refreshSnapshot();
     }
 
-    function choose(target, toggle) {
+    function showDetail(origin) {
+      wallFocus = origin;
+      detail.scrollIntoView({ block: "start" });
+      byId("HistoryTitle").focus({ preventScroll: true });
+    }
+
+    function choose(target, toggle, origin) {
       if (!target) return;
       const first = selected.size === 0;
       if (!toggle) selected.clear();
@@ -337,7 +329,7 @@
       list();
       if (first && rangeField.value !== "custom") applyRange();
       else refreshHistory();
-      if (!toggle) detail.scrollIntoView({ block: "start" });
+      if (!toggle) showDetail(origin);
     }
 
     function download() {
@@ -363,20 +355,14 @@
       if (chart && byId("OverviewChart").contains(chart)) setCursor(charts.chartTime(chart, event.clientX));
       if (!button) return;
       if (button.dataset.cursor) setCursor(Number(button.dataset.cursor));
-      if (button.dataset.action === "open") choose(visible[Number(button.dataset.index)], false);
-      if (button.dataset.action === "compare") choose(visible[Number(button.dataset.index)], true);
+      const key = button.closest(".ping-card")?.dataset.key;
+      if (button.dataset.action === "open") choose(visible.get(key), false, button);
+      if (button.dataset.action === "compare") choose(visible.get(key), true);
       if (button.dataset.action === "remove") choose([...selected.values()][Number(button.dataset.index)], true);
     });
-    for (const field of [category, status, search]) field.addEventListener("input", () => {
-      page = 0;
-      list();
-      refreshTrends();
-    });
-    for (const [id, delta] of [["Prev", -1], ["Next", 1]]) byId(id).addEventListener("click", () => {
-      page += delta;
-      list();
-      refreshTrends();
-    });
+    for (const field of [category, status, search]) field.addEventListener("input", list);
+    byId("Comparison").addEventListener("click", (event) => showDetail(event.currentTarget));
+    byId("BackToWall").addEventListener("click", () => (wallFocus?.isConnected ? wallFocus : search).focus());
     rangeField.addEventListener("change", () => {
       if (rangeField.value === "custom") byId("Custom").hidden = false;
       else applyRange();
@@ -395,12 +381,16 @@
     function stop() {
       active = false;
       clearTimeout(timer);
+      wall.stop();
+      trends.stop();
       for (const name of requests.keys()) cancel(name);
     }
 
     function start(params) {
       stop();
       active = true;
+      wall.start();
+      wallFocus = null;
       selected.clear();
       snapshotAt = null;
       root.scrollTop = 0;
