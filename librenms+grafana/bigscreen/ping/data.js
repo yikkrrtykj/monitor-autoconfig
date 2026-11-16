@@ -4,9 +4,7 @@
   const common = typeof module !== "undefined" && module.exports;
   const model = common ? require("./model.js") : window.BSPingModel;
   const { escapeRegex } = common ? require("../utils.js") : window.BSUtils;
-  const allJobs = Object.keys(model.jobs);
-  const slowJobs = ["player-ping", "infra-ap-ping"];
-  const fastJobs = allJobs.filter((job) => !slowJobs.includes(job));
+  const deviceJobs = Object.keys(model.jobs).filter((job) => job !== "player-ping" && job !== "infra-ap-ping");
 
   function matcher(label, values) {
     const terms = [...new Set(values)];
@@ -47,8 +45,9 @@
     ];
   }
 
-  function createPingData({ query, settings, inventoryMaxAge = 0 }) {
-    const all = matcher("job", allJobs);
+  function createPingData({ query, settings, inventoryMaxAge = 0, includeAp = true }) {
+    const allowedJobs = new Set(includeAp ? [...deviceJobs, "infra-ap-ping"] : deviceJobs);
+    const all = matcher("job", allowedJobs);
     const { inventorySeconds } = model;
     // Keep the preceding five minutes separate so an expiring target still
     // leaves a coverage notice, including on reload. Neither window proves intent.
@@ -58,8 +57,8 @@
     ];
     const liveFields = [
       ...currentFields(all),
-      ...lossFields(matcher("job", fastJobs), 60),
-      ...lossFields(matcher("job", slowJobs), 300)
+      ...lossFields(matcher("job", deviceJobs), 60),
+      ...(includeAp ? lossFields(matcher("job", ["infra-ap-ping"]), 300) : [])
     ];
     const liveQuery = liveFields.join(" or ");
     const summaryQuery = [...inventoryFields, ...liveFields].join(" or ");
@@ -67,8 +66,9 @@
 
     async function summary(at, signal) {
       const cached = inventory && at >= inventory.at && at - inventory.at < inventoryMaxAge ? inventory : null;
-      const result = await query(cached ? liveQuery : summaryQuery, { time: at }, signal);
-      if (result.length > 10 * 3000) throw new Error("监控目标超出列表上限");
+      const response = await query(cached ? liveQuery : summaryQuery, { time: at }, signal);
+      if (response.length > 10 * 3000) throw new Error("监控目标超出列表上限");
+      const result = response.filter(({ metric }) => allowedJobs.has(metric.job));
       // The overview can reuse membership briefly, but always classifies
       // with new measurements and admits newly observed identities at once.
       const inventoryRows = cached?.rows || result.filter(({ metric }) =>

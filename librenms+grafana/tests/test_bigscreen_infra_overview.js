@@ -49,7 +49,7 @@ test("only fresh, complete key coverage may produce All Good", () => {
   assert.equal(ready.health, "healthy");
   assert.equal(ready.infraCounts.UP, 2);
   assert.equal(ready.ispCounts.UP, 1);
-  assert.equal(ready.clients.find((client) => client.category === "ap").UP, 1);
+  assert.equal(ready.total.UP, 3);
   assert.equal(ready.gatewayRows.find(({ job }) => job === core.job).stddev, 0);
   assert.equal(ready.gatewayRows.some(({ job }) => job === ha.job), false);
   assert.equal(overview.overviewState(current, now + 20).health, "unavailable");
@@ -65,6 +65,25 @@ test("only fresh, complete key coverage may produce All Good", () => {
   assert.equal(failed.health, "unavailable");
   assert.equal(failed.infraCounts.UNKNOWN, 2);
   assert.equal(failed.wans[0].in.bps, 12e6);
+});
+
+test("overview excludes client noise but retains distribution faults outside the gateway table", () => {
+  const player = { job: "player-ping", instance: "192.0.2.42", team: "2", seat: "1" };
+  const dist = { job: "infra-dist-ping", instance: "Dist", target_ip: "192.0.2.12" };
+  const vip = { ...core, job: "infra-fw-ping" };
+  const down = { ...healthy, probe: 0, ok: 0 };
+  const read = (extra) => overview.overviewState(status(ping.snapshot([
+    ...[core, isp, vip].flatMap((metric) => vector(metric, healthy)),
+    ...vector(player, down), ...vector(ap, { target: 1 }), ...extra
+  ], now, ping.policy())), now);
+  const quiet = read([]);
+  assert.equal(quiet.health, "healthy");
+  assert.equal(quiet.total.DOWN, 0);
+  assert.equal(quiet.total.UNKNOWN, 0);
+  const fault = read(vector(dist, down));
+  assert.equal(fault.health, "fault");
+  assert.deepEqual(fault.faults.map(({ job }) => job), [dist.job]);
+  assert.deepEqual(fault.gatewayRows.map(({ job }) => job), [core.job, vip.job, isp.job]);
 });
 
 test("true DOWN, quality loss and missing scrape remain separate; same IP links keep job identity", () => {

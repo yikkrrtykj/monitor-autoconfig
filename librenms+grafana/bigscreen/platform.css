@@ -106,7 +106,6 @@
 .wireless-panel,
 .control-panel,
 .dhcp-panel,
-.incident-panel,
 .topology-panel {
   min-width: 0;
   min-height: 0;
@@ -118,7 +117,6 @@
 .wireless-panel[hidden],
 .control-panel[hidden],
 .dhcp-panel[hidden],
-.incident-panel[hidden],
 .topology-panel[hidden],
 .panel-grid[hidden] {
   display: none;
@@ -744,20 +742,17 @@
 }
 
 .screen.control-mode,
-.screen.incident-mode,
 .screen.topology-mode {
   grid-template-rows: var(--screen-header-height) minmax(0, 1fr);
   background: var(--linear-canvas);
 }
 
 .screen.control-mode .topbar,
-.screen.incident-mode .topbar,
 .screen.topology-mode .topbar {
   grid-column: 1 / -1;
 }
 
 .screen.control-mode main,
-.screen.incident-mode main,
 .screen.topology-mode main {
   grid-column: 1 / -1;
 }
@@ -3354,7 +3349,6 @@ a.seat-slot:hover {
   .screen.evidence-mode,
   .screen.control-mode,
   .screen.dhcp-mode,
-  .screen.incident-mode,
   .screen.topology-mode,
   .screen.wireless-mode,
   .screen.tournament-mode {
@@ -3374,7 +3368,6 @@ a.seat-slot:hover {
   .screen.evidence-mode .topbar,
   .screen.control-mode .topbar,
   .screen.dhcp-mode .topbar,
-  .screen.incident-mode .topbar,
   .screen.topology-mode .topbar,
   .screen.wireless-mode .topbar,
   .screen.tournament-mode .topbar {
@@ -3620,52 +3613,6 @@ a.seat-slot:hover {
   .evidence-success-panel {
     grid-column: 1;
     height: 100%;
-  }
-
-  /* 卡顿分析：输入保持双列，结果卡单列排布。 */
-  .incident-panel {
-    grid-template-rows: auto auto auto;
-    height: auto;
-    padding: 10px;
-    overflow: visible;
-  }
-
-  .incident-controls {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: end;
-    gap: 10px;
-    padding: 12px;
-  }
-
-  .incident-controls label,
-  .incident-controls button {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .incident-controls input,
-  .incident-controls select,
-  .incident-controls button {
-    width: 100%;
-    min-height: 42px;
-    font-size: 16px;
-  }
-
-  .incident-verdict {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
-    padding: 12px;
-  }
-
-  .incident-grid {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: none;
-    grid-auto-rows: minmax(180px, auto);
-  }
-
-  .incident-card {
-    min-height: 180px;
   }
 
   /* 拓扑：工具条可换行，画布保留足够的手势操作区域。 */

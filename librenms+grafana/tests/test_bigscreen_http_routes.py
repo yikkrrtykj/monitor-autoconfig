@@ -69,9 +69,11 @@ def test_functional_pages_do_not_redirect_to_internal_port(tmp_path):
             assert (status, location, body) == (200, None, expected), route
             status, location, _ = request(route + "/?fixture=1")
             assert (status, location) == (302, route + "?fixture=1"), route
-        for asset in ("control/auth-controller.js", "incident/incident-panel.js", "dhcp/dhcp-panel.js"):
+        for asset in ("control/auth-controller.js", "control/incident-registry.js", "dhcp/dhcp-panel.js"):
             status, location, body = request("/" + asset)
             assert (status, location, body) == (200, None, (app / asset).read_bytes())
+        for retired in ("/incident?at=fixture", "/incident/", "/incident.js", "/incident/incident-panel.js"):
+            assert request(retired)[:2] == (410, None), retired
         assert request("/topology/fixture.json")[::2] == (200, b'{"fixture":true}')
         # Non-page directory redirects must also remain relative.
         (app / "fixture-directory").mkdir()

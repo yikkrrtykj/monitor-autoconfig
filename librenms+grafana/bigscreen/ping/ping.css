@@ -112,3 +112,4 @@
   .ping-chart text { font-size: 20px; }
   .ping-heat-row { grid-template-columns: minmax(50px, 78px) minmax(0, 1fr); }
 }
+.ping-policy summary { cursor: pointer; width: fit-content; }

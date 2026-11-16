@@ -124,7 +124,7 @@
       const coverage = byId("Coverage");
       const coverageText = agedOut
         ? `${agedOut} 个目标已超出 ${model.inventorySeconds / 60} 分钟观察窗口并移出列表，消失原因未知。`
-        : `清单依据最近 ${model.inventorySeconds / 60} 分钟的抓取记录。消失的目标显示 UNKNOWN，超出窗口后移出列表。`;
+        : "";
       if (coverage.textContent !== coverageText) coverage.textContent = coverageText;
       byId("Updated").textContent = `最后成功更新 ${lastSuccess === null ? "—" : charts.formatTime(lastSuccess)}`;
       list();
@@ -390,7 +390,7 @@
     statsField.addEventListener("change", refreshDrill);
     byId("Failures").addEventListener("change", renderDrill);
     byId("Export").addEventListener("click", download);
-    byId("Policy").textContent = `质量异常阈值为 Loss ≥ ${settings.lossThreshold}% 或当前 RTT ≥ ${settings.rttThreshold} ms。统计覆盖至少 80%，P50 / P95 / STDDEV 至少 30 个有效 RTT。`;
+    byId("Policy").textContent = `清单依据最近 ${model.inventorySeconds / 60} 分钟的抓取记录。消失的目标显示 UNKNOWN，超出窗口后移出列表。质量异常阈值为 Loss ≥ ${settings.lossThreshold}% 或当前 RTT ≥ ${settings.rttThreshold} ms。统计覆盖至少 80%，P50 / P95 / STDDEV 至少 30 个有效 RTT。`;
 
     function stop() {
       active = false;

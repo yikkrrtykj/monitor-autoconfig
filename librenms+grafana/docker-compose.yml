@@ -1316,12 +1316,16 @@ services:
 
           # Page names may also be source directories. Never serve them as directories.
           # Canonical URLs omit the slash so relative assets resolve from the root.
-          location ~ ^/(control|infra|ping|dhcp|latency|incident|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)/$$ {
+          location ~ ^/(control|infra|ping|dhcp|latency|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)/$$ {
             return 302 /$$1$$is_args$$args;
           }
-          location ~ ^/(control|infra|ping|dhcp|latency|incident|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)$$ {
+          location ~ ^/(control|infra|ping|dhcp|latency|topology|wireless|match-5v5|tournament-6|tournament-64-2layer|tournament-64-233|tournament-64-332)$$ {
             try_files /index.html =404;
           }
+
+          location = /incident { return 410; }
+          location = /incident.js { return 410; }
+          location ^~ /incident/ { return 410; }
 
           location / {
             try_files $$uri $$uri/ /index.html;

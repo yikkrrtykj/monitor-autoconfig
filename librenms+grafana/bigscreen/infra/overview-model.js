@@ -4,7 +4,7 @@
   const common = typeof module !== "undefined" && module.exports;
   const ping = common ? require("../ping/model.js") : window.BSPingModel;
   const { parseIspBandwidthConfig } = common ? require("../utils.js") : window.BSUtils;
-  const gatewayJobs = ["infra-core-ping", "infra-fw-ping", "infra-isp-ping", "infra-dist-ping"];
+  const gatewayJobs = ["infra-core-ping", "infra-fw-ping", "infra-isp-ping"];
   const maxGateways = 12;
   const maxWans = 16;
   const wanFreshness = 35;
@@ -172,7 +172,7 @@
     const critical = infra.concat(gateways);
     const infraCounts = countStates(infra);
     const ispCounts = countStates(gateways);
-    const total = countStates(targets);
+    const total = countStates(critical);
     const agedOut = pingState.data?.agedOut || 0;
     const uncovered = wans.filter(({ probeCoverage }) => probeCoverage.state === "missing").length;
     const unconfigured = wans.filter(({ probeCoverage }) => probeCoverage.state === "unconfigured").length;
@@ -190,14 +190,11 @@
     const faults = critical.filter(({ status }) => status !== "UP");
     const rank = { DOWN: 0, DEGRADED: 1, UNKNOWN: 2 };
     faults.sort((a, b) => rank[a.status] - rank[b.status]);
-    const clients = ["player", "ap"].map((category) => ({
-      category, ...countStates(targets.filter((target) => target.category === category))
-    }));
     const gatewayRows = gatewayTargets(targets).map((target) => ({
       ...target, stddev: target.status !== "UNKNOWN" && statsState.state === "ready" &&
         at - statsState.at <= 45 ? statsState.data.get(target.key) ?? null : null
     }));
-    return { health, availability, infraCounts, ispCounts, total, wans, faults, gatewayRows, clients,
+    return { health, availability, infraCounts, ispCounts, total, wans, faults, gatewayRows,
       agedOut, uncovered, unconfigured, ambiguous, missingGroups, incomplete, wanUnavailable, statsUnavailable,
       moreGateways: targets.filter(({ job }) => gatewayJobs.includes(job)).length - gatewayRows.length };
   }
