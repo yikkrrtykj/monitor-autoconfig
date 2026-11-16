@@ -4,6 +4,7 @@
   const common = typeof module !== "undefined" && module.exports;
   const ping = common ? require("../ping/model.js") : window.BSPingModel;
   const { parseIspBandwidthConfig } = common ? require("../utils.js") : window.BSUtils;
+  const { expandIpRangeText } = common ? require("../config/config-model.js") : window.BSConfigModel;
   const gatewayJobs = ["infra-core-ping", "infra-fw-ping", "infra-isp-ping"];
   const maxGateways = 12;
   const maxWans = 16;
@@ -162,7 +163,28 @@
     return { state: wan.gateway ? "missing" : "unconfigured" };
   }
 
-  function overviewState({ pingState, wanState, statsState }, at) {
+  function firewallExpectations(raw = "") {
+    const ips = new Set();
+    if (typeof raw !== "string" || raw.length > 16384) return { ips, invalid: true };
+    if (!raw.trim()) return { ips, invalid: false };
+    let invalid = false;
+    for (const entry of raw.replace(/\s/g, "").split(",").filter(Boolean)) {
+      // FIREWALL_PING uses the existing bare-IP / NAME:IP and last-octet range syntax.
+      const address = entry.slice(entry.indexOf(":") + 1);
+      for (const ip of expandIpRangeText(address)) {
+        if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip) && ip.split(".").every((octet) => Number(octet) <= 255)) {
+          ips.add(ip);
+          if (ips.size > 3000) return { ips: new Set(), invalid: true };
+        } else {
+          invalid = true;
+        }
+      }
+      if (!address) invalid = true;
+    }
+    return { ips, invalid: invalid || !ips.size };
+  }
+
+  function overviewState({ pingState, wanState, statsState }, at, firewall) {
     const targets = (pingState.data?.targets || []).map((target) => freshTarget(target, pingState.state === "ready", at));
     const infra = targets.filter((target) => target.category === "lan" || target.category === "server");
     const gateways = targets.filter((target) => target.category === "isp");
@@ -179,12 +201,16 @@
     const ambiguous = wans.filter(({ probeCoverage }) => probeCoverage.state === "ambiguous").length;
     const incomplete = critical.some(({ status, rtt, loss }) => status === "UP" && (rtt == null || loss.loss == null));
     const missingGroups = !infra.some(({ job }) => job === "infra-core-ping") || !gateways.length;
+    const observedFirewallIps = new Set(infra.filter(({ job }) => job === "infra-fw-ping")
+      .map(({ metric }) => metric.target_ip));
+    const missingFirewallVips = [...(firewall?.ips || [])].filter((ip) => !observedFirewallIps.has(ip)).length;
+    const firewallConfigInvalid = firewall?.invalid === true;
     const wanUnavailable = wanState.state !== "ready" || !wans.length ||
       wans.some((wan) => wan.in.bps === null || wan.out.bps === null);
     const unavailable = pingState.state !== "ready" || !critical.some(({ status }) => status !== "UNKNOWN");
     const statsUnavailable = statsState.state === "error";
     const partial = total.UNKNOWN > 0 || agedOut > 0 || uncovered > 0 || unconfigured > 0 || ambiguous > 0 || incomplete ||
-      missingGroups || wanUnavailable || statsUnavailable;
+      missingGroups || missingFirewallVips > 0 || firewallConfigInvalid || wanUnavailable || statsUnavailable;
     const availability = unavailable ? "unavailable" : partial ? "partial" : "ready";
     const health = total.DOWN || total.DEGRADED ? "fault" : availability === "ready" ? "healthy" : availability;
     const faults = critical.filter(({ status }) => status !== "UP");
@@ -195,11 +221,12 @@
         at - statsState.at <= 45 ? statsState.data.get(target.key) ?? null : null
     }));
     return { health, availability, infraCounts, ispCounts, total, wans, faults, gatewayRows,
-      agedOut, uncovered, unconfigured, ambiguous, missingGroups, incomplete, wanUnavailable, statsUnavailable,
+      agedOut, uncovered, unconfigured, ambiguous, missingGroups, missingFirewallVips, firewallConfigInvalid,
+      incomplete, wanUnavailable, statsUnavailable,
       moreGateways: targets.filter(({ job }) => gatewayJobs.includes(job)).length - gatewayRows.length };
   }
 
-  const ns = { maxWans, inventoryFreshness, gatewayTargets, pingHref, inventoryRows, wanCards, overviewState };
+  const ns = { maxWans, inventoryFreshness, gatewayTargets, pingHref, inventoryRows, wanCards, firewallExpectations, overviewState };
   if (common) module.exports = ns;
   else window.BSOverviewModel = ns;
 })();

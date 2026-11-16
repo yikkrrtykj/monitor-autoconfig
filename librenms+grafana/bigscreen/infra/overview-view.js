@@ -144,6 +144,8 @@
         state.unconfigured ? `${state.unconfigured} 个 WAN 未提供网关，探测关联待核实` : "",
         state.ambiguous ? `${state.ambiguous} 个 WAN 探测关联有歧义` : "",
         state.missingGroups ? "Core 或 ISP 网关覆盖不足" : "",
+        state.missingFirewallVips ? `${state.missingFirewallVips} 个已配置的 FW VIP 缺少探测覆盖` : "",
+        state.firewallConfigInvalid ? "FW VIP 探测配置无效" : "",
         state.incomplete ? "部分关键目标 RTT 或 Loss 样本不足" : "",
         state.statsUnavailable ? "STDDEV 查询不可用" : ""
       ].filter(Boolean).join(" · ");

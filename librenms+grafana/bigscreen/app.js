@@ -888,7 +888,7 @@
         bandwidthConfig: config.ispMaxBandwidthMbps
       });
       const render = window.BSOverviewView.createOverviewView(document.getElementById("infraOverview"));
-      overviewPanel = window.BSOverviewController.createOverviewController({ data, render });
+      overviewPanel = window.BSOverviewController.createOverviewController({ data, render, firewallPing: config.firewallPing });
     }
     overviewPanel.start();
   }

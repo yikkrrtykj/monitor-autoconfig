@@ -86,6 +86,38 @@ test("overview excludes client noise but retains distribution faults outside the
   assert.deepEqual(fault.gatewayRows.map(({ job }) => job), [core.job, vip.job, isp.job]);
 });
 
+test("a configured firewall VIP stays required after its history disappears and recovers by exact identity", () => {
+  const firewall = { ...core, job: "infra-fw-ping", instance: "Edge VIP", target_ip: "192.0.2.1" };
+  const wrong = { ...firewall, target_ip: "192.0.2.9" };
+  const peer = { ...ha, target_ip: firewall.target_ip };
+  const read = (points, configured = "Logical VIP:192.0.2.1") =>
+    overview.overviewState(status(points), now, overview.firewallExpectations(configured));
+
+  assert.equal(read(targets(core, isp, firewall)).health, "healthy");
+  const missing = read(targets(core, isp, peer, wrong));
+  assert.equal(missing.agedOut, 0);
+  assert.equal(missing.health, "partial");
+  assert.equal(missing.availability, "partial");
+  assert.equal(missing.missingFirewallVips, 1);
+  assert.equal(missing.total.DOWN, 0);
+  assert.deepEqual([missing.wans[0].in.bps, missing.wans[0].out.bps], [12e6, 3e6]);
+
+  const stale = ping.snapshot([
+    ...vector(core, healthy), ...vector(isp, healthy), ...vector(firewall, { target: 1 })
+  ], now, ping.policy());
+  assert.equal(read(stale).health, "partial");
+  assert.equal(read(stale).faults[0].status, "UNKNOWN");
+  assert.equal(read(targets(core, isp, firewall)).health, "healthy");
+  assert.equal(read(targets(core, isp), "").health, "healthy");
+
+  const secondary = { ...firewall, instance: "Other VIP", target_ip: "192.0.2.2" };
+  assert.equal(read(targets(core, isp, firewall), "VIP:192.0.2.1-2").missingFirewallVips, 1);
+  assert.equal(read(targets(core, isp, firewall, secondary), "VIP:192.0.2.1-2,192.0.2.2").health, "healthy");
+  const invalid = read(targets(core, isp, firewall), "invalid-target,192.0.2.1");
+  assert.equal(invalid.firewallConfigInvalid, true);
+  assert.equal(invalid.health, "partial");
+});
+
 test("true DOWN, quality loss and missing scrape remain separate; same IP links keep job identity", () => {
   const settings = ping.policy({ pingIntervals: { infra: "10s" } });
   const snapshot = (changes) => ping.snapshot([
