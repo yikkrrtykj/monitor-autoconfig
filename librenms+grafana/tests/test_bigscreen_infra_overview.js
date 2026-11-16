@@ -51,7 +51,7 @@ test("only fresh, complete key coverage may produce All Good", () => {
   assert.equal(ready.ispCounts.UP, 1);
   assert.equal(ready.total.UP, 3);
   assert.equal(ready.gatewayRows.find(({ job }) => job === core.job).stddev, 0);
-  assert.equal(ready.gatewayRows.some(({ job }) => job === ha.job), false);
+  assert.equal(ready.gatewayRows.some(({ job }) => job === ha.job), true);
   assert.equal(overview.overviewState(current, now + 20).health, "unavailable");
   assert.equal(overview.overviewState(status([]), now).health, "unavailable");
   assert.equal(overview.overviewState(status(targets(isp)), now).health, "partial");
@@ -65,6 +65,28 @@ test("only fresh, complete key coverage may produce All Good", () => {
   assert.equal(failed.health, "unavailable");
   assert.equal(failed.infraCounts.UNKNOWN, 2);
   assert.equal(failed.wans[0].in.bps, 12e6);
+});
+
+test("physical firewall members have independent gateway rows after the VIP, including an offline member", () => {
+  const vip = { ...core, job: "infra-fw-ping", instance: "Logical VIP", target_ip: "192.0.2.51" };
+  const memberA = { ...ha, instance: "Member A", target_ip: "192.0.2.52" };
+  const memberB = { ...ha, instance: "Member B", target_ip: "192.0.2.53" };
+  const points = ping.snapshot([
+    ...[core, isp, vip, memberA].flatMap((metric) => vector(metric, healthy)),
+    ...vector(memberB, { ...healthy, probe: 0, ok: 0 })
+  ], now, ping.policy());
+  const current = status(points);
+  current.statsState.data.set(ping.identity(memberA), 0.25);
+  const rows = overview.overviewState(current, now).gatewayRows;
+  assert.deepEqual(rows.map(({ key }) => key), [core, vip, memberA, memberB, isp].map(ping.identity));
+  assert.deepEqual(rows.slice(1, 4).map(({ group, status, stddev }) => [group, status, stddev]), [
+    ["FW", "UP", null], ["FW Unit", "UP", 0.25], ["FW Unit", "DOWN", null]
+  ]);
+  assert.deepEqual(rows.slice(1, 4).map((target) =>
+    new URL(overview.pingHref(target), "http://localhost").searchParams.get("target")),
+  [vip, memberA, memberB].map(ping.identity));
+  assert.deepEqual(overview.overviewState(status(targets(core, isp, vip)), now).gatewayRows
+    .map(({ key }) => key), [core, vip, isp].map(ping.identity));
 });
 
 test("overview excludes client noise but retains distribution faults outside the gateway table", () => {

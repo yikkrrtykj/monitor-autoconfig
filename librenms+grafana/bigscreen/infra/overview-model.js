@@ -5,7 +5,7 @@
   const ping = common ? require("../ping/model.js") : window.BSPingModel;
   const { parseIspBandwidthConfig } = common ? require("../utils.js") : window.BSUtils;
   const { expandIpRangeText } = common ? require("../config/config-model.js") : window.BSConfigModel;
-  const gatewayJobs = ["infra-core-ping", "infra-fw-ping", "infra-isp-ping"];
+  const gatewayJobs = ["infra-core-ping", "infra-fw-ping", "infra-fw-unit-ping", "infra-isp-ping"];
   const maxGateways = 12;
   const maxWans = 16;
   const wanFreshness = 35;
@@ -21,7 +21,8 @@
     const ordered = gatewayJobs.map((job) => targets.filter((target) => target.job === job));
     // Give the major groups a place before filling the table with more devices.
     const first = ordered.flatMap((group) => group.slice(0, 1));
-    return first.concat(ordered.flatMap((group) => group.slice(1))).slice(0, maxGateways);
+    const selected = new Set(first.concat(ordered.flatMap((group) => group.slice(1))).slice(0, maxGateways));
+    return ordered.flat().filter((target) => selected.has(target));
   }
 
   function pingHref(target) {
