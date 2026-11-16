@@ -33,6 +33,7 @@ jobs:
           "$PR112_CHROME" --version
           node --version
           node browser-audit.cjs
+          node -e 'console.log("AUDIT_BROWSER "+JSON.stringify(require("./evidence/pr112-browser-results.json")));'
       - name: Upload exact-head browser evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

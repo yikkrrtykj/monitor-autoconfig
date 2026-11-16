@@ -226,10 +226,12 @@ async function runRound(n,fixture,base,round,scenario){
       liveProbeSeries:measured.sampleSeries,scrapeP95Ms:+(measured.scrapeP95*1000).toFixed(3),scrapeMaxMs:+(measured.scrapeMax*1000).toFixed(3),
       scrapeErrors:measured.failedScrapes,scrapes:measured.allScrapes,exporter: scrapeCounts,trendPeak};
     allReports.push(resources);
+    console.log("AUDIT_ROUND "+JSON.stringify({resources,summary:brief(own.filter(r=>r.kind==="summary")),trend:brief(own.filter(r=>r.kind==="trend"))}));
     allSamples.push(...own);
     if(round===1){
       for(const kind of ["summary","trend"]){
-        const bad=await api(web,examples[kind],{time:base.at,timeout:"1ns"});
+        const stress='sum_over_time((last_over_time(up{job=~"infra-.*-ping"}[1800s]))[600s:1s])';
+        const bad=await api(web,stress,{time:base.at,timeout:"1ms"});
         const good=await api(web,examples[kind],{time:base.at});
         assert.equal(bad.payload.errorType,"timeout");
         assert.equal(good.payload.status,"success");

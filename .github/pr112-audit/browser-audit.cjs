@@ -14,7 +14,7 @@ const setDigest=(a)=>a.length+" rows";
 let fixture=devices(50), calls=[], active=0, peak=0, missingVip=false, unitRestored=false, toggleCore=false, extraDelay=false, timeoutStatus=false, timeoutTrend=false;
 function vector(item,at){
   const t=Math.floor(at/item.interval)*item.interval;
-  const mode=toggleCore&&item.i===0?"down":unitRestored&&item.i===2?"up":modes(item,null);
+  const mode=missingVip?"up":toggleCore&&item.i===0?"down":unitRestored&&item.i===2?"up":modes(item,null);
   const sourceAt=mode==="missing"?t-70:t;
   const count=(item.metric.job==="infra-ap-ping"?300:60)/item.interval;
   const fields={target:1,source:mode==="scrape"?0:1,source_at:sourceAt,probe:mode==="down"?0:1,
@@ -144,6 +144,7 @@ async function main(){
     assert.equal(await evaluate('document.querySelector("#pingSource").dataset.state'),"DEGRADED");
     assert.deepEqual((await order()).slice(0,3),["Core A","FW Unit A","FW Unit B"]);
     assert.equal(await state(1),"UP");assert.equal(await state(2),"UP");
+    assert.match(await evaluate('document.querySelector("#pingCounts").textContent'),/未知 0(?:\D|$)/);
     checks.push("missing configured VIP still partial with both HA members UP");
     missingVip=false;unitRestored=false;
     await wait(cardCount+'===100');
