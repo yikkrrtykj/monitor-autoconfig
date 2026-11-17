@@ -7,12 +7,41 @@ const model = require("../bigscreen/ping/model.js");
 const history = require("../bigscreen/ping/history.js");
 
 const id = "65a8c647-c103-4e45-89bf-06b107bf531a";
+const otherId = "4f1c8d1e-6f6b-4a0f-8a4d-9c4d2e1f7b21";
 const row = { id, name: "转播", group: "Remote", ip: "192.0.2.17", enabled: true, revision: 1,
   createdAt: "2026-11-17T09:00:00Z", updatedAt: "2026-11-17T09:00:00Z" };
 const manifest = (revision, targets) => ({ ok: true, revision, targets, publication: "published", publishedRevision: revision });
 const discovery = (revision, targets) => ({ ok: true, revision, publishedRevision: revision, discoveredRevision: revision,
   activeTargets: targets.map(({ id, ip, revision }) => ({ id, ip, revision, scrapeHealth: "up" })) });
 const settings = model.policy();
+const settle = async () => {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+};
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, no) => { resolve = ok; reject = no; });
+  return { promise, resolve, reject };
+}
+
+// Every request is controlled by the test so pause/resume timing and late
+// responses are deterministic without touching the browser clock.
+function harness({ clock = () => 100, visible = () => true } = {}) {
+  const sent = [];
+  const latches = { list: [], discovery: [], sample: [] };
+  const client = {
+    list(signal) { const latch = { ...deferred(), signal }; latches.list.push(latch); return latch.promise; },
+    discovery(signal) { const latch = { ...deferred(), signal }; latches.discovery.push(latch); return latch.promise; },
+  };
+  const sample = (at, signal) => { const latch = { ...deferred(), at, signal }; latches.sample.push(latch); return latch.promise; };
+  const monitor = custom.createMonitor({ client, sample, settings, changed: (view) => sent.push(view), visible, now: clock });
+  return { monitor, sent, latches };
+}
+
+const reading = (item, values) => new Map([[item.key, { ...item, ...values }]]);
+const fresh = (at, status = "UP") => ({ status, sourceAt: at - 1, rtt: 12, loss: model.lossStats(30, 30, 60, 2) });
 
 test("accepted deletion is immediate even on 202 and older reads cannot restore it", () => {
   const store = custom.createState();
@@ -122,4 +151,219 @@ test("monitor drops a late pre-deletion read and keeps the last good list on fai
     assert.match(sent.at(-1).notice, /清单暂不可用/);
     assert.equal(sent.at(-1).catalog.revision, 2);
   } finally { monitor.stop(); }
+});
+
+test("expired cached UP becomes UNKNOWN on resume before the stalled read completes", async () => {
+  let clock = Date.parse(row.updatedAt) / 1000 + 70;
+  let shown = true;
+  const h = harness({ clock: () => clock, visible: () => shown });
+  const item = custom.target(row, settings);
+  try {
+    h.monitor.start();
+    h.latches.list[0].resolve(manifest(1, [row]));
+    h.latches.discovery[0].resolve(discovery(1, [row]));
+    await settle();
+    h.latches.sample[0].resolve(reading(item, fresh(clock)));
+    await settle();
+    assert.equal(h.sent.at(-1).items[0].status, "UP");
+    assert.equal(h.sent.at(-1).sync, "已发现");
+
+    // The tab was hidden or /ping was left long enough for the last sample to expire.
+    clock += 31;
+    shown = false;
+    h.monitor.pause();
+    shown = true;
+    const resuming = h.monitor.refresh();
+    // The retired status is rendered synchronously, before any new request settles.
+    const expired = h.sent.at(-1);
+    assert.equal(expired.items[0].status, "UNKNOWN");
+    assert.equal(expired.items[0].reason, "数据过期");
+    assert.equal(expired.items[0].sourceAt, null);
+    assert.equal(expired.catalog.targets.length, 1);
+    assert.equal(expired.sync, "已发现");
+    assert.equal(h.latches.list.length, 2);
+    assert.equal(h.latches.sample.length, 1);
+
+    // A delayed or failing authority read cannot restore the cached UP.
+    h.latches.list[1].reject(new Error("503"));
+    h.latches.discovery[1].resolve(discovery(1, [row]));
+    assert.equal(await resuming, false);
+    assert.equal(h.sent.at(-1).items[0].status, "UNKNOWN");
+    assert.match(h.sent.at(-1).notice, /清单暂不可用/);
+    assert.equal(h.sent.at(-1).catalog.targets.length, 1);
+
+    // Only a fresh successful ICMP sample may become UP again.
+    h.monitor.refresh();
+    h.latches.list[2].resolve(manifest(1, [row]));
+    h.latches.discovery[2].resolve(discovery(1, [row]));
+    await settle();
+    h.latches.sample.at(-1).resolve(reading(item, fresh(clock)));
+    await settle();
+    assert.equal(h.sent.at(-1).items[0].status, "UP");
+    assert.equal(h.sent.at(-1).notice, "");
+  } finally { h.monitor.stop(); }
+});
+
+test("stale samples held across a hidden/unhidden cycle never flash UP while pending", async () => {
+  let clock = Date.parse(row.updatedAt) / 1000 + 70;
+  let shown = true;
+  const h = harness({ clock: () => clock, visible: () => shown });
+  const item = custom.target(row, settings);
+  try {
+    h.monitor.start();
+    h.latches.list[0].resolve(manifest(1, [row]));
+    h.latches.discovery[0].resolve(discovery(1, [row]));
+    await settle();
+    h.latches.sample[0].resolve(reading(item, fresh(clock)));
+    await settle();
+    assert.equal(h.sent.at(-1).items[0].status, "UP");
+
+    clock += 30;
+    const pending = h.monitor.refresh();
+    assert.equal(h.sent.at(-1).items[0].status, "UNKNOWN");
+    shown = false;
+    h.monitor.pause();
+    assert.equal(h.latches.list[1].signal.aborted, true);
+    const before = h.sent.length;
+    shown = true;
+    h.monitor.start();
+    // A late response from the hidden period must be discarded, not re-rendered.
+    h.latches.list[1].resolve(manifest(1, [row]));
+    h.latches.discovery[1].resolve(discovery(1, [row]));
+    assert.equal(await pending, false);
+    await settle();
+    assert.equal(h.sent.length, before);
+    assert.equal(h.sent.at(-1).items[0].status, "UNKNOWN");
+
+    h.latches.list[2].resolve(manifest(1, [row]));
+    h.latches.discovery[2].resolve(discovery(1, [row]));
+    await settle();
+    h.latches.sample.at(-1).resolve(reading(item, fresh(clock)));
+    await settle();
+    assert.equal(h.sent.at(-1).items[0].status, "UP");
+  } finally { h.monitor.stop(); }
+});
+
+test("a stalled authority read cannot paint samples that expire before display", async () => {
+  let clock = Date.parse(row.updatedAt) / 1000 + 70;
+  const h = harness({ clock: () => clock });
+  const item = custom.target(row, settings);
+  try {
+    const started = clock;
+    h.monitor.start();
+    // The list/discovery request hangs until the original sample time is expired.
+    clock = started + 11;
+    h.latches.list[0].resolve(manifest(1, [row]));
+    h.latches.discovery[0].resolve(discovery(1, [row]));
+    await settle();
+    assert.equal(h.latches.sample[0].at, started);
+    h.latches.sample[0].resolve(reading(item, fresh(started)));
+    await settle();
+    assert.equal(h.sent.at(-1).items[0].status, "UNKNOWN");
+    assert.equal(h.sent.at(-1).items[0].reason, "数据过期");
+  } finally { h.monitor.stop(); }
+});
+
+test("rapid hide/show cycles abort the previous read and keep one in-flight pair", async () => {
+  let clock = Date.parse(row.updatedAt) / 1000 + 70;
+  let shown = true;
+  const h = harness({ clock: () => clock, visible: () => shown });
+  const item = custom.target(row, settings);
+  try {
+    h.monitor.start();
+    h.latches.list[0].resolve(manifest(1, [row]));
+    h.latches.discovery[0].resolve(discovery(1, [row]));
+    await settle();
+    h.latches.sample[0].resolve(reading(item, fresh(clock)));
+    await settle();
+    clock += 20;
+    for (let index = 0; index < 3; index += 1) {
+      shown = false;
+      h.monitor.pause();
+      shown = true;
+      void h.monitor.refresh();
+    }
+    assert.equal(h.latches.list.length, 4);
+    assert.equal(h.latches.discovery.length, 4);
+    assert.equal(h.latches.sample.length, 1);
+    assert.equal(h.latches.list[1].signal.aborted, true);
+    assert.equal(h.latches.list[2].signal.aborted, true);
+    assert.equal(h.latches.list[3].signal.aborted, false);
+    assert.equal(h.sent.at(-1).items[0].status, "UNKNOWN");
+  } finally { h.monitor.stop(); }
+});
+
+test("an idempotent replay behind a newer revision requires authoritative reread", () => {
+  const store = custom.createState();
+  assert.equal(store.read(manifest(1, [row])), true);
+  // The original write landed at savedRevision 2 but its response was lost;
+  // another administrator then committed revision 3.
+  const replay = { id, savedRevision: 2, revision: 3, target: { ...row, name: "旧操作", revision: 2 },
+    publication: "published", publishedRevision: 3 };
+  assert.equal(store.save(replay), "reread");
+  const held = store.current();
+  assert.equal(held.complete, false);
+  assert.equal(held.revision, 1);
+  assert.deepEqual(held.targets.map(({ id: value }) => value), [id]);
+  assert.equal(held.targets[0].name, row.name);
+  // A read that is older than the confirmed global revision cannot reset the floor.
+  assert.equal(store.read(manifest(2, [{ ...row, name: "旧操作", revision: 2 }])), false);
+  const concurrent = { ...row, id: otherId, name: "并发目标", ip: "192.0.2.28", revision: 3 };
+  assert.equal(store.read(manifest(3, [{ ...row, name: "旧操作", revision: 2 }, concurrent])), true);
+  assert.equal(store.current().complete, true);
+  assert.deepEqual(store.current().targets.map(({ id: value }) => value).sort(), [id, otherId].sort());
+  // If the full authoritative list at or beyond the receipt revision is already
+  // held, the replay cannot invalidate it.
+  assert.equal(store.save({ ...replay, target: { ...row, revision: 2 } }), "current");
+  assert.equal(store.current().complete, true);
+  assert.equal(store.current().revision, 3);
+});
+
+test("replayed receipt cannot masquerade as the concurrent newer manifest", async () => {
+  let clock = Date.parse(row.updatedAt) / 1000 + 70;
+  const h = harness({ clock: () => clock });
+  const item = custom.target(row, settings);
+  try {
+    h.monitor.start();
+    h.latches.list[0].resolve(manifest(1, [row]));
+    h.latches.discovery[0].resolve(discovery(1, [row]));
+    await settle();
+    h.latches.sample[0].resolve(reading(item, fresh(clock)));
+    await settle();
+    assert.equal(h.sent.at(-1).items[0].status, "UP");
+
+    h.monitor.saved({ id, savedRevision: 2, revision: 3, target: { ...row, group: "Server", revision: 2 },
+      publication: "published", publishedRevision: 3 });
+    const held = h.sent.at(-1);
+    assert.equal(held.catalog.complete, false);
+    assert.equal(held.catalog.revision, 1);
+    assert.match(held.notice, /重新读取/);
+    assert.equal(held.items[0].status, "UNKNOWN");
+    assert.equal(h.latches.list.length, 2);
+
+    // The refresh is not allowed to accept a list older than the confirmed revision.
+    h.latches.list[1].resolve(manifest(2, [{ ...row, group: "Server", revision: 2 }]));
+    h.latches.discovery[1].resolve(discovery(2, [{ ...row, group: "Server", revision: 2 }]));
+    await settle();
+    assert.match(h.sent.at(-1).notice, /清单暂不可用/);
+    assert.equal(h.sent.at(-1).items[0].status, "UNKNOWN");
+
+    const updated = { ...row, group: "Server", revision: 2 };
+    const concurrent = { ...row, id: otherId, name: "并发目标", ip: "192.0.2.28", revision: 3 };
+    h.monitor.refresh();
+    h.latches.list[2].resolve(manifest(3, [updated, concurrent]));
+    h.latches.discovery[2].resolve(discovery(3, [updated, concurrent]));
+    await settle();
+    h.latches.sample.at(-1).resolve(new Map([
+      [custom.target(updated, settings).key, { ...custom.target(updated, settings), ...fresh(clock) }],
+      [custom.target(concurrent, settings).key, { ...custom.target(concurrent, settings), ...fresh(clock) }],
+    ]));
+    await settle();
+    const done = h.sent.at(-1);
+    assert.equal(done.catalog.complete, true);
+    assert.equal(done.catalog.revision, 3);
+    assert.equal(done.notice, "");
+    assert.deepEqual(done.items.map(({ name, status }) => [name, status]).sort(),
+      [["并发目标", "UP"], ["转播", "UP"]].sort());
+  } finally { h.monitor.stop(); }
 });

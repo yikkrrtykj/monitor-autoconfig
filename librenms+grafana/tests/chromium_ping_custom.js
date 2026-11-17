@@ -17,7 +17,7 @@ const fixtureTime = () => Math.floor(Date.now() / 1000);
 const iso = (seconds) => new Date(seconds * 1000).toISOString();
 const contentTypes = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
 
-function fixture(size, customCount) {
+function fixture(size, customCount, options = {}) {
   const infra = Array.from({ length: size - customCount }, (_, i) => ({
     job: i === 0 ? "infra-fw-ping" : "infra-dist-ping", instance: "设备 " + i,
     target_ip: address(i, "192.0")
@@ -30,13 +30,16 @@ function fixture(size, customCount) {
   const metrics = rows.map((row) => ({ ...metricFor(row), row }));
   const failure = { status: 0, code: "" };
   const requestKeys = [];
-  const stats = { summary: 0, custom: 0, manifest: 0, discovery: 0, raw: 0, rawPeak: 0, rawSize: 0 };
+  const stats = { summary: 0, custom: 0, manifest: 0, discovery: 0, raw: 0, rawPeak: 0, rawSize: 0, held: 0 };
   let activeRaw = 0;
   let auth = false;
   let authEnabled = true;
   let missingDiscovery = false;
   let missingList = false;
   let generation = 1000;
+  let allUp = options.allUp === true;
+  let barrier = null;
+  let releaseBarrier = null;
   function metricFor(row) { return { job: "custom-ping", instance: row.id, custom_id: row.id, target_ip: row.ip }; }
   const state = () => ({ ok: true, revision, publication: "published", publishedRevision: revision });
 
@@ -57,7 +60,7 @@ function fixture(size, customCount) {
       })));
     }
     const live = custom
-      ? chosen.map((metric) => ({ metric, values: metric.instance === uuid(2) ? [0, 1, 55] :
+      ? chosen.map((metric) => ({ metric, values: allUp ? [1, 1, 12] : metric.instance === uuid(2) ? [0, 1, 55] :
         metric.instance === uuid(3) ? [1, 0, 0] : [1, 1, metric.instance === uuid(4) ? 90 : 12] }))
       : chosen.map((metric) => ({ metric, values: [1, 1, 12] }));
     return live.flatMap(({ metric, values: [up, ping, rtt] }) => Object.entries({
@@ -78,12 +81,15 @@ function fixture(size, customCount) {
     if (url.pathname === api + "/discovery") {
       stats.discovery++;
       if (missingDiscovery) return respond({ ok: false, error: "custom_ping_inventory_unavailable" }, 503);
+      if (barrier) { stats.held++; await barrier; }
       return respond({ ...state(), discoveredRevision: revision, activeTargets: rows.filter((row) => row.enabled)
         .map(({ id, ip, revision }) => ({ id, ip, revision, scrapeHealth: "up" })) });
     }
     if (url.pathname === api && req.method() === "GET") {
       stats.manifest++;
-      return missingList ? respond({ ok: false }, 503) : respond({ ...state(), targets: rows });
+      if (missingList) return respond({ ok: false }, 503);
+      if (barrier) { stats.held++; await barrier; }
+      return respond({ ...state(), targets: rows });
     }
     if (url.pathname === api || url.pathname.startsWith(api + "/")) {
       const method = req.method();
@@ -139,16 +145,20 @@ function fixture(size, customCount) {
   }
 
   return { intercept, stats, failure, requestKeys, authenticate(value) { auth = value; },
-    disableAuth() { authEnabled = false; }, enableAuth() { authEnabled = true; }, unavailable(list, discovery) { missingList = list; missingDiscovery = discovery; } };
+    disableAuth() { authEnabled = false; }, enableAuth() { authEnabled = true; }, unavailable(list, discovery) { missingList = list; missingDiscovery = discovery; },
+    // Hold authority reads to model a stalled Platform API while the wall is
+    // resumed; release resolves every request that queued on the barrier.
+    hold() { barrier = new Promise((resolve) => { releaseBarrier = resolve; }); },
+    release() { const resolve = releaseBarrier; releaseBarrier = null; barrier = null; resolve?.(); } };
 }
 
 async function cardCount(page, expected) {
   await page.waitForFunction((number) => document.querySelectorAll("#pingWall .ping-card").length === number, expected);
 }
 
-async function start(browser, directory, size, customCount, viewport, touch = false, locked = false) {
+async function start(browser, directory, size, customCount, viewport, touch = false, locked = false, options = {}) {
   const context = await browser.newContext({ viewport, hasTouch: touch, acceptDownloads: true });
-  const mock = fixture(size, customCount);
+  const mock = fixture(size, customCount, options);
   if (locked) mock.disableAuth();
   await context.route("**/*", (route) => mock.intercept(route, directory));
   const page = await context.newPage();
@@ -159,6 +169,61 @@ async function start(browser, directory, size, customCount, viewport, touch = fa
   await cardCount(page, size);
   assert.deepEqual(errors, []);
   return { context, page, mock, errors };
+}
+
+const customStates = (page) => page.evaluate(() => [...document.querySelectorAll("#pingWall .ping-card")]
+  .filter((card) => card.querySelector(".ping-card-group").textContent.startsWith("Custom"))
+  .map((card) => card.dataset.state));
+const sourceState = (page) => page.evaluate(() => {
+  const source = document.getElementById("pingSource");
+  return { state: source.dataset.state, text: source.textContent };
+});
+const waitAllUp = (page) => page.waitForFunction(() => [...document.querySelectorAll("#pingWall .ping-card")]
+  .filter((card) => card.querySelector(".ping-card-group").textContent.startsWith("Custom"))
+  .every((card) => card.dataset.state === "UP"));
+
+// P1 regression: an expired cached UP must be retired on the synchronous
+// resume/re-entry render, before the stalled authority read settles, and the
+// surrounding wall must not keep advertising a healthy source.
+async function staleScenario(browser, directory, viewport, mode) {
+  const { context, page, mock, errors } = await start(browser, directory, 14, 4, viewport, false, false, { allUp: true });
+  try {
+    await waitAllUp(page);
+    const healthy = await sourceState(page);
+    assert.equal(healthy.state, "UP");
+    assert.equal(healthy.text, "实时监控");
+    if (mode === "route") {
+      await page.evaluate(() => { history.pushState({}, "", "/"); dispatchEvent(new PopStateEvent("popstate")); });
+      await page.waitForTimeout(12000);
+      mock.hold();
+      await page.evaluate(() => { history.pushState({}, "", "/ping"); dispatchEvent(new PopStateEvent("popstate")); });
+    } else {
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await page.waitForTimeout(12000);
+      mock.hold();
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    }
+    const stale = { states: await customStates(page), source: await sourceState(page) };
+    assert.equal(stale.states.length, 4);
+    assert.deepEqual([...new Set(stale.states)], ["UNKNOWN"]);
+    assert.notEqual(stale.source.state, "UP");
+    assert.match(stale.source.text, /部分不可用/);
+    await page.screenshot({ path: path.join(out, "stale-" + mode + "-" + viewport.width + ".png") });
+    mock.release();
+    await waitAllUp(page);
+    const recovered = await sourceState(page);
+    assert.equal(recovered.state, "UP");
+    assert.equal(recovered.text, "实时监控");
+    await page.screenshot({ path: path.join(out, "resumed-" + mode + "-" + viewport.width + ".png") });
+    assert.deepEqual(errors, []);
+    return { mode, width: viewport.width, stale, recovered, held: mock.stats.held };
+  } finally { await context.close(); }
 }
 
 async function run() {
@@ -289,6 +354,12 @@ async function run() {
       await context.close();
     }
 
+    const staleRows = [];
+    for (const viewport of dimensions) {
+      for (const mode of ["route", "visibility"]) staleRows.push(await staleScenario(browser, root, viewport, mode));
+    }
+    fs.writeFileSync(path.join(out, "stale.json"), JSON.stringify(staleRows, null, 2));
+
     const performanceRows = [];
     for (const size of [50, 100, 300]) {
       for (const [variant, directory] of [["baseline", baseline], ["b2", root]]) {
@@ -307,7 +378,7 @@ async function run() {
       }
     }
     fs.writeFileSync(path.join(out, "performance.json"), JSON.stringify(performanceRows, null, 2));
-    console.log(JSON.stringify({ chromium: browser.version(), screenshots: out, performance: performanceRows }));
+    console.log(JSON.stringify({ chromium: browser.version(), screenshots: out, stale: staleRows, performance: performanceRows }));
   } finally { await browser.close(); }
 }
 

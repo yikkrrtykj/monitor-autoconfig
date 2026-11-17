@@ -46,9 +46,19 @@
             receipt.target.id !== receipt.id || receipt.target.revision !== receipt.savedRevision)) {
         throw new Error("自定义目标回执无效");
       }
+      if (receipt.revision > receipt.savedRevision) {
+        // Idempotent replay: the operation applied at savedRevision, but the
+        // global manifest has since advanced. The receipt only describes the
+        // older delta, so it must never be merged or relabelled as the newer
+        // authoritative list. Keep the last known rows but require a full read.
+        floor = Math.max(floor, receipt.revision);
+        if (current?.complete && current.revision >= receipt.revision) return "current";
+        if (current) current = { ...current, complete: false };
+        return "reread";
+      }
       if (receipt.savedRevision < floor || current?.complete && receipt.savedRevision === floor) {
         floor = Math.max(floor, receipt.revision);
-        return;
+        return "current";
       }
       floor = Math.max(floor, receipt.revision);
       const rows = new Map((current?.targets || []).map((row) => [row.id, row]));
@@ -56,6 +66,7 @@
       else rows.set(receipt.id, receipt.target);
       current = { revision: receipt.revision, publication: receipt.publication, publishedRevision: receipt.publishedRevision,
         targets: [...rows.values()], complete: false };
+      return "applied";
     }
     return { current: () => current, read, save };
   }
@@ -113,14 +124,34 @@
     let failures = 0;
     let notice = "";
     let items = [];
+    let renderedSync = "";
 
     function render(discovery, samples) {
       const catalog = state.current();
       items = present(catalog, discovery, samples, settings, observed, notice);
       if (observed.size > 384) observed.clear();
-      const sync = !catalog ? "" : catalog.publication === "pending" ? "待发布" :
+      renderedSync = !catalog ? "" : catalog.publication === "pending" ? "待发布" :
         !notice && isDiscovered(catalog, discovery) ? "已发现" : "待发现";
-      changed({ catalog, items, notice, sync });
+      changed({ catalog, items, notice, sync: renderedSync });
+    }
+
+    // A cached status is only live while its sample is inside the same window
+    // the Prometheus snapshot applies. Hidden tabs, SPA route changes and
+    // stalled reads otherwise keep a retired UP on screen until the next read.
+    function expire() {
+      const at = now();
+      let expired = false;
+      items = items.map((item) => {
+        if (item.status === "UNKNOWN" || item.sourceAt === null ||
+            at - item.sourceAt <= Math.max(10, item.interval * 3)) return item;
+        expired = true;
+        return { ...item, status: "UNKNOWN", rtt: null, sourceAt: null, reason: "数据过期",
+          loss: model.lossStats(null, null, item.lossWindow, item.interval) };
+      });
+      if (!expired) return;
+      // Keep the authoritative catalog, card identity and history links; only
+      // the stale readings are retired until a new sample is accepted.
+      changed({ catalog: state.current(), items, notice, sync: renderedSync });
     }
 
     function pause() {
@@ -131,6 +162,7 @@
 
     async function refresh() {
       pause();
+      expire();
       if (!active || !visible()) return false;
       const request = new AbortController();
       controller = request;
@@ -162,14 +194,17 @@
       }
       render(discovery, samples);
       if (active && !signal.aborted && visible()) {
+        // A slow authority read may have used samples that were fresh when the
+        // read started but are already retired by the time they are painted.
+        expire();
         timer = setTimeout(refresh, Math.min(60000, 5000 * 2 ** failures));
       }
       return authorityCurrent;
     }
 
     function saved(receipt) {
-      state.save(receipt);
-      notice = "";
+      const outcome = state.save(receipt);
+      notice = outcome === "reread" ? "已确认保存，需重新读取权威清单" : "";
       render();
       void refresh();
     }
