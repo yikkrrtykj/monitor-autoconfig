@@ -75,12 +75,12 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path, monkeypa
     # the exact config the production entrypoint would otherwise run immediately.
     source = (ROOT / "prometheus-gen-config.sh").read_text(encoding="utf-8")
     (sandbox / "generate.sh").write_text(source.split("exec /bin/prometheus", 1)[0], encoding="utf-8")
-    (sandbox / "player_targets.json").write_text('[{"targets":["192.0.2.90"],"labels":{"network":"wired"}}]')
+    (sandbox / "player_targets.json").write_text('[{"targets":["172.31.249.90"],"labels":{"network":"wired"}}]')
     fixture_mount = f"{sandbox}:/fixture"
     docker(
         "run", "--rm", "--network", "none", "--user", "0", "-v", fixture_mount, "--entrypoint", "/bin/sh",
         "-e", "PROMETHEUS_CONFIG_FILE=/fixture/prometheus.yml", "-e", "PLAYER_TARGETS_FILE=/fixture/player_targets.json",
-        "-e", "CORE_SWITCH_PING=fixture:192.0.2.91", IMAGE, "/fixture/generate.sh", timeout=120,
+        "-e", "CORE_SWITCH_PING=fixture:172.31.249.91", IMAGE, "/fixture/generate.sh", timeout=120,
     )
 
     mounts = ("-v", fixture_mount + ":ro", "-v", f"{discovery_path.parent}:{SD_DIR}:ro")
@@ -128,7 +128,7 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path, monkeypa
         return io.BytesIO(result.stdout.encode())
 
     monkeypatch.setattr(custom_ping, "urlopen", open_inventory)
-    inventory = TargetInventory("http://127.0.0.1:9090", "192.0.2.0/24", "", 1)
+    inventory = TargetInventory("http://127.0.0.1:9090", "172.31.249.0/24", "", 1)
 
     def observe():
         return inventory.observed(store.list_targets())
@@ -149,20 +149,20 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path, monkeypa
         initial = wait_for(observe, lambda state: state["discoveredRevision"] == 0)
         assert initial["publishedRevision"] == 0 and initial["activeTargets"] == []
         assert "custom-ping" in fetch("/api/v1/scrape_pools")["scrapePools"]
-        assert targets("player-ping")[0]["labels"]["instance"] == "192.0.2.90"
+        assert targets("player-ping")[0]["labels"]["instance"] == "172.31.249.90"
         assert targets("infra-core-ping")[0]["labels"]["instance"] == "fixture"
-        for reserved in ("192.0.2.90", "192.0.2.91"):
+        for reserved in ("172.31.249.90", "172.31.249.91"):
             with pytest.raises(PingError, match="duplicate_ip"):
                 inventory.check(reserved)
 
-        target = write("POST", changes={"name": "Remote", "ip": "192.0.2.21", "group": "Remote"})
+        target = write("POST", changes={"name": "Remote", "ip": "172.31.249.21", "group": "Remote"})
         original = wait_for(lambda: targets("custom-ping"), bool)[0]
         target_id = target["id"]
         assert original["labels"] == {
-            "job": "custom-ping", "custom_id": target_id, "instance": target_id, "target_ip": "192.0.2.21",
+            "job": "custom-ping", "custom_id": target_id, "instance": target_id, "target_ip": "172.31.249.21",
         }
         assert original["scrapeInterval"] == "2s"
-        assert "module=icmp" in original["scrapeUrl"] and "target=192.0.2.21" in original["scrapeUrl"]
+        assert "module=icmp" in original["scrapeUrl"] and "target=172.31.249.21" in original["scrapeUrl"]
         assert "blackbox-exporter:9115/probe?" in original["scrapeUrl"]
         assert inventory.observed(store.list_targets())["discoveredRevision"] == 1
 
@@ -177,11 +177,11 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path, monkeypa
         expr = 'count by (target_ip) (count_over_time(up{job="custom-ping"}[5m]))'
         wait_for(lambda: query(expr), bool)
 
-        target = write("PATCH", target_id, 2, {"ip": "192.0.2.22"})
-        moved = wait_for(lambda: targets("custom-ping"), lambda rows: bool(rows) and rows[0]["labels"]["target_ip"] == "192.0.2.22")
+        target = write("PATCH", target_id, 2, {"ip": "172.31.249.22"})
+        moved = wait_for(lambda: targets("custom-ping"), lambda rows: bool(rows) and rows[0]["labels"]["target_ip"] == "172.31.249.22")
         assert moved[0]["labels"]["instance"] == target_id
         historic = wait_for(lambda: query(expr), lambda rows: len(rows) == 2)
-        assert {row["metric"]["target_ip"] for row in historic} == {"192.0.2.21", "192.0.2.22"}
+        assert {row["metric"]["target_ip"] for row in historic} == {"172.31.249.21", "172.31.249.22"}
 
         write("PATCH", target_id, 3, {"enabled": False})
         disabled = wait_for(observe, lambda state: state["discoveredRevision"] == 4)
@@ -193,7 +193,7 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path, monkeypa
         result = docker("exec", "--user", "0", name, "/bin/sh", "-c",
                         'printf "[]" > /etc/prometheus/targets/custom/custom_targets.json', check=False)
         assert result.returncode != 0 and "Read-only file system" in result.stderr
-        assert targets("custom-ping")[0]["labels"]["target_ip"] == "192.0.2.22"
+        assert targets("custom-ping")[0]["labels"]["target_ip"] == "172.31.249.22"
         docker("restart", name)
         wait_for(lambda: targets("custom-ping"), bool)
         write("DELETE", target_id, 5)

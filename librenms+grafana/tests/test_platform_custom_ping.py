@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from platform_api import auth, custom_ping, custom_ping_store as storage, main
 
 
-ITEM = {"name": "远端制作", "ip": "192.0.2.11", "group": "Remote"}
+ITEM = {"name": "远端制作", "ip": "10.70.10.11", "group": "Remote"}
 ORIGIN = "http://console.test:8088"
 AUTH_RECORD = {"username": "test-admin", "passwordHash": "synthetic-test-record"}
 
@@ -80,7 +80,7 @@ def prom(server_factory, monkeypatch):
         port = 9
     else:
         port = server_factory(FakePrometheus)
-    inventory = custom_ping.TargetInventory(f"http://127.0.0.1:{port}", "192.0.2.0/24", "192.0.2.96/28", 1)
+    inventory = custom_ping.TargetInventory(f"http://127.0.0.1:{port}", "10.70.10.0/24", "10.70.10.96/28", 1)
     return inventory, active, responses
 
 
@@ -190,12 +190,12 @@ def test_http_lifecycle_replay_and_discovery(store, api, prom, caplog):
     assert request("GET", "/discovery")[1]["discoveredRevision"] is None
     prom[1].pop()
     assert request("GET", "/discovery")[1]["discoveredRevision"] == 3
-    restored = request("PATCH", target, {"enabled": True, "ip": "192.0.2.12"}, edit_headers(headers, 3))
+    restored = request("PATCH", target, {"enabled": True, "ip": "10.70.10.12"}, edit_headers(headers, 3))
     assert restored[0] == 200 and restored[1]["target"]["id"] == item["id"]
-    assert json.loads(store.discovery.read_bytes())[0]["targets"] == ["192.0.2.12"]
+    assert json.loads(store.discovery.read_bytes())[0]["targets"] == ["10.70.10.12"]
     assert request("GET", "/discovery")[1]["discoveredRevision"] is None
     prom[1].append({
-        "scrapePool": "custom-ping", "labels": {"custom_id": item["id"], "target_ip": "192.0.2.12"},
+        "scrapePool": "custom-ping", "labels": {"custom_id": item["id"], "target_ip": "10.70.10.12"},
         "discoveredLabels": {"__meta_custom_ping_revision": "4"}, "health": "up",
     })
     assert request("GET", "/discovery")[1]["discoveredRevision"] == 4
@@ -210,7 +210,7 @@ def test_http_lifecycle_replay_and_discovery(store, api, prom, caplog):
     assert request("GET", "/discovery")[1]["discoveredRevision"] == 5
     receipts = json.loads(store.manifest.read_bytes())["receipts"]
     assert [row["action"] for row in receipts] == ["POST", "PATCH", "PATCH", "PATCH", "DELETE"]
-    assert receipts[-1]["before"]["ip"] == "192.0.2.12" and receipts[-1]["actor"] == AUTH_RECORD["username"]
+    assert receipts[-1]["before"]["ip"] == "10.70.10.12" and receipts[-1]["actor"] == AUTH_RECORD["username"]
     assert headers["Cookie"] not in caplog.text and headers["X-CSRF-Token"] not in caplog.text
 
 
@@ -318,16 +318,88 @@ def test_schema_request_limits_and_address_policy(store, api):
     assert request("POST", raw=b'{"ip": "192.0.2.11", "ip": "192.0.2.12"}', headers=edit_headers(headers))[0] == 400
     assert request("POST", raw=b"[" * 2048 + b"]" * 2048, headers=edit_headers(headers))[0] == 400
     assert request("POST", body=ITEM, headers=edit_headers(headers, **{"Content-Type": "text/plain"}))[0] == 415
-    for ip in ("198.51.100.1", "192.0.2.255"):
+    for ip in ("10.70.11.1", "10.70.10.255"):
         assert request("POST", body={**ITEM, "ip": ip}, headers=edit_headers(headers))[0] == 403
-    reserved = request("POST", body={**ITEM, "ip": "192.0.2.99"}, headers=edit_headers(headers))
+    reserved = request("POST", body={**ITEM, "ip": "10.70.10.99"}, headers=edit_headers(headers))
     assert reserved[0] == 409 and reserved[1]["source"] == "player-network"
     assert not store.manifest.exists()
+
+
+@pytest.mark.parametrize("allowed", ["", "   "])
+def test_blank_cidrs_allow_public_unicast_and_rfc1918(store, api, prom, allowed):
+    _, request, headers, _ = api
+    prom[0].allowed = allowed
+    addresses = ["1.1.1.1", "10.70.10.11", "172.16.10.11", "192.168.10.11"]
+    for ip in addresses:
+        status, result, _ = request("POST", body={**ITEM, "ip": ip}, headers=edit_headers(headers))
+        assert status == 201 and result["target"]["ip"] == ip
+    assert [row["targets"][0] for row in json.loads(store.discovery.read_bytes())] == addresses
+    assert json.loads(store.manifest.read_bytes())["schema"] == 1
+
+    status, result, _ = request("POST", body={**ITEM, "ip": "10.70.10.99"}, headers=edit_headers(headers))
+    assert status == 409 and result["source"] == "player-network"
+    assert request("POST", body=ITEM, headers=edit_headers(headers))[0] == 409
+
+
+@pytest.mark.parametrize("ip", [
+    "100.64.0.1", "100.100.100.200", "168.63.129.16", "192.0.0.1", "192.0.2.11",
+    "192.88.99.1", "198.18.0.1", "198.51.100.1", "203.0.113.1",
+])
+def test_special_addresses_rejected_even_if_explicitly_listed(store, api, prom, ip):
+    _, request, headers, _ = api
+    for allowed in ("", f"{ip}/32"):
+        prom[0].allowed = allowed
+        status, result, _ = request("POST", body={**ITEM, "ip": ip}, headers=edit_headers(headers))
+        assert status == 403 and result["error"] == "custom_ping_ip_outside_allowed_cidrs"
+    assert not store.manifest.exists()
+    assert json.loads(store.discovery.read_bytes()) == []
+
+
+@pytest.mark.parametrize("allowed", [",", "10.70.10.0/24,", "10.70.10.0/24,bogus", "2001:db8::/32"])
+def test_malformed_nonempty_policy_cannot_open_writes(store, api, prom, allowed):
+    _, request, headers, _ = api
+    prom[0].allowed = allowed
+    status, result, _ = request("POST", body=ITEM, headers=edit_headers(headers))
+    assert status == 503 and result["error"] == "custom_ping_address_policy_invalid"
+    assert not store.manifest.exists()
+
+
+def test_strict_policy_uses_most_specific_prefix_and_honors_point_to_point(api, prom):
+    _, request, headers, _ = api
+    prom[0].allowed = "10.0.0.0/8,10.70.10.0/24,10.70.11.0/31,10.70.12.255/32"
+    for ip in ("10.70.10.0", "10.70.10.255", "1.1.1.1"):
+        assert request("POST", body={**ITEM, "ip": ip}, headers=edit_headers(headers))[0] == 403
+    for ip in ("10.70.10.11", "10.70.11.0", "10.70.11.1", "10.70.12.255"):
+        assert request("POST", body={**ITEM, "ip": ip}, headers=edit_headers(headers))[0] == 201
+
+
+def test_legacy_special_address_still_readable_and_replayable(store, api, prom):
+    _, request, headers, _ = api
+    prom[0].allowed = ""
+    legacy = {**ITEM, "ip": "192.0.2.11"}
+    create = edit_headers(headers)
+    _, saved = store.change("POST", None, None, legacy, AUTH_RECORD["username"],
+                            create["Idempotency-Key"], lambda _: None)
+    original = store.manifest.read_bytes()
+    status, result, _ = request("POST", body=legacy, headers=create)
+    assert status == 201 and result["replayed"] and result["target"] == saved["target"]
+    assert request("GET")[1]["targets"] == [saved["target"]]
+    assert store.manifest.read_bytes() == original
+
+    path = "/" + saved["target"]["id"]
+    assert request("PATCH", path, {"ip": "198.18.0.1"}, edit_headers(headers, 1))[0] == 403
+    assert store.manifest.read_bytes() == original
+    status, result, _ = request("PATCH", path, {"enabled": False}, edit_headers(headers, 1))
+    assert status == 200 and result["target"]["enabled"] is False
+    original = (store.manifest.read_bytes(), store.discovery.read_bytes())
+    assert request("PATCH", path, {"enabled": True}, edit_headers(headers, 2))[0] == 403
+    assert original == (store.manifest.read_bytes(), store.discovery.read_bytes())
 
 
 @pytest.mark.parametrize("job", ["player-ping", "infra-ap-ping", "infra-isp-ping", "infra-fw-unit-ping", "infra-srv-ping", "firewall-snmp"])
 def test_other_source_duplicate_and_missing_inventory(api, prom, job):
     _, request, headers, _ = api
+    prom[0].allowed = ""
     prom[1].append({"scrapePool": job, "discoveredLabels": {"__address__": ITEM["ip"]}})
     result = request("POST", body=ITEM, headers=edit_headers(headers))
     assert result[0] == 409 and result[1]["source"] == job

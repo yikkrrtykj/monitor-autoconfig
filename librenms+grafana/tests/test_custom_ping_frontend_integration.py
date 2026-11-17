@@ -98,10 +98,10 @@ def test_frontend_uses_real_discovery_and_blackbox_icmp(tmp_path, monkeypatch):
             raise OSError("isolated Prometheus unavailable") from error
 
     monkeypatch.setattr(custom_ping, "urlopen", open_inventory)
-    inventory = TargetInventory("http://127.0.0.1:9090", "192.0.2.0/24", "", 2)
-    docker("network", "create", "--internal", "--subnet", "192.0.2.0/24", net)
+    inventory = TargetInventory("http://127.0.0.1:9090", "", "", 2)
+    docker("network", "create", "--internal", "--subnet", "172.31.249.0/24", net)
     try:
-        reachable, unreachable = "192.0.2.21", "192.0.2.22"
+        reachable, unreachable = "172.31.249.21", "172.31.249.22"
         docker("run", "-d", "--name", bb, "--user", "0", "--network", net, "--ip", reachable, "--network-alias",
                "blackbox-exporter", "--cap-add", "NET_RAW", "-v", fixture + ":ro", BLACKBOX,
                "--config.file=/fixture/blackbox.yml", timeout=120)
