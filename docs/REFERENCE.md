@@ -67,6 +67,23 @@ Cisco Small Business（`ciscosb`，兼容旧 `cisco-access`）详情使用“查
 
 升级保留已有清单和历史回执。收紧策略后，如需停止已在探测的自定义目标，请在管理界面停用该目标；恢复时会重新检查当前策略。
 
+### 自定义 Ping 域名后端
+
+域名后端沿用 /platform-api/ping/targets 管理路径。旧的 {name, ip, group} 输入保持兼容，新输入可用 {name, kind: "ipv4", address, group} 或 {name, kind: "dns", address, group, privateCidrs: []}。域名按 IDNA、小写和去末尾点规范化，最多 253 个 ASCII 字符。名称沿用 80 字符限制。只接受主机名及 A 记录，查询始终使用绝对域名。保存成功后可以是 DNS_PENDING，配置持久化和 DNS 成功独立。
+
+首次成功写入 DNS 配置时清单升级为 Schema 2。原 IPv4 行、UUID、revision、旧回执和幂等摘要保留，IPv4 API 与只读 Schema 1 保持兼容。DNS 行增加 kind、address、privateCidrs 和仅在地址、授权范围或启停变化时更新的 endpointRevision。损坏或未知 Schema 明确失败。DNS 运行状态在同一私有目录的 custom-ping-dns.json 中独立原子保存，自动刷新不修改管理员 revision。清单、运行状态和 file_sd 通过同一锁与投影发布，跨卷失败显示 pending 并由 reconciliation 重试。
+
+每个启用域名最多发布一个实际 IPv4。保留仍在合规 A 集合内的当前地址，否则按 IPv4 数值从小到大选址。每次结果重新检查 D1 地址策略、玩家/无线网段、跨来源目标及自定义目标冲突。私网解析要求该域名的 privateCidrs 明确授权，最多 16 个 RFC1918 内部 CIDR，受限地址及现有冲突仍会被拒绝。公网地址转到未授权私网时显示 DNS_POLICY_BLOCKED，撤销活动探测并保留上次 IP 供诊断。
+
+解析使用锁定版本 dnspython==2.8.0。每次 A/CNAME 查询共享 2 秒总预算，CNAME 最多 8 跳，每次最多 64 个 A 地址。Platform API 单进程调度最多 8 个在途解析，每目标最多 1 个，不积压额外解析任务。成功刷新间隔为有效 TTL 的 80%，限制在 30–300 秒。失败退避为 30、60、120、300 秒。TTL 取 A 与 CNAME 链的最小值，调度下限不延长 TTL。低于刷新下限的 TTL 到期后会先成为 DNS_STALE，等待下一次成功解析。
+
+DNS 错误与 ICMP 状态分别返回。列表含 dnsStatus、resolvedIp、aCount、resolutionGeneration、resolvedAt、expiresAt、sampleNotBefore、dnsError。发现接口按当前可发布的端点集合确认，dnsTargets 返回 discoveredGeneration、discoveryStatus 与 pingStatus。新代次尚未发现、DNS 失效、抓取失败或样本早于启用时间均为 UNKNOWN。只有当前端点同一抓取时刻的新 up=1 与有效 ICMP 证据可判 UP/DOWN。质量阈值和历史统计由既有页面逻辑处理。
+
+发现文件通过仅用于发现的 __meta_custom_ping_resolution_generation 携带解析代次，Prometheus 自动移除该元标签。时序保持 custom_id、instance、真实 target_ip。改名/分组不增加新的时序标签。IP 生效时段用 /platform-api/ping/targets/<UUID>/resolutions?cursor=<generation> 分页只读查询，每页最多 200 条，删除后的 UUID 也可查询。记录至少保留最近 7 天，整体最多 100000 段、运行文件最多 32 MiB。容量耗尽时暂停新地址激活并返回明确原因，保留已有来源。前端按真实 IP 和生效时段读取历史，原始 UTC CSV 与旧端点深链继续使用 TSDB。
+
+运行状态、配置和发现文件均需随现有状态卷持久化。DNS 后端与域名前端在同一维护窗口上线，需构建含解析依赖的 Platform API 镜像。将 PLATFORM_CUSTOM_PING_DNS_ENABLED=false 并重建 Platform API，可用兼容 Schema 2 的版本暂停 DNS 投影，保留配置、IP 时段、回执和 TSDB，IPv4 仍按原有逻辑运行。恢复启用后重新解析并等待新代次与采样。已有 Schema 2 数据的环境应先使用该兼容暂停路径，再评估后续回退版本。
+
+
 ### 核心交换机直连 AP
 
 拓扑默认不把 AP 挂在核心下面，因为核心也会学到下游 AP 的 MAC。确实直连时，先核对物理接线，再在部署目录的 `.env` 填写 `TOPOLOGY_CORE_AP_PORTS`，例如 `192.0.2.1:Gi1/0/37`。多项用逗号分隔，最多 128 项、8192 字符。IP 必须是已配置的核心地址，接口名填写采集到的 `ifName`（忽略大小写，不混用全称和缩写）。不要填写接交换机的互联口或聚合成员；改接线时也要更新这项。

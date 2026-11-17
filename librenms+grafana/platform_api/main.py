@@ -143,6 +143,8 @@ CUSTOM_PING = CustomPingAPI(
     public_origin=os.environ.get("PLATFORM_CUSTOM_PING_ORIGIN", ""),
 )
 
+CUSTOM_PING.store.dns_enabled = os.environ.get("PLATFORM_CUSTOM_PING_DNS_ENABLED", "true").lower() == "true"
+
 
 class DiagnosticError(Exception):
     def __init__(self, status: int, message: str, **extra):
