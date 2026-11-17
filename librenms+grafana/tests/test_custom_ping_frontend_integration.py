@@ -53,13 +53,19 @@ def prometheus_fetch(container, endpoint):
     return docker("exec", container, "wget", "-qO-", "http://127.0.0.1:9090" + endpoint).stdout
 
 
-def query(container, expression, at=None):
+def query_response(container, expression, at=None, *, stats=False):
     params = {"query": expression}
     if at is not None:
         params["time"] = at
+    if stats:
+        params["stats"] = "all"
     result = json.loads(prometheus_fetch(container, "/api/v1/query?" + urlencode(params)))
     assert result["status"] == "success"
-    return result["data"]["result"]
+    return result["data"]
+
+
+def query(container, expression, at=None):
+    return query_response(container, expression, at)["result"]
 
 
 def test_frontend_uses_real_discovery_and_blackbox_icmp(tmp_path, monkeypatch):
@@ -159,7 +165,7 @@ def test_prometheus_mixed_query_performance(tmp_path, capsys):
     infra, custom = frontend({"at": at})
     results = []
     for size in (50, 100, 300):
-        for variant, custom_count in (("baseline", 0), ("b2", size // 4)):
+        for variant, custom_count in (("baseline", 0), ("b2", (size + 3) // 4)):
             name = "ping-b2-perf-" + uuid4().hex[:12]
             mount = preload_prometheus(tmp_path / name, size, custom_count, at)
             try:
@@ -172,17 +178,27 @@ def test_prometheus_mixed_query_performance(tmp_path, capsys):
                     return {field: float(re.search(rf"(?m)^{field} ([\d.eE+-]+)$", metrics)[1])
                             for field in ("process_cpu_seconds_total", "process_resident_memory_bytes")}
 
+                expressions = [(infra, size - custom_count)]
+                if custom_count:
+                    expressions.append((custom, custom_count))
+
                 before = measures()
-                elapsed = []
-                for _ in range(10):
+                elapsed, server = [], []
+                for _ in range(20):
                     start = monotonic()
-                    assert sum(row["metric"].get("ping_field") == "source" for row in query(name, infra, at)) == size - custom_count
-                    if custom_count:
-                        assert sum(row["metric"].get("ping_field") == "source" for row in query(name, custom, at)) == custom_count
+                    execution = 0
+                    for expression, expected in expressions:
+                        query_data = query_response(name, expression, at, stats=True)
+                        sources = sum(row["metric"].get("ping_field") == "source" for row in query_data["result"])
+                        assert sources == expected
+                        execution += query_data["stats"]["timings"]["execTotalTime"]
                     elapsed.append((monotonic() - start) * 1000)
+                    server.append(execution * 1000)
                 after = measures()
+                # Nearest-rank p95 over 20 iterations is the 19th observation in sorted order.
                 results.append({"size": size, "custom": custom_count, "variant": variant,
-                                "docker_exec_e2e_p95_ms": round(max(elapsed), 2),
+                                "prom_query_p95_ms": round(sorted(server)[18], 2),
+                                "docker_exec_e2e_p95_ms": round(sorted(elapsed)[18], 2),
                                 "prom_cpu_s_delta": round(after["process_cpu_seconds_total"] - before["process_cpu_seconds_total"], 3),
                                 "prom_rss_bytes": int(after["process_resident_memory_bytes"])})
             finally:
