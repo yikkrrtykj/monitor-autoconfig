@@ -1,4 +1,5 @@
 """Run real file_sd and Prometheus checks in a container without network access."""
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from platform_api import custom_ping
 from platform_api.custom_ping import TargetInventory
 from platform_api.custom_ping_store import PingError, PingStore
 
@@ -58,7 +60,7 @@ def test_compose_custom_discovery_is_shared_only_between_api_and_prometheus():
     assert all(v.get("source") != "platform-state" for v in services["prometheus"]["volumes"])
 
 
-def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path):
+def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path, monkeypatch):
     sandbox = tmp_path / "fixture"
     sandbox.mkdir(mode=0o755)
     sandbox.chmod(0o755)
@@ -86,6 +88,12 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path):
         "run", "--rm", "--network", "none", *mounts, "--entrypoint", "/bin/promtool", IMAGE,
         "check", "config", "/fixture/prometheus.yml",
     )
+    config_path = sandbox / "prometheus.yml"
+    full_config = sandbox / "prometheus-full.yml"
+    config_path.rename(full_config)
+    without_custom, job, _ = full_config.read_text().partition('  - job_name: "custom-ping"')
+    assert job
+    config_path.write_text(without_custom)
     name = "custom-ping-ci-" + uuid4().hex
 
     def fetch(path):
@@ -110,8 +118,20 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path):
         assert status in (200, 201) and result["publication"] == "published"
         return result["target"]
 
-    inventory = TargetInventory("http://unreachable.test", "192.0.2.0/24", "", 1)
-    inventory.active = active
+
+    def open_inventory(url, timeout):
+        # Forward the Platform API request to the real Prometheus on its isolated loopback.
+        try:
+            result = docker("exec", name, "wget", "-qO-", url, timeout=timeout + 5)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise OSError("isolated Prometheus request failed") from exc
+        return io.BytesIO(result.stdout.encode())
+
+    monkeypatch.setattr(custom_ping, "urlopen", open_inventory)
+    inventory = TargetInventory("http://127.0.0.1:9090", "192.0.2.0/24", "", 1)
+
+    def observe():
+        return inventory.observed(store.list_targets())
 
     try:
         docker(
@@ -119,7 +139,16 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path):
             "--config.file=/fixture/prometheus.yml", "--storage.tsdb.path=/prometheus",
         )
         wait_for(active, lambda rows: {"prometheus", "player-ping", "infra-core-ping"} <= {r["scrapePool"] for r in rows})
-        assert targets("custom-ping") == []
+        missing = observe()
+        assert missing["publishedRevision"] == 0 and missing["discoveredRevision"] is None
+        assert missing["activeTargets"] == []
+        assert "custom-ping" not in fetch("/api/v1/scrape_pools")["scrapePools"]
+
+        full_config.replace(config_path)
+        docker("kill", "--signal=HUP", name)
+        initial = wait_for(observe, lambda state: state["discoveredRevision"] == 0)
+        assert initial["publishedRevision"] == 0 and initial["activeTargets"] == []
+        assert "custom-ping" in fetch("/api/v1/scrape_pools")["scrapePools"]
         assert targets("player-ping")[0]["labels"]["instance"] == "192.0.2.90"
         assert targets("infra-core-ping")[0]["labels"]["instance"] == "fixture"
         for reserved in ("192.0.2.90", "192.0.2.91"):
@@ -155,7 +184,8 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path):
         assert {row["metric"]["target_ip"] for row in historic} == {"192.0.2.21", "192.0.2.22"}
 
         write("PATCH", target_id, 3, {"enabled": False})
-        wait_for(lambda: targets("custom-ping"), lambda rows: not rows)
+        disabled = wait_for(observe, lambda state: state["discoveredRevision"] == 4)
+        assert disabled["activeTargets"] == []
         assert len(query(expr)) == 2
         write("PATCH", target_id, 4, {"enabled": True})
         wait_for(lambda: targets("custom-ping"), bool)
@@ -167,8 +197,20 @@ def test_prometheus_reads_atomic_updates_and_preserves_series(tmp_path):
         docker("restart", name)
         wait_for(lambda: targets("custom-ping"), bool)
         write("DELETE", target_id, 5)
-        wait_for(lambda: targets("custom-ping"), lambda rows: not rows)
+        deleted = wait_for(observe, lambda state: state["discoveredRevision"] == 6)
+        assert deleted["activeTargets"] == []
+        broken = discovery_path.with_suffix(".tmp")
+        broken.write_bytes(b"broken file_sd")
+        broken.replace(discovery_path)
+        dirty = observe()
+        assert dirty["publishedRevision"] is None and dirty["discoveredRevision"] is None
+        store.reconcile()
+        assert observe()["discoveredRevision"] == 6
         assert len(query(expr)) == 2
         assert len(targets("player-ping")) == len(targets("infra-core-ping")) == 1
+        docker("stop", "-t", "5", name)
+        with pytest.raises(PingError, match="inventory_unavailable") as error:
+            observe()
+        assert error.value.status == 503
     finally:
         docker("rm", "-f", "-v", name, check=False)

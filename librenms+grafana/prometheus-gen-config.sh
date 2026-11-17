@@ -416,6 +416,10 @@ cat >> "$CONFIG_FILE" <<'CUSTOM_PING'
     metrics_path: /probe
     params:
       module: [icmp]
+    # Prometheus 2.53 needs a target group to initialize a scrape pool.
+    # An empty static group makes the pool observable even when file_sd is [].
+    static_configs:
+      - targets: []
     file_sd_configs:
       - files:
           - "/etc/prometheus/targets/custom/custom_targets.json"

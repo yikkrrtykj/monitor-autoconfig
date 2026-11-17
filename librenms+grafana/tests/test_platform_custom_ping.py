@@ -49,12 +49,19 @@ def server_factory():
 
 @pytest.fixture
 def prom(server_factory, monkeypatch):
-    class FakePrometheus(BaseHTTPRequestHandler):
-        payload = {"status": "success", "data": {"activeTargets": [{"scrapePool": "prometheus"}]}}
+    active = [{"scrapePool": "prometheus"}]
+    responses = {
+        "/api/v1/targets?state=active": {"status": "success", "data": {"activeTargets": active}},
+        "/api/v1/scrape_pools": {"status": "success", "data": {"scrapePools": ["prometheus", "custom-ping"]}},
+    }
 
+    class FakePrometheus(BaseHTTPRequestHandler):
         def do_GET(self):
-            assert self.path == "/api/v1/targets?state=active"
-            body = json.dumps(self.payload).encode()
+            payload = responses[self.path]
+            if payload is None:
+                self.send_error(503)
+                return
+            body = json.dumps(payload).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -63,15 +70,18 @@ def prom(server_factory, monkeypatch):
     if os.name == "nt":
         # Exercise the same HTTP parser without requiring a loopback socket in restricted Windows tools.
         def open_inventory(url, timeout):
-            assert url.endswith("/api/v1/targets?state=active") and timeout == 1
-            return io.BytesIO(json.dumps(FakePrometheus.payload).encode())
+            assert timeout == 1
+            payload = responses[url.removeprefix("http://127.0.0.1:9")]
+            if payload is None:
+                raise OSError("fixture unavailable")
+            return io.BytesIO(json.dumps(payload).encode())
 
         monkeypatch.setattr(custom_ping, "urlopen", open_inventory)
         port = 9
     else:
         port = server_factory(FakePrometheus)
     inventory = custom_ping.TargetInventory(f"http://127.0.0.1:{port}", "192.0.2.0/24", "192.0.2.96/28", 1)
-    return inventory, FakePrometheus.payload["data"]["activeTargets"]
+    return inventory, active, responses
 
 
 @pytest.fixture
@@ -151,6 +161,7 @@ def test_http_lifecycle_replay_and_discovery(store, api, prom, caplog):
     assert request("GET")[1] == {
         "ok": True, "targets": [], "revision": 0, "publishedRevision": 0, "publication": "published",
     }
+    assert request("GET", "/discovery")[1]["discoveredRevision"] == 0
     create = edit_headers(headers)
     status, original, reply = request("POST", body=ITEM, headers=create)
     assert status == 201 and reply["ETag"] == '"1"'
@@ -177,20 +188,72 @@ def test_http_lifecycle_replay_and_discovery(store, api, prom, caplog):
     assert disabled[0] == 200 and disabled[1]["target"]["enabled"] is False
     assert json.loads(store.discovery.read_bytes()) == []
     assert request("GET", "/discovery")[1]["discoveredRevision"] is None
+    prom[1].pop()
+    assert request("GET", "/discovery")[1]["discoveredRevision"] == 3
     restored = request("PATCH", target, {"enabled": True, "ip": "192.0.2.12"}, edit_headers(headers, 3))
     assert restored[0] == 200 and restored[1]["target"]["id"] == item["id"]
     assert json.loads(store.discovery.read_bytes())[0]["targets"] == ["192.0.2.12"]
     assert request("GET", "/discovery")[1]["discoveredRevision"] is None
+    prom[1].append({
+        "scrapePool": "custom-ping", "labels": {"custom_id": item["id"], "target_ip": "192.0.2.12"},
+        "discoveredLabels": {"__meta_custom_ping_revision": "4"}, "health": "up",
+    })
+    assert request("GET", "/discovery")[1]["discoveredRevision"] == 4
     delete = edit_headers(headers, 4)
     status, removed, _ = request("DELETE", target, headers=delete)
     assert status == 200 and removed["target"] is None and removed["savedRevision"] == 5
     assert request("DELETE", target, headers=delete)[1]["replayed"]
     assert request("GET")[1]["targets"] == []
     assert json.loads(store.discovery.read_bytes()) == []
+    assert request("GET", "/discovery")[1]["discoveredRevision"] is None
+    prom[1].pop()
+    assert request("GET", "/discovery")[1]["discoveredRevision"] == 5
     receipts = json.loads(store.manifest.read_bytes())["receipts"]
     assert [row["action"] for row in receipts] == ["POST", "PATCH", "PATCH", "PATCH", "DELETE"]
     assert receipts[-1]["before"]["ip"] == "192.0.2.12" and receipts[-1]["actor"] == AUTH_RECORD["username"]
     assert headers["Cookie"] not in caplog.text and headers["X-CSRF-Token"] not in caplog.text
+
+
+def test_empty_discovery_requires_loaded_job(api, prom):
+    _, request, _, _ = api
+    pools = prom[2]["/api/v1/scrape_pools"]["data"]["scrapePools"]
+    pools.remove("custom-ping")
+    status, result, _ = request("GET", "/discovery")
+    assert status == 200 and result["publishedRevision"] == 0
+    assert result["discoveredRevision"] is None and result["activeTargets"] == []
+
+
+@pytest.mark.parametrize("response", [
+    None,
+    {"status": "error", "data": {"scrapePools": ["custom-ping"]}},
+    {"status": "success", "data": {"scrapePools": {"custom-ping": True}}},
+    {"status": "success", "data": {"scrapePools": ["custom-ping", None]}},
+    {"status": "success", "data": {}},
+])
+def test_empty_discovery_rejects_unavailable_or_invalid_pool_state(api, prom, response):
+    _, request, _, _ = api
+    prom[2]["/api/v1/scrape_pools"] = response
+    status, result, _ = request("GET", "/discovery")
+    assert status == 503 and result["error"] == "custom_ping_inventory_unavailable"
+    assert "discoveredRevision" not in result
+
+
+def test_multiple_discovery_matches_individual_revisions(store, api, prom):
+    _, request, _, _ = api
+    first = add(store)[1]["target"]
+    second = add(store, ip="192.0.2.12")[1]["target"]
+    for target in (first, second):
+        prom[1].append({
+            "scrapePool": "custom-ping",
+            "labels": {"custom_id": target["id"], "target_ip": target["ip"]},
+            "discoveredLabels": {"__meta_custom_ping_revision": str(target["revision"])},
+            "health": "up",
+        })
+    # Populated inventories already have pool evidence in their active records.
+    prom[2]["/api/v1/scrape_pools"] = None
+    assert request("GET", "/discovery")[1]["discoveredRevision"] == 2
+    prom[1][-1]["discoveredLabels"]["__meta_custom_ping_revision"] = "0"
+    assert request("GET", "/discovery")[0] == 503
 
 
 @pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])

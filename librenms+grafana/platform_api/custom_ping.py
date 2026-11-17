@@ -105,30 +105,44 @@ class TargetInventory:
         self.player_subnets = player_subnets
         self.timeout = min(timeout, 4)
 
+    def _prometheus_data(self, path: str) -> dict:
+        with urlopen(f"{self.prom_url}{path}", timeout=self.timeout) as response:
+            # read1 lets a slow sender consume at most one socket timeout beyond the deadline.
+            deadline = time.monotonic() + self.timeout
+            raw = bytearray()
+            while time.monotonic() < deadline:
+                chunk = response.read1(min(65536, MAX_INVENTORY_BYTES + 1 - len(raw)))
+                if not chunk:
+                    break
+                raw.extend(chunk)
+                if len(raw) > MAX_INVENTORY_BYTES:
+                    raise ValueError("oversize inventory")
+            else:
+                raise ValueError("inventory deadline")
+        payload = decode_json(bytes(raw))
+        if payload["status"] != "success" or not isinstance(payload["data"], dict):
+            raise ValueError("invalid inventory response")
+        return payload["data"]
+
     def active(self) -> list[dict]:
         try:
-            with urlopen(f"{self.prom_url}/api/v1/targets?state=active", timeout=self.timeout) as response:
-                # read1 lets a slow sender consume at most one socket timeout beyond the deadline.
-                deadline = time.monotonic() + self.timeout
-                raw = bytearray()
-                while time.monotonic() < deadline:
-                    chunk = response.read1(min(65536, MAX_INVENTORY_BYTES + 1 - len(raw)))
-                    if not chunk:
-                        break
-                    raw.extend(chunk)
-                    if len(raw) > MAX_INVENTORY_BYTES:
-                        raise ValueError("oversize inventory")
-                else:
-                    raise ValueError("inventory deadline")
-            payload = decode_json(bytes(raw))
-            active = payload["data"]["activeTargets"]
+            active = self._prometheus_data("/api/v1/targets?state=active")["activeTargets"]
             if (
-                payload["status"] != "success" or not isinstance(active, list)
+                not isinstance(active, list)
                 or any(not isinstance(row["scrapePool"], str) for row in active)
                 or not any(row["scrapePool"] == "prometheus" for row in active)
             ):
                 raise ValueError("invalid or uninitialized inventory")
             return active
+        except (OSError, HTTPException, TypeError, ValueError, KeyError, RecursionError) as exc:
+            raise PingError(503, "custom_ping_inventory_unavailable") from exc
+
+    def _custom_pool_loaded(self) -> bool:
+        try:
+            pools = self._prometheus_data("/api/v1/scrape_pools")["scrapePools"]
+            if not isinstance(pools, list) or any(not isinstance(name, str) for name in pools):
+                raise ValueError("invalid scrape pools")
+            return JOB in pools
         except (OSError, HTTPException, TypeError, ValueError, KeyError, RecursionError) as exc:
             raise PingError(503, "custom_ping_inventory_unavailable") from exc
 
@@ -181,10 +195,13 @@ class TargetInventory:
             except (KeyError, TypeError, ValueError) as exc:
                 raise PingError(503, "custom_ping_inventory_unavailable") from exc
         matched = (
-            snapshot["publication"] == "published" and current and len(observed) == len(current)
+            snapshot["publication"] == "published" and len(observed) == len(current)
             and {(row["id"], row["ip"], row["revision"]) for row in observed}
             == {(row["id"], row["ip"], row["revision"]) for row in current.values()}
         )
+        # A matching empty inventory alone cannot distinguish a missing job.
+        if matched and not current:
+            matched = self._custom_pool_loaded()
         return {"ok": True, "revision": snapshot["revision"], "publishedRevision": snapshot["publishedRevision"],
                 "discoveredRevision": snapshot["revision"] if matched else None, "activeTargets": observed}
 
