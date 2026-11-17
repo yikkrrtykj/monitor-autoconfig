@@ -9,7 +9,10 @@
     hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZoneName: "short"
   });
   const time = (t) => localTime.format(new Date(t * 1000));
-  const rtt = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 });
+  const subMillisecond = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 3 });
+  const milliseconds = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
+  const formatRtt = (value) => Number.isFinite(value) && value >= 0
+    ? (value < 1 ? subMillisecond : milliseconds).format(value) + " ms" : "N/A";
   const percent = (value) => value == null ? "N/A" : value.toFixed(1) + "%";
 
   function describe({ rows, aggregated }) {
@@ -18,7 +21,7 @@
       if (aggregated) {
         return `<div>${identity}<span>${bucket ? `聚合桶 ${time(bucket.from)} — ${time(bucket.to)} · Loss ${percent(bucket.loss)} · ${bucket.failed}/${bucket.total} 失败` : "此处无聚合桶"}</span></div>`;
       }
-      return `<div>${identity}<span>${sample ? `${time(sample.t)} · ` : ""}${history.sampleStatus(sample)} · RTT ${sample?.rtt == null ? "N/A" : rtt.format(sample.rtt) + " ms"}</span></div>`;
+      return `<div>${identity}<span>${sample ? `${time(sample.t)} · ` : ""}${history.sampleStatus(sample)} · RTT ${formatRtt(sample?.rtt)}</span></div>`;
     }).join("");
   }
 
