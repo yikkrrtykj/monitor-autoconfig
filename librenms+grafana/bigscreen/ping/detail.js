@@ -93,9 +93,8 @@
       byId("Cursor").value = localInput(pin?.time ?? range.end);
     }
 
-    function statistics(series, aggregated) {
-      byId("Metrics").innerHTML = series.map(({ target, points, buckets }, index) => {
-        const span = range.end - range.start;
+    function statistics(container, series, span, aggregated = false) {
+      container.innerHTML = series.map(({ target, points, buckets }, index) => {
         const stats = aggregated ? model.lossStats(
           buckets.reduce((n, bucket) => n + bucket.total, 0),
           buckets.reduce((n, bucket) => n + bucket.success, 0), span, target.interval
@@ -124,11 +123,27 @@
       return timeline.bind(container, series, { aggregated, onPin: (pick) => setPin(pick, isRaw), onZoom: zoom, onClear: clearPin });
     }
 
+    function renderDrillSummary() {
+      const show = Boolean(pin && drill?.data);
+      byId("DrillStatistics").hidden = !show;
+      if (!show) return;
+      const end = Math.min(drill.end, Math.max(drill.start + 1, pin.time));
+      const start = Math.max(drill.start, end - Number(statsField.value));
+      const series = targets.map((target) => ({
+        target,
+        points: drill.data.get(target.key).filter(({ t }) => t > start && t <= end)
+      }));
+      byId("DrillStatistics").querySelector("h4").textContent =
+        `固定点原始窗口统计 · ${timeline.time(start)} — ${timeline.time(end)}`;
+      statistics(byId("DrillMetrics"), series, end - start);
+    }
+
     function renderRaw() {
       rawPlot?.dispose();
       rawPlot = null;
       byId("Export").disabled = !drill?.data || ![...drill.data.values()].some((rows) => rows.length);
       raw.innerHTML = "";
+      renderDrillSummary();
       byId("Events").innerHTML = '<tr><td colspan="4">该窗口没有探测记录</td></tr>';
       if (!drill) {
         byId("DrillCaption").textContent = "长区间仅显示聚合统计。固定一个聚合桶可下钻原始记录。";
@@ -197,8 +212,10 @@
       error();
       renderPins();
       // Keep the existing drill graph and its samples under a click in the drill.
-      if (isRaw) renderEvents();
-      else refreshDrill();
+      if (isRaw) {
+        renderDrillSummary();
+        renderEvents();
+      } else refreshDrill();
     }
 
     function locate(t) {
@@ -231,7 +248,7 @@
         overview = { data: rows, series, raw: isRaw };
         plot = graph(main, series, start, end, !isRaw, false);
         byId("OverviewLoss").innerHTML = charts.heatmap(series);
-        statistics(series, !isRaw);
+        statistics(byId("Metrics"), series, end - start, !isRaw);
         refreshDrill();
       }, (reason) => { main.textContent = `历史${queryError(reason)}。可使用刷新重试。`; });
     }

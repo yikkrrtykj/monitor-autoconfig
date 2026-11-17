@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 env:
-  AUDIT_HEAD: "3f8a25c799574e456ce9d6400607ac6c4f652f9b"
+  AUDIT_HEAD: "73b75a296c2cade44a3374c372c642ac69c39dc7"
 jobs:
   prometheus:
     runs-on: ubuntu-24.04
@@ -18,7 +18,7 @@ jobs:
       - name: Check out the exact proposed head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: "3f8a25c799574e456ce9d6400607ac6c4f652f9b"
+          ref: "73b75a296c2cade44a3374c372c642ac69c39dc7"
           path: tested
           fetch-depth: 0
           persist-credentials: false
@@ -45,7 +45,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ux113-prometheus-history-3f8a25c7
+          name: ux113-prometheus-history-73b75a29
           path: |
             .github/ux113-evidence/evidence/ux113-prometheus-history.json
             .github/ux113-evidence/prom-progress.json

@@ -7,7 +7,7 @@ const {spawn}=require("node:child_process");
 const {devices,modes,rtt,playerJob}=require("./fixture.cjs");
 const root=process.env.PR112_BIGSCREEN;
 const output=path.join(__dirname,"evidence");
-const head="3f8a25c799574e456ce9d6400607ac6c4f652f9b";
+const head="73b75a296c2cade44a3374c372c642ac69c39dc7";
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const pct=(items,p=.95)=>{const a=[...items].sort((x,y)=>x-y);return a.length?Math.round(a[Math.ceil(a.length*p)-1]*100)/100:null};
 let fixture=devices(50), calls=[], active=0, peak=0, missingVip=false, unitRestored=false, toggleCore=false, extraDelay=false, timeoutStatus=false, timeoutTrend=false;
@@ -197,7 +197,11 @@ async function main(){
     await wait(pinned+'.includes("128.237 ms")');
     assert.equal(await evaluate('document.querySelector("#pingOverviewChart .ping-pin").classList.contains("ping-plot-hidden")'),false);
     assert.equal(calls.length,beforeHover,"raw pin reuses loaded overview");
-    checks.push("real spike hover and pin, exact 128.237 ms, zero new HTTP");
+    await wait('!document.querySelector("#pingDrillStatistics").hidden');
+    assert.match(await evaluate('document.querySelector("#pingDrillMetrics").textContent'),/P50.*P95.*Max.*128\.2 ms.*STDDEV.*Loss/s);
+    const rawStatsTime=await evaluate('document.querySelector("#pingDrillStatistics h4").textContent');
+    const mainStats=await evaluate('document.querySelector("#pingMetrics").textContent');
+    checks.push("real spike hover and pin, exact 128.237 ms, synchronized fixed-window stats, zero new HTTP");
 
     for(const [w,h] of [[1920,1080],[1366,768],[390,844]]){
       await screen(w,h);
@@ -213,6 +217,8 @@ async function main(){
     await send("Input.dispatchTouchEvent",{type:"touchStart",touchPoints:[touch]});
     await send("Input.dispatchTouchEvent",{type:"touchEnd",touchPoints:[]});
     await wait(pinned+'.includes("已固定")&&'+pinned+'!=='+JSON.stringify(oldPinned));
+    assert.notEqual(await evaluate('document.querySelector("#pingDrillStatistics h4").textContent'),rawStatsTime);
+    assert.equal(await evaluate('document.querySelector("#pingMetrics").textContent'),mainStats);
     await send("Emulation.setTouchEmulationEnabled",{enabled:false});
     await screen(1920,1080);
     await evaluate('document.querySelector("#pingOverviewChart svg").focus()');
@@ -221,6 +227,7 @@ async function main(){
     await wait(pinned+'.includes("已固定")');
     await plotKey("keyDown","Escape");await plotKey("keyUp","Escape");
     assert.equal(await evaluate(pinned+'.trim()'),"");
+    assert.equal(await evaluate('document.querySelector("#pingDrillStatistics").hidden'),true);
     checks.push("three history sizes, mobile touch pin, keyboard navigation/Enter/Escape");
 
     await scroll(overview);

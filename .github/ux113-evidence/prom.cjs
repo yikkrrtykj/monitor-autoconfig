@@ -15,7 +15,7 @@ const {policy,identity}=require(path.join(process.env.PR112_BIGSCREEN,"ping/mode
 const engine=process.env.PR112_PROM;
 const evidence=path.join(__dirname,"evidence");
 const sleep=ms=>new Promise(r=>setTimeout(r,Math.max(0,ms)));
-const head="3f8a25c799574e456ce9d6400607ac6c4f652f9b";
+const head="73b75a296c2cade44a3374c372c642ac69c39dc7";
 const sourceSettings=policy({});
 let current=new Map();
 let exporterRequests={};
