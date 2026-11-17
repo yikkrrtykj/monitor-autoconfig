@@ -7,7 +7,7 @@ from time import monotonic, time
 from urllib.parse import urlencode
 from uuid import uuid4
 
-from test_custom_ping_prometheus import IMAGE, ROOT, SD_DIR, docker, pytestmark, wait_for
+from .test_custom_ping_prometheus import IMAGE, ROOT, SD_DIR, docker, pytestmark, wait_for
 from platform_api import custom_ping
 from platform_api.custom_ping import TargetInventory
 from platform_api.custom_ping_store import PingStore
