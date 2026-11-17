@@ -100,14 +100,16 @@
         }
       }
       byId("CustomActions").hidden = !live;
-      byId("CustomNotice").textContent = live ? custom.notice : "";
+      const customNotice = live ? custom.notice ||
+        (custom.catalog && !custom.items.length && custom.sync !== "已发现" ? "自定义目标 · " + custom.sync : "") : "";
+      byId("CustomNotice").textContent = customNotice;
       customManager.update(custom);
       const counts = { UP: 0, DOWN: 0, DEGRADED: 0, UNKNOWN: 0 };
       for (const { status } of targets) counts[status] += 1;
       const available = targets.length > counts.UNKNOWN;
       const missing = dataState === "ready" ? model.missingFirewall(targets, firewall.ips) : [];
       const partial = counts.UNKNOWN > 0 || agedOut > 0 || missing.length > 0 || firewall.invalid ||
-        dataState === "unavailable" || (live && !!custom.notice);
+        dataState === "unavailable" || !!customNotice;
       const mode = snapshotAt === null ? "实时监控" : "历史快照 · " + localInput(snapshotAt).replace("T", " ");
       const source = byId("Source");
       source.dataset.state = !available ? "UNKNOWN" : partial ? "DEGRADED" : "UP";

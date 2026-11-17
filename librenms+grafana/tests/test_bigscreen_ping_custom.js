@@ -92,10 +92,11 @@ test("timeout is classified, with the logical request reusable after transport a
 test("monitor drops a late pre-deletion read and keeps the last good list on failure", async () => {
   const sent = [];
   const requested = [];
+  let found = { ...discovery(2, [row]), discoveredRevision: null };
   const monitor = custom.createMonitor({
     client: {
       list: () => new Promise((resolve, reject) => requested.push({ resolve, reject })),
-      discovery: async () => discovery(2, []),
+      discovery: async () => found,
     },
     sample: async () => new Map(), changed: (view) => sent.push(view),
     settings, visible: () => true, now: () => 100,
@@ -103,13 +104,20 @@ test("monitor drops a late pre-deletion read and keeps the last good list on fai
   try {
     monitor.start();
     monitor.saved({ id, target: null, savedRevision: 2, revision: 2, publication: "pending", publishedRevision: null });
+    assert.equal(sent.at(-1).sync, "待发布");
     requested[0].resolve(manifest(1, [row]));
     requested[1].resolve(manifest(2, []));
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(sent.at(-1).catalog.revision, 2);
     assert.deepEqual(sent.at(-1).items, []);
+    assert.equal(sent.at(-1).sync, "待发现");
+    found = discovery(2, []);
+    const converged = monitor.refresh();
+    requested[2].resolve(manifest(2, []));
+    assert.equal(await converged, true);
+    assert.equal(sent.at(-1).sync, "已发现");
     const failure = monitor.refresh();
-    requested[2].reject(new Error("503"));
+    requested[3].reject(new Error("503"));
     assert.equal(await failure, false);
     assert.match(sent.at(-1).notice, /清单暂不可用/);
     assert.equal(sent.at(-1).catalog.revision, 2);

@@ -74,7 +74,7 @@
       if (!open()) return;
       const list = view.catalog?.targets || [];
       const count = list.filter((row) => row.enabled).length;
-      const publication = view.catalog ? view.catalog.publication === "pending" ? "待发布" : "已发布" : "正在读取清单";
+      const publication = view.sync === "待发现" ? "已发布 · 待发现" : view.sync || "正在读取清单";
       el("Inventory").textContent = view.catalog
         ? count + " / 100 启用 · " + list.length + " / 300 总数 · " + publication + (view.notice ? " · " + view.notice : "")
         : view.notice || publication;
@@ -205,7 +205,7 @@
         retry = null;
         if (operation.method === "POST" || operation.method === "PATCH" && showEditor) showEditor = false;
         deleting = null;
-        announce(receipt.publication === "pending" ? "已保存，等待发布。" : "已保存，等待确认发现状态。", true);
+        announce("已保存。", true);
       } catch (error) {
         if (request.signal.aborted || !open()) return;
         if (error.status === 401 || error.code === "custom_ping_csrf_rejected" ||

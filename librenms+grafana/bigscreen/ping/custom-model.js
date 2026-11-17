@@ -65,19 +65,26 @@
       customGroup: row.group };
   }
 
+  function isDiscovered(catalog, discovery) {
+    if (!catalog || catalog.complete === false || discovery?.revision !== catalog.revision ||
+        discovery.discoveredRevision !== catalog.revision || discovery.publishedRevision !== catalog.revision ||
+        catalog.publishedRevision !== catalog.revision) return false;
+    const active = new Map(discovery.activeTargets.map((item) => [item.id, item]));
+    const enabled = catalog.targets.filter((row) => row.enabled);
+    return discovery.activeTargets.length === enabled.length && enabled.every((row) =>
+      active.get(row.id)?.ip === row.ip && active.get(row.id)?.revision === row.revision);
+  }
+
   function present(catalog, discovery, samples, settings, observed = new Set(), notice = "") {
     if (!catalog) return [];
-    const matches = catalog.complete !== false && discovery?.revision === catalog.revision &&
-      discovery.discoveredRevision === catalog.revision && discovery.publishedRevision === catalog.revision;
-    const surviving = new Map((matches ? discovery.activeTargets : []).map((item) => [item.id, item]));
+    const discovered = isDiscovered(catalog, discovery);
     return catalog.targets.filter((row) => row.enabled).map((row) => {
       const item = target(row, settings);
-      const seen = surviving.get(row.id);
       const reading = samples?.get(item.key);
       const since = Date.parse(row.updatedAt) / 1000;
       let sync = catalog.publication === "pending" ? "待发布" : "待发现";
       let reason = notice;
-      if (seen?.ip === row.ip && seen.revision === row.revision) {
+      if (discovered) {
         sync = "已发现";
         const attempt = item.key + ":" + row.revision;
         if (reading?.sourceAt != null && reading.sourceAt >= since && reading.status !== "UNKNOWN" && !notice) {
@@ -111,7 +118,9 @@
       const catalog = state.current();
       items = present(catalog, discovery, samples, settings, observed, notice);
       if (observed.size > 384) observed.clear();
-      changed({ catalog, items, notice });
+      const sync = !catalog ? "" : catalog.publication === "pending" ? "待发布" :
+        !notice && isDiscovered(catalog, discovery) ? "已发现" : "待发现";
+      changed({ catalog, items, notice, sync });
     }
 
     function pause() {
@@ -140,7 +149,7 @@
           throw new Error("自定义发现暂不可确认");
         }
         discovery = found.value;
-        if (list.value.targets.some((row) => row.enabled) && discovery.discoveredRevision === list.value.revision) {
+        if (discovery.activeTargets.length && isDiscovered(state.current(), discovery)) {
           samples = await sample(at, signal);
           if (signal.aborted) return false;
         }
