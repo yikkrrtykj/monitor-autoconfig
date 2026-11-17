@@ -7,7 +7,7 @@ const {spawn}=require("node:child_process");
 const {devices,modes,rtt,playerJob}=require("./fixture.cjs");
 const root=process.env.PR112_BIGSCREEN;
 const output=path.join(__dirname,"evidence");
-const head="2928eeede9f1dce5c14671e6942b00b2c1162746";
+const head="3f8a25c799574e456ce9d6400607ac6c4f652f9b";
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const pct=(items,p=.95)=>{const a=[...items].sort((x,y)=>x-y);return a.length?Math.round(a[Math.ceil(a.length*p)-1]*100)/100:null};
 let fixture=devices(50), calls=[], active=0, peak=0, missingVip=false, unitRestored=false, toggleCore=false, extraDelay=false, timeoutStatus=false, timeoutTrend=false;
@@ -147,8 +147,8 @@ async function main(){
     const mouse=(type,p,more={})=>send("Input.dispatchMouseEvent",{type,...p,...more});
     const pointerClick=async(p)=>{await mouse("mouseMoved",p);await mouse("mousePressed",p,{button:"left",buttons:1,clickCount:1});await mouse("mouseReleased",p,{button:"left",buttons:0,clickCount:1});};
     const scroll=(s)=>evaluate('document.querySelector('+JSON.stringify(s)+').scrollIntoView({block:"center"})');
-    const historyOn='!document.querySelector("#pingDetail").hidden&&document.querySelector("#pingWallView").hidden';
-    const historyOff='document.querySelector("#pingDetail").hidden&&!document.querySelector("#pingWallView").hidden';
+    const historyOn='document.querySelector("#pingDetail")?.hidden===false&&document.querySelector("#pingWallView")?.hidden===true';
+    const historyOff='document.querySelector("#pingDetail")?.hidden===true&&document.querySelector("#pingWallView")?.hidden===false';
     const spike=(range)=>Math.floor(range.end/2)*2-34;
     const pinned='document.querySelector("#pingPinned").textContent';
     const plotKey=(type,key)=>send("Input.dispatchKeyEvent",{type,key,code:key});
@@ -257,7 +257,7 @@ async function main(){
 
     await evaluate("history.back(); void 0");
     await wait(historyOff+'&&document.querySelector("#pingSearch").value==="Core"');
-    assert.equal(await evaluate('document.activeElement.classList.contains("ping-card-open")'),true);
+    await wait('document.activeElement.classList.contains("ping-card-open")');
     await evaluate("history.forward(); void 0");
     await wait(historyOn+"&&"+exists(overview));
     assert.deepEqual(await span(),original);
@@ -266,7 +266,7 @@ async function main(){
     await wait("performance.timeOrigin!=="+pageStart+"&&"+historyOn+"&&"+exists(overview)); }
     assert.deepEqual(await span(),original);
     await click("#pingBackToWall");
-    await wait(historyOff);
+    await wait(historyOff+'&&document.querySelector("#pingSearch").value==="Core"&&'+cardCount+'===1');
     const key=await evaluate('document.querySelector(".ping-card").dataset.key');
     await navigate("?target="+encodeURIComponent(key)+"&at="+(original.end-900));
     await wait(historyOn+"&&"+exists(overview));

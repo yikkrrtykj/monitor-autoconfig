@@ -46,6 +46,7 @@ test("nearest sample retains a real spike and states for 1/2/5-second sources", 
     assert.equal(history.sampleStatus(points[2]), "ICMP 丢包（DOWN）");
     assert.equal(history.sampleStatus(points[3]), "抓取失败");
     assert.equal(history.sampleStatus(points[4]), "缺样（UNKNOWN）");
+    assert.equal(history.sampleStatus({ scrape: 1, success: 1, rtt: null }), "探测成功 · RTT 缺样");
     assert.equal(history.selection(data, 100 + interval * 8, false).canPin, false);
   }
   assert.equal(history.nearest([], 100, 2), null);

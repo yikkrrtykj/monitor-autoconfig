@@ -32,6 +32,7 @@
     let dataError = "";
     let snapshotAt = null;
     let restore = null;
+    let restoreFrame = null;
     const wall = window.BSPingWall.createPingWall({ root, grid: byId("Wall"), viewportChanged });
     const trends = createTrendLoader({ raw: data.raw, changed: wall.paint });
     const historyPanel = createHistoryPanel({ byId, data, run, cancel, replaceUrl, back: backToWall });
@@ -97,6 +98,7 @@
       if (coverage.textContent !== coverageText) coverage.textContent = coverageText;
       byId("Updated").textContent = `最后成功更新 ${lastSuccess === null ? "—" : charts.formatTime(lastSuccess)}`;
       list();
+      restoreWall();
     }
 
     function viewportChanged(targets) {
@@ -167,10 +169,28 @@
 
     function showDetails(chosen, origin) {
       if (!chosen.length) return;
-      restore = { top: root.scrollTop, origin, wallUrl: window.location.pathname + window.location.search };
+      const wallState = {
+        top: root.scrollTop, category: category.value, status: status.value, search: search.value,
+        selected: [...selected.keys()], focusKey: origin.closest(".ping-card")?.dataset.key ?? null
+      };
+      window.history.replaceState({ ...window.history.state, pingWall: wallState }, "");
       const end = snapshotAt ?? now();
-      navigate(history.urlFor(chosen, { start: end - 300, end }, snapshotAt),
-        { pingFromWall: true, wallUrl: restore.wallUrl });
+      navigate(history.urlFor(chosen, { start: end - 300, end }, snapshotAt), { pingFromWall: true });
+    }
+
+    function restoreWall() {
+      if (!restore || !active || inHistory || dataState === "loading") return;
+      const state = restore;
+      restore = null;
+      restoreFrame = requestAnimationFrame(() => {
+        restoreFrame = null;
+        if (!active || inHistory) return;
+        root.scrollTop = Number.isFinite(state.top) ? Math.max(0, state.top) : 0;
+        const card = state.focusKey && [...byId("Wall").querySelectorAll(".ping-card")]
+          .find((node) => node.dataset.key === state.focusKey);
+        const focus = state.focusKey ? card?.querySelector(".ping-card-open") : byId("Comparison");
+        (focus && !focus.disabled ? focus : search).focus({ preventScroll: true });
+      });
     }
 
     function backToWall() {
@@ -211,6 +231,8 @@
     function stop() {
       active = false;
       clearTimeout(timer);
+      if (restoreFrame !== null) cancelAnimationFrame(restoreFrame);
+      restoreFrame = null;
       wall.stop();
       trends.stop();
       historyPanel.stop();
@@ -224,6 +246,7 @@
       inHistory = history.isHistory(params);
       wallView.hidden = inHistory;
       detail.hidden = !inHistory;
+      root.setAttribute("aria-labelledby", inHistory ? "pingHistoryTitle" : "pingWorkspaceTitle");
       if (inHistory) {
         root.scrollTop = 0;
         const known = snapshotAt === route.at ? targets : [];
@@ -234,18 +257,26 @@
         }
         return;
       }
-      const position = restore && restore.wallUrl === window.location.pathname + window.location.search ? restore : null;
-      restore = null;
+      restore = window.history.state?.pingWall ?? null;
+      if (restore) {
+        category.value = restore.category;
+        status.value = restore.status;
+        search.value = restore.search;
+      }
       wall.start();
       byId("SnapshotAt").value = localInput(route.at ?? now());
       if (snapshotAt !== route.at || !targets.length) setSnapshot(route.at);
       else refreshSnapshot();
-      root.scrollTop = position?.top ?? 0;
-      if (position) requestAnimationFrame(() => {
-        if (!active || inHistory) return;
-        root.scrollTop = position.top;
-        (position.origin.isConnected ? position.origin : search).focus({ preventScroll: true });
-      });
+      if (restore && Array.isArray(restore.selected)) {
+        selected.clear();
+        for (const key of restore.selected.slice(0, model.maxCompared)) {
+          const target = history.parseTarget(key, settings);
+          if (target) selected.set(key, target);
+        }
+        list();
+      }
+      root.scrollTop = restore?.top ?? 0;
+      restoreWall();
     }
 
     window.addEventListener("pagehide", stop);
