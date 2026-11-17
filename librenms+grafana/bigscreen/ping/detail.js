@@ -16,7 +16,6 @@
   const fromInput = (field) => Date.parse(field.value) / 1000;
   const csvText = (value) => /^[\t\r\n]|^\s*[=+\-@]/.test(value) ? "'" + value : value;
   const sameRange = (a, b) => a.start === b.start && a.end === b.end;
-  const localDateTime = (t) => localInput(t).replace("T", " ");
 
   function duration(seconds) {
     return [[86400, "天"], [3600, "小时"], [60, "分钟"], [1, "秒"]].map(([unit, label]) => {
@@ -29,8 +28,6 @@
   function createHistoryPanel({ byId, data, run, cancel, replaceUrl, back }) {
     const main = byId("OverviewChart");
     const raw = byId("Distribution");
-    const pan = byId("Pan");
-    const panTrack = byId("PanTrack");
     const earlier = byId("GoEarlier");
     const later = byId("GoLater");
     const statsField = byId("StatsWindow");
@@ -44,12 +41,6 @@
     let pin = null;
     let plot = null;
     let rawPlot = null;
-    let navStart = 0;
-    let navEnd = 0;
-    let navNow;
-    let panGesture = null;
-    let keyStart = null;
-    let panCommit = null;
 
     function error(message = "") { byId("HistoryError").textContent = message; }
 
@@ -70,55 +61,26 @@
 
     function updateUrl() { replaceUrl(history.urlFor(targets, range, at)); }
 
-    function paintPan(next) {
-      const domain = navEnd - navStart;
-      const span = next.end - next.start;
-      pan.style.left = (next.start - navStart) * 100 / domain + "%";
-      pan.style.width = span * 100 / domain + "%";
-      const state = sameRange(next, range) ? "当前窗口" : "预览窗口";
-      const status = `${state}（${duration(span)}）`;
-      const times = `${localDateTime(next.start)} — ${localDateTime(next.end)}`;
-      byId("PanStatus").textContent = status;
-      byId("PanTimes").textContent = times;
-      pan.setAttribute("aria-valuenow", String(next.start));
-      pan.setAttribute("aria-valuetext", status + " " + times);
-    }
-
-    function navigationBound(name, t) {
-      const bound = byId(name);
-      bound.dateTime = new Date(t * 1000).toISOString();
-      bound.textContent = localDateTime(t);
-    }
-
-    function navigator(keepDomain = false) {
+    function renderRangeControls() {
       const span = range.end - range.start;
-      navNow = now();
-      // Keep the preview's scale after release. A button can extend the rail past an edge.
-      if (!keepDomain || range.start < navStart) navStart = Math.max(1, Math.min(home.start, range.start - span));
-      if (!keepDomain || range.end > navEnd) navEnd = Math.min(navNow, Math.max(home.end, range.end + span));
-      const disabled = navEnd - span <= navStart;
-      pan.setAttribute("aria-valuemin", String(navStart));
-      pan.setAttribute("aria-valuemax", String(navEnd - span));
-      pan.setAttribute("aria-disabled", String(disabled));
-      pan.tabIndex = disabled ? -1 : 0;
-      navigationBound("PanStart", navStart);
-      navigationBound("PanEnd", navEnd);
       byId("PrevRange").disabled = !historyStack.length;
       byId("ResetRange").disabled = sameRange(range, home) && !historyStack.length;
       const backSpan = Math.min(span, range.start - 1);
-      const forwardSpan = Math.min(span, Math.max(0, navNow - range.end));
+      const forwardSpan = Math.min(span, Math.max(0, now() - range.end));
       earlier.disabled = !backSpan;
       later.disabled = !forwardSpan;
+      earlier.value = String(-backSpan);
+      later.value = String(forwardSpan);
       earlier.textContent = "← 前 " + duration(backSpan || span);
       later.textContent = "后 " + duration(forwardSpan || span) + " →";
       byId("RangeStart").value = localInput(range.start);
       byId("RangeEnd").value = localInput(range.end);
-      const mode = span > model.maxRaw ? "聚合 · RTT 为抽样趋势，丢包按完整探测分桶" : "原始样本 · 时间以浏览器本地时区显示";
-      byId("HistoryCaption").textContent = `${timeline.time(range.start)} 至 ${timeline.time(range.end)} · ${mode}`;
+      const mode = span > model.maxRaw ? "聚合 · RTT 为抽样趋势，丢包按完整探测分桶" : "原始样本";
+      byId("HistoryCaption").textContent =
+        `当前查询（${duration(span)}） ${timeline.time(range.start)} 至 ${timeline.time(range.end)} · ${mode}`;
       byId("Presets").querySelectorAll("[data-span]").forEach((button) => {
         button.setAttribute("aria-pressed", String(history.presets[button.dataset.span] === span));
       });
-      paintPan(range);
     }
 
     function renderPins() {
@@ -289,29 +251,21 @@
       }, (reason) => { main.textContent = `历史${queryError(reason)}。可使用刷新重试。`; });
     }
 
-    function clearPan() {
-      clearTimeout(panCommit);
-      panCommit = null;
-      keyStart = null;
-      panGesture = null;
-    }
-
-    function apply(next, action, keepDomain = false) {
-      clearPan();
+    function apply(next, action) {
       if (action === "reset" && sameRange(next, range)) {
         historyStack.length = 0;
-        navigator();
+        renderRangeControls();
         return;
       }
       if (action === "remember") {
-        if (sameRange(next, range)) { paintPan(range); return; }
+        if (sameRange(next, range)) return;
         historyStack.push(range);
         if (historyStack.length > 24) historyStack.shift();
       }
       if (action === "reset") historyStack.length = 0;
       range = next;
       error();
-      navigator(keepDomain);
+      renderRangeControls();
       updateUrl();
       refreshHistory();
     }
@@ -322,17 +276,9 @@
       apply(next, "remember");
     }
 
-    function offset(seconds) { apply(history.shiftRange(range, seconds, navNow), "remember", true); }
-
-    function panRange(start) {
-      const span = range.end - range.start;
-      start = Math.max(navStart, Math.min(navEnd - span, Math.round(start)));
-      return { start, end: start + span };
-    }
-
-    function timeOnTrack(event) {
-      const bounds = panTrack.getBoundingClientRect();
-      return navStart + (event.clientX - bounds.left) * (navEnd - navStart) / bounds.width;
+    function moveRange(event) {
+      const seconds = Number(event.currentTarget.value);
+      if (seconds) apply(history.shiftRange(range, seconds, now()), "remember");
     }
 
     function download() {
@@ -369,57 +315,8 @@
     });
     byId("PrevRange").addEventListener("click", () => { if (historyStack.length) apply(historyStack.pop()); });
     byId("ResetRange").addEventListener("click", () => apply(home, "reset"));
-    earlier.addEventListener("click", () => offset(-(range.end - range.start)));
-    later.addEventListener("click", () => offset(range.end - range.start));
-    panTrack.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || !event.isPrimary || panGesture || pan.tabIndex < 0) return;
-      clearPan();
-      const t = timeOnTrack(event);
-      const grab = event.target === pan ? t - range.start : (range.end - range.start) / 2;
-      panGesture = { id: event.pointerId, grab };
-      panTrack.setPointerCapture(event.pointerId);
-      pan.focus({ preventScroll: true });
-      paintPan(panRange(t - grab));
-    });
-    panTrack.addEventListener("pointermove", (event) => {
-      if (panGesture?.id === event.pointerId) paintPan(panRange(timeOnTrack(event) - panGesture.grab));
-    });
-    panTrack.addEventListener("pointerup", (event) => {
-      if (panGesture?.id === event.pointerId) {
-        apply(panRange(timeOnTrack(event) - panGesture.grab), "remember", true);
-      }
-    });
-    function cancelPanGesture(event) {
-      if (panGesture?.id !== event.pointerId) return;
-      clearPan();
-      paintPan(range);
-    }
-    panTrack.addEventListener("pointercancel", cancelPanGesture);
-    panTrack.addEventListener("lostpointercapture", cancelPanGesture);
-    pan.addEventListener("keydown", (event) => {
-      if (pan.tabIndex < 0 || panGesture) return;
-      if (event.key === "Escape" && keyStart !== null) {
-        clearPan();
-        paintPan(range);
-        return;
-      }
-      const span = range.end - range.start;
-      const step = Math.max(1, Math.round(span / 60));
-      const current = keyStart ?? range.start;
-      const steps = { ArrowLeft: -step, ArrowDown: -step, ArrowRight: step, ArrowUp: step,
-        PageDown: -span, PageUp: span };
-      let start;
-      if (event.key === "Home") start = navStart;
-      else if (event.key === "End") start = navEnd - span;
-      else if (Object.hasOwn(steps, event.key)) start = current + steps[event.key];
-      else return;
-      event.preventDefault();
-      const next = panRange(start);
-      keyStart = next.start;
-      paintPan(next);
-      clearTimeout(panCommit);
-      panCommit = setTimeout(() => apply(next, "remember", true), 150);
-    });
+    earlier.addEventListener("click", moveRange);
+    later.addEventListener("click", moveRange);
     byId("Detail").addEventListener("keydown", (event) => {
       if (event.key === "Escape") clearPin();
     });
@@ -458,12 +355,11 @@
       statsField.value = String(model.defaultStats);
       byId("Failures").checked = false;
       error(route.invalid ? "链接中有无法识别的设备，已显示其余设备。" : "");
-      navigator();
+      renderRangeControls();
       refreshHistory();
     }
 
     function stop() {
-      clearPan();
       plot?.dispose();
       rawPlot?.dispose();
       plot = rawPlot = null;
