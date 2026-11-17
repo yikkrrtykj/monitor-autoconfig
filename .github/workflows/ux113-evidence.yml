@@ -2,6 +2,7 @@ name: UX113 isolated browser and Prometheus evidence
 on:
   push:
     branches: ["codex/ping-history-ux1-evidence"]
+    paths: [".github/workflows/ux113-evidence.yml", ".github/ux113-evidence/browser.cjs", ".github/ux113-evidence/prom.cjs", ".github/ux113-evidence/fixture.cjs", ".github/ux113-evidence/original-click-red.cjs"]
 permissions:
   contents: read
 env:
