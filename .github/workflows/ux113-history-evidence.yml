@@ -1,0 +1,51 @@
+name: UX113 real Prometheus history navigation
+on:
+  push:
+    branches: ["codex/ping-history-ux1-evidence"]
+    paths: [".github/workflows/ux113-history-evidence.yml", ".github/ux113-evidence/history-prom.cjs"]
+permissions:
+  contents: read
+env:
+  AUDIT_HEAD: "3f8a25c799574e456ce9d6400607ac6c4f652f9b"
+jobs:
+  prometheus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check out the exact proposed head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: "3f8a25c799574e456ce9d6400607ac6c4f652f9b"
+          path: tested
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch verified official Prometheus
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          source=https://github.com/prometheus/prometheus/releases/download/v2.53.1
+          archive=prometheus-2.53.1.linux-amd64.tar.gz
+          curl --fail --silent --show-error --location --retry 2 --max-time 120 "$source/sha256sums.txt" -o prometheus-checksums.txt
+          curl --fail --silent --show-error --location --retry 2 --max-time 120 "$source/$archive" -o "$archive"
+          grep -F "  $archive" prometheus-checksums.txt | sha256sum --check --strict
+          tar -xzf "$archive"
+          printf 'PR112_PROM=%s/prometheus-2.53.1.linux-amd64\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Check real-engine history windows
+        working-directory: .github/ux113-evidence
+        run: |
+          set -euo pipefail
+          test "$(git -C "$GITHUB_WORKSPACE/tested" rev-parse HEAD)" = "$AUDIT_HEAD"
+          export PR112_BIGSCREEN="$GITHUB_WORKSPACE/tested/librenms+grafana/bigscreen"
+          git -C "$GITHUB_WORKSPACE/tested" diff --check "2c1ae32e2ae0a5542fc1dd97fca7c0e139bc06c0" "$AUDIT_HEAD"
+          node history-prom.cjs
+      - name: Upload Prometheus query and resource measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ux113-prometheus-history-3f8a25c7
+          path: |
+            .github/ux113-evidence/evidence/ux113-prometheus-history.json
+            .github/ux113-evidence/prom-progress.json
