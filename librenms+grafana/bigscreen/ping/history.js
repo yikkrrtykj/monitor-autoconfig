@@ -79,7 +79,7 @@
     if (!sample) return "此处无原始样本";
     if (sample.scrape === 0) return "抓取失败";
     if (sample.success === 0) return "ICMP 丢包（DOWN）";
-    if (sample.success === 1 && Number.isFinite(sample.rtt)) return "成功（UP）";
+    if (sample.success === 1) return Number.isFinite(sample.rtt) ? "成功（UP）" : "探测成功 · RTT 缺样";
     return "缺样（UNKNOWN）";
   }
 
