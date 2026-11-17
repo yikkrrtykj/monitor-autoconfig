@@ -155,7 +155,7 @@ async function main(){
   await progress("start",{samples:base.seedSamples});
   await config(fixture,path.join(scenario,"prometheus.yml"));
   const instance=await start(scenario,base,1);
-  const targets=[0,4,11,12].map(i=>fixture[i]).map(({interval,metric})=>({interval,metric,key:identity(metric)}));
+  const targets=[0,4,11,12].map(i=>fixture[i]).map(({interval,metric})=>({...metric,interval,metric,key:identity(metric)}));
   const rows=[], requests=[];
   let span=0;
   const query=async(expr,opts,signal)=>{
