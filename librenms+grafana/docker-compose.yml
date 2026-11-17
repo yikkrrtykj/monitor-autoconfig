@@ -116,6 +116,7 @@ services:
       - prometheus-data:/prometheus
       - player-targets-data:/etc/prometheus/targets
       - topology-data:/etc/prometheus/targets/topology
+      - custom-ping-discovery:/etc/prometheus/targets/custom:ro
       - ./prometheus-gen-config.sh:/etc/prometheus/prometheus-gen-config.sh:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
@@ -902,6 +903,7 @@ services:
       - ./librenms-data/rrd:/data/db:ro
       - topology-data:/etc/prometheus/targets/topology:ro
       - platform-state:/workspace/platform-state
+      - custom-ping-discovery:/etc/prometheus/targets/custom
       - /var/run/docker.sock:/var/run/docker.sock
       - /usr/bin:/host/usr/bin:ro
       - /usr/lib:/host/usr/lib:ro
@@ -913,6 +915,10 @@ services:
       PLATFORM_API_PORT: "9200"
       PLATFORM_WORKDIR: "/workspace"
       PLATFORM_STATE_DIR: "/workspace/platform-state"
+      PLATFORM_CUSTOM_PING_ALLOWED_CIDRS: "${PLATFORM_CUSTOM_PING_ALLOWED_CIDRS:-}"
+      PLATFORM_CUSTOM_PING_ORIGIN: "${PLATFORM_CUSTOM_PING_ORIGIN:-}"
+      PLAYER_SUBNETS: "${PLAYER_SUBNETS:-}"
+      WIRELESS_SUBNETS: "${WIRELESS_SUBNETS:-}"
       PLATFORM_VERSION_FILE: "/workspace/VERSION"
       PLATFORM_GIT_COMMIT: "${PLATFORM_GIT_COMMIT:-unknown}"
       # Feishu bridge, used by the console's "发送测试告警" button.
@@ -1384,6 +1390,7 @@ services:
             set $$platform_upstream platform-api;
             rewrite ^/platform-api/(.*)$$ /$$1 break;
             proxy_pass http://$$platform_upstream:9200;
+            proxy_set_header X-Platform-Public-Origin $$scheme://$$http_host;
             # The platform apply command may legitimately run for several
             # minutes. The durable operation status still handles a bigscreen
             # restart, while this avoids an unrelated nginx timeout first.
@@ -1472,3 +1479,4 @@ volumes:
   topology-data:
   grafana-data:
   platform-state:
+  custom-ping-discovery:

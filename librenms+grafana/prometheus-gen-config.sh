@@ -407,6 +407,32 @@ if [ -n "$UNIFI_CONTROLLER_URL" ]; then
 EOF
 fi
 
+# Custom targets use stable scrape labels. Display metadata is visible only in
+# discoveredLabels; changing it must not create separate Prometheus series.
+cat >> "$CONFIG_FILE" <<'CUSTOM_PING'
+  - job_name: "custom-ping"
+    scrape_interval: 2s
+    scrape_timeout: 2s
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files:
+          - "/etc/prometheus/targets/custom/custom_targets.json"
+        refresh_interval: 10s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__address__]
+        target_label: target_ip
+      - source_labels: [custom_id]
+        target_label: instance
+      - action: labeldrop
+        regex: display_name|custom_group
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+CUSTOM_PING
+
 echo "Generated Prometheus config:"
 echo "  Core:    ${CORE_SWITCH_PING:-none}"
 echo "  Dist:    ${DIST_SWITCH_PING:-none}"

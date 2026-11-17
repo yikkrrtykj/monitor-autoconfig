@@ -583,15 +583,16 @@ class PendingDeleteTransactionTests(unittest.TestCase):
                 raise StopIteration
 
         bridge.DEVICE_DOWN_ENABLED = True
-        bridge.DEVICE_DOWN_JOBS = "infra-dist-ping"
+        bridge.DEVICE_DOWN_JOBS = "infra-dist-ping,custom-ping,custom.ping"
         bridge.DEVICE_DOWN_RUNTIME_LOADED = True
         bridge.DEVICE_DOWN_ROOT_CAUSE_ENABLED = False
         bridge.DEVICE_ONLINE_FROM_PING = False
-        with mock.patch.object(bridge, "prometheus_query", return_value=samples), \
+        with mock.patch.object(bridge, "prometheus_query", return_value=samples) as query, \
              mock.patch.object(bridge, "fetch_librenms_name_cache", return_value={}), \
              mock.patch.object(bridge.time, "sleep", side_effect=bounded_sleep), \
              self.assertRaises(StopIteration):
             bridge.device_down_watcher()
+        self.assertIn('job!="custom-ping"', query.call_args.args[0])
         self.assertEqual(self.state, before)
         self.assertTrue(other["seen_up"])
 

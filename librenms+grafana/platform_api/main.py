@@ -28,6 +28,8 @@ from platform_api import auth as platform_auth
 from platform_api import bridge as platform_bridge
 from platform_api import config_transaction as platform_config_transaction
 from platform_api import config_write as platform_config_write
+from platform_api.custom_ping import CustomPingAPI, TargetInventory
+from platform_api.custom_ping_store import PingStore
 from platform_api import dhcp_runtime as platform_dhcp_runtime
 from platform_api import dhcp_settings as platform_dhcp_settings
 from platform_api import dhcp_telnet as platform_dhcp_telnet
@@ -127,6 +129,18 @@ AUTH_CONTEXT = platform_auth.AuthContext(
             _config_transaction_context(), action, actor, note, detail,
         )
     ),
+)
+
+
+CUSTOM_PING = CustomPingAPI(
+    PingStore(STATE_DIR), AUTH_CONTEXT, WRITE_ENABLED,
+    TargetInventory(
+        NETWORK_PROMETHEUS_URL,
+        os.environ.get("PLATFORM_CUSTOM_PING_ALLOWED_CIDRS", ""),
+        ",".join(os.environ.get(name, "") for name in ("PLAYER_SUBNETS", "WIRELESS_SUBNETS")),
+        NETWORK_HTTP_TIMEOUT,
+    ),
+    public_origin=os.environ.get("PLATFORM_CUSTOM_PING_ORIGIN", ""),
 )
 
 
@@ -521,6 +535,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             path = urlparse(self.path).path.rstrip("/") or "/"
+            if CUSTOM_PING.dispatch(self, path):
+                return
             if path == "/health":
                 self._send_json(platform_health.health_payload(
                     _health_context(),
@@ -544,6 +560,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if CUSTOM_PING.dispatch(self, urlparse(self.path).path):
+                return
             data = self._body()
             platform_write_api.handle_post(
                 self,
@@ -564,6 +582,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         try:
+            if CUSTOM_PING.dispatch(self, urlparse(self.path).path):
+                return
             platform_write_api.handle_patch(
                 self,
                 self.path,
@@ -578,12 +598,22 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def do_DELETE(self):
+        try:
+            if not CUSTOM_PING.dispatch(self, urlparse(self.path).path):
+                self._send_json({"ok": False, "error": "not_found"}, HTTPStatus.NOT_FOUND)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception:
+            self._send_json({"ok": False, "error": "internal_error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def log_message(self, fmt, *args):
         print(f"[platform-api] {fmt % args}", flush=True)
 
 
 if __name__ == "__main__":
     ensure_dirs()
+    CUSTOM_PING.start_reconciliation()
     port = int(os.environ.get("PLATFORM_API_PORT", "9200"))
     # Threaded so a long "apply" (runs apply-env.sh, up to PLATFORM_APPLY_TIMEOUT)
     # doesn't freeze the console's status polls / other requests.

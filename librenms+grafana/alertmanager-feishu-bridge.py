@@ -4138,7 +4138,9 @@ def device_down_watcher():
         log("[DOWN] no valid jobs configured, watcher disabled")
         return
     sample_window = max(1, DEVICE_DOWN_SAMPLE_WINDOW_SECONDS)
-    query = 'min_over_time(probe_success{job=~"%s"}[%ss])' % ("|".join(safe_jobs), sample_window)
+    # The self-service Ping job cannot enter the monitored device lifecycle,
+    # even when an operator-supplied job selector matches its name.
+    query = 'min_over_time(probe_success{job=~"%s",job!="custom-ping"}[%ss])' % ("|".join(safe_jobs), sample_window)
     time.sleep(20)  # let Prometheus/blackbox settle after a (re)start
     # 共享全局注册表：HTTP 线程（控制台/飞书回调的待删除确认）也要访问
     global DEVICE_DOWN_RUNTIME_LOADED
