@@ -287,7 +287,7 @@ class TargetInventory:
                         continue
                     key = (metric["custom_id"], metric["target_ip"], metric["sampleMetric"])
                     readings.setdefault(key, {})[metric["sampleType"]] = float(sample["value"][1])
-            except (PingError, KeyError, ValueError, TypeError, OverflowError):
+            except (PingError, OSError, HTTPException, KeyError, ValueError, TypeError, OverflowError, RecursionError):
                 readings = {}
         now = time.time()
         result = []

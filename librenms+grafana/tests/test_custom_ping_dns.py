@@ -305,6 +305,24 @@ def test_evidence_needs_discovered_generation_and_post_activation_samples(store,
     assert prom[0].observed(snap)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
 
 
+@pytest.mark.parametrize("failure", [OSError, custom_ping.HTTPException])
+def test_prometheus_evidence_failure_is_unknown(store, clock, prom, monkeypatch, failure):
+    row = create(store); visible = refresh(store)
+    found = json.loads(store.discovery.read_bytes())[0]
+    prom[1].append({"scrapePool": "custom-ping",
+                    "labels": {"custom_id": row["id"], "target_ip": visible["resolvedIp"]},
+                    "discoveredLabels": found["labels"], "health": "up"})
+    original = prom[0]._prometheus_data
+    def unavailable(path):
+        if path.startswith("/api/v1/query?"):
+            raise failure("synthetic metrics connection failure")
+        return original(path)
+    monkeypatch.setattr(prom[0], "_prometheus_data", unavailable)
+    state = prom[0].observed(store.list_targets())
+    assert state["discoveredRevision"] == row["revision"]
+    assert state["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
+
+
 @pytest.fixture
 def dns_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
