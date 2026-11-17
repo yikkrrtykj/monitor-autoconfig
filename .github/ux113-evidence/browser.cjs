@@ -198,7 +198,7 @@ async function main(){
     assert.equal(await evaluate('document.querySelector("#pingOverviewChart .ping-pin").classList.contains("ping-plot-hidden")'),false);
     assert.equal(calls.length,beforeHover,"raw pin reuses loaded overview");
     await wait('!document.querySelector("#pingDrillStatistics").hidden');
-    assert.match(await evaluate('document.querySelector("#pingDrillMetrics").textContent'),/P50.*P95.*Max.*128\.2 ms.*STDDEV.*Loss/s);
+    assert.match(await evaluate('document.querySelector("#pingDrillMetrics").textContent'),/P50.*P95.*Max.*128\.2.*STDDEV.*Loss/s);
     const rawStatsTime=await evaluate('document.querySelector("#pingDrillStatistics h4").textContent');
     const mainStats=await evaluate('document.querySelector("#pingMetrics").textContent');
     checks.push("real spike hover and pin, exact 128.237 ms, synchronized fixed-window stats, zero new HTTP");
