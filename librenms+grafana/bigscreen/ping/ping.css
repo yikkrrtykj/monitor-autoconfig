@@ -217,3 +217,97 @@
   .ping-plot .ping-chart { height: 145px; }
   .ping-plot .ping-chart text { font-size: 19px; }
 }
+
+
+/* Custom targets share the wall card grid and use a native modal for management. */
+.ping-custom-actions,
+.ping-custom-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ping-custom-header {
+  justify-content: space-between;
+}
+
+.ping-custom-dialog {
+  background: var(--panel, #111a2a);
+  border: 1px solid var(--border, #334259);
+  border-radius: 0.75rem;
+  color: var(--text, #e7eefb);
+  width: min(42rem, calc(100vw - 2rem));
+  max-height: min(48rem, calc(100dvh - 2rem));
+  overflow: auto;
+  padding: 1rem;
+}
+
+.ping-custom-dialog::backdrop {
+  background: rgb(4 9 19 / 70%);
+}
+
+.ping-custom-header h3,
+.ping-custom-form h4,
+.ping-custom-confirm p {
+  margin: 0;
+}
+
+.ping-custom-dialog button {
+  min-height: 2.5rem;
+}
+
+.ping-custom-form,
+.ping-custom-confirm {
+  border: 1px solid var(--border, #334259);
+  border-radius: 0.5rem;
+  display: grid;
+  gap: 0.65rem;
+  margin: 0.7rem 0;
+  padding: 0.75rem;
+}
+
+.ping-custom-form label {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.ping-custom-form input,
+.ping-custom-form select {
+  width: 100%;
+  min-height: 2.5rem;
+  box-sizing: border-box;
+}
+
+.ping-custom-message:empty,
+.ping-custom-dialog [hidden],
+.ping-custom-actions[hidden] {
+  display: none;
+}
+
+.ping-custom-rows {
+  padding: 0;
+  list-style: none;
+}
+
+.ping-custom-rows li {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  border-top: 1px solid var(--border, #334259);
+  padding: 0.6rem 0;
+}
+
+.ping-custom-rows span {
+  overflow-wrap: anywhere;
+}
+
+.ping-custom-dialog button:focus-visible,
+.ping-custom-dialog input:focus-visible,
+.ping-custom-dialog select:focus-visible {
+  outline: 2px solid #69b7ff;
+  outline-offset: 2px;
+}

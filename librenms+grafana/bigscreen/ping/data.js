@@ -105,6 +105,16 @@
       return { targets, agedOut: agedOut.size };
     }
 
+    async function custom(at, signal) {
+      const match = 'job="custom-ping"';
+      const rows = await query([...currentFields(match), ...lossFields(match, 60)].join(" or "), { time: at }, signal);
+      if (rows.length > 30000) throw new Error("自定义监控样本超出上限");
+      const fields = rows.filter(({ metric }) => model.customMetric(metric));
+      const inventory = fields.filter(({ metric }) => metric.ping_field === "source")
+        .map((row) => ({ ...row, metric: { ...row.metric, ping_field: "target" } }));
+      return new Map(model.snapshot([...inventory, ...fields], at, settings).map((target) => [target.key, target]));
+    }
+
     async function raw(targets, start, end, signal) {
       const duration = Math.ceil(end - start);
       if (!targets.length || targets.length > model.maxRawTargets || duration < 1 || duration > model.maxRaw) {
@@ -163,7 +173,7 @@
       }));
     }
 
-    return { summary, raw, overview };
+    return { summary, custom, raw, overview };
   }
 
   const queryError = (error) => error?.name === "TimeoutError" ? "查询超时" : "查询失败";
