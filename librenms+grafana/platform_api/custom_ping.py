@@ -20,6 +20,17 @@ from .custom_ping_store import (
 BASE = "/ping/targets"
 MAX_BODY = 4096
 MAX_INVENTORY_BYTES = 8 * 1024 * 1024
+# These exclusions apply to writes. Schema 1 and old receipts may still contain these addresses.
+BLOCKED_WRITE_NETWORKS = tuple(map(IPv4Network, (
+    "100.64.0.0/10",     # Shared address space, including some cloud metadata endpoints.
+    "168.63.129.16/32",  # Azure platform services.
+    "192.0.0.0/24",      # IETF protocol assignments.
+    "192.0.2.0/24",      # TEST-NET-1.
+    "192.88.99.0/24",    # 6to4 relay space.
+    "198.18.0.0/15",     # Benchmarking.
+    "198.51.100.0/24",   # TEST-NET-2.
+    "203.0.113.0/24",    # TEST-NET-3.
+)))
 LOG = logging.getLogger("platform_api.custom_ping")
 
 
@@ -147,20 +158,30 @@ class TargetInventory:
             raise PingError(503, "custom_ping_inventory_unavailable") from exc
 
     def check(self, ip: str) -> None:
-        address = IPv4Address(ip)
         try:
-            allowed = [IPv4Network(item.strip()) for item in self.allowed.split(",") if item.strip()]
+            address = IPv4Address(validate_ip(ip))
+        except ValueError as exc:
+            raise PingError(400, "custom_ping_invalid_ipv4") from exc
+        configured = self.allowed.strip()
+        try:
+            allowed = [IPv4Network(item.strip()) for item in configured.split(",")] if configured else []
             reserved = [IPv4Network(item.strip()) for item in self.player_subnets.split(",") if item.strip()]
         except ValueError as exc:
             raise PingError(503, "custom_ping_address_policy_invalid") from exc
         if any(address in network for network in reserved):
             raise PingError(409, "custom_ping_duplicate_ip", source="player-network")
-        permitted = any(
-            address in network and (network.prefixlen >= 31 or address not in (network.network_address, network.broadcast_address))
-            for network in allowed
-        )
-        if not permitted:
+        if any(address in network for network in BLOCKED_WRITE_NETWORKS):
             raise PingError(403, "custom_ping_ip_outside_allowed_cidrs")
+        if allowed:
+            network = max(
+                (candidate for candidate in allowed if address in candidate),
+                key=lambda candidate: candidate.prefixlen,
+                default=None,
+            )
+            if network is None or (
+                network.prefixlen < 31 and address in (network.network_address, network.broadcast_address)
+            ):
+                raise PingError(403, "custom_ping_ip_outside_allowed_cidrs")
         for row in self.active():
             source = row["scrapePool"]
             if source not in {"player-ping", "firewall-snmp"} and not source.startswith("infra-"):
