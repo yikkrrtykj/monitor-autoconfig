@@ -136,7 +136,14 @@ test("RTT display rounds msec by magnitude and leaves the sample untouched", () 
   }
 });
 
-test("time window uses the labeled scale and commits only after a valid release", () => {
+test("history discards the slider markup, controller and styles", () => {
+  const removed = /pingPan|ping-navigation|byId\("Pan|panTrack|panGesture|panCommit|navStart|navEnd|keepDomain/;
+  for (const path of ["../bigscreen/index.html", "../bigscreen/ping/detail.js", "../bigscreen/ping/ping.css"]) {
+    assert.doesNotMatch(readFileSync(require.resolve(path), "utf8"), removed, path);
+  }
+});
+
+test("time buttons display and apply the actual shift, including the remaining time at both bounds", () => {
   const window = {
     BSPingModel: model, BSPingHistory: history, BSPingCharts: { colors: ["#fff"] },
     BSPingTimeline: { time: String }, BSPingData: {}, BSUtils: { escapeHtml: (s) => s }
@@ -145,55 +152,48 @@ test("time window uses the labeled scale and commits only after a valid release"
   const byId = (name) => {
     if (!elements.has(name)) {
       const element = new EventTarget();
-      const attrs = new Map();
-      Object.assign(element, { style: {}, querySelectorAll: () => [], focus() {}, setPointerCapture() {},
-        getBoundingClientRect: () => ({ left: 0, width: 900 }),
-        setAttribute: (key, value) => attrs.set(key, value), getAttribute: (key) => attrs.get(key) });
+      Object.assign(element, { querySelectorAll: () => [], focus() {} });
       elements.set(name, element);
     }
     return elements.get(name);
   };
-  const send = (name, type, fields) => byId(name).dispatchEvent(Object.assign(new Event(type), fields));
+  const click = (name) => byId(name).dispatchEvent(new Event("click"));
   const ranges = [];
   const queries = [];
   class Clock extends Date { static now() { return now * 1000; } }
-  vm.runInNewContext(readFileSync(require.resolve("../bigscreen/ping/detail.js"), "utf8"), {
-    window, Date: Clock, clearTimeout
-  });
+  vm.runInNewContext(readFileSync(require.resolve("../bigscreen/ping/detail.js"), "utf8"), { window, Date: Clock });
   const panel = window.BSPingDetail.createHistoryPanel({
     byId, data: { raw: (_, start, end) => queries.push([start, end]) }, run: (_, load) => load(), cancel() {},
     replaceUrl: (href) => ranges.push(new URL(href, "https://example.test")), back() {}
   });
-  panel.start({ targets: [core], range: { start: now - 7200, end: now - 3600 }, at: null }, []);
+  const start = (from, to) => panel.start({ targets: [core], range: { start: from, end: to }, at: null }, []);
+  start(now - 4200, now - 600);
+  assert.match(byId("HistoryCaption").textContent, /当前查询（1 小时）/);
+  assert.ok(byId("HistoryCaption").textContent.includes(`${now - 4200} 至 ${now - 600}`));
   assert.equal(byId("GoEarlier").textContent, "← 前 1 小时");
-  assert.equal(byId("GoLater").textContent, "后 1 小时 →");
-  assert.equal(byId("PanStart").dateTime, new Date((now - 10800) * 1000).toISOString());
-  assert.equal(byId("PanEnd").dateTime, new Date(now * 1000).toISOString());
-  const options = { button: 0, isPrimary: true, pointerId: 1 };
-  const down = () => {
-    // A window-origin event bubbles to the track in Chromium. Here dispatch it at the track.
-    const event = Object.assign(new Event("pointerdown"), { ...options, clientX: 450 });
-    Object.defineProperty(event, "target", { value: byId("Pan") });
-    byId("PanTrack").dispatchEvent(event);
-  };
-  down();
-  send("PanTrack", "pointermove", { ...options, clientX: 350 });
-  assert.equal(byId("PanStatus").textContent, "预览窗口（1 小时）");
-  assert.equal(byId("Pan").getAttribute("aria-valuenow"), String(now - 8400));
-  assert.equal(queries.length, 1);
-  send("PanTrack", "pointercancel", options);
-  assert.equal(byId("PanStatus").textContent, "当前窗口（1 小时）");
-  assert.equal(byId("Pan").getAttribute("aria-valuenow"), String(now - 7200));
-  assert.equal(queries.length, 1);
+  assert.equal(byId("GoLater").textContent, "后 10 分钟 →");
+  const commits = [
+    ["GoEarlier", now - 7800, now - 4200],
+    ["PrevRange", now - 4200, now - 600],
+    ["GoLater", now - 3600, now]
+  ];
+  for (const [name, from, to] of commits) {
+    const count = queries.length;
+    click(name);
+    assert.equal(queries.length, count + 1);
+    assert.deepEqual(queries.at(-1), [from, to]);
+    assert.deepEqual(["from", "to"].map((key) => Number(ranges.at(-1).searchParams.get(key))), [from, to]);
+  }
+  assert.equal(byId("GoLater").disabled, true);
+  click("GoLater");
+  assert.equal(queries.length, 4);
+  click("ResetRange");
+  assert.deepEqual(queries.at(-1), [now - 4200, now - 600]);
+  assert.equal(byId("PrevRange").disabled, true);
 
-  down();
-  send("PanTrack", "pointermove", { ...options, clientX: 350 });
-  const left = byId("Pan").style.left;
-  send("PanTrack", "pointerup", { ...options, clientX: 350 });
-  send("PanTrack", "lostpointercapture", options);
-  assert.equal(byId("Pan").style.left, left);
-  assert.match(byId("Pan").getAttribute("aria-valuetext"), /^当前窗口/);
-  assert.deepEqual(queries, [[now - 7200, now - 3600], [now - 8400, now - 4800]]);
-  assert.equal(ranges.length, 1);
-  assert.equal(Number(ranges[0].searchParams.get("from")), now - 8400);
+  start(61, 361);
+  assert.equal(byId("GoEarlier").textContent, "← 前 1 分钟");
+  click("GoEarlier");
+  assert.deepEqual(queries.at(-1), [1, 301]);
+  assert.equal(byId("GoEarlier").disabled, true);
 });

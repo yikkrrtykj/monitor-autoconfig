@@ -191,6 +191,9 @@
 .ping-history-controls, .ping-history-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ping-history-controls { justify-content: space-between; }
 .ping-history-actions button[aria-pressed="true"] { background: #224155; border-color: #7fcede; }
+.ping-history-advanced > .ping-history-actions { margin: 6px 0; }
+.ping-history-window { margin: 8px 0; }
+.ping-history-window p { font-size: 13px; font-variant-numeric: tabular-nums; }
 .ping-history-stat-title { padding: 14px 0 7px; }
 .ping-plot { position: relative; min-width: 0; }
 .ping-plot svg { touch-action: pan-y; }
@@ -209,39 +212,8 @@
 .ping-tooltip span, .ping-pinned span { display: block; color: #b6c9d8; }
 .ping-tooltip > div + div, .ping-pinned > div + div { margin-top: 4px; }
 .ping-pinned:not(:empty) { margin-top: 10px; padding: 8px; background: #172637; border-left: 3px solid #ffd17a; }
-.ping-navigation { margin: 6px 0 14px; }
-.ping-navigation-track {
-  position: relative; height: 36px; background: #253646; border-radius: 5px; overflow: hidden; touch-action: pan-y;
-}
-#pingPan {
-  position: absolute; inset-block: 4px; box-sizing: border-box; min-width: 3px;
-  background: #417b92; border: 1px solid #9ce3f1; border-radius: 4px; cursor: grab;
-}
-#pingPan:active { cursor: grabbing; }
-#pingPan[aria-disabled="true"] { cursor: default; }
-#pingPan::after {
-  content: ""; position: absolute; inset-block: 25%; left: 50%; width: 4px; transform: translateX(-50%);
-  border-inline: 1px solid #d2f7ff; pointer-events: none;
-}
-.ping-navigation-bounds, .ping-navigation-actions {
-  display: flex; justify-content: space-between; align-items: center; gap: 4px 10px;
-}
-.ping-navigation-bounds { align-items: start; margin: 5px 0 8px; }
-.ping-navigation-bounds time:last-child { text-align: right; }
-.ping-navigation-actions { flex-wrap: wrap; }
-.ping-navigation #pingPanLabel, .ping-navigation #pingPanHelp, .ping-navigation-bounds {
-  color: #b6c9d8; font-size: 12px; font-variant-numeric: tabular-nums;
-}
-.ping-navigation #pingPanLabel, .ping-navigation #pingPanHelp { margin: 0; text-align: center; }
-.ping-navigation #pingPanLabel { margin-bottom: 6px; color: #d9eff7; }
-#pingPanTimes { display: inline-block; }
 .ping-chart-instructions { font-size: 12px; }
 @media (max-width: 720px) {
   .ping-plot .ping-chart { height: 145px; }
   .ping-plot .ping-chart text { font-size: 19px; }
-  .ping-navigation #pingPanHelp { flex-basis: 100%; order: 1; }
-}
-@media (forced-colors: active) {
-  #pingPan { background: Highlight; border-color: Highlight; forced-color-adjust: none; }
-  #pingPan::after { border-color: HighlightText; }
 }
