@@ -1,0 +1,94 @@
+name: UX113 isolated browser and Prometheus evidence
+on:
+  push:
+    branches: ["codex/ping-history-ux1-evidence"]
+permissions:
+  contents: read
+env:
+  AUDIT_HEAD: "2928eeede9f1dce5c14671e6942b00b2c1162746"
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check out the exact proposed head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: "2928eeede9f1dce5c14671e6942b00b2c1162746"
+          path: tested
+          persist-credentials: false
+      - name: Install Chinese screenshot fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+          fc-match ':lang=zh'
+      - name: Run Chromium interactions and browser load checks
+        working-directory: .github/ux113-evidence
+        run: |
+          set -euo pipefail
+          test "$(git -C "$GITHUB_WORKSPACE/tested" rev-parse HEAD)" = "$AUDIT_HEAD"
+          export PR112_BIGSCREEN="$GITHUB_WORKSPACE/tested/librenms+grafana/bigscreen"
+          export PR112_CHROME="$(command -v google-chrome || command -v chromium)"
+          test -x "$PR112_CHROME"
+          node --test "$GITHUB_WORKSPACE/tested/librenms+grafana/tests/test_bigscreen_ping_history.js"
+          node browser.cjs
+      - name: Upload browser screenshots and report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ux113-chromium-2928eeed
+          path: |
+            .github/ux113-evidence/evidence/ux113-*.png
+            .github/ux113-evidence/evidence/ux113-browser-results.json
+            .github/ux113-evidence/browser-progress.json
+  prometheus:
+    name: Prometheus 2.53.1 / ${{ matrix.targets }} targets
+    strategy:
+      fail-fast: false
+      matrix:
+        targets: [50, 100, 300]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      PR112_N: ${{ matrix.targets }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check out the exact proposed head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: "2928eeede9f1dce5c14671e6942b00b2c1162746"
+          path: tested
+          persist-credentials: false
+      - name: Fetch verified official Prometheus
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          source=https://github.com/prometheus/prometheus/releases/download/v2.53.1
+          archive=prometheus-2.53.1.linux-amd64.tar.gz
+          curl --fail --silent --show-error --location --retry 2 --max-time 120 "$source/sha256sums.txt" -o prometheus-checksums.txt
+          curl --fail --silent --show-error --location --retry 2 --max-time 120 "$source/$archive" -o "$archive"
+          grep -F "  $archive" prometheus-checksums.txt | sha256sum --check --strict
+          tar -xzf "$archive"
+          printf 'PR112_PROM=%s/prometheus-2.53.1.linux-amd64\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Check real-engine wall query load
+        working-directory: .github/ux113-evidence
+        run: |
+          set -euo pipefail
+          test "$(git -C "$GITHUB_WORKSPACE/tested" rev-parse HEAD)" = "$AUDIT_HEAD"
+          export PR112_BIGSCREEN="$GITHUB_WORKSPACE/tested/librenms+grafana/bigscreen"
+          node prom.cjs
+          node -e 'console.log("UX113_PROM "+JSON.stringify(require("./evidence/pr112-prometheus-results.json")));'
+      - name: Upload Prometheus query and resource measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ux113-prometheus-${{ matrix.targets }}
+          path: |
+            .github/ux113-evidence/evidence/pr112-prometheus-results.json
+            .github/ux113-evidence/evidence/pr112-prometheus-samples.csv
+            .github/ux113-evidence/prom-progress.json
