@@ -98,6 +98,7 @@
       set(card.rtt, rtt === null ? "N/A" : `${charts.fmt(rtt)} ms`);
       set(card.loss, loss.loss === null ? "N/A" : `${loss.loss.toFixed(1)}%`);
       card.loss.title = `${target.lossWindow / 60} 分钟 · ${loss.failed} 失败 / ${loss.total} 有效 · 覆盖 ${(loss.coverage * 100).toFixed(1)}%`;
+      set(card.compare, picked ? "✓ 已选" : "+ 对比");
       const disabled = !picked && selected.size >= model.maxCompared;
       if (card.compare.disabled !== disabled) card.compare.disabled = disabled;
       if (card.compare.getAttribute("aria-pressed") !== String(picked)) {

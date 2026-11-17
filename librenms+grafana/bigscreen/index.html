@@ -6,7 +6,7 @@
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20261116a" />
     <link rel="stylesheet" href="./platform.css?v=20261116a" />
-    <link rel="stylesheet" href="./ping/ping.css?v=20261116b" />
+    <link rel="stylesheet" href="./ping/ping.css?v=20261117a" />
     <link rel="stylesheet" href="./infra/overview.css?v=20261116a" />
   </head>
   <body>
@@ -105,6 +105,7 @@
       </section>
       <section class="ping-workspace" id="pingWorkspace" aria-labelledby="pingWorkspaceTitle" hidden>
         <div class="ping-shell">
+          <div id="pingWallView">
           <header class="ping-heading">
             <h2 id="pingWorkspaceTitle">Ping 监控墙</h2>
             <div class="ping-feed"><span class="ping-badge" id="pingSource" data-state="UNKNOWN"></span><time id="pingUpdated"></time></div>
@@ -125,19 +126,17 @@
                 <option value="DEGRADED">质量异常</option><option value="UNKNOWN">未知</option>
               </select></label>
               <label class="ping-search">搜索<input id="pingSearch" type="search" placeholder="名称或 IP" maxlength="160" /></label>
-              <label>历史范围<select id="pingRange">
-                <option value="5m">5m</option><option value="1h">1h</option><option value="6h">6h</option>
-                <option value="24h">24h</option><option value="7d">7d</option><option value="custom">自定义</option>
-              </select></label>
               <button type="button" id="pingRefresh">刷新</button>
               <button type="button" id="pingComparison" disabled>查看历史 / 对比（0/4）</button>
             </div>
-            <div class="ping-toolbar ping-custom" id="pingCustom" hidden>
-              <label>起点<input id="pingStart" type="datetime-local" step="1" /></label>
-              <label>终点<input id="pingEnd" type="datetime-local" step="1" /></label>
-              <button type="button" id="pingApply">应用时间范围</button>
-              <label class="ping-check"><input id="pingHistoricalTargets" type="checkbox" /> 显示终点时的目标</label>
-            </div>
+            <details class="ping-policy">
+              <summary>历史目标快照</summary>
+              <div class="ping-toolbar">
+                <label>快照时间<input id="pingSnapshotAt" type="datetime-local" step="1" /></label>
+                <button type="button" id="pingSnapshotApply">查看快照</button>
+                <button type="button" id="pingSnapshotLive">返回实时</button>
+              </div>
+            </details>
             <p class="ping-error" id="pingError" role="alert"></p>
             <div class="ping-wall-counts">
               <p class="ping-counts" id="pingCounts"></p><p class="ping-counts" id="pingVisibleCount"></p>
@@ -154,35 +153,78 @@
             <div class="ping-wall" id="pingWall"></div>
             <p class="ping-empty" id="pingEmpty" role="status"></p>
           </section>
+            <details class="ping-policy"><summary>统计说明</summary><p id="pingPolicy"></p></details>
+          </div>
           <section class="ping-surface ping-detail" id="pingDetail" aria-labelledby="pingHistoryTitle" hidden>
-            <header class="ping-detail-header"><h3 id="pingHistoryTitle" tabindex="-1">历史查询与对比</h3>
+            <header class="ping-detail-header">
+              <h2 id="pingHistoryTitle" tabindex="-1">Ping 历史</h2>
               <button type="button" id="pingBackToWall">返回监控墙</button>
-              <div class="ping-selection" id="pingSelected"></div></header>
-            <p id="pingHistoryCaption"></p>
-            <div id="pingOverviewChart"></div>
-            <h4>丢包热力图</h4>
-            <div class="ping-heat-legend"><span class="clear">0%</span><span class="loss">有丢包</span><span class="high">≥50%</span><span class="unknown">N/A</span></div>
-            <div id="pingOverviewLoss"></div>
-            <div class="ping-toolbar ping-detail-toolbar">
-              <label>查询时间点<input id="pingCursor" type="datetime-local" step="1" /></label>
-              <button type="button" id="pingLocate">定位</button>
-              <label>原始样本统计窗口<select id="pingStatsWindow"><option value="60">1 分钟</option><option value="300" selected>5 分钟</option>
-                <option value="900">15 分钟</option><option value="3600">1 小时</option></select></label>
-              <button type="button" id="pingExport" disabled>导出原始 CSV（UTC）</button>
+            </header>
+            <p class="ping-empty" id="pingHistoryEmpty" hidden></p>
+            <div id="pingHistoryBody">
+              <div class="ping-selection ping-history-targets" id="pingSelected"></div>
+              <div class="ping-history-controls">
+                <div id="pingPresets" class="ping-history-actions" role="group" aria-label="快捷时间范围">
+                  <button type="button" data-span="5m">5m</button><button type="button" data-span="15m">15m</button>
+                  <button type="button" data-span="1h">1h</button><button type="button" data-span="6h">6h</button>
+                  <button type="button" data-span="24h">24h</button><button type="button" data-span="7d">7d</button>
+                </div>
+                <div class="ping-history-actions">
+                  <button type="button" id="pingPrevRange">上一层</button>
+                  <button type="button" id="pingResetRange">重置缩放</button>
+                  <button type="button" id="pingHistoryRefresh">刷新</button>
+                </div>
+              </div>
+              <details class="ping-policy"><summary>自定义时间</summary>
+                <div class="ping-toolbar">
+                  <label>起点<input id="pingRangeStart" type="datetime-local" step="1" /></label>
+                  <label>终点<input id="pingRangeEnd" type="datetime-local" step="1" /></label>
+                  <button type="button" id="pingHistoryApply">应用时间范围</button>
+                </div>
+              </details>
+              <p class="ping-error" id="pingHistoryError" role="alert"></p>
+              <p id="pingHistoryCaption"></p>
+              <p class="ping-chart-instructions" id="pingChartInstructions">悬停查样本，点击或 Enter 固定，拖选放大。方向键浏览，Esc 解除。</p>
+              <div id="pingOverviewChart"></div>
+              <div class="ping-navigation" aria-label="平移时间范围">
+                <button type="button" id="pingGoEarlier" aria-label="前移一个窗口">← 前移</button>
+                <div class="ping-navigation-track">
+                  <span id="pingPanWindow"></span>
+                  <input id="pingPan" type="range" step="1" aria-label="拖动平移时间范围" />
+                </div>
+                <button type="button" id="pingGoLater" aria-label="后移一个窗口">后移 →</button>
+                <output id="pingPanLabel" for="pingPan"></output>
+              </div>
+              <h4>丢包热力图</h4>
+              <div class="ping-heat-legend"><span class="clear">0%</span><span class="loss">有丢包</span><span class="high">≥50%</span><span class="unknown">N/A</span></div>
+              <div id="pingOverviewLoss"></div>
+              <h4 class="ping-history-stat-title">当前区间统计</h4>
+              <div class="ping-metrics" id="pingMetrics"></div>
+              <div class="ping-toolbar ping-detail-toolbar">
+                <label>查询时间点<input id="pingCursor" type="datetime-local" step="1" /></label>
+                <button type="button" id="pingLocate">定位</button>
+                <label>固定点原始窗口<select id="pingStatsWindow"><option value="60">1 分钟</option><option value="300" selected>5 分钟</option>
+                  <option value="900">15 分钟</option><option value="3600">1 小时</option></select></label>
+                <button type="button" id="pingClearPin" hidden>解除固定</button>
+                <button type="button" id="pingExport" disabled>导出原始 CSV（UTC）</button>
+              </div>
+              <div id="pingPinned" class="ping-pinned" role="status"></div>
+              <p id="pingDrillCaption"></p>
+              <div class="ping-distribution" id="pingDistribution" aria-label="原始 RTT 时间线"></div>
+              <section id="pingDrillStatistics" aria-label="固定点原始窗口统计" hidden>
+                <h4 class="ping-history-stat-title">固定点原始窗口统计</h4>
+                <div id="pingDrillMetrics" class="ping-metrics"></div>
+              </section>
+              <details class="ping-events">
+                <summary>探测记录（最多 20 条）</summary>
+                <label class="ping-check"><input id="pingFailures" type="checkbox" /> 仅失败或未知</label>
+                <div class="ping-table-wrap"><table class="ping-table">
+                  <thead><tr><th>本地时间</th><th>目标</th><th>结果</th><th>RTT <small>ms</small></th></tr></thead>
+                  <tbody id="pingEvents"></tbody>
+                </table></div>
+              </details>
             </div>
-            <p id="pingDrillCaption"></p>
-            <div class="ping-metrics" id="pingMetrics"></div>
-            <div class="ping-distribution" id="pingDistribution"></div>
-            <details class="ping-events">
-              <summary>探测记录（最近 20 条）</summary>
-              <label class="ping-check"><input id="pingFailures" type="checkbox" /> 仅失败或未知</label>
-              <div class="ping-table-wrap"><table class="ping-table">
-                <thead><tr><th>本地时间</th><th>目标</th><th>结果</th><th>RTT <small>ms</small></th></tr></thead>
-                <tbody id="pingEvents"></tbody>
-              </table></div>
-            </details>
           </section>
-          <details class="ping-policy"><summary>统计说明</summary><p id="pingPolicy"></p></details>
         </div>
       </section>
       <section class="evidence-panel" id="evidencePanel" aria-label="延迟查询" hidden>
@@ -390,12 +432,15 @@
     <script src="./metrics/ping-transform.js?v=20260826b"></script>
     <script src="./isp-carousel.js?v=20260731a"></script>
     <script src="./api.js?v=20261116b"></script>
-    <script src="./ping/model.js?v=20261116b"></script>
+    <script src="./ping/model.js?v=20261117a"></script>
     <script src="./ping/data.js?v=20261116b"></script>
-    <script src="./ping/charts.js?v=20261116b"></script>
+    <script src="./ping/charts.js?v=20261117a"></script>
     <script src="./ping/trends.js?v=20261116b"></script>
-    <script src="./ping/wall.js?v=20261116b"></script>
-    <script src="./ping/panel.js?v=20261116b"></script>
+    <script src="./ping/wall.js?v=20261117a"></script>
+    <script src="./ping/history.js?v=20261117a"></script>
+    <script src="./ping/timeline.js?v=20261117a"></script>
+    <script src="./ping/detail.js?v=20261117a"></script>
+    <script src="./ping/panel.js?v=20261117a"></script>
     <script src="./infra/overview-model.js?v=20261116c"></script>
     <script src="./infra/overview-data.js?v=20261107a"></script>
     <script src="./infra/overview-controller.js?v=20261116b"></script>

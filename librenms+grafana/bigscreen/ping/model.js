@@ -213,7 +213,7 @@
   }
 
   const ns = { jobs, minCoverage, minRttSamples, maxHistory, maxRaw, defaultStats, inventorySeconds, maxCompared, maxRawTargets,
-    policy, missingFirewall, groupLabel, wallOrder, identity, number, lossStats, rttMs, snapshot, rawRows, rawStats, bucketRows };
+    targetFromMetric, policy, missingFirewall, groupLabel, wallOrder, identity, number, lossStats, rttMs, snapshot, rawRows, rawStats, bucketRows };
   if (typeof module !== "undefined" && module.exports) module.exports = ns;
   else window.BSPingModel = ns;
 })();
