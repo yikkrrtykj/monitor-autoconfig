@@ -257,8 +257,49 @@ test("a stalled authority read cannot paint samples that expire before display",
     h.latches.discovery[0].resolve(discovery(1, [row]));
     await settle();
     assert.equal(h.latches.sample[0].at, started);
+    const before = h.sent.length;
     h.latches.sample[0].resolve(reading(item, fresh(started)));
     await settle();
+    // No intermediate callback may publish the stale UP, only its retirement.
+    const events = h.sent.slice(before);
+    assert.ok(events.length >= 1);
+    assert.ok(events.every((view) => view.items.every(({ status }) => status !== "UP")));
+    assert.equal(h.sent.at(-1).items[0].status, "UNKNOWN");
+    assert.equal(h.sent.at(-1).items[0].reason, "数据过期");
+  } finally { h.monitor.stop(); }
+});
+
+test("a delayed sample read publishes UNKNOWN without ever emitting an expired UP", async () => {
+  let clock = Date.parse(row.updatedAt) / 1000 + 70;
+  const h = harness({ clock: () => clock });
+  const item = custom.target(row, settings);
+  try {
+    // A valid UP is already on the wall when the slow refresh starts.
+    h.monitor.start();
+    h.latches.list[0].resolve(manifest(1, [row]));
+    h.latches.discovery[0].resolve(discovery(1, [row]));
+    await settle();
+    h.latches.sample[0].resolve(reading(item, fresh(clock)));
+    await settle();
+    assert.equal(h.sent.at(-1).items[0].status, "UP");
+
+    const started = clock;
+    const before = h.sent.length;
+    const pending = h.monitor.refresh();
+    h.latches.list[1].resolve(manifest(1, [row]));
+    h.latches.discovery[1].resolve(discovery(1, [row]));
+    await settle();
+    assert.equal(h.latches.sample[1].at, started);
+    // The sample was valid when queried but the response arrives after expiry.
+    clock = started + 11;
+    h.latches.sample[1].resolve(reading(item, fresh(started)));
+    assert.equal(await pending, true);
+    // Every callback in this completion must already be UNKNOWN; an emitted UP
+    // followed by UNKNOWN is not allowed.
+    const events = h.sent.slice(before);
+    assert.ok(events.length >= 1);
+    assert.ok(events.every((view) => view.items.every(({ status }) => status !== "UP")),
+      "expired sample must never be published as UP");
     assert.equal(h.sent.at(-1).items[0].status, "UNKNOWN");
     assert.equal(h.sent.at(-1).items[0].reason, "数据过期");
   } finally { h.monitor.stop(); }

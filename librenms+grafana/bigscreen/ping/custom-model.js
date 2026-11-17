@@ -135,23 +135,40 @@
       changed({ catalog, items, notice, sync: renderedSync });
     }
 
-    // A cached status is only live while its sample is inside the same window
-    // the Prometheus snapshot applies. Hidden tabs, SPA route changes and
-    // stalled reads otherwise keep a retired UP on screen until the next read.
+    // A status is only live while its sample is inside the same window the
+    // Prometheus snapshot applies.
+    const maxAge = (item) => Math.max(10, item.interval * 3);
+    const stale = (item, at) => item.sourceAt !== null && item.status !== "UNKNOWN" &&
+      at - item.sourceAt > maxAge(item);
+    const retired = (item) => ({ ...item, status: "UNKNOWN", rtt: null, sourceAt: null, reason: "数据过期",
+      loss: model.lossStats(null, null, item.lossWindow, item.interval) });
+
+    // Cached statuses are checked whenever a read starts, so hidden tabs, SPA
+    // route changes and stalled reads cannot keep a retired UP on screen.
     function expire() {
       const at = now();
       let expired = false;
       items = items.map((item) => {
-        if (item.status === "UNKNOWN" || item.sourceAt === null ||
-            at - item.sourceAt <= Math.max(10, item.interval * 3)) return item;
+        if (!stale(item, at)) return item;
         expired = true;
-        return { ...item, status: "UNKNOWN", rtt: null, sourceAt: null, reason: "数据过期",
-          loss: model.lossStats(null, null, item.lossWindow, item.interval) };
+        return retired(item);
       });
       if (!expired) return;
       // Keep the authoritative catalog, card identity and history links; only
       // the stale readings are retired until a new sample is accepted.
       changed({ catalog: state.current(), items, notice, sync: renderedSync });
+    }
+
+    // The snapshot validator accepts a sample relative to its query time, but a
+    // delayed read hands it back after the window already closed. Retire it
+    // before render() can emit any changed() event, so an expired sample is
+    // never published as UP even transiently.
+    function freshSamples(samples) {
+      if (!samples) return samples;
+      const at = now();
+      const fresh = new Map();
+      for (const [key, reading] of samples) fresh.set(key, reading && stale(reading, at) ? retired(reading) : reading);
+      return fresh;
     }
 
     function pause() {
@@ -184,6 +201,7 @@
         if (discovery.activeTargets.length && isDiscovered(state.current(), discovery)) {
           samples = await sample(at, signal);
           if (signal.aborted) return false;
+          samples = freshSamples(samples);
         }
         failures = 0;
         notice = "";
@@ -194,9 +212,6 @@
       }
       render(discovery, samples);
       if (active && !signal.aborted && visible()) {
-        // A slow authority read may have used samples that were fresh when the
-        // read started but are already retired by the time they are painted.
-        expire();
         timer = setTimeout(refresh, Math.min(60000, 5000 * 2 ** failures));
       }
       return authorityCurrent;

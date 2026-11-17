@@ -40,6 +40,7 @@ function fixture(size, customCount, options = {}) {
   let allUp = options.allUp === true;
   let barrier = null;
   let releaseBarrier = null;
+  const slow = { ms: 0, age: 1 };
   function metricFor(row) { return { job: "custom-ping", instance: row.id, custom_id: row.id, target_ip: row.ip }; }
   const state = () => ({ ok: true, revision, publication: "published", publishedRevision: revision });
 
@@ -63,9 +64,10 @@ function fixture(size, customCount, options = {}) {
       ? chosen.map((metric) => ({ metric, values: allUp ? [1, 1, 12] : metric.instance === uuid(2) ? [0, 1, 55] :
         metric.instance === uuid(3) ? [1, 0, 0] : [1, 1, metric.instance === uuid(4) ? 90 : 12] }))
       : chosen.map((metric) => ({ metric, values: [1, 1, 12] }));
+    const age = custom ? slow.age : 1;
     return live.flatMap(({ metric, values: [up, ping, rtt] }) => Object.entries({
-      ...(!custom ? { target: 1 } : {}), source: up, source_at: at - 1, probe: ping,
-      probe_at: at - 1, rtt: rtt / 1000, rtt_at: at - 1, count: 30, ok: ping ? 30 : 0
+      ...(!custom ? { target: 1 } : {}), source: up, source_at: at - age, probe: ping,
+      probe_at: at - age, rtt: rtt / 1000, rtt_at: at - age, count: 30, ok: ping ? 30 : 0
     }).map(([field, value]) => ({ metric: { ...metric, ping_field: field }, value: [at, String(value)] })));
   }
 
@@ -130,6 +132,7 @@ function fixture(size, customCount, options = {}) {
       else if (q.includes('job="custom-ping"')) stats.custom++;
       else if (q.includes("last_over_time(up")) stats.summary++;
       const result = payload(q, at);
+      if (slow.ms && q.includes('job="custom-ping"')) await new Promise((resolve) => setTimeout(resolve, slow.ms));
       await new Promise((resolve) => setTimeout(resolve, 24));
       if (q.startsWith("{__name__")) activeRaw--;
       return respond({ status: "success", data: { resultType: q.startsWith("{__name__") ? "matrix" : "vector", result } });
@@ -149,7 +152,10 @@ function fixture(size, customCount, options = {}) {
     // Hold authority reads to model a stalled Platform API while the wall is
     // resumed; release resolves every request that queued on the barrier.
     hold() { barrier = new Promise((resolve) => { releaseBarrier = resolve; }); },
-    release() { const resolve = releaseBarrier; releaseBarrier = null; barrier = null; resolve?.(); } };
+    release() { const resolve = releaseBarrier; releaseBarrier = null; barrier = null; resolve?.(); },
+    // Delay only the custom-ping sample query and report its sample a bit older,
+    // so a slow response carries a sample that already left the freshness window.
+    slowSamples(ms = 0, age = 1) { slow.ms = ms; slow.age = age; } };
 }
 
 async function cardCount(page, expected) {
@@ -215,14 +221,33 @@ async function staleScenario(browser, directory, viewport, mode) {
     assert.notEqual(stale.source.state, "UP");
     assert.match(stale.source.text, /部分不可用/);
     await page.screenshot({ path: path.join(out, "stale-" + mode + "-" + viewport.width + ".png") });
+
+    // Record every health-indicator transition while the stale sample comes
+    // back. A transient UP followed by UNKNOWN would surface as a mutation
+    // whose previous value was UP.
+    await page.evaluate(() => {
+      window.__pingSourceMutations = [];
+      const source = document.getElementById("pingSource");
+      new MutationObserver((records) => {
+        for (const record of records) window.__pingSourceMutations.push({ old: record.oldValue, value: source.dataset.state });
+      }).observe(source, { attributes: true, attributeFilter: ["data-state"], attributeOldValue: true });
+    });
+    // Let the authority reads settle, then delay only the custom sample query:
+    // the response is valid for its query time but already past the freshness
+    // window when it is published. The delay stays under the 9s query timeout.
+    mock.slowSamples(8000, 3);
     mock.release();
+    await page.waitForTimeout(8500);
+    mock.slowSamples(0);
     await waitAllUp(page);
+    const mutations = await page.evaluate(() => window.__pingSourceMutations);
+    assert.ok(!mutations.some(({ old }) => old === "UP"), "stale UP must never reach the health indicator");
     const recovered = await sourceState(page);
     assert.equal(recovered.state, "UP");
     assert.equal(recovered.text, "实时监控");
     await page.screenshot({ path: path.join(out, "resumed-" + mode + "-" + viewport.width + ".png") });
     assert.deepEqual(errors, []);
-    return { mode, width: viewport.width, stale, recovered, held: mock.stats.held };
+    return { mode, width: viewport.width, stale, recovered, mutations, held: mock.stats.held };
   } finally { await context.close(); }
 }
 
