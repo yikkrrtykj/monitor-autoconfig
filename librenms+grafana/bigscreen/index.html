@@ -6,7 +6,7 @@
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20261116a" />
     <link rel="stylesheet" href="./platform.css?v=20261116a" />
-    <link rel="stylesheet" href="./ping/ping.css?v=20261117a" />
+    <link rel="stylesheet" href="./ping/ping.css?v=20261117b" />
     <link rel="stylesheet" href="./infra/overview.css?v=20261116a" />
   </head>
   <body>
@@ -186,14 +186,21 @@
               <p id="pingHistoryCaption"></p>
               <p class="ping-chart-instructions" id="pingChartInstructions">悬停查样本，点击或 Enter 固定，拖选放大。方向键浏览，Esc 解除。</p>
               <div id="pingOverviewChart"></div>
-              <div class="ping-navigation" aria-label="平移时间范围">
-                <button type="button" id="pingGoEarlier" aria-label="前移一个窗口">← 前移</button>
-                <div class="ping-navigation-track">
-                  <span id="pingPanWindow"></span>
-                  <input id="pingPan" type="range" step="1" aria-label="拖动平移时间范围" />
+              <div class="ping-navigation" role="group" aria-label="平移时间范围（本地时间）">
+                <p id="pingPanLabel"><span id="pingPanStatus"></span> <span id="pingPanTimes"></span></p>
+                <div class="ping-navigation-track" id="pingPanTrack">
+                  <div id="pingPan" role="slider" tabindex="0" aria-label="平移时间窗口"
+                    aria-describedby="pingPanHelp"></div>
                 </div>
-                <button type="button" id="pingGoLater" aria-label="后移一个窗口">后移 →</button>
-                <output id="pingPanLabel" for="pingPan"></output>
+                <div class="ping-navigation-bounds">
+                  <time id="pingPanStart"></time>
+                  <time id="pingPanEnd"></time>
+                </div>
+                <div class="ping-navigation-actions">
+                  <button type="button" id="pingGoEarlier"></button>
+                  <p id="pingPanHelp">拖动时间窗，松开后查询 · 本地时间</p>
+                  <button type="button" id="pingGoLater"></button>
+                </div>
               </div>
               <h4>丢包热力图</h4>
               <div class="ping-heat-legend"><span class="clear">0%</span><span class="loss">有丢包</span><span class="high">≥50%</span><span class="unknown">N/A</span></div>
@@ -438,8 +445,8 @@
     <script src="./ping/trends.js?v=20261116b"></script>
     <script src="./ping/wall.js?v=20261117a"></script>
     <script src="./ping/history.js?v=20261117a"></script>
-    <script src="./ping/timeline.js?v=20261117a"></script>
-    <script src="./ping/detail.js?v=20261117a"></script>
+    <script src="./ping/timeline.js?v=20261117b"></script>
+    <script src="./ping/detail.js?v=20261117b"></script>
     <script src="./ping/panel.js?v=20261117a"></script>
     <script src="./infra/overview-model.js?v=20261116c"></script>
     <script src="./infra/overview-data.js?v=20261107a"></script>

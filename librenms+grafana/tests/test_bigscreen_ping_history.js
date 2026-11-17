@@ -107,7 +107,7 @@ test("main and original RTT SVG pin a loaded sample; drag only commits on pointe
     });
     graph.send("pointermove", { ...options, clientX: 140.3 });
     frame();
-    assert.match(graph.tooltip.innerHTML, /128\.237 ms/);
+    assert.match(graph.tooltip.innerHTML, /128\.24 ms/);
     assert.equal(pins.length, id === "OverviewChart" ? 0 : 1);
     graph.send("pointerdown", { ...options, clientX: 140.3 });
     graph.send("pointerup", { ...options, clientX: 140.3 });
@@ -123,4 +123,77 @@ test("main and original RTT SVG pin a loaded sample; drag only commits on pointe
   assert.deepEqual(pins, [["OverviewChart", 140], ["Distribution", 140]]);
   assert.deepEqual(zooms, [[130, 180], [130, 180]]);
   bindings.forEach((binding) => binding.dispose());
+});
+
+test("RTT display rounds msec by magnitude and leaves the sample untouched", () => {
+  const window = { BSPingHistory: history, BSUtils: { escapeHtml: (s) => s } };
+  vm.runInNewContext(readFileSync(require.resolve("../bigscreen/ping/timeline.js"), "utf8"), { window });
+  for (const [value, expected] of [[0.351237, "0.351 ms"], [8.625678, "8.63 ms"], [128.237, "128.24 ms"],
+    [0, "0 ms"], [1, "1 ms"], [null, "N/A"], [NaN, "N/A"]]) {
+    const sample = Object.freeze({ t: 140, scrape: 1, success: 1, rtt: value });
+    const html = window.BSPingTimeline.describe({ rows: [{ target: core, sample }] });
+    assert.ok(html.includes("RTT " + expected + "</span>"));
+  }
+});
+
+test("time window uses the labeled scale and commits only after a valid release", () => {
+  const window = {
+    BSPingModel: model, BSPingHistory: history, BSPingCharts: { colors: ["#fff"] },
+    BSPingTimeline: { time: String }, BSPingData: {}, BSUtils: { escapeHtml: (s) => s }
+  };
+  const elements = new Map();
+  const byId = (name) => {
+    if (!elements.has(name)) {
+      const element = new EventTarget();
+      const attrs = new Map();
+      Object.assign(element, { style: {}, querySelectorAll: () => [], focus() {}, setPointerCapture() {},
+        getBoundingClientRect: () => ({ left: 0, width: 900 }),
+        setAttribute: (key, value) => attrs.set(key, value), getAttribute: (key) => attrs.get(key) });
+      elements.set(name, element);
+    }
+    return elements.get(name);
+  };
+  const send = (name, type, fields) => byId(name).dispatchEvent(Object.assign(new Event(type), fields));
+  const ranges = [];
+  const queries = [];
+  class Clock extends Date { static now() { return now * 1000; } }
+  vm.runInNewContext(readFileSync(require.resolve("../bigscreen/ping/detail.js"), "utf8"), {
+    window, Date: Clock, clearTimeout
+  });
+  const panel = window.BSPingDetail.createHistoryPanel({
+    byId, data: { raw: (_, start, end) => queries.push([start, end]) }, run: (_, load) => load(), cancel() {},
+    replaceUrl: (href) => ranges.push(new URL(href, "https://example.test")), back() {}
+  });
+  panel.start({ targets: [core], range: { start: now - 7200, end: now - 3600 }, at: null }, []);
+  assert.equal(byId("GoEarlier").textContent, "← 前 1 小时");
+  assert.equal(byId("GoLater").textContent, "后 1 小时 →");
+  assert.equal(byId("PanStart").dateTime, new Date((now - 10800) * 1000).toISOString());
+  assert.equal(byId("PanEnd").dateTime, new Date(now * 1000).toISOString());
+  const options = { button: 0, isPrimary: true, pointerId: 1 };
+  const down = () => {
+    // A window-origin event bubbles to the track in Chromium. Here dispatch it at the track.
+    const event = Object.assign(new Event("pointerdown"), { ...options, clientX: 450 });
+    Object.defineProperty(event, "target", { value: byId("Pan") });
+    byId("PanTrack").dispatchEvent(event);
+  };
+  down();
+  send("PanTrack", "pointermove", { ...options, clientX: 350 });
+  assert.equal(byId("PanStatus").textContent, "预览窗口（1 小时）");
+  assert.equal(byId("Pan").getAttribute("aria-valuenow"), String(now - 8400));
+  assert.equal(queries.length, 1);
+  send("PanTrack", "pointercancel", options);
+  assert.equal(byId("PanStatus").textContent, "当前窗口（1 小时）");
+  assert.equal(byId("Pan").getAttribute("aria-valuenow"), String(now - 7200));
+  assert.equal(queries.length, 1);
+
+  down();
+  send("PanTrack", "pointermove", { ...options, clientX: 350 });
+  const left = byId("Pan").style.left;
+  send("PanTrack", "pointerup", { ...options, clientX: 350 });
+  send("PanTrack", "lostpointercapture", options);
+  assert.equal(byId("Pan").style.left, left);
+  assert.match(byId("Pan").getAttribute("aria-valuetext"), /^当前窗口/);
+  assert.deepEqual(queries, [[now - 7200, now - 3600], [now - 8400, now - 4800]]);
+  assert.equal(ranges.length, 1);
+  assert.equal(Number(ranges[0].searchParams.get("from")), now - 8400);
 });
