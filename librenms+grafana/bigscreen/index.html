@@ -6,7 +6,7 @@
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20261116a" />
     <link rel="stylesheet" href="./platform.css?v=20261116a" />
-    <link rel="stylesheet" href="./ping/ping.css?v=20261117c" />
+    <link rel="stylesheet" href="./ping/ping.css?v=20261117b2" />
     <link rel="stylesheet" href="./infra/overview.css?v=20261116a" />
   </head>
   <body>
@@ -109,6 +109,10 @@
           <header class="ping-heading">
             <h2 id="pingWorkspaceTitle">Ping 监控墙</h2>
             <div class="ping-feed"><span class="ping-badge" id="pingSource" data-state="UNKNOWN"></span><time id="pingUpdated"></time></div>
+            <div class="ping-custom-actions" id="pingCustomActions">
+              <button type="button" id="pingCustomAdd">+ 添加目标</button>
+              <button type="button" id="pingCustomManage">管理自定义目标</button>
+            </div>
           </header>
           <section class="ping-surface" aria-label="设备探测监控墙">
             <div class="ping-toolbar">
@@ -119,6 +123,9 @@
                   <option value="FW Unit">FW Unit</option><option value="Stage">Stage</option><option value="Dist">Dist / 交换机</option>
                 </optgroup>
                 <option value="isp">ISP</option><option value="ap">AP ICMP</option><option value="server">服务器</option>
+                <optgroup label="Custom"><option value="custom">全部自定义目标</option>
+                  <option value="custom-Remote">Remote</option><option value="custom-Server">Server</option>
+                  <option value="custom-Other">Other</option></optgroup>
               </select></label>
               <label>探测状态<select id="pingStatus">
                 <option value="">全部状态</option><option value="abnormal">全部异常</option>
@@ -142,6 +149,7 @@
               <p class="ping-counts" id="pingCounts"></p><p class="ping-counts" id="pingVisibleCount"></p>
             </div>
             <p class="ping-counts" id="pingCoverage" role="status"></p>
+            <p class="ping-counts" id="pingCustomNotice" role="status"></p>
             <div class="ping-wall-legend" aria-label="小图图例">
               <span><i class="ping-legend-trace"></i>RTT · 共用刻度 0 / 25 / 100 / 500 / 2000 ms</span>
               <span><i class="ping-legend-loss"></i>ICMP 丢包</span>
@@ -155,6 +163,48 @@
           </section>
             <details class="ping-policy"><summary>统计说明</summary><p id="pingPolicy"></p></details>
           </div>
+          <dialog class="ping-custom-dialog" id="pingCustomDialog" aria-labelledby="pingCustomTitle">
+            <header class="ping-custom-header">
+              <h3 id="pingCustomTitle">管理自定义目标</h3>
+              <button type="button" id="pingCustomClose" autofocus>关闭</button>
+            </header>
+            <p id="pingCustomInventory"></p>
+            <p id="pingCustomMessage" class="ping-custom-message" role="status" tabindex="-1"></p>
+            <form id="pingCustomLogin" class="ping-custom-form" hidden>
+              <label>管理员账号<input id="pingCustomUser" autocomplete="username" required></label>
+              <label>密码<input id="pingCustomPass" type="password" autocomplete="current-password" required></label>
+              <button id="pingCustomLoginSubmit" type="submit">登录</button>
+            </form>
+            <div class="ping-custom-actions">
+              <button type="button" id="pingCustomNew" hidden>新建目标</button>
+              <button type="button" id="pingCustomLogout" hidden>退出登录</button>
+            </div>
+            <form id="pingCustomForm" class="ping-custom-form" hidden>
+              <h4 id="pingCustomEditorTitle">添加目标</h4>
+              <label>名称<input id="pingCustomName" maxlength="160" required></label>
+              <label>IPv4<input id="pingCustomIP" maxlength="15" inputmode="decimal" required></label>
+              <label>分组<select id="pingCustomGroup"><option>Remote</option><option>Server</option><option>Other</option></select></label>
+              <div class="ping-custom-actions">
+                <button type="submit" id="pingCustomSave">保存</button>
+                <button type="button" id="pingCustomEditorCancel">取消编辑</button>
+              </div>
+            </form>
+            <section id="pingCustomConfirm" class="ping-custom-confirm" aria-labelledby="pingCustomDeleteText" hidden>
+              <p id="pingCustomDeleteText"></p>
+              <div class="ping-custom-actions">
+                <button type="button" id="pingCustomCancelDelete">取消删除</button>
+                <button type="button" id="pingCustomDelete">确认删除</button>
+              </div>
+            </section>
+            <div id="pingCustomConflict" class="ping-custom-actions" hidden>
+              <button type="button" id="pingCustomReview">核对并采用最新版本</button>
+            </div>
+            <div class="ping-custom-actions">
+              <button type="button" id="pingCustomRetry" hidden>重试原请求</button>
+              <button type="button" id="pingCustomDismiss" hidden>放弃重试并刷新</button>
+            </div>
+            <ul id="pingCustomRows" class="ping-custom-rows" aria-label="自定义目标清单"></ul>
+          </dialog>
           <section class="ping-surface ping-detail" id="pingDetail" aria-labelledby="pingHistoryTitle" hidden>
             <header class="ping-detail-header">
               <h2 id="pingHistoryTitle" tabindex="-1">Ping 历史</h2>
@@ -434,15 +484,18 @@
     <script src="./metrics/ping-transform.js?v=20260826b"></script>
     <script src="./isp-carousel.js?v=20260731a"></script>
     <script src="./api.js?v=20261116b"></script>
-    <script src="./ping/model.js?v=20261117a"></script>
-    <script src="./ping/data.js?v=20261116b"></script>
+    <script src="./ping/model.js?v=20261117b2"></script>
+    <script src="./ping/data.js?v=20261117b2"></script>
     <script src="./ping/charts.js?v=20261117a"></script>
     <script src="./ping/trends.js?v=20261116b"></script>
-    <script src="./ping/wall.js?v=20261117a"></script>
+    <script src="./ping/wall.js?v=20261117b2"></script>
     <script src="./ping/history.js?v=20261117a"></script>
     <script src="./ping/timeline.js?v=20261117b"></script>
     <script src="./ping/detail.js?v=20261117c"></script>
-    <script src="./ping/panel.js?v=20261117a"></script>
+    <script src="./ping/custom-api.js?v=20261117b2"></script>
+    <script src="./ping/custom-model.js?v=20261117b2"></script>
+    <script src="./ping/custom-manager.js?v=20261117b2"></script>
+    <script src="./ping/panel.js?v=20261117b2"></script>
     <script src="./infra/overview-model.js?v=20261116c"></script>
     <script src="./infra/overview-data.js?v=20261107a"></script>
     <script src="./infra/overview-controller.js?v=20261116b"></script>

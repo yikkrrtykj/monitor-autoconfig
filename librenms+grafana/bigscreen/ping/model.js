@@ -12,7 +12,7 @@
     "player-ping": ["player", "Player", "player"]
   });
   const jobOrder = Object.keys(jobs);
-  const wallGroups = ["Core", "FW", "FW Unit", "ISP", "Stage", "Dist", "Server", "AP"];
+  const wallGroups = ["Core", "FW", "FW Unit", "ISP", "Stage", "Dist", "Server", "AP", "Custom"];
   const groupLabels = { FW: "FW VIP", AP: "AP ICMP" };
   const defaults = Object.freeze({ isp: 1, infra: 2, player: 5, ap: 5 });
   const minCoverage = 0.8;
@@ -52,7 +52,7 @@
     return [...expected].filter((ip) => !present.has(ip));
   }
 
-  const groupLabel = ({ group }) => groupLabels[group] || group;
+  const groupLabel = ({ group, customGroup }) => customGroup ? "Custom / " + customGroup : groupLabels[group] || group;
   const wallOrder = (a, b) => wallGroups.indexOf(a.group) - wallGroups.indexOf(b.group);
 
   function identity(metric) {
@@ -63,8 +63,20 @@
       .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
   }
 
+  function customMetric(metric) {
+    return metric.job === "custom-ping" && metric.instance === metric.custom_id &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(metric.custom_id || "") &&
+      typeof metric.target_ip === "string" && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(metric.target_ip) &&
+      metric.target_ip.split(".").every((octet) => Number(octet) <= 255);
+  }
+
   function targetFromMetric(metric, settings) {
     const job = metric.job;
+    if (job === "custom-ping") {
+      if (!customMetric(metric)) return null;
+      return { key: identity(metric), metric, job, category: "custom", group: "Custom", interval: 2,
+        lossWindow: 60, name: metric.target_ip, ip: metric.target_ip, subtitle: "" };
+    }
     if (!Object.hasOwn(jobs, job) || !metric.instance) return null;
     const [category, defaultGroup, intervalGroup] = jobs[job];
     const { team, seat, network } = metric;
@@ -213,7 +225,7 @@
   }
 
   const ns = { jobs, minCoverage, minRttSamples, maxHistory, maxRaw, defaultStats, inventorySeconds, maxCompared, maxRawTargets,
-    targetFromMetric, policy, missingFirewall, groupLabel, wallOrder, identity, number, lossStats, rttMs, snapshot, rawRows, rawStats, bucketRows };
+    targetFromMetric, customMetric, policy, missingFirewall, groupLabel, wallOrder, identity, number, lossStats, rttMs, snapshot, rawRows, rawStats, bucketRows };
   if (typeof module !== "undefined" && module.exports) module.exports = ns;
   else window.BSPingModel = ns;
 })();

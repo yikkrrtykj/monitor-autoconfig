@@ -6,6 +6,7 @@
 
   function trendLabel({ target, trend }) {
     if (trend?.error) return trend.error;
+    if (target.sync) return [target.sync, target.reason].filter(Boolean).join(" · ");
     if (target.reason) return target.reason;
     if (!trend) return "正在读取小图…";
     return trend.rows.length ? "近 5 分钟" : "近 5 分钟无样本";
@@ -42,7 +43,7 @@
     function clearTrend(card) {
       card.trend = null;
       card.chart.textContent = "";
-      card.note.textContent = card.target.reason || "近 5 分钟";
+      card.note.textContent = card.target.sync ? trendLabel(card) : card.target.reason || "近 5 分钟";
       card.note.removeAttribute("title");
     }
 
@@ -91,9 +92,9 @@
       }
       set(card.badge, status);
       if (card.badge.title !== reason) card.badge.title = reason;
-      if (previous?.reason !== reason || previous?.status !== status) {
+      if (previous?.reason !== reason || previous?.status !== status || previous?.sync !== target.sync) {
         card.badge.setAttribute("aria-label", reason ? `${status} · ${reason}` : status);
-        set(card.note, nearby.has(target.key) ? trendLabel(card) : reason || "近 5 分钟");
+        set(card.note, nearby.has(target.key) || target.sync ? trendLabel(card) : reason || "近 5 分钟");
       }
       set(card.rtt, rtt === null ? "N/A" : `${charts.fmt(rtt)} ms`);
       set(card.loss, loss.loss === null ? "N/A" : `${loss.loss.toFixed(1)}%`);
