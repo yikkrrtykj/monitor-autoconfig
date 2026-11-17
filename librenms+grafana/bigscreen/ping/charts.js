@@ -66,14 +66,14 @@
       <path class="ping-gridline" d="${grid}"/><path class="ping-trace" d="${path}"/>${marks}</svg>`;
   }
 
-  function chart(series, start, end, cursor, { distribution = false, sampled = false } = {}) {
+  function chart(series, start, end, cursor, { distribution = false, sampled = false, interactive = false } = {}) {
     const limit = series.reduce((max, item) => {
       const points = distribution ? item.buckets : item.points;
       return points.reduce((peak, value) => Math.max(peak, (distribution ? value.p95 : value.rtt) || 0), max);
     }, 0);
-    if (!limit) return `<p class="ping-empty">${distribution ? "样本不足，无法绘制分布带" : "该时间段没有有效 RTT 样本"}</p>`;
+    if (!limit && distribution) return `<p class="ping-empty">样本不足，无法绘制分布带</p>`;
     const x = (t) => left + (t - start) / (end - start) * (right - left);
-    const y = (value) => bottom - value / limit * (bottom - top);
+    const y = (value) => bottom - value / (limit || 1) * (bottom - top);
     const grid = Array.from({ length: 4 }, (_, index) => {
       const value = limit * index / 3;
       const row = y(value);
@@ -84,7 +84,14 @@
     const paths = series.map((item, index) => {
       const color = colors[index];
       if (!distribution) {
-        return `<path d="${line(item.points, x, y, item.gap)}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke" ${sampled ? 'stroke-dasharray="4 3"' : ""}/>`;
+        const marks = { loss: "", scrape: "", missing: "" };
+        if (!sampled) {
+          for (const point of item.points) {
+            const kind = point.scrape === 0 ? "scrape" : point.success === 0 ? "loss" : point.rtt === null ? "missing" : null;
+            if (kind) marks[kind] += `M${x(point.t).toFixed(2)} ${bottom - index * 5}v-4`;
+          }
+        }
+        return `<path d="${line(item.points, x, y, item.gap)}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke" ${sampled ? 'stroke-dasharray="4 3"' : ""}/>${Object.entries(marks).filter(([, d]) => d).map(([kind, d]) => `<path class="ping-mark-${kind}" d="${d}" fill="none" />`).join("")}`;
       }
       return item.buckets.filter(({ p95 }) => p95 !== null).map(({ from, to, p50, p95 }) => `
         <rect x="${x(from)}" y="${y(p95)}" width="${x(to) - x(from)}" height="${y(p50) - y(p95)}" fill="${color}" opacity=".23"/>
@@ -92,8 +99,12 @@
         <path d="M${x(from)} ${y(p50)}H${x(to)}" stroke="${color}" stroke-width="2"/>`).join("");
     }).join("");
     const marker = cursor >= start && cursor <= end ? `<path class="ping-cursor" d="M${x(cursor)} ${top}V${bottom}"/>` : "";
-    return `<svg class="ping-chart" viewBox="0 0 ${width} 186" data-chart-start="${start}" data-chart-end="${end}" role="img" aria-label="RTT 时间线（毫秒）">
-      <text x="7" y="14">ms</text>${grid}${ticks}${paths}${marker}</svg>`;
+    const overlays = interactive ? `<rect class="ping-brush ping-plot-hidden" y="${top}" height="${bottom - top}"/>
+      <path class="ping-pin ping-plot-hidden"/><path class="ping-hover-x ping-plot-hidden"/><path class="ping-hover-y ping-plot-hidden"/>` : "";
+    const svg = `<svg class="ping-chart" viewBox="0 0 ${width} 186" data-chart-start="${start}" data-chart-end="${end}" data-chart-max="${limit || 1}"
+      ${interactive ? 'tabindex="0" aria-describedby="pingChartInstructions" preserveAspectRatio="none"' : ""} role="img" aria-label="RTT 时间线（毫秒）">
+      <text x="7" y="14">ms</text>${grid}${ticks}${paths}${marker}${overlays}</svg>`;
+    return interactive ? `<div class="ping-plot">${svg}<div class="ping-tooltip" role="tooltip" hidden></div></div>` : svg;
   }
 
   function chartTime(svg, clientX) {
@@ -103,7 +114,7 @@
     const ratio = (chartX - left) / (right - left);
     const start = Number(svg.dataset.chartStart);
     const end = Number(svg.dataset.chartEnd);
-    return Math.round(start + Math.max(0, Math.min(1, ratio)) * (end - start));
+    return start + Math.max(0, Math.min(1, ratio)) * (end - start);
   }
 
   function heatmap(series) {
@@ -117,5 +128,5 @@
       }).join("")}</div></div>`).join("");
   }
 
-  window.BSPingCharts = { colors, formatTime, fmt, sparkline, chart, chartTime, heatmap };
+  window.BSPingCharts = { colors, formatTime, fmt, sparkline, chart, chartTime, heatmap, plot: Object.freeze({ left, right, top, bottom }) };
 })();
