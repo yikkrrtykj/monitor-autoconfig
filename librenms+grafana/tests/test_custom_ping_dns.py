@@ -1,4 +1,5 @@
 """D2 的 DNS、配置兼容、并发发布与历史外部行为回归。"""
+import errno
 import hashlib
 import io
 import json
@@ -185,7 +186,8 @@ def test_disable_restore_and_a_b_a_have_new_activation_generations(store, clock)
     clock[0] += 301
     again = refresh(store)
     assert a["resolutionGeneration"] < b["resolutionGeneration"] < again["resolutionGeneration"]
-    assert again["sampleNotBefore"] > a["sampleNotBefore"]
+    assert again["activatedAt"] > a["activatedAt"]
+    assert again["sampleNotBefore"] is None
     disabled = patch(store, row, {"enabled": False})[1]["target"]
     store.reconcile()
     assert json.loads(store.discovery.read_bytes()) == []
@@ -224,6 +226,9 @@ def test_publication_failure_is_pending_and_restart_uses_same_projection(store, 
         assert store.list_targets()["publication"] == "pending"
     restarted = PingStore(store.manifest.parent, store.discovery)
     restarted.reconcile()
+    assert restarted.list_targets()["targets"][0]["dnsStatus"] == "DNS_STALE"
+    assert json.loads(store.discovery.read_bytes()) == []
+    refresh(restarted)
     assert restarted.list_targets()["targets"][0]["dnsStatus"] == "DNS_OK"
     assert json.loads(store.discovery.read_bytes())[0]["targets"] == ["1.1.1.1"]
     assert restarted.list_targets()["publication"] == "published"
@@ -241,7 +246,10 @@ def test_runtime_write_failure_leaves_old_state_and_discovery(store, clock, monk
     monkeypatch.setattr(os, "replace", fail_runtime)
     with pytest.raises(PingError, match="dns_commit_failed"):
         refresh(store, ("1.1.1.2",))
-    assert original == (store.dns.path.read_bytes(), store.discovery.read_bytes(), store.manifest.read_bytes())
+    assert store.dns.path.read_bytes() == original[0]
+    assert store.manifest.read_bytes() == original[2]
+    assert store.list_targets()["targets"][0]["dnsStatus"] == "DNS_ERROR"
+    assert json.loads(store.discovery.read_bytes()) == []
 
 
 def test_history_retains_deleted_identity_and_bounds_capacity(store, clock, monkeypatch):
@@ -282,7 +290,7 @@ def test_evidence_needs_discovered_generation_and_post_activation_samples(store,
                     "labels": {"custom_id": row["id"], "target_ip": visible["resolvedIp"]},
                     "discoveredLabels": found["labels"], "health": "up"})
     now = clock[0] + 2
-    monkeypatch.setattr(custom_ping.time, "time", lambda: now)
+    store.dns.clock = lambda: now
     def evidence(stamp, success):
         samples = []
         for name, value in (("up", 1), ("probe_success", success)):
@@ -295,14 +303,15 @@ def test_evidence_needs_discovered_generation_and_post_activation_samples(store,
         monkeypatch.setattr(prom[0], "_prometheus_data",
                             lambda path: prom[2]["/api/v1/query?"]["data"] if path.startswith("/api/v1/query?") else
                             original(path))
-    evidence(visible["sampleNotBefore"] - 1, 1)
-    assert prom[0].observed(snap)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
-    evidence(visible["sampleNotBefore"] + 1, 1)
-    assert prom[0].observed(snap)["dnsTargets"][0]["pingStatus"] == "UP"
-    evidence(visible["sampleNotBefore"] + 1, 0)
-    assert prom[0].observed(snap)["dnsTargets"][0]["pingStatus"] == "DOWN"
+    evidence(clock[0] + 1, 1)
+    assert prom[0].observed(snap, store)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
+    now += 2
+    evidence(now - 1, 1)
+    assert prom[0].observed(snap, store)["dnsTargets"][0]["pingStatus"] == "UP"
+    evidence(now - 1, 0)
+    assert prom[0].observed(snap, store)["dnsTargets"][0]["pingStatus"] == "DOWN"
     prom[1][-1]["discoveredLabels"]["__meta_custom_ping_resolution_generation"] = "99"
-    assert prom[0].observed(snap)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
+    assert prom[0].observed(snap, store)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
 
 
 @pytest.mark.parametrize("failure", [OSError, custom_ping.HTTPException])
@@ -318,7 +327,7 @@ def test_prometheus_evidence_failure_is_unknown(store, clock, prom, monkeypatch,
             raise failure("synthetic metrics connection failure")
         return original(path)
     monkeypatch.setattr(prom[0], "_prometheus_data", unavailable)
-    state = prom[0].observed(store.list_targets())
+    state = prom[0].observed(store.list_targets(), store)
     assert state["discoveredRevision"] == row["revision"]
     assert state["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
 
@@ -343,6 +352,13 @@ def dns_server():
             name = request.question[0].name.to_text()
             if config["mode"] in ("nxdomain", "servfail"):
                 response.set_rcode(dns.rcode.NXDOMAIN if config["mode"] == "nxdomain" else dns.rcode.SERVFAIL)
+            elif config["mode"] == "split":
+                config["queries"].append(name)
+                if name == "game.example.com.":
+                    response.answer.append(dns.rrset.from_text(name, 1, "IN", "CNAME", "alias.example.com."))
+                else:
+                    config["advance"]()
+                    response.answer.append(dns.rrset.from_text(name, 5, "IN", "A", "1.1.1.1"))
             elif config["mode"] == "aaaa":
                 response.answer.append(dns.rrset.from_text(name, 90, "IN", "AAAA", "2001:db8::1"))
             else:
@@ -454,8 +470,19 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
     private = tmp_path / "private"
     private.mkdir()
     discovery = tmp_path / "sd" / "custom_targets.json"
+    collector = tmp_path / "collector" / "custom_targets.json"
+    collector.parent.mkdir(mode=0o755)
+    collector.parent.chmod(0o755)
     local = PingStore(private, discovery)
     local.reconcile()
+
+    def let_prometheus_read():
+        staged = collector.with_suffix(".tmp")
+        staged.write_bytes(discovery.read_bytes())
+        staged.chmod(0o644)
+        os.replace(staged, collector)
+
+    let_prometheus_read()
     fixture = f"{work}:/fixture"
     (work / "blackbox.yml").write_text(
         "modules:\n  icmp:\n    prober: icmp\n    timeout: 1s\n    icmp:\n      preferred_ip_protocol: ip4\n", encoding="utf-8")
@@ -467,9 +494,14 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
     net, prom_name, bb, peer = prefix + "-net", prefix + "-prom", prefix + "-bb", prefix + "-peer"
     a, b = "172.31.248.21", "172.31.248.22"
     dns_config["ips"] = [a]
+    query_body = [None]
     def prom_open(url, timeout):
         try:
-            return io.BytesIO(prometheus_fetch(prom_name, url.removeprefix("http://prom:9090")).encode())
+            endpoint = url.removeprefix("http://prom:9090")
+            if query_body[0] and endpoint.startswith("/api/v1/query?"):
+                return io.BytesIO(query_body[0])
+            body = prometheus_fetch(prom_name, endpoint).encode()
+            return io.BytesIO(body)
         except Exception as exc:
             raise OSError("isolated Prometheus unavailable") from exc
     monkeypatch.setattr(custom_ping, "urlopen", prom_open)
@@ -487,31 +519,419 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
         docker("run", "-d", "--name", peer, "--user", "0", "--network", net, "--ip", b,
                "--cap-add", "NET_RAW", "-v", fixture + ":ro", BLACKBOX, "--config.file=/fixture/blackbox.yml")
         docker("run", "-d", "--name", prom_name, "--network", net,
-               "-v", fixture + ":ro", "-v", f"{discovery.parent}:{SD_DIR}:ro", IMAGE,
+               "-v", fixture + ":ro", "-v", f"{collector.parent}:{SD_DIR}:ro", IMAGE,
                "--config.file=/fixture/prometheus.yml")
         wait_for(lambda: prometheus_fetch(prom_name, "/api/v1/scrape_pools"), lambda raw: "custom-ping" in raw)
         created = create(local, private=["172.31.248.0/24"])
-        assert inventory.observed(local.list_targets())["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
+        assert inventory.observed(local.list_targets(), local)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
         for address in (a, b, a):
             dns_config["ips"] = [address]
             answer = resolver.resolve("game.example.com")
             assert answer.ips == (address,)
             assert local.resolve_dns(ticket(), answer, inventory.dns_policy())
-            pending = inventory.observed(local.list_targets())["dnsTargets"][0]
+            let_prometheus_read()
+            pending = inventory.observed(local.list_targets(), local)["dnsTargets"][0]
             assert pending["pingStatus"] == "UNKNOWN"
-            ready = wait_for(lambda: inventory.observed(local.list_targets()),
+            ready = wait_for(lambda: inventory.observed(local.list_targets(), local),
                              lambda info: info["dnsTargets"][0]["pingStatus"] == "UP")
             assert ready["dnsTargets"][0]["resolvedIp"] == address
             assert ready["dnsTargets"][0]["discoveredGeneration"] == ready["dnsTargets"][0]["resolutionGeneration"]
         metrics = wait_for(lambda: query(prom_name, 'count by (target_ip) (count_over_time(probe_success{job="custom-ping"}[5m]))'),
                            lambda result: len(result) == 2)
         assert {r["metric"]["target_ip"] for r in metrics} == {a, b}
+        # Leave Prometheus on the last live A while the API commits B and
+        # then a new A. Repeat with B publication itself failing.
+        expected_history = [a, b, a]
+        for publication_failed in (False, True):
+            from urllib.parse import urlencode
+
+            baseline = inventory.observed(local.list_targets(), local)["dnsTargets"][0]
+            dns_config["ips"] = [b]
+            with monkeypatch.context() as busted:
+                if publication_failed:
+                    original = os.replace
+                    def fail_B(source, destination):
+                        if destination == discovery:
+                            raise OSError(errno.ENOSPC, "fixture file_sd volume full")
+                        return original(source, destination)
+                    busted.setattr(os, "replace", fail_B)
+                    with pytest.raises(PingError, match="publication_failed"):
+                        local.resolve_dns(ticket(), resolver.resolve("game.example.com"), inventory.dns_policy())
+                    assert local.list_targets()["publication"] == "pending"
+                else:
+                    assert local.resolve_dns(ticket(), resolver.resolve("game.example.com"), inventory.dns_policy())
+                assert inventory.observed(local.list_targets(), local)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
+            actual = next(row for row in inventory.active() if row["scrapePool"] == "custom-ping")
+            assert actual["labels"]["target_ip"] == a
+            assert int(actual["discoveredLabels"]["__meta_custom_ping_resolution_generation"]) == baseline["resolutionGeneration"]
+
+            dns_config["ips"] = [a]
+            assert local.resolve_dns(ticket(), resolver.resolve("game.example.com"), inventory.dns_policy())
+            current = local.list_targets()["targets"][0]
+            # Capture real old-A samples that are newer than the new A intent.
+            selector = '{job="custom-ping",__name__=~"up|probe_success"}'
+            named = 'label_replace(' + selector + ',"sampleMetric","$1","__name__","(.+)")'
+            expr = ('label_replace(' + named + ',"sampleType","value","job",".*") or '
+                    'label_replace(timestamp(' + named + '),"sampleType","time","job",".*")')
+            def captured_old_A():
+                body = prometheus_fetch(prom_name, "/api/v1/query?" + urlencode({"query": expr}))
+                samples = json.loads(body)["data"]["result"]
+                stamps = [float(item["value"][1]) for item in samples
+                          if item["metric"]["target_ip"] == a and item["metric"]["sampleType"] == "time"]
+                return body, stamps
+
+            old_body, timestamps = wait_for(captured_old_A,
+                                            lambda result: len(result[1]) == 2 and min(result[1]) > current["activatedAt"])
+            assert current["sampleNotBefore"] is None
+            query_body[0] = old_body.encode()
+            let_prometheus_read()
+            first = wait_for(lambda: inventory.observed(local.list_targets(), local)["dnsTargets"][0],
+                             lambda value: value["discoveredGeneration"] == current["resolutionGeneration"])
+            assert first["sampleNotBefore"] > max(timestamps)
+            assert first["pingStatus"] == "UNKNOWN"
+            query_body[0] = None
+            live = wait_for(lambda: inventory.observed(local.list_targets(), local)["dnsTargets"][0],
+                            lambda value: value["pingStatus"] == "UP")
+            assert live["sampleNotBefore"] == first["sampleNotBefore"]
+            expected_history.extend((b, a))
         dns_config["mode"] = "nxdomain"
         local.resolve_dns(ticket(), resolver.resolve("game.example.com"), inventory.dns_policy())
-        assert inventory.observed(local.list_targets())["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
-        wait_for(lambda: inventory.observed(local.list_targets()), lambda info: info["activeTargets"] == [])
-        assert [s["ip"] for s in local.resolution_history(created["id"])["segments"]] == [a, b, a]
+        let_prometheus_read()
+        assert inventory.observed(local.list_targets(), local)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
+        wait_for(lambda: inventory.observed(local.list_targets(), local), lambda info: info["activeTargets"] == [])
+        segments = local.resolution_history(created["id"])["segments"]
+        assert [s["ip"] for s in segments] == expected_history
+        assert all(s["sampleNotBefore"] is None for s in segments[3::2])
+        assert all(s["sampleNotBefore"] > s["start"] for s in segments[4::2])
     finally:
         docker("rm", "-f", "-v", prom_name, bb, peer, check=False)
         docker("network", "rm", net, check=False)
 
+
+
+@pytest.mark.parametrize("ttl,delay,expected", [(1, 2, "DNS_STALE"), (5, 6, "DNS_STALE"),
+                                               (5, 2, "DNS_OK")])
+def test_refresh_ttl_includes_inventory_and_commit_delay(store, clock, prom, dns_server, ttl, delay, expected):
+    resolver, config = dns_server
+    config.update(ttl=ttl, ips=["1.1.1.1"])
+    prom[0].allowed = ""
+    wall_start = clock[0]
+    ticks = [10.]
+    resolver.clock = lambda: ticks[0]
+    resolver.wall_clock = store.dns.clock
+    store.dns.monotonic = resolver.clock
+    create(store)
+
+    def delayed_inventory():
+        policy = prom[0].dns_policy()
+        clock[0] += delay
+        ticks[0] += delay
+        return policy
+
+    worker = Refresh(store, delayed_inventory, resolver)
+    try:
+        worker.tick()
+        next(iter(worker.pending.values())).result(5)
+    finally:
+        worker.stop()
+    row = store.list_targets()["targets"][0]
+    assert row["dnsStatus"] == expected
+    projected = json.loads(store.discovery.read_bytes())
+    if expected == "DNS_OK":
+        assert row["expiresAt"] == wall_start + ttl
+        assert projected[0]["targets"] == ["1.1.1.1"]
+    else:
+        assert projected == []
+
+
+@pytest.mark.parametrize("address,networks,allowed", [
+    ("10.70.11.0", ["10.70.11.0/24"], False),
+    ("10.70.11.255", ["10.70.11.0/24"], False),
+    ("10.70.11.0", ["10.70.11.0/24", "10.70.11.0/31"], True),
+    ("10.70.11.1", ["10.70.11.0/31"], True),
+    ("10.70.11.255", ["10.70.11.255/32"], True),
+    ("10.70.11.127", ["10.70.11.0/24", "10.70.11.0/25"], False),
+])
+def test_domain_cidr_uses_most_specific_prefix(store, clock, prom, address, networks, allowed):
+    prom[0].allowed = ""
+    create(store, private=networks)
+    store.resolve_dns(store.dns_due()[0], Answer((address,), 300), prom[0].dns_policy())
+    targets = json.loads(store.discovery.read_bytes())
+    assert [item["targets"][0] for item in targets] == ([address] if allowed else [])
+    assert store.list_targets()["targets"][0]["dnsStatus"] == ("DNS_OK" if allowed else "DNS_POLICY_BLOCKED")
+
+
+def test_http_dns_rename_requires_new_private_authorization(store, api):
+    _, request, headers, _ = api
+    row = create(store, private=["10.70.11.0/24"])
+    path = "/" + row["id"]
+    old_ticket = store.dns_due()[0]
+    status, same, _ = request("PATCH", path, {"kind": "dns", "address": "GAME.example.COM.", "name": "New"},
+                              edit_headers(headers, row["revision"]))
+    assert status == 200
+    assert same["target"]["privateCidrs"] == ["10.70.11.0/24"]
+    assert same["target"]["endpointRevision"] == row["endpointRevision"]
+    status, renamed, _ = request("PATCH", path, {"kind": "dns", "address": "other.example.com"},
+                                 edit_headers(headers, same["target"]["revision"]))
+    assert status == 200 and renamed["target"]["privateCidrs"] == []
+    assert not store.resolve_dns(old_ticket, Answer(("10.70.11.3",), 300), lambda _: None)
+    explicit = {"kind": "dns", "address": "third.example.com", "privateCidrs": ["10.70.11.3/32"]}
+    key = edit_headers(headers, renamed["target"]["revision"])
+    status, authorized, _ = request("PATCH", path, explicit, key)
+    assert status == 200 and authorized["target"]["privateCidrs"] == explicit["privateCidrs"]
+    assert request("PATCH", path, explicit, key)[1]["replayed"]
+
+
+
+def test_cname_followup_cannot_restart_earlier_ttl(store, clock, dns_server, prom):
+    resolver, config = dns_server
+    ticks = [10.]
+    def advance():
+        ticks[0] += 1.5
+        clock[0] += 1.5
+
+    resolver.clock = store.dns.monotonic = lambda: ticks[0]
+    resolver.wall_clock = store.dns.clock
+    config.update(mode="split", queries=[], advance=advance)
+    prom[0].allowed = ""
+    create(store)
+    worker = Refresh(store, prom[0].dns_policy, resolver)
+    try:
+        worker.tick()
+        next(iter(worker.pending.values())).result(5)
+    finally:
+        worker.stop()
+    assert config["queries"] == ["game.example.com.", "alias.example.com."]
+    assert store.list_targets()["targets"][0]["dnsError"] == "ttl_expired"
+    assert json.loads(store.discovery.read_bytes()) == []
+
+
+@pytest.mark.parametrize("phase", ["lock", "runtime_stage", "projection_stage"])
+def test_ttl_is_checked_at_lock_and_file_boundaries(store, clock, monkeypatch, phase):
+    from contextlib import contextmanager
+    from platform_api import custom_ping_store as storage
+
+    ticks = [10.]
+    store.dns.monotonic = lambda: ticks[0]
+    row = create(store)
+    ticket = store.dns_due()[0]
+    answer = Answer(("1.1.1.1",), 1, started_at=clock[0], started_monotonic=ticks[0])
+
+    def advance():
+        # Monotonic elapsed time remains authoritative if UTC did not advance.
+        ticks[0] += 2
+
+    if phase == "lock":
+        locked = store._locked
+        @contextmanager
+        def delayed_lock():
+            with locked():
+                advance()
+                yield
+        monkeypatch.setattr(store, "_locked", delayed_lock)
+    else:
+        module = runtime if phase == "runtime_stage" else storage
+        stage = module.staged_file
+        path = store.dns.path if phase == "runtime_stage" else store.discovery
+        @contextmanager
+        def delayed_stage(destination, data, mode):
+            with stage(destination, data, mode) as tmp:
+                if destination == path:
+                    advance()
+                yield tmp
+        monkeypatch.setattr(module, "staged_file", delayed_stage)
+
+    assert store.resolve_dns(ticket, answer, lambda _: None)
+    assert store.list_targets()["targets"][0]["dnsStatus"] == "DNS_STALE"
+    assert json.loads(store.discovery.read_bytes()) == []
+    if phase != "projection_stage":
+        assert store.resolution_history(row["id"])["segments"] == []
+
+
+def project_as_discovered(store, prom):
+    observed = []
+    for entry in json.loads(store.discovery.read_bytes()):
+        observed.append({"scrapePool": "custom-ping",
+                         "labels": {"custom_id": entry["labels"]["custom_id"], "target_ip": entry["targets"][0]},
+                         "health": "up",
+                         "discoveredLabels": {**entry["labels"], "__address__": entry["targets"][0]}})
+    prom[1][1:] = observed
+
+
+def metric_response(monkeypatch, prom, readings):
+    original = prom[0]._prometheus_data
+    def fetch(path):
+        if not path.startswith("/api/v1/query?"):
+            return original(path)
+        timestamp, success = readings()
+        samples = []
+        for target in prom[1][1:]:
+            labels = target["discoveredLabels"]
+            for metric, value in (("up", 1), ("probe_success", success)):
+                for kind, reading in (("value", value), ("time", timestamp)):
+                    samples.append({"metric": {"custom_id": labels["custom_id"], "target_ip": labels["__address__"],
+                                               "sampleMetric": metric, "sampleType": kind},
+                                    "value": [timestamp, str(reading)]})
+        return {"resultType": "vector", "result": samples}
+    monkeypatch.setattr(prom[0], "_prometheus_data", fetch)
+
+
+@pytest.mark.parametrize("failure,result,can_withdraw", [
+    ("write", Answer(error="nxdomain"), True),
+    ("replace", Answer(("169.254.169.254",), 300), True),
+    ("fsync", Answer(("1.1.1.3",), 300), True),
+    ("replace", Answer(error="nxdomain"), False),
+])
+def test_failed_runtime_transition_invalidates_only_affected_health(
+        store, clock, prom, api, monkeypatch, failure, result, can_withdraw):
+    from contextlib import contextmanager
+
+    _, request, _, _ = api
+    ticks = [10.]
+    store.dns.monotonic = lambda: ticks[0]
+    prom[0].allowed = ""
+    row = create(store)
+    other = create(store, "other.example.com")
+    store.change("POST", None, None, {**ITEM, "ip": "10.70.10.54"}, "admin", str(uuid4()), prom[0].check)
+    for ip in ("1.1.1.1", "1.1.1.2"):
+        store.resolve_dns(store.dns_due()[0], Answer((ip,), 300), prom[0].dns_policy())
+    project_as_discovered(store, prom)
+    metric_response(monkeypatch, prom, lambda: (clock[0] - .5, 1))
+    discover = lambda: {item["id"]: item for item in request("GET", "/discovery")[1]["dnsTargets"]}
+    assert discover()[row["id"]]["pingStatus"] == "UNKNOWN"
+    clock[0] += 241
+    assert all(discover()[target]["pingStatus"] == "UP" for target in (row["id"], other["id"]))
+    ticket = store.dns_due()[0]
+    manifest = store.manifest.read_bytes()
+    replace = os.replace
+
+    @contextmanager
+    def fail_write(*args):
+        raise OSError(errno.ENOSPC, "fixture write failed")
+        yield
+
+    def fail_sync(directory):
+        raise OSError(errno.ENOSPC, "fixture directory fsync failed")
+
+    def fail_replace(source, destination):
+        if failure == "replace" and destination == store.dns.path or not can_withdraw and destination == store.discovery:
+            raise OSError(errno.ENOSPC, "fixture replace failed")
+        return replace(source, destination)
+
+    with monkeypatch.context() as busted:
+        busted.setattr(os, "replace", fail_replace)
+        if failure == "write":
+            busted.setattr(runtime, "staged_file", fail_write)
+        if failure == "fsync":
+            busted.setattr(runtime, "sync_directory", fail_sync)
+        with pytest.raises(PingError, match="dns_commit_failed"):
+            store.resolve_dns(ticket, result, prom[0].dns_policy())
+        catalog = request("GET")[1]
+        assert catalog["targets"][0]["dnsError"] == "storage"
+        assert catalog["publication"] == ("published" if can_withdraw else "pending")
+        state = discover()
+        assert state[row["id"]]["pingStatus"] == "UNKNOWN" and state[row["id"]]["withdrawalPending"]
+        assert state[other["id"]]["pingStatus"] == "UP"
+        expected = {"1.1.1.2", "10.70.10.54"} | (set() if can_withdraw else {"1.1.1.1"})
+        assert {entry["targets"][0] for entry in json.loads(store.discovery.read_bytes())} == expected
+        # The previous target may still appear in Prometheus until its next SD update.
+        if can_withdraw:
+            project_as_discovered(store, prom)
+            assert not discover()[row["id"]]["withdrawalPending"]
+        try:
+            store.reconcile()
+        except PingError:
+            pass
+        assert {entry["targets"][0] for entry in json.loads(store.discovery.read_bytes())} == expected
+
+    assert store.manifest.read_bytes() == manifest
+    assert store.resolution_history(row["id"])["segments"][0]["end"] is not None
+    restarted = PingStore(store.manifest.parent, store.discovery)
+    restarted.dns.clock = store.dns.clock
+    restart_snapshot = restarted.list_targets()
+    assert restart_snapshot["targets"][0]["dnsStatus"] != "DNS_OK"
+    assert prom[0].observed(restart_snapshot, restarted)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
+    restarted.reconcile()
+    assert [entry["targets"][0] for entry in json.loads(store.discovery.read_bytes())] == ["10.70.10.54"]
+    # A fresh verified answer can recover after storage is writable.
+    tickets = {ticket["id"]: ticket for ticket in restarted.dns_due()}
+    recovery = tickets.get(row["id"])
+    if recovery is None:
+        clock[0] += 31
+        recovery = next(t for t in restarted.dns_due() if t["id"] == row["id"])
+    assert restarted.resolve_dns(recovery, Answer(("1.1.1.4",), 300), prom[0].dns_policy())
+    assert restarted.list_targets()["targets"][0]["resolvedIp"] == "1.1.1.4"
+
+
+def test_history_byte_limit_keeps_seven_day_history_and_withdraws(store, clock, monkeypatch):
+    from platform_api.custom_ping_store import encode_json
+
+    row = create(store)
+    refresh(store)
+    before = store.resolution_history(row["id"])["segments"]
+    state = store.dns.read(required=True)
+    # Exhaust only the history budget while leaving the reserved close/error space.
+    cap = len(encode_json({**state, "rows": {}})) + runtime.RUNTIME_RESERVE_BYTES + runtime.OPEN_SEGMENT_RESERVE_BYTES
+    monkeypatch.setattr(runtime, "MAX_BYTES", cap)
+    clock[0] += 241
+    result = refresh(store, ("1.1.1.2",))
+    assert result["dnsError"] == "history_capacity" and result["dnsStatus"] == "DNS_ERROR"
+    assert json.loads(store.discovery.read_bytes()) == []
+    segments = store.resolution_history(row["id"])["segments"]
+    assert len(segments) == 1 and segments[0]["ip"] == before[0]["ip"]
+    assert segments[0]["end"] == clock[0]
+    clock[0] += runtime.RETENTION - 1
+    store.reconcile()
+    assert store.resolution_history(row["id"])["segments"] == segments
+
+
+@pytest.mark.parametrize("name", ["localhost", "node.localhost", "node.local", "NODE.LOCAL."])
+def test_dns_api_refuses_local_resolution_suffixes(api, name):
+    _, request, headers, _ = api
+    status, _, _ = request("POST", body={"kind": "dns", "address": name, "name": "Local", "group": "Remote"},
+                           headers=edit_headers(headers))
+    assert status == 400
+
+
+
+def test_late_targets_and_metrics_cannot_confirm_superseded_generation(store, clock, prom, monkeypatch):
+    row = create(store)
+    refresh(store)
+    project_as_discovered(store, prom)
+    original_active = prom[0].active
+    old_snapshot = store.list_targets()
+    old_active = original_active()
+    clock[0] += 241
+    refresh(store, ("1.1.1.2",))
+    clock[0] += 241
+    current = refresh(store)
+    project_as_discovered(store, prom)
+
+    metric_response(monkeypatch, prom, lambda: (clock[0] - .5, 1))
+    latest = prom[0].observed(store.list_targets(), store)["dnsTargets"][0]
+    assert latest["pingStatus"] == "UNKNOWN"
+    boundary = latest["sampleNotBefore"]
+    with monkeypatch.context() as delayed:
+        delayed.setattr(prom[0], "active", lambda: old_active)
+        old = prom[0].observed(old_snapshot, store)["dnsTargets"][0]
+        assert old["discoveredGeneration"] is None and old["pingStatus"] == "UNKNOWN"
+
+    clock[0] += 2
+    recent = prom[0].observed(store.list_targets(), store)["dnsTargets"][0]
+    assert recent["pingStatus"] == "UP" and recent["sampleNotBefore"] == boundary
+    segment = store.resolution_history(row["id"])["segments"][-1]
+    assert segment["generation"] == current["resolutionGeneration"]
+    assert segment["start"] <= segment["sampleNotBefore"] == boundary
+
+    fetch = prom[0]._prometheus_data
+    def delayed_metrics(path):
+        data = fetch(path)
+        if path.startswith("/api/v1/query?"):
+            store.change("PATCH", row["id"], row["revision"], {"enabled": False},
+                         "admin", str(uuid4()), lambda _: None)
+        return data
+
+    monkeypatch.setattr(prom[0], "_prometheus_data", delayed_metrics)
+    data = prom[0].observed(store.list_targets(), store)["dnsTargets"][0]
+    assert data["pingStatus"] == "UNKNOWN" and data["discoveredGeneration"] is None
+    assert json.loads(store.discovery.read_bytes()) == []

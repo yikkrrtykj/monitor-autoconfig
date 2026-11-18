@@ -171,21 +171,16 @@ def validate_manifest(manifest: dict) -> None:
         raise ValueError("duplicate custom Ping receipt")
 
 
+def discovery_entry(row: dict) -> dict:
+    labels = {"custom_id": row["id"], "display_name": row["name"], "custom_group": row["group"],
+              "__meta_custom_ping_revision": str(row["revision"])}
+    if "resolutionGeneration" in row:
+        labels["__meta_custom_ping_resolution_generation"] = str(row["resolutionGeneration"])
+    return {"targets": [row["ip"]], "labels": labels}
+
+
 def discovery_bytes(manifest: dict) -> bytes:
-    return encode_json([
-        {
-            "targets": [row["ip"]],
-            "labels": {
-                "custom_id": row["id"],
-                "display_name": row["name"],
-                "custom_group": row["group"],
-                "__meta_custom_ping_revision": str(row["revision"]),
-                **({"__meta_custom_ping_resolution_generation": str(row["resolutionGeneration"])}
-                   if "resolutionGeneration" in row else {}),
-            },
-        }
-        for row in manifest["targets"] if row["enabled"]
-    ])
+    return encode_json([discovery_entry(row) for row in manifest["targets"] if row["enabled"]])
 
 
 def read_bounded(path: Path) -> bytes | None:
@@ -281,10 +276,11 @@ class PingStore:
         except (ValueError, OSError):
             return False
 
-    def _projection(self, manifest: dict) -> dict:
+    def _projection(self, manifest: dict, state: dict | None = None) -> dict:
         if manifest["schema"] == 1:
             return manifest
-        state = self.dns.read(required=True)
+        if state is None:
+            state = self.dns.read(required=True)
         rows = []
         now = self.dns.clock()
         for row in manifest["targets"]:
@@ -297,8 +293,8 @@ class PingStore:
                              "resolutionGeneration": view["resolutionGeneration"]})
         return {**manifest, "targets": rows}
 
-    def _status(self, manifest: dict) -> dict:
-        matched = self._publication_matches(discovery_bytes(self._projection(manifest)))
+    def _status(self, manifest: dict, state: dict | None = None) -> dict:
+        matched = self._publication_matches(discovery_bytes(self._projection(manifest, state)))
         return {
             "revision": manifest["revision"],
             "publishedRevision": manifest["revision"] if matched else None,
@@ -309,44 +305,66 @@ class PingStore:
         with self._locked():
             manifest, _ = self._read()
             targets = manifest["targets"]
+            state = None
             if manifest["schema"] == 2:
                 state = self.dns.read(required=True)
                 now = self.dns.clock()
                 targets = [{**row, **self.dns.view(row, state, now)} if row.get("kind") == "dns" else row
                            for row in targets]
-            result = {"ok": True, "targets": targets, **self._status(manifest)}
+            result = {"ok": True, "targets": targets, **self._status(manifest, state)}
             if manifest["schema"] == 2:
                 result["manifestRevision"] = manifest["revision"]
                 result["dnsEnabled"] = self.dns_enabled
             return result
 
+    def _publish(self, manifest: dict, state: dict | None = None) -> None:
+        if state is None and manifest["schema"] == 2:
+            state = self.dns.read(required=True)
+        expected = discovery_bytes(self._projection(manifest, state))
+        try:
+            self.discovery.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            while not self._publication_matches(expected):
+                with staged_file(self.discovery, expected, 0o644) as temporary:
+                    # fsync and staging can outlive a short lease. Under the lock
+                    # only expiration can change this projection between checks.
+                    current = discovery_bytes(self._projection(manifest, state))
+                    if current == expected:
+                        os.replace(temporary, self.discovery)
+                        break
+                    expected = current
+            sync_directory(self.discovery.parent)
+        except OSError as exc:
+            raise PingError(503, "custom_ping_publication_failed") from exc
+
     def reconcile(self) -> None:
         with self._locked():
             manifest, _ = self._read()
+            state = None
             if manifest["schema"] == 2:
+                self.dns.prune(manifest)
                 state = self.dns.read(required=True)
-                updated = self.dns.maintain(manifest, state, self.dns.clock())
+            # Keep the manifest durable before publishing its projection, then
+            # withdraw before any runtime history maintenance writes.
+            try:
+                sync_directory(self.manifest.parent)
+            except OSError as exc:
+                raise PingError(503, "custom_ping_publication_failed") from exc
+            self._publish(manifest, state)
+            if state is not None:
+                now = self.dns.clock()
+                updated = self.dns.maintain(manifest, state, now)
                 if not self.dns_enabled:
+                    self.dns.leases.clear()
                     for saved in updated["rows"].values():
                         if saved["status"] == "DNS_OK":
                             updated["generation"] += 1
-                            saved.update(status="DNS_STALE", error="paused", expiresAt=self.dns.clock(),
-                                         nextRefreshAt=self.dns.clock(), generation=updated["generation"])
+                            saved.update(status="DNS_STALE", error="paused", expiresAt=now,
+                                         nextRefreshAt=now, generation=updated["generation"])
                     for segment in updated["segments"]:
                         if segment["end"] is None:
-                            segment["end"] = max(segment["start"], self.dns.clock())
+                            segment["end"] = max(segment["start"], now)
                 if updated != state:
                     self.dns.write(updated)
-            expected = discovery_bytes(self._projection(manifest))
-            try:
-                sync_directory(self.manifest.parent)
-                self.discovery.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-                if not self._publication_matches(expected):
-                    with staged_file(self.discovery, expected, 0o644) as temporary:
-                        os.replace(temporary, self.discovery)
-                sync_directory(self.discovery.parent)
-            except OSError as exc:
-                raise PingError(503, "custom_ping_publication_failed") from exc
 
     def _commit(self, manifest: dict, previous: bytes | None) -> bool:
         # Prepare all writes on their own filesystems before committing the manifest.
@@ -360,7 +378,8 @@ class PingStore:
         with ExitStack() as staged:
             try:
                 self.discovery.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-                discovery = staged.enter_context(staged_file(self.discovery, discovery_bytes(self._projection(manifest)), 0o644))
+                projection = discovery_bytes(self._projection(manifest))
+                discovery = staged.enter_context(staged_file(self.discovery, projection, 0o644))
                 current = staged.enter_context(staged_file(self.manifest, encoded, 0o600))
                 if previous is not None:
                     backup = staged.enter_context(staged_file(self.backup, previous, 0o600))
@@ -371,9 +390,12 @@ class PingStore:
                 raise PingError(503, "custom_ping_commit_failed") from exc
             try:
                 sync_directory(self.manifest.parent)
-                os.replace(discovery, self.discovery)
-                sync_directory(self.discovery.parent)
-            except OSError:
+                if projection == discovery_bytes(self._projection(manifest)):
+                    os.replace(discovery, self.discovery)
+                    sync_directory(self.discovery.parent)
+                else:
+                    self._publish(manifest)
+            except (OSError, PingError):
                 LOG.warning("custom_ping publication_pending revision=%d", manifest["revision"])
                 return False
         return True
@@ -408,6 +430,8 @@ class PingStore:
                 after = {**base, **changes, "updatedAt": now, "revision": revision}
                 if changes.get("kind") == "dns":
                     after.pop("ip", None)
+                    if not before or before.get("address") != after["address"]:
+                        after["privateCidrs"] = changes.get("privateCidrs", [])
                     after.setdefault("privateCidrs", [])
                 elif "ip" in changes:
                     after = {k: v for k, v in after.items() if k in TARGET_KEYS}
@@ -448,6 +472,7 @@ class PingStore:
             }
             validate_manifest(candidate)
             published = self._commit(candidate, previous)
+            self.dns.prune(candidate)
             LOG.info("custom_ping committed %s", encode_json({
                 "actor": actor, "action": action, "time": now, "id": (after or before)["id"],
                 "before_ip": before.get("ip", before.get("address")) if before else None,
@@ -458,6 +483,11 @@ class PingStore:
                 "revision": revision, "publishedRevision": revision if published else None,
                 "publication": "published" if published else "pending",
             })
+
+    def _dns_digest(self, row, saved) -> str:
+        failure = self.dns.failure(row)
+        payload = [saved, failure.retry_at] if failure else saved
+        return hashlib.sha256(encode_json(payload)).hexdigest()
 
     def dns_due(self) -> list[dict]:
         if not self.dns_enabled:
@@ -472,34 +502,86 @@ class PingStore:
             for row in manifest["targets"]:
                 if row.get("kind") != "dns" or not row["enabled"]:
                     continue
-                saved = state["rows"].get(row["id"])
-                if (not saved or (saved["address"], saved["endpointRevision"]) != (
-                        row["address"], row["endpointRevision"]) or saved["nextRefreshAt"] <= now):
-                    due.append({**row, "_runtimeDigest": hashlib.sha256(encode_json(saved)).hexdigest()})
+                identity = row["id"]
+                saved = state["rows"].get(identity)
+                failure = self.dns.failure(row)
+                if failure:
+                    if self.dns.monotonic() < failure.retry_at:
+                        continue
+                elif saved and (saved["address"], saved["endpointRevision"]) == (
+                        row["address"], row["endpointRevision"]):
+                    lease = self.dns.leases.get(identity)
+                    if saved["status"] == "DNS_OK":
+                        if (lease and lease.generation == saved["generation"]
+                                and saved["nextRefreshAt"] > now and lease.refresh_at > self.dns.monotonic()):
+                            continue
+                    elif saved["nextRefreshAt"] > now >= saved["expiresAt"]:
+                        continue
+                due.append({**row, "_runtimeDigest": self._dns_digest(row, saved)})
             return due
 
     def resolve_dns(self, ticket, answer, check_address) -> bool:
+        started = self.dns.monotonic()
+        answer = answer.measured_at(self.dns.clock(), started)
         with self._locked():
             manifest, _ = self._read()
             row = next((r for r in manifest["targets"] if r["id"] == ticket["id"]), None)
-            state = self.dns.read(required=True)
-            expected_runtime = hashlib.sha256(encode_json(state["rows"].get(ticket["id"]))).hexdigest()
             intent = {k: v for k, v in ticket.items() if k != "_runtimeDigest"}
-            if (not self.dns_enabled or row != intent or not row["enabled"]
-                    or ticket.get("_runtimeDigest") != expected_runtime):
+            if not self.dns_enabled or row != intent or not row["enabled"]:
                 return False
-            self.dns.apply(manifest, row, answer, check_address)
-            # The authoritative runtime is durable first. A cross-volume failure
-            # leaves publication pending, and the same projector retries it.
-            expected = discovery_bytes(self._projection(manifest))
+            state = self.dns.read(required=True)
+            expected_runtime = self._dns_digest(row, state["rows"].get(row["id"]))
+            if ticket.get("_runtimeDigest") != expected_runtime:
+                return False
             try:
-                self.discovery.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-                with staged_file(self.discovery, expected, 0o644) as temporary:
-                    os.replace(temporary, self.discovery)
-                sync_directory(self.discovery.parent)
-            except OSError as exc:
-                raise PingError(503, "custom_ping_publication_failed") from exc
+                updated = self.dns.apply(manifest, state, row, answer, check_address)
+            except PingError:
+                # Even if replace succeeded before fsync failed, that row is
+                # untrusted. Project all other rows from the last readable copy.
+                self.dns.invalidate(row)
+                try:
+                    self._publish(manifest, state)
+                except PingError:
+                    LOG.warning("custom_ping dns_withdrawal_pending id=%s", row["id"])
+                raise
+            self._publish(manifest, updated)
             return True
+
+    def observed_dns(self, candidates: dict, *, confirm: bool = False) -> dict:
+        """Revalidate scrape identities after I/O and record their first discovery time."""
+        if not candidates:
+            return {}
+        with self._locked():
+            manifest, _ = self._read()
+            if manifest["schema"] != 2 or not self.dns_enabled:
+                return {}
+            state = self.dns.read(required=True)
+            try:
+                published = decode_json(read_bounded(self.discovery) or b"[]")
+                entries = {entry["labels"]["custom_id"]: entry for entry in published}
+            except (OSError, ValueError, KeyError, TypeError, RecursionError):
+                return {}
+            now = self.dns.clock()
+            views = {}
+            for row in self._projection(manifest, state)["targets"]:
+                identity = row["id"]
+                if row.get("kind") != "dns" or (
+                        row["ip"], row["revision"], row["resolutionGeneration"]) != candidates.get(identity):
+                    continue
+                if entries.get(identity) == discovery_entry(row):
+                    views[identity] = row
+            if confirm and views:
+                try:
+                    self.dns.confirm(state, {identity: self.dns.leases[identity] for identity in views}, now)
+                except PingError as exc:
+                    LOG.warning("custom_ping dns_sample_boundary_pending code=%s", exc.code)
+            now = self.dns.clock()
+            result = {}
+            for identity, row in views.items():
+                view = self.dns.view(row, state, now)
+                if view["dnsStatus"] == "DNS_OK":
+                    result[identity] = view
+            return result
 
     def resolution_history(self, identity: str, cursor: int = 0) -> dict:
         with self._locked():

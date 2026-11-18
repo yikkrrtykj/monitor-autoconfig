@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from ipaddress import IPv4Address, IPv4Network
 import logging
 import re
@@ -25,6 +25,13 @@ def hostname(value: str) -> str:
     return name
 
 
+def probe_hostname(value: str) -> str:
+    name = hostname(value)
+    if name.rsplit(".", 1)[-1] in {"local", "localhost"}:
+        raise ValueError("unsupported DNS suffix")
+    return name
+
+
 def private_cidrs(value) -> list[str]:
     if not isinstance(value, list) or len(value) > 16 or any(not isinstance(v, str) for v in value):
         raise ValueError("invalid private CIDRs")
@@ -43,13 +50,21 @@ class Answer:
     ips: tuple[str, ...] = ()
     ttl: int = 0
     error: str = ""
+    started_at: float | None = None
+    started_monotonic: float | None = None
+
+    def measured_at(self, wall: float, monotonic: float) -> Answer:
+        if self.started_monotonic is not None:
+            return self
+        return replace(self, started_at=wall, started_monotonic=monotonic)
 
 
 class Resolver:
-    def __init__(self, nameservers=None, port: int = 53, clock=time.monotonic):
+    def __init__(self, nameservers=None, port: int = 53, clock=time.monotonic, wall_clock=time.time):
         self.nameservers = nameservers
         self.port = port
         self.clock = clock
+        self.wall_clock = wall_clock
 
     def resolve(self, name: str) -> Answer:
         import dns.exception
@@ -57,16 +72,17 @@ class Resolver:
         import dns.resolver
 
         started = self.clock()
+        wall_started = self.wall_clock()
         resolver = dns.resolver.Resolver(configure=self.nameservers is None)
         if self.nameservers is not None:
             resolver.nameservers = self.nameservers
         resolver.port = self.port
         resolver.cache = None
-        current = hostname(name)
-        seen = {current}
         ttl = 2**31 - 1
         hops = 0
         try:
+            current = probe_hostname(name)
+            seen = {current}
             while True:
                 remaining = 2 - (self.clock() - started)
                 if remaining <= 0:
@@ -81,7 +97,8 @@ class Resolver:
                         links[rrset.name.to_text().lower().rstrip(".")] = (
                             rrset[0].target.to_text().lower().rstrip("."), rrset.ttl)
                 while current in links:
-                    current, link_ttl = links[current]
+                    target, link_ttl = links[current]
+                    current = probe_hostname(target)
                     hops += 1
                     if current in seen or hops > 8:
                         return Answer(error="cname_limit")
@@ -91,7 +108,8 @@ class Resolver:
                     if len(answer.rrset) > MAX_ANSWERS:
                         return Answer(error="answer_limit")
                     ips = tuple(sorted({str(IPv4Address(rr.address)) for rr in answer}, key=IPv4Address))
-                    return Answer(ips, max(0, min(ttl, answer.rrset.ttl)))
+                    return Answer(ips, max(0, min(ttl, answer.rrset.ttl)),
+                                  started_at=wall_started, started_monotonic=started)
                 if not links:
                     return Answer(error="no_a")
         except dns.resolver.NXDOMAIN:
@@ -134,7 +152,9 @@ class Refresh:
 
     def _resolve(self, row: dict) -> None:
         try:
-            answer = self.resolver.resolve(row["address"])
+            started = self.store.dns.monotonic()
+            wall_started = self.store.dns.clock()
+            answer = self.resolver.resolve(row["address"]).measured_at(wall_started, started)
         except Exception:
             answer = Answer(error="resolver_error")
         try:

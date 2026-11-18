@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import urlopen
 
 from . import auth
-from .custom_ping_dns import Refresh, hostname, private_cidrs
+from .custom_ping_dns import Refresh, private_cidrs, probe_hostname
 from .custom_ping_store import (
     GROUPS, JOB, PingError, PingStore, decode_json, timestamp, valid_id, valid_name, validate_ip,
 )
@@ -106,7 +106,7 @@ def validate_changes(data: dict, create: bool) -> dict:
                     data = {**data, "ip": validate_ip(data["address"])}
                     del data["kind"], data["address"]
                 elif data["kind"] == "dns":
-                    data["address"] = hostname(data["address"])
+                    data["address"] = probe_hostname(data["address"])
                 else:
                     raise ValueError("invalid target kind")
             if "privateCidrs" in data:
@@ -229,7 +229,7 @@ class TargetInventory:
             if address == existing:
                 raise PingError(409, "custom_ping_duplicate_ip", source=source)
 
-    def observed(self, snapshot: dict) -> dict:
+    def observed(self, snapshot: dict, store: PingStore | None = None) -> dict:
         current = {row["id"]: row for row in snapshot["targets"] if row["enabled"] and (
             row.get("kind") != "dns" or snapshot.get("dnsEnabled", True) and row["dnsStatus"] == "DNS_OK")}
         active = [row for row in self.active() if row["scrapePool"] == JOB]
@@ -265,12 +265,21 @@ class TargetInventory:
                   "discoveredRevision": snapshot["revision"] if matched else None, "activeTargets": observed}
         dns = [row for row in snapshot["targets"] if row.get("kind") == "dns"]
         if dns:
-            result["dnsTargets"] = self.dns_status(dns, observed, matched, snapshot.get("dnsEnabled", True))
+            result["dnsTargets"] = self.dns_status(dns, observed, store, snapshot.get("dnsEnabled", True))
         return result
 
-    def dns_status(self, targets, observed, matched, enabled):
+    def dns_status(self, targets, observed, store, enabled):
+        found = {row["id"]: row for row in observed}
+        candidates = {}
+        for row in targets:
+            actual = found.get(row["id"])
+            if (enabled and actual and row["enabled"] and row["dnsStatus"] == "DNS_OK"
+                    and (actual["ip"], actual["revision"], actual.get("resolutionGeneration"))
+                    == (row["resolvedIp"], row["revision"], row["resolutionGeneration"])):
+                candidates[row["id"]] = (actual["ip"], actual["revision"], actual["resolutionGeneration"])
+        confirmed = store.observed_dns(candidates, confirm=True) if store else {}
         readings = {}
-        if matched and enabled and any(row["enabled"] and row["dnsStatus"] == "DNS_OK" for row in targets):
+        if any(row["sampleNotBefore"] is not None for row in confirmed.values()):
             selector = '{job="custom-ping",__name__=~"up|probe_success|probe_icmp_duration_seconds"}'
             named = 'label_replace(' + selector + ',"sampleMetric","$1","__name__","(.+)")'
             try:
@@ -289,26 +298,30 @@ class TargetInventory:
                     readings.setdefault(key, {})[metric["sampleType"]] = float(sample["value"][1])
             except (PingError, OSError, HTTPException, KeyError, ValueError, TypeError, OverflowError, RecursionError):
                 readings = {}
-        now = time.time()
+        # A targets or metrics response delayed across a configuration/lease
+        # change cannot supply health for the superseded DNS generation.
+        current = store.observed_dns(candidates) if confirmed else {}
+        now = store.dns.clock() if store else time.time()
         result = []
         for row in targets:
-            status = "UNKNOWN"
-            ready = enabled and matched and row["enabled"] and row["dnsStatus"] == "DNS_OK"
+            identity = row["id"]
+            view = current.get(identity, {})
+            boundary = view.get("sampleNotBefore")
             ip = row["resolvedIp"]
-            values = [readings.get((row["id"], ip, name), {}) for name in ("up", "probe_success")]
-            fresh = all(math.isfinite(v.get("value", math.nan)) and
-                        math.isfinite(v.get("time", math.nan)) and
-                        row["sampleNotBefore"] <= v["time"] <= now and now - v["time"] <= 10
-                        for v in values)
-            if (ready and row["expiresAt"] > now and fresh and values[0]["value"] == 1
-                    and values[0]["time"] == values[1]["time"]):
+            values = [readings.get((identity, ip, name), {}) for name in ("up", "probe_success")]
+            status = "UNKNOWN"
+            fresh = boundary is not None and all(
+                math.isfinite(v.get("value", math.nan)) and math.isfinite(v.get("time", math.nan))
+                and boundary < v["time"] <= now and now - v["time"] <= 10 for v in values)
+            if fresh and view["expiresAt"] > now and values[0]["value"] == 1 and values[0]["time"] == values[1]["time"]:
                 status = {0.0: "DOWN", 1.0: "UP"}.get(values[1]["value"], "UNKNOWN")
-            found = next((r for r in observed if r["id"] == row["id"]), {})
-            result.append({"id": row["id"], "dnsStatus": row["dnsStatus"], "resolvedIp": ip,
+            withdraw = not enabled or not row["enabled"] or row["dnsStatus"] != "DNS_OK"
+            result.append({"id": identity, "dnsStatus": row["dnsStatus"], "resolvedIp": ip,
                            "resolutionGeneration": row["resolutionGeneration"],
-                           "discoveredGeneration": found.get("resolutionGeneration") if ready else None,
-                           "sampleNotBefore": row["sampleNotBefore"], "pingStatus": status,
-                           "discoveryStatus": "DISCOVERED" if ready else "DISCOVERY_PENDING"})
+                           "discoveredGeneration": view.get("resolutionGeneration"),
+                           "sampleNotBefore": boundary, "pingStatus": status,
+                           "withdrawalPending": withdraw and identity in found,
+                           "discoveryStatus": "DISCOVERED" if view else "DISCOVERY_PENDING"})
         return result
 
 
@@ -327,17 +340,18 @@ class CustomPingAPI:
 
     def start_reconciliation(self) -> None:
         def loop():
-            last_error = None
             wait = threading.Event()
+            tasks = (self.store.reconcile, self.dns_refresh.tick)
+            last_errors = {}
             while True:
-                try:
-                    self.store.reconcile()
-                    self.dns_refresh.tick()
-                    last_error = None
-                except PingError as exc:
-                    if exc.code != last_error:
-                        LOG.warning("custom_ping reconciliation_failed code=%s", exc.code)
-                    last_error = exc.code
+                for task in tasks:
+                    try:
+                        task()
+                        last_errors.pop(task, None)
+                    except PingError as exc:
+                        if exc.code != last_errors.get(task):
+                            LOG.warning("custom_ping reconciliation_failed code=%s", exc.code)
+                        last_errors[task] = exc.code
                 wait.wait(1 if self.store.dns.path.exists() else 10)
 
         threading.Thread(target=loop, name="custom-ping-discovery", daemon=True).start()
@@ -383,7 +397,7 @@ class CustomPingAPI:
                 if path == BASE:
                     handler._send_json(self.store.list_targets())
                 elif path == BASE + "/discovery":
-                    handler._send_json(self.inventory.observed(self.store.list_targets()))
+                    handler._send_json(self.inventory.observed(self.store.list_targets(), self.store))
                 elif path.endswith("/resolutions") and valid_id(path.removeprefix(BASE + "/").removesuffix("/resolutions")):
                     query = parse_qs(urlsplit(handler.path).query, keep_blank_values=True)
                     cursor = query.get("cursor", ["0"])

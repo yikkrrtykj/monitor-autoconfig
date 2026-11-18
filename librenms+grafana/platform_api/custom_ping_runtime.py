@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime
 from ipaddress import IPv4Address, IPv4Network
-import math
 import logging
+import math
 import os
 import time
 
-from .custom_ping_dns import PRIVATE, signature
+from .custom_ping_dns import Answer, PRIVATE, signature
 from .custom_ping_store import (
     PingError, decode_json, encode_json, staged_file, sync_directory, valid_id, validate_ip,
 )
@@ -16,12 +18,16 @@ from .custom_ping_store import (
 LOG = logging.getLogger("platform_api.custom_ping")
 MAX_BYTES = 32 * 1024 * 1024
 MAX_SEGMENTS = 100000
+# 300 rows at <2 KiB each, plus the generation and JSON envelope.
+RUNTIME_RESERVE_BYTES = 1024 * 1024
+# Each open segment can gain two finite JSON timestamps in place of null.
+OPEN_SEGMENT_RESERVE_BYTES = 64
 RETENTION = 7 * 86400
 FIELDS = {"address", "endpointRevision", "status", "error", "ips", "ip", "expiresAt", "resolvedAt",
           "nextRefreshAt", "failures", "generation", "activatedAt"}
 STATUSES = {"DNS_OK", "DNS_ERROR", "DNS_POLICY_BLOCKED", "DNS_STALE"}
 ERRORS = {"", "timeout", "nxdomain", "servfail", "no_a", "cname_limit", "answer_limit",
-          "invalid_response", "resolver_error", "policy", "inventory", "ttl_zero", "history_capacity", "paused"}
+          "invalid_response", "resolver_error", "policy", "inventory", "ttl_zero", "ttl_expired", "history_capacity", "paused"}
 
 
 def finite(value):
@@ -50,22 +56,61 @@ def validate(state):
     seen = set()
     for segment in state["segments"]:
         if (not isinstance(segment, dict)
-                or segment.keys() != {"id", "address", "ip", "generation", "start", "end"}
+                or segment.keys() - {"sampleNotBefore"} != {"id", "address", "ip", "generation", "start", "end"}
                 or not valid_id(segment["id"]) or not isinstance(segment["address"], str)
                 or len(segment["address"]) > 253 or validate_ip(segment["ip"]) != segment["ip"]
                 or type(segment["generation"]) is not int
                 or not 0 < segment["generation"] <= state["generation"]
                 or segment["generation"] in seen or not finite(segment["start"])
+                or segment.get("sampleNotBefore") is not None and (
+                    not finite(segment["sampleNotBefore"]) or segment["sampleNotBefore"] < segment["start"])
                 or segment["end"] is not None and (
                     not finite(segment["end"]) or segment["end"] < segment["start"])):
             raise ValueError("invalid DNS history segment")
         seen.add(segment["generation"])
 
 
+@dataclass
+class Lease:
+    generation: int
+    deadline: float
+    refresh_at: float
+    sample_not_before: float | None = None
+
+
+@dataclass(frozen=True)
+class WriteFailure:
+    endpoint: tuple
+    ended_at: float
+    retry_at: float
+
+
 class DNSState:
-    def __init__(self, path, clock=time.time):
+    def __init__(self, path, clock=time.time, monotonic=time.monotonic):
         self.path = path
         self.clock = clock
+        self.monotonic = monotonic
+        # The disk state keeps history across restarts. Only DNS answers verified
+        # by this process may publish or attest to a current endpoint.
+        self.leases: dict[str, Lease] = {}
+        self.failures: dict[str, WriteFailure] = {}
+
+    def failure(self, row):
+        failure = self.failures.get(row["id"])
+        return failure if failure and failure.endpoint == signature(row) else None
+
+    def invalidate(self, row):
+        previous = self.failure(row)
+        now = self.clock()
+        self.leases.pop(row["id"], None)
+        ended_at = previous.ended_at if previous else now
+        self.failures[row["id"]] = WriteFailure(signature(row), ended_at, self.monotonic() + 30)
+
+    def prune(self, manifest):
+        active = {row["id"]: row for row in manifest["targets"] if row.get("kind") == "dns" and row["enabled"]}
+        self.leases = {identity: lease for identity, lease in self.leases.items() if identity in active}
+        self.failures = {identity: failure for identity, failure in self.failures.items()
+                         if identity in active and failure.endpoint == signature(active[identity])}
 
     def read(self, required=False):
         try:
@@ -86,31 +131,69 @@ class DNSState:
         except (ValueError, KeyError, TypeError, RecursionError) as exc:
             raise PingError(503, "custom_ping_dns_state_unavailable") from exc
 
-    def write(self, state):
+    def write(self, state, *, still_valid=None) -> bool:
         validate(state)
         encoded = encode_json(state)
         if len(encoded) > MAX_BYTES:
             raise PingError(409, "custom_ping_dns_storage_limit")
         try:
             with staged_file(self.path, encoded, 0o600) as temporary:
+                if still_valid is not None and not still_valid():
+                    return False
                 os.replace(temporary, self.path)
             sync_directory(self.path.parent)
         except OSError as exc:
             raise PingError(503, "custom_ping_dns_commit_failed") from exc
+        return True
 
     def view(self, row, state, now):
-        saved = state["rows"].get(row["id"])
-        if not saved or (saved["address"], saved["endpointRevision"]) != (
-                row["address"], row["endpointRevision"]):
-            return {"dnsStatus": "DNS_PENDING", "resolvedIp": None, "aCount": 0,
-                    "resolutionGeneration": None, "sampleNotBefore": None,
-                    "resolvedAt": None, "expiresAt": None, "dnsError": ""}
-        status = saved["status"]
-        if status == "DNS_OK" and (saved["expiresAt"] <= now or saved["resolvedAt"] > now):
-            status = "DNS_STALE"
+        identity = row["id"]
+        saved = state["rows"].get(identity)
+        failure = self.failure(row)
+        empty = {"resolvedIp": None, "aCount": 0, "resolutionGeneration": None,
+                 "activatedAt": None, "sampleNotBefore": None, "resolvedAt": None, "expiresAt": None}
+        if not saved or signature(row) != (identity, saved["address"], saved["endpointRevision"]):
+            return {**empty, "dnsStatus": "DNS_ERROR" if failure else "DNS_PENDING",
+                    "dnsError": "storage" if failure else ""}
+        status, error = saved["status"], saved["error"]
+        lease = self.leases.get(identity)
+        if failure:
+            status, error = "DNS_ERROR", "storage"
+        elif status == "DNS_OK":
+            if not lease or lease.generation != saved["generation"]:
+                status, error = "DNS_STALE", "restart_pending"
+            elif (lease.deadline <= self.monotonic() or saved["expiresAt"] <= now
+                  or saved["resolvedAt"] > now):
+                # A wall clock correction cannot revive a withdrawn lease.
+                lease.deadline = 0
+                status, error = "DNS_STALE", "ttl_expired"
         return {"dnsStatus": status, "resolvedIp": saved["ip"], "aCount": len(saved["ips"]),
-                "resolutionGeneration": saved["generation"], "sampleNotBefore": saved["activatedAt"],
-                "resolvedAt": saved["resolvedAt"], "expiresAt": saved["expiresAt"], "dnsError": saved["error"]}
+                "resolutionGeneration": saved["generation"], "activatedAt": saved["activatedAt"],
+                "sampleNotBefore": lease.sample_not_before if status == "DNS_OK" else None,
+                "resolvedAt": saved["resolvedAt"], "expiresAt": saved["expiresAt"], "dnsError": error}
+
+    def confirm(self, state, candidates, now):
+        """Persist the first observed scrape boundary for each live generation."""
+        pending = {identity: lease for identity, lease in candidates.items() if lease.sample_not_before is None}
+        if not pending:
+            return
+        for segment in state["segments"]:
+            lease = pending.get(segment["id"])
+            if lease and lease.generation == segment["generation"] and segment["end"] is None:
+                segment["sampleNotBefore"] = max(segment["start"], now)
+        self.write(state)
+        for segment in state["segments"]:
+            lease = pending.get(segment["id"])
+            if lease and lease.generation == segment["generation"] and segment["end"] is None:
+                lease.sample_not_before = segment["sampleNotBefore"]
+
+    @staticmethod
+    def history_fits(state):
+        segments = state["segments"]
+        if len(segments) > MAX_SEGMENTS:
+            return False
+        reserved = sum(segment["end"] is None for segment in segments) * OPEN_SEGMENT_RESERVE_BYTES
+        return len(encode_json({**state, "rows": {}})) + reserved + RUNTIME_RESERVE_BYTES <= MAX_BYTES
 
     def maintain(self, manifest, state, now):
         """过期/删除/编辑关闭时段，保留七天内来源。仅 reconciliation/写入口落盘。"""
@@ -131,9 +214,14 @@ class DNSState:
                     if (before and before["id"] == segment["id"] and before.get("kind") == "dns"
                             and before["endpointRevision"] == saved["endpointRevision"]
                             and (after is None or after.get("endpointRevision") != before["endpointRevision"])):
-                        from datetime import datetime
                         end = datetime.fromisoformat(receipt["time"].replace("Z", "+00:00")).timestamp()
                         break
+            if row:
+                failure = self.failure(row)
+                if failure:
+                    end = min(end if end is not None else now, failure.ended_at)
+                elif self.view(row, state, now)["dnsStatus"] != "DNS_OK":
+                    end = min(end if end is not None else now, saved["expiresAt"], now)
             if saved["expiresAt"] <= now:
                 end = min(end if end is not None else now, saved["expiresAt"])
             if end is not None:
@@ -142,9 +230,9 @@ class DNSState:
         result["rows"] = {identity: value for identity, value in result["rows"].items() if identity in rows}
         return result
 
-    def apply(self, manifest, row, answer, check_address):
+    def apply(self, manifest, previous, row, answer, check_address):
         now = self.clock()
-        state = self.maintain(manifest, self.read(required=True), now)
+        state = self.maintain(manifest, previous, now)
         old = state["rows"].get(row["id"])
         same = old and (old["address"], old["endpointRevision"]) == (row["address"], row["endpointRevision"])
         previous_ip = old["ip"] if same else None
@@ -166,11 +254,15 @@ class DNSState:
                     if other["enabled"] and view["dnsStatus"] == "DNS_OK":
                         used.add(view["resolvedIp"])
             if not error:
+                private = tuple(map(IPv4Network, row["privateCidrs"]))
                 for ip in ips:
                     address = IPv4Address(ip)
-                    if any(address in n for n in PRIVATE) and not any(
-                            address in IPv4Network(n) for n in row["privateCidrs"]):
-                        continue
+                    if any(address in n for n in PRIVATE):
+                        network = max((n for n in private if address in n),
+                                      key=lambda n: n.prefixlen, default=None)
+                        if network is None or (network.prefixlen < 31 and address in (
+                                network.network_address, network.broadcast_address)):
+                            continue
                     if ip in used:
                         continue
                     try:
@@ -185,11 +277,17 @@ class DNSState:
                     error = "policy" if ips else "no_a"
                 if not error and answer.ttl == 0:
                     error = "ttl_zero"
+        now = self.clock()
+        monotonic_now = self.monotonic()
+        deadline = expires_at = now
+        if not error:
+            deadline = answer.started_monotonic + answer.ttl
+            expires_at = min(answer.started_at + answer.ttl, now + (deadline - monotonic_now))
+            if deadline <= monotonic_now or expires_at <= now or now < answer.started_at:
+                error = "ttl_expired"
         selected = (previous_ip if previous_ip in allowed else next(iter(allowed), None)) if not error else None
-        active_old = same and old["status"] == "DNS_OK" and old["expiresAt"] > now
-        changed = not (active_old and selected and selected == previous_ip)
-        if selected and changed and len(state["segments"]) >= MAX_SEGMENTS:
-            error, selected = "history_capacity", None
+        active_old = same and self.view(row, state, now)["dnsStatus"] == "DNS_OK"
+        changed = not (active_old and selected == previous_ip and selected is not None)
         if changed:
             state["generation"] += 1
             for segment in state["segments"]:
@@ -199,18 +297,43 @@ class DNSState:
         activated = now if changed else old["activatedAt"]
         if selected and changed:
             state["segments"].append({"id": row["id"], "address": row["address"], "ip": selected,
-                                      "generation": generation, "start": now, "end": None})
+                                      "generation": generation, "start": now, "end": None,
+                                      "sampleNotBefore": None})
+            if not self.history_fits(state):
+                state["segments"].pop()
+                error, selected = "history_capacity", None
         status = "DNS_OK" if selected else "DNS_POLICY_BLOCKED" if error == "policy" else (
-            "DNS_STALE" if error == "ttl_zero" else "DNS_ERROR")
+            "DNS_STALE" if error in ("ttl_zero", "ttl_expired") else "DNS_ERROR")
+        refresh_interval = (max(30, min(300, int(answer.ttl * 0.8))) if selected
+                            else (30, 60, 120, 300)[failures - 1])
         state["rows"][row["id"]] = {
             "address": row["address"], "endpointRevision": row["endpointRevision"],
             "status": status, "error": error, "ips": ips,
-            "ip": selected or previous_ip, "expiresAt": now + answer.ttl if selected else now,
+            "ip": selected or previous_ip, "expiresAt": expires_at if selected else now,
             "resolvedAt": now if selected else (old["resolvedAt"] if same else 0),
-            "nextRefreshAt": now + (max(30, min(300, int(answer.ttl * 0.8))) if selected else (30, 60, 120, 300)[failures - 1]),
+            "nextRefreshAt": now + refresh_interval,
             "failures": 0 if selected else failures, "generation": generation, "activatedAt": activated,
         }
-        self.write(state)
+
+        def still_valid():
+            wall = self.clock()
+            return answer.started_at <= wall < expires_at and self.monotonic() < deadline
+
+        if not self.write(state, still_valid=still_valid if selected else None):
+            # The valid answer expired while staging. No proposed row or segment
+            # reached disk; commit the same transition as an expired result.
+            return self.apply(manifest, previous, row, Answer(error="ttl_expired"), check_address)
+        self.failures.pop(row["id"], None)
+        if selected:
+            identity = row["id"]
+            refresh_at = monotonic_now + refresh_interval
+            if changed:
+                self.leases[identity] = Lease(generation, deadline, refresh_at)
+            else:
+                self.leases[identity].deadline = deadline
+                self.leases[identity].refresh_at = refresh_at
+        else:
+            self.leases.pop(row["id"], None)
         if changed and (not old or (old["status"], old["ip"], old["error"]) != (status, selected or previous_ip, error)):
             LOG.info("custom_ping dns_transition id=%s generation=%d status=%s error=%s",
                      row["id"], generation, status, error)
