@@ -5,14 +5,16 @@ import hmac
 from http.client import HTTPException
 from ipaddress import IPv4Address, IPv4Network, ip_address
 import logging
+import math
 import re
 import secrets
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import urlopen
 
 from . import auth
+from .custom_ping_dns import Refresh, private_cidrs, probe_hostname
 from .custom_ping_store import (
     GROUPS, JOB, PingError, PingStore, decode_json, timestamp, valid_id, valid_name, validate_ip,
 )
@@ -90,7 +92,32 @@ def read_body(handler) -> dict:
 
 
 def validate_changes(data: dict, create: bool) -> dict:
+    if data.keys() & {"kind", "address", "privateCidrs"}:
+        permitted = {"name", "group", "enabled", "kind", "address", "privateCidrs"}
+        if (data.keys() - permitted or "ip" in data
+                or create and not {"name", "group", "kind", "address"} <= data.keys()
+                or ("kind" in data) != ("address" in data)):
+            raise PingError(400, "custom_ping_invalid_fields")
+        try:
+            if "kind" in data:
+                if data["kind"] == "ipv4":
+                    if "privateCidrs" in data:
+                        raise ValueError("private CIDRs only apply to DNS")
+                    data = {**data, "ip": validate_ip(data["address"])}
+                    del data["kind"], data["address"]
+                elif data["kind"] == "dns":
+                    data["address"] = probe_hostname(data["address"])
+                else:
+                    raise ValueError("invalid target kind")
+            if "privateCidrs" in data:
+                data["privateCidrs"] = private_cidrs(data["privateCidrs"])
+        except (ValueError, UnicodeError, TypeError) as exc:
+            raise PingError(400, "custom_ping_invalid_address") from exc
     fields = {"name", "ip", "group"}
+    if data.get("kind") == "dns" or "privateCidrs" in data:
+        fields = {"name", "group", "kind", "address", "privateCidrs"}
+        if create:
+            data.setdefault("privateCidrs", [])
     if create and data.keys() != fields:
         raise PingError(400, "custom_ping_invalid_fields")
     if not create and (not data or data.keys() - (fields | {"enabled"})):
@@ -157,7 +184,11 @@ class TargetInventory:
         except (OSError, HTTPException, TypeError, ValueError, KeyError, RecursionError) as exc:
             raise PingError(503, "custom_ping_inventory_unavailable") from exc
 
-    def check(self, ip: str) -> None:
+    def dns_policy(self):
+        active = self.active()
+        return lambda ip: self.check(ip, active)
+
+    def check(self, ip: str, active=None) -> None:
         try:
             address = IPv4Address(validate_ip(ip))
         except ValueError as exc:
@@ -182,7 +213,7 @@ class TargetInventory:
                 network.prefixlen < 31 and address in (network.network_address, network.broadcast_address)
             ):
                 raise PingError(403, "custom_ping_ip_outside_allowed_cidrs")
-        for row in self.active():
+        for row in self.active() if active is None else active:
             source = row["scrapePool"]
             if source not in {"player-ping", "firewall-snmp"} and not source.startswith("infra-"):
                 continue
@@ -198,8 +229,9 @@ class TargetInventory:
             if address == existing:
                 raise PingError(409, "custom_ping_duplicate_ip", source=source)
 
-    def observed(self, snapshot: dict) -> dict:
-        current = {row["id"]: row for row in snapshot["targets"] if row["enabled"]}
+    def observed(self, snapshot: dict, store: PingStore | None = None) -> dict:
+        current = {row["id"]: row for row in snapshot["targets"] if row["enabled"] and (
+            row.get("kind") != "dns" or snapshot.get("dnsEnabled", True) and row["dnsStatus"] == "DNS_OK")}
         active = [row for row in self.active() if row["scrapePool"] == JOB]
         observed = []
         for row in active:
@@ -209,22 +241,88 @@ class TargetInventory:
                 revision = discovered["__meta_custom_ping_revision"]
                 if not valid_id(target_id) or validate_ip(ip) != ip or not re.fullmatch(r"[1-9][0-9]{0,14}", revision):
                     raise ValueError("invalid discovery labels")
+                generation = discovered.get("__meta_custom_ping_resolution_generation")
+                if generation is not None and not re.fullmatch(r"[1-9][0-9]{0,14}", generation):
+                    raise ValueError("invalid resolution generation")
                 observed.append({
                     "id": target_id, "ip": ip, "revision": int(revision),
                     "scrapeHealth": row["health"] if row["health"] in ("up", "down") else "unknown",
+                    **({"resolutionGeneration": int(generation)} if generation else {}),
                 })
             except (KeyError, TypeError, ValueError) as exc:
                 raise PingError(503, "custom_ping_inventory_unavailable") from exc
         matched = (
             snapshot["publication"] == "published" and len(observed) == len(current)
             and {(row["id"], row["ip"], row["revision"]) for row in observed}
-            == {(row["id"], row["ip"], row["revision"]) for row in current.values()}
+            == {(row["id"], row.get("resolvedIp", row.get("ip")), row["revision"]) for row in current.values()}
+            and all(next((r.get("resolutionGeneration") for r in observed if r["id"] == row["id"]), None)
+                    == row.get("resolutionGeneration") for row in current.values())
         )
         # A matching empty inventory alone cannot distinguish a missing job.
         if matched and not current:
             matched = self._custom_pool_loaded()
-        return {"ok": True, "revision": snapshot["revision"], "publishedRevision": snapshot["publishedRevision"],
-                "discoveredRevision": snapshot["revision"] if matched else None, "activeTargets": observed}
+        result = {"ok": True, "revision": snapshot["revision"], "publishedRevision": snapshot["publishedRevision"],
+                  "discoveredRevision": snapshot["revision"] if matched else None, "activeTargets": observed}
+        dns = [row for row in snapshot["targets"] if row.get("kind") == "dns"]
+        if dns:
+            result["dnsTargets"] = self.dns_status(dns, observed, store, snapshot.get("dnsEnabled", True))
+        return result
+
+    def dns_status(self, targets, observed, store, enabled):
+        found = {row["id"]: row for row in observed}
+        candidates = {}
+        for row in targets:
+            actual = found.get(row["id"])
+            if (enabled and actual and row["enabled"] and row["dnsStatus"] == "DNS_OK"
+                    and (actual["ip"], actual["revision"], actual.get("resolutionGeneration"))
+                    == (row["resolvedIp"], row["revision"], row["resolutionGeneration"])):
+                candidates[row["id"]] = (actual["ip"], actual["revision"], actual["resolutionGeneration"])
+        confirmed = store.observed_dns(candidates, confirm=True) if store else {}
+        readings = {}
+        if any(row["sampleNotBefore"] is not None for row in confirmed.values()):
+            selector = '{job="custom-ping",__name__=~"up|probe_success|probe_icmp_duration_seconds"}'
+            named = 'label_replace(' + selector + ',"sampleMetric","$1","__name__","(.+)")'
+            try:
+                expression = (
+                    'label_replace(' + named + ',"sampleType","value","job",".*") or '
+                    'label_replace(timestamp(' + named + '),"sampleType","time","job",".*")'
+                )
+                data = self._prometheus_data("/api/v1/query?" + urlencode({"query": expression}))
+                if data.get("resultType") != "vector":
+                    raise ValueError("invalid evidence")
+                for sample in data["result"]:
+                    metric = sample["metric"]
+                    if metric.get("phase") not in (None, "rtt"):
+                        continue
+                    key = (metric["custom_id"], metric["target_ip"], metric["sampleMetric"])
+                    readings.setdefault(key, {})[metric["sampleType"]] = float(sample["value"][1])
+            except (PingError, OSError, HTTPException, KeyError, ValueError, TypeError, OverflowError, RecursionError):
+                readings = {}
+        # A targets or metrics response delayed across a configuration/lease
+        # change cannot supply health for the superseded DNS generation.
+        current = store.observed_dns(candidates) if confirmed else {}
+        now = store.dns.clock() if store else time.time()
+        result = []
+        for row in targets:
+            identity = row["id"]
+            view = current.get(identity, {})
+            boundary = view.get("sampleNotBefore")
+            ip = row["resolvedIp"]
+            values = [readings.get((identity, ip, name), {}) for name in ("up", "probe_success")]
+            status = "UNKNOWN"
+            fresh = boundary is not None and all(
+                math.isfinite(v.get("value", math.nan)) and math.isfinite(v.get("time", math.nan))
+                and boundary < v["time"] <= now and now - v["time"] <= 10 for v in values)
+            if fresh and view["expiresAt"] > now and values[0]["value"] == 1 and values[0]["time"] == values[1]["time"]:
+                status = {0.0: "DOWN", 1.0: "UP"}.get(values[1]["value"], "UNKNOWN")
+            withdraw = not enabled or not row["enabled"] or row["dnsStatus"] != "DNS_OK"
+            result.append({"id": identity, "dnsStatus": row["dnsStatus"], "resolvedIp": ip,
+                           "resolutionGeneration": row["resolutionGeneration"],
+                           "discoveredGeneration": view.get("resolutionGeneration"),
+                           "sampleNotBefore": boundary, "pingStatus": status,
+                           "withdrawalPending": withdraw and identity in found,
+                           "discoveryStatus": "DISCOVERED" if view else "DISCOVERY_PENDING"})
+        return result
 
 
 class CustomPingAPI:
@@ -238,20 +336,23 @@ class CustomPingAPI:
         self.inventory = inventory
         self.public_origin = public_origin
         self.csrf_key = secrets.token_bytes(32)
+        self.dns_refresh = Refresh(store, inventory.dns_policy)
 
     def start_reconciliation(self) -> None:
         def loop():
-            last_error = None
             wait = threading.Event()
+            tasks = (self.store.reconcile, self.dns_refresh.tick)
+            last_errors = {}
             while True:
-                try:
-                    self.store.reconcile()
-                    last_error = None
-                except PingError as exc:
-                    if exc.code != last_error:
-                        LOG.warning("custom_ping reconciliation_failed code=%s", exc.code)
-                    last_error = exc.code
-                wait.wait(10)
+                for task in tasks:
+                    try:
+                        task()
+                        last_errors.pop(task, None)
+                    except PingError as exc:
+                        if exc.code != last_errors.get(task):
+                            LOG.warning("custom_ping reconciliation_failed code=%s", exc.code)
+                        last_errors[task] = exc.code
+                wait.wait(1 if self.store.dns.path.exists() else 10)
 
         threading.Thread(target=loop, name="custom-ping-discovery", daemon=True).start()
 
@@ -296,7 +397,14 @@ class CustomPingAPI:
                 if path == BASE:
                     handler._send_json(self.store.list_targets())
                 elif path == BASE + "/discovery":
-                    handler._send_json(self.inventory.observed(self.store.list_targets()))
+                    handler._send_json(self.inventory.observed(self.store.list_targets(), self.store))
+                elif path.endswith("/resolutions") and valid_id(path.removeprefix(BASE + "/").removesuffix("/resolutions")):
+                    query = parse_qs(urlsplit(handler.path).query, keep_blank_values=True)
+                    cursor = query.get("cursor", ["0"])
+                    if set(query) - {"cursor"} or len(cursor) != 1 or not re.fullmatch(r"[0-9]{1,15}", cursor[0]):
+                        raise PingError(400, "custom_ping_invalid_cursor")
+                    identity = path.removeprefix(BASE + "/").removesuffix("/resolutions")
+                    handler._send_json(self.store.resolution_history(identity, int(cursor[0])))
                 elif path == BASE + "/csrf":
                     actor, csrf = self._credentials(handler)
                     handler._send_json({"ok": True, "csrfToken": csrf})
