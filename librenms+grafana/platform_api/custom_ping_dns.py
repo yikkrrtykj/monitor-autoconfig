@@ -11,6 +11,7 @@ import time
 
 PRIVATE = tuple(map(IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
 MAX_ANSWERS = 64
+MAX_IN_FLIGHT = 8
 LOG = logging.getLogger("platform_api.custom_ping")
 
 
@@ -128,8 +129,9 @@ class Refresh:
         self.store = store
         self.check_policy = check_policy
         self.resolver = resolver or Resolver()
-        self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="custom-ping-dns")
+        self.executor = ThreadPoolExecutor(max_workers=MAX_IN_FLIGHT, thread_name_prefix="custom-ping-dns")
         self.pending = {}
+        self.waiting: dict[str, None] = {}
         self.lock = threading.Lock()
         self.stopped = False
 
@@ -144,11 +146,15 @@ class Refresh:
                     except Exception as exc:
                         LOG.warning("custom_ping dns_refresh_failed type=%s", type(exc).__name__)
                     del self.pending[identity]
-            for row in self.store.dns_due():
-                if len(self.pending) >= 8:
-                    break
-                if row["id"] not in self.pending:
-                    self.pending[row["id"]] = self.executor.submit(self._resolve, row)
+            due = {row["id"]: row for row in self.store.dns_due() if row["id"] not in self.pending}
+            # Keep the waiting order across ticks. Store only IDs here and
+            # fetch the current ticket each tick so edits cannot queue old work.
+            self.waiting = dict.fromkeys(identity for identity in self.waiting if identity in due)
+            self.waiting.update(dict.fromkeys(due))
+            slots = MAX_IN_FLIGHT - len(self.pending)
+            for identity in list(self.waiting)[:slots]:
+                self.pending[identity] = self.executor.submit(self._resolve, due[identity])
+                del self.waiting[identity]
 
     def _resolve(self, row: dict) -> None:
         try:

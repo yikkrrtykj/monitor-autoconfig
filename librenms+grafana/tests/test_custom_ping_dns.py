@@ -935,3 +935,362 @@ def test_late_targets_and_metrics_cannot_confirm_superseded_generation(store, cl
     data = prom[0].observed(store.list_targets(), store)["dnsTargets"][0]
     assert data["pingStatus"] == "UNKNOWN" and data["discoveredGeneration"] is None
     assert json.loads(store.discovery.read_bytes()) == []
+
+
+
+class ShortThreadLock:
+    """Use a real thread lock with a shorter test-only acquisition deadline."""
+    def __init__(self):
+        self.lock = threading.Lock()
+
+    def acquire(self, timeout):
+        return self.lock.acquire(timeout=min(timeout, .05))
+
+    def release(self):
+        self.lock.release()
+
+
+@pytest.fixture
+def refresh_busy(store, monkeypatch, request):
+    from contextlib import contextmanager
+
+    mode = request.param if hasattr(request, "param") else "thread"
+    if mode == "thread":
+        lock = ShortThreadLock()
+        monkeypatch.setattr(store, "lock", lock)
+
+    @contextmanager
+    def hold():
+        if mode == "thread":
+            with lock.lock:
+                yield
+        else:
+            from platform_api import custom_ping_store as storage
+            fd = os.open(store.lockfile, os.O_RDWR)
+            try:
+                storage.fcntl.flock(fd, storage.fcntl.LOCK_EX)
+                yield
+            finally:
+                os.close(fd)
+
+    return hold
+
+
+@pytest.mark.parametrize("refresh_busy", [
+    "thread",
+    pytest.param("flock", marks=pytest.mark.skipif(os.name == "nt", reason="POSIX flock")),
+], indirect=True)
+def test_refresh_lock_failure_revokes_old_up_before_slow_retry(store, clock, prom, api, monkeypatch, refresh_busy):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _, request, _, _ = api
+    ticks = [10.]
+    store.dns.monotonic = lambda: ticks[0]
+    prom[0].allowed = ""
+    row = create(store)
+    other = create(store, "other.example.com")
+    store.change("POST", None, None, {**ITEM, "ip": "10.70.10.54"}, "admin", str(uuid4()), prom[0].check)
+    for ip, ttl in (("1.1.1.1", 300), ("1.1.1.2", 900)):
+        store.resolve_dns(store.dns_due()[0], Answer((ip,), ttl), prom[0].dns_policy())
+    project_as_discovered(store, prom)
+    metric_response(monkeypatch, prom, lambda: (clock[0] - .5, 1))
+
+    def discover():
+        status, body, _ = request("GET", "/discovery")
+        assert status == 200
+        return {item["id"]: item for item in body["dnsTargets"]}
+
+    assert discover()[row["id"]]["pingStatus"] == "UNKNOWN"
+    clock[0] += 241
+    ticks[0] += 241
+    assert discover()[row["id"]]["pingStatus"] == "UP"
+    ticket = store.dns_due()[0]
+    started, release = threading.Event(), threading.Event()
+
+    class ResolverWithSlowRetry:
+        calls = 0
+
+        def resolve(self, name):
+            assert name == row["address"]
+            self.calls += 1
+            if self.calls == 1:
+                return Answer(error="nxdomain")
+            started.set()
+            if not release.wait(5):
+                return Answer(error="timeout")
+            return Answer(("1.1.1.3",), 300)
+
+    worker = Refresh(store, prom[0].dns_policy, ResolverWithSlowRetry())
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        with refresh_busy():
+            failed = pool.submit(worker._resolve, ticket)
+            with pytest.raises(PingError, match="custom_ping_busy"):
+                failed.result(2)
+        # DNS work at t+31 is in flight while the old t+300 TTL is still valid.
+        ticks[0] += 31
+        clock[0] += 31
+        worker.tick()
+        assert started.wait(2)
+        data = discover()
+        assert data[row["id"]]["pingStatus"] == "UNKNOWN"
+        assert data[row["id"]]["withdrawalPending"]
+        assert data[other["id"]]["pingStatus"] == "UP"
+        store.reconcile()
+        assert {entry["targets"][0] for entry in json.loads(store.discovery.read_bytes())} == {
+            "1.1.1.2", "10.70.10.54",
+        }
+        release.set()
+        worker.pending[row["id"]].result(5)
+        assert store.list_targets()["targets"][0]["resolvedIp"] == "1.1.1.3"
+        project_as_discovered(store, prom)
+        assert discover()[row["id"]]["pingStatus"] == "UNKNOWN"
+        clock[0] += 2
+        assert discover()[row["id"]]["pingStatus"] == "UP"
+    finally:
+        release.set()
+        worker.stop()
+        pool.shutdown()
+
+
+def test_refresh_fairness_for_100_with_slow_inventory(store, clock):
+    targets = [create(store, f"g{i}.example.com") for i in range(100)]
+    ticks = [10.]
+    store.dns.monotonic = lambda: ticks[0]
+    barrier = threading.Condition()
+    joined = []
+    calls = []
+    step = [0]
+    peak = [0]
+
+    class ResolverWithShortTTL:
+        def resolve(self, name):
+            (label, _) = name.split(".", 1)
+            value = int(label[1:])
+            calls.append((name, step[0]))
+            return Answer((f"1.1.2.{value + 1}",), 15)
+
+    def slow_inventory():
+        with barrier:
+            current = step[0]
+            joined.append(current)
+            peak[0] = max(peak[0], len(joined))
+            barrier.notify_all()
+            if not barrier.wait_for(lambda: step[0] > current, timeout=10):
+                raise AssertionError("batch never released")
+        return lambda _: None
+
+    worker = Refresh(store, slow_inventory, ResolverWithShortTTL())
+    try:
+        for wave in range(43):
+            if wave == 14:
+                assert len({name for name, _ in calls}) == len(targets)
+            if wave == 28:
+                assert len({name for name, turn in calls if 14 <= turn < 28}) == len(targets)
+            worker.tick()
+            batch = list(worker.pending.values())
+            assert len(batch) == 8
+            with barrier:
+                assert barrier.wait_for(lambda: len(joined) == len(batch), timeout=10)
+                if wave == 28:
+                    rows = {row["id"]: row for row in store.list_targets()["targets"]}
+                    editing, disabling, deleting = [rows[identity] for identity in list(worker.pending)[:3]]
+                    edited = patch(store, editing, {"kind": "dns", "address": "g101.example.com"})[1]["target"]
+                    patch(store, disabling, {"enabled": False})
+                    store.change("DELETE", deleting["id"], deleting["revision"], {},
+                                 "admin", str(uuid4()), lambda _: None)
+                    added = create(store, "g100.example.com")
+                joined.clear()
+                clock[0] += 6
+                ticks[0] += 6
+                step[0] += 1
+                barrier.notify_all()
+            for future in batch:
+                future.result(10)
+        assert peak[0] == 8
+        for wave in range(43):
+            names = [name for name, turn in calls if turn == wave]
+            assert len(names) == len(set(names)) == 8
+        expected = {row["address"] for row in targets}
+        for removed in (editing, disabling, deleting):
+            expected.remove(removed["address"])
+        expected.update((edited["address"], added["address"]))
+        assert {name for name, wave in calls if wave > 28} == expected
+        for row in (edited, added):
+            assert store.resolution_history(row["id"])["segments"][-1]["address"] == row["address"]
+    finally:
+        with barrier:
+            step[0] += 1
+            barrier.notify_all()
+        worker.stop()
+
+
+
+@pytest.mark.parametrize("change", ["edit", "disable", "delete", "new_resolution"])
+def test_failed_old_ticket_is_ignored_after_concurrent_update(store, clock, refresh_busy, change):
+    from concurrent.futures import ThreadPoolExecutor
+
+    row = create(store)
+    refresh(store)
+    clock[0] += 241
+    old_ticket = store.dns_due()[0]
+    completed, release = threading.Event(), threading.Event()
+
+    class ResolverWithOldAnswer:
+        def resolve(self, name):
+            return Answer(("169.254.169.254",), 300)
+
+    def wait_for_inventory():
+        completed.set()
+        if not release.wait(5):
+            raise AssertionError("test did not release inventory")
+        return lambda _: None
+
+    worker = Refresh(store, wait_for_inventory, ResolverWithOldAnswer())
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        task = pool.submit(worker._resolve, old_ticket)
+        assert completed.wait(2)
+        if change == "edit":
+            patch(store, row, {"kind": "dns", "address": "renamed.example.com"})
+        elif change == "disable":
+            patch(store, row, {"enabled": False})
+        elif change == "delete":
+            store.change("DELETE", row["id"], row["revision"], {}, "admin", str(uuid4()), lambda _: None)
+        if change in {"edit", "new_resolution"}:
+            # The old worker loses its lock while an already committed replacement is live.
+            assert store.resolve_dns(store.dns_due()[0], Answer(("1.1.1.2",), 300), lambda _: None)
+        before = store.list_targets()
+        projected = store.discovery.read_bytes()
+        with refresh_busy():
+            release.set()
+            with pytest.raises(PingError, match="custom_ping_busy"):
+                task.result(2)
+        assert store.list_targets() == before
+        store.reconcile()
+        assert store.discovery.read_bytes() == projected
+        assert [item["targets"][0] for item in json.loads(projected)] == (
+            ["1.1.1.2"] if change in {"edit", "new_resolution"} else [])
+    finally:
+        release.set()
+        worker.stop()
+        pool.shutdown()
+
+
+@pytest.mark.parametrize("failure", ["lock", "runtime_fsync"])
+def test_reconcile_can_withdraw_with_failed_state_fsync_and_recovered_discovery(
+        store, clock, prom, api, monkeypatch, refresh_busy, failure):
+    from platform_api import custom_ping_store as storage
+
+    _, request, _, _ = api
+    ticks = [10.]
+    store.dns.monotonic = lambda: ticks[0]
+    row = create(store)
+    active = create(store, "active.example.com")
+    waiting = create(store, "waiting.example.com")
+    prom[0].allowed = ""
+    store.change("POST", None, None, {**ITEM, "ip": "10.70.10.54"}, "admin", str(uuid4()), prom[0].check)
+    for ip, ttl in (("1.1.1.1", 300), ("1.1.1.2", 900)):
+        assert store.resolve_dns(store.dns_due()[0], Answer((ip,), ttl), prom[0].dns_policy())
+    project_as_discovered(store, prom)
+    metric_response(monkeypatch, prom, lambda: (clock[0] - .5, 1))
+    assert request("GET", "/discovery")[1]["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
+    clock[0] += 241
+    ticks[0] += 241
+    assert request("GET", "/discovery")[1]["dnsTargets"][0]["pingStatus"] == "UP"
+    replace = os.replace
+    sync = storage.sync_directory
+    discovery_failed = [True]
+    state_failed = [False]
+
+    def fail_replace(src, dst):
+        if dst == store.discovery and discovery_failed[0]:
+            raise OSError(errno.ENOSPC, "fixture discovery volume full")
+        return replace(src, dst)
+
+    def fail_fsync(directory):
+        if directory == store.manifest.parent and state_failed[0]:
+            raise OSError(errno.EIO, "fixture state directory fsync failed")
+        return sync(directory)
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr(storage, "sync_directory", fail_fsync)
+    monkeypatch.setattr(runtime, "sync_directory", fail_fsync)
+    tickets = {t["id"]: t for t in store.dns_due()}
+    with pytest.raises(PingError, match="publication_failed"):
+        store.resolve_dns(tickets[waiting["id"]], Answer(("1.1.1.3",), 300), prom[0].dns_policy())
+    state_failed[0] = True
+    if failure == "lock":
+        with refresh_busy(), pytest.raises(PingError, match="custom_ping_busy"):
+            store.resolve_dns(tickets[row["id"]], Answer(error="nxdomain"), prom[0].dns_policy())
+    else:
+        with pytest.raises(PingError, match="dns_commit_failed"):
+            store.resolve_dns(tickets[row["id"]], Answer(("1.1.1.4",), 300), prom[0].dns_policy())
+    with pytest.raises(PingError, match="publication_failed"):
+        store.reconcile()
+    result = request("GET", "/discovery")[1]
+    dns = {item["id"]: item for item in result["dnsTargets"]}
+    assert dns[row["id"]]["pingStatus"] == "UNKNOWN" and dns[row["id"]]["withdrawalPending"]
+    assert dns[active["id"]]["pingStatus"] == "UP"
+    assert request("GET")[1]["publication"] == "pending"
+
+    def published_ips():
+        return {item["targets"][0] for item in json.loads(store.discovery.read_bytes())}
+
+    assert published_ips() == {"1.1.1.1", "1.1.1.2", "10.70.10.54"}
+    discovery_failed[0] = False
+    with pytest.raises(PingError, match="publication_failed"):
+        store.reconcile()
+    # A durable but pending addition and a failed-fsync replacement are
+    # both absent from the removal-only write.
+    assert published_ips() == {"1.1.1.2", "10.70.10.54"}
+    project_as_discovered(store, prom)
+    assert not request("GET", "/discovery")[1]["dnsTargets"][0]["withdrawalPending"]
+
+    restarted = PingStore(store.manifest.parent, store.discovery)
+    restarted.dns.clock = store.dns.clock
+    assert restarted.list_targets()["targets"][0]["dnsStatus"] != "DNS_OK"
+    with pytest.raises(PingError, match="publication_failed"):
+        restarted.reconcile()
+    assert published_ips() == {"10.70.10.54"}
+    state_failed[0] = False
+    restarted.reconcile()
+    recovery = next(t for t in restarted.dns_due() if t["id"] == row["id"])
+    assert restarted.resolve_dns(recovery, Answer(("1.1.1.5",), 300), prom[0].dns_policy())
+    assert published_ips() == {"1.1.1.5", "10.70.10.54"}
+
+
+
+def test_failed_admin_commit_does_not_discard_lock_failure_for_live_ticket(
+        store, clock, monkeypatch, refresh_busy):
+    from concurrent.futures import ThreadPoolExecutor
+
+    row = create(store)
+    refresh(store)
+    clock[0] += 241
+    ticket = store.dns_due()[0]
+    commit = store._commit
+    replace = os.replace
+
+    def fail_manifest(src, dst):
+        if dst == store.manifest:
+            raise OSError(errno.ENOSPC, "fixture manifest write failed")
+        return replace(src, dst)
+
+    def commit_while_dns_worker_times_out(candidate, previous):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            task = pool.submit(store.resolve_dns, ticket, Answer(error="nxdomain"), lambda _: None)
+            with pytest.raises(PingError, match="custom_ping_busy"):
+                task.result(2)
+        return commit(candidate, previous)
+
+    monkeypatch.setattr(os, "replace", fail_manifest)
+    monkeypatch.setattr(store, "_commit", commit_while_dns_worker_times_out)
+    with pytest.raises(PingError, match="custom_ping_commit_failed"):
+        patch(store, row, {"kind": "dns", "address": "never-committed.example.com"})
+    catalog = store.list_targets()
+    assert catalog["targets"][0]["address"] == row["address"]
+    assert catalog["targets"][0]["dnsStatus"] == "DNS_ERROR"
+    assert catalog["publication"] == "pending"
+    store.reconcile()
+    assert json.loads(store.discovery.read_bytes()) == []

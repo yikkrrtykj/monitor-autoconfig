@@ -230,6 +230,10 @@ class PingStore:
         self.lockfile = state_dir / "custom-ping.lock"
         self.discovery = discovery_path
         self.lock = threading.Lock()
+        # A refresh unable to enter the store must still signal loss of evidence.
+        # This lock protects only the mailbox. It is never held during store I/O.
+        self._failed_dns_lock = threading.Lock()
+        self._failed_dns: dict[tuple, tuple[float, float]] = {}
         from .custom_ping_runtime import DNSState
         self.dns = DNSState(state_dir / "custom-ping-dns.json")
         self.dns_enabled = True
@@ -280,7 +284,7 @@ class PingStore:
         if manifest["schema"] == 1:
             return manifest
         if state is None:
-            state = self.dns.read(required=True)
+            state = self._dns_state(manifest)
         rows = []
         now = self.dns.clock()
         for row in manifest["targets"]:
@@ -307,7 +311,7 @@ class PingStore:
             targets = manifest["targets"]
             state = None
             if manifest["schema"] == 2:
-                state = self.dns.read(required=True)
+                state = self._dns_state(manifest)
                 now = self.dns.clock()
                 targets = [{**row, **self.dns.view(row, state, now)} if row.get("kind") == "dns" else row
                            for row in targets]
@@ -319,7 +323,7 @@ class PingStore:
 
     def _publish(self, manifest: dict, state: dict | None = None) -> None:
         if state is None and manifest["schema"] == 2:
-            state = self.dns.read(required=True)
+            state = self._dns_state(manifest)
         expected = discovery_bytes(self._projection(manifest, state))
         try:
             self.discovery.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -336,18 +340,41 @@ class PingStore:
         except OSError as exc:
             raise PingError(503, "custom_ping_publication_failed") from exc
 
+    def _withdraw_dns(self, manifest, state):
+        """During a state-volume fault, only remove invalid DNS entries from file_sd."""
+        try:
+            existing = decode_json(read_bounded(self.discovery) or b"[]")
+            if not isinstance(existing, list):
+                raise ValueError("invalid custom Ping discovery")
+            live = {(row["id"], str(row["resolutionGeneration"])): [row["ip"]]
+                    for row in self._projection(manifest, state)["targets"] if row.get("kind") == "dns"}
+            kept = []
+            for entry in existing:
+                labels = entry["labels"]
+                generation = labels.get("__meta_custom_ping_resolution_generation")
+                if generation is None or live.get((labels["custom_id"], generation)) == entry["targets"]:
+                    kept.append(entry)
+            if len(kept) != len(existing):
+                with staged_file(self.discovery, encode_json(kept), 0o644) as temporary:
+                    os.replace(temporary, self.discovery)
+                sync_directory(self.discovery.parent)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
+            raise PingError(503, "custom_ping_publication_failed") from exc
+
     def reconcile(self) -> None:
         with self._locked():
             manifest, _ = self._read()
             state = None
             if manifest["schema"] == 2:
                 self.dns.prune(manifest)
-                state = self.dns.read(required=True)
+                state = self._dns_state(manifest)
             # Keep the manifest durable before publishing its projection, then
             # withdraw before any runtime history maintenance writes.
             try:
                 sync_directory(self.manifest.parent)
             except OSError as exc:
+                if state is not None:
+                    self._withdraw_dns(manifest, state)
                 raise PingError(503, "custom_ping_publication_failed") from exc
             self._publish(manifest, state)
             if state is not None:
@@ -378,7 +405,10 @@ class PingStore:
         with ExitStack() as staged:
             try:
                 self.discovery.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-                projection = discovery_bytes(self._projection(manifest))
+                # A candidate manifest may still fail to commit. Only consume
+                # lock failures against the version that actually reached disk.
+                state = self.dns.read(required=True) if manifest["schema"] == 2 else None
+                projection = discovery_bytes(self._projection(manifest, state))
                 discovery = staged.enter_context(staged_file(self.discovery, projection, 0o644))
                 current = staged.enter_context(staged_file(self.manifest, encoded, 0o600))
                 if previous is not None:
@@ -414,7 +444,7 @@ class PingStore:
                     return self._write_result(receipt, self._status(manifest), replayed=True)
 
             if manifest["schema"] == 2:
-                self.dns.read(required=True)
+                self._dns_state(manifest)
             targets = manifest["targets"]
             before = next((row for row in targets if row["id"] == target_id), None)
             if action != "POST":
@@ -484,6 +514,33 @@ class PingStore:
                 "publication": "published" if published else "pending",
             })
 
+    @staticmethod
+    def _dns_ticket_key(row, digest):
+        return (row["id"], row["address"], row["endpointRevision"], row["revision"], digest)
+
+    def _record_dns_lock_failure(self, ticket):
+        key = self._dns_ticket_key(ticket, ticket["_runtimeDigest"])
+        with self._failed_dns_lock:
+            # Refresh has at most eight in-flight workers and drains on each
+            # successful scheduler/read tick; the active-target cap is a hard limit.
+            if len(self._failed_dns) < MAX_ACTIVE:
+                self._failed_dns.setdefault(key, (self.dns.clock(), self.dns.monotonic()))
+
+    def _dns_state(self, manifest):
+        state = self.dns.read(required=True)
+        with self._failed_dns_lock:
+            failures, self._failed_dns = self._failed_dns, {}
+        if failures:
+            for row in manifest["targets"]:
+                if row.get("kind") != "dns" or not row["enabled"]:
+                    continue
+                digest = self._dns_digest(row, state["rows"].get(row["id"]))
+                failed_at = failures.get(self._dns_ticket_key(row, digest))
+                if failed_at is not None:
+                    wall, monotonic = failed_at
+                    self.dns.invalidate(row, ended_at=wall, retry_at=monotonic + 30)
+        return state
+
     def _dns_digest(self, row, saved) -> str:
         failure = self.dns.failure(row)
         payload = [saved, failure.retry_at] if failure else saved
@@ -496,7 +553,7 @@ class PingStore:
             manifest, _ = self._read()
             if manifest["schema"] == 1:
                 return []
-            state = self.dns.read(required=True)
+            state = self._dns_state(manifest)
             now = self.dns.clock()
             due = []
             for row in manifest["targets"]:
@@ -523,13 +580,18 @@ class PingStore:
     def resolve_dns(self, ticket, answer, check_address) -> bool:
         started = self.dns.monotonic()
         answer = answer.measured_at(self.dns.clock(), started)
-        with self._locked():
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(self._locked())
+            except PingError:
+                self._record_dns_lock_failure(ticket)
+                raise
             manifest, _ = self._read()
             row = next((r for r in manifest["targets"] if r["id"] == ticket["id"]), None)
             intent = {k: v for k, v in ticket.items() if k != "_runtimeDigest"}
             if not self.dns_enabled or row != intent or not row["enabled"]:
                 return False
-            state = self.dns.read(required=True)
+            state = self._dns_state(manifest)
             expected_runtime = self._dns_digest(row, state["rows"].get(row["id"]))
             if ticket.get("_runtimeDigest") != expected_runtime:
                 return False
@@ -537,10 +599,10 @@ class PingStore:
                 updated = self.dns.apply(manifest, state, row, answer, check_address)
             except PingError:
                 # Even if replace succeeded before fsync failed, that row is
-                # untrusted. Project all other rows from the last readable copy.
+                # untrusted. Only withdraw, leaving other published entries intact.
                 self.dns.invalidate(row)
                 try:
-                    self._publish(manifest, state)
+                    self._withdraw_dns(manifest, state)
                 except PingError:
                     LOG.warning("custom_ping dns_withdrawal_pending id=%s", row["id"])
                 raise
@@ -555,7 +617,7 @@ class PingStore:
             manifest, _ = self._read()
             if manifest["schema"] != 2 or not self.dns_enabled:
                 return {}
-            state = self.dns.read(required=True)
+            state = self._dns_state(manifest)
             try:
                 published = decode_json(read_bounded(self.discovery) or b"[]")
                 entries = {entry["labels"]["custom_id"]: entry for entry in published}
@@ -586,7 +648,7 @@ class PingStore:
     def resolution_history(self, identity: str, cursor: int = 0) -> dict:
         with self._locked():
             manifest, _ = self._read()
-            state = self.dns.read(required=manifest["schema"] == 2)
+            state = self._dns_state(manifest) if manifest["schema"] == 2 else self.dns.read()
             state = self.dns.maintain(manifest, state, self.dns.clock())
             segments = [s for s in state["segments"] if s["id"] == identity and s["generation"] > cursor]
             page = segments[:200]

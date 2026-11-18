@@ -99,12 +99,16 @@ class DNSState:
         failure = self.failures.get(row["id"])
         return failure if failure and failure.endpoint == signature(row) else None
 
-    def invalidate(self, row):
+    def invalidate(self, row, *, ended_at=None, retry_at=None):
         previous = self.failure(row)
-        now = self.clock()
         self.leases.pop(row["id"], None)
-        ended_at = previous.ended_at if previous else now
-        self.failures[row["id"]] = WriteFailure(signature(row), ended_at, self.monotonic() + 30)
+        if ended_at is None:
+            ended_at = self.clock()
+        if previous:
+            ended_at = min(ended_at, previous.ended_at)
+        if retry_at is None:
+            retry_at = self.monotonic() + 30
+        self.failures[row["id"]] = WriteFailure(signature(row), ended_at, retry_at)
 
     def prune(self, manifest):
         active = {row["id"]: row for row in manifest["targets"] if row.get("kind") == "dns" and row["enabled"]}
