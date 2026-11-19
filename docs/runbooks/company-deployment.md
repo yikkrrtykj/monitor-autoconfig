@@ -158,7 +158,7 @@ test "$(stat -c '%a' -- "$backup_root")" = 700
 
 ## 4. 精确快进与定向更新
 
-准备工作通过后，在阶段脚本里使用步骤 3 的 `cd`、`before`、`target` 三个赋值。下面片段再次核对工作区及取回的目标。若期间运行过其他 Git fetch，先重新执行步骤 3。只允许快进，禁止盲目 `git pull`、自动 stash、`reset --hard`、强制推送及清理文件或卷。Git 写入工作树时使用局部 `umask 022`。
+准备工作通过后，在阶段脚本里使用步骤 3 的 `cd`、`before`、`target` 三个赋值。下面片段再次核对工作区及取回的目标。若期间运行过其他 Git fetch，先重新执行步骤 3。只允许快进，禁止盲目 `git pull`、自动 stash、`reset --hard`、强制推送及清理文件或卷。创建隔离源码工作树、Git checkout 与生产 merge 均在局部 `umask 022` 下执行。
 
 <!-- release-example: merge -->
 ```bash

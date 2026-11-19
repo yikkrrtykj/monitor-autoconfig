@@ -37,19 +37,23 @@ def bash():
     return binary
 
 
-def run(command, cwd, **kwargs):
+def run(command, cwd, **env_overrides):
+    # Honor the fixture cwd even if pytest was launched with a Git work tree
+    # or hook configuration in the environment.
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    env.update(BASH_ENV="", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    env.update(env_overrides)
     return subprocess.run(
-        command, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
-        text=True, encoding="utf-8", timeout=15, **kwargs,
+        command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+        text=True, encoding="utf-8", timeout=15,
     )
 
 
-def release(bash, cwd, workspace, body, *args, **env_overrides):
+def release(bash, cwd, workspace, body, *args):
     scratch = workspace / "script files"
     scratch.mkdir(exist_ok=True)
-    env = dict(os.environ, BASH_ENV="", TMPDIR=scratch.as_posix(), **env_overrides)
     command = example("runner") + "\n" + 'run_release_script "$@" <<\'FIXTURE\'\n' + body + "\nFIXTURE\n"
-    return run([bash, "-c", command, "fixture", *args], cwd, env=env)
+    return run([bash, "-c", command, "fixture", *args], cwd, TMPDIR=scratch.as_posix())
 
 
 def saved_script(result, workspace):
@@ -137,8 +141,7 @@ def test_all_current_bash_examples_parse(bash, tmp_path):
 
 
 def git(cwd, *args):
-    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
-    result = run(["git", *args], cwd, env=env)
+    result = run(["git", *args], cwd)
     assert result.returncode == 0, result
     return result.stdout.strip()
 
@@ -214,7 +217,6 @@ def fast_forward(bash, repos):
         bash, new, workspace,
         prep + example("backup") + "\n" + example("merge") + "\n: >'outside umask marker'",
         before, target, str(backup_root),
-        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
     )
     assert result.returncode == 0, result
     assert "COMPLETE stage=git-merge" in result.stdout
@@ -261,7 +263,6 @@ def test_release_merge_stops_without_overwriting_local_paths(bash, release_repos
         target = before
     result = release(
         bash, new, workspace, "before=$1\ntarget=$2\n" + example("merge"), before, target,
-        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
     )
     assert result.returncode != 0, result
     assert "STOP stage=git-merge" in result.stderr and "COMPLETE" not in result.stdout
