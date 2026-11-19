@@ -1,6 +1,7 @@
 """执行现行发布手册的片段，仅使用临时脚本、Git 仓库和本机回环 HTTP。"""
 
 import http.client
+import json
 import os
 from pathlib import Path
 import re
@@ -443,3 +444,111 @@ def test_nginx_static_http_permissions(bash, release_repos, nonroot):
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=5)
+
+def docker_snapshot(bash, tmp_path, frames, *, compare=False):
+    fixture = tmp_path / "docker.json"
+    fixture.write_text(json.dumps(frames), encoding="utf-8")
+    stub = tmp_path / "docker-fixture.py"
+    stub.write_text(
+        """
+import json
+from pathlib import Path
+import sys
+
+frames = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+frame = frames[int(sys.argv[2])]
+args = sys.argv[3:]
+assert not sys.stdin.read()
+if args == ["compose", "ps", "--all", "--no-trunc", "--quiet", "platform-api", "prometheus"]:
+    print("\\n".join(frame["listed"]))
+else:
+    assert args == ["inspect", "--type", "container", *frame["listed"]]
+    print(json.dumps(frame["inspect"]))
+    sys.exit(frame.get("exit", 0))
+""".lstrip(),
+        encoding="utf-8",
+    )
+    setup = """
+timeout() { shift; "$@"; }
+docker() { "$FIXTURE_PYTHON" "$FIXTURE_DOCKER" "$FIXTURE_FRAMES" "$phase" "$@"; }
+python3() { "$FIXTURE_PYTHON" "$@"; }
+"""
+    script = """
+set -e -o pipefail
+phase=0
+snapshot_containers platform-api prometheus >before.json
+"""
+    if compare:
+        script += """
+phase=1
+snapshot_containers platform-api prometheus >after.json
+cmp -- before.json after.json
+"""
+    result = run(
+        [bash, "-c", setup + example("snapshot") + script], tmp_path,
+        FIXTURE_PYTHON=Path(sys.executable).as_posix(),
+        FIXTURE_DOCKER=stub.as_posix(), FIXTURE_FRAMES=fixture.as_posix(),
+    )
+    return result, json.loads((tmp_path / "before.json").read_text() or "null")
+
+
+def snapshot_container(container_id, **state):
+    return {
+        "Id": container_id,
+        "RestartCount": 0,
+        "State": {"Status": "running", "StartedAt": "2026-11-19T07:00:00Z", **state},
+        "Config": {"Env": ["FIXTURE_PRIVATE=do-not-print"]},
+    }
+
+
+def test_snapshot_handles_optional_health_and_ignores_list_order(bash, tmp_path):
+    rows = [
+        snapshot_container("a" * 64, Health={"Status": "healthy"}),
+        snapshot_container("b" * 64),
+        snapshot_container("c" * 64, Health=None),
+    ]
+    frames = [{"listed": [item["Id"] for item in order], "inspect": order}
+              for order in (rows, rows[::-1])]
+    result, snapshot = docker_snapshot(bash, tmp_path, frames, compare=True)
+    assert result.returncode == 0, result
+    assert snapshot == [[row["Id"], "running", "2026-11-19T07:00:00Z", 0, health]
+                        for row, health in zip(rows, ("healthy", "none", "none"), strict=True)]
+
+
+@pytest.mark.parametrize("failure", ["empty", "inspect", "vanished", "incomplete"])
+def test_snapshot_fails_without_a_complete_inspection(bash, tmp_path, failure):
+    rows = [snapshot_container("a" * 64), snapshot_container("b" * 64)]
+    frame = {"listed": [item["Id"] for item in rows], "inspect": rows}
+    expected = 1
+    if failure == "empty":
+        frame["listed"] = []
+    elif failure == "inspect":
+        frame["exit"] = expected = 37
+    elif failure == "vanished":
+        frame["inspect"] = rows[:1]
+        frame["exit"] = expected = 1
+    else:
+        frame["inspect"] = rows[:1]
+    result, snapshot = docker_snapshot(bash, tmp_path, [frame])
+    assert result.returncode == expected, result
+    if failure != "inspect":
+        assert snapshot is None
+
+
+@pytest.mark.parametrize("change", ["id", "status", "started", "restarts", "health"])
+def test_snapshot_detects_changed_container(bash, tmp_path, change):
+    before, after = (snapshot_container("a" * 64, Health={"Status": "healthy"}) for _ in range(2))
+    if change == "id":
+        after["Id"] = "b" * 64
+    elif change == "status":
+        after["State"]["Status"] = "exited"
+    elif change == "started":
+        after["State"]["StartedAt"] = "2026-11-19T07:00:01Z"
+    elif change == "restarts":
+        after["RestartCount"] = 1
+    else:
+        after["State"]["Health"]["Status"] = "unhealthy"
+    frames = [{"listed": [item["Id"]], "inspect": [item]} for item in (before, after)]
+    result, _ = docker_snapshot(bash, tmp_path, frames, compare=True)
+    assert result.returncode == 1, result
+    assert "differ" in result.stdout, result

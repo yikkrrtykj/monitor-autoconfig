@@ -18,14 +18,14 @@ const domainCard = (page, domain = domainHost) => page.locator(".ping-card-domai
 });
 const el = (page, name) => page.locator("#ping" + name);
 
-function matrix(metric, at, count = 31) {
+function matrix(metric, at, count = 31, interval = 2) {
   return ["up", "probe_success", "probe_icmp_duration_seconds"].map((field) => ({
     metric: { ...metric, __name__: field, ...(field === "probe_icmp_duration_seconds" ? { phase: "rtt" } : {}) },
-    values: Array.from({ length: count }, (_, i) => [at - (count - i) * 2, field === "probe_icmp_duration_seconds" ? "0.012" : "1"])
+    values: Array.from({ length: count }, (_, i) => [at - (count - i) * interval, field === "probe_icmp_duration_seconds" ? "0.012" : "1"])
   }));
 }
 
-function fixture(size, { builtIn = false } = {}) {
+function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
   const instant = () => Math.floor(Date.now() / 1000);
   const first = instant() - 120;
   const enabled = Math.min(size, 100);
@@ -54,6 +54,14 @@ function fixture(size, { builtIn = false } = {}) {
   let queryCount = 0;
   let activeQueries = 0;
   let queryPeak = 0;
+  const infrastructureRows = Array.from({ length: infrastructure }, (_, i) => ({
+    job: ["infra-isp-ping", "infra-ap-ping", "infra-dist-ping"][Math.min(i % 5, 2)],
+    instance: "fixture-" + i,
+    target_ip: "10.1." + Math.floor(i / 250) + "." + (i % 250 + 1)
+  }));
+  const samples = { raw: 0, rawPeak: 0, rawSize: 0, duplicateTargets: 0, rawInFlight: 0, dnsRaw: 0, dnsRawSize: 0 };
+  const requested = new Set();
+  const intervalFor = (row) => row.job === "infra-isp-ping" ? 1 : row.job === "infra-ap-ping" ? 5 : 2;
   const ops = [];
   const initial = () => ({ catalog: size, enabled, openCalls: opened, queryCount, queryPeak });
   async function intercept(route) {
@@ -111,7 +119,38 @@ function fixture(size, { builtIn = false } = {}) {
           rtt: .005, rtt_at: at - 2, count: 30, ok: 30 })
           .map(([field, value]) => ({ metric: { ...labels, ping_field: field }, value: [at, String(value)] }));
       }
+      const dnsRead = raw && /,custom_id=/.test(expression);
+      if (infrastructure && dnsRead) {
+        const matcher = /,custom_id=(~?)("(?:[^"\\]|\\.)*")/.exec(expression);
+        const value = JSON.parse(matcher[2]);
+        const chosen = active.filter((row) => matcher[1] ? new RegExp("^(?:" + value + ")$").test(row.id) : value === row.id);
+        samples.dnsRaw++;
+        samples.dnsRawSize = Math.max(samples.dnsRawSize, chosen.length);
+        rows = chosen.flatMap((row) => matrix(metric(row), at));
+      } else if (infrastructure && raw) {
+        const selectors = [...expression.matchAll(/instance=(~?)("(?:[^"\\]|\\.)*")/g)]
+          .map((match) => [match[1], JSON.parse(match[2])]);
+        const matched = [...infrastructureRows, ...active.map(metric)].filter((row) =>
+          selectors.some(([regex, value]) => regex ? new RegExp("^(?:" + value + ")$").test(row.instance) : value === row.instance)
+        );
+        assert.ok(matched.length, expression);
+        samples.raw++;
+        samples.rawPeak = Math.max(samples.rawPeak, ++samples.rawInFlight);
+        samples.rawSize = Math.max(samples.rawSize, matched.length);
+        for (const row of matched) {
+          const key = at + ":" + row.job + ":" + row.instance;
+          if (requested.has(key)) samples.duplicateTargets++;
+          requested.add(key);
+        }
+        rows = matched.flatMap((row) => matrix(row, at, 60 / intervalFor(row) + 1, intervalFor(row)));
+      } else if (infrastructure && !expression.includes('job="custom-ping"')) {
+        rows = infrastructureRows.flatMap((row) => Object.entries({
+          target: 1, source: 1, source_at: at - 1, probe: 1, probe_at: at - 1,
+          rtt: .012, rtt_at: at - 1, count: 60 / intervalFor(row), ok: 60 / intervalFor(row)
+        }).map(([field, value]) => ({ metric: { ...row, ping_field: field }, value: [at, String(value)] })));
+      }
       await new Promise((resolve) => setTimeout(resolve, 15));
+      if (infrastructure && raw && !dnsRead) samples.rawInFlight--;
       activeQueries--;
       return json({ status: "success", data: { resultType: raw ? "matrix" : "vector", result: rows } });
     }
@@ -121,7 +160,7 @@ function fixture(size, { builtIn = false } = {}) {
     const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml" };
     return route.fulfill({ path: file, contentType: types[path.extname(file)] || "application/octet-stream" });
   }
-  return { intercept, initial, ops, snapshot: () => ({ catalog, discovery }),
+  return { intercept, initial, ops, samples, snapshot: () => ({ catalog, discovery }),
     setSnapshot(next) { ({ catalog, discovery } = next); } };
 }
 
@@ -186,6 +225,56 @@ async function layout(browser) {
   record("layouts", evidence);
 }
 
+async function mixedPerformance(browser) {
+  const results = [];
+  for (const [total, custom] of [[50, 13], [100, 25], [300, 100]]) {
+    const infrastructure = total - custom;
+    const data = fixture(custom, { infrastructure });
+    const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    await context.route("**/*", (route) => data.intercept(route));
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    try {
+      // Pin the wall's clock to one cache window while measuring scroll and revisit.
+      const now = Math.floor(Date.now() / 30000) * 30000 + 15000;
+      await page.clock.setFixedTime(now);
+      const start = performance.now();
+      await page.goto(fixtureHost + "/ping", { waitUntil: "domcontentloaded" });
+      await page.waitForFunction((count) => document.querySelectorAll("#pingWall .ping-card").length === count, total);
+      const cardsMs = Math.round(performance.now() - start);
+      await page.locator("#pingWall .ping-card-chart svg").first().waitFor();
+      const firstTrendMs = Math.round(performance.now() - start);
+      await page.waitForTimeout(250);
+      const initialRaw = data.samples.raw;
+
+      const rawByScroll = [];
+      for (const ratio of [0.45, 0.9, 0]) {
+        const before = data.samples.raw;
+        const offset = await el(page, "Workspace").evaluate((root, ratio) => {
+          root.scrollTop = (root.scrollHeight - root.clientHeight) * ratio;
+          return root.scrollTop;
+        }, ratio);
+        if (ratio) assert.ok(offset > 0, "scroll must reach a different viewport");
+        await page.waitForTimeout(400);
+        rawByScroll.push(data.samples.raw - before);
+      }
+      assert.ok(rawByScroll[0] + rawByScroll[1] > 0);
+      assert.equal(rawByScroll.at(-1), 0, "same-window revisit must reuse the cached first view");
+      assert.equal(data.samples.duplicateTargets, 0);
+      assert.equal(data.samples.dnsRawSize, Math.ceil(custom / 2));
+      assert.ok(data.samples.rawSize > 0 && data.samples.rawSize <= 12 && data.samples.rawPeak <= 2);
+      assert.deepEqual(errors, []);
+      results.push({ total, infrastructure, fixed: Math.floor(custom / 2), dns: Math.ceil(custom / 2),
+        cardsMs, firstTrendMs, initialRaw, rawByScroll, cacheRevisitAvoided: initialRaw,
+        ...data.samples });
+    } finally {
+      await context.close();
+    }
+  }
+  record("mixed-browser-performance", results);
+  console.log("PING_DOMAIN_MIXED_BROWSER " + JSON.stringify(results));
+}
 async function syncStates(browser) {
   const evidence = [];
   const scenarios = [
@@ -424,6 +513,13 @@ async function isolated(browser, host) {
     await el(page, "HistoryTitle").getByText(domainHost, { exact: true }).waitFor();
     await el(page, "DnsHistory").locator("summary").click();
     await el(page, "DnsSegments").getByText(/172\.31\.248\.22/).first().waitFor();
+    await page.waitForFunction(() => !document.getElementById("pingExport").disabled);
+    const [deletedDownload] = await Promise.all([page.waitForEvent("download"), el(page, "Export").click()]);
+    const deletedCsv = fs.readFileSync(await deletedDownload.path(), "utf8");
+    assert.match(deletedCsv, /timestamp_utc/);
+    assert.match(deletedCsv, /172\.31\.248\.21/);
+    assert.match(deletedCsv, /172\.31\.248\.22/);
+    fs.writeFileSync(path.join(output, "isolated-history-after-delete.csv"), deletedCsv);
     assert.deepEqual(errors, []);
   } finally {
     record("isolated-operations", { operations, requests: requestLog, errors });
@@ -439,6 +535,7 @@ async function isolated(browser, host) {
     else {
       await syncStates(browser);
       await layout(browser);
+      await mixedPerformance(browser);
       await verifyFixedPoint(browser, dims, output);
       await verifyLossBuckets(browser, dims, output);
     }
