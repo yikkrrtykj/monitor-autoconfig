@@ -136,7 +136,8 @@ test("A→B→A, unconfirmed B, partial aggregate windows and historical statist
   const plotted = segments.rawSeries(target, points, 10, 44);
   assert.deepEqual(plotted.points.map((point) => point.rtt), [12, null, 36]);
   assert.deepEqual(segments.splitStatistics(plotted, 10, 44, false)
-    .map((item) => [item.target.generation, item.target.name, item.points.length]), [[1, "game.example.com", 1], [3, "renamed.example.com", 1]]);
+    .map((item) => [item.target.generation, item.target.name, item.points.length, item.start, item.end, item.span]),
+    [[1, "game.example.com", 1, 11, 20, 9], [3, "renamed.example.com", 1, 34, 44, 10]]);
   assert.ok(plotted.buckets.every((bucket) => bucket.total <= 1));
   const long = { ...target, segments: [{ ...last, start: 100, sampleNotBefore: 122 }] };
   const step = 20;
@@ -144,6 +145,20 @@ test("A→B→A, unconfirmed B, partial aggregate windows and historical statist
   const aggregated = segments.aggregate(long, new Map([["actual", { target: { ...target, ip: last.ip },
     buckets, points: buckets.map((bucket) => ({ t: bucket.to, rtt: 1 })) }]]), 100, 4900);
   assert.deepEqual(aggregated.buckets.slice(0, 3).map((bucket) => bucket.total), [0, 0, 10]);
+});
+
+test("DNS loss cells require the bucket owner and ignore unconfirmed rows and plotted breaks", () => {
+  const first = { ip: "192.0.2.1", generation: 1 };
+  const sameIp = { ...first, generation: 3 };
+  const result = (t, segment, verified, success) => ({ t, ip: segment.ip, segment, verified, scrape: 1, success, rtt: null });
+  const samples = [result(10, sameIp, true, 0), result(12, first, true, 0), result(14, sameIp, true, 1),
+    result(16, sameIp, false, 0), result(18, sameIp, true, 0)];
+  const series = { target: { key: "dns", dns: true }, points: [{ t: 17, rtt: null }], samples };
+  const pick = (from, to, segment) => history.bucketSelection(series, { from, to, segment }, false);
+  assert.equal(pick(10, 17, sameIp).rows[0].sample, samples[2]);
+  assert.equal(pick(10, 18, sameIp).rows[0].sample, samples[4]);
+  assert.equal(pick(10, 20, null), null);
+  assert.equal(pick(14, 17, sameIp), null);
 });
 
 test("a delayed sample response cannot revive a different active generation or a paused route", async () => {

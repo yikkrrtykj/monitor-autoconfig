@@ -19,11 +19,12 @@
   const sameRange = (a, b) => a.start === b.start && a.end === b.end;
 
   function duration(seconds) {
-    return [[86400, "天"], [3600, "小时"], [60, "分钟"], [1, "秒"]].map(([unit, label]) => {
-      const count = Math.floor(seconds / unit);
-      seconds %= unit;
+    let remaining = Math.round(seconds * 1000);
+    return [[86400000, "天"], [3600000, "小时"], [60000, "分钟"], [1000, "秒"], [1, "毫秒"]].map(([unit, label]) => {
+      const count = Math.floor(remaining / unit);
+      remaining %= unit;
       return count ? count + " " + label : "";
-    }).filter(Boolean).join(" ");
+    }).filter(Boolean).join(" ") || "0 秒";
   }
 
   function createHistoryPanel({ byId, data, run, cancel, replaceUrl, back }) {
@@ -108,14 +109,14 @@
     function renderPins() {
       plot?.marker(pin?.time);
       rawPlot?.marker(pin?.time);
-      byId("Pinned").innerHTML = pin ? `<h4>已固定 · ${timeline.time(pin.time)}</h4>${timeline.describe(pin)}` : "";
+      byId("Pinned").innerHTML = pin ? `<h4>${pin.aggregated ? "已固定聚合桶" : "已固定"} · ${timeline.time(pin.time)}</h4>${timeline.describe(pin)}` : "";
       byId("ClearPin").hidden = !pin;
       byId("Cursor").value = localInput(pin?.time ?? range.end);
     }
 
     function statistics(container, series, start, end, aggregated = false) {
       const groups = series.flatMap((entry) => dnsHistory.splitStatistics(entry, start, end, aggregated));
-      container.innerHTML = groups.map(({ target, points, buckets, span }, index) => {
+      container.innerHTML = groups.map(({ target, points, buckets, start: from, end: to, span }, index) => {
         const stats = aggregated ? model.lossStats(
           buckets.reduce((n, bucket) => n + bucket.total, 0),
           buckets.reduce((n, bucket) => n + bucket.success, 0), span, target.interval
@@ -125,7 +126,8 @@
         return `<article class="ping-metrics-card" style="--ping-series:${charts.colors[index % charts.colors.length]}">
           <h4>${esc(target.name)} · ${esc(target.ip)}${target.generation ? " · 代次 " + target.generation : ""}</h4>
           <dl>${fields.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join("")}</dl>
-          <small>${stats.success} 成功 · ${stats.failed} 失败 · 覆盖 ${pct(stats.coverage * 100)}<br>
+          <small>${stats.success} 成功 · ${stats.failed} 失败 · 采样覆盖 ${pct(stats.coverage * 100)}（按 ${duration(span)}）<br>
+          ${target.generation ? `覆盖范围 ${timeline.time(from)} — ${timeline.time(to)}<br>` : ""}
           ${aggregated ? "缩小至 1 小时内查看原始 RTT 统计" : `${stats.rttSamples} 个有效 RTT 样本`}</small>
         </article>`;
       }).join("") || '<p class="ping-empty">当前范围没有已确认的探测统计。</p>';
@@ -149,15 +151,27 @@
       const show = Boolean(pin && drill?.data);
       byId("DrillStatistics").hidden = !show;
       if (!show) return;
-      const end = Math.min(drill.end, Math.max(drill.start + 1, pin.time));
-      const start = Math.max(drill.start, end - Number(statsField.value));
+      // Raw overviews already hold the whole history range. The drill still owns
+      // its graph and CSV window, including after a click within the raw graph.
+      const loaded = overview.raw ? range : drill;
+      const rows = overview.raw ? overview.data : drill.data;
+      const { start, end, selected, historyClipped, loadClipped } =
+        history.statisticsWindow(range, loaded, pin.time, Number(statsField.value));
+      const reasons = [historyClipped && "历史查询边界", loadClipped && "下钻加载范围不足"].filter(Boolean);
+      const actual = duration(Math.max(0, end - start));
+      const limit = reasons.length ? "（受限于" + reasons.join("、") + "）" : "";
+      byId("DrillStatistics").querySelector("h4").textContent =
+        `固定点原始窗口统计 · 所选 ${duration(selected)} · 实际 ${actual}${limit} · ${timeline.time(start)} — ${timeline.time(end)}`;
+      const metrics = byId("DrillMetrics");
+      if (end <= start) {
+        metrics.innerHTML = '<p class="ping-empty">固定点前没有已加载的统计区间。</p>';
+        return;
+      }
       const series = targets.map((target) => ({
         target,
-        points: drill.data.get(target.key).filter(({ t }) => t > start && t <= end)
+        points: rows.get(target.key).filter(({ t }) => t > start && t <= end)
       }));
-      byId("DrillStatistics").querySelector("h4").textContent =
-        `固定点原始窗口统计 · ${timeline.time(start)} — ${timeline.time(end)}`;
-      statistics(byId("DrillMetrics"), series, start, end);
+      statistics(metrics, series, start, end);
     }
 
     function renderRaw() {
@@ -188,7 +202,8 @@
       const failures = byId("Failures").checked;
       const events = targets.flatMap((target) => drill.data.get(target.key).map((point) => ({ target, point })))
         .filter(({ point }) => !failures || point.success !== 1)
-        .sort((a, b) => pin ? Math.abs(a.point.t - pin.time) - Math.abs(b.point.t - pin.time) : b.point.t - a.point.t);
+        .sort((a, b) => pin ? Math.abs(a.point.t - pin.time) - Math.abs(b.point.t - pin.time) ||
+          Number(b.target.key === pin.targetKey) - Number(a.target.key === pin.targetKey) : b.point.t - a.point.t);
       byId("Events").innerHTML = events.length ? events.slice(0, 20).map(({ target, point }) => `
         <tr><td>${esc(timeline.time(point.t))}</td><td>${esc(point.segment?.address || target.name)} · ${esc(point.ip || target.ip)}</td>
         <td>${history.sampleStatus(point)}${target.dns ? (point.verified ? " · 代次 " + point.segment.generation : " · 未确认原始记录") : ""}</td><td>${charts.fmt(point.rtt)}</td></tr>`).join("") : '<tr><td colspan="4">该窗口没有探测记录</td></tr>';
@@ -226,15 +241,17 @@
     }
 
     function setPin(pick, isRaw = false) {
-      if (pin?.time === pick.time && pin.aggregated === pick.aggregated) {
+      const sameWindow = pin?.time === pick.time && pin.aggregated === pick.aggregated;
+      if (sameWindow && pin.targetKey === pick.targetKey) {
         clearPin();
         return;
       }
       pin = pick;
       error();
       renderPins();
-      // Keep the existing drill graph and its samples under a click in the drill.
-      if (isRaw) {
+      // A click within the drill or a different target at the same anchor
+      // can reuse the existing chart, CSV range and in-flight window request.
+      if (isRaw || sameWindow) {
         renderDrillSummary();
         renderEvents();
       } else refreshDrill();
@@ -361,8 +378,15 @@
     byId("Locate").addEventListener("click", () => locate(fromInput(byId("Cursor"))));
     byId("ClearPin").addEventListener("click", clearPin);
     byId("OverviewLoss").addEventListener("click", (event) => {
-      const button = event.target.closest("[data-cursor]");
-      if (button) locate(Number(button.dataset.cursor));
+      const button = event.target.closest("[data-bucket-index]");
+      if (!button || !overview) return;
+      const key = button.closest("[data-target-key]")?.dataset.targetKey;
+      const series = overview.series.find(({ target }) => target.key === key);
+      const bucket = series?.buckets[Number(button.dataset.bucketIndex)];
+      if (!bucket) return;
+      const pick = history.bucketSelection(series, bucket, !overview.raw);
+      if (pick) setPin(pick);
+      else error("此处无原始样本。");
     });
     statsField.addEventListener("change", refreshDrill);
     byId("Failures").addEventListener("change", renderEvents);

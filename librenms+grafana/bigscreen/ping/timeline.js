@@ -4,11 +4,16 @@
   const charts = window.BSPingCharts;
   const history = window.BSPingHistory;
   const { escapeHtml: esc } = window.BSUtils;
-  const localTime = new Intl.DateTimeFormat("zh-CN", {
+  const timeOptions = {
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZoneName: "short"
-  });
-  const time = (t) => localTime.format(new Date(t * 1000));
+  };
+  const localTime = new Intl.DateTimeFormat("zh-CN", timeOptions);
+  const preciseTime = new Intl.DateTimeFormat("zh-CN", { ...timeOptions, fractionalSecondDigits: 3 });
+  const time = (t) => {
+    const ms = Math.round(t * 1000);
+    return (ms % 1000 ? preciseTime : localTime).format(new Date(ms));
+  };
   const subMillisecond = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 3 });
   const milliseconds = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
   const formatRtt = (value) => Number.isFinite(value) && value >= 0
