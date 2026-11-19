@@ -25,6 +25,152 @@ function matrix(metric, at, count = 31, interval = 2) {
   }));
 }
 
+function rawQueryKind(expression) {
+  if (!expression.startsWith("{__name__")) return null;
+  if (expression.endsWith("[300s]")) return "miniTrend";
+  if (expression.endsWith("[60s]") && /,custom_id=/.test(expression)) return "dnsStatus";
+  return null;
+}
+
+function observePrometheusQueries(page, isWall = () => true) {
+  const counters = Object.fromEntries(["all", "miniTrend", "dnsStatus"].map((name) => [
+    name, { started: 0, finished: 0, failed: 0, peak: 0 }
+  ]));
+  const inFlight = ({ started, finished, failed }) => started - finished - failed;
+  const pending = new Map();
+
+  function queryUrl(request) {
+    const url = new URL(request.url());
+    return url.origin === fixtureHost && /^\/prometheus\/api\/v1\/query(?:_range)?$/.test(url.pathname) ? url : null;
+  }
+
+  page.on("request", (request) => {
+    const url = queryUrl(request);
+    if (!url) return;
+    const kind = url.pathname.endsWith("/query") && isWall() && rawQueryKind(url.searchParams.get("query") || "");
+    const groups = kind ? [counters.all, counters[kind]] : [counters.all];
+    assert.ok(!pending.has(request), "duplicate query start event");
+    pending.set(request, groups);
+    for (const group of groups) {
+      group.started++;
+      group.peak = Math.max(group.peak, inFlight(group));
+    }
+  });
+
+  function settle(request, terminal) {
+    if (!queryUrl(request)) return;
+    const groups = pending.get(request);
+    assert.ok(pending.delete(request), "query ended without exactly one pending request");
+    for (const group of groups) group[terminal]++;
+  }
+
+  page.on("requestfinished", (request) => settle(request, "finished"));
+  page.on("requestfailed", (request) => settle(request, "failed"));
+
+  function snapshot() {
+    return Object.fromEntries(Object.entries(counters).map(([name, group]) => [
+      name, { ...group, inFlight: inFlight(group) }
+    ]));
+  }
+
+  async function drain() {
+    const until = performance.now() + 5000;
+    while (pending.size && performance.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const report = snapshot();
+    assert.equal(pending.size, 0, JSON.stringify(report));
+    for (const group of Object.values(report)) assert.equal(group.inFlight, 0);
+    return report;
+  }
+
+  return { snapshot, drain };
+}
+
+async function verifyQueryLifecycle(browser) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const queries = observePrometheusQueries(page);
+    await page.route(fixtureHost + "/lifecycle", (route) => route.fulfill({ contentType: "text/html", body: "<html></html>" }));
+    await page.goto(fixtureHost + "/lifecycle");
+    await page.evaluate(() => { window.queryControllers = {}; });
+
+    async function start(id, expression) {
+      const url = new URL("/prometheus/api/v1/query", fixtureHost);
+      url.searchParams.set("query", expression);
+      url.searchParams.set("case", id);
+      let accept;
+      const arrived = new Promise((resolve) => { accept = resolve; });
+      await page.route((requestUrl) => requestUrl.href === url.href, accept, { times: 1 });
+      const request = page.waitForRequest((event) => event.url() === url.href, { timeout: 5000 });
+      const result = page.evaluate(async ({ id, href }) => {
+        const controller = new AbortController();
+        window.queryControllers[id] = controller;
+        try {
+          const response = await fetch(href, { signal: controller.signal });
+          await response.text();
+          return response.status;
+        } catch (error) {
+          return error.name;
+        }
+      }, { id, href: url.href });
+      await request;
+      let timer;
+      try {
+        const deadline = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("route unavailable for " + id)), 5000);
+        });
+        return { route: await Promise.race([arrived, deadline]), result };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    for (const status of [200, 503, 201]) {
+      const call = await start(String(status), "vector(1)");
+      await call.route.fulfill({ status, body: "ok" });
+      assert.equal(await call.result, status);
+      await queries.drain();
+    }
+    const sequential = (await queries.drain()).all;
+    assert.deepEqual(sequential, { started: 3, finished: 3, failed: 0, peak: 1, inFlight: 0 });
+
+    const fixed = '{__name__="up",instance="fixed"}[300s]';
+    const dnsTrend = '{__name__="up",custom_id="domain"}[300s]';
+    const dnsStatus = '{__name__="up",custom_id="domain"}[60s]';
+    const parallel = await Promise.all([start("fixed", fixed), start("dns-trend", dnsTrend), start("dns-status", dnsStatus)]);
+    const held = queries.snapshot();
+    assert.deepEqual(Object.values(held).map(({ inFlight }) => inFlight), [3, 2, 1]);
+    await Promise.all(parallel.map(({ route }) => route.fulfill({ body: "ok" })));
+    assert.deepEqual(await Promise.all(parallel.map(({ result }) => result)), [200, 200, 200]);
+    const concurrent = await queries.drain();
+    assert.deepEqual(Object.values(concurrent).map(({ peak }) => peak), [3, 2, 1]);
+
+    const failed = await start("failed", fixed);
+    await failed.route.abort("failed");
+    assert.equal(await failed.result, "TypeError");
+    await queries.drain();
+    const cancelled = await start("cancelled", dnsTrend);
+    await page.evaluate(() => window.queryControllers.cancelled.abort());
+    assert.equal(await cancelled.result, "AbortError");
+    await queries.drain();
+    const timedOut = await start("timeout", dnsStatus);
+    await timedOut.route.abort("timedout");
+    assert.equal(await timedOut.result, "TypeError");
+    const final = await queries.drain();
+    assert.deepEqual(final, {
+      all: { started: 9, finished: 6, failed: 3, peak: 3, inFlight: 0 },
+      miniTrend: { started: 4, finished: 2, failed: 2, peak: 2, inFlight: 0 },
+      dnsStatus: { started: 2, finished: 1, failed: 1, peak: 1, inFlight: 0 }
+    });
+    record("query-lifecycle", { sequential, concurrent, final });
+    console.log("PING_QUERY_LIFECYCLE " + JSON.stringify({ sequential, concurrent, final }));
+  } finally {
+    await context.close();
+  }
+}
+
 function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
   const instant = () => Math.floor(Date.now() / 1000);
   const first = instant() - 120;
@@ -51,19 +197,16 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
       discoveryStatus: "DISCOVERED", withdrawalPending: false
     })) };
   let opened = 0;
-  let queryCount = 0;
-  let activeQueries = 0;
-  let queryPeak = 0;
   const infrastructureRows = Array.from({ length: infrastructure }, (_, i) => ({
     job: ["infra-isp-ping", "infra-ap-ping", "infra-dist-ping"][Math.min(i % 5, 2)],
     instance: "fixture-" + i,
     target_ip: "10.1." + Math.floor(i / 250) + "." + (i % 250 + 1)
   }));
-  const samples = { raw: 0, rawPeak: 0, rawSize: 0, duplicateTargets: 0, rawInFlight: 0, dnsRaw: 0, dnsRawSize: 0 };
+  const samples = { rawSize: 0, duplicateTargets: 0, dnsRawSize: 0 };
   const requested = new Set();
   const intervalFor = (row) => row.job === "infra-isp-ping" ? 1 : row.job === "infra-ap-ping" ? 5 : 2;
   const ops = [];
-  const initial = () => ({ catalog: size, enabled, openCalls: opened, queryCount, queryPeak });
+  const initial = () => ({ catalog: size, enabled, openCalls: opened });
   async function intercept(route) {
     const req = route.request();
     const url = new URL(req.url());
@@ -100,9 +243,6 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
       return json({ ok: false, error: "custom_ping_revision_conflict" }, 412);
     }
     if (url.pathname.startsWith("/prometheus/api/v1/")) {
-      queryCount++;
-      activeQueries++;
-      queryPeak = Math.max(queryPeak, activeQueries);
       const expression = url.searchParams.get("query") || "";
       const at = Number(url.searchParams.get("time")) || instant();
       let rows = [];
@@ -120,7 +260,7 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
           .map(([field, value]) => ({ metric: { ...labels, ping_field: field }, value: [at, String(value)] }));
       }
       const dnsRead = raw && /,custom_id=/.test(expression);
-      const trendRead = raw && expression.endsWith("[300s]");
+      const kind = rawQueryKind(expression);
       if (infrastructure && raw) {
         const field = dnsRead ? "custom_id" : "instance";
         const matcher = dnsRead ? /custom_id=(~?)("(?:[^"\\]|\\.)*")/g : /instance=(~?)("(?:[^"\\]|\\.)*")/g;
@@ -129,17 +269,14 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
         const matched = population.filter((row) => selectors.some(([regex, value]) =>
           regex ? new RegExp("^(?:" + value + ")$").test(row[field]) : value === row[field]));
         assert.ok(matched.length, expression);
-        if (trendRead) {
-          samples.raw++;
-          samples.rawPeak = Math.max(samples.rawPeak, ++samples.rawInFlight);
+        if (kind === "miniTrend") {
           samples.rawSize = Math.max(samples.rawSize, matched.length);
           for (const row of matched) {
             const key = at + ":" + row.job + ":" + row.instance;
             if (requested.has(key)) samples.duplicateTargets++;
             requested.add(key);
           }
-        } else if (dnsRead) {
-          samples.dnsRaw++;
+        } else if (kind === "dnsStatus") {
           samples.dnsRawSize = Math.max(samples.dnsRawSize, matched.length);
         }
         rows = matched.flatMap((row) => matrix(row, at, 60 / intervalFor(row) + 1, intervalFor(row)));
@@ -150,7 +287,6 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
         }).map(([field, value]) => ({ metric: { ...row, ping_field: field }, value: [at, String(value)] })));
       }
       await new Promise((resolve) => setTimeout(resolve, 15));
-      if (infrastructure && trendRead) samples.rawInFlight--;
       return json({ status: "success", data: { resultType: raw ? "matrix" : "vector", result: rows } });
     }
     if (url.pathname === "/config.js") return route.fulfill({ body: "window.BIGSCREEN_CONFIG={};", contentType: "text/javascript" });
@@ -171,6 +307,8 @@ async function layout(browser) {
     await context.route("**/*", (route) => data.intercept(route));
     const page = await context.newPage();
     page.setDefaultTimeout(11000);
+    let onWall = true;
+    const monitor = observePrometheusQueries(page, () => onWall);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     try {
@@ -207,6 +345,7 @@ async function layout(browser) {
       await el(page, "CustomReview").click();
       assert.equal(await el(page, "CustomIP").inputValue(), "new.example.test");
       await el(page, "CustomClose").click();
+      onWall = false;
       const history = domainCard(page, longHost).locator(".ping-card-open");
       if (width === 390) await history.tap();
       else await history.click();
@@ -216,12 +355,16 @@ async function layout(browser) {
       assert.equal(await el(page, "Workspace").evaluate((root) => root.scrollWidth <= root.clientWidth), true);
       await screenshot(page, "history-" + width + "x" + height);
       assert.deepEqual(errors, []);
-      evidence.push({ width, height, ...metrics, elapsedMs: Date.now() - started, ...data.initial() });
+      const queries = await monitor.drain();
+      assert.ok(queries.all.started > 0 && queries.all.peak > 0);
+      evidence.push({ width, height, ...metrics, elapsedMs: Date.now() - started, ...data.initial(),
+        queryCount: queries.all.started, queryPeak: queries.all.peak, queries });
     } finally {
       await context.close();
     }
   }
   record("layouts", evidence);
+  console.log("PING_DOMAIN_LAYOUT_QUERIES " + JSON.stringify(evidence.map(({ width, height, queries }) => ({ width, height, queries }))));
 }
 
 async function mixedPerformance(browser) {
@@ -232,6 +375,7 @@ async function mixedPerformance(browser) {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
     await context.route("**/*", (route) => data.intercept(route));
     const page = await context.newPage();
+    const monitor = observePrometheusQueries(page);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     try {
@@ -245,29 +389,32 @@ async function mixedPerformance(browser) {
       await page.locator("#pingWall .ping-card-chart svg").first().waitFor();
       const firstTrendMs = Math.round(performance.now() - start);
       await page.waitForTimeout(250);
-      const initialRaw = data.samples.raw;
+      const initialRaw = monitor.snapshot().miniTrend.started;
 
       const rawByScroll = [];
       for (const ratio of [0.45, 0.9, 0]) {
-        const before = data.samples.raw;
+        const before = monitor.snapshot().miniTrend.started;
         const offset = await el(page, "Workspace").evaluate((root, ratio) => {
           root.scrollTop = (root.scrollHeight - root.clientHeight) * ratio;
           return root.scrollTop;
         }, ratio);
         if (ratio) assert.ok(offset > 0, "scroll must reach a different viewport");
         await page.waitForTimeout(400);
-        rawByScroll.push(data.samples.raw - before);
+        rawByScroll.push(monitor.snapshot().miniTrend.started - before);
       }
       assert.ok(rawByScroll[0] + rawByScroll[1] > 0);
       assert.equal(rawByScroll.at(-1), 0, "same-window revisit must reuse the cached first view");
       assert.equal(data.samples.duplicateTargets, 0);
       assert.equal(data.samples.dnsRawSize, Math.ceil(custom / 2));
       assert.ok(data.samples.rawSize > 0 && data.samples.rawSize <= 12);
-      // Two scheduled trend batches can each query fixed IPv4 and DNS.
-      assert.ok(data.samples.rawPeak <= 4);
+      const queries = await monitor.drain();
+      assert.equal(queries.miniTrend.started, initialRaw + rawByScroll.reduce((sum, count) => sum + count, 0));
+      assert.ok(queries.dnsStatus.started > 0);
       assert.deepEqual(errors, []);
       results.push({ total, infrastructure, fixed: Math.floor(custom / 2), dns: Math.ceil(custom / 2),
         cardsMs, firstTrendMs, initialRaw, rawByScroll, cacheRevisitAvoided: initialRaw,
+        approxFixtureSampleSeconds: 60, queries,
+        miniTrendHttpConcurrency: { limit: 2, verdict: queries.miniTrend.peak <= 2 ? "PASS" : "FAIL" },
         ...data.samples });
     } finally {
       await context.close();
@@ -534,6 +681,7 @@ async function isolated(browser, host) {
   try {
     if (process.env.PING_D3_LIVE) await isolated(browser, process.env.PING_D3_LIVE);
     else {
+      await verifyQueryLifecycle(browser);
       await syncStates(browser);
       await layout(browser);
       await mixedPerformance(browser);
