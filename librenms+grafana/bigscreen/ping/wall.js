@@ -62,6 +62,7 @@
       node.innerHTML = `<button type="button" class="ping-card-open" data-action="open">
         <span class="ping-card-header"><strong></strong><span class="ping-badge"></span></span>
         <span class="ping-card-meta"><span class="ping-card-group"></span><span class="ping-card-ip"></span></span>
+        <span class="ping-card-dns" hidden></span>
         <span class="ping-card-metrics"><span>RTT <b></b></span><span>Loss <b></b></span></span>
         <span class="ping-card-chart"></span><span class="ping-card-note">近 5 分钟</span>
       </button><button type="button" class="ping-card-compare" data-action="compare"></button>`;
@@ -69,7 +70,7 @@
       return {
         node, title: node.querySelector("strong"), badge: node.querySelector(".ping-badge"),
         group: node.querySelector(".ping-card-group"), ip: node.querySelector(".ping-card-ip"),
-        rtt, loss, chart: node.querySelector(".ping-card-chart"), note: node.querySelector(".ping-card-note"),
+        dns: node.querySelector(".ping-card-dns"), rtt, loss, chart: node.querySelector(".ping-card-chart"), note: node.querySelector(".ping-card-note"),
         compare: node.querySelector(".ping-card-compare")
       };
     }
@@ -84,8 +85,14 @@
       card.target = target;
       if (card.title.textContent !== name) card.title.title = name;
       set(card.title, name);
-      set(card.group, model.groupLabel(target));
-      set(card.ip, ip);
+      set(card.group, target.dns ? [target.friendlyName, target.customGroup].filter(Boolean).join(" · ") : model.groupLabel(target));
+      set(card.ip, target.dns && ip ? (target.dnsStatus === "DNS_OK" ? "当前解析：" : "上次解析：") + ip : ip);
+      card.node.classList.toggle("ping-card-domain", !!target.dns);
+      card.dns.hidden = !target.dns;
+      set(card.dns, target.dnsLabel || "");
+      if (target.dns && previous && (previous.ip !== ip ||
+          previous.resolutionGeneration !== target.resolutionGeneration || previous.sampleNotBefore !== target.sampleNotBefore ||
+          status === "UNKNOWN")) clearTrend(card);
       if (card.node.dataset.state !== status) {
         card.node.dataset.state = status;
         card.badge.dataset.state = status;

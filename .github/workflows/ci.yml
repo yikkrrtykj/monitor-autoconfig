@@ -134,3 +134,50 @@ jobs:
 
           raise SystemExit(1 if failures else 0)
           PY
+
+  ping-domain-browser:
+    name: Ping domain browser and isolated services
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: librenms+grafana/requirements-dev.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Prepare isolated browser dependencies
+        run: |
+          pip install --disable-pip-version-check -r librenms+grafana/requirements-dev.txt
+          npm install --prefix "$RUNNER_TEMP/ping-browser" --no-audit --no-fund --no-save playwright@1.56.1
+      - name: Verify legacy Ping and D3 layouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PLAYWRIGHT_MODULE="$RUNNER_TEMP/ping-browser/node_modules/playwright"
+          export CHROMIUM_PATH="$(command -v google-chrome)"
+          test -x "$CHROMIUM_PATH"
+          export PING_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/legacy"
+          mkdir -p "$PING_BROWSER_OUTPUT"
+          node librenms+grafana/tests/chromium_ping_custom.js | tee "$PING_BROWSER_OUTPUT/run.log"
+          export PING_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/domains"
+          mkdir -p "$PING_BROWSER_OUTPUT"
+          node librenms+grafana/tests/chromium_ping_domains.js | tee "$PING_BROWSER_OUTPUT/layout-run.log"
+      - name: Exercise browser with Platform API, DNS, Prometheus and Blackbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PLAYWRIGHT_MODULE="$RUNNER_TEMP/ping-browser/node_modules/playwright"
+          export CHROMIUM_PATH="$(command -v google-chrome)"
+          export PING_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/domains"
+          export RUN_CUSTOM_PING_DOMAIN_BROWSER=1
+          pytest -q -s librenms+grafana/tests/test_custom_ping_dns.py::test_dns_real_prometheus_blackbox_generation_and_history | tee "$PING_BROWSER_OUTPUT/isolated-pytest.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ping-d3-browser-evidence
+          path: ${{ runner.temp }}/ping-browser-evidence
+          if-no-files-found: error

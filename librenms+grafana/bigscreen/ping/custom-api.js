@@ -58,7 +58,25 @@
       return request(op.path, { method: op.method, headers, body: op.body }, signal);
     }
 
-    return { list: (signal) => request(base, {}, signal),
+    async function resolutions(id, signal) {
+      const segments = [];
+      let cursor = 0;
+      for (let page = 0; page < 500; page += 1) {
+        const result = await request(base + "/" + encodeURIComponent(id) + "/resolutions?cursor=" + cursor, {}, signal);
+        const rows = result.segments;
+        if (!Array.isArray(rows) || rows.length > 200 || typeof result.more !== "boolean") throw failure("invalid_response");
+        for (const row of rows) {
+          if (row?.id !== id || !Number.isSafeInteger(row.generation) || row.generation <= cursor) throw failure("invalid_response");
+          cursor = row.generation;
+          segments.push(row);
+        }
+        if (result.nextCursor !== cursor || result.more && rows.length === 0) throw failure("invalid_response");
+        if (!result.more) return segments;
+      }
+      throw failure("resolution_history_limit");
+    }
+
+    return { resolutions, list: (signal) => request(base, {}, signal),
       discovery: (signal) => request(base + "/discovery", {}, signal),
       csrf: (signal) => request(base + "/csrf", {}, signal), operation, write };
   }

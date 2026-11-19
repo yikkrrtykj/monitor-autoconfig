@@ -5,6 +5,7 @@
   const charts = window.BSPingCharts;
   const history = window.BSPingHistory;
   const timeline = window.BSPingTimeline;
+  const dnsHistory = window.BSPingCustomHistory;
   const { queryError } = window.BSPingData;
   const { escapeHtml: esc, buildCsv } = window.BSUtils;
   const now = () => Math.floor(Date.now() / 1000);
@@ -45,12 +46,33 @@
     function error(message = "") { byId("HistoryError").textContent = message; }
 
     function identity() {
+      const singleDomain = targets.length === 1 && targets[0].dns;
+      byId("HistoryTitle").textContent = singleDomain ? targets[0].name : "Ping 历史";
       byId("Selected").innerHTML = targets.map((target, index) => `
         <div class="ping-history-target" style="--ping-series:${charts.colors[index]}">
-          <strong>${esc(target.name)}</strong><small>${esc(target.ip)} · ${esc(model.groupLabel(target))}</small>
+          <strong>${esc(target.name)}</strong><small>${esc(
+            [target.friendlyName, target.ip ? (target.dns ? "现解析 " : "") + target.ip : "", model.groupLabel(target)]
+              .filter(Boolean).join(" · "))}</small>
           <span class="ping-badge" data-state="${target.status ?? "UNKNOWN"}">${target.status ?? "UNKNOWN"}</span>
           ${targets.length > 1 ? `<button type="button" data-remove="${index}" aria-label="移除 ${esc(target.name)}">×</button>` : ""}
         </div>`).join("");
+    }
+
+    function renderSegments() {
+      const domains = targets.filter((target) => target.dns);
+      byId("DnsHistory").hidden = domains.length === 0;
+      byId("DnsSegments").innerHTML = domains.map((target) => {
+        const segments = dnsHistory.ranges(target, range.start, range.end);
+        return `<section><strong>${esc(target.name)}</strong>
+          <small>${segments.length} 个解析分段 · 未确认分段仅保留来源和原始记录</small>
+          ${segments.slice(-100).map((segment) => `<div>
+            ${esc(segment.address)} · ${esc(segment.ip)} · 代次 ${segment.generation}
+            <small>${timeline.time(segment.start)} — ${segment.end === null ? "当前" : timeline.time(segment.end)}
+            · ${segment.sampleNotBefore == null ? "未确认采样" : "采样严格晚于 " + timeline.time(segment.sampleNotBefore)}</small>
+          </div>`).join("")}
+          ${segments.length > 100 ? "<small>显示最近 100 段。缩小范围可查看更早分段。</small>" : ""}
+        </section>`;
+      }).join("");
     }
 
     function snapshot(entries) {
@@ -91,26 +113,28 @@
       byId("Cursor").value = localInput(pin?.time ?? range.end);
     }
 
-    function statistics(container, series, span, aggregated = false) {
-      container.innerHTML = series.map(({ target, points, buckets }, index) => {
+    function statistics(container, series, start, end, aggregated = false) {
+      const groups = series.flatMap((entry) => dnsHistory.splitStatistics(entry, start, end, aggregated));
+      container.innerHTML = groups.map(({ target, points, buckets, span }, index) => {
         const stats = aggregated ? model.lossStats(
           buckets.reduce((n, bucket) => n + bucket.total, 0),
           buckets.reduce((n, bucket) => n + bucket.success, 0), span, target.interval
         ) : model.rawStats(points, span, target.interval);
         const fields = [["P50", charts.fmt(stats.p50)], ["P95", charts.fmt(stats.p95)], ["Max", charts.fmt(stats.max)],
           ["STDDEV", charts.fmt(stats.stddev)], ["Loss", pct(stats.loss)]];
-        return `<article class="ping-metrics-card" style="--ping-series:${charts.colors[index]}">
-          <h4>${esc(target.name)} · ${esc(target.ip)}</h4>
+        return `<article class="ping-metrics-card" style="--ping-series:${charts.colors[index % charts.colors.length]}">
+          <h4>${esc(target.name)} · ${esc(target.ip)}${target.generation ? " · 代次 " + target.generation : ""}</h4>
           <dl>${fields.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join("")}</dl>
           <small>${stats.success} 成功 · ${stats.failed} 失败 · 覆盖 ${pct(stats.coverage * 100)}<br>
           ${aggregated ? "缩小至 1 小时内查看原始 RTT 统计" : `${stats.rttSamples} 个有效 RTT 样本`}</small>
         </article>`;
-      }).join("");
+      }).join("") || '<p class="ping-empty">当前范围没有已确认的探测统计。</p>';
     }
 
     function seriesFor(rows, start, end) {
       return targets.map((target) => {
         const points = rows.get(target.key);
+        if (target.dns) return dnsHistory.rawSeries(target, points, start, end);
         return { target, points, gap: target.interval * 1.5,
           buckets: model.bucketRows(points, start, end, Math.max(10, Math.ceil((end - start) / 90)), target.interval) };
       });
@@ -133,7 +157,7 @@
       }));
       byId("DrillStatistics").querySelector("h4").textContent =
         `固定点原始窗口统计 · ${timeline.time(start)} — ${timeline.time(end)}`;
-      statistics(byId("DrillMetrics"), series, end - start);
+      statistics(byId("DrillMetrics"), series, start, end);
     }
 
     function renderRaw() {
@@ -166,8 +190,8 @@
         .filter(({ point }) => !failures || point.success !== 1)
         .sort((a, b) => pin ? Math.abs(a.point.t - pin.time) - Math.abs(b.point.t - pin.time) : b.point.t - a.point.t);
       byId("Events").innerHTML = events.length ? events.slice(0, 20).map(({ target, point }) => `
-        <tr><td>${esc(timeline.time(point.t))}</td><td>${esc(target.name)} · ${esc(target.ip)}</td>
-        <td>${history.sampleStatus(point)}</td><td>${charts.fmt(point.rtt)}</td></tr>`).join("") : '<tr><td colspan="4">该窗口没有探测记录</td></tr>';
+        <tr><td>${esc(timeline.time(point.t))}</td><td>${esc(point.segment?.address || target.name)} · ${esc(point.ip || target.ip)}</td>
+        <td>${history.sampleStatus(point)}${target.dns ? (point.verified ? " · 代次 " + point.segment.generation : " · 未确认原始记录") : ""}</td><td>${charts.fmt(point.rtt)}</td></tr>`).join("") : '<tr><td colspan="4">该窗口没有探测记录</td></tr>';
     }
 
     function refreshDrill() {
@@ -238,7 +262,16 @@
       renderRaw();
       const { start, end } = range;
       const isRaw = end - start <= model.maxRaw;
-      run("history", (signal) => (isRaw ? data.raw : data.overview)(targets, start, end, signal), (rows) => {
+      const selection = targets;
+      byId("DnsHistory").hidden = true;
+      run("history", async (signal) => {
+        const resolved = selection.some((target) => target.dns) ? await data.hydrate(selection, signal) : selection;
+        const rows = await (isRaw ? data.raw : data.overview)(resolved, start, end, signal);
+        return { resolved, rows };
+      }, ({ resolved, rows }) => {
+        targets = resolved;
+        identity();
+        renderSegments();
         const series = isRaw ? seriesFor(rows, start, end) : targets.map((target) => {
           const result = rows.get(target.key);
           return { target, ...result, gap: result.step * 1.5 };
@@ -246,7 +279,7 @@
         overview = { data: rows, series, raw: isRaw };
         plot = graph(main, series, start, end, !isRaw, false);
         byId("OverviewLoss").innerHTML = charts.heatmap(series);
-        statistics(byId("Metrics"), series, end - start, !isRaw);
+        statistics(byId("Metrics"), series, start, end, !isRaw);
         refreshDrill();
       }, (reason) => { main.textContent = `历史${queryError(reason)}。可使用刷新重试。`; });
     }
@@ -284,10 +317,15 @@
     function download() {
       if (!drill?.data) return;
       const rows = [["timestamp_utc", "job", "name", "ip", "target_labels", "scrape_up", "probe_success", "rtt_ms"]];
+      const domains = targets.some((target) => target.dns);
+      if (domains) rows[0].push("resolution_generation", "sample_verified");
       for (const target of targets) {
         for (const point of drill.data.get(target.key)) {
-          rows.push([new Date(point.t * 1000).toISOString(), target.job, csvText(target.name), csvText(target.ip),
-            target.key, point.scrape, point.success, point.rtt]);
+          const row = [new Date(point.t * 1000).toISOString(), target.job,
+            csvText(point.segment?.address || target.name), csvText(point.ip || target.ip),
+            point.targetKey || target.key, point.scrape, point.success, point.rtt];
+          if (domains) row.push(point.segment?.generation ?? "", target.dns ? String(point.verified) : "");
+          rows.push(row);
         }
       }
       const url = URL.createObjectURL(new Blob([buildCsv(rows)], { type: "text/csv;charset=utf-8" }));

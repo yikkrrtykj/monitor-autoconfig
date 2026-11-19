@@ -17,7 +17,10 @@
 
   function describe({ rows, aggregated }) {
     return rows.map(({ target, sample, bucket }) => {
-      const identity = `<strong>${esc(target.name)} · ${esc(target.ip)}</strong>`;
+      const segment = sample?.segment || bucket?.segment;
+      const ip = sample?.ip || segment?.ip || (target.dns ? "" : target.ip);
+      const identity = `<strong>${esc(segment?.address || target.name)}${ip ? " · " + esc(ip) : ""}
+        ${segment ? " · 代次 " + segment.generation : ""}</strong>`;
       if (aggregated) {
         return `<div>${identity}<span>${bucket ? `聚合桶 ${time(bucket.from)} — ${time(bucket.to)} · Loss ${percent(bucket.loss)} · ${bucket.failed}/${bucket.total} 失败` : "此处无聚合桶"}</span></div>`;
       }
