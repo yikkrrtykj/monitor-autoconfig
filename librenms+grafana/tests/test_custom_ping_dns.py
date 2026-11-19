@@ -524,7 +524,7 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
                "--cap-add", "NET_RAW", "-v", fixture + ":ro", BLACKBOX, "--config.file=/fixture/blackbox.yml")
         docker("run", "-d", "--name", prom_name, "--network", net,
                "-v", fixture + ":ro", "-v", f"{collector.parent}:{SD_DIR}:ro", IMAGE,
-               "--config.file=/fixture/prometheus.yml")
+               "--config.file=/fixture/prometheus.yml", "--storage.tsdb.path=/prometheus")
         wait_for(lambda: prometheus_fetch(prom_name, "/api/v1/scrape_pools"), lambda raw: "custom-ping" in raw)
         created = create(local, private=["172.31.248.0/24"])
         assert inventory.observed(local.list_targets(), local)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"

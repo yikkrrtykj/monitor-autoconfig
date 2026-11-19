@@ -65,6 +65,9 @@ def restore_cold_archive(
 
     history_rows = historic_rows(prom_name)
     assert {row["metric"]["target_ip"] for row in history_rows if row["metric"]["custom_id"] == dns_id} == {a, b}
+    flags = json.loads(prometheus_fetch(prom_name, "/api/v1/status/flags"))["data"]
+    assert flags["storage.tsdb.path"] == "/prometheus"
+    docker("exec", prom_name, "test", "-d", "/prometheus/wal")
     docker("stop", "-t", "15", prom_name, timeout=25)
     container = json.loads(docker("inspect", prom_name).stdout)[0]
     assert container["State"]["ExitCode"] == 0
