@@ -107,7 +107,7 @@
     return prometheusRangeFor(query, rangeWindow(step), nameGetter);
   }
 
-  async function prometheusSamples(query, window, signal, { ifMibCounterNames = false } = {}) {
+  async function prometheusSamples(query, window, signal, { ifMibCounterNames = false, waitForErrorBody = false } = {}) {
     const ranged = Object.hasOwn(window, "step");
     const params = new URLSearchParams({ query, ...window, timeout: "7s" });
     const endpoint = ranged ? "query_range" : "query";
@@ -116,10 +116,13 @@
     const response = await fetch(url, {
       cache: "no-store", signal: AbortSignal.any([signal, AbortSignal.timeout(9000)])
     });
+    const jsonUnavailable = response.status === 503 && response.headers.get("content-type")?.includes("application/json");
+    // A mini-trend slot owns the transfer through its body, including HTTP errors.
+    if (waitForErrorBody && !response.ok && !jsonUnavailable) await response.body?.pipeTo(new WritableStream());
     if (response.status === 408 || response.status === 504) {
       throw new DOMException("监控查询超时", "TimeoutError");
     }
-    if (response.status === 503 && response.headers.get("content-type")?.includes("application/json")) {
+    if (jsonUnavailable) {
       const error = await response.json();
       if (error?.errorType === "timeout") throw new DOMException("监控查询超时", "TimeoutError");
     }
