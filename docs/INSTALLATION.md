@@ -261,26 +261,7 @@ systemctl is-active docker
 
 ### 更新
 
-普通更新使用 `main`。以下操作会部署并可能重启服务，先选择允许操作的时间。仓库假设在 `/root/monitor-autoconfig`；其它安装目录按实际修改。已跟踪文件有修改时先停下来检查，不自动覆盖，也不清理未跟踪文件。
-
-```bash
-(
-set -e
-cd /root/monitor-autoconfig
-test "$(git branch --show-current)" = main
-test -z "$(git status --porcelain --untracked-files=no)" || {
-  echo "已有文件修改，停止更新，请先检查 git status --short"
-  exit 1
-}
-git fetch origin
-git pull --ff-only origin main
-cd librenms+grafana
-./deploy.sh
-./deploy-check.sh configured
-)
-```
-
-`deploy.sh` 会负责已有安装的配置兼容和部署验证。`git pull` 不会自动删除 `event-config.yml`、`.env` 或 Docker 数据卷。项目暂未建立正式的 release/tag 流程；完成后会另行更新推荐的固定版本部署方式。
+已安装的公司服务器从[公司服务器发布与验收](runbooks/company-deployment.md)进入，按批准的目标 Merge SHA 和受影响服务执行。
 
 ### 版本与配置兼容
 
