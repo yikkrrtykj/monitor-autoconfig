@@ -141,7 +141,7 @@
       return ['job="custom-ping"', matcher("custom_id", targets.map((target) => target.metric.custom_id))].join(",");
     }
 
-    async function dnsRaw(targets, start, end, signal, live = false) {
+    async function dnsRaw(targets, start, end, signal, live = false, queryOptions) {
       const span = Math.ceil(end - start);
       const limit = live ? 100 : model.maxCompared;
       if (!targets.length || targets.length > limit || span < 1 || span > model.maxRaw) {
@@ -149,7 +149,7 @@
       }
       const match = dnsMatcher(targets);
       const expr = '{__name__=~"up|probe_success|probe_icmp_duration_seconds",' + match + ',phase=~"rtt|"}[' + span + 's]';
-      const result = await query(expr, { time: end }, signal);
+      const result = await query(expr, { time: end }, signal, queryOptions);
       const byId = new Map(targets.map((row) => [row.metric.custom_id, row]));
       const physical = new Map();
       let values = 0;
@@ -172,7 +172,7 @@
       return output;
     }
 
-    async function raw(targets, start, end, signal) {
+    async function raw(targets, start, end, signal, queryOptions) {
       const duration = Math.ceil(end - start);
       if (!targets.length || targets.length > model.maxRawTargets || duration < 1 || duration > model.maxRaw) {
         throw new Error("原始样本查询超出范围");
@@ -181,7 +181,7 @@
       if (expected > 24000) throw new Error("原始样本过多，请缩短查询窗口");
       const match = targetMatchers(targets);
       const expr = `{__name__=~"up|probe_success|probe_icmp_duration_seconds",${match},phase=~"rtt|"}[${duration}s]`;
-      const result = await query(expr, { time: end }, signal);
+      const result = await query(expr, { time: end }, signal, queryOptions);
       return model.rawRows(result, targets, start, end);
     }
 

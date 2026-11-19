@@ -32,6 +32,13 @@ function rawQueryKind(expression) {
   return null;
 }
 
+function miniTrendBudget(queries) {
+  assert.ok(queries.miniTrend.started > 0);
+  assert.ok(queries.miniTrend.peak <= 2, JSON.stringify(queries.miniTrend));
+  assert.equal(queries.miniTrend.inFlight, 0);
+  return { limit: 2, verdict: "PASS" };
+}
+
 function observePrometheusQueries(page, isWall = () => true) {
   const counters = Object.fromEntries(["all", "miniTrend", "dnsStatus"].map((name) => [
     name, { started: 0, finished: 0, failed: 0, peak: 0 }
@@ -171,16 +178,19 @@ async function verifyQueryLifecycle(browser) {
   }
 }
 
-function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
+function fixture(size, { builtIn = false, infrastructure = 0, miniTrendSeconds = 60, beforeMiniTrend,
+  alternateNames = false } = {}) {
   const instant = () => Math.floor(Date.now() / 1000);
   const first = instant() - 120;
   const enabled = Math.min(size, 100);
   const list = Array.from({ length: size }, (_, i) => {
     const id = "abcd1234-1000-4000-8000-" + String(i + 1).padStart(12, "0");
     const ip = "10.0." + Math.floor(i / 250) + "." + (i % 250 + 1);
-    const common = { id, name: "Game " + i, group: "Remote", enabled: i < enabled, revision: i + 1,
+    const alternate = "batch" + i + ".example.test";
+    const common = { id, name: alternateNames ? alternate : "Game " + i, group: "Remote", enabled: i < enabled, revision: i + 1,
       updatedAt: new Date(first * 1000).toISOString() };
-    return i % 2 ? { ...common, ip } : { ...common, address: i === 0 ? longHost : "game" + i + ".example.test",
+    const address = alternateNames ? alternate : i === 0 ? longHost : "game" + i + ".example.test";
+    return i % 2 ? { ...common, ip } : { ...common, address,
       kind: "dns", endpointRevision: i + 1, privateCidrs: [], resolvedIp: ip, aCount: 3, dnsStatus: "DNS_OK",
       resolutionGeneration: i + 1, sampleNotBefore: first, expiresAt: first + 300, dnsError: "" };
   });
@@ -202,9 +212,10 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
     instance: "fixture-" + i,
     target_ip: "10.1." + Math.floor(i / 250) + "." + (i % 250 + 1)
   }));
-  const samples = { rawSize: 0, duplicateTargets: 0, dnsRawSize: 0 };
+  const samples = { rawSize: 0, duplicateTargets: 0, dnsRawSize: 0, miniTrendSamplesPerSeries: {} };
   const requested = new Set();
   const intervalFor = (row) => row.job === "infra-isp-ping" ? 1 : row.job === "infra-ap-ping" ? 5 : 2;
+  const miniTrendCount = (interval) => miniTrendSeconds === 60 ? 60 / interval + 1 : miniTrendSeconds / interval;
   const ops = [];
   const initial = () => ({ catalog: size, enabled, openCalls: opened });
   async function intercept(route) {
@@ -261,7 +272,7 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
       }
       const dnsRead = raw && /,custom_id=/.test(expression);
       const kind = rawQueryKind(expression);
-      if (infrastructure && raw) {
+      if (raw && (infrastructure || kind === "miniTrend" && !builtIn)) {
         const field = dnsRead ? "custom_id" : "instance";
         const matcher = dnsRead ? /custom_id=(~?)("(?:[^"\\]|\\.)*")/g : /instance=(~?)("(?:[^"\\]|\\.)*")/g;
         const selectors = [...expression.matchAll(matcher)].map((match) => [match[1], JSON.parse(match[2])]);
@@ -271,15 +282,28 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
         assert.ok(matched.length, expression);
         if (kind === "miniTrend") {
           samples.rawSize = Math.max(samples.rawSize, matched.length);
+          assert.ok(matched.length <= 12, "one mini-trend HTTP query targets more than 12 endpoints");
           for (const row of matched) {
             const key = at + ":" + row.job + ":" + row.instance;
             if (requested.has(key)) samples.duplicateTargets++;
             requested.add(key);
           }
+          for (const row of matched) {
+            const interval = intervalFor(row);
+            samples.miniTrendSamplesPerSeries[interval] = miniTrendCount(interval);
+          }
+          if (beforeMiniTrend && await beforeMiniTrend({ dns: dnsRead, targets: matched.map((row) => row.instance) }) === "fail") {
+            return route.abort("failed");
+          }
         } else if (kind === "dnsStatus") {
           samples.dnsRawSize = Math.max(samples.dnsRawSize, matched.length);
         }
-        rows = matched.flatMap((row) => matrix(row, at, 60 / intervalFor(row) + 1, intervalFor(row)));
+        rows = matched.flatMap((row) => {
+          const interval = intervalFor(row);
+          const fullWindow = kind === "miniTrend" && miniTrendSeconds === 300;
+          return matrix(row, fullWindow ? at + interval : at,
+            kind === "miniTrend" ? miniTrendCount(interval) : 60 / interval + 1, interval);
+        });
       } else if (infrastructure && !expression.includes('job="custom-ping"')) {
         rows = infrastructureRows.flatMap((row) => Object.entries({
           target: 1, source: 1, source_at: at - 1, probe: 1, probe_at: at - 1,
@@ -317,6 +341,9 @@ async function layout(browser) {
       const wall = el(page, "Wall");
       const count = data.initial().enabled;
       await page.waitForFunction((count) => document.querySelectorAll("#pingWall .ping-card").length === count, count);
+      const cardsMs = Date.now() - started;
+      await wall.locator(".ping-card-chart svg").first().waitFor();
+      const firstTrendMs = Date.now() - started;
       await domainCard(page, longHost).locator(".ping-card-dns").getByText(/3 个 A 记录/).waitFor();
       const metrics = await wall.evaluate((wall) => ({
         columns: getComputedStyle(wall).gridTemplateColumns.split(" ").length,
@@ -357,21 +384,31 @@ async function layout(browser) {
       assert.deepEqual(errors, []);
       const queries = await monitor.drain();
       assert.ok(queries.all.started > 0 && queries.all.peak > 0);
+      const miniTrendHttpConcurrency = miniTrendBudget(queries);
+      assert.ok(data.samples.rawSize > 0);
+      const samples = { ...data.samples };
+      onWall = true;
+      await el(page, "BackToWall").click();
+      await wall.locator(".ping-card-chart svg").first().waitFor();
+      await page.waitForTimeout(250);
+      const throughReturn = await monitor.drain();
+      miniTrendBudget(throughReturn);
       evidence.push({ width, height, ...metrics, elapsedMs: Date.now() - started, ...data.initial(),
-        queryCount: queries.all.started, queryPeak: queries.all.peak, queries });
+        queryCount: queries.all.started, queryPeak: queries.all.peak, queries, throughReturn,
+        cardsMs, firstTrendMs, miniTrendHttpConcurrency, ...samples });
     } finally {
       await context.close();
     }
   }
   record("layouts", evidence);
-  console.log("PING_DOMAIN_LAYOUT_QUERIES " + JSON.stringify(evidence.map(({ width, height, queries }) => ({ width, height, queries }))));
+  console.log("PING_DOMAIN_LAYOUT_QUERIES " + JSON.stringify(evidence));
 }
 
-async function mixedPerformance(browser) {
+async function mixedPerformance(browser, sampleSeconds, workloads) {
   const results = [];
-  for (const [total, custom] of [[50, 13], [100, 25], [300, 100]]) {
+  for (const [total, custom] of workloads) {
     const infrastructure = total - custom;
-    const data = fixture(custom, { infrastructure });
+    const data = fixture(custom, { infrastructure, miniTrendSeconds: sampleSeconds });
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
     await context.route("**/*", (route) => data.intercept(route));
     const page = await context.newPage();
@@ -392,13 +429,24 @@ async function mixedPerformance(browser) {
       const initialRaw = monitor.snapshot().miniTrend.started;
 
       const rawByScroll = [];
-      for (const ratio of [0.45, 0.9, 0]) {
+      const renderedFullWindowPoints = {};
+      for (const ratio of [0.45, 0.9, ...(sampleSeconds === 300 ? ["AP"] : []), 0]) {
         const before = monitor.snapshot().miniTrend.started;
-        const offset = await el(page, "Workspace").evaluate((root, ratio) => {
-          root.scrollTop = (root.scrollHeight - root.clientHeight) * ratio;
-          return root.scrollTop;
-        }, ratio);
-        if (ratio) assert.ok(offset > 0, "scroll must reach a different viewport");
+        if (ratio === "AP") {
+          const ap = el(page, "Wall").locator(".ping-card").filter({
+            has: page.getByText("AP ICMP", { exact: true })
+          }).first();
+          await ap.scrollIntoViewIfNeeded();
+          const trace = await ap.locator(".ping-trace").getAttribute("d");
+          renderedFullWindowPoints.ap = (trace.match(/[ML]/g) || []).length;
+          assert.equal(renderedFullWindowPoints.ap, 60);
+        } else {
+          const offset = await el(page, "Workspace").evaluate((root, ratio) => {
+            root.scrollTop = (root.scrollHeight - root.clientHeight) * ratio;
+            return root.scrollTop;
+          }, ratio);
+          if (ratio) assert.ok(offset > 0, "scroll must reach a different viewport");
+        }
         await page.waitForTimeout(400);
         rawByScroll.push(monitor.snapshot().miniTrend.started - before);
       }
@@ -407,22 +455,169 @@ async function mixedPerformance(browser) {
       assert.equal(data.samples.duplicateTargets, 0);
       assert.equal(data.samples.dnsRawSize, Math.ceil(custom / 2));
       assert.ok(data.samples.rawSize > 0 && data.samples.rawSize <= 12);
+      if (sampleSeconds === 300) assert.deepEqual(data.samples.miniTrendSamplesPerSeries, { 1: 300, 2: 150, 5: 60 });
+      else for (const [interval, count] of Object.entries(data.samples.miniTrendSamplesPerSeries)) {
+        assert.equal(count, 60 / Number(interval) + 1);
+      }
       const queries = await monitor.drain();
       assert.equal(queries.miniTrend.started, initialRaw + rawByScroll.reduce((sum, count) => sum + count, 0));
       assert.ok(queries.dnsStatus.started > 0);
       assert.deepEqual(errors, []);
+      if (sampleSeconds === 300) {
+        const trace = await el(page, "Wall").locator(".ping-card").filter({
+          has: page.getByText("fixture-0", { exact: true })
+        }).locator(".ping-trace").getAttribute("d");
+        renderedFullWindowPoints.isp = (trace.match(/[ML]/g) || []).length;
+        assert.equal(renderedFullWindowPoints.isp, 300);
+      }
       results.push({ total, infrastructure, fixed: Math.floor(custom / 2), dns: Math.ceil(custom / 2),
         cardsMs, firstTrendMs, initialRaw, rawByScroll, cacheRevisitAvoided: initialRaw,
-        approxFixtureSampleSeconds: 60, queries,
-        miniTrendHttpConcurrency: { limit: 2, verdict: queries.miniTrend.peak <= 2 ? "PASS" : "FAIL" },
+        approxFixtureSampleSeconds: sampleSeconds, queries,
+        miniTrendHttpConcurrency: miniTrendBudget(queries),
+        ...(sampleSeconds === 300 ? { renderedFullWindowPoints } : {}),
         ...data.samples });
     } finally {
       await context.close();
     }
   }
-  record("mixed-browser-performance", results);
-  console.log("PING_DOMAIN_MIXED_BROWSER " + JSON.stringify(results));
+  record(sampleSeconds === 60 ? "mixed-browser-performance" : "mixed-browser-performance-300s", results);
+  console.log((sampleSeconds === 60 ? "PING_DOMAIN_MIXED_BROWSER " : "PING_DOMAIN_MIXED_BROWSER_300S ") + JSON.stringify(results));
 }
+
+function holdMiniTrends() {
+  const held = [];
+  let release = false;
+  return {
+    held,
+    beforeMiniTrend(info) {
+      if (release) return;
+      return new Promise((finish) => held.push({ ...info, finish }));
+    },
+    async waitFor(count) {
+      const until = performance.now() + 5000;
+      while (held.length < count && performance.now() < until) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.ok(held.length >= count, `expected ${count} gated requests, saw ${held.length}`);
+    },
+    releaseAll() {
+      release = true;
+      for (const entry of held) entry.finish();
+    }
+  };
+}
+
+async function controlledMiniTrendBudget(browser) {
+  const results = [];
+  for (const total of [24, 36]) {
+    const gate = holdMiniTrends();
+    const data = fixture(total, { beforeMiniTrend: gate.beforeMiniTrend, alternateNames: true });
+    const context = await browser.newContext({ viewport: { width: 1920, height: 1900 } });
+    await context.route("**/*", (route) => data.intercept(route));
+    const page = await context.newPage();
+    const monitor = observePrometheusQueries(page);
+    const fixedTime = Math.floor(Date.now() / 30000) * 30000 + 15000;
+    await page.clock.setFixedTime(fixedTime);
+    try {
+      await page.goto(fixtureHost + "/ping", { waitUntil: "domcontentloaded" });
+      const cards = el(page, "Wall").locator(".ping-card");
+      await page.waitForFunction((total) => document.querySelectorAll("#pingWall .ping-card").length === total, total);
+      assert.deepEqual(await cards.evaluateAll((nodes) => nodes.map((node) => node.classList.contains("ping-card-domain"))),
+        Array.from({ length: total }, (_, i) => i % 2 === 0));
+      await gate.waitFor(2);
+      // Keep both responses gated long enough for an erroneous extra request to arrive.
+      await page.waitForTimeout(150);
+      assert.equal(monitor.snapshot().miniTrend.inFlight, 2);
+      const dns = gate.held.find((request) => request.dns);
+      const fixed = gate.held.find((request) => !request.dns);
+      assert.equal(dns?.targets.length, 12);
+      assert.equal(fixed?.targets.length, 12);
+      if (total === 36) {
+        fixed.finish("fail");
+        await gate.waitFor(3);
+        assert.equal(monitor.snapshot().miniTrend.failed, 1);
+        assert.equal(monitor.snapshot().miniTrend.inFlight, 2);
+        assert.deepEqual([gate.held[2].dns, gate.held[2].targets.length], [false, 6]);
+        gate.held[2].finish();
+        await gate.waitFor(4);
+        assert.deepEqual([gate.held[3].dns, gate.held[3].targets.length], [true, 6]);
+        gate.held[3].finish();
+      }
+      dns.finish();
+      fixed.finish();
+      await domainCard(page, "batch0.example.test").locator(".ping-card-chart svg").waitFor();
+      await page.waitForTimeout(200);
+      const queries = await monitor.drain();
+      assert.equal(queries.miniTrend.started, total === 24 ? 2 : 4);
+      assert.equal(queries.miniTrend.failed, total === 24 ? 0 : 1);
+      assert.equal(new Set(gate.held.flatMap(({ targets }) => targets)).size, total);
+      assert.equal(data.samples.duplicateTargets, 0);
+      if (total === 36) await cards.nth(1).locator(".ping-card-note").getByText("查询失败").waitFor();
+      results.push({ total, queries, miniTrendHttpConcurrency: miniTrendBudget(queries), ...data.samples,
+        batches: gate.held.map(({ dns, targets }) => ({ dns, size: targets.length })) });
+    } finally {
+      gate.releaseAll();
+      await context.close();
+    }
+  }
+  record("controlled-mini-trend-browser", results);
+  console.log("PING_DOMAIN_CONTROLLED_BROWSER " + JSON.stringify(results));
+}
+
+async function miniTrendNavigation(browser) {
+  const gate = holdMiniTrends();
+  const data = fixture(25, { infrastructure: 75, beforeMiniTrend: gate.beforeMiniTrend });
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  await context.route("**/*", (route) => data.intercept(route));
+  const page = await context.newPage();
+  let onWall = true;
+  const monitor = observePrometheusQueries(page, () => onWall);
+  try {
+    const fixedTime = Math.floor(Date.now() / 30000) * 30000 + 15000;
+    await page.clock.setFixedTime(fixedTime);
+    await page.goto(fixtureHost + "/ping", { waitUntil: "domcontentloaded" });
+    const workspace = el(page, "Workspace");
+    const wall = el(page, "Wall");
+    await page.waitForFunction(() => document.querySelectorAll("#pingWall .ping-card").length === 100);
+    await gate.waitFor(1);
+    await workspace.evaluate(async (root) => {
+      for (const ratio of [1, 0, 0.8, 0.1]) {
+        root.scrollTop = (root.scrollHeight - root.clientHeight) * ratio;
+        await new Promise(requestAnimationFrame);
+      }
+    });
+    await el(page, "Search").fill("game12.example.test");
+    await el(page, "Category").selectOption("custom-Remote");
+    await el(page, "Category").selectOption("custom-Other");
+    await el(page, "Empty").getByText("没有符合条件的目标").waitFor();
+    await page.waitForTimeout(250);
+    const afterCancel = await monitor.drain();
+    assert.ok(afterCancel.miniTrend.failed > 0, "filtering cancels an actual browser request");
+    gate.releaseAll();
+    await el(page, "Category").selectOption("custom-Remote");
+    await wall.locator(".ping-card-chart svg").waitFor();
+    await page.waitForTimeout(200);
+    const beforeHistory = await monitor.drain();
+    const history = wall.locator(".ping-card-open");
+    onWall = false;
+    await history.tap();
+    await el(page, "HistoryTitle").getByText("game12.example.test", { exact: true }).waitFor();
+    await monitor.drain();
+    onWall = true;
+    await el(page, "BackToWall").tap();
+    await wall.locator(".ping-card-chart svg").waitFor();
+    await page.waitForTimeout(200);
+    const queries = await monitor.drain();
+    const result = { queries, afterCancel, beforeHistory, miniTrendHttpConcurrency: miniTrendBudget(queries),
+      ...data.samples };
+    record("mini-trend-navigation", result);
+    console.log("PING_DOMAIN_NAVIGATION_BROWSER " + JSON.stringify(result));
+  } finally {
+    gate.releaseAll();
+    await context.close();
+  }
+}
+
 async function syncStates(browser) {
   const evidence = [];
   const scenarios = [
@@ -684,7 +879,10 @@ async function isolated(browser, host) {
       await verifyQueryLifecycle(browser);
       await syncStates(browser);
       await layout(browser);
-      await mixedPerformance(browser);
+      await mixedPerformance(browser, 60, [[50, 13], [100, 25], [300, 100]]);
+      await mixedPerformance(browser, 300, [[300, 100]]);
+      await controlledMiniTrendBudget(browser);
+      await miniTrendNavigation(browser);
       await verifyFixedPoint(browser, dims, output);
       await verifyLossBuckets(browser, dims, output);
     }

@@ -37,15 +37,12 @@
     let restoreFrame = null;
     const wall = window.BSPingWall.createPingWall({ root, grid: byId("Wall"), viewportChanged });
     async function liveTrends(targets, start, end, signal) {
-      const fixed = targets.filter((target) => !target.dns);
-      const domains = targets.filter((target) => target.dns);
-      const [ordinary, dynamic] = await Promise.all([
-        fixed.length ? data.raw(fixed, start, end, signal) : new Map(),
-        domains.length ? data.dnsRaw(domains, start, end, signal, true) : new Map()
-      ]);
-      for (const target of domains) ordinary.set(target.key, dynamic.get(target.key)
+      const options = { waitForErrorBody: true };
+      if (!targets[0].dns) return data.raw(targets, start, end, signal, options);
+      const dynamic = await data.dnsRaw(targets, start, end, signal, true, options);
+      for (const target of targets) dynamic.set(target.key, dynamic.get(target.key)
         .filter((point) => point.t > target.sampleNotBefore));
-      return ordinary;
+      return dynamic;
     }
 
     const trends = createTrendLoader({ raw: liveTrends, changed: wall.paint });

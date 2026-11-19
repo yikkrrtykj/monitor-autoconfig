@@ -62,9 +62,19 @@
       }
       const queued = [...wanted.values()].filter(({ key }) => !covered.has(key) && !get(key));
       while (pending.size < concurrency && queued.length) {
-        const targets = queued.splice(0, model.maxRawTargets);
+        // One pending batch owns one HTTP request until raw settles. When both
+        // kinds are waiting, let the idle kind share the budget.
+        const active = pending.values().next().value;
+        const first = (active && !active.controller.signal.aborted &&
+          queued.find((target) => Boolean(target.dns) !== active.dns)) || queued[0];
+        const dns = Boolean(first.dns);
+        const targets = [];
+        for (let i = 0; i < queued.length && targets.length < model.maxRawTargets;) {
+          if (Boolean(queued[i].dns) === dns) targets.push(queued.splice(i, 1)[0]);
+          else i++;
+        }
         const versions = new Map(targets.map((target) => [target.key, signature(target)]));
-        const request = { end, keys: [...versions.keys()], versions, controller: new AbortController() };
+        const request = { dns, end, keys: [...versions.keys()], versions, controller: new AbortController() };
         pending.add(request);
         void load(request, targets);
       }
