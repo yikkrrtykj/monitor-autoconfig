@@ -218,7 +218,7 @@ printf 'Before=%s Target=%s\n' "$before" "$target"
 <!-- release-example: snapshot -->
 ```bash
 snapshot_containers() {
-  local listed
+  local listed inspected
   local -a ids
   listed=$(timeout 25s docker compose ps --all --no-trunc --quiet "$@" </dev/null) || return "$?"
   if [[ -z "$listed" ]]; then
@@ -226,8 +226,8 @@ snapshot_containers() {
     return 1
   fi
   mapfile -t ids <<<"$listed"
-  timeout 25s docker inspect --type container "${ids[@]}" </dev/null |
-    python3 -c '
+  inspected=$(timeout 25s docker inspect --type container "${ids[@]}" </dev/null) || return "$?"
+  python3 -c '
 import json
 import sys
 
@@ -252,11 +252,11 @@ except (KeyError, TypeError, ValueError):
     sys.exit("Invalid or incomplete Docker container snapshot")
 json.dump(sorted(snapshot), sys.stdout)
 print()
-' "${ids[@]}"
+' "${ids[@]}" <<<"$inspected"
 }
 ```
 
-例如只更新 Bigscreen，按变更单设置数组 `unchanged_services` 并在更新前运行 `snapshot_containers "${unchanged_services[@]}" >"$backup_dir/containers.before.json"`。更新后使用同样的服务列表写 `containers.after.json`，再用 `cmp -- "$backup_dir/containers.before.json" "$backup_dir/containers.after.json"`。容器健康字段缺失和 `null` 均记为 `none`。使用原始 inspect JSON 读取可选字段，仅写出容器 ID、运行状态、启动时间、重启次数和健康状态。inspect 失败、列表为空或采集期间容器消失时停止，快照文件不可用于验收。快照只能核对两次观测的容器状态。
+例如只更新 Bigscreen，在当前阶段脚本设置数组 `unchanged_services`，将 `backup_dir` 指向步骤 3 已核验的私有目录，再在更新前运行 `snapshot_containers "${unchanged_services[@]}" >"$backup_dir/containers.before.json"`。更新后使用同样的服务列表写 `containers.after.json`，再用 `cmp -- "$backup_dir/containers.before.json" "$backup_dir/containers.after.json"`。容器健康字段缺失和 `null` 均记为 `none`。使用原始 inspect JSON 读取可选字段，仅写出容器 ID、运行状态、启动时间、重启次数和健康状态。inspect 失败、列表为空或采集期间容器消失时停止，快照文件不可用于验收。快照只能核对两次观测的容器状态。
 
 普通静态文件示例片段在部署目录执行。先把 `asset`、实际 `route`、`port`、`target`、`worker_uid`、`worker_gid` 设为已核对的值。此处 worker 的文件系统身份与有效 UID/GID 一致。读取文件会同时验证路径上的目录可遍历。
 

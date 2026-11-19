@@ -531,8 +531,7 @@ def test_snapshot_fails_without_a_complete_inspection(bash, tmp_path, failure):
         frame["inspect"] = rows[:1]
     result, snapshot = docker_snapshot(bash, tmp_path, [frame])
     assert result.returncode == expected, result
-    if failure != "inspect":
-        assert snapshot is None
+    assert snapshot is None
 
 
 @pytest.mark.parametrize("change", ["id", "status", "started", "restarts", "health"])

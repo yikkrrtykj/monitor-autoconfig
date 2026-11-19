@@ -54,13 +54,20 @@ def restore_cold_archive(
     confirmation = wait_for(lambda: dns(source), lambda row: row["pingStatus"] == "UP")
     original = source.list_targets()
     original_history = source.resolution_history(dns_id)
-    last_point = time()
+    # Freeze an older evaluation point so a scrape still in flight at shutdown
+    # cannot add a sample to the very interval being compared.
+    last_point = time() - 3
     historic_query = 'count by (custom_id,target_ip) (count_over_time(probe_success{job="custom-ping"}[5m]))'
     history_rows = query(prom_name, historic_query, last_point)
     assert {row["metric"]["target_ip"] for row in history_rows if row["metric"]["custom_id"] == dns_id} == {a, b}
     docker("stop", "-t", "15", prom_name, timeout=25)
     container = json.loads(docker("inspect", prom_name).stdout)[0]
     assert container["State"]["ExitCode"] == 0
+    if "Health" not in container["State"]:
+        guarded = docker("inspect", "--format", "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+                         prom_name, check=False)
+        print(f"PING_DOCKER_OPTIONAL_HEALTH guarded_go_template_exit={guarded.returncode} "
+              f"missing_key={'map has no entry' in guarded.stderr}")
     tsdb = next(mount["Name"] for mount in container["Mounts"] if mount["Destination"] == "/prometheus")
 
     backup = tmp_path / "private-backup"
@@ -84,9 +91,10 @@ def restore_cold_archive(
     try:
         for name, source_volume in sources.items():
             filename = name + ".tar"
-            archive_command(backup_mount, "-cpf", f"{source_volume}:/data:ro", filename)
             path = backup / filename
-            path.chmod(0o600)
+            # Create the archive as the test runner before root writes through the bind mount.
+            path.touch(mode=0o600)
+            archive_command(backup_mount, "-cpf", f"{source_volume}:/data:ro", filename)
             assert path.stat().st_size > 0
             docker(
                 "run", "--rm", "--network", "none", "--user", "0", "--entrypoint", "/bin/tar",
@@ -137,6 +145,7 @@ def restore_cold_archive(
         assert paused.manifest.read_bytes() == source.manifest.read_bytes()
         assert paused.list_targets()["revision"] == original["revision"]
 
+        pause_started = time()
         docker(
             "run", "-d", "--name", destination, "--user", "0", "--network", net,
             "-v", fixture + ":ro", "-v", f"{destination}-custom-ping-discovery:{SD_DIR}:ro",
@@ -162,7 +171,7 @@ def restore_cold_archive(
             assert dns(paused)["pingStatus"] == "UNKNOWN"
             fixed_sample = f'timestamp(probe_success{{custom_id="{fixed_id}"}} == 1)'
             wait_for(lambda: query(destination, fixed_sample),
-                     lambda rows: len(rows) == 1 and float(rows[0]["value"][1]) > last_point)
+                     lambda rows: len(rows) == 1 and float(rows[0]["value"][1]) > pause_started)
 
             active = PingStore(state, discovery)
             active.reconcile()
@@ -174,13 +183,13 @@ def restore_cold_archive(
             ready = wait_for(lambda: dns(active), lambda row: row["pingStatus"] == "UP")
             assert ready["resolutionGeneration"] > confirmation["resolutionGeneration"]
             assert ready["discoveredGeneration"] == ready["resolutionGeneration"]
-            assert ready["sampleNotBefore"] > last_point and ready["resolvedIp"] == a
+            assert ready["sampleNotBefore"] > pause_started and ready["resolvedIp"] == a
             assert active.list_targets()["revision"] == original["revision"]
             assert query(destination, historic_query, last_point) == history_rows
             print("PING_SCHEMA2_DOCKER_RESTORE sections=4 sha256=4 permissions=PASS history=PASS pause_resume=PASS")
             authority = tmp_path / "fixture" / "authority.json"
             staged = authority.with_suffix(".tmp")
-            staged.write_text(json.dumps([{"targets": [a], "labels": {"name": "new authority"}}]), encoding="ascii")
+            staged.write_text(json.dumps([{"targets": [a], "labels": {"display_name": "new authority"}}]), encoding="ascii")
             staged.chmod(0o644)
             staged.replace(authority)
             wait_for(inventory.active, lambda rows: any(
