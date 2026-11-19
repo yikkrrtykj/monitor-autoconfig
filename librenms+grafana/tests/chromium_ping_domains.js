@@ -24,7 +24,7 @@ function matrix(metric, at, count = 31) {
   }));
 }
 
-function fixture(size) {
+function fixture(size, { builtIn = false } = {}) {
   const instant = () => Math.floor(Date.now() / 1000);
   const first = instant() - 120;
   const enabled = Math.min(size, 100);
@@ -40,6 +40,15 @@ function fixture(size) {
   const active = list.filter((row) => row.enabled);
   const metric = (row) => ({ job: "custom-ping", instance: row.id, custom_id: row.id, target_ip: row.ip || row.resolvedIp });
   const state = { ok: true, revision: size, manifestRevision: size, publication: "published", publishedRevision: size, dnsEnabled: true };
+  let catalog = { ...state, targets: list };
+  let discovery = { ...state, discoveredRevision: size,
+    activeTargets: active.map((row) => ({
+      id: row.id, ip: row.ip || row.resolvedIp, revision: row.revision, resolutionGeneration: row.resolutionGeneration
+    })), dnsTargets: active.filter((row) => row.kind === "dns").map((row) => ({
+      id: row.id, dnsStatus: row.dnsStatus, resolvedIp: row.resolvedIp, resolutionGeneration: row.resolutionGeneration,
+      discoveredGeneration: row.resolutionGeneration, sampleNotBefore: first, pingStatus: "UP",
+      discoveryStatus: "DISCOVERED", withdrawalPending: false
+    })) };
   let opened = 0;
   let queryCount = 0;
   let activeQueries = 0;
@@ -53,15 +62,8 @@ function fixture(size) {
     if (url.origin !== fixtureHost) return route.abort();
     if (url.pathname === "/platform-api/auth/status") return json({ ok: true, enabled: true, authenticated: true });
     if (url.pathname === api + "/csrf") return json({ ok: true, csrfToken: "a".repeat(64) });
-    if (url.pathname === api && req.method() === "GET") { opened++; return json({ ...state, targets: list }); }
-    if (url.pathname === api + "/discovery") return json({ ...state, discoveredRevision: size,
-      activeTargets: active.map((row) => ({
-        id: row.id, ip: row.ip || row.resolvedIp, revision: row.revision, resolutionGeneration: row.resolutionGeneration
-      })), dnsTargets: active.filter((row) => row.kind === "dns").map((row) => ({
-        id: row.id, dnsStatus: row.dnsStatus, resolvedIp: row.resolvedIp, resolutionGeneration: row.resolutionGeneration,
-        discoveredGeneration: row.resolutionGeneration, sampleNotBefore: first, pingStatus: "UP",
-        discoveryStatus: "DISCOVERED", withdrawalPending: false
-      })) });
+    if (url.pathname === api && req.method() === "GET") { opened++; return json(catalog); }
+    if (url.pathname === api + "/discovery") return json(discovery);
     if (req.method() === "GET" && url.pathname.endsWith("/resolutions")) {
       const id = url.pathname.split("/").at(-2);
       const row = list.find((item) => item.id === id && item.kind === "dns");
@@ -69,6 +71,16 @@ function fixture(size) {
       return json({ ok: true, segments: [{ id, address: row.address, ip: row.resolvedIp,
         generation: row.resolutionGeneration, start: first - 1, end: null, sampleNotBefore: first }],
         more: false, nextCursor: row.resolutionGeneration });
+    }
+    if (req.method() === "DELETE" && builtIn && url.pathname === api + "/" + list[0].id) {
+      const deleted = list[0];
+      const revision = catalog.revision + 1;
+      assert.equal(req.headers()["if-match"], JSON.stringify(String(deleted.revision)));
+      assert.equal(req.headers()["x-csrf-token"], "a".repeat(64));
+      catalog = { ...catalog, revision, manifestRevision: revision, publishedRevision: revision, targets: [] };
+      discovery = { ...discovery, revision, publishedRevision: revision, discoveredRevision: null, activeTargets: [], dnsTargets: [] };
+      return json({ ok: true, target: null, id: deleted.id, savedRevision: revision, revision, replayed: false,
+        publication: "published", publishedRevision: revision });
     }
     if (req.method() === "PATCH" && url.pathname.startsWith(api + "/")) {
       const data = req.postDataJSON();
@@ -92,6 +104,12 @@ function fixture(size) {
             source: 1, source_at: at - 2, probe: 1, probe_at: at - 2, rtt: .012, rtt_at: at - 2, count: 30, ok: 30
           }).map(([field, value]) => ({ metric: { ...metric(row), ping_field: field }, value: [at, String(value)] })));
       }
+      if (builtIn && !raw && expression.includes("infra-core-ping")) {
+        const labels = { job: "infra-core-ping", instance: "Sync fixture core", target_ip: "192.0.2.254" };
+        rows = Object.entries({ target: 1, source: 1, source_at: at - 2, probe: 1, probe_at: at - 2,
+          rtt: .005, rtt_at: at - 2, count: 30, ok: 30 })
+          .map(([field, value]) => ({ metric: { ...labels, ping_field: field }, value: [at, String(value)] }));
+      }
       await new Promise((resolve) => setTimeout(resolve, 15));
       activeQueries--;
       return json({ status: "success", data: { resultType: raw ? "matrix" : "vector", result: rows } });
@@ -102,7 +120,8 @@ function fixture(size) {
     const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml" };
     return route.fulfill({ path: file, contentType: types[path.extname(file)] || "application/octet-stream" });
   }
-  return { intercept, initial, ops };
+  return { intercept, initial, ops, snapshot: () => ({ catalog, discovery }),
+    setSnapshot(next) { ({ catalog, discovery } = next); } };
 }
 
 async function layout(browser) {
@@ -164,6 +183,132 @@ async function layout(browser) {
     }
   }
   record("layouts", evidence);
+}
+
+async function syncStates(browser) {
+  const evidence = [];
+  const scenarios = [
+    ["schema1-empty-loaded", 1, "empty", true],
+    ["schema1-empty-missing", 1, "empty", false],
+    ["schema2-empty-loaded", 2, "empty", true],
+    ["schema2-empty-missing", 2, "empty", false],
+    ["all-disabled-loaded", 2, "disabled", true],
+    ["all-disabled-missing", 2, "disabled", false],
+    ["last-dns-deleted", 2, "delete", true],
+    ["dns-awaiting-resolution", 2, "resolving", true],
+    ["dns-awaiting-publication", 2, "publishing", false],
+    ["dns-awaiting-discovery", 2, "discovering", false],
+    ["dns-withdrawal-pending", 2, "withdrawing", false],
+    ["mixed-awaiting-publication", 2, "mixed-publishing", false],
+    ["mixed-awaiting-resolution", 2, "mixed-resolving", true],
+    ["mixed-discovered", 2, "mixed", true]
+  ];
+  try {
+    // Collect the actual DOM of each scenario before asserting it, including
+    // the old-head failure. Built-in evidence stays UP in every scenario.
+    for (const [name, schema, phase, acknowledged] of scenarios) {
+      const context = await browser.newContext({ viewport: { width: 1366, height: 768 } });
+      const data = fixture(2, { builtIn: true });
+      const { catalog, discovery } = data.snapshot();
+      const [domain, fixed] = catalog.targets;
+      const [dynamicEndpoint, fixedEndpoint] = discovery.activeTargets;
+      const [found] = discovery.dnsTargets;
+      const mixed = phase.startsWith("mixed");
+      const hasFixed = mixed;
+      const hasDns = !["empty", "disabled"].includes(phase);
+      const resolving = phase.endsWith("resolving");
+      const publishing = phase.endsWith("publishing");
+      const withdrawing = phase === "withdrawing";
+      const pending = publishing || phase === "discovering" || withdrawing;
+      catalog.targets = phase === "disabled" ? [domain, fixed].map((row) => ({ ...row, enabled: false })) :
+        !hasDns ? [] : [resolving ? { ...domain, dnsStatus: "DNS_PENDING", resolvedIp: null,
+          resolutionGeneration: null, sampleNotBefore: null } : withdrawing ? { ...domain, dnsStatus: "DNS_ERROR" } : domain,
+        ...(hasFixed ? [fixed] : [])];
+      if (schema === 1) {
+        delete catalog.manifestRevision;
+        delete catalog.dnsEnabled;
+      }
+      if (publishing) {
+        catalog.publication = "pending";
+        catalog.publishedRevision = null;
+      }
+      discovery.publishedRevision = catalog.publishedRevision;
+      discovery.discoveredRevision = acknowledged ? catalog.revision : null;
+      discovery.activeTargets = [
+        ...(hasDns && !resolving && (!pending || withdrawing) ? [dynamicEndpoint] : []),
+        ...(hasFixed ? [fixedEndpoint] : [])
+      ];
+      discovery.dnsTargets = !hasDns ? [] : resolving || pending
+        ? [{ ...found, ...Object.fromEntries(["dnsStatus", "resolvedIp", "resolutionGeneration"].map((key) =>
+          [key, catalog.targets[0][key]])), discoveredGeneration: null, sampleNotBefore: null,
+          pingStatus: "UNKNOWN", discoveryStatus: "DISCOVERY_PENDING", withdrawalPending: withdrawing }] : [found];
+
+      await context.route("**/*", (route) => data.intercept(route));
+      const page = await context.newPage();
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.setDefaultTimeout(11000);
+      try {
+        await page.goto(fixtureHost + "/ping", { waitUntil: "domcontentloaded" });
+        const core = el(page, "Wall").locator(".ping-card").filter({ hasText: "Sync fixture core" });
+        await core.waitFor();
+        assert.equal(await core.getAttribute("data-state"), "UP");
+        await el(page, "CustomManage").click();
+        const inventory = el(page, "CustomInventory");
+        await inventory.getByText(new RegExp(catalog.targets.length + " / 300 总数")).waitFor();
+        if (hasFixed) await el(page, "CustomRows").getByText(/Game 1.*UP/).waitFor();
+        if (phase === "delete") {
+          await el(page, "CustomRows").getByRole("button", { name: /^删除/ }).click();
+          await el(page, "CustomDelete").click();
+          await inventory.getByText(/0 \/ 300 总数/).waitFor();
+          // Wait for the post-delete discovery read beyond the write receipt.
+          const empty = data.snapshot().discovery;
+          assert.equal(empty.discoveredRevision, null);
+          const response = page.waitForResponse((reply) => new URL(reply.url()).pathname === api + "/discovery");
+          await el(page, "CustomClose").click();
+          await el(page, "Refresh").click();
+          await response;
+          await el(page, "CustomManage").click();
+        }
+
+        const fixedCard = el(page, "Wall").locator(".ping-card").filter({ hasText: "Game 1" });
+        const dynamicCard = el(page, "Wall").locator(".ping-card-domain");
+        const actual = {
+          inventory: await inventory.textContent(),
+          notice: await el(page, "CustomNotice").textContent(),
+          source: await el(page, "Source").getAttribute("data-state"),
+          fixed: await fixedCard.count() ? await fixedCard.getAttribute("data-state") : null,
+          dns: await dynamicCard.count() ? await dynamicCard.getAttribute("data-state") : null,
+          errors
+        };
+        const synchronized = acknowledged && !resolving && phase !== "delete";
+        const sync = synchronized ? "已发现" : publishing ? "待发布" : "待发现";
+        evidence.push({ name, schema, phase, acknowledged, actual });
+        await screenshot(page, "sync-" + name + "-manager");
+        await el(page, "CustomClose").click();
+        await screenshot(page, "sync-" + name + "-wall");
+        assert.ok(actual.inventory.endsWith(sync), name + ": " + actual.inventory);
+        assert.equal(actual.notice, synchronized ? "" : "自定义目标 · " + sync, name);
+        assert.equal(actual.source, synchronized ? "UP" : "DEGRADED", name);
+        assert.equal(actual.fixed, hasFixed ? "UP" : null, name);
+        assert.equal(actual.dns, hasDns && phase !== "delete" ? synchronized ? "UP" : "UNKNOWN" : null, name);
+        assert.deepEqual(errors, []);
+        if (phase === "delete") {
+          const empty = data.snapshot();
+          data.setSnapshot({ ...empty, discovery: { ...empty.discovery, discoveredRevision: empty.catalog.revision } });
+          await el(page, "Refresh").click();
+          await el(page, "CustomManage").click();
+          await inventory.getByText(/已发现/).waitFor();
+          await el(page, "CustomClose").click();
+          const recovered = { notice: await el(page, "CustomNotice").textContent(),
+            source: await el(page, "Source").getAttribute("data-state") };
+          assert.deepEqual(recovered, { notice: "", source: "UP" });
+          evidence.at(-1).recovered = recovered;
+          await screenshot(page, "sync-last-dns-deleted-job-confirmed");
+        }
+      } finally { await context.close(); }
+    }
+  } finally { record("sync-states", evidence); }
 }
 
 async function isolated(browser, host) {
@@ -290,7 +435,10 @@ async function isolated(browser, host) {
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ["--no-sandbox"] });
   try {
     if (process.env.PING_D3_LIVE) await isolated(browser, process.env.PING_D3_LIVE);
-    else await layout(browser);
+    else {
+      await syncStates(browser);
+      await layout(browser);
+    }
     console.log(JSON.stringify({ chromium: browser.version(), mode: process.env.PING_D3_LIVE ? "isolated-services" : "layouts" }));
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

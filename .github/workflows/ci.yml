@@ -151,6 +151,7 @@ jobs:
           node-version: "20"
       - name: Prepare isolated browser dependencies
         run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk
           pip install --disable-pip-version-check -r librenms+grafana/requirements-dev.txt
           npm install --prefix "$RUNNER_TEMP/ping-browser" --no-audit --no-fund --no-save playwright@1.56.1
       - name: Verify D3 layouts in Chromium

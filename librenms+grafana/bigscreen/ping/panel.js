@@ -115,7 +115,7 @@
       }
       byId("CustomActions").hidden = !live;
       const customNotice = live ? custom.notice ||
-        (custom.catalog && !custom.items.length && custom.sync !== "已发现" ? "自定义目标 · " + custom.sync : "") : "";
+        (custom.catalog && custom.sync !== "已发现" ? "自定义目标 · " + custom.sync : "") : "";
       byId("CustomNotice").textContent = customNotice;
       customManager.update(custom);
       const counts = { UP: 0, DOWN: 0, DEGRADED: 0, UNKNOWN: 0 };

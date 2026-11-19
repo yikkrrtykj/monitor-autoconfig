@@ -219,3 +219,122 @@ test("DNS sample request failure preserves validated IPv4 readings", async () =>
   assert.equal(samples.get(model.identity(fixed)).status, "UP");
   assert.equal(samples.has(endpoint.key), false);
 });
+
+test("monitor separates catalog discovery from valid fixed and DNS probe evidence", async () => {
+  const pending = row({ dnsStatus: "DNS_PENDING", resolvedIp: null, resolutionGeneration: null, sampleNotBefore: null });
+  const unresolved = views(pending, { discoveryStatus: "DISCOVERY_PENDING", pingStatus: "UNKNOWN" });
+  const resolved = views();
+  const fixed = { id: id(2), name: "Fixed", group: "Remote", ip: "192.0.2.2", enabled: true,
+    revision: 7, updatedAt: new Date((at - 75) * 1000).toISOString() };
+  const physical = { id: fixed.id, ip: fixed.ip, revision: fixed.revision };
+  const fixedKey = custom.target(fixed, settings).key;
+  const cases = [];
+  const add = (name, authority, discovery, expected, fixedStatus = null, dnsStatus = null, source = new Map()) =>
+    cases.push({ name, authority, discovery, expected, fixedStatus, dnsStatus, source });
+
+  for (const schema of [1, 2]) {
+    const { manifestRevision, dnsEnabled, ...base } = resolved.authority;
+    const authority = { ...base, targets: [], ...(schema === 2 ? { manifestRevision, dnsEnabled } : {}) };
+    for (const loaded of [false, true]) {
+      const discovery = { ...resolved.discovery, activeTargets: [], dnsTargets: [], discoveredRevision: loaded ? 7 : null };
+      add("Schema " + schema + " empty, pool loaded=" + loaded, authority, discovery, loaded ? "已发现" : "待发现");
+      if (schema === 2) {
+        add("all disabled, pool loaded=" + loaded,
+          { ...authority, targets: [{ ...fixed, enabled: false }, { ...resolved.authority.targets[0], enabled: false }] },
+          discovery, loaded ? "已发现" : "待发现");
+      }
+    }
+  }
+
+  add("DNS pending despite empty pool acknowledgement", unresolved.authority,
+    { ...unresolved.discovery, activeTargets: [] }, "待发现", null, "UNKNOWN");
+  add("DNS publication pending", { ...resolved.authority, publication: "pending", publishedRevision: null },
+    { ...resolved.discovery, publishedRevision: null, discoveredRevision: null, activeTargets: [] }, "待发布", null, "UNKNOWN");
+  add("DNS address pending discovery", resolved.authority,
+    { ...resolved.discovery, discoveredRevision: null, activeTargets: [] }, "待发现", null, "UNKNOWN");
+  const withdrawn = views(row({ dnsStatus: "DNS_ERROR" }), {
+    discoveryStatus: "DISCOVERY_PENDING", withdrawalPending: true, pingStatus: "UNKNOWN"
+  });
+  add("DNS withdrawal pending", withdrawn.authority,
+    { ...withdrawn.discovery, discoveredRevision: null }, "待发现", null, "UNKNOWN");
+  add("DNS confirmed without a probe sample", resolved.authority, resolved.discovery, "已发现", null, "UNKNOWN");
+
+  for (const [status, rtt] of [["UP", 12], ["DOWN", null], ["DEGRADED", 80]]) {
+    const source = new Map([[fixedKey, { sourceAt: at - 1, status: status === "DOWN" ? "DOWN" : "UP", rtt,
+      loss: model.lossStats(30, 30, 60, 2) }]]);
+    const mixed = { ...unresolved.authority, targets: [fixed, pending] };
+    const discovery = { ...unresolved.discovery, activeTargets: [physical] };
+    add("healthy evidence independently available: " + status, mixed, discovery, "待发现", status, "UNKNOWN", source);
+    add("fixed evidence during DNS publication pending: " + status, { ...mixed, publication: "pending", publishedRevision: null },
+      { ...discovery, publishedRevision: null, discoveredRevision: null }, "待发布", status, "UNKNOWN", source);
+    add("both discovered: " + status, { ...resolved.authority, targets: [fixed, ...resolved.authority.targets] },
+      { ...resolved.discovery, activeTargets: [physical, ...resolved.discovery.activeTargets] },
+      "已发现", status, "UP", new Map([...source, ...resolved.source]));
+  }
+
+  const actual = [];
+  for (const scenario of cases) {
+    let last;
+    const monitor = custom.createMonitor({
+      client: { list: async () => scenario.authority, discovery: async () => scenario.discovery },
+      sample: async () => scenario.source, settings, visible: () => true, now: () => at,
+      changed: (view) => { last = view; }
+    });
+    try {
+      monitor.start();
+      await monitor.refresh();
+      actual.push([scenario.name, last.sync, last.items.find((item) => !item.dns)?.status ?? null,
+        last.items.find((item) => item.dns)?.status ?? null, last.notice]);
+    } finally { monitor.stop(); }
+  }
+  assert.deepEqual(actual, cases.map(({ name, expected, fixedStatus, dnsStatus }) => [name, expected, fixedStatus, dnsStatus, ""]));
+});
+
+test("deleting the last DNS target waits for the Schema 2 empty pool to be confirmed", async () => {
+  const { authority, discovery, source } = views();
+  let list = authority;
+  let found = discovery;
+  const events = [];
+  const monitor = custom.createMonitor({
+    client: { list: async () => list, discovery: async () => found },
+    sample: async () => source, settings, visible: () => true, now: () => at, changed: (view) => events.push(view)
+  });
+  try {
+    monitor.start();
+    await monitor.refresh();
+    assert.equal(events.at(-1).sync, "已发现");
+    list = { ...list, manifestRevision: 8, revision: 8, publishedRevision: 8, targets: [] };
+    found = { ok: true, revision: 8, publishedRevision: 8, discoveredRevision: null, activeTargets: [] };
+    const before = events.length;
+    monitor.saved({ id: id(), target: null, savedRevision: 8, revision: 8, publication: "published", publishedRevision: 8 });
+    await monitor.refresh();
+    assert.deepEqual(events.slice(before).map(({ items, sync }) => [items.length, sync]), [[0, "待发现"], [0, "待发现"]]);
+    found = { ...found, discoveredRevision: 8 };
+    await monitor.refresh();
+    assert.equal(events.at(-1).sync, "已发现");
+  } finally { monitor.stop(); }
+});
+
+test("the overall DNS discovery lease expires even when its first probe is still pending", async () => {
+  const { authority, discovery } = views(row({ expiresAt: at + 1 }));
+  let clock = at;
+  let events = [];
+  const monitor = custom.createMonitor({
+    client: { list: async () => authority, discovery: async () => discovery },
+    sample: async () => new Map(), settings, visible: () => true, now: () => clock,
+    changed: (view) => events.push(view)
+  });
+  try {
+    monitor.start();
+    await monitor.refresh();
+    assert.equal(events.at(-1).sync, "已发现");
+    assert.equal(events.at(-1).items[0].status, "UNKNOWN");
+    clock++;
+    events = [];
+    const refresh = monitor.refresh();
+    assert.deepEqual(events.map(({ sync }) => sync), ["待发现"]);
+    assert.equal(events[0].items[0].dnsStatus, "DNS_STALE");
+    await refresh;
+    assert.ok(events.every(({ sync }) => sync === "待发现"));
+  } finally { monitor.stop(); }
+});

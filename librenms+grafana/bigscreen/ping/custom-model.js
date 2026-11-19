@@ -91,7 +91,7 @@
       customGroup: row.group };
   }
 
-  function isDiscovered(catalog, discovery) {
+  function fixedDiscovered(catalog, discovery) {
     if (!catalog || catalog.complete === false || discovery?.revision !== catalog.revision) return false;
     const schemaTwo = catalog.manifestRevision === catalog.revision;
     if (!schemaTwo && (discovery.discoveredRevision !== catalog.revision ||
@@ -103,9 +103,25 @@
       active.get(row.id)?.ip === row.ip && active.get(row.id)?.revision === row.revision);
   }
 
+  function catalogSync(catalog, discovery, notice, at) {
+    if (!catalog) return "";
+    if (catalog.publication === "pending") return "待发布";
+    if (notice || catalog.publication !== "published" || catalog.publishedRevision !== catalog.revision ||
+        discovery?.publishedRevision !== catalog.revision || discovery.discoveredRevision !== catalog.revision ||
+        !fixedDiscovered(catalog, discovery)) return "待发现";
+
+    // D2 acknowledges the projected set, which can omit an unresolved DNS
+    // row. Overall sync also requires every enabled configuration to be found.
+    const enabled = catalog.targets.filter((row) => row.enabled);
+    return discovery.activeTargets.length === enabled.length &&
+      !discovery.dnsTargets?.some((row) => row.withdrawalPending) &&
+      enabled.every((row) => row.kind !== "dns" || dns.verifiedEndpoint(catalog, discovery, row, at))
+      ? "已发现" : "待发现";
+  }
+
   function present(catalog, discovery, samples, settings, observed = new Set(), notice = "", now = Date.now() / 1000) {
     if (!catalog) return [];
-    const discovered = isDiscovered(catalog, discovery);
+    const discovered = fixedDiscovered(catalog, discovery);
     return catalog.targets.filter((row) => row.enabled).map((row) => {
       if (row.kind === "dns") return dns.presentation(catalog, discovery, row, samples, settings, notice, now);
       const item = target(row, settings);
@@ -147,11 +163,11 @@
 
     function render(discovery, samples) {
       const catalog = state.current();
-      items = present(catalog, discovery, samples, settings, observed, notice, now());
+      const at = now();
+      items = present(catalog, discovery, samples, settings, observed, notice, at);
+      renderedSync = catalogSync(catalog, discovery, notice, at);
       scheduleExpiry();
       if (observed.size > 384) observed.clear();
-      renderedSync = !catalog ? "" : catalog.publication === "pending" ? "待发布" :
-        !notice && isDiscovered(catalog, discovery) ? "已发现" : "待发现";
       changed({ catalog, items, notice, sync: renderedSync });
     }
 
@@ -165,9 +181,11 @@
 
     function scheduleExpiry() {
       clearTimeout(expiryTimer);
-      const live = items.filter((item) => item.dns && item.status !== "UNKNOWN");
+      const live = items.filter((item) => item.dns && item.dnsStatus === "DNS_OK" &&
+        (item.status !== "UNKNOWN" || renderedSync === "已发现"));
       if (!active || !visible() || !live.length) return;
-      const when = Math.min(...live.map((item) => Math.min(item.expiresAt, item.sourceAt + 10.001)));
+      const when = Math.min(...live.map((item) => item.status === "UNKNOWN" ? item.expiresAt :
+        Math.min(item.expiresAt, item.sourceAt + 10.001)));
       expiryTimer = setTimeout(() => { expire(); scheduleExpiry(); }, Math.max(1, Math.ceil((when - now()) * 1000)));
     }
 
@@ -177,11 +195,13 @@
       const at = now();
       let expired = false;
       items = items.map((item) => {
-        if (item.status === "UNKNOWN" || (retireDns ? !item.dns : !stale(item, at))) return item;
-        expired = true;
-        if (item.dns && at >= item.expiresAt) {
+        if (item.dns && item.dnsStatus === "DNS_OK" && Number.isFinite(item.expiresAt) && at >= item.expiresAt) {
+          expired = true;
+          if (renderedSync === "已发现") renderedSync = "待发现";
           return { ...retired(item), dnsStatus: "DNS_STALE", dnsLabel: "DNS：解析已过期", sync: "等待重新解析" };
         }
+        if (item.status === "UNKNOWN" || (retireDns ? !item.dns : !stale(item, at))) return item;
+        expired = true;
         return item.dns ? { ...retired(item), sync: "等待新样本" } : retired(item);
       });
       if (!expired) return;
@@ -249,11 +269,13 @@
           const row = dnsRows.find(({ id }) => id === item.metric.custom_id);
           return row?.enabled ? dns.presentation(catalog, discovery, row, null, settings, "", now()) : null;
         }).filter(Boolean);
-        if (dnsChanged) {
+        const nextSync = catalogSync(catalog, discovery, notice, now());
+        if (dnsChanged || renderedSync === "已发现" && nextSync !== "已发现") {
+          renderedSync = nextSync;
           scheduleExpiry();
           changed({ catalog, items, notice, sync: renderedSync });
         }
-        const fixed = catalog.targets.some((row) => row.enabled && row.kind !== "dns") && isDiscovered(catalog, discovery);
+        const fixed = catalog.targets.some((row) => row.enabled && row.kind !== "dns") && fixedDiscovered(catalog, discovery);
         if (fixed || ready.length) {
           samples = await sample(at, signal, ready, fixed);
           if (signal.aborted) return false;
