@@ -105,7 +105,7 @@
       return { targets, agedOut: agedOut.size };
     }
 
-    async function custom(at, signal) {
+    async function fixedCustom(at, signal) {
       const match = 'job="custom-ping"';
       const rows = await query([...currentFields(match), ...lossFields(match, 60)].join(" or "), { time: at }, signal);
       if (rows.length > 30000) throw new Error("自定义监控样本超出上限");
@@ -113,6 +113,63 @@
       const inventory = fields.filter(({ metric }) => metric.ping_field === "source")
         .map((row) => ({ ...row, metric: { ...row.metric, ping_field: "target" } }));
       return new Map(model.snapshot([...inventory, ...fields], at, settings).map((target) => [target.key, target]));
+    }
+
+    async function custom(at, signal, endpoints = [], fixed = true) {
+      const [samples, domainSamples] = await Promise.all([
+        fixed ? fixedCustom(at, signal) : new Map(),
+        endpoints.length ? dnsRaw(endpoints, at - 60, at, signal, true).catch((error) => {
+          if (!fixed) throw error;
+          return new Map();
+        }) : new Map()
+      ]);
+      for (const target of endpoints) {
+        const rows = (domainSamples.get(target.key) || []).filter((point) => point.t > target.sampleNotBefore);
+        const last = rows.at(-1);
+        if (!last || last.scrape !== 1 || ![0, 1].includes(last.success)) continue;
+        samples.set(target.key, {
+          ...target, sourceAt: last.t, status: last.success ? "UP" : "DOWN", rtt: last.rtt,
+          loss: model.rawStats(rows, 60, target.interval)
+        });
+      }
+      return samples;
+    }
+
+    function dnsMatcher(targets) {
+      // Keep the URL bounded at 100 IDs. The returned physical series are
+      // still matched by exact UUID and IP for live reads.
+      return ['job="custom-ping"', matcher("custom_id", targets.map((target) => target.metric.custom_id))].join(",");
+    }
+
+    async function dnsRaw(targets, start, end, signal, live = false) {
+      const span = Math.ceil(end - start);
+      const limit = live ? 100 : model.maxCompared;
+      if (!targets.length || targets.length > limit || span < 1 || span > model.maxRaw) {
+        throw new Error("域名原始样本查询超出范围");
+      }
+      const match = dnsMatcher(targets);
+      const expr = '{__name__=~"up|probe_success|probe_icmp_duration_seconds",' + match + ',phase=~"rtt|"}[' + span + 's]';
+      const result = await query(expr, { time: end }, signal);
+      const byId = new Map(targets.map((row) => [row.metric.custom_id, row]));
+      const physical = new Map();
+      let values = 0;
+      for (const entry of result) {
+        const { metric } = entry;
+        const domain = byId.get(metric?.custom_id);
+        if (!domain || !model.customMetric(metric) || live && domain.ip !== metric.target_ip) continue;
+        const key = model.identity(metric);
+        physical.set(key, { key, domain, ip: metric.target_ip });
+        values += entry.values?.length ?? 0;
+        if (values > 60000) throw new Error("域名原始样本过多，请缩短查询窗口");
+      }
+      const output = new Map(targets.map(({ key }) => [key, []]));
+      for (const [key, points] of model.rawRows(result, [...physical.values()], start, end)) {
+        const { domain, ip } = physical.get(key);
+        const rows = output.get(domain.key);
+        for (const point of points) rows.push({ ...point, ip, targetKey: key });
+      }
+      for (const rows of output.values()) rows.sort((a, b) => a.t - b.t || a.ip.localeCompare(b.ip));
+      return output;
     }
 
     async function raw(targets, start, end, signal) {
@@ -128,7 +185,7 @@
       return model.rawRows(result, targets, start, end);
     }
 
-    async function overview(targets, start, end, signal) {
+    async function overview(targets, start, end, signal, domains = false) {
       const span = end - start;
       if (!targets.length || targets.length > model.maxCompared || span <= model.maxRaw || span > model.maxHistory) {
         throw new Error("历史概览查询超出范围");
@@ -137,15 +194,25 @@
       // Anchor at the requested end. The first, potentially partial bucket is
       // read separately so its denominator and data never extend before start.
       const first = end - Math.floor(span / step) * step;
-      const match = targetMatchers(targets);
+      const match = domains ? dnsMatcher(targets) : targetMatchers(targets);
       const range = { start: first + step, end, step };
       const [counts, current, partial] = await Promise.all([
         query(lossFields(match, step).join(" or "), range, signal),
         query(currentFields(match).join(" or "), range, signal),
         first > start ? query(lossFields(match, first - start).join(" or "), { time: first }, signal) : []
       ]);
-      const records = new Map(targets.map(({ key }) => [key, new Map()]));
-      for (const { metric, values, value } of [...counts, ...current, ...partial]) {
+      const results = [...counts, ...current, ...partial];
+      if (domains && results.reduce((total, row) => total + (row.values?.length ?? 1), 0) > 180000) {
+        throw new Error("域名聚合样本过多，请缩短查询窗口");
+      }
+      const ids = new Set(targets.map((target) => target.metric.custom_id));
+      const physical = domains ? new Map(results.filter(({ metric }) =>
+        model.customMetric(metric) && ids.has(metric.custom_id)).map(({ metric }) => {
+          const target = model.targetFromMetric(metric, settings);
+          return [target.key, target];
+        })) : new Map(targets.map((target) => [target.key, target]));
+      const records = new Map([...physical.keys()].map((key) => [key, new Map()]));
+      for (const { metric, values, value } of results) {
         const record = records.get(model.identity(metric));
         if (!record) continue;
         for (const [t, rawValue] of values || [value]) {
@@ -155,7 +222,7 @@
           fields.set(name, fields.has(name) ? null : model.number(rawValue));
         }
       }
-      return new Map(targets.map((target) => {
+      return new Map([...physical.values()].map((target) => {
         const record = records.get(target.key);
         const buckets = [];
         const points = [];
@@ -169,11 +236,12 @@
             && get("source") === 1 && get("probe") === 1 && get("probe_at") === at && get("rtt_at") === at;
           points.push({ t: valid ? at : to, rtt: valid ? model.rttMs(get("rtt")) : null, success: null });
         }
-        return [target.key, { buckets, points, step }];
+        return [target.key, { buckets, points, step, ...(domains ? { target } : {}) }];
       }));
     }
 
-    return { summary, custom, raw, overview };
+    return { summary, custom, raw, overview, dnsRaw,
+      dnsOverview: (targets, start, end, signal) => overview(targets, start, end, signal, true) };
   }
 
   const queryError = (error) => error?.name === "TimeoutError" ? "查询超时" : "查询失败";

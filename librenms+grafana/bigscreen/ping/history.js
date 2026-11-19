@@ -3,12 +3,15 @@
 
   const common = typeof module !== "undefined" && module.exports;
   const model = common ? require("./model.js") : window.BSPingModel;
+  const dns = common ? require("./custom-dns.js") : window.BSPingCustomDNS;
   const presets = Object.freeze({ "5m": 300, "15m": 900, "1h": 3600, "6h": 21600, "24h": 86400, "7d": model.maxHistory });
   const minZoom = 30;
 
   function parseTarget(key, settings) {
     // URLs contain canonical Prometheus labels, not a display name or IP shortcut.
     if (!key || key.length > 2048) return null;
+    const domain = dns.parseTarget(key);
+    if (domain) return domain;
     let entries;
     try { entries = JSON.parse(key); } catch { return null; }
     if (!Array.isArray(entries) || entries.length > 32 || entries.some((entry) =>
@@ -85,14 +88,14 @@
 
   function selection(series, time, aggregated) {
     let closest = null;
-    const rows = series.map(({ target, points, buckets }) => {
+    const rows = series.map(({ target, points, samples = points, buckets }) => {
       if (aggregated) {
         const candidate = buckets[lowerBound(buckets, time, "to")];
         const bucket = candidate && candidate.from <= time ? candidate : null;
         if (bucket && !closest) closest = { time: bucket.to, rtt: null };
         return { target, bucket };
       }
-      const sample = nearest(points, time, target.interval);
+      const sample = nearest(samples, time, target.interval);
       if (sample && (!closest || Math.abs(sample.t - time) < Math.abs(closest.time - time))) {
         closest = { time: sample.t, rtt: sample.rtt };
       }

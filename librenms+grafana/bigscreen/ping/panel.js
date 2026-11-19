@@ -36,10 +36,24 @@
     let restore = null;
     let restoreFrame = null;
     const wall = window.BSPingWall.createPingWall({ root, grid: byId("Wall"), viewportChanged });
-    const trends = createTrendLoader({ raw: data.raw, changed: wall.paint });
-    const historyPanel = createHistoryPanel({ byId, data, run, cancel, replaceUrl, back: backToWall });
+    async function liveTrends(targets, start, end, signal) {
+      const fixed = targets.filter((target) => !target.dns);
+      const domains = targets.filter((target) => target.dns);
+      const [ordinary, dynamic] = await Promise.all([
+        fixed.length ? data.raw(fixed, start, end, signal) : new Map(),
+        domains.length ? data.dnsRaw(domains, start, end, signal, true) : new Map()
+      ]);
+      for (const target of domains) ordinary.set(target.key, dynamic.get(target.key)
+        .filter((point) => point.t > target.sampleNotBefore));
+      return ordinary;
+    }
+
+    const trends = createTrendLoader({ raw: liveTrends, changed: wall.paint });
     const client = window.BSPingCustomAPI.createClient({ fetch: window.fetch.bind(window), crypto: window.crypto });
-    const customMonitor = window.BSPingCustomModel.createMonitor({ client, sample: data.custom, settings, now,
+    const historyData = window.BSPingCustomHistory.createHistoryData(client, data);
+    const historyPanel = createHistoryPanel({ byId, data: historyData, run, cancel, replaceUrl, back: backToWall });
+    const customMonitor = window.BSPingCustomModel.createMonitor({ client, sample: data.custom, settings,
+      now: () => Date.now() / 1000,
       visible: () => !document.hidden, changed: (update) => {
         custom = update;
         if (active && !inHistory && snapshotAt === null) renderSnapshot();
@@ -75,7 +89,7 @@
         (!category.value || category.value === target.category || category.value === target.group ||
           category.value === `custom-${target.customGroup}`) &&
         (!status.value || (status.value === "abnormal" ? target.status !== "UP" : status.value === target.status)) &&
-        (!term || [target.name, target.ip, target.subtitle, target.group, model.groupLabel(target)].some((value) => value.toLowerCase().includes(term))));
+        (!term || [target.name, target.ip, target.subtitle, target.group, model.groupLabel(target)].some((value) => String(value || "").toLowerCase().includes(term))));
       visible = new Map(filtered.map((target) => [target.key, target]));
       wall.render(visible, selected);
       const empty = dataState === "loading" ? "正在读取监控目标…" :
@@ -101,7 +115,7 @@
       }
       byId("CustomActions").hidden = !live;
       const customNotice = live ? custom.notice ||
-        (custom.catalog && !custom.items.length && custom.sync !== "已发现" ? "自定义目标 · " + custom.sync : "") : "";
+        (custom.catalog && custom.sync !== "已发现" ? "自定义目标 · " + custom.sync : "") : "";
       byId("CustomNotice").textContent = customNotice;
       customManager.update(custom);
       const counts = { UP: 0, DOWN: 0, DEGRADED: 0, UNKNOWN: 0 };
@@ -112,7 +126,8 @@
         dataState === "unavailable" || !!customNotice;
       const mode = snapshotAt === null ? "实时监控" : "历史快照 · " + localInput(snapshotAt).replace("T", " ");
       const source = byId("Source");
-      source.dataset.state = !available ? "UNKNOWN" : partial ? "DEGRADED" : "UP";
+      const state = !available ? "UNKNOWN" : partial ? "DEGRADED" : "UP";
+      if (source.dataset.state !== state) source.dataset.state = state;
       source.textContent = dataState === "loading" ? "正在读取" :
         !available ? ["Monitoring Unavailable", dataError].filter(Boolean).join(" · ") : partial ? `${mode} · 部分不可用` : mode;
       byId("Counts").textContent = Object.entries(states).map(([key, label]) => `${label} ${counts[key]}`).join(" · ");
@@ -140,7 +155,8 @@
         return;
       }
       const end = snapshotAt ?? Math.floor(now() / refreshSeconds) * refreshSeconds;
-      const current = nearby.map(({ key }) => visible.get(key)).filter(Boolean);
+      const current = nearby.map(({ key }) => visible.get(key)).filter((target) => target &&
+        (!target.dns || target.status !== "UNKNOWN" && target.sampleNotBefore < end));
       trends.update(current, end);
       for (const { key } of current) wall.paint(key, trends.get(key));
     }
@@ -299,7 +315,10 @@
       if (route.at === null) customMonitor.start();
       byId("SnapshotAt").value = localInput(route.at ?? now());
       if (snapshotAt !== route.at || !targets.length) setSnapshot(route.at);
-      else refreshSnapshot();
+      else {
+        renderSnapshot();
+        refreshSnapshot();
+      }
       if (restore && Array.isArray(restore.selected)) {
         selected.clear();
         for (const key of restore.selected.slice(0, model.maxCompared)) {

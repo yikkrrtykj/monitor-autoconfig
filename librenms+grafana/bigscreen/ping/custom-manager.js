@@ -2,6 +2,7 @@
   'use strict';
 
   const { groups } = window.BSPingCustomModel;
+  const dns = window.BSPingCustomDNS;
 
   const errors = {
     custom_ping_auth_required: "会话已结束，请重新登录。",
@@ -12,7 +13,8 @@
     custom_ping_csrf_rejected: "安全令牌已失效，请重新确认登录状态。",
     custom_ping_ip_outside_allowed_cidrs: "IPv4 不在批准的地址范围内。",
     custom_ping_invalid_ipv4: "请输入合法的单播 IPv4 地址。",
-    custom_ping_duplicate_ip: "该 IPv4 已被监控目标占用。",
+    custom_ping_duplicate_ip: "该地址或域名已被监控目标占用。",
+    custom_ping_invalid_address: "服务端拒绝该域名或私网授权，请核对格式。",
     custom_ping_capacity: "已达到目标数量上限。",
     custom_ping_idempotency_conflict: "请求标识与原操作不一致，请刷新清单。",
     custom_ping_not_found: "该目标已移除，请刷新清单。",
@@ -34,7 +36,24 @@
     const name = el("Name");
     const ip = el("IP");
     const group = el("Group");
-    const formFields = [name, ip, group, el("Save")];
+    const privateOptions = el("Private");
+    const cidrs = el("CIDRs");
+    const formFields = [name, ip, group, cidrs, el("Save")];
+    let grantAddress = null;
+
+    function updatePrivate() {
+      const parsed = dns.addressInput(ip.value);
+      const host = parsed?.kind === "dns" ? parsed.address : null;
+      if (host !== grantAddress) {
+        cidrs.value = "";
+        privateOptions.open = false;
+        grantAddress = host;
+      }
+      privateOptions.hidden = host === null;
+      return parsed;
+    }
+
+    ip.addEventListener("input", updatePrivate);
     const rows = el("Rows");
     let view = { catalog: null, items: [], notice: "" };
     let origin = null;
@@ -80,8 +99,8 @@
         : view.notice || publication;
       const status = new Map(view.items.map((item) => [item.metric.custom_id, item]));
       const writable = canModify();
-      const fingerprint = JSON.stringify([writable, !!token, list.map(({ id, name, ip, group, enabled, revision }) =>
-        [id, name, ip, group, enabled, revision, status.get(id)?.sync, status.get(id)?.status])]);
+      const fingerprint = JSON.stringify([writable, !!token, list.map(({ id, name, ip, address, resolvedIp, group, enabled, revision }) =>
+        [id, name, ip, address, resolvedIp, group, enabled, revision, status.get(id)?.sync, status.get(id)?.status])]);
       if (rowSignature !== fingerprint) {
         let focused = null;
         if (rows.contains(document.activeElement)) focused = { ...document.activeElement.dataset };
@@ -90,8 +109,9 @@
           const line = document.createElement("li");
           const caption = document.createElement("span");
           const state = status.get(row.id);
-          caption.textContent = [row.name, row.ip, row.group, row.enabled ? (state?.sync || "待发现") +
-            " · " + (state?.status || "UNKNOWN") : "已停用"].join(" · ");
+          caption.textContent = [row.address || row.name, row.address ? row.name : row.ip,
+            row.address && row.resolvedIp, row.group, row.enabled ? (state?.sync || "待发现") +
+            " · " + (state?.status || "UNKNOWN") : "已停用"].filter(Boolean).join(" · ");
           line.append(caption);
           if (token) {
             const actions = document.createElement("div");
@@ -162,7 +182,11 @@
       editing = row;
       showEditor = true;
       name.value = row?.name || "";
-      ip.value = row?.ip || "";
+      ip.value = row?.address || row?.ip || "";
+      grantAddress = row?.address || null;
+      cidrs.value = row?.privateCidrs?.join(", ") || "";
+      privateOptions.open = !!cidrs.value;
+      updatePrivate();
       group.value = row?.group || groups[0];
       el("EditorTitle").textContent = row ? "编辑目标" : "添加目标";
       render();
@@ -299,20 +323,26 @@
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       if (!canModify()) return;
-      const value = name.value.trim();
-      if (!value || [...value].length > 80 || new TextEncoder().encode(value).length > 240 || /\p{C}/u.test(value)) {
+      const parsed = updatePrivate();
+      if (!parsed) {
+        announce("请输入合法的 IPv4 或 DNS 主机名。");
+        ip.focus();
+        return;
+      }
+      const networks = parsed.kind === "dns" ? dns.privateCidrs(cidrs.value) : [];
+      if (!networks) {
+        announce("请输入有效的 RFC1918 私网 CIDR，最多 16 项。");
+        privateOptions.open = true;
+        cidrs.focus();
+        return;
+      }
+      const payload = dns.editPayload(name.value, parsed, group.value, networks);
+      if (!payload) {
         announce("名称须为 1–80 个字符且最多 240 字节，不含控制字符。");
         name.focus();
         return;
       }
-      const address = ip.value.trim();
-      if (!/^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(address) ||
-          address.split(".").some((part) => Number(part) > 255)) {
-        announce(errors.custom_ping_invalid_ipv4);
-        ip.focus();
-        return;
-      }
-      submit(editing ? "PATCH" : "POST", editing, { name: value, ip: address, group: group.value });
+      submit(editing ? "PATCH" : "POST", editing, payload);
     });
 
     rows.addEventListener("click", (event) => {
@@ -324,7 +354,7 @@
       if (control.dataset.action === "toggle") submit("PATCH", row, { enabled: !row.enabled });
       if (control.dataset.action === "delete") {
         deleting = row;
-        el("DeleteText").textContent = "删除 “" + row.name + "”（" + row.ip + "）？已采集的历史仍可通过原链接查看。";
+        el("DeleteText").textContent = "删除 “" + row.name + "”（" + (row.address || row.ip) + "）？已采集的历史仍可通过原链接查看。";
         render();
         el("CancelDelete").focus();
       }

@@ -603,6 +603,10 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
         assert [s["ip"] for s in segments] == expected_history
         assert all(s["sampleNotBefore"] is None for s in segments[3::2])
         assert all(s["sampleNotBefore"] > s["start"] for s in segments[4::2])
+        if os.environ.get("RUN_CUSTOM_PING_DOMAIN_BROWSER") == "1":
+            from .ping_domain_browser_fixture import run_domain_browser
+            run_domain_browser(monkeypatch, ROOT, local, inventory, resolver, dns_config, let_prometheus_read,
+                               lambda url: prometheus_fetch(prom_name, url), created["id"], a, b)
     finally:
         docker("rm", "-f", "-v", prom_name, bb, peer, check=False)
         docker("network", "rm", net, check=False)
