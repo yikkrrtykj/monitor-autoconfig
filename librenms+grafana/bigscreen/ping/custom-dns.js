@@ -68,7 +68,7 @@
     return { key: dnsKey + id, metric: endpoint(id, resolvedIp || ""), job: "custom-ping",
       category: "custom", group: "Custom", interval: 2, lossWindow: 60, dns: true, address,
       name: address || "域名目标", friendlyName: name === address ? "" : name || "", subtitle: name || "",
-      ip: resolvedIp || "", customGroup: group, resolutionGeneration, expiresAt };
+      ip: resolvedIp || "", customGroup: group, resolutionGeneration, expiresAt, resolvedAt: row.resolvedAt };
   }
 
   function parseTarget(key) {
@@ -110,7 +110,8 @@
     const common = { ...item, dnsLabel: dnsLabel + (ready ? "，当前监控 1 个" : ""), dnsStatus,
       sampleNotBefore: ready?.sampleNotBefore ?? null, withdrawalPending };
     const sync = withdrawalPending ? "等待停止旧探测" :
-      dnsStatus !== "DNS_OK" ? (stateLabels[dnsStatus] || "等待解析") :
+      catalog?.dnsEnabled === false ? "DNS 动态解析已暂停" :
+      dnsStatus !== "DNS_OK" ? (dnsStatus === "DNS_PENDING" ? stateLabels.DNS_PENDING : "等待自动重试") :
       ready ? "等待新样本" : "等待新地址发现";
     if (!notice && !expired && ready && reading && reading.sourceAt > ready.sampleNotBefore &&
         reading.sourceAt <= now && now - reading.sourceAt <= 10 &&

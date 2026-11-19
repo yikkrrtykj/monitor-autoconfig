@@ -5,6 +5,7 @@
   const { viewportLimit } = window.BSPingTrends;
 
   function trendLabel({ target, trend }) {
+    if (target.dns && target.status === "UNKNOWN") return [target.sync, target.reason].filter(Boolean).join(" · ");
     if (trend?.error) return trend.error;
     if (target.sync) return [target.sync, target.reason].filter(Boolean).join(" · ");
     if (target.reason) return target.reason;
@@ -63,6 +64,7 @@
         <span class="ping-card-header"><strong></strong><span class="ping-badge"></span></span>
         <span class="ping-card-meta"><span class="ping-card-group"></span><span class="ping-card-ip"></span></span>
         <span class="ping-card-dns" hidden></span>
+        <small class="ping-card-last-resolution" hidden></small>
         <span class="ping-card-metrics"><span>RTT <b></b></span><span>Loss <b></b></span></span>
         <span class="ping-card-chart"></span><span class="ping-card-note">近 5 分钟</span>
       </button><button type="button" class="ping-card-compare" data-action="compare"></button>`;
@@ -70,7 +72,8 @@
       return {
         node, title: node.querySelector("strong"), badge: node.querySelector(".ping-badge"),
         group: node.querySelector(".ping-card-group"), ip: node.querySelector(".ping-card-ip"),
-        dns: node.querySelector(".ping-card-dns"), rtt, loss, chart: node.querySelector(".ping-card-chart"), note: node.querySelector(".ping-card-note"),
+        dns: node.querySelector(".ping-card-dns"), resolved: node.querySelector(".ping-card-last-resolution"), rtt, loss,
+        chart: node.querySelector(".ping-card-chart"), note: node.querySelector(".ping-card-note"),
         compare: node.querySelector(".ping-card-compare")
       };
     }
@@ -90,6 +93,10 @@
       card.node.classList.toggle("ping-card-domain", !!target.dns);
       card.dns.hidden = !target.dns;
       set(card.dns, target.dnsLabel || "");
+      const priorResolution = target.dns && target.dnsStatus !== "DNS_OK" && ip &&
+        Number.isFinite(target.resolvedAt) && target.resolvedAt > 0;
+      card.resolved.hidden = !priorResolution;
+      set(card.resolved, priorResolution ? "最近成功解析：" + charts.formatTime(target.resolvedAt) : "");
       if (target.dns && previous && (previous.ip !== ip ||
           previous.resolutionGeneration !== target.resolutionGeneration || previous.sampleNotBefore !== target.sampleNotBefore ||
           status === "UNKNOWN")) clearTrend(card);

@@ -203,7 +203,10 @@ async function isolated(browser, host) {
     await openAdd();
     await el(page, "CustomUser").fill("d3-admin");
     await el(page, "CustomPass").fill("only-isolated-d3-fixture");
+    const loginComplete = page.waitForResponse((response) => new URL(response.url()).pathname === "/platform-api/auth/login");
     await el(page, "CustomLoginSubmit").click();
+    const loginResult = await loginComplete;
+    assert.equal(loginResult.status(), 200, loginResult.ok() ? "" : await loginResult.text());
     await el(page, "CustomIP").fill("172.31.248.23");
     await save();
     await el(page, "CustomRows").getByText(/172\.31\.248\.23/).waitFor();
@@ -236,6 +239,7 @@ async function isolated(browser, host) {
     assert.equal(await wallRow.getAttribute("data-key"), key);
     await phase("error-hold", "UNKNOWN", "172.31.248.22");
     await wallRow.getByText(/等待停止旧探测/).waitFor();
+    await wallRow.getByText(/最近成功解析/).waitFor();
     await screenshot(page, "isolated-withdrawal");
     await phase("policy", "UNKNOWN");
     await wallRow.getByText(/解析地址未获授权/).first().waitFor();

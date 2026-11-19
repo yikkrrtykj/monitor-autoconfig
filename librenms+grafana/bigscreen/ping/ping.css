@@ -314,7 +314,7 @@
 
 .ping-card-domain .ping-card-meta { flex-wrap: wrap; }
 .ping-card-domain .ping-card-group { flex-shrink: 1; min-width: 0; overflow-wrap: anywhere; }
-.ping-card-dns { color: #b2c4d4; font-size: 11px; overflow-wrap: anywhere; }
+.ping-card-dns, .ping-card-last-resolution { color: #b2c4d4; font-size: 11px; overflow-wrap: anywhere; }
 .ping-custom-form details { min-width: 0; }
 .ping-custom-form details > summary { cursor: pointer; margin-bottom: 0.5rem; }
 .ping-custom-form small, .ping-history-target strong, .ping-dns-history, .ping-detail-header h2 { overflow-wrap: anywhere; min-width: 0; }

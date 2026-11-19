@@ -25,7 +25,7 @@ def run_domain_browser(monkeypatch, root, local, inventory, resolver, dns_config
     app = custom_ping.CustomPingAPI(local, context, True, inventory)
 
     class Gateway(main.Handler):
-        def _body(self, body, content_type="application/json", status=200):
+        def _send_fixture_bytes(self, body, content_type="application/json", status=200):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -44,15 +44,15 @@ def run_domain_browser(monkeypatch, root, local, inventory, resolver, dns_config
             if path.startswith("/platform-api/"):
                 self._platform(super().do_GET)
             elif path in ("/prometheus/api/v1/query", "/prometheus/api/v1/query_range"):
-                self._body(fetch_prom(self.path.removeprefix("/prometheus")).encode())
+                self._send_fixture_bytes(fetch_prom(self.path.removeprefix("/prometheus")).encode())
             elif path == "/config.js":
-                self._body(b"window.BIGSCREEN_CONFIG={pingQualityRttMs:1000};", "text/javascript")
+                self._send_fixture_bytes(b"window.BIGSCREEN_CONFIG={pingQualityRttMs:1000};", "text/javascript")
             else:
                 file = (static / ("index.html" if path == "/ping" else path.lstrip("/"))).resolve()
                 if not file.is_relative_to(static.resolve()) or not file.is_file():
                     self.send_error(404)
                     return
-                self._body(file.read_bytes(), mimetypes.guess_type(file)[0] or "application/octet-stream")
+                self._send_fixture_bytes(file.read_bytes(), mimetypes.guess_type(file)[0] or "application/octet-stream")
 
         def do_POST(self):
             if not self.path.startswith("/fixture/dns/"):
@@ -76,7 +76,7 @@ def run_domain_browser(monkeypatch, root, local, inventory, resolver, dns_config
             else:
                 self.send_error(404)
                 return
-            self._body(json.dumps(local.list_targets()).encode())
+            self._send_fixture_bytes(json.dumps(local.list_targets()).encode())
 
         def do_PATCH(self):
             self._platform(super().do_PATCH)
