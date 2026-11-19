@@ -7,7 +7,7 @@ Batch 5.2 的命令和结果留在[固定版本原文](https://github.com/yikkrr
 ## 1. 确认发布范围
 
 - 记录批准的完整目标 Merge SHA、目标提交的 CI、服务器当前 SHA、变更文件、受影响的服务、镜像和挂载，以及网页验收项。串行执行发布，避免配置应用或其他发布同时写入。
-- 确认仓库为 `/root/monitor-autoconfig`（或实际路径），生产工作树在 `main`，已跟踪工作树和暂存区干净，且无进行中的 Git 操作。允许已有未跟踪和 ignored 文件，遇到路径冲突即停。保留 `.env`、日志、运行目录、备份、未跟踪的 `VERSION` 和数据卷。
+- 确认仓库为 `/root/monitor-autoconfig`（或实际路径），生产工作树在 `main`，已跟踪工作树和暂存区干净，且无进行中的 Git 操作。公司服务器发布要求完整检出，启用 sparse checkout 或存在 `assume-unchanged`、`skip-worktree` 标记时立即停止。保留标记与本地文件，交由维护者核实。允许已有未跟踪和 ignored 文件，遇到路径冲突即停。保留 `.env`、日志、运行目录、备份、未跟踪的 `VERSION` 和数据卷。
 - 按数据格式及写入风险决定备份范围和是否暂停写入。记录实际卷、写入者、兼容读取版本及恢复条件。涉及冷备份时，先完成镜像准备，暂停最小必要范围的写入者，在切换源码和服务前完成并核验备份。
 - 目录绑定挂载内的内容可能在 Git 快进时就对运行中的进程可见。按变更单决定哪些服务需在快进前暂停，哪些需在快进后重新创建。单文件挂载可能仍指向旧 inode；仅重启进程或仅核对容器名称不能证明加载了新文件。
 
@@ -18,15 +18,20 @@ Batch 5.2 的命令和结果留在[固定版本原文](https://github.com/yikkrr
 <!-- release-example: runner -->
 ```bash
 run_release_script() (
-  set -Ee -o pipefail
+  release_setup_failed() {
+    printf "STOP stage=%s line=%s exit=%s\n" "$stage" "$2" "$1" >&2
+    exit "$1"
+  }
+
+  stage=script-create
+  script=$(mktemp -- "${TMPDIR:-/tmp}/company-release.XXXXXXXX") || release_setup_failed "$?" "$LINENO"
+  stage=script-permissions
+  chmod 600 -- "$script" || release_setup_failed "$?" "$LINENO"
   stage=script-write
-  trap 'rc=$?; printf "STOP stage=%s line=%s exit=%s\n" "$stage" "$LINENO" "$rc" >&2; exit "$rc"' ERR
-  script=$(mktemp -- "${TMPDIR:-/tmp}/company-release.XXXXXXXX")
-  chmod 600 -- "$script"
-  printf 'Release script %s\n' "$script"
+  printf 'Release script %s\n' "$script" || release_setup_failed "$?" "$LINENO"
 
   {
-    cat <<'RELEASE_HEADER'
+    cat <<'RELEASE_HEADER' || release_setup_failed "$?" "$LINENO"
 set -Ee -o pipefail
 shopt -s inherit_errexit
 stage=release
@@ -36,18 +41,40 @@ trap 'rc=$?; if (( rc == 0 && release_complete == 0 )); then
   printf "STOP stage=%s line=%s exit=1 (incomplete)\n" "$stage" "$LINENO" >&2
   exit 1
 fi' EXIT
+
+require_clean_release_tree() {
+  local LC_ALL=C sparse entry
+  sparse=$(git config --type=bool --default=false --get core.sparseCheckout) || return "$?"
+  if [[ "$sparse" != false ]]; then
+    printf 'Sparse checkout is unsupported for company releases\n' >&2
+    return 1
+  fi
+  # -v uses lowercase tags for assume-unchanged and S/s for skip-worktree.
+  git ls-files -v -z | (
+    while IFS= read -r -d '' entry; do
+      case "$entry" in
+        [a-z]\ *|S\ *)
+          printf 'Git index flag %s on %q (assume-unchanged or skip-worktree)\n' \
+            "${entry:0:1}" "${entry:2}" >&2
+          exit 1
+          ;;
+      esac
+    done
+  ) || return "$?"
+  git diff --quiet || return "$?"
+  git diff --cached --quiet
+}
 RELEASE_HEADER
-    cat
-    printf '\nrelease_complete=1\nprintf "COMPLETE stage=%%s\\n" "$stage"\n'
-  } >"$script"
+    cat || release_setup_failed "$?" "$LINENO"
+    printf '\nrelease_complete=1\nprintf "COMPLETE stage=%%s\\n" "$stage"\n' || release_setup_failed "$?" "$LINENO"
+  } >"$script" || release_setup_failed "$?" "$LINENO"
   stage=script-syntax
-  bash -n "$script" </dev/null
-  stage=script-start
+  bash -n "$script" </dev/null || release_setup_failed "$?" "$LINENO"
   exec bash "$script" "$@" </dev/null
 )
 ```
 
-脚本内用 `stage=阶段名` 标记检查或变更；失败以实际退出码停止，诊断行号对应打印的脚本文件。保持必经命令在普通语句位置。Bash 的 `if`、`!`、`&&` 和 `||` 可抑制对条件中命令的错误处理，需要检查时显式处理退出状态。`COMPLETE` 表示该脚本所有步骤已到达末尾。
+创建、设置权限、写入和语法检查均检查原始退出码。任一步失败都会报告阶段与行号并停止，即使调用方使用 `if` 或 `||`。`script-syntax` 的 `STOP` 行号指向启动函数中的语法检查，Bash 的诊断另给出临时脚本中的出错行。脚本内用 `stage=阶段名` 标记检查或变更；保持必经命令在普通语句位置。脚本内部的 `if`、`!`、`&&` 和 `||` 需要显式处理失败状态。`COMPLETE` 表示该脚本已到达全部步骤的末尾。
 
 每条非交互 `docker exec` 或 `docker compose exec -T` 显式加 `</dev/null`。`-T` 只关闭伪终端。有意接收数据的命令使用独立输入，例如下面 Compose JSON 由管道传给 Python，Python 代码由 `-c` 提供。
 
@@ -55,6 +82,7 @@ RELEASE_HEADER
 
 把示例中的仓库路径（如有差异）和两处完整 SHA 换成变更单上的值。此阶段只取回 Git 对象和生成变更清单。比较清单与批准范围，并完成下述准备，再进入快进。每次阶段脚本都须成功结束才能执行下一阶段；脚本间的变量需按变更单重新传入。
 
+<!-- release-example: preflight -->
 ```bash
 run_release_script /root/monitor-autoconfig '<当前完整SHA>' '<目标Merge SHA>' <<'RELEASE'
 stage=git-preflight
@@ -65,8 +93,7 @@ target=$3
 test "$(git branch --show-current)" = main
 test "$(git remote get-url origin)" = https://github.com/yikkrrtykj/monitor-autoconfig.git
 test "$(git rev-parse HEAD)" = "$before"
-git diff --quiet
-git diff --cached --quiet
+require_clean_release_tree
 
 stage=git-fetch
 if [[ -n "${RELEASE_PROXY:-}" ]]; then
@@ -158,7 +185,7 @@ test "$(stat -c '%a' -- "$backup_root")" = 700
 
 ## 4. 精确快进与定向更新
 
-准备工作通过后，在阶段脚本里使用步骤 3 的 `cd`、`before`、`target` 三个赋值。下面片段再次核对工作区及取回的目标。若期间运行过其他 Git fetch，先重新执行步骤 3。只允许快进，禁止盲目 `git pull`、自动 stash、`reset --hard`、强制推送及清理文件或卷。创建隔离源码工作树、Git checkout 与生产 merge 均在局部 `umask 022` 下执行。
+准备工作通过后，在阶段脚本里使用步骤 3 的 `cd`、`before`、`target` 三个赋值。下面片段在仓库根目录再次核对取回的目标，并在快进前检查索引标记、工作树和暂存区。若期间运行过其他 Git fetch，先重新执行步骤 3。只允许快进，禁止盲目 `git pull`、自动 stash、`reset --hard`、强制推送及清理文件或卷。创建隔离源码工作树、Git checkout 与生产 merge 均在局部 `umask 022` 下执行。
 
 <!-- release-example: merge -->
 ```bash
@@ -166,11 +193,10 @@ stage=git-merge
 test "$(git branch --show-current)" = main
 test "$(git rev-parse HEAD)" = "$before"
 test "$(git rev-parse --verify 'FETCH_HEAD^{commit}')" = "$target"
-git diff --quiet
-git diff --cached --quiet
 git merge-base --is-ancestor "$before" "$target"
 (
   umask 022
+  require_clean_release_tree
   git -c merge.autoStash=false merge --ff-only --no-overwrite-ignore "$target" </dev/null
 )
 test "$(git rev-parse HEAD)" = "$target"
@@ -182,7 +208,7 @@ printf 'Before=%s Target=%s\n' "$before" "$target"
 
 ## 5. 验收和失败处置
 
-- 检查受影响服务的容器、健康状态及挂载来源，运行 `./deploy-check.sh configured </dev/null`。核对目标 Git SHA 与已跟踪工作树、暂存区，记录 configured 摘要与任何 SKIP 的原因。
+- 检查受影响服务的容器、健康状态及挂载来源，运行 `./deploy-check.sh configured </dev/null`。记录 configured 摘要与任何 SKIP 的原因。
 - 对变更清单中的静态文件逐一核对 Git 工作树源码、容器实际绑定挂载、启动时复制目录及 HTTP 响应的 SHA256。通过 `docker compose exec -T bigscreen nginx -T </dev/null` 核对实际 Nginx `root`、`alias` 与路由。当前普通静态文件由 `/app` 提供，复制目录是 `/usr/share/nginx/html`。`/config.js` 由入口生成，通过 alias 提供，比较生成文件与 HTTP；拓扑数据走独立挂载，按对应 alias 验证。删除路径按实际路由验收。
 - 通过 `docker compose exec -T bigscreen ps -o pid,user,args </dev/null` 找到 worker，读取容器内该进程的 `/proc/<PID>/status`，核对有效 UID/GID 和文件系统 UID/GID，必要时核对补充组。使用该身份执行哈希检查。root 的 `test -r` 无法证明 worker 能读。若身份或挂载映射无法核实，停止并记录 UNKNOWN。
 - 从 `docker compose port bigscreen 80 </dev/null` 核对实际本机端口和 IPv4 监听地址。HTTP 验收显式绕过代理，核对缓存头、页面实际引用的资源版本及浏览器强刷。按变更单验证页面和功能，至少确认受影响入口可用。只做批准的验收动作，不执行真实设备 DELETE 或发送测试飞书。
@@ -210,4 +236,14 @@ rm -- "$http_body"
 printf 'SHA OK %s %s\n' "$asset" "$sha_source"
 ```
 
-全部必需命令和网页检查完成后，才在对应 Issue/PR 记录最终 PASS。失败记为 FAIL，明确未执行的可选验证记为 SKIP，证据不足记为 UNKNOWN。失败时停止后续发布，保留 SHA、阶段、行号、退出状态、容器状态、备份和原卷，避免回贴敏感配置。代码回滚与数据恢复分别授权，先确认回退版本可读当前数据格式；禁止自动回滚、覆盖卷或清理现场。
+必需命令和网页检查完成后，在仓库根目录运行下列阶段片段。先用同一个启动函数创建并执行验收脚本，把 `target` 设为已经核对的完整目标 SHA。
+
+<!-- release-example: acceptance -->
+```bash
+stage=git-acceptance
+test "$(git branch --show-current)" = main
+test "$(git rev-parse HEAD)" = "$target"
+require_clean_release_tree
+```
+
+最终 Git 验收也通过后，才在对应 Issue/PR 记录最终 PASS。失败记为 FAIL，明确未执行的可选验证记为 SKIP，证据不足记为 UNKNOWN。失败时停止后续发布，保留 SHA、阶段、行号、退出状态、容器状态、备份和原卷，避免回贴敏感配置。代码回滚与数据恢复分别授权，先确认回退版本可读当前数据格式；禁止自动回滚、覆盖卷或清理现场。

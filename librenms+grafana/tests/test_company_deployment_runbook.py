@@ -20,6 +20,7 @@ RUNBOOK = Path(__file__).resolve().parents[2] / "docs/runbooks/company-deploymen
 ASSET = Path("bigscreen/release asset.js")
 NESTED_ASSET = Path("bigscreen/new folder/detail.js")
 PAYLOAD = b"// isolated Bigscreen fixture\n"
+TRACKED = Path("existing tracked file.txt" if os.name == "nt" else "existing tracked\tfile\nS quoted' file.txt")
 
 
 def example(name):
@@ -49,10 +50,17 @@ def run(command, cwd, **env_overrides):
     )
 
 
-def release(bash, cwd, workspace, body, *args):
+def release(bash, cwd, workspace, body, *args, invocation="plain", setup=""):
     scratch = workspace / "script files"
     scratch.mkdir(exist_ok=True)
-    command = example("runner") + "\n" + 'run_release_script "$@" <<\'FIXTURE\'\n' + body + "\nFIXTURE\n"
+    launch = """run_release_script "$@" <<'FIXTURE'"""
+    tail = ""
+    if invocation == "if":
+        launch = "if " + launch
+        tail = 'then exit 0; else exit "$?"; fi\n'
+    elif invocation == "or":
+        launch += ' || exit "$?"'
+    command = "\n".join((example("runner"), setup, launch, body, "FIXTURE", tail))
     return run([bash, "-c", command, "fixture", *args], cwd, TMPDIR=scratch.as_posix())
 
 
@@ -102,9 +110,10 @@ printf 'checked\\n' >"$1"
     "bash -c 'exit 37' | cat",
     "result=$(bash -c 'exit 37'; printf 'unreachable')",
 ])
-def test_child_failure_keeps_status_and_stops_before_completion(bash, tmp_path, command):
+@pytest.mark.parametrize("invocation", ["plain", "if", "or"])
+def test_child_failure_keeps_status_and_stops_before_completion(bash, tmp_path, command, invocation):
     body = f"stage=verify-fixture\n{command}\nprintf 'unexpected\\n' >'finished marker'"
-    result = release(bash, tmp_path, tmp_path, body)
+    result = release(bash, tmp_path, tmp_path, body, invocation=invocation)
     line = saved_script(result, tmp_path).read_text(encoding="utf-8").splitlines().index(command) + 1
     assert result.returncode == 37, result
     assert f"STOP stage=verify-fixture line={line} exit=37" in result.stderr
@@ -119,11 +128,43 @@ def test_missing_completion_sentinel_is_a_failure(bash, tmp_path):
     assert "COMPLETE" not in result.stdout
 
 
-def test_syntax_failure_has_no_script_side_effect(bash, tmp_path):
+@pytest.mark.parametrize("invocation", ["plain", "if", "or"])
+def test_syntax_failure_has_no_script_side_effect(bash, tmp_path, invocation):
     body = "printf 'unexpected\\n' >'finished marker'\nif then"
-    result = release(bash, tmp_path, tmp_path, body)
+    result = release(bash, tmp_path, tmp_path, body, invocation=invocation)
     assert result.returncode == 2, result
-    assert "STOP stage=script-syntax" in result.stderr
+    assert re.search(r"STOP stage=script-syntax line=\d+ exit=2", result.stderr)
+    assert "COMPLETE" not in result.stdout
+    assert not (tmp_path / "finished marker").exists()
+
+
+@pytest.mark.parametrize("invocation", ["plain", "if", "or"])
+def test_valid_script_completes_in_each_invocation_context(bash, tmp_path, invocation):
+    body = "stage=verify-fixture\nprintf 'checked\\n' >'finished marker'"
+    result = release(bash, tmp_path, tmp_path, body, invocation=invocation)
+    assert result.returncode == 0, result
+    assert "COMPLETE stage=verify-fixture" in result.stdout
+    assert (tmp_path / "finished marker").read_bytes() == b"checked\n"
+
+
+@pytest.mark.parametrize("setup, stage, status", [
+    ("mktemp() { return 41; }", "script-create", 41),
+    ("chmod() { return 42; }", "script-permissions", 42),
+    ("""cat() {
+  command cat || return "$?"
+  copy_count=$(( ${copy_count:-0} + 1 ))
+  if (( copy_count == 2 )); then return 43; fi
+}""", "script-write", 43),
+    ("""mktemp() { command mktemp -d "$@"; }
+chmod() { return 0; }""", "script-write", 1),
+], ids=["mktemp", "chmod", "partial-write", "redirection"])
+def test_launcher_failures_preserve_status_and_do_not_start_script(bash, tmp_path, setup, stage, status):
+    result = release(
+        bash, tmp_path, tmp_path, "printf 'unexpected\\n' >'finished marker'",
+        invocation="if", setup=setup,
+    )
+    assert result.returncode == status, result
+    assert re.search(rf"STOP stage={stage} line=\d+ exit={status}", result.stderr)
     assert "COMPLETE" not in result.stdout
     assert not (tmp_path / "finished marker").exists()
 
@@ -147,11 +188,10 @@ def git(cwd, *args):
 
 
 @pytest.fixture
-def release_repos():
-    if sys.platform != "linux":
-        pytest.skip("Git permission checks require Linux file modes")
-    # Pytest's private parent directories cannot be traversed by a second user.
-    with tempfile.TemporaryDirectory(prefix="company release ", dir="/tmp") as directory:
+def release_repos(tmp_path):
+    # On Linux, pytest's private parent directories cannot be traversed by a second user.
+    parent = "/tmp" if sys.platform == "linux" else tmp_path
+    with tempfile.TemporaryDirectory(prefix="company release ", dir=parent) as directory:
         workspace = Path(directory)
         workspace.chmod(0o711)
         source = workspace / "source repo"
@@ -162,7 +202,8 @@ def release_repos():
         (source / "bigscreen").mkdir()
         (source / "bigscreen/index.html").write_text("<title>fixture</title>\n", encoding="utf-8")
         (source / ".gitignore").write_text(".env\nignored.log\nrelease asset.js\n", encoding="utf-8")
-        git(source, "add", "--", ".gitignore", "bigscreen/index.html")
+        (source / TRACKED).write_bytes(b"tracked baseline\n")
+        git(source, "add", "--", ".gitignore", "bigscreen/index.html", str(TRACKED))
         git(source, "commit", "-m", "baseline")
         before = git(source, "rev-parse", "HEAD")
         checkouts = [workspace / name for name in ("old checkout", "new checkout")]
@@ -272,6 +313,64 @@ def test_release_merge_stops_without_overwriting_local_paths(bash, release_repos
     assert (new / ".env").read_bytes() == b"FIXTURE=private\n"
     assert (new / "VERSION").read_bytes() == b"existing untracked version\n"
     assert (new / "ignored.log").read_bytes() == b"existing ignored file\n"
+
+
+@pytest.mark.parametrize("flag, tag", [("assume-unchanged", "h"), ("skip-worktree", "S")])
+@pytest.mark.parametrize("stage", ["preflight", "merge", "acceptance"])
+def test_release_checkpoints_reject_hidden_tracked_modifications(bash, release_repos, flag, tag, stage):
+    workspace, _, checkout, before, target = release_repos
+    # Run the real preflight next to the fixture repository. The fixture has already
+    # fetched locally, so exclude only the network stage of the documented script.
+    git(checkout, "remote", "set-url", "origin", "https://github.com/yikkrrtykj/monitor-autoconfig.git")
+    preflight = example("preflight").split("<<'RELEASE'\n", 1)[1].split("\nstage=git-fetch\n", 1)[0]
+    preflight_args = (checkout.as_posix(), before, target)
+    merge = "before=$1\ntarget=$2\n" + example("merge")
+    check, args, expected_head = preflight, preflight_args, before
+    if stage != "preflight":
+        clean = release(bash, checkout, workspace, preflight, *preflight_args)
+        assert clean.returncode == 0 and "COMPLETE stage=git-preflight" in clean.stdout, clean
+        check, args = merge, (before, target)
+    if stage == "acceptance":
+        merged = release(bash, checkout, workspace, merge, before, target)
+        assert merged.returncode == 0 and "COMPLETE stage=git-merge" in merged.stdout, merged
+        check, args, expected_head = "target=$1\n" + example("acceptance"), (target,), target
+
+    git(checkout, "update-index", "--" + flag, "--", str(TRACKED))
+    (checkout / TRACKED).write_bytes(b"hidden local change\n")
+    git(checkout, "diff", "--quiet")
+    git(checkout, "diff", "--cached", "--quiet")
+    index_flags = git(checkout, "ls-files", "-v", "-z")
+    assert git(checkout, "ls-files", "-v", "-z", "--", str(TRACKED)).startswith(tag + " ")
+    files = [TRACKED, Path(".env"), Path("VERSION"), Path("ignored.log")]
+    contents = {path: (checkout / path).read_bytes() for path in files}
+
+    result = release(bash, checkout, workspace, check, *args)
+    assert result.returncode == 1, result
+    assert f"Git index flag {tag} on " in result.stderr
+    assert re.search(rf"STOP stage=git-{stage} line=\d+ exit=1", result.stderr)
+    assert "COMPLETE" not in result.stdout
+    assert git(checkout, "rev-parse", "HEAD") == expected_head
+    assert git(checkout, "ls-files", "-v", "-z") == index_flags
+    assert {path: (checkout / path).read_bytes() for path in files} == contents
+    if stage == "merge":
+        assert not (checkout / ASSET).exists()
+
+
+def test_release_rejects_sparse_checkout_even_without_index_flags(bash, release_repos):
+    workspace, _, checkout, before, target = release_repos
+    git(checkout, "config", "core.sparseCheckout", "true")
+    index_flags = git(checkout, "ls-files", "-v", "-z")
+    assert all(entry.startswith("H ") for entry in index_flags.rstrip("\0").split("\0"))
+    result = release(
+        bash, checkout, workspace, "before=$1\ntarget=$2\n" + example("merge"), before, target,
+    )
+    assert result.returncode == 1, result
+    assert "Sparse checkout is unsupported" in result.stderr
+    assert "STOP stage=git-merge" in result.stderr and "COMPLETE" not in result.stdout
+    assert git(checkout, "rev-parse", "HEAD") == before
+    assert git(checkout, "ls-files", "-v", "-z") == index_flags
+    assert git(checkout, "config", "core.sparseCheckout") == "true"
+    assert (checkout / TRACKED).read_bytes() == b"tracked baseline\n"
 
 
 def test_nginx_static_http_permissions(bash, release_repos, nonroot):
