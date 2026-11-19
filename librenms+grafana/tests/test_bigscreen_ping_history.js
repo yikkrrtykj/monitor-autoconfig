@@ -52,6 +52,24 @@ test("nearest sample retains a real spike and states for 1/2/5-second sources", 
   assert.equal(history.nearest([], 100, 2), null);
 });
 
+test("fixed point window intersects selected, historical and loaded bounds before counting samples", () => {
+  const range = { start: 100, end: 1000 };
+  const loaded = { start: 500, end: 800 };
+  assert.deepEqual(history.statisticsWindow(range, loaded, 800, 300),
+    { start: 500, end: 800, selected: 300, historyClipped: false, loadClipped: false });
+  assert.deepEqual(history.statisticsWindow(range, loaded, 510, 300),
+    { start: 500, end: 510, selected: 300, historyClipped: false, loadClipped: true });
+  assert.deepEqual(history.statisticsWindow(range, range, 110, 300),
+    { start: 100, end: 110, selected: 300, historyClipped: true, loadClipped: false });
+  const fractional = history.statisticsWindow(range, range, 100.25, 300);
+  assert.equal(fractional.end - fractional.start, 0.25, "keep the first fractional sample's time");
+  const window = history.statisticsWindow(range, loaded, 800, 300);
+  const samples = Array.from({ length: 60 }, (_, i) => ({ t: 741 + i, success: 1, rtt: 12 }));
+  const stats = model.rawStats(samples, window.end - window.start, 1);
+  assert.equal(stats.coverage, 0.2, "loaded gaps count against the full denominator");
+  assert.equal(stats.p95, null);
+});
+
 test("long-range hover exposes its real bucket and pans keep span across bounds", () => {
   const bucket = { from: 100, to: 800, loss: 4.25, failed: 34, total: 800 };
   const pick = history.selection([{ target: core, points: [{ t: 700, rtt: 25 }], buckets: [bucket] }], 350, true);

@@ -136,7 +136,8 @@ test("A→B→A, unconfirmed B, partial aggregate windows and historical statist
   const plotted = segments.rawSeries(target, points, 10, 44);
   assert.deepEqual(plotted.points.map((point) => point.rtt), [12, null, 36]);
   assert.deepEqual(segments.splitStatistics(plotted, 10, 44, false)
-    .map((item) => [item.target.generation, item.target.name, item.points.length]), [[1, "game.example.com", 1], [3, "renamed.example.com", 1]]);
+    .map((item) => [item.target.generation, item.target.name, item.points.length, item.start, item.end, item.span]),
+    [[1, "game.example.com", 1, 11, 20, 9], [3, "renamed.example.com", 1, 34, 44, 10]]);
   assert.ok(plotted.buckets.every((bucket) => bucket.total <= 1));
   const long = { ...target, segments: [{ ...last, start: 100, sampleNotBefore: 122 }] };
   const step = 20;

@@ -59,6 +59,17 @@
     return { start, end: start + span };
   }
 
+  function statisticsWindow(range, loaded, time, selected) {
+    const requestedStart = time - selected;
+    const historyStart = Math.max(range.start, requestedStart);
+    const historyEnd = Math.min(range.end, time);
+    const start = Math.max(historyStart, loaded.start);
+    const end = Math.min(historyEnd, loaded.end);
+    return { start, end, selected,
+      historyClipped: historyStart > requestedStart || historyEnd < time,
+      loadClipped: start > historyStart || end < historyEnd };
+  }
+
   function lowerBound(rows, t, field) {
     let start = 0;
     let end = rows.length;
@@ -104,7 +115,7 @@
     return { rows, time: closest?.time ?? time, rtt: closest?.rtt ?? null, canPin: closest !== null, aggregated };
   }
 
-  const api = { presets, minZoom, parseTarget, isHistory, parseRoute, urlFor, validateRange, shiftRange, nearest, sampleStatus, selection };
+  const api = { presets, minZoom, parseTarget, isHistory, parseRoute, urlFor, validateRange, shiftRange, statisticsWindow, nearest, sampleStatus, selection };
   if (common) module.exports = api;
   else window.BSPingHistory = api;
 })();

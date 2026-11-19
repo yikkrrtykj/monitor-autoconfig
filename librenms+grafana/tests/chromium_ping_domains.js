@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
+const { verifyFixedPoint } = require("./chromium_ping_history.js");
 
 const staticDir = path.join(__dirname, "..", "bigscreen");
 const output = process.env.PING_BROWSER_OUTPUT || path.join(require("node:os").tmpdir(), "ping-d3-evidence");
@@ -438,6 +439,7 @@ async function isolated(browser, host) {
     else {
       await syncStates(browser);
       await layout(browser);
+      await verifyFixedPoint(browser, dims, output);
     }
     console.log(JSON.stringify({ chromium: browser.version(), mode: process.env.PING_D3_LIVE ? "isolated-services" : "layouts" }));
   } finally { await browser.close(); }

@@ -147,7 +147,7 @@
   }
 
   function splitStatistics(series, start, end, aggregated) {
-    if (!series.target.dns) return [{ ...series, span: end - start }];
+    if (!series.target.dns) return [{ ...series, start, end, span: end - start }];
     const byGeneration = new Map();
     for (const sample of aggregated ? (series.buckets || []) : series.points) {
       const segment = sample.segment;
@@ -155,11 +155,15 @@
       if (!byGeneration.has(segment.generation)) byGeneration.set(segment.generation, { segment, samples: [] });
       byGeneration.get(segment.generation).samples.push(sample);
     }
-    return [...byGeneration.values()].map(({ segment, samples }) => ({
-      target: { ...series.target, ip: segment.ip, name: segment.address, generation: segment.generation },
-      span: Math.max(0.001, Math.min(end, segment.end ?? end) - Math.max(start, segment.sampleNotBefore)),
-      [aggregated ? "buckets" : "points"]: samples
-    }));
+    return [...byGeneration.values()].map(({ segment, samples }) => {
+      const from = Math.max(start, segment.sampleNotBefore);
+      const to = Math.min(end, segment.end ?? end);
+      return {
+        target: { ...series.target, ip: segment.ip, name: segment.address, generation: segment.generation },
+        start: from, end: to, span: Math.max(0.001, to - from),
+        [aggregated ? "buckets" : "points"]: samples
+      };
+    });
   }
 
   const api = { validateSegments, segmentAt, annotate, ranges, rawSeries, aggregate, createHistoryData, splitStatistics };
