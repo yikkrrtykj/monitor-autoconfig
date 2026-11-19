@@ -132,7 +132,7 @@ def test_dns_mixed_preloaded_profile(tmp_path, capsys):
                 labels = f'job="{job}",instance="{uid}",target_ip="{ip}"'
                 if job == "custom-ping":
                     labels += f',custom_id="{uid}"'
-                for stamp in range(at - 60, at + 1, interval):
+                for stamp in range(at - 60 + interval, at + 1, interval):
                     stream.write(f'up{{{labels}}} 1 {stamp}\nprobe_success{{{labels}}} 1 {stamp}\n')
                     stream.write(f'probe_icmp_duration_seconds{{{labels},phase="rtt"}} 0.012 {stamp}\n')
             stream.write("# EOF\n")

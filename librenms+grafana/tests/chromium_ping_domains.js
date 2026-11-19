@@ -120,27 +120,27 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
           .map(([field, value]) => ({ metric: { ...labels, ping_field: field }, value: [at, String(value)] }));
       }
       const dnsRead = raw && /,custom_id=/.test(expression);
-      if (infrastructure && dnsRead) {
-        const matcher = /,custom_id=(~?)("(?:[^"\\]|\\.)*")/.exec(expression);
-        const value = JSON.parse(matcher[2]);
-        const chosen = active.filter((row) => matcher[1] ? new RegExp("^(?:" + value + ")$").test(row.id) : value === row.id);
-        samples.dnsRaw++;
-        samples.dnsRawSize = Math.max(samples.dnsRawSize, chosen.length);
-        rows = chosen.flatMap((row) => matrix(metric(row), at));
-      } else if (infrastructure && raw) {
-        const selectors = [...expression.matchAll(/instance=(~?)("(?:[^"\\]|\\.)*")/g)]
-          .map((match) => [match[1], JSON.parse(match[2])]);
-        const matched = [...infrastructureRows, ...active.map(metric)].filter((row) =>
-          selectors.some(([regex, value]) => regex ? new RegExp("^(?:" + value + ")$").test(row.instance) : value === row.instance)
-        );
+      const trendRead = raw && expression.endsWith("[300s]");
+      if (infrastructure && raw) {
+        const field = dnsRead ? "custom_id" : "instance";
+        const matcher = dnsRead ? /custom_id=(~?)("(?:[^"\\]|\\.)*")/g : /instance=(~?)("(?:[^"\\]|\\.)*")/g;
+        const selectors = [...expression.matchAll(matcher)].map((match) => [match[1], JSON.parse(match[2])]);
+        const population = dnsRead ? active.map(metric) : [...infrastructureRows, ...active.map(metric)];
+        const matched = population.filter((row) => selectors.some(([regex, value]) =>
+          regex ? new RegExp("^(?:" + value + ")$").test(row[field]) : value === row[field]));
         assert.ok(matched.length, expression);
-        samples.raw++;
-        samples.rawPeak = Math.max(samples.rawPeak, ++samples.rawInFlight);
-        samples.rawSize = Math.max(samples.rawSize, matched.length);
-        for (const row of matched) {
-          const key = at + ":" + row.job + ":" + row.instance;
-          if (requested.has(key)) samples.duplicateTargets++;
-          requested.add(key);
+        if (trendRead) {
+          samples.raw++;
+          samples.rawPeak = Math.max(samples.rawPeak, ++samples.rawInFlight);
+          samples.rawSize = Math.max(samples.rawSize, matched.length);
+          for (const row of matched) {
+            const key = at + ":" + row.job + ":" + row.instance;
+            if (requested.has(key)) samples.duplicateTargets++;
+            requested.add(key);
+          }
+        } else if (dnsRead) {
+          samples.dnsRaw++;
+          samples.dnsRawSize = Math.max(samples.dnsRawSize, matched.length);
         }
         rows = matched.flatMap((row) => matrix(row, at, 60 / intervalFor(row) + 1, intervalFor(row)));
       } else if (infrastructure && !expression.includes('job="custom-ping"')) {
@@ -150,8 +150,7 @@ function fixture(size, { builtIn = false, infrastructure = 0 } = {}) {
         }).map(([field, value]) => ({ metric: { ...row, ping_field: field }, value: [at, String(value)] })));
       }
       await new Promise((resolve) => setTimeout(resolve, 15));
-      if (infrastructure && raw && !dnsRead) samples.rawInFlight--;
-      activeQueries--;
+      if (infrastructure && trendRead) samples.rawInFlight--;
       return json({ status: "success", data: { resultType: raw ? "matrix" : "vector", result: rows } });
     }
     if (url.pathname === "/config.js") return route.fulfill({ body: "window.BIGSCREEN_CONFIG={};", contentType: "text/javascript" });
@@ -263,7 +262,9 @@ async function mixedPerformance(browser) {
       assert.equal(rawByScroll.at(-1), 0, "same-window revisit must reuse the cached first view");
       assert.equal(data.samples.duplicateTargets, 0);
       assert.equal(data.samples.dnsRawSize, Math.ceil(custom / 2));
-      assert.ok(data.samples.rawSize > 0 && data.samples.rawSize <= 12 && data.samples.rawPeak <= 2);
+      assert.ok(data.samples.rawSize > 0 && data.samples.rawSize <= 12);
+      // Two scheduled trend batches can each query fixed IPv4 and DNS.
+      assert.ok(data.samples.rawPeak <= 4);
       assert.deepEqual(errors, []);
       results.push({ total, infrastructure, fixed: Math.floor(custom / 2), dns: Math.ceil(custom / 2),
         cardsMs, firstTrendMs, initialRaw, rawByScroll, cacheRevisitAvoided: initialRaw,

@@ -58,7 +58,12 @@ def restore_cold_archive(
     # cannot add a sample to the very interval being compared.
     last_point = time() - 3
     historic_query = 'count by (custom_id,target_ip) (count_over_time(probe_success{job="custom-ping"}[5m]))'
-    history_rows = query(prom_name, historic_query, last_point)
+
+    def historic_rows(name):
+        return sorted(query(name, historic_query, last_point),
+                      key=lambda row: (row["metric"]["custom_id"], row["metric"]["target_ip"]))
+
+    history_rows = historic_rows(prom_name)
     assert {row["metric"]["target_ip"] for row in history_rows if row["metric"]["custom_id"] == dns_id} == {a, b}
     docker("stop", "-t", "15", prom_name, timeout=25)
     container = json.loads(docker("inspect", prom_name).stdout)[0]
@@ -163,7 +168,7 @@ def restore_cold_archive(
         with monkeypatch.context() as restored:
             restored.setattr(custom_ping, "urlopen", restored_inventory)
             wait_for(lambda: prometheus_fetch(destination, "/-/ready"), bool)
-            assert query(destination, historic_query, last_point) == history_rows
+            assert historic_rows(destination) == history_rows
             observed_fixed = wait_for(
                 lambda: observed(paused), lambda found: found["discoveredRevision"] == original["revision"],
             )
@@ -185,7 +190,7 @@ def restore_cold_archive(
             assert ready["discoveredGeneration"] == ready["resolutionGeneration"]
             assert ready["sampleNotBefore"] > pause_started and ready["resolvedIp"] == a
             assert active.list_targets()["revision"] == original["revision"]
-            assert query(destination, historic_query, last_point) == history_rows
+            assert historic_rows(destination) == history_rows
             print("PING_SCHEMA2_DOCKER_RESTORE sections=4 sha256=4 permissions=PASS history=PASS pause_resume=PASS")
             authority = tmp_path / "fixture" / "authority.json"
             staged = authority.with_suffix(".tmp")
