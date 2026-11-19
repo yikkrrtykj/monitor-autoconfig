@@ -179,6 +179,14 @@ def restore_cold_archive(
             restored.setattr(custom_ping, "urlopen", restored_inventory)
             wait_for(lambda: prometheus_fetch(destination, "/-/ready"), bool)
             assert historic_rows(destination) == history_rows
+            print("PING_RESTORED_TSDB historical_query=PASS path=/prometheus")
+
+            def scrape_targets():
+                response = prometheus_fetch(destination, "/api/v1/targets?state=active")
+                return json.loads(response)["data"]["activeTargets"]
+
+            # HTTP readiness can precede scrape discovery after TSDB WAL replay.
+            wait_for(scrape_targets, lambda rows: any(row["scrapePool"] == "prometheus" for row in rows))
             observed_fixed = wait_for(
                 lambda: observed(paused), lambda found: found["discoveredRevision"] == original["revision"],
             )
