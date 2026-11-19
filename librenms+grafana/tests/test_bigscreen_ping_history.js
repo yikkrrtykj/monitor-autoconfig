@@ -52,6 +52,28 @@ test("nearest sample retains a real spike and states for 1/2/5-second sources", 
   assert.equal(history.nearest([], 100, 2), null);
 });
 
+test("loss cell uses its own right-closed bucket and prefers the newest loss over other records", () => {
+  const target = { ...core, interval: 5 };
+  const record = (t, success, scrape = 1) => ({ t, success, scrape, rtt: success === 1 ? 12 : null });
+  const points = [
+    record(90, 0), record(90.1, 0), record(100, 0),
+    record(105.1, 1), record(110.1, null, 0), record(120, null)
+  ];
+  const series = { target, points };
+  const pick = (from, to) => history.bucketSelection(series, { from, to }, false);
+  assert.equal(history.selection([series], 120, false).rows[0].sample, points[5]);
+  assert.equal(pick(90, 110).rows[0].sample, points[2]);
+  assert.equal(pick(100, 110).rows[0].sample, points[3], "exclude the shared left edge");
+  assert.equal(history.nearest(points.slice(1, 4), 110, 5), null, "the 4.9 second gap still exceeds hover tolerance");
+  assert.equal(pick(110, 119).rows[0].sample, points[4]);
+  assert.equal(history.sampleStatus(pick(119, 120).rows[0].sample), "缺样（UNKNOWN）");
+  assert.equal(pick(120, 130), null);
+  const aggregated = history.bucketSelection(series, { from: 120, to: 130 }, true);
+  assert.equal(aggregated.aggregated, true);
+  assert.equal(aggregated.time, 130);
+  assert.equal(aggregated.rows[0].sample, undefined);
+});
+
 test("fixed point window intersects selected, historical and loaded bounds before counting samples", () => {
   const range = { start: 100, end: 1000 };
   const loaded = { start: 500, end: 800 };

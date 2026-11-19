@@ -239,4 +239,161 @@ async function verifyFixedPoint(browser, dims, output) {
   fs.writeFileSync(path.join(output, "history-fixed-point.json"), JSON.stringify(evidence, null, 2));
 }
 
-module.exports = { end, el, openHistory, observeFixedPoint, pickChart, verifyFixedPoint };
+function heatCell(page, row, index) {
+  return el(page, "OverviewLoss").locator(".ping-heat-row").nth(row).locator(".ping-heat-cell").nth(index);
+}
+
+async function verifyApBuckets(browser, viewport, output) {
+  const touch = viewport.width === 390;
+  const ap = { job: "infra-ap-ping", instance: 'AP "A" & 1', display_name: "Phase AP", target_ip: "192.0.2.20" };
+  const other = { ...ap, instance: "AP B", target_ip: "192.0.2.21" };
+  const fixed = await openHistory(browser, viewport, {
+    start: end - 300, keys: [model.identity(ap), model.identity(other)], samples: () => [
+      { metric: ap, points: [
+        { t: end - 20, success: 1 }, { t: end - 12, success: null },
+        { t: end - 10, scrape: 0 }, { t: end - 9.9, success: 0 }, { t: end - 4.9, success: 1 }
+      ] },
+      { metric: other, points: [{ t: end - 39, success: 1 }, { t: end - 9.9, success: 1 }] }
+    ]
+  });
+  const { page, context, requests, errors } = fixed;
+  try {
+    const select = (row, index) => touch ? heatCell(page, row, index).tap() : heatCell(page, row, index).click();
+    const pinned = el(page, "Pinned");
+    const before = requests.filter(({ type }) => type === "raw").length;
+    assert.equal(before, 1);
+    assert.match(await heatCell(page, 0, -1).getAttribute("title"), /50\.0% · 1 失败 \/ 2 有效/);
+    await select(0, -1);
+    const loss = await pinned.innerText();
+    assert.match(loss, /已固定.*22:19:50\.100/s);
+    assert.match(loss, /192\.0\.2\.20.*ICMP 丢包/s);
+    assert.doesNotMatch(loss, /192\.0\.2\.21/);
+    await pinned.screenshot({ path: path.join(output, "loss-bucket-" + viewport.width + ".png") });
+
+    await select(1, -1);
+    const compare = await pinned.innerText();
+    assert.match(compare, /已固定.*22:19:50\.100/s);
+    assert.match(compare, /192\.0\.2\.21.*成功（UP）/s);
+    assert.doesNotMatch(compare, /192\.0\.2\.20/);
+    assert.match(await el(page, "Events").locator("tr").first().textContent(), /192\.0\.2\.21/);
+    await select(0, -2);
+    assert.match(await pinned.innerText(), /22:19:50.*抓取失败/s);
+    await select(0, -3);
+    assert.match(await pinned.innerText(), /22:19:40.*成功（UP）/s);
+    const previous = await pinned.innerText();
+    await select(0, -4);
+    assert.equal(await el(page, "HistoryError").textContent(), "此处无原始样本。");
+    assert.equal(await pinned.innerText(), previous, "an empty cell cannot borrow the other AP's sample");
+
+    await el(page, "ClearPin").click();
+    assert.equal(await pinned.innerText(), "");
+    assert.match(await el(page, "Cursor").inputValue(), /T22:20(?::00)?$/);
+    await el(page, "Locate").click();
+    assert.equal(await el(page, "HistoryError").textContent(), "此处无原始样本。");
+    assert.equal(await pinned.innerText(), "", "manual nearest-sample tolerance is unchanged");
+    assert.equal(requests.filter(({ type }) => type === "raw").length, before);
+    assert.equal(await el(page, "Workspace").evaluate((root) => root.scrollWidth <= root.clientWidth), true);
+    assert.deepEqual(errors, []);
+    return { ...viewport, loss, compare, requests, additionalRawQueries: 0 };
+  } finally {
+    await context.close();
+  }
+}
+
+async function verifyDnsBuckets(browser, output) {
+  const start = end - 300;
+  const id = "abcd1234-1000-4000-8000-000000000119";
+  const ipA = "192.0.2.31";
+  const ipB = "192.0.2.32";
+  const metric = (target_ip) => ({ job: "custom-ping", instance: id, custom_id: id, target_ip });
+  const segment = (generation, ip, from, to, gate) => ({ id, address: "loss.example.test", generation, ip,
+    start: start + from, end: to === null ? null : start + to, sampleNotBefore: start + gate });
+  const fixture = await openHistory(browser, { width: 1366, height: 768 }, {
+    start, keys: ["custom-dns:" + id],
+    segments: [segment(1, ipA, -1, 104, 0), segment(2, ipB, 104, 210, 108), segment(3, ipA, 210, null, 214)],
+    samples: () => [
+      { metric: metric(ipA), points: [94, 102, 106, 216, 224, 229].map((offset) =>
+        ({ t: start + offset, success: offset === 229 ? 1 : 0 })) },
+      { metric: metric(ipB), points: [108, 109, 112, 114, 225].map((offset) =>
+        ({ t: start + offset, success: offset === 114 ? 1 : 0 })) }
+    ]
+  });
+  const { page, requests, errors, context } = fixture;
+  try {
+    const pins = [];
+    const pinned = el(page, "Pinned");
+    for (const [index, ip, generation, time] of [
+      [9, ipA, 1, "22:16:34"], [11, ipB, 2, "22:16:52"], [22, ipA, 3, "22:18:44"]
+    ]) {
+      await heatCell(page, 0, index).click();
+      const pin = await pinned.innerText();
+      assert.ok([time, ip, "代次 " + generation, "ICMP 丢包"].every((label) => pin.includes(label)), pin);
+      pins.push(pin);
+    }
+    for (const boundary of [10, 21]) {
+      await heatCell(page, 0, boundary).click();
+      assert.equal(await el(page, "HistoryError").textContent(), "此处无原始样本。");
+      assert.equal(await pinned.innerText(), pins.at(-1));
+    }
+    assert.equal(requests.filter(({ type }) => type === "raw").length, 1);
+    assert.deepEqual(errors, []);
+    await pinned.screenshot({ path: path.join(output, "loss-bucket-dns-generation.png") });
+    return { pins, requests, blockedBuckets: [10, 21] };
+  } finally {
+    await context.close();
+  }
+}
+
+async function verifyAggregateBuckets(browser) {
+  let releaseOld;
+  const oldResponse = new Promise((resolve) => { releaseOld = resolve; });
+  const other = { job: "infra-ap-ping", instance: "Other target", target_ip: "192.0.2.20" };
+  const { page, context, requests, errors } = await openHistory(browser, { width: 1366, height: 768 }, {
+    start: overviewStart, keys: [model.identity(core), model.identity(other)],
+    delays: (time) => time === end ? oldResponse : undefined,
+    samples: (time) => [{ metric: core, points: [{ t: time - 5, success: 1 }] }],
+    config: { pingIntervals: { infra: "1s" } }
+  });
+  try {
+    const isOldDrill = (request) => {
+      const parameters = new URL(request.url()).searchParams;
+      return parameters.get("time") === String(end) && parameters.get("query")?.startsWith("{__name__");
+    };
+    const pending = page.waitForRequest(isOldDrill);
+    const stale = page.waitForEvent("requestfailed", { predicate: isOldDrill });
+    await heatCell(page, 0, -1).click();
+    await pending;
+    assert.match(await el(page, "DrillCaption").textContent(), /正在读取/);
+    await heatCell(page, 0, -2).click();
+    const raw = el(page, "Distribution").locator("svg");
+    await raw.waitFor();
+    assert.equal(await raw.getAttribute("data-chart-end"), String(end - 20));
+    assert.match(await el(page, "Pinned").innerText(), /聚合桶.*22:19:40/s);
+    releaseOld();
+    assert.match((await stale).failure().errorText, /ABORTED/);
+
+    await heatCell(page, 1, -2).click();
+    const pin = await el(page, "Pinned").innerText();
+    assert.match(pin, /Other target.*聚合桶/s);
+    assert.doesNotMatch(pin, /Fixed point fixture/);
+    assert.equal(await raw.getAttribute("data-chart-end"), String(end - 20));
+    assert.deepEqual(requests.filter(({ type }) => type === "raw").map(({ time, span }) => [time, span]),
+      [[end, 300], [end - 20, 300]]);
+    assert.equal(requests.filter(({ type }) => type === "range").length, 2);
+    assert.deepEqual(errors, []);
+    return { pin, requests, staleRequestCanceled: true };
+  } finally {
+    releaseOld();
+    await context.close();
+  }
+}
+
+async function verifyLossBuckets(browser, dims, output) {
+  const layouts = [];
+  for (const [width, height] of dims) layouts.push(await verifyApBuckets(browser, { width, height }, output));
+  const dns = await verifyDnsBuckets(browser, output);
+  const aggregate = await verifyAggregateBuckets(browser);
+  fs.writeFileSync(path.join(output, "history-loss-bucket.json"), JSON.stringify({ layouts, dns, aggregate }, null, 2));
+}
+
+module.exports = { verifyFixedPoint, verifyLossBuckets };

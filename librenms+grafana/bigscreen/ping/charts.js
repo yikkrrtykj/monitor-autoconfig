@@ -118,13 +118,13 @@
   }
 
   function heatmap(series) {
-    return series.map(({ target, buckets }, index) => `<div class="ping-heat-row">
+    return series.map(({ target, buckets }, index) => `<div class="ping-heat-row" data-target-key="${escapeHtml(target.key)}">
       <span title="${escapeHtml(target.ip)}" style="--ping-series:${colors[index]}">${escapeHtml(target.name)}</span>
-      <div class="ping-heat-track">${buckets.map((bucket) => {
+      <div class="ping-heat-track">${buckets.map((bucket, bucketIndex) => {
         const state = bucket.loss === null ? "unknown" : bucket.failed === 0 ? "clear" : bucket.loss >= 50 ? "high" : "loss";
         const time = formatAxis(bucket.to, buckets.at(-1).to - buckets[0].from);
         const title = `${time} · ${bucket.loss === null ? "N/A" : bucket.loss.toFixed(1) + "%"} · ${bucket.failed} 失败 / ${bucket.total} 有效`;
-        return `<button type="button" tabindex="-1" class="ping-heat-cell ${state}" title="${title}" aria-label="${title}" data-cursor="${bucket.to}" style="flex-grow:${bucket.to - bucket.from}"></button>`;
+        return `<button type="button" tabindex="-1" class="ping-heat-cell ${state}" title="${title}" aria-label="${title}" data-bucket-index="${bucketIndex}" style="flex-grow:${bucket.to - bucket.from}"></button>`;
       }).join("")}</div></div>`).join("");
   }
 

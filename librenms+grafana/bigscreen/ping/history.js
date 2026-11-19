@@ -97,6 +97,33 @@
     return "缺样（UNKNOWN）";
   }
 
+  function bucketSelection({ target, points, samples = points }, bucket, aggregated) {
+    if (aggregated) {
+      return { rows: [{ target, bucket }], time: bucket.to, rtt: null, canPin: true,
+        aggregated: true, targetKey: target.key };
+    }
+    if (target.dns && !bucket.segment) return null;
+    let sample = null;
+    let rank = 0;
+    for (let index = lowerBound(samples, bucket.from, "t"); index < samples.length; index++) {
+      const point = samples[index];
+      if (point.t > bucket.to) break;
+      if (point.t <= bucket.from || point.scrape === undefined) continue;
+      if (target.dns && (!point.verified || point.ip !== bucket.segment.ip ||
+          point.segment?.generation !== bucket.segment.generation)) continue;
+      // Within each class the newest record wins. A diagnostic record never
+      // outranks a probe result or turns a failed scrape into packet loss.
+      const priority = point.scrape === 1 && point.success === 0 ? 3 :
+        point.scrape === 1 && point.success === 1 ? 2 : 1;
+      if (priority >= rank) {
+        sample = point;
+        rank = priority;
+      }
+    }
+    return sample && { rows: [{ target, sample }], time: sample.t, rtt: sample.rtt, canPin: true,
+      aggregated: false, targetKey: target.key };
+  }
+
   function selection(series, time, aggregated) {
     let closest = null;
     const rows = series.map(({ target, points, samples = points, buckets }) => {
@@ -115,7 +142,7 @@
     return { rows, time: closest?.time ?? time, rtt: closest?.rtt ?? null, canPin: closest !== null, aggregated };
   }
 
-  const api = { presets, minZoom, parseTarget, isHistory, parseRoute, urlFor, validateRange, shiftRange, statisticsWindow, nearest, sampleStatus, selection };
+  const api = { presets, minZoom, parseTarget, isHistory, parseRoute, urlFor, validateRange, shiftRange, statisticsWindow, nearest, sampleStatus, bucketSelection, selection };
   if (common) module.exports = api;
   else window.BSPingHistory = api;
 })();
