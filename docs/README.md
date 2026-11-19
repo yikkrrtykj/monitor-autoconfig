@@ -13,8 +13,8 @@
 | [DOCUMENTATION](DOCUMENTATION.md) | 文档分类、更新触发、证据和上下文持久化 |
 | [旧 TODO 与 STATUS 归档](https://github.com/yikkrrtykj/monitor-autoconfig/issues/16) | 原文快照见 #16、#17；旧迭代记录见 #18–#24 |
 | [A-02.1 生产验收](https://github.com/yikkrrtykj/monitor-autoconfig/issues/13) | 尚未收口的 Hotfix 审计、部署和现场验收 |
-| [A-02.1 部署与验收](runbooks/a-02.1-unifi-mac-hotfix.md) | 本次 Hotfix 的完整操作与回滚手册 |
-| [公司部署与验收](runbooks/company-deployment.md) | 已收口 Batch 5.2 的历史部署参考，不能直接用作 Feishu 修复交付 |
+| [A-02.1 部署与验收](runbooks/a-02.1-unifi-mac-hotfix.md) | Hotfix 历史交付、兼容边界和待验收项 |
+| [公司部署与验收](runbooks/company-deployment.md) | 现行公司服务器发布规范及 Batch 5.2 历史入口 |
 
 专题文档保留在既有位置，避免为了整理目录打断已有链接：
 
