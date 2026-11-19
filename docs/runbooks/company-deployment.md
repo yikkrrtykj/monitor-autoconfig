@@ -213,6 +213,51 @@ printf 'Before=%s Target=%s\n' "$before" "$target"
 - 通过 `docker compose exec -T bigscreen ps -o pid,user,args </dev/null` 找到 worker，读取容器内该进程的 `/proc/<PID>/status`，核对有效 UID/GID 和文件系统 UID/GID，必要时核对补充组。使用该身份执行哈希检查。root 的 `test -r` 无法证明 worker 能读。若身份或挂载映射无法核实，停止并记录 UNKNOWN。
 - 从 `docker compose port bigscreen 80 </dev/null` 核对实际本机端口和 IPv4 监听地址。HTTP 验收显式绕过代理，核对缓存头、页面实际引用的资源版本及浏览器强刷。按变更单验证页面和功能，至少确认受影响入口可用。只做批准的验收动作，不执行真实设备 DELETE 或发送测试飞书。
 
+如果变更单要求其他服务保持运行，在更新前后用同一 Compose 项目、同一组服务采集快照。只列入此次无需更新的服务，快照写入已准备好的私有备份目录。比较失败时记录差异和受影响服务，停止签收。
+
+<!-- release-example: snapshot -->
+```bash
+snapshot_containers() {
+  local listed inspected
+  local -a ids
+  listed=$(timeout 25s docker compose ps --all --no-trunc --quiet "$@" </dev/null) || return "$?"
+  if [[ -z "$listed" ]]; then
+    printf 'Empty Compose container snapshot\n' >&2
+    return 1
+  fi
+  mapfile -t ids <<<"$listed"
+  inspected=$(timeout 25s docker inspect --type container "${ids[@]}" </dev/null) || return "$?"
+  python3 -c '
+import json
+import sys
+
+try:
+    containers = json.load(sys.stdin)
+    ids = [item["Id"] for item in containers]
+    if not ids or len(ids) != len(set(ids)) or set(ids) != set(sys.argv[1:]):
+        raise ValueError
+    snapshot = []
+    for item in containers:
+        state = item["State"]
+        health = state.get("Health")
+        restart_count = item["RestartCount"]
+        row = (item["Id"], state["Status"], state["StartedAt"], restart_count,
+               "none" if health is None else health["Status"])
+        if any(not isinstance(row[index], str) or not row[index] for index in (0, 1, 2, 4)):
+            raise ValueError
+        if type(restart_count) is not int or restart_count < 0:
+            raise ValueError
+        snapshot.append(row)
+except (KeyError, TypeError, ValueError):
+    sys.exit("Invalid or incomplete Docker container snapshot")
+json.dump(sorted(snapshot), sys.stdout)
+print()
+' "${ids[@]}" <<<"$inspected"
+}
+```
+
+例如只更新 Bigscreen，在当前阶段脚本设置数组 `unchanged_services`，将 `backup_dir` 指向步骤 3 已核验的私有目录，再在更新前运行 `snapshot_containers "${unchanged_services[@]}" >"$backup_dir/containers.before.json"`。更新后使用同样的服务列表写 `containers.after.json`，再用 `cmp -- "$backup_dir/containers.before.json" "$backup_dir/containers.after.json"`。容器健康字段缺失和 `null` 均记为 `none`。使用原始 inspect JSON 读取可选字段，仅写出容器 ID、运行状态、启动时间、重启次数和健康状态。inspect 失败、列表为空或采集期间容器消失时停止，快照文件不可用于验收。快照只能核对两次观测的容器状态。
+
 普通静态文件示例片段在部署目录执行。先把 `asset`、实际 `route`、`port`、`target`、`worker_uid`、`worker_gid` 设为已核对的值。此处 worker 的文件系统身份与有效 UID/GID 一致。读取文件会同时验证路径上的目录可遍历。
 
 ```bash

@@ -459,7 +459,7 @@ def test_cname_loop_is_bounded(dns_server):
     os.environ.get("RUN_CUSTOM_PING_PROMETHEUS") != "1" and os.environ.get("GITHUB_ACTIONS") != "true",
     reason="real Docker DNS/Prometheus/Blackbox integration runs in Linux CI",
 )
-def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypatch, dns_server):
+def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypatch, dns_server, capsys):
     from .test_custom_ping_prometheus import IMAGE, ROOT, SD_DIR, docker, wait_for
     from .test_custom_ping_frontend_integration import BLACKBOX, prometheus_fetch, query
 
@@ -468,7 +468,7 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
     work.mkdir(mode=0o755)
     work.chmod(0o755)
     private = tmp_path / "private"
-    private.mkdir()
+    private.mkdir(mode=0o700)
     discovery = tmp_path / "sd" / "custom_targets.json"
     collector = tmp_path / "collector" / "custom_targets.json"
     collector.parent.mkdir(mode=0o755)
@@ -488,7 +488,11 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
         "modules:\n  icmp:\n    prober: icmp\n    timeout: 1s\n    icmp:\n      preferred_ip_protocol: ip4\n", encoding="utf-8")
     generator = (ROOT / "prometheus-gen-config.sh").read_text(encoding="utf-8")
     (work / "generate.sh").write_text(generator.split("exec /bin/prometheus", 1)[0], encoding="utf-8")
+    authority = work / "authority.json"
+    authority.write_text("[]", encoding="ascii")
+    authority.chmod(0o644)
     docker("run", "--rm", "--network", "none", "--user", "0", "-v", fixture, "--entrypoint", "/bin/sh",
+           "-e", "SWITCH_TARGETS_FILE=/fixture/authority.json",
            "-e", "PROMETHEUS_CONFIG_FILE=/fixture/prometheus.yml", IMAGE, "/fixture/generate.sh", timeout=120)
     prefix = "dns-ci-" + uuid4().hex[:12]
     net, prom_name, bb, peer = prefix + "-net", prefix + "-prom", prefix + "-bb", prefix + "-peer"
@@ -520,7 +524,7 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
                "--cap-add", "NET_RAW", "-v", fixture + ":ro", BLACKBOX, "--config.file=/fixture/blackbox.yml")
         docker("run", "-d", "--name", prom_name, "--network", net,
                "-v", fixture + ":ro", "-v", f"{collector.parent}:{SD_DIR}:ro", IMAGE,
-               "--config.file=/fixture/prometheus.yml")
+               "--config.file=/fixture/prometheus.yml", "--storage.tsdb.path=/prometheus")
         wait_for(lambda: prometheus_fetch(prom_name, "/api/v1/scrape_pools"), lambda raw: "custom-ping" in raw)
         created = create(local, private=["172.31.248.0/24"])
         assert inventory.observed(local.list_targets(), local)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
@@ -607,6 +611,11 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
             from .ping_domain_browser_fixture import run_domain_browser
             run_domain_browser(monkeypatch, ROOT, local, inventory, resolver, dns_config, let_prometheus_read,
                                lambda url: prometheus_fetch(prom_name, url), created["id"], a, b)
+        else:
+            from .test_custom_ping_restore_fixture import restore_cold_archive
+            with capsys.disabled():
+                restore_cold_archive(tmp_path, monkeypatch, local, prom_name, net, fixture,
+                                     inventory, resolver, dns_config, created, (a, b))
     finally:
         docker("rm", "-f", "-v", prom_name, bb, peer, check=False)
         docker("network", "rm", net, check=False)
@@ -1057,7 +1066,7 @@ def test_refresh_lock_failure_revokes_old_up_before_slow_retry(store, clock, pro
         pool.shutdown()
 
 
-def test_refresh_fairness_for_100_with_slow_inventory(store, clock):
+def test_refresh_fairness_for_100_with_slow_inventory(store, clock, capsys):
     targets = [create(store, f"g{i}.example.com") for i in range(100)]
     ticks = [10.]
     store.dns.monotonic = lambda: ticks[0]
@@ -1122,6 +1131,9 @@ def test_refresh_fairness_for_100_with_slow_inventory(store, clock):
         assert {name for name, wave in calls if wave > 28} == expected
         for row in (edited, added):
             assert store.resolution_history(row["id"])["segments"][-1]["address"] == row["address"]
+        with capsys.disabled():
+            print(f"PING_DNS_REFRESH coverage=100/100 first_window_waves=14 second_window_waves=14 "
+                  f"peak={peak[0]} one_in_flight_per_id=PASS fixture_ttl_seconds=15")
     finally:
         with barrier:
             step[0] += 1
