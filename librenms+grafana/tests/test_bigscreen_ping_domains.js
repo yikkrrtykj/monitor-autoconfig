@@ -96,7 +96,6 @@ test("loss and current samples from Prometheus exclude all samples at/before the
   ];
   const data = createPingData({ settings, query: async (expression) => {
     assert.match(expression, /custom_id="abcd1234/);
-    assert.match(expression, /target_ip="1\.1\.1\.1"/);
     return samples;
   } });
   const selected = await data.custom(at, undefined, [endpoint], false);
@@ -191,4 +190,32 @@ test("mixed sizes keep UUID identity, 100 enabled, and 300-row catalog limit", (
     assert.equal(custom.present(state.current(), null, null, settings).length, Math.min(size, 100));
     if (size > 100) assert.throws(() => state.read({ ...list, targets: targets.map((item) => ({ ...item, enabled: true })) }));
   }
+});
+
+
+test("full 100-domain batch stays below the Prometheus URL limit", async () => {
+  const endpoints = Array.from({ length: 100 }, (_, i) => ({
+    ...dns.target(row({ id: id(i + 1), resolvedIp: "192.168.100." + (i + 100) })),
+    sampleNotBefore: at - 20
+  }));
+  const data = createPingData({ settings, query: async (expression) => {
+    const params = new URLSearchParams({ query: expression, time: at, timeout: "7s" });
+    assert.ok(("/prometheus/api/v1/query?" + params).length < 7600);
+    assert.equal((expression.match(/abcd1234/g) || []).length, 100);
+    return [];
+  } });
+  assert.equal((await data.custom(at, undefined, endpoints, false)).size, 0);
+});
+
+test("DNS sample request failure preserves validated IPv4 readings", async () => {
+  const fixed = dns.endpoint(id(2), "192.0.2.2");
+  const labels = { source: 1, source_at: at - 1, probe: 1, probe_at: at - 1, rtt: .012, rtt_at: at - 1, count: 30, ok: 30 };
+  const data = createPingData({ settings, query: async (expression) => {
+    if (expression.startsWith("{__name__")) throw new Error("isolated domain sample source unavailable");
+    return Object.entries(labels).map(([field, value]) => ({ metric: { ...fixed, ping_field: field }, value: [at, String(value)] }));
+  } });
+  const endpoint = { ...dns.target(row()), sampleNotBefore: at - 20 };
+  const samples = await data.custom(at, undefined, [endpoint], true);
+  assert.equal(samples.get(model.identity(fixed)).status, "UP");
+  assert.equal(samples.has(endpoint.key), false);
 });

@@ -62,6 +62,14 @@ function fixture(size) {
         discoveredGeneration: row.resolutionGeneration, sampleNotBefore: first, pingStatus: "UP",
         discoveryStatus: "DISCOVERED", withdrawalPending: false
       })) });
+    if (req.method() === "GET" && url.pathname.endsWith("/resolutions")) {
+      const id = url.pathname.split("/").at(-2);
+      const row = list.find((item) => item.id === id && item.kind === "dns");
+      if (!row) return json({ ok: true, segments: [], more: false, nextCursor: 0 });
+      return json({ ok: true, segments: [{ id, address: row.address, ip: row.resolvedIp,
+        generation: row.resolutionGeneration, start: first - 1, end: null, sampleNotBefore: first }],
+        more: false, nextCursor: row.resolutionGeneration });
+    }
     if (req.method() === "PATCH" && url.pathname.startsWith(api + "/")) {
       const data = req.postDataJSON();
       assert.ok(req.headers()["idempotency-key"]);
@@ -84,6 +92,7 @@ function fixture(size) {
             source: 1, source_at: at - 2, probe: 1, probe_at: at - 2, rtt: .012, rtt_at: at - 2, count: 30, ok: 30
           }).map(([field, value]) => ({ metric: { ...metric(row), ping_field: field }, value: [at, String(value)] })));
       }
+      await new Promise((resolve) => setTimeout(resolve, 15));
       activeQueries--;
       return json({ status: "success", data: { resultType: raw ? "matrix" : "vector", result: rows } });
     }
@@ -125,7 +134,8 @@ async function layout(browser) {
       assert.equal(await domainCard(page, longHost).locator("strong").getAttribute("title"), longHost);
       assert.match(await domainCard(page, longHost).locator(".ping-card-ip").textContent(), /当前解析：10\.0\.0\.1/);
       await screenshot(page, "wall-" + width + "x" + height);
-      await el(page, "CustomManage").click();
+      if (width === 390) await el(page, "CustomManage").tap();
+      else await el(page, "CustomManage").click();
       await el(page, "CustomRows").getByRole("button", { name: "编辑 Game 0", exact: true }).click();
       await el(page, "CustomPrivate").locator("summary").click();
       await el(page, "CustomCIDRs").fill("10.0.0.0/24");
@@ -138,6 +148,15 @@ async function layout(browser) {
       assert.deepEqual(data.ops.at(-1).privateCidrs, []);
       await el(page, "CustomReview").click();
       assert.equal(await el(page, "CustomIP").inputValue(), "new.example.test");
+      await el(page, "CustomClose").click();
+      const history = domainCard(page, longHost).locator(".ping-card-open");
+      if (width === 390) await history.tap();
+      else await history.click();
+      await el(page, "HistoryTitle").getByText(longHost, { exact: true }).waitFor();
+      await el(page, "DnsHistory").locator("summary").click();
+      await el(page, "DnsSegments").getByText(/严格晚于/).first().waitFor();
+      assert.equal(await el(page, "Workspace").evaluate((root) => root.scrollWidth <= root.clientWidth), true);
+      await screenshot(page, "history-" + width + "x" + height);
       assert.deepEqual(errors, []);
       evidence.push({ width, height, ...metrics, elapsedMs: Date.now() - started, ...data.initial() });
     } finally {

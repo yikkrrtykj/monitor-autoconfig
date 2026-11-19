@@ -126,7 +126,8 @@
         dataState === "unavailable" || !!customNotice;
       const mode = snapshotAt === null ? "实时监控" : "历史快照 · " + localInput(snapshotAt).replace("T", " ");
       const source = byId("Source");
-      source.dataset.state = !available ? "UNKNOWN" : partial ? "DEGRADED" : "UP";
+      const state = !available ? "UNKNOWN" : partial ? "DEGRADED" : "UP";
+      if (source.dataset.state !== state) source.dataset.state = state;
       source.textContent = dataState === "loading" ? "正在读取" :
         !available ? ["Monitoring Unavailable", dataError].filter(Boolean).join(" · ") : partial ? `${mode} · 部分不可用` : mode;
       byId("Counts").textContent = Object.entries(states).map(([key, label]) => `${label} ${counts[key]}`).join(" · ");

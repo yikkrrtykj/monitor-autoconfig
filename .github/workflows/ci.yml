@@ -153,7 +153,7 @@ jobs:
         run: |
           pip install --disable-pip-version-check -r librenms+grafana/requirements-dev.txt
           npm install --prefix "$RUNNER_TEMP/ping-browser" --no-audit --no-fund --no-save playwright@1.56.1
-      - name: Verify legacy Ping and D3 layouts
+      - name: Verify legacy Ping in Chromium
         shell: bash
         run: |
           set -euo pipefail
@@ -163,10 +163,18 @@ jobs:
           export PING_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/legacy"
           mkdir -p "$PING_BROWSER_OUTPUT"
           node librenms+grafana/tests/chromium_ping_custom.js | tee "$PING_BROWSER_OUTPUT/run.log"
+      - name: Verify D3 layouts in Chromium
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PLAYWRIGHT_MODULE="$RUNNER_TEMP/ping-browser/node_modules/playwright"
+          export CHROMIUM_PATH="$(command -v google-chrome)"
           export PING_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/domains"
           mkdir -p "$PING_BROWSER_OUTPUT"
           node librenms+grafana/tests/chromium_ping_domains.js | tee "$PING_BROWSER_OUTPUT/layout-run.log"
       - name: Exercise browser with Platform API, DNS, Prometheus and Blackbox
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail
@@ -174,6 +182,7 @@ jobs:
           export CHROMIUM_PATH="$(command -v google-chrome)"
           export PING_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/domains"
           export RUN_CUSTOM_PING_DOMAIN_BROWSER=1
+          mkdir -p "$PING_BROWSER_OUTPUT"
           pytest -q -s librenms+grafana/tests/test_custom_ping_dns.py::test_dns_real_prometheus_blackbox_generation_and_history | tee "$PING_BROWSER_OUTPUT/isolated-pytest.log"
       - uses: actions/upload-artifact@v4
         if: always()

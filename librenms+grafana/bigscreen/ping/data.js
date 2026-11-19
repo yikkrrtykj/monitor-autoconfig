@@ -118,10 +118,13 @@
     async function custom(at, signal, endpoints = [], fixed = true) {
       const [samples, domainSamples] = await Promise.all([
         fixed ? fixedCustom(at, signal) : new Map(),
-        endpoints.length ? dnsRaw(endpoints, at - 60, at, signal, true) : new Map()
+        endpoints.length ? dnsRaw(endpoints, at - 60, at, signal, true).catch((error) => {
+          if (!fixed) throw error;
+          return new Map();
+        }) : new Map()
       ]);
       for (const target of endpoints) {
-        const rows = domainSamples.get(target.key).filter((point) => point.t > target.sampleNotBefore);
+        const rows = (domainSamples.get(target.key) || []).filter((point) => point.t > target.sampleNotBefore);
         const last = rows.at(-1);
         if (!last || last.scrape !== 1 || ![0, 1].includes(last.success)) continue;
         samples.set(target.key, {
@@ -132,9 +135,10 @@
       return samples;
     }
 
-    function dnsMatcher(targets, live = false) {
-      return ['job="custom-ping"', matcher("custom_id", targets.map((target) => target.metric.custom_id)),
-        ...(live ? [matcher("target_ip", targets.map((target) => target.ip))] : [])].join(",");
+    function dnsMatcher(targets) {
+      // Keep the URL bounded at 100 IDs. The returned physical series are
+      // still matched by exact UUID and IP for live reads.
+      return ['job="custom-ping"', matcher("custom_id", targets.map((target) => target.metric.custom_id))].join(",");
     }
 
     async function dnsRaw(targets, start, end, signal, live = false) {
@@ -143,7 +147,7 @@
       if (!targets.length || targets.length > limit || span < 1 || span > model.maxRaw) {
         throw new Error("域名原始样本查询超出范围");
       }
-      const match = dnsMatcher(targets, live);
+      const match = dnsMatcher(targets);
       const expr = '{__name__=~"up|probe_success|probe_icmp_duration_seconds",' + match + ',phase=~"rtt|"}[' + span + 's]';
       const result = await query(expr, { time: end }, signal);
       const byId = new Map(targets.map((row) => [row.metric.custom_id, row]));
