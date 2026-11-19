@@ -149,9 +149,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Try installing CJK screenshot fonts
+        shell: bash
+        run: |
+          if ! timeout --kill-after=5s 60s bash -c '
+            sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=12 update -qq &&
+            sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=12 install -y --no-install-recommends fonts-noto-cjk
+          '; then
+            echo "::warning::CJK screenshot fonts unavailable, using runner fonts"
+          fi
       - name: Prepare isolated browser dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk
           pip install --disable-pip-version-check -r librenms+grafana/requirements-dev.txt
           npm install --prefix "$RUNNER_TEMP/ping-browser" --no-audit --no-fund --no-save playwright@1.56.1
       - name: Verify D3 layouts in Chromium
