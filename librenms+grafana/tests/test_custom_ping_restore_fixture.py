@@ -140,7 +140,14 @@ def restore_cold_archive(
         assert paused.backup.read_bytes() == source.backup.read_bytes()
         assert paused.dns.path.read_bytes() == source.dns.path.read_bytes()
         assert paused.discovery.read_bytes() == source.discovery.read_bytes()
-        assert paused.resolution_history(dns_id) == original_history
+        # The restored process has no live DNS lease. Reading history can close
+        # the previously open segment without changing any archived bytes.
+        restored_history = paused.resolution_history(dns_id)
+        last = restored_history["segments"][-1]
+        assert original_history["segments"][-1]["end"] is None
+        assert last["sampleNotBefore"] <= last["end"] <= time()
+        last["end"] = None
+        assert restored_history == original_history
 
         paused.dns_enabled = False
         paused.reconcile()
