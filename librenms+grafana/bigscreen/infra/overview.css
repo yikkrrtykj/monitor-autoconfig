@@ -44,6 +44,15 @@
 .overview-wan-grid > .overview-empty { grid-column: 1 / -1; }
 .overview-wan { min-width: 0; padding: 6px 8px; border: 1px solid #32475d; border-radius: 7px; background: #0d1724; }
 .overview-wan:only-child { grid-column: 1 / -1; max-width: 360px; }
+/* Each row of cards shares tracks for names, rates, trends, and notes. */
+@supports (grid-template-rows: subgrid) {
+  .overview-wan {
+    display: grid;
+    grid-row: span 4;
+    grid-template-rows: subgrid;
+    row-gap: 0;
+  }
+}
 .overview-wan h4 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
 .overview-wan-note { margin-top: 3px; color: var(--overview-muted); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
 .overview-warning { color: #ffcc8a; }
@@ -72,11 +81,11 @@
 .overview-status [data-overview="faults"] a:focus-visible { outline-offset: 1px; }
 .overview-fault-summary { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-bottom: 6px; }
 .overview-health, .overview-badge { display: inline-block; padding: 3px 6px; border-radius: 4px; white-space: nowrap; font-size: 12px; font-weight: 750; }
-.overview-badge[data-count="0"] { background: #0d1724; color: var(--overview-muted); }
 .overview-health[data-health="healthy"], .overview-badge[data-status="UP"] { background: #153d34; color: #a6ecd1; }
 .overview-health[data-health="partial"], .overview-badge[data-status="DEGRADED"] { background: #47351c; color: #ffdb9b; }
 .overview-health[data-health="fault"], .overview-badge[data-status="DOWN"] { background: #482532; color: #ffc0cd; }
 .overview-health[data-health="unavailable"], .overview-badge[data-status="UNKNOWN"] { background: #2c394b; color: #d7e3ef; }
+.overview-badge[data-count="0"] { background: #0d1724; color: var(--overview-muted); }
 .overview-faults { margin: 0; padding: 0; list-style: none; }
 .overview-faults li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 5px 8px; margin-bottom: 5px; border: 1px solid #674050; border-left: 3px solid #e78ca2; border-radius: 6px; background: #2a1c29; }
 .overview-faults a { font-weight: 700; overflow-wrap: anywhere; }

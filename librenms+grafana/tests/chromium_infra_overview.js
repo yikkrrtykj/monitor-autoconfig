@@ -57,7 +57,7 @@ function fixture(options = {}) {
   const inventoryBody = JSON.stringify(inventory);
   const config = { eventName: "赛事网络 · 浏览器验收", ispAutoDiscovery: "true", firewallPing: `VIP:${vip.target_ip}`,
     ispNames: inventory.map(({ labels }) => labels.display_name).join(","),
-    ispMaxBandwidthMbps: "WAN 1:1000/500" };
+    ispMaxBandwidthMbps: long ? `WAN 1:1000/500,${longWan}:1750/2500` : "WAN 1:1000/500" };
   function taggedPing(query, at) {
     return [...status].flatMap(([metric, state]) => {
       const samples = metric.job === "infra-isp-ping" ? 60 : 30;
@@ -78,11 +78,14 @@ function fixture(options = {}) {
         return value === null ? [] : [[t, value]];
       }));
     return [series("up", () => 1), series("up_at", (t) => t - 1), ...inventory.flatMap(({ labels }, i) => {
+      if (long && i === 3) return [];
       const fields = {
-        in: (t, k) => i === 0 && k === 27 ? null : i === 0 && k === 60 ? 0 : 12e6 + (k % 7) * 1e6,
+        in: (t, k) => i === 0 && k === 27 ? null : i === 0 && k === 60 ? 0 :
+          long && i === 2 ? 986e6 : 12e6 + (k % 7) * 1e6,
         out: () => i === 0 ? 24 : 3e6,
         in_at: (t, k) => i === 0 && (k === 27 || (options.longWarning && k === 60)) ? null : t - 1,
-        out_at: (t) => t - 1, in_resets: () => 0, out_resets: () => options.longWarning ? 1 : 0, speed: () => 1000
+        out_at: (t, k) => long && i === 2 && k === 60 ? null : t - 1,
+        in_resets: () => 0, out_resets: () => options.longWarning && i === 0 ? 1 : 0, speed: () => 1000
       };
       return Object.entries(fields).map(([field, fn]) => series(field, fn, { ifIndex: labels.metric_ifindex }));
     })];
@@ -245,7 +248,15 @@ async function geometry(page) {
           });
       });
     };
-    const cardRects = [...parts.bandwidth.querySelectorAll(".overview-wan")].map((card) => card.getBoundingClientRect());
+    const wanPlots = [...parts.bandwidth.querySelectorAll(".overview-wan")].map((card) => {
+      const plot = card.querySelector("svg, .overview-no-trend");
+      const baseline = plot.querySelector(".overview-baseline");
+      return {
+        row: card.getBoundingClientRect().top,
+        top: plot.getBoundingClientRect().top,
+        baseline: baseline ? baseline.getBoundingClientRect().top : null
+      };
+    });
     return {
       visible: Object.fromEntries(Object.entries(candidates).map(([key, node]) => [key, visibleText(node)])),
       top: Object.fromEntries(Object.entries(candidates).map(([key, node]) => [key,
@@ -256,7 +267,8 @@ async function geometry(page) {
       cardOverflowX: [...parts.bandwidth.querySelectorAll(".overview-wan,.overview-rate,h4,.overview-wan-note")]
         .map((node) => node.scrollWidth - node.clientWidth).filter((px) => px > 1),
       tableOverflowX: table.scrollWidth - table.clientWidth, tableOverflowY: table.scrollHeight - table.clientHeight,
-      firstRowWans: cardRects.filter((card) => card.top === cardRects[0]?.top).length
+      firstRowWans: wanPlots.filter((plot) => plot.row === wanPlots[0]?.row).length,
+      wanPlots
     };
   });
 }
@@ -272,6 +284,42 @@ function expectSummary(result, width, down) {
   assert.equal(result.overviewOverflowX, 0);
   assert.deepEqual(result.cardOverflowX, []);
   if (width > 390) assert.equal(visible.gateway, true, `${width}px gateway text is clipped: ${JSON.stringify(result)}`);
+}
+
+function expectWanAlignment(plots, expectedCards, label) {
+  assert.equal(plots.length, expectedCards);
+  const rows = new Map();
+  for (const plot of plots) {
+    if (!rows.has(plot.row)) rows.set(plot.row, []);
+    rows.get(plot.row).push(plot);
+  }
+  assert.ok(plots.length <= 1 || [...rows.values()].some((row) => row.length > 1), label);
+  for (const row of rows.values()) {
+    const tops = row.map((plot) => plot.top);
+    const baselines = row.map((plot) => plot.baseline).filter((y) => y !== null);
+    assert.ok(Math.max(...tops) - Math.min(...tops) <= 1,
+      `${label}: WAN trend and placeholder top edges differ: ${tops.join(", ")}`);
+    if (baselines.length > 1) {
+      assert.ok(Math.max(...baselines) - Math.min(...baselines) <= 1,
+        `${label}: WAN plot baselines differ: ${baselines.join(", ")}`);
+    }
+  }
+}
+
+async function expectFaultColors(page) {
+  const colors = await part(page, "fault-summary").locator("[data-count]").evaluateAll((nodes) => nodes.map((node) => {
+    const { color, backgroundColor } = getComputedStyle(node);
+    return { status: node.dataset.status, count: node.dataset.count, color, backgroundColor };
+  }));
+  const active = {
+    DOWN: ["rgb(255, 192, 205)", "rgb(72, 37, 50)"],
+    DEGRADED: ["rgb(255, 219, 155)", "rgb(71, 53, 28)"],
+    UNKNOWN: ["rgb(215, 227, 239)", "rgb(44, 57, 75)"]
+  };
+  for (const { status, count, color, backgroundColor } of colors) {
+    const expected = count === "0" ? ["rgb(154, 175, 195)", "rgb(13, 23, 36)"] : active[status];
+    assert.deepEqual([color, backgroundColor], expected, `${status} count ${count}`);
+  }
 }
 
 function screen(page, name) {
@@ -307,6 +355,8 @@ async function verifyScenarios(browser, report) {
         const measured = await geometry(page);
         if (["normal", "single-down", "unknown", "mixed"].includes(name)) await screen(page, `after-${name}-${width}x${height}`);
         expectSummary(measured, width, options.down);
+        expectWanAlignment(measured.wanPlots, options.count ?? 6, `${name}-${width}`);
+        await expectFaultColors(page);
         if (coverage) assert.equal(measured.visible.coverage, true, name);
         if (name === "normal") {
           assert.equal(measured.firstRowWans, width === 390 ? 2 : 6);
@@ -323,6 +373,7 @@ async function verifyScenarios(browser, report) {
           assert.match(await wan.nth(1).textContent(), /容量待核实/);
           assert.equal((await wan.first().locator("path.overview-rx").getAttribute("d")).match(/M/g).length, 2);
           assert.equal(await wan.first().locator("path.overview-tx").getAttribute("class"), "overview-tx");
+          assert.ok(measured.wanPlots.every(({ baseline }) => Number.isFinite(baseline)));
         }
         if (name === "multiple-down") {
           assert.equal(await part(page, "faults").locator(".overview-faults li").count(), 8);
@@ -343,10 +394,21 @@ async function verifyScenarios(browser, report) {
           assert.match(coverage, /2 个 WAN 探测关联有歧义/);
         }
         if (name === "long-labels") {
-          assert.equal(await page.locator(".overview-wan").nth(2).locator("h4").textContent(), longWan);
-          const first = page.locator(".overview-wan").first();
+          const cards = page.locator(".overview-wan");
+          const longCard = cards.nth(2);
+          assert.equal(await longCard.locator("h4").textContent(), longWan);
+          assert.equal(await longCard.locator(".overview-util").count(), 1);
+          assert.match(await longCard.locator('[data-direction="in"]').textContent(), /986\.0 Mbps.*1750 Mbps/s);
+          assert.match(await longCard.locator('[data-direction="out"] strong').textContent(), /N\/A/);
+          assert.match(await cards.nth(3).locator(".overview-no-trend").textContent(), /近 15 分钟暂无数据/);
+          assert.ok(Number.isFinite(measured.wanPlots[2].baseline));
+          assert.equal(measured.wanPlots[3].baseline, null);
+          assert.equal(measured.wanPlots[2].row, measured.wanPlots[3].row);
+          const first = cards.first();
           assert.match(await first.textContent(), /抓取失败、缺样或数据过期/);
           assert.match(await first.textContent(), /速率样本不足、重复或计数异常/);
+          await cards.first().scrollIntoViewIfNeeded();
+          await screen(page, `after-wan-alignment-${width}x${height}`);
         }
         assert.deepEqual(errors, []);
         report.scenarios[`${name}-${width}`] = measured;

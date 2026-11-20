@@ -72,9 +72,11 @@
       <h4 title="${esc(`${card.name} · ${identity}`)}">${esc(card.name)}</h4>
       <div class="overview-rates">${direction(card.in, "入站 ↓", "in")}${direction(card.out, "出站 ↑", "out")}</div>
       ${sparkline(card)}
-      ${warnings.map((warning) => `<p class="overview-wan-note overview-warning">${esc(warning)}</p>`).join("")}
-      ${capacity ? `<p class="overview-wan-note">${capacity}</p>` : ""}
-      <p class="overview-wan-note${probe.state !== "matched" ? " overview-warning" : ""}" data-probe-coverage="${probe.state}">${probeText}</p>
+      <div class="overview-wan-notes">
+        ${warnings.map((warning) => `<p class="overview-wan-note overview-warning">${esc(warning)}</p>`).join("")}
+        ${capacity ? `<p class="overview-wan-note">${capacity}</p>` : ""}
+        <p class="overview-wan-note${probe.state !== "matched" ? " overview-warning" : ""}" data-probe-coverage="${probe.state}">${probeText}</p>
+      </div>
     </article>`;
   }
 
