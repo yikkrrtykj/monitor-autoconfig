@@ -5,6 +5,7 @@
   const { pingHref } = window.BSOverviewModel;
   const maxFaults = 8;
   const healthLabels = { healthy: "All Good", fault: "检测到网络异常", partial: "监控部分不可用", unavailable: "监控不可用" };
+  const faultLabels = { DOWN: "已确认离线", DEGRADED: "质量异常", UNKNOWN: "探测未知" };
   const formatTime = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
   const number = (value, places = 2) => value == null ? "N/A" : value.toFixed(places);
   const count = (values) => values.UP + values.DOWN + values.DEGRADED + values.UNKNOWN;
@@ -58,7 +59,7 @@
   }
 
   function bandwidthCard(card) {
-    const warning = card.in.reason || card.out.reason;
+    const warnings = [...new Set([card.in.reason, card.out.reason].filter(Boolean))];
     const identity = card.instance && card.index ? `${card.instance} · ifIndex ${card.index}` : "接口待核实";
     const capacity = card.in.capacity !== null || card.out.capacity !== null ? "" :
       card.ambiguousName ? "同名接口 · 容量待核实" : "容量待核实";
@@ -68,10 +69,11 @@
       ? `<a href="${pingHref(probe.target)}">探测已关联 · ${probe.target.status}</a>`
       : probeLabels[probe.state];
     return `<article class="overview-wan" data-wan-key="${esc(card.key || "")}">
-      <h3 title="${esc(`${card.name} · ${identity}`)}">${esc(card.name)}</h3>
+      <h4 title="${esc(`${card.name} · ${identity}`)}">${esc(card.name)}</h4>
       <div class="overview-rates">${direction(card.in, "入站 ↓", "in")}${direction(card.out, "出站 ↑", "out")}</div>
       ${sparkline(card)}
-      ${warning || capacity ? `<p class="overview-wan-note${warning ? " overview-warning" : ""}">${esc(warning || capacity)}</p>` : ""}
+      ${warnings.map((warning) => `<p class="overview-wan-note overview-warning">${esc(warning)}</p>`).join("")}
+      ${capacity ? `<p class="overview-wan-note">${capacity}</p>` : ""}
       <p class="overview-wan-note${probe.state !== "matched" ? " overview-warning" : ""}" data-probe-coverage="${probe.state}">${probeText}</p>
     </article>`;
   }
@@ -81,10 +83,10 @@
     const rows = down.slice(0, maxFaults).map((target) => `<li>
       <div>${targetLink(target)} <small>${esc(target.group)}</small></div>${badge(target.status)}
     </li>`).join("");
-    const other = [["DEGRADED", "质量异常"], ["UNKNOWN", "探测未知"]].map(([status, label]) => {
+    const other = ["DEGRADED", "UNKNOWN"].map((status) => {
       const list = state.faults.filter((target) => target.status === status);
       if (!list.length) return "";
-      return `<section class="overview-other-faults"><b>${label} ${list.length}</b>
+      return `<section class="overview-other-faults"><b>${faultLabels[status]} ${list.length}</b>
         <span>${list.slice(0, 3).map(targetLink).join(" · ")}${list.length > 3 ? ' · <a href="/ping">其余目标</a>' : ""}</span></section>`;
     }).join("");
     return `${rows ? `<ul class="overview-faults">${rows}</ul>` : '<p class="overview-empty">暂无已确认离线设备</p>'}
@@ -103,7 +105,9 @@
           <td>${target.loss.loss == null ? "N/A" : `${number(target.loss.loss, 1)}%`}</td>
         </tr>`).join("")}</tbody>`;
     }).join("");
-    return `<div class="overview-table-wrap" tabindex="0" aria-label="滚动查看网关状态"><table><thead><tr>
+    return `<p class="overview-note overview-table-hint" id="overviewGatewayScrollHint">横向滑动或聚焦表格后按方向键，可查看全部列。</p>
+    <div class="overview-table-wrap" tabindex="0" role="region" aria-labelledby="overviewGatewayTitle"
+      aria-describedby="overviewGatewayScrollHint"><table><thead><tr>
       <th scope="col">Name</th><th scope="col">Status</th><th scope="col">RTT <small>ms</small></th>
       <th scope="col">STDDEV <small>ms</small></th><th scope="col">Loss <small>%</small></th>
     </tr></thead>${groups}</table></div>
@@ -120,9 +124,18 @@
     function html(part, markup) {
       const element = select(part);
       if (rendered.get(part) === markup) return;
-      const focused = element.contains(document.activeElement) ? document.activeElement.getAttribute("href") : null;
+      const previousTable = element.querySelector(".overview-table-wrap");
+      const tableScroll = previousTable && { left: previousTable.scrollLeft, top: previousTable.scrollTop };
+      const active = document.activeElement;
+      const focused = element.contains(active) ? active.getAttribute("href") : null;
+      const tableFocused = previousTable && previousTable === active;
       element.innerHTML = markup;
       rendered.set(part, markup);
+      const table = element.querySelector(".overview-table-wrap");
+      if (tableScroll && table) {
+        table.scrollTo(tableScroll);
+        if (tableFocused) table.focus({ preventScroll: true });
+      }
       if (focused) [...element.querySelectorAll("a")].find((link) => link.getAttribute("href") === focused)?.focus({ preventScroll: true });
     }
     return function render(state, meta) {
@@ -147,13 +160,16 @@
         state.missingFirewallVips ? `${state.missingFirewallVips} 个已配置的 FW VIP 缺少探测覆盖` : "",
         state.firewallConfigInvalid ? "FW VIP 探测配置无效" : "",
         state.incomplete ? "部分关键目标 RTT 或 Loss 样本不足" : "",
-        state.statsUnavailable ? "STDDEV 查询不可用" : ""
+        state.statsUnavailable ? "STDDEV 查询不可用" : "",
+        state.wanUnavailable && meta.wanState !== "loading" ? "WAN 采集缺失或部分不可用" : ""
       ].filter(Boolean).join(" · ");
       select("coverage").textContent = coverage;
       select("wan-source").textContent = meta.wanState === "loading" ? "正在读取 WAN" :
         state.wanUnavailable ? "WAN 采集缺失或部分不可用" : "IF-MIB · 近 15 分钟";
       html("bandwidth", state.wans.length ? state.wans.map(bandwidthCard).join("") :
         `<p class="overview-empty">${meta.wanState === "loading" ? "正在读取已发现 WAN 接口…" : "WAN 清单为空或暂不可用。"}</p>`);
+      html("fault-summary", Object.entries(faultLabels).map(([status, label]) =>
+        `<span class="overview-badge" data-status="${status}" data-count="${state.total[status]}">${label} ${state.total[status]}</span>`).join(""));
       html("faults", faultsMarkup(state));
       html("gateways", gatewayMarkup(state));
     };
