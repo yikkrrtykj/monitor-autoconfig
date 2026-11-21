@@ -225,6 +225,48 @@ def test_external_device_id_does_not_fallback_to_same_named_local_switch():
     assert placeholders[0]["resolution_state"] == "external_device"
 
 
+def test_zero_remote_device_id_falls_back_to_name_resolution():
+    """LibreNMS writes 0 for "neighbour is not one of my devices"."""
+    source = topology_device(
+        "192.168.10.30", "pmgc-lops.global.com", 5, {10111: "Gi0/11"},
+    )
+    peer = topology_device(
+        "192.168.10.31", "pmgc-hero.global.com", 8, {12: "Gi0/12"},
+    )
+    source["neighbors"] = [unified_neighbor(
+        10111, "Gi0/11", "pmgc-hero.global.com", 0, "GigabitEthernet0/12",
+    )]
+    devices = {source["ip"]: source, peer["ip"]: peer}
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert diagnostics == []
+    assert len(edges) == 1
+    assert edges[0]["from_ip"] == "192.168.10.30"
+    assert edges[0]["to_ip"] == "192.168.10.31"
+    assert edges[0]["to_port"] == "Gi0/12"
+
+
+def test_zero_remote_device_id_reports_unresolved_not_external():
+    source = topology_device(
+        "192.168.10.30", "pmgc-lops.global.com", 5, {10111: "Gi0/11"},
+    )
+    source["neighbors"] = [unified_neighbor(
+        10111, "Gi0/11", "unknown-device", 0, "GigabitEthernet0/12",
+    )]
+    devices = {source["ip"]: source}
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices),
+    )
+
+    assert edges == []
+    assert diagnostics[0]["resolution_state"] == "unknown_device"
+    assert diagnostics[0]["resolution_reason"] == "unknown-device"
+
+
 def test_external_ap_device_id_does_not_collide_with_ob_switch_name():
     source = topology_device(
         "192.168.10.11", "Aggregation", 7, {601: "Gi6/0/1"},
@@ -1452,6 +1494,95 @@ def test_retention_drops_stale_external_device_identity_collision():
 
     assert live == []
     assert retained == []
+
+
+def test_retention_drops_edge_when_local_port_now_sees_another_neighbour():
+    """A port moved to another device is not a 24h outage, even if unresolved."""
+    core = topology_device(
+        "192.168.10.1", "PMGC-core", 1, {6: "Te1/1/6", 1: "Te1/1/1"},
+    )
+    access = topology_device(
+        "192.168.10.30", "pmgc-lops.global.com", 5,
+        {10111: "Gi0/11", 10112: "Gi0/12"},
+    )
+    access["neighbors"] = [unified_neighbor(
+        10111, "Gi0/11", "pmgc-hero.global.com", 0, "GigabitEthernet0/12",
+    )]
+    devices = {core["ip"]: core, access["ip"]: access}
+    invalidation_hints = []
+    live, _diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices),
+        invalidation_hints=invalidation_hints,
+    )
+    cached = [{
+        "from_ip": access["ip"], "from_sysname": "pmgc-lops.global.com",
+        "from_port": "Gi0/11", "from_ifindex": 10111,
+        "to_ip": core["ip"], "to_sysname": "PMGC-core",
+        "to_port": "Te1/1/1", "to_ifindex": 1,
+        "last_seen": 100.0,
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        live, cached, list(devices),
+        now=200, retention_seconds=86400,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert live == []
+    assert retained == []
+
+
+def test_retention_reuse_matches_port_when_cached_ifindex_is_missing():
+    """A reverse LLDP/CDP shadow may only carry the port name."""
+    cached = [{
+        "from_ip": "192.168.10.30", "from_sysname": "pmgc-lops.global.com",
+        "from_port": "Gi0/11", "from_ifindex": None,
+        "to_ip": "192.168.10.1", "to_sysname": "PMGC-core",
+        "to_port": "Te1/1/1", "to_ifindex": None,
+        "last_seen": 100.0,
+    }]
+    invalidation_hints = [{
+        "kind": "endpoint-reuse",
+        "local_ip": "192.168.10.30",
+        "local_ifindex": 10111,
+        "local_port": "Gi0/11",
+        "remote_name": "pmgc-hero.global.com",
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        [], cached, ["192.168.10.30", "192.168.10.1"],
+        now=200, retention_seconds=86400,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert retained == []
+
+
+def test_retention_keeps_stale_uplink_when_port_has_no_new_neighbour():
+    """A silent port (cable pulled) must keep its last confirmed link."""
+    cached = [{
+        "from_ip": "192.168.10.30", "from_sysname": "pmgc-lops.global.com",
+        "from_port": "Gi0/11", "from_ifindex": 10111,
+        "to_ip": "192.168.10.1", "to_sysname": "PMGC-core",
+        "to_port": "Te1/1/1", "to_ifindex": 1,
+        "last_seen": 100.0,
+    }]
+    invalidation_hints = [{
+        "kind": "endpoint-reuse",
+        "local_ip": "192.168.10.30",
+        "local_ifindex": 10112,
+        "local_port": "Gi0/12",
+        "remote_name": "some-other-switch",
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        [], cached, ["192.168.10.30", "192.168.10.1"],
+        now=200, retention_seconds=86400,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert len(retained) == 1
+    assert retained[0]["stale"] is True
 
 
 def test_retention_preserves_normal_stale_uplink_with_external_neighbors():
