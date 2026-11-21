@@ -1290,7 +1290,7 @@ def _librenms_neighbors(client, device, port_by_id):
                 (local or {}).get("ifName") or (local or {}).get("ifDescr") or ""
             ).strip(),
             "neighbor_name": str(link.get("remote_hostname") or "").strip(),
-            "neighbor_device_id": link.get("remote_device_id"),
+            "neighbor_device_id": _clean_device_id(link.get("remote_device_id")),
             "neighbor_port_id": link.get("remote_port_id"),
             "neighbor_port": str(link.get("remote_port") or "").strip(),
         })
@@ -1507,11 +1507,30 @@ def _device_evidence(indexes, index_name, identity, kind):
     }
 
 
+def _clean_device_id(value):
+    """Normalize LibreNMS' "far end is not a managed device" sentinel to no identity.
+
+    LibreNMS stores `remote_device_id = 0` for links whose neighbour is not one
+    of its devices. Zero is a placeholder, not an identity: keeping it as strong
+    evidence made every such neighbour stop at `external-device-id` and skip the
+    sysname fallback, so a switch the collector polls directly could never be
+    linked even when its advertised name matched exactly. Real external device
+    IDs stay authoritative on purpose (identity collision safety).
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    if text in ("", "0", "none", "null"):
+        return None
+    return text
+
+
 def resolve_device_identity(indexes, remote_device_id=None, management_ip=None,
                             name=None, allow_scoped_core=False):
     """Resolve current-cycle device evidence without guessing through ambiguity."""
     evidence = []
     strong = []
+    remote_device_id = _clean_device_id(remote_device_id)
     if remote_device_id not in (None, ""):
         identity, candidates, item = _device_evidence(
             indexes, "by_device_id", remote_device_id, "librenms-device-id"
@@ -2057,6 +2076,10 @@ def build_edges(devices, name_index, evidence_seen_at=None,
         invalidation_hints if invalidation_hints is not None else []
     )
     strong_endpoint_claims = {}
+    # Each device's own neighbour rows only: the remote side of an observation
+    # is an advertisement about another device and must never be treated as
+    # that device's local evidence.
+    local_observations = []
     observed_at = time.time() if evidence_seen_at is None else evidence_seen_at
     identity_indexes = (
         name_index if isinstance(name_index, dict) and "by_device_id" in name_index
@@ -2113,6 +2136,12 @@ def build_edges(devices, name_index, evidence_seen_at=None,
                 "remote_name": neighbor_name,
                 "remote_port": remote_name,
             })
+        if result.get("state") == "not_found" and result.get("reason") != "self-edge":
+            reuse_hint = _endpoint_reuse_hint(
+                device.get("ip"), local_name, local_ifindex, neighbor_name
+            )
+            if reuse_hint:
+                invalidation_hints.append(reuse_hint)
         diagnostics.append(record)
 
     def add_port_diagnostic(device, protocol, local_name, local_ifindex,
@@ -2233,6 +2262,14 @@ def build_edges(devices, name_index, evidence_seen_at=None,
             return
         if not interface_is_usable(remote, remote_ifindex):
             return
+        if local_ifindex is not None or local_port_name:
+            local_observations.append({
+                "local_ip": ip,
+                "local_port": local_port_name,
+                "local_ifindex": local_ifindex,
+                "remote_ip": neighbor_ip,
+                "remote_name": neighbor_name,
+            })
         merge_edge(edges_by_key, {
             "from_ip": ip,
             "from_sysname": device.get("sysname"),
@@ -2335,8 +2372,7 @@ def build_edges(devices, name_index, evidence_seen_at=None,
             remote_port_name = str(neighbor.get("neighbor_port") or "").strip()
             result = resolve_device_identity(
                 identity_indexes,
-                remote_device_id=neighbor_device_id
-                if neighbor_device_id not in (None, "") else None,
+                remote_device_id=_clean_device_id(neighbor_device_id),
                 name=neighbor_name,
             )
             if result["state"] != "resolved":
@@ -2413,7 +2449,11 @@ def build_edges(devices, name_index, evidence_seen_at=None,
         invalidation_hints=invalidation_hints,
     ))
     edges = enrich_aggregate_members(edges, devices)
-    return publish_physical_edge_metadata(edges), diagnostics
+    published = publish_physical_edge_metadata(edges)
+    _append_endpoint_reuse_hints(
+        invalidation_hints, published, local_observations
+    )
+    return published, diagnostics
 
 
 UNMATCHED_NEIGHBOR_CATEGORIES = (
@@ -3591,6 +3631,141 @@ def _matches_external_neighbor_identity(edge, identities):
     return False
 
 
+def _endpoint_reuse_hint(local_ip, local_port, local_ifindex, remote_name,
+                         remote_ip=None):
+    """Describe a local port whose current neighbour is not the cached peer."""
+    remote_name = str(remote_name or "").strip()
+    local_ip = str(local_ip or "").strip()
+    if not local_ip or (local_ifindex in (None, "") and not local_port):
+        return None
+    remote_ip = str(remote_ip or "").strip()
+    if not remote_name and not remote_ip:
+        return None
+    return {
+        "kind": "endpoint-reuse",
+        "local_ip": local_ip,
+        "local_ifindex": local_ifindex,
+        "local_port": local_port,
+        "remote_name": remote_name,
+        "remote_ip": remote_ip,
+    }
+
+
+def _append_endpoint_reuse_hints(invalidation_hints, edges, observations):
+    """Publish cache invalidation hints from each device's own observations.
+
+    Only the observing device's endpoint is trusted. The remote side of a
+    partial edge is merely what that peer advertised, so it is not evidence
+    about the peer's own port and must never retire the peer's cached link
+    (round-2 audit P2). Observations that did not survive conflict resolution
+    are dropped, so ambiguous evidence cannot delete cache. The local endpoint
+    may fall back to its port name when its ifIndex is unresolved: that name
+    still comes from the device's own neighbour row.
+    """
+    published = set()
+    for edge in edges or []:
+        for local_side, remote_side in (("from", "to"), ("to", "from")):
+            local_ip = str(edge.get(f"{local_side}_ip") or "").strip()
+            remote_ip = str(edge.get(f"{remote_side}_ip") or "").strip()
+            if not local_ip or not remote_ip:
+                continue
+            ifindex = edge.get(f"{local_side}_ifindex")
+            if ifindex not in (None, ""):
+                published.add((local_ip, f"i:{ifindex}", remote_ip))
+            port = normalize_port_name(edge.get(f"{local_side}_port"))
+            if port:
+                published.add((local_ip, f"p:{port}", remote_ip))
+    for observation in observations or []:
+        local_ip = str(observation.get("local_ip") or "").strip()
+        remote_ip = str(observation.get("remote_ip") or "").strip()
+        if not local_ip or not remote_ip:
+            continue
+        local_ifindex = observation.get("local_ifindex")
+        keys = []
+        if local_ifindex not in (None, ""):
+            keys.append((local_ip, f"i:{local_ifindex}", remote_ip))
+        port = normalize_port_name(observation.get("local_port"))
+        if port:
+            keys.append((local_ip, f"p:{port}", remote_ip))
+        if not any(key in published for key in keys):
+            continue
+        hint = _endpoint_reuse_hint(
+            local_ip,
+            observation.get("local_port"),
+            local_ifindex,
+            observation.get("remote_name"),
+            remote_ip=remote_ip,
+        )
+        if hint:
+            invalidation_hints.append(hint)
+
+
+def _endpoint_reuse_hints(invalidation_hints):
+    """Return normalized `endpoint-reuse` hints for cache invalidation."""
+    hints = []
+    for hint in invalidation_hints or []:
+        if not isinstance(hint, dict) or hint.get("kind") != "endpoint-reuse":
+            continue
+        local_ip = str(hint.get("local_ip") or "").strip()
+        local_ifindex = hint.get("local_ifindex")
+        local_port = normalize_port_name(hint.get("local_port"))
+        remote_name = normalize_hostname(hint.get("remote_name"))
+        remote_ip = str(hint.get("remote_ip") or "").strip()
+        if not local_ip or (not remote_name and not remote_ip):
+            continue
+        if local_ifindex in (None, "") and not local_port:
+            continue
+        hints.append({
+            "local_ip": local_ip,
+            "local_ifindex": ""
+            if local_ifindex in (None, "") else str(local_ifindex),
+            "local_port": local_port,
+            "remote_name": remote_name,
+            "remote_ip": remote_ip,
+        })
+    return hints
+
+
+def _matches_endpoint_reuse_hint(edge, hints):
+    """Whether a cached edge's local port now faces a different neighbour.
+
+    A cached row is only worth keeping while its port has no newer evidence.
+    Once the current cycle observes another device name on that exact port, the
+    cable was moved or the neighbour replaced: retaining the old link for the
+    24-hour outage window would report a failure that never happened. A cached
+    link that is still real arrives as a live edge first, so this check never
+    overrides healthy adjacency.
+    """
+    for hint in hints:
+        for local_side, remote_side in (("from", "to"), ("to", "from")):
+            if str(edge.get(f"{local_side}_ip") or "").strip() != hint["local_ip"]:
+                continue
+            edge_ifindex = str(edge.get(f"{local_side}_ifindex") or "")
+            edge_port = normalize_port_name(edge.get(f"{local_side}_port"))
+            if hint["local_ifindex"]:
+                if edge_ifindex and edge_ifindex != hint["local_ifindex"]:
+                    continue
+                if not edge_ifindex and edge_port != hint["local_port"]:
+                    continue
+            elif edge_port != hint["local_port"]:
+                continue
+            if not edge_ifindex and not edge_port:
+                continue
+            cached_remote_ip = str(edge.get(f"{remote_side}_ip") or "").strip()
+            if hint["remote_ip"] and cached_remote_ip:
+                if cached_remote_ip == hint["remote_ip"]:
+                    # Same device: the live edge already covers the link.
+                    continue
+                return True
+            cached_remote = normalize_hostname(edge.get(f"{remote_side}_sysname"))
+            if (
+                cached_remote and hint["remote_name"] and
+                cached_remote != hint["remote_name"]
+            ):
+                return True
+    return False
+
+
 def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
                                 now=None, retention_seconds=24 * 60 * 60,
                                 devices=None, invalidation_hints=None):
@@ -3599,9 +3774,9 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
     Live observations replace matching cache entries. A cached edge is dropped
     immediately when one of its resolved physical endpoints is now occupied by
     a different live peer; otherwise it is retained as stale for the configured
-    window. Self-edges and current-cycle external-device identity collisions
-    are never retained. Server/FDB ownership has a separate durable ledger and
-    is excluded.
+    window. Self-edges, current-cycle external-device identity collisions, and
+    ports that now advertise a different neighbour are never retained.
+    Server/FDB ownership has a separate durable ledger and is excluded.
     """
     now = time.time() if now is None else float(now)
     retention_seconds = max(0, int(retention_seconds))
@@ -3612,6 +3787,7 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
     cache_invalidation_hints = _endpoint_invalidation_hints(
         invalidation_hints
     )
+    endpoint_reuse_hints = _endpoint_reuse_hints(invalidation_hints)
     live_keys = {_edge_cache_key(edge) for edge in live_edges}
     live_endpoint_identities = set()
     active_aggregate_identities = {}
@@ -3660,6 +3836,8 @@ def retain_cached_network_edges(live_edges, cached_edges, configured_device_ips,
         ):
             continue
         if _matches_cache_invalidation_hint(source, cache_invalidation_hints):
+            continue
+        if _matches_endpoint_reuse_hint(source, endpoint_reuse_hints):
             continue
         if _edge_cache_key(source) in live_keys:
             continue
