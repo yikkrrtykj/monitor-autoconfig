@@ -173,6 +173,8 @@ export NO_PROXY="$no_proxy"
 
 能 ping 通不等于能读取 SNMP。先在交换机执行 `show snmp`；如果提示 `SNMP agent not enabled`，需要启用 SNMP。再核对团体字和访问控制，以及它是否已经进入 LibreNMS。自动添加曾失败时，不能只等 ping 恢复就认定已补加。
 
+普通交换机自动发现只接纳能确认交换机身份的设备（SNMP sysDescr/sysObjectID/sysServices）。只通 ping、或 SNMP 显示是主机/打印机/路由器的地址会记为“未验证”，不会出现在大屏、拓扑和 SNMP 采集中；确认是交换机但型号无法识别时，在控制台“固定普通交换机”手工登记即可。
+
 **UniFi 的 AP 数量和拓扑数量不一样**
 
 “AP 已定位数/总数”表示找到了接入位置的数量，不是在线数量。没有可信的接入记录、位置有歧义或记录过期时，AP 不会连线。
