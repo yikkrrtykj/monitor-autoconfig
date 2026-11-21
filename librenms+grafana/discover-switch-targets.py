@@ -71,6 +71,7 @@ SNMP_IDENTITY_OIDS = (
 STATE_SCHEMA_VERSION = 2
 DEFAULT_MAX_HOSTS = 1024
 DEFAULT_RETENTION_SECONDS = 24 * 60 * 60
+DEFAULT_LEGACY_GRACE_SECONDS = 7 * 24 * 60 * 60
 UNVERIFIED_LOG_LIMIT = 10
 
 # Enterprise OIDs of vendors that actually ship switching products. The vendor
@@ -144,8 +145,43 @@ def ping_alive(ip: str, timeout: int = 1) -> bool:
         return False
 
 
-def _snmp_value(line: str) -> str:
-    text = str(line or "").strip().strip('"')
+_SNMP_RECORD = re.compile(r"^(?P<oid>\.?\d+(?:\.\d+)+)\s*=\s*(?P<body>.*)$")
+_SNMP_TYPE_PREFIX = re.compile(r"^[A-Za-z][A-Za-z0-9 -]*:\s")
+
+
+def _normalize_oid(value: str) -> str:
+    return str(value or "").strip().lstrip(".")
+
+
+def parse_snmpget_output(text: str) -> dict[str, str]:
+    """Map numeric OIDs to their values from one snmpget response.
+
+    `snmpget` prints one ``OID = value`` record per varbind, but a STRING value
+    may contain embedded newlines; continuation lines do not start with an OID.
+    Records are therefore split on OID boundaries, never on physical lines, so
+    a multi-line sysDescr cannot shift sysObjectID/sysName/sysServices.
+    """
+    records: dict[str, str] = {}
+    current = None
+    for raw_line in str(text or "").splitlines():
+        match = _SNMP_RECORD.match(raw_line)
+        if match:
+            current = _normalize_oid(match.group("oid"))
+            records[current] = match.group("body")
+            continue
+        if current is not None:
+            records[current] += "\n" + raw_line
+    values: dict[str, str] = {}
+    for oid, body in records.items():
+        first, separator, rest = body.partition("\n")
+        first = _SNMP_TYPE_PREFIX.sub("", first, count=1).strip()
+        values[oid] = first if not separator else f"{first}\n{rest}".strip()
+    return values
+
+
+def _usable_value(value: str) -> str:
+    """Collapse one parsed value into a single line, dropping SNMP sentinels."""
+    text = " ".join(str(value or "").split())
     lowered = text.lower()
     if not text or lowered.startswith((
         "no such", "no more", "timeout", "end of mib", "endofmibview",
@@ -158,7 +194,7 @@ def snmp_identity(ip: str, community: str, timeout: int = 1) -> dict[str, str]:
     """Return one bounded identity probe (4 varbinds, one request)."""
     try:
         result = subprocess.run(
-            ["snmpget", "-v2c", "-c", community, "-Onqv", "-t", str(timeout),
+            ["snmpget", "-v2c", "-c", community, "-On", "-t", str(timeout),
              "-r", "0", ip, *SNMP_IDENTITY_OIDS],
             capture_output=True, text=True, timeout=timeout + 3,
         )
@@ -166,13 +202,13 @@ def snmp_identity(ip: str, community: str, timeout: int = 1) -> dict[str, str]:
         return {}
     if result.returncode != 0:
         return {}
-    lines = result.stdout.splitlines()
-    if not lines:
+    records = parse_snmpget_output(result.stdout)
+    if not records:
         return {}
-    values = [_snmp_value(line) for line in lines]
-    while len(values) < len(SNMP_IDENTITY_OIDS):
-        values.append("")
-    descr, object_id, name, services = values[:4]
+    descr = _usable_value(records.get(SYS_DESCR_OID, ""))
+    object_id = _normalize_oid(_usable_value(records.get(SYS_OBJECT_ID_OID, "")))
+    name = _usable_value(records.get(SYS_NAME_OID, ""))
+    services = _usable_value(records.get(SYS_SERVICES_OID, ""))
     if not any((descr, object_id, name, services)):
         return {}
     return {
@@ -184,7 +220,7 @@ def snmp_identity(ip: str, community: str, timeout: int = 1) -> dict[str, str]:
 
 
 def vendor_for_object_id(object_id: str) -> str:
-    parts = str(object_id or "").strip().split(".")
+    parts = _normalize_oid(object_id).split(".")
     if len(parts) < 7 or parts[:6] != ["1", "3", "6", "1", "4", "1"]:
         return ""
     return ENTERPRISE_VENDORS.get(parts[6], "")
@@ -259,7 +295,9 @@ def _float_or_none(value: object) -> float | None:
 def _entry(ip: str, name: str, status: str, source: str | None,
            confirmed_at: float | None, last_seen: float | None,
            object_id: str | None = None,
-           reason: str | None = None) -> dict:
+           reason: str | None = None,
+           pending_verification: bool = False,
+           legacy_deadline: float | None = None) -> dict:
     return {
         "name": name or ip,
         "status": status,
@@ -268,6 +306,8 @@ def _entry(ip: str, name: str, status: str, source: str | None,
         "last_seen": last_seen,
         "sys_object_id": object_id or None,
         "reason": reason or None,
+        "pending_verification": bool(pending_verification),
+        "legacy_deadline": legacy_deadline,
     }
 
 
@@ -312,9 +352,10 @@ def normalize_state(payload) -> dict[str, dict]:
     """Read schema v1 or v2 into the current entry shape.
 
     v1 only stored ``name``/``last_seen``. An IP-shaped name was a ping
-    placeholder and never proved switch identity; a real hostname was already
-    being monitored, so it keeps monitoring as ``legacy-state`` until SNMP
-    verification decides its actual type.
+    placeholder and never proved switch identity. A real hostname proves the old
+    scanner received an SNMP sysName, which any printer/server/AP can provide,
+    so it becomes a **legacy pending** entry: monitoring continues for a bounded
+    verification window, but it is never treated as an SNMP-confirmed switch.
     """
     if not isinstance(payload, dict):
         return {}
@@ -327,13 +368,18 @@ def normalize_state(payload) -> dict[str, dict]:
             status = str(item.get("status") or "unverified").strip().lower()
             if status not in ("confirmed", "unverified"):
                 status = "unverified"
+            source = str(item.get("source") or "").strip() or None
+            pending = bool(item.get("pending_verification")) or (
+                source == "legacy-state"
+            )
             entries[ip] = _entry(
-                ip, name, status,
-                str(item.get("source") or "").strip() or None,
+                ip, name, status, source,
                 _float_or_none(item.get("identity_confirmed_at")),
                 _float_or_none(item.get("last_seen")),
                 str(item.get("sys_object_id") or "").strip() or None,
                 str(item.get("reason") or "").strip() or None,
+                pending_verification=pending,
+                legacy_deadline=_float_or_none(item.get("legacy_deadline")),
             )
         return entries
     for ip, item in payload.items():
@@ -348,7 +394,9 @@ def normalize_state(payload) -> dict[str, dict]:
             )
         else:
             entries[ip] = _entry(
-                ip, name, "confirmed", "legacy-state", last_seen, last_seen,
+                ip, name, "confirmed", "legacy-state", None, last_seen,
+                None, "awaiting-verification",
+                pending_verification=True,
             )
     return entries
 
@@ -373,16 +421,26 @@ def state_payload(entries: dict[str, dict]) -> dict:
 
 
 def update_entries(observations, candidates, previous, now,
-                   retention_seconds) -> tuple[dict[str, str], dict[str, dict]]:
+                   retention_seconds,
+                   legacy_grace_seconds=DEFAULT_LEGACY_GRACE_SECONDS
+                   ) -> tuple[dict[str, str], dict[str, dict]]:
     """Merge this cycle's observations with the durable identity ledger.
 
     Returns ``(targets, entries)``. Only ``confirmed`` entries become targets;
     unverified devices are kept for diagnostics and never enter switch
     monitoring. Identity confirmation time and last-seen time never share a
     field, so a Ping-only unknown host cannot refresh a switch identity.
+
+    ``legacy-state`` entries (migrated from v1, where a sysName alone admitted a
+    device) keep monitoring only for a bounded verification window. They are
+    provisional: an SNMP switch verdict promotes them to a real source, explicit
+    non-switch evidence removes them immediately, and the deadline retires
+    devices that never prove themselves. Already SNMP-confirmed switches are
+    unaffected and keep the 24-hour outage retention.
     """
     now = float(now)
     retention_seconds = max(0, int(retention_seconds))
+    grace_seconds = max(0, int(legacy_grace_seconds))
     candidates = list(dict.fromkeys(candidates))
     entries: dict[str, dict] = {}
     targets: dict[str, str] = {}
@@ -396,6 +454,11 @@ def update_entries(observations, candidates, previous, now,
         prev_name = str(prev.get("name") or "").strip()
         prev_confirmed_at = _float_or_none(prev.get("identity_confirmed_at"))
         prev_last_seen = _float_or_none(prev.get("last_seen"))
+        prev_source = str(prev.get("source") or "").strip() or None
+        pending = bool(prev.get("pending_verification")) or (
+            prev_source == "legacy-state"
+        )
+        deadline = _float_or_none(prev.get("legacy_deadline"))
 
         if identity:
             verdict, source, reason = classify_identity(identity)
@@ -411,9 +474,24 @@ def update_entries(observations, candidates, previous, now,
                 # SNMP answered but cannot confirm the type. Keep the already
                 # confirmed identity and its Ping monitoring instead of
                 # degrading it on a weak reading.
+                if pending:
+                    deadline = deadline if deadline is not None else now + grace_seconds
+                    if now > deadline:
+                        entries[ip] = _entry(
+                            ip, name, "unverified", None, None, now,
+                            object_id, "legacy-grace-expired",
+                        )
+                        continue
+                    entries[ip] = _entry(
+                        ip, name, "confirmed", prev_source, None, now,
+                        object_id, "awaiting-verification",
+                        pending_verification=True, legacy_deadline=deadline,
+                    )
+                    targets[ip] = entries[ip]["name"]
+                    continue
                 confirmed_at = prev_confirmed_at if prev_confirmed_at is not None else now
                 entries[ip] = _entry(
-                    ip, name, "confirmed", prev.get("source"), confirmed_at,
+                    ip, name, "confirmed", prev_source, confirmed_at,
                     now, object_id, reason,
                 )
                 targets[ip] = entries[ip]["name"]
@@ -429,8 +507,26 @@ def update_entries(observations, candidates, previous, now,
             if not ping_ok:
                 if last_seen is None or now - last_seen > retention_seconds:
                     continue
+            if pending:
+                deadline = deadline if deadline is not None else now + grace_seconds
+                if now > deadline:
+                    # Bounded legacy verification window is over: a device that
+                    # never proved itself as a switch must not keep the slot.
+                    if ping_ok:
+                        entries[ip] = _entry(
+                            ip, prev_name or ip, "unverified", None, None, now,
+                            prev.get("sys_object_id"), "legacy-grace-expired",
+                        )
+                    continue
+                entries[ip] = _entry(
+                    ip, prev_name or ip, "confirmed", prev_source, None,
+                    last_seen, prev.get("sys_object_id"), "awaiting-verification",
+                    pending_verification=True, legacy_deadline=deadline,
+                )
+                targets[ip] = entries[ip]["name"]
+                continue
             entries[ip] = _entry(
-                ip, prev_name or ip, "confirmed", prev.get("source"),
+                ip, prev_name or ip, "confirmed", prev_source,
                 prev_confirmed_at, last_seen, prev.get("sys_object_id"),
             )
             targets[ip] = entries[ip]["name"]
@@ -471,6 +567,44 @@ def _log_unverified(entries: dict[str, dict]) -> None:
         )
 
 
+def _log_legacy_pending(entries: dict[str, dict], now: float) -> None:
+    """Expose the bounded migration window and each retirement."""
+    expired = sorted(
+        (ip, entry) for ip, entry in entries.items()
+        if entry.get("reason") == "legacy-grace-expired"
+    )
+    for ip, entry in expired:
+        print(
+            f"[switch-discovery] legacy grace expired: {ip} "
+            f"{entry.get('name') or '-'} (identity never proven)",
+            file=sys.stderr,
+        )
+    pending = sorted(
+        (ip, entry) for ip, entry in entries.items()
+        if entry.get("pending_verification")
+    )
+    if not pending:
+        return
+    deadlines = [
+        entry["legacy_deadline"] for _, entry in pending
+        if entry.get("legacy_deadline") is not None
+    ]
+    nearest = ""
+    if deadlines:
+        nearest = f", nearest deadline in {max(0.0, min(deadlines) - now) / 3600:.1f}h"
+    print(
+        f"[switch-discovery] legacy hosts awaiting SNMP verification: "
+        f"{len(pending)}{nearest}",
+        file=sys.stderr,
+    )
+    for ip, entry in pending[:UNVERIFIED_LOG_LIMIT]:
+        print(
+            f"[switch-discovery]   {ip} {entry.get('name') or '-'} "
+            f"source={entry.get('source') or '-'}",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
     raw = os.environ.get("SWITCH_DISCOVERY_RANGE", "").strip()
     out = os.environ.get("SWITCH_TARGETS_FILE", "/targets/switch_targets.json")
@@ -484,6 +618,10 @@ def main() -> None:
     retention_seconds = int(os.environ.get(
         "SWITCH_DISCOVERY_RETENTION_SECONDS", str(DEFAULT_RETENTION_SECONDS)
     ) or DEFAULT_RETENTION_SECONDS)
+    legacy_grace_seconds = int(os.environ.get(
+        "SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS",
+        str(DEFAULT_LEGACY_GRACE_SECONDS),
+    ) or DEFAULT_LEGACY_GRACE_SECONDS)
     state_file = os.environ.get(
         "SWITCH_DISCOVERY_STATE_FILE", f"{out}.state.json"
     )
@@ -521,18 +659,23 @@ def main() -> None:
     if previous_payload and previous_payload.get(
         "schema_version"
     ) != STATE_SCHEMA_VERSION:
-        confirmed = sum(
+        pending = sum(
             1 for entry in previous.values()
-            if entry.get("status") == "confirmed"
+            if entry.get("pending_verification")
+        )
+        placeholders = sum(
+            1 for entry in previous.values()
+            if entry.get("status") == "unverified"
         )
         print(
             "[switch-discovery] migrated legacy state: "
-            f"{confirmed} confirmed kept, "
-            f"{len(previous) - confirmed} ping placeholders unverified",
+            f"{pending} legacy hosts awaiting SNMP verification, "
+            f"{placeholders} ping placeholders unverified",
             file=sys.stderr,
         )
     targets, entries = update_entries(
         observations, ips, previous, now, retention_seconds,
+        legacy_grace_seconds=legacy_grace_seconds,
     )
     write_file_sd(state_file, state_payload(entries), sort_keys=True)
     write_file_sd(out, build_file_sd(targets))
@@ -550,6 +693,7 @@ def main() -> None:
         file=sys.stderr,
     )
     _log_unverified(entries)
+    _log_legacy_pending(entries, now)
 
 
 if __name__ == "__main__":
