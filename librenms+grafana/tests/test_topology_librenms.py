@@ -520,7 +520,7 @@ def test_stale_remote_port_id_falls_back_to_unique_remote_port_name():
     assert edges[0]["to_port"] == "Gi1/0/2"
 
 
-def test_ambiguous_remote_port_emits_partial_edge_and_invalidates_exact_cache():
+def test_ambiguous_remote_port_emits_partial_edge_and_invalidates_previous_peers():
     source = topology_device(
         "192.168.10.1", "Source", 1, {1: "Gi1/0/1"}
     )
@@ -562,9 +562,12 @@ def test_ambiguous_remote_port_emits_partial_edge_and_invalidates_exact_cache():
         live, cached, [*devices, "192.168.10.3"], now=200.0,
         invalidation_hints=invalidation_hints,
     )
-    assert len(retained) == 2
-    assert sum(edge["stale"] is False for edge in retained) == 1
-    assert sum(edge["stale"] is True for edge in retained) == 1
+    # The device identity on Gi1/0/1 is certain even though its peer port is
+    # ambiguous, so every cached peer of that local port is obsolete: a physical
+    # port cannot still face 192.168.10.3 while the live edge says Remote.
+    assert len(retained) == 1
+    assert retained[0]["stale"] is False
+    assert retained[0]["to_ip"] == remote["ip"]
     assert all(
         edge["to_ip"] != remote["ip"] or edge["to_ifindex"] is None
         for edge in retained
@@ -1530,6 +1533,203 @@ def test_retention_drops_edge_when_local_port_now_sees_another_neighbour():
 
     assert live == []
     assert retained == []
+
+
+def test_partial_remote_port_retires_previous_peer_on_same_port():
+    """Audit P2: peer device resolves, peer port does not.
+
+    The new live edge carries only the local ifIndex. It still proves that
+    A Gi0/11 now faces B, so the cached A Gi0/11 -> Core edge must be dropped
+    instead of staying yellow for the retention window.
+    """
+    core = topology_device(
+        "192.168.10.1", "PMGC-core", 1, {1: "Te1/1/1", 6: "Te1/1/6"},
+    )
+    access = topology_device(
+        "192.168.10.30", "pmgc-lops.global.com", 5,
+        {10111: "Gi0/11", 10112: "Gi0/12"},
+    )
+    hero = topology_device(
+        "192.168.10.31", "pmgc-hero.global.com", 8, {12: "Gi0/12"},
+    )
+    # HERO is polled, but the advertised remote port is not in its IF-MIB, so
+    # only the device identity resolves.
+    access["neighbors"] = [unified_neighbor(
+        10111, "Gi0/11", "pmgc-hero.global.com", 0, "GigabitEthernet9/99",
+    )]
+    devices = {core["ip"]: core, access["ip"]: access, hero["ip"]: hero}
+    invalidation_hints = []
+    live, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices),
+        invalidation_hints=invalidation_hints,
+    )
+    cached = [{
+        "from_ip": access["ip"], "from_sysname": "pmgc-lops.global.com",
+        "from_port": "Gi0/11", "from_ifindex": 10111,
+        "to_ip": core["ip"], "to_sysname": "PMGC-core",
+        "to_port": "Te1/1/1", "to_ifindex": 1,
+        "last_seen": 100.0,
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        live, cached, list(devices),
+        now=200, retention_seconds=86400,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert len(live) == 1
+    assert live[0]["to_ip"] == "192.168.10.31"
+    assert live[0]["to_ifindex"] is None, "audit premise: only the peer port is unresolved"
+    assert diagnostics and diagnostics[0]["resolution_state"] == "unknown_port"
+    assert [edge for edge in retained if edge.get("stale") is True] == [], \
+        "cached A Gi0/11 -> Core edge must not survive the new peer observation"
+    assert any(
+        hint.get("kind") == "endpoint-reuse"
+        and hint.get("local_ifindex") == 10111
+        and hint.get("remote_ip") == "192.168.10.31"
+        for hint in invalidation_hints
+    )
+
+
+def test_resolved_new_peer_retires_previous_peer_on_same_port():
+    """Both endpoints resolve: the cached edge must not survive as yellow."""
+    core = topology_device(
+        "192.168.10.1", "PMGC-core", 1, {1: "Te1/1/1"},
+    )
+    access = topology_device(
+        "192.168.10.30", "pmgc-lops.global.com", 5, {10111: "Gi0/11"},
+    )
+    hero = topology_device(
+        "192.168.10.31", "pmgc-hero.global.com", 8, {12: "Gi0/12"},
+    )
+    access["neighbors"] = [unified_neighbor(
+        10111, "Gi0/11", "pmgc-hero.global.com", 0, "GigabitEthernet0/12",
+    )]
+    devices = {core["ip"]: core, access["ip"]: access, hero["ip"]: hero}
+    invalidation_hints = []
+    live, _diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices),
+        invalidation_hints=invalidation_hints,
+    )
+    cached = [{
+        "from_ip": access["ip"], "from_sysname": "pmgc-lops.global.com",
+        "from_port": "Gi0/11", "from_ifindex": 10111,
+        "to_ip": core["ip"], "to_sysname": "PMGC-core",
+        "to_port": "Te1/1/1", "to_ifindex": 1,
+        "last_seen": 100.0,
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        live, cached, list(devices),
+        now=200, retention_seconds=86400,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert len(live) == 1
+    assert live[0]["to_ip"] == "192.168.10.31"
+    assert live[0]["to_ifindex"] == 12
+    assert [edge for edge in retained if edge.get("stale") is True] == []
+
+
+def test_same_peer_with_unresolved_port_keeps_cached_edge():
+    """Same device, temporarily unreadable port: keep the last confirmed ports."""
+    core = topology_device(
+        "192.168.10.1", "PMGC-core", 1, {1: "Te1/1/1"},
+    )
+    access = topology_device(
+        "192.168.10.30", "pmgc-lops.global.com", 5, {10111: "Gi0/11"},
+    )
+    access["neighbors"] = [unified_neighbor(
+        10111, "Gi0/11", "PMGC-core", 0, "GigabitEthernet9/99",
+    )]
+    devices = {core["ip"]: core, access["ip"]: access}
+    invalidation_hints = []
+    live, _diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices),
+        invalidation_hints=invalidation_hints,
+    )
+    cached = [{
+        "from_ip": access["ip"], "from_sysname": "pmgc-lops.global.com",
+        "from_port": "Gi0/11", "from_ifindex": 10111,
+        "to_ip": core["ip"], "to_sysname": "PMGC-core",
+        "to_port": "Te1/1/1", "to_ifindex": 1,
+        "last_seen": 100.0,
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        live, cached, list(devices),
+        now=200, retention_seconds=86400,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert len(live) == 1
+    assert live[0]["to_ip"] == "192.168.10.1"
+    stale = [edge for edge in retained if edge.get("stale") is True]
+    assert len(stale) == 1
+    assert stale[0]["to_ip"] == "192.168.10.1"
+
+
+def test_reuse_hint_falls_back_to_port_when_live_ifindex_missing():
+    """Rule 9: an unresolved local ifIndex still identifies the port by name."""
+    core = topology_device(
+        "192.168.10.1", "PMGC-core", 1, {1: "Te1/1/1"},
+    )
+    access = topology_device(
+        "192.168.10.30", "pmgc-lops.global.com", 5, {},
+    )
+    hero = topology_device(
+        "192.168.10.31", "pmgc-hero.global.com", 8, {12: "Gi0/12"},
+    )
+    access["neighbors"] = [unified_neighbor(
+        10111, "Gi0/11", "pmgc-hero.global.com", 0, "GigabitEthernet0/12",
+    )]
+    devices = {core["ip"]: core, access["ip"]: access, hero["ip"]: hero}
+    invalidation_hints = []
+    live, _diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices),
+        invalidation_hints=invalidation_hints,
+    )
+    cached = [{
+        "from_ip": access["ip"], "from_sysname": "pmgc-lops.global.com",
+        "from_port": "Gi0/11", "from_ifindex": None,
+        "to_ip": core["ip"], "to_sysname": "PMGC-core",
+        "to_port": "Te1/1/1", "to_ifindex": None,
+        "last_seen": 100.0,
+    }]
+
+    retained = gte.retain_cached_network_edges(
+        live, cached, list(devices),
+        now=200, retention_seconds=86400,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert len(live) == 1
+    assert live[0]["from_ifindex"] is None and live[0]["from_port"] == "Gi0/11"
+    assert [edge for edge in retained if edge.get("stale") is True] == []
+
+
+def test_ambiguous_identity_does_not_emit_reuse_hint():
+    """Ambiguous identity keeps UNKNOWN semantics: no cache deletion."""
+    source = topology_device(
+        "192.168.10.1", "Source", 1, {1: "Gi0/1"},
+    )
+    first = topology_device("192.168.10.2", "First", 7, {2: "Gi0/2"})
+    second = topology_device("192.168.10.3", "Second", 7, {3: "Gi0/3"})
+    source["neighbors"] = [unified_neighbor(1, "Gi0/1", "First", 7, "Gi0/2")]
+    devices = {
+        source["ip"]: source, first["ip"]: first, second["ip"]: second,
+    }
+    invalidation_hints = []
+
+    edges, diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices),
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert edges == []
+    assert diagnostics[0]["resolution_state"] == "ambiguous_device"
+    assert [hint for hint in invalidation_hints
+            if hint.get("kind") == "endpoint-reuse"] == []
 
 
 def test_retention_reuse_matches_port_when_cached_ifindex_is_missing():
