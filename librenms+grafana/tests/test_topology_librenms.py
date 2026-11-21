@@ -1669,6 +1669,65 @@ def test_same_peer_with_unresolved_port_keeps_cached_edge():
     assert stale[0]["to_ip"] == "192.168.10.1"
 
 
+def test_peer_advertised_port_does_not_retire_that_peers_cached_edge():
+    """Round-2 audit P2: A's advertisement of B Gi9/99 is not B's observation.
+
+    A confirms B on its own Gi0/11, so A's older uplink cache may be retired.
+    B never reported anything on Gi9/99, so B's confirmed B Gi9/99 -> C edge
+    must survive the full retention window.
+    """
+    access = topology_device(
+        "192.168.10.30", "pmgc-lops.global.com", 5, {10111: "Gi0/11"},
+    )
+    hero = topology_device(
+        "192.168.10.31", "pmgc-hero.global.com", 8, {12: "Gi0/12"},
+    )
+    # HERO advertises Gi9/99 through A's CDP row; HERO's own IF-MIB has no
+    # such port and HERO reports no neighbour of its own.
+    access["neighbors"] = [unified_neighbor(
+        10111, "Gi0/11", "pmgc-hero.global.com", 0, "Gi9/99",
+    )]
+    devices = {access["ip"]: access, hero["ip"]: hero}
+    invalidation_hints = []
+    live, _diagnostics = gte.build_edges(
+        devices, gte.build_name_index(devices),
+        invalidation_hints=invalidation_hints,
+    )
+    cached = [
+        {
+            "from_ip": access["ip"], "from_sysname": "pmgc-lops.global.com",
+            "from_port": "Gi0/11", "from_ifindex": 10111,
+            "to_ip": "192.168.10.1", "to_sysname": "PMGC-core",
+            "to_port": "Te1/1/1", "to_ifindex": 1,
+            "last_seen": 100.0,
+        },
+        {
+            "from_ip": hero["ip"], "from_sysname": "pmgc-hero.global.com",
+            "from_port": "Gi9/99", "from_ifindex": None,
+            "to_ip": "192.168.10.32", "to_sysname": "PMGC-edge",
+            "to_port": "Gi0/1", "to_ifindex": 1,
+            "last_seen": 100.0,
+        },
+    ]
+
+    retained = gte.retain_cached_network_edges(
+        live, cached, [access["ip"], hero["ip"], "192.168.10.32"],
+        now=200, retention_seconds=86400,
+        invalidation_hints=invalidation_hints,
+    )
+
+    assert len(live) == 1
+    assert live[0]["to_ip"] == hero["ip"]
+    assert live[0]["to_ifindex"] is None, "audit premise: peer port is unverified"
+    stale_peers = sorted(
+        edge["to_ip"] for edge in retained if edge.get("stale") is True
+    )
+    assert stale_peers == ["192.168.10.32"], (
+        "A's old uplink must be retired, B's confirmed link must survive: "
+        f"{stale_peers}"
+    )
+
+
 def test_reuse_hint_falls_back_to_port_when_live_ifindex_missing():
     """Rule 9: an unresolved local ifIndex still identifies the port by name."""
     core = topology_device(

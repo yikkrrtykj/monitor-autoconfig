@@ -2076,6 +2076,10 @@ def build_edges(devices, name_index, evidence_seen_at=None,
         invalidation_hints if invalidation_hints is not None else []
     )
     strong_endpoint_claims = {}
+    # Each device's own neighbour rows only: the remote side of an observation
+    # is an advertisement about another device and must never be treated as
+    # that device's local evidence.
+    local_observations = []
     observed_at = time.time() if evidence_seen_at is None else evidence_seen_at
     identity_indexes = (
         name_index if isinstance(name_index, dict) and "by_device_id" in name_index
@@ -2258,6 +2262,14 @@ def build_edges(devices, name_index, evidence_seen_at=None,
             return
         if not interface_is_usable(remote, remote_ifindex):
             return
+        if local_ifindex is not None or local_port_name:
+            local_observations.append({
+                "local_ip": ip,
+                "local_port": local_port_name,
+                "local_ifindex": local_ifindex,
+                "remote_ip": neighbor_ip,
+                "remote_name": neighbor_name,
+            })
         merge_edge(edges_by_key, {
             "from_ip": ip,
             "from_sysname": device.get("sysname"),
@@ -2438,7 +2450,9 @@ def build_edges(devices, name_index, evidence_seen_at=None,
     ))
     edges = enrich_aggregate_members(edges, devices)
     published = publish_physical_edge_metadata(edges)
-    _append_endpoint_reuse_hints(invalidation_hints, published)
+    _append_endpoint_reuse_hints(
+        invalidation_hints, published, local_observations
+    )
     return published, diagnostics
 
 
@@ -3637,31 +3651,53 @@ def _endpoint_reuse_hint(local_ip, local_port, local_ifindex, remote_name,
     }
 
 
-def _append_endpoint_reuse_hints(invalidation_hints, edges):
-    """Publish cache invalidation hints from current, trusted live edges.
+def _append_endpoint_reuse_hints(invalidation_hints, edges, observations):
+    """Publish cache invalidation hints from each device's own observations.
 
-    A live edge proves the local port currently faces that peer even when the
-    peer port could not be resolved (partial edge). Such an observation must
-    retire an older cached link on the same port, otherwise a moved cable keeps
-    its previous neighbour yellow for the full retention window. Only published
-    edges are used: conflicting or ambiguous observations never reach this
-    point, so they cannot delete cache.
+    Only the observing device's endpoint is trusted. The remote side of a
+    partial edge is merely what that peer advertised, so it is not evidence
+    about the peer's own port and must never retire the peer's cached link
+    (round-2 audit P2). Observations that did not survive conflict resolution
+    are dropped, so ambiguous evidence cannot delete cache. The local endpoint
+    may fall back to its port name when its ifIndex is unresolved: that name
+    still comes from the device's own neighbour row.
     """
+    published = set()
     for edge in edges or []:
         for local_side, remote_side in (("from", "to"), ("to", "from")):
-            local_ifindex = edge.get(f"{local_side}_ifindex")
-            local_port = edge.get(f"{local_side}_port")
-            if local_ifindex in (None, "") and not local_port:
+            local_ip = str(edge.get(f"{local_side}_ip") or "").strip()
+            remote_ip = str(edge.get(f"{remote_side}_ip") or "").strip()
+            if not local_ip or not remote_ip:
                 continue
-            hint = _endpoint_reuse_hint(
-                edge.get(f"{local_side}_ip"),
-                local_port,
-                local_ifindex,
-                edge.get(f"{remote_side}_sysname"),
-                remote_ip=edge.get(f"{remote_side}_ip"),
-            )
-            if hint:
-                invalidation_hints.append(hint)
+            ifindex = edge.get(f"{local_side}_ifindex")
+            if ifindex not in (None, ""):
+                published.add((local_ip, f"i:{ifindex}", remote_ip))
+            port = normalize_port_name(edge.get(f"{local_side}_port"))
+            if port:
+                published.add((local_ip, f"p:{port}", remote_ip))
+    for observation in observations or []:
+        local_ip = str(observation.get("local_ip") or "").strip()
+        remote_ip = str(observation.get("remote_ip") or "").strip()
+        if not local_ip or not remote_ip:
+            continue
+        local_ifindex = observation.get("local_ifindex")
+        keys = []
+        if local_ifindex not in (None, ""):
+            keys.append((local_ip, f"i:{local_ifindex}", remote_ip))
+        port = normalize_port_name(observation.get("local_port"))
+        if port:
+            keys.append((local_ip, f"p:{port}", remote_ip))
+        if not any(key in published for key in keys):
+            continue
+        hint = _endpoint_reuse_hint(
+            local_ip,
+            observation.get("local_port"),
+            local_ifindex,
+            observation.get("remote_name"),
+            remote_ip=remote_ip,
+        )
+        if hint:
+            invalidation_hints.append(hint)
 
 
 def _endpoint_reuse_hints(invalidation_hints):
