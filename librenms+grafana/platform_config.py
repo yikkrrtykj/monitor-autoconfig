@@ -785,6 +785,11 @@ def render_env(config: dict[str, Any], existing: dict[str, str] | None = None) -
         "CORE_SWITCH_PING": core_ping,
         "DIST_SWITCH_PING": dist_ping,
         "SWITCH_DISCOVERY_RANGE": discovery_range,
+        # Operator-set migration window survives console applies; the collector
+        # keeps its own 604800 default when the key is absent from .env.
+        "SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS": existing.get(
+            "SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS", "604800"
+        ),
         "TOURNAMENT_SWITCHES": tournament_switches,
         "FIREWALL_PING": firewall_ping,
         "FIREWALL_SNMP_TARGETS": firewall_snmp or firewall_ping,

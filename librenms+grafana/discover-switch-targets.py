@@ -146,11 +146,30 @@ def ping_alive(ip: str, timeout: int = 1) -> bool:
 
 
 _SNMP_RECORD = re.compile(r"^(?P<oid>\.?\d+(?:\.\d+)+)\s*=\s*(?P<body>.*)$")
-_SNMP_TYPE_PREFIX = re.compile(r"^[A-Za-z][A-Za-z0-9 -]*:\s")
+# Net-SNMP prints a typed prefix before the value. Only strip a known token:
+# `STRING:` may have no trailing space for an empty value, while a value that
+# legitimately starts with text such as `Hardware:` must be preserved.
+_SNMP_VALUE_TYPES = (
+    "STRING", "INTEGER", "INTEGER32", "OID", "HEX-STRING", "GAUGE32",
+    "COUNTER32", "COUNTER64", "TIMETICKS", "IPADDRESS", "NETWORK ADDRESS",
+    "OPAQUE", "BITS", "UINTEGER32", "NULL",
+)
+_SNMP_TYPE_PREFIX = re.compile(
+    r"^(?:" + "|".join(re.escape(token) for token in _SNMP_VALUE_TYPES) + r"):\s*",
+    re.IGNORECASE,
+)
 
 
 def _normalize_oid(value: str) -> str:
     return str(value or "").strip().lstrip(".")
+
+
+def _strip_outer_quotes(value: str) -> str:
+    """Drop one wrapping quote layer while keeping legitimate inner quotes."""
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        return text[1:-1].strip()
+    return text
 
 
 def parse_snmpget_output(text: str) -> dict[str, str]:
@@ -182,8 +201,9 @@ def parse_snmpget_output(text: str) -> dict[str, str]:
 def _usable_value(value: str) -> str:
     """Collapse one parsed value into a single line, dropping SNMP sentinels."""
     text = " ".join(str(value or "").split())
+    text = _strip_outer_quotes(text)
     lowered = text.lower()
-    if not text or lowered.startswith((
+    if not text or lowered in ("string", "oid", "integer") or lowered.startswith((
         "no such", "no more", "timeout", "end of mib", "endofmibview",
     )):
         return ""
@@ -281,8 +301,10 @@ def classify_identity(identity: dict[str, str]) -> tuple[str, str, str]:
 
 
 def _display_name(value: object) -> str:
-    name = str(value or "").strip()
-    return "" if not name or looks_like_ip(name) else name
+    name = _strip_outer_quotes(str(value or "").strip())
+    if not name or looks_like_ip(name) or name.lower() in ("string", "oid", "integer"):
+        return ""
+    return name
 
 
 def _float_or_none(value: object) -> float | None:
@@ -476,7 +498,7 @@ def update_entries(observations, candidates, previous, now,
                 # degrading it on a weak reading.
                 if pending:
                     deadline = deadline if deadline is not None else now + grace_seconds
-                    if now > deadline:
+                    if now >= deadline:
                         entries[ip] = _entry(
                             ip, name, "unverified", None, None, now,
                             object_id, "legacy-grace-expired",
@@ -509,7 +531,7 @@ def update_entries(observations, candidates, previous, now,
                     continue
             if pending:
                 deadline = deadline if deadline is not None else now + grace_seconds
-                if now > deadline:
+                if now >= deadline:
                     # Bounded legacy verification window is over: a device that
                     # never proved itself as a switch must not keep the slot.
                     if ping_ok:
@@ -539,6 +561,32 @@ def update_entries(observations, candidates, previous, now,
             )
 
     return targets, entries
+
+
+def _log_cycle_summary(entries: dict[str, dict], targets: dict[str, str],
+                       observations: dict[str, dict], probed: int) -> None:
+    """Report each state separately; legacy pending is not verified identity."""
+    verified = sum(
+        1 for entry in entries.values()
+        if entry.get("status") == "confirmed"
+        and not entry.get("pending_verification")
+    )
+    legacy_pending = sum(
+        1 for entry in entries.values() if entry.get("pending_verification")
+    )
+    unverified = sum(
+        1 for entry in entries.values() if entry.get("status") == "unverified"
+    )
+    retained = len(targets) - sum(
+        1 for ip in targets if observations.get(ip, {}).get("snmp")
+        or observations.get(ip, {}).get("ping")
+    )
+    print(
+        f"[switch-discovery] probed {probed} addresses -> "
+        f"{verified} SNMP-verified, {legacy_pending} legacy pending, "
+        f"{unverified} unverified, {retained} offline retained",
+        file=sys.stderr,
+    )
 
 
 def _log_unverified(entries: dict[str, dict]) -> None:
@@ -679,19 +727,7 @@ def main() -> None:
     )
     write_file_sd(state_file, state_payload(entries), sort_keys=True)
     write_file_sd(out, build_file_sd(targets))
-    confirmed = sum(
-        1 for entry in entries.values() if entry.get("status") == "confirmed"
-    )
-    unverified = len(entries) - confirmed
-    retained = len(targets) - sum(
-        1 for ip in targets if observations.get(ip, {}).get("snmp")
-        or observations.get(ip, {}).get("ping")
-    )
-    print(
-        f"[switch-discovery] probed {len(ips)} addresses -> "
-        f"{confirmed} confirmed, {unverified} unverified, {retained} offline retained",
-        file=sys.stderr,
-    )
+    _log_cycle_summary(entries, targets, observations, len(ips))
     _log_unverified(entries)
     _log_legacy_pending(entries, now)
 

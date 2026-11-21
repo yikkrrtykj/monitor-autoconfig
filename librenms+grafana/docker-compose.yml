@@ -786,6 +786,10 @@ services:
       SWITCH_TARGETS_FILE: "/targets/switch_targets.json"
       SWITCH_DISCOVERY_STATE_FILE: "/targets/switch-discovery-state.json"
       SWITCH_DISCOVERY_RETENTION_SECONDS: "${SWITCH_DISCOVERY_RETENTION_SECONDS:-86400}"
+      # Bounded SNMP re-verification window for v1 legacy entries. 0 retires
+      # unproven legacy entries on the first cycle; existing deadlines never
+      # extend when this value changes.
+      SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS: "${SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS:-604800}"
       # A low-cost StackWise member-number walk is run during the topology
       # loop. Only confirmed multi-member stacks enter the 60-second SNMP job.
       STACKWISE_TARGETS_FILE: "/targets/stackwise_targets.json"
@@ -843,7 +847,8 @@ services:
             TOPOLOGY_POLL_WORKERS TOPOLOGY_SNMP_DELAY_MS \
             TOPOLOGY_ARP_DEVICES TOPOLOGY_EDGE_RETENTION_SECONDS CORE_SWITCH_PING DIST_SWITCH_PING \
             FIREWALL_PING TOURNAMENT_SWITCHES SERVER_PING SWITCH_DISCOVERY_RANGE \
-            SWITCH_DISCOVERY_RETENTION_SECONDS TOPOLOGY_REFRESH_INTERVAL \
+            SWITCH_DISCOVERY_RETENTION_SECONDS SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS \
+            TOPOLOGY_REFRESH_INTERVAL \
             ISP_GATEWAY_AUTO_DISCOVER BIGSCREEN_ISP_AUTO_DISCOVER ISP_DISCOVERY_SOURCE ISP_LIBRENMS_POLL_MAX_AGE_SECONDS \
             FIREWALL_SNMP_TARGETS FIREWALL_UNIT_SNMP_TARGETS \
             FIREWALL_SNMP_COMMUNITY FIREWALL_WAN_IF_FILTER BIGSCREEN_ISP_NAMES BIGSCREEN_ISP_IPS ISP_PING \

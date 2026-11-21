@@ -1,5 +1,8 @@
 import importlib.util
 import json
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -540,13 +543,13 @@ def test_legacy_miscollected_host_expires_after_grace_window():
     assert targets == {"192.168.10.9": "printer-9"}
 
     targets, state = disc.update_entries(
-        observations, ["192.168.10.9"], state, now=deadline,
+        observations, ["192.168.10.9"], state, now=deadline - 1,
         retention_seconds=86400, legacy_grace_seconds=LEGACY_GRACE,
     )
-    assert targets == {"192.168.10.9": "printer-9"}, "deadline itself is still pending"
+    assert targets == {"192.168.10.9": "printer-9"}, "one second before deadline is pending"
 
     targets, state = disc.update_entries(
-        observations, ["192.168.10.9"], state, now=deadline + 1,
+        observations, ["192.168.10.9"], state, now=deadline,
         retention_seconds=86400, legacy_grace_seconds=LEGACY_GRACE,
     )
     assert targets == {}
@@ -837,3 +840,289 @@ def test_single_probe_per_candidate_keeps_snmp_bounded():
     )
 
     assert sorted(calls) == [("192.168.10.11", 1), ("192.168.10.12", 1)]
+
+
+def _compose_value(compose_text, key, environ):
+    pattern = re.compile(
+        r'^\s*' + re.escape(key) + r':\s*"\$\{' + re.escape(key) + r':-([^}]*)\}"\s*$',
+        re.MULTILINE,
+    )
+    match = pattern.search(compose_text)
+    assert match, f"{key} is not wired into docker-compose.yml"
+    return environ.get(key, match.group(1))
+
+
+def test_compose_wires_legacy_grace_with_default_zero_and_custom():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert _compose_value(compose, "SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS", {}) == "604800"
+    assert _compose_value(
+        compose, "SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS",
+        {"SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS": "0"},
+    ) == "0"
+    assert _compose_value(
+        compose, "SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS",
+        {"SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS": "3600"},
+    ) == "3600"
+
+
+def test_compose_runtime_env_export_list_contains_legacy_grace():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    service = compose.split("topology-collector:", 1)[1]
+    entry = service.split("env-export-shell /config/.env", 1)[1].split("2>/dev/null", 1)[0]
+    assert "SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS" in entry
+
+
+def test_platform_config_renders_and_preserves_legacy_grace():
+    spec = importlib.util.spec_from_file_location(
+        "platform_config_grace", ROOT / "platform_config.py",
+    )
+    platform_config = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(platform_config)
+
+    assert platform_config.render_env(
+        {}, {},
+    )["SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS"] == "604800"
+    assert platform_config.render_env(
+        {}, {"SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS": "0"},
+    )["SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS"] == "0"
+
+
+def test_runtime_env_export_shell_carries_legacy_grace(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "SWITCH_DISCOVERY_RANGE=192.168.10.2-40\n"
+        "SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS=0\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "platform_config.py"), "env-export-shell",
+         str(env_file), "SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS"],
+        capture_output=True, text=True, timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "export SWITCH_DISCOVERY_LEGACY_GRACE_SECONDS=0" in completed.stdout
+
+
+def test_zero_grace_retires_legacy_host_on_first_cycle_without_snmp():
+    legacy = {"192.168.10.9": {"name": "printer-9", "last_seen": 100.0}}
+    state = disc.normalize_state(legacy)
+
+    targets, state = disc.update_entries(
+        {"192.168.10.9": {"ping": True, "snmp": {}}},
+        ["192.168.10.9"], state, now=200.0,
+        retention_seconds=86400, legacy_grace_seconds=0,
+    )
+
+    assert targets == {}
+    assert state["192.168.10.9"]["status"] == "unverified"
+    assert state["192.168.10.9"]["reason"] == "legacy-grace-expired"
+    assert state["192.168.10.9"]["pending_verification"] is False
+
+
+def test_zero_grace_retires_legacy_host_when_snmp_verdict_is_unknown():
+    legacy = {"192.168.10.57": {"name": "pgs-avl", "last_seen": 100.0}}
+    state = disc.normalize_state(legacy)
+    observations = {"192.168.10.57": {"ping": True, "snmp": identity(
+        name="pgs-avl",
+    )}}
+
+    targets, state = disc.update_entries(
+        observations, ["192.168.10.57"], state, now=200.0,
+        retention_seconds=86400, legacy_grace_seconds=0,
+    )
+
+    assert targets == {}
+    assert state["192.168.10.57"]["status"] == "unverified"
+    assert state["192.168.10.57"]["reason"] == "legacy-grace-expired"
+
+
+def test_zero_grace_still_admits_new_snmp_confirmed_switch():
+    observations = {"192.168.10.30": {"ping": True, "snmp": identity(
+        CISCO_2960_DESCR, CISCO_2960, "pmgc-lops.global.com", "3",
+    )}}
+
+    targets, state = disc.update_entries(
+        observations, ["192.168.10.30"], {}, now=200.0,
+        retention_seconds=86400, legacy_grace_seconds=0,
+    )
+
+    assert targets == {"192.168.10.30": "pmgc-lops.global.com"}
+    assert state["192.168.10.30"]["source"] == "snmp-description"
+
+
+def test_persisted_deadline_is_not_extended_by_larger_grace():
+    state = disc.normalize_state(
+        {"192.168.10.57": {"name": "pgs-avl", "last_seen": 100.0}}
+    )
+    targets, state = disc.update_entries(
+        {"192.168.10.57": {"ping": True, "snmp": {}}},
+        ["192.168.10.57"], state, now=200.0,
+        retention_seconds=86400, legacy_grace_seconds=LEGACY_GRACE,
+    )
+    deadline = state["192.168.10.57"]["legacy_deadline"]
+    assert targets == {"192.168.10.57": "pgs-avl"}
+
+    targets, state = disc.update_entries(
+        {"192.168.10.57": {"ping": True, "snmp": {}}},
+        ["192.168.10.57"], state, now=deadline - 1,
+        retention_seconds=86400, legacy_grace_seconds=30 * 86400,
+    )
+    assert state["192.168.10.57"]["legacy_deadline"] == deadline
+    assert targets == {"192.168.10.57": "pgs-avl"}
+
+    targets, state = disc.update_entries(
+        {"192.168.10.57": {"ping": True, "snmp": {}}},
+        ["192.168.10.57"], state, now=deadline,
+        retention_seconds=86400, legacy_grace_seconds=30 * 86400,
+    )
+    assert targets == {}
+    assert state["192.168.10.57"]["reason"] == "legacy-grace-expired"
+
+
+def test_state_reload_preserves_legacy_deadline(tmp_path):
+    state = disc.normalize_state(
+        {"192.168.10.57": {"name": "pgs-avl", "last_seen": 100.0}}
+    )
+    _, state = disc.update_entries(
+        {"192.168.10.57": {"ping": True, "snmp": {}}},
+        ["192.168.10.57"], state, now=200.0,
+        retention_seconds=86400, legacy_grace_seconds=LEGACY_GRACE,
+    )
+    deadline = state["192.168.10.57"]["legacy_deadline"]
+    path = tmp_path / "switch-discovery-state.json"
+    path.write_text(json.dumps(disc.state_payload(state)), encoding="utf-8")
+
+    reloaded = disc.load_state(str(path))
+    targets, state = disc.update_entries(
+        {"192.168.10.57": {"ping": True, "snmp": {}}},
+        ["192.168.10.57"], reloaded, now=deadline - 2,
+        retention_seconds=86400, legacy_grace_seconds=LEGACY_GRACE,
+    )
+
+    assert state["192.168.10.57"]["legacy_deadline"] == deadline
+    assert targets == {"192.168.10.57": "pgs-avl"}
+
+
+def test_zero_grace_does_not_affect_confirmed_v2_switch():
+    previous = {"192.168.10.57": confirmed_entry(confirmed_at=100.0, last_seen=100.0)}
+
+    targets, state = disc.update_entries(
+        {"192.168.10.57": {"ping": True, "snmp": {}}},
+        ["192.168.10.57"], previous, now=200.0,
+        retention_seconds=86400, legacy_grace_seconds=0,
+    )
+
+    assert targets == {"192.168.10.57": "pgs-avl"}
+    assert state["192.168.10.57"]["status"] == "confirmed"
+    assert state["192.168.10.57"]["pending_verification"] is False
+
+
+def test_cycle_summary_separates_legacy_pending(capsys):
+    entries = {
+        "192.168.10.57": disc._entry(
+            "192.168.10.57", "pgs-avl", "confirmed", "legacy-state", None,
+            200.0, None, "awaiting-verification",
+            pending_verification=True, legacy_deadline=1000.0,
+        ),
+        "192.168.10.9": disc._entry(
+            "192.168.10.9", "192.168.10.9", "unverified", None, None, 200.0,
+            None, "no-snmp",
+        ),
+    }
+
+    disc._log_cycle_summary(entries, {"192.168.10.57": "pgs-avl"},
+                            {"192.168.10.57": {"ping": True}}, 2)
+
+    err = capsys.readouterr().err
+    assert "0 SNMP-verified, 1 legacy pending, 1 unverified" in err
+
+
+def test_snmp_identity_empty_string_sysname_is_missing(monkeypatch):
+    for line in ("STRING:", "STRING:   ", 'STRING: ""', "STRING: ''"):
+        stub_snmpget(monkeypatch, (
+            ".1.3.6.1.2.1.1.1.0 = STRING: Cisco IOS Software, C2960\n"
+            ".1.3.6.1.2.1.1.2.0 = OID: .1.3.6.1.4.1.9.1.716\n"
+            f".1.3.6.1.2.1.1.5.0 = {line}\n"
+            ".1.3.6.1.2.1.1.7.0 = INTEGER: 3\n"
+        ))
+        identity = disc.snmp_identity("192.168.10.30", "public")
+        assert identity["sys_name"] == "", line
+        assert identity["sys_object_id"] == "1.3.6.1.4.1.9.1.716", line
+
+
+def test_snmp_identity_normalizes_quoted_sysname(monkeypatch):
+    stub_snmpget(monkeypatch, (
+        ".1.3.6.1.2.1.1.1.0 = STRING: Cisco IOS Software, C2960\n"
+        ".1.3.6.1.2.1.1.2.0 = OID: .1.3.6.1.4.1.9.1.716\n"
+        '.1.3.6.1.2.1.1.5.0 = STRING: "pmgc-hero.global.com"\n'
+        ".1.3.6.1.2.1.1.7.0 = INTEGER: 3\n"
+    ))
+    identity = disc.snmp_identity("192.168.10.31", "public")
+    assert identity["sys_name"] == "pmgc-hero.global.com"
+
+    stub_snmpget(monkeypatch, (
+        ".1.3.6.1.2.1.1.1.0 = STRING: Cisco IOS Software, C2960\n"
+        ".1.3.6.1.2.1.1.2.0 = OID: .1.3.6.1.4.1.9.1.716\n"
+        '.1.3.6.1.2.1.1.5.0 = STRING: "192.168.10.31"\n'
+        ".1.3.6.1.2.1.1.7.0 = INTEGER: 3\n"
+    ))
+    identity = disc.snmp_identity("192.168.10.31", "public")
+    targets, _state = disc.update_entries(
+        {"192.168.10.31": {"ping": True, "snmp": identity}},
+        ["192.168.10.31"], {}, now=200.0, retention_seconds=86400,
+    )
+    assert identity["sys_name"] == "192.168.10.31"
+    assert targets == {"192.168.10.31": "192.168.10.31"}
+
+
+def test_empty_sysname_keeps_confirmed_name_or_falls_back_to_ip(monkeypatch):
+    stub_snmpget(monkeypatch, (
+        ".1.3.6.1.2.1.1.1.0 = STRING: Cisco IOS Software, C2960\n"
+        ".1.3.6.1.2.1.1.2.0 = OID: .1.3.6.1.4.1.9.1.716\n"
+        ".1.3.6.1.2.1.1.5.0 = STRING:\n"
+        ".1.3.6.1.2.1.1.7.0 = INTEGER: 3\n"
+    ))
+    identity = disc.snmp_identity("192.168.10.57", "public")
+
+    targets, state = disc.update_entries(
+        {"192.168.10.57": {"ping": True, "snmp": identity}},
+        ["192.168.10.57"], {"192.168.10.57": confirmed_entry()},
+        now=200.0, retention_seconds=86400,
+    )
+    assert targets == {"192.168.10.57": "pgs-avl"}
+    assert state["192.168.10.57"]["name"] == "pgs-avl"
+
+    targets, _state = disc.update_entries(
+        {"192.168.10.30": {"ping": True, "snmp": identity}},
+        ["192.168.10.30"], {}, now=200.0, retention_seconds=86400,
+    )
+    assert targets == {"192.168.10.30": "192.168.10.30"}
+
+
+def test_snmp_identity_preserves_internal_quotes(monkeypatch):
+    stub_snmpget(monkeypatch, (
+        '.1.3.6.1.2.1.1.1.0 = STRING: uplink "A" port, Cisco C2960\n'
+        ".1.3.6.1.2.1.1.2.0 = OID: .1.3.6.1.4.1.9.1.716\n"
+        ".1.3.6.1.2.1.1.5.0 = STRING: sw-1\n"
+        ".1.3.6.1.2.1.1.7.0 = INTEGER: 3\n"
+    ))
+
+    identity = disc.snmp_identity("192.168.10.30", "public")
+
+    assert identity["sys_descr"] == 'uplink "A" port, Cisco C2960'
+
+
+def test_snmp_identity_missing_sysname_record_is_missing(monkeypatch):
+    stub_snmpget(monkeypatch, (
+        ".1.3.6.1.2.1.1.1.0 = STRING: Cisco IOS Software, C2960\n"
+        ".1.3.6.1.2.1.1.2.0 = OID: .1.3.6.1.4.1.9.1.716\n"
+        ".1.3.6.1.2.1.1.7.0 = INTEGER: 3\n"
+    ))
+
+    identity = disc.snmp_identity("192.168.10.30", "public")
+
+    assert identity["sys_name"] == ""
+    assert identity["sys_object_id"] == "1.3.6.1.4.1.9.1.716"
