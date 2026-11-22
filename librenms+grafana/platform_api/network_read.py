@@ -30,6 +30,9 @@ AP_PLACEMENT_BYTE_LIMIT = 4 * 1024 * 1024
 AP_PLACEMENT_LIMIT = 512
 AP_PLACEMENT_MAX_AGE_LIMIT = 86400
 AP_PLACEMENT_FUTURE_SKEW_SECONDS = 60
+# P1 records validated_at during the same collection cycle before generated_at;
+# a few seconds tolerate clock/rounding, larger deltas are evidence conflicts.
+AP_PLACEMENT_TIMESTAMP_SKEW_SECONDS = 5.0
 AP_PLACEMENT_WARNING_LIMIT = 32
 AP_PLACEMENT_TEXT_LIMIT = 256
 AP_PLACEMENT_COVERAGE_REASON_LIMIT = 16
@@ -452,7 +455,8 @@ def _ap_placement_coverage(value):
     return result
 
 
-def _ap_placement_entry(item, index, now, max_age, file_age, seen_macs, seen_ips, warnings):
+def _ap_placement_entry(item, index, now, max_age, file_age, generated_at,
+                        seen_macs, seen_ips, warnings):
     """Validate and sanitize one placement; downgrade only, never promote."""
     if not isinstance(item, dict):
         raise _ap_malformed("AP placement snapshot is malformed")
@@ -529,16 +533,51 @@ def _ap_placement_entry(item, index, now, max_age, file_age, seen_macs, seen_ips
     if online == "offline":
         problems.append("offline_current_placement")
 
+    evidence = entry["evidence"]
+    exact = evidence.get("exact_snmp") or {}
+    port = evidence.get("port") or {}
+    fdb = evidence.get("fdb") or {}
+    online_evidence = evidence.get("online") or {}
+    if online_evidence.get("status") not in (None, "", online):
+        problems.append("online_evidence_conflict")
+    if fdb.get("status") != "matched":
+        problems.append("fdb_evidence_missing")
+    exact_status = exact.get("status")
+    if exact_status != "matched":
+        if exact_status == "failed":
+            problems.append("exact_evidence_failed")
+        elif exact_status in (None, "not_attempted"):
+            problems.append("exact_evidence_missing")
+        else:
+            problems.append("exact_evidence_unavailable")
+    if port.get("verified") is not True:
+        problems.append("port_evidence_unverified")
+    if level == "confirmed-direct":
+        manual = evidence.get("manual_confirmation") or {}
+        direct = evidence.get("direct_neighbor") or {}
+        if manual.get("status") != "confirmed":
+            problems.append("manual_confirmation_missing")
+        if (direct.get("status") != "operator-attested"
+                or direct.get("source") != "manual-allowlist"):
+            problems.append("direct_neighbor_untrusted")
+    valid_age = _ap_number(evidence_age) and evidence_age >= 0
+    validated_at = exact.get("validated_at")
+    if valid_age:
+        if validated_at is None:
+            problems.append("validated_at_missing")
+        elif not _ap_number(validated_at) or validated_at <= 0:
+            problems.append("invalid_validated_at")
+        else:
+            if validated_at > now + AP_PLACEMENT_TIMESTAMP_SKEW_SECONDS:
+                problems.append("future_validated_at")
+            expected_age = float(generated_at) - float(validated_at)
+            if abs(expected_age - float(evidence_age)) > AP_PLACEMENT_TIMESTAMP_SKEW_SECONDS:
+                problems.append("evidence_timestamp_conflict")
+
     effective_age = None
     if not problems:
-        effective_age = float(evidence_age) + file_age
-        validated_at = entry["evidence"].get("exact_snmp", {}).get("validated_at")
-        if validated_at is not None:
-            cross_age = max(0.0, now - float(validated_at))
-            if abs(cross_age - effective_age) > 120:
-                _ap_warning(warnings, f"{label}: exact evidence timestamps differ; "
-                                       "using conservative age")
-            effective_age = max(effective_age, cross_age)
+        cross_age = max(0.0, now - float(validated_at))
+        effective_age = max(float(evidence_age) + file_age, cross_age)
         if effective_age > max_age:
             problems.append("exact_evidence_stale")
 
@@ -619,7 +658,7 @@ def read_ap_placement(context: NetworkReadContext) -> dict[str, Any]:
     seen_ips = set()
     sanitized = [
         _ap_placement_entry(item, index, now, max_age, file_age,
-                            seen_macs, seen_ips, warnings)
+                            float(generated_at), seen_macs, seen_ips, warnings)
         for index, item in enumerate(placements)
     ]
     counts = _ap_placement_recount(sanitized)

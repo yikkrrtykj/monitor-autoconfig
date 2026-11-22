@@ -338,7 +338,7 @@ def ap_entry(**overrides):
             "fdb": {"status": "matched", "raw_candidates": 1, "eligible_candidates": 1,
                     "candidate_age_seconds": 10000.0},
             "exact_snmp": {"status": "matched", "gets": 1, "lookup_attempts": 1,
-                           "validated_at": 1970.0, "validation_age_seconds": 30.0},
+                           "validated_at": 1870.0, "validation_age_seconds": 30.0},
             "direct_neighbor": {"status": "unknown", "source": "none"},
             "manual_confirmation": {"status": "none"},
             "online": {"status": "unknown", "source": "unpoller-uptime",
@@ -347,6 +347,17 @@ def ap_entry(**overrides):
             "port": {"verified": True},
         },
     }
+    entry.update(overrides)
+    return entry
+
+
+def confirmed_entry(**overrides):
+    entry = ap_entry(level="confirmed-direct", online="online",
+                     reason="operator_confirmed_core_port")
+    entry["evidence"]["manual_confirmation"] = {"status": "confirmed"}
+    entry["evidence"]["direct_neighbor"] = {
+        "status": "operator-attested", "source": "manual-allowlist"}
+    entry["evidence"]["online"]["status"] = "online"
     entry.update(overrides)
     return entry
 
@@ -558,8 +569,9 @@ def test_ap_placement_entry_field_errors_downgrade_only(tmp_path, overrides, rea
 
 def test_ap_placement_exact_evidence_age_includes_file_age(tmp_path):
     stale = ap_entry(evidence_age_seconds=7150.0)
-    result = network_read.read_ap_placement(
-        ap_context(tmp_path, ap_payload([stale])))
+    stale["evidence"]["exact_snmp"]["validated_at"] = 9900.0 - 7150.0
+    payload = ap_payload([stale], generated_at=9900.0)
+    result = network_read.read_ap_placement(ap_context(tmp_path, payload, now=10000.0))
     entry = result["placements"][0]
     assert entry["level"] == "unresolved"
     assert entry["reason"] == "exact_evidence_stale"
@@ -571,42 +583,139 @@ def test_ap_placement_exact_evidence_age_includes_file_age(tmp_path):
 
 
 def test_ap_placement_stale_even_when_file_is_fresh(tmp_path):
-    payload = ap_payload([ap_entry(evidence_age_seconds=7201.0)],
-                         generated_at=2000.0)
-    entry = network_read.read_ap_placement(ap_context(tmp_path, payload))["placements"][0]
-    assert entry["level"] == "unresolved"
-    assert entry["reason"] == "exact_evidence_stale"
+    entry = ap_entry(evidence_age_seconds=7201.0)
+    entry["evidence"]["exact_snmp"]["validated_at"] = 10000.0 - 7201.0
+    result = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([entry], generated_at=10000.0), now=10000.0))
+    output = result["placements"][0]
+    assert output["level"] == "unresolved"
+    assert output["reason"] == "exact_evidence_stale"
 
 
-def test_ap_placement_validated_at_cross_check_is_conservative(tmp_path):
-    payload = ap_payload([ap_entry(evidence_age_seconds=5.0,
-                                   evidence={
-                                       **ap_entry()["evidence"],
-                                       "exact_snmp": {
-                                           **ap_entry()["evidence"]["exact_snmp"],
-                                           "validated_at": 1000.0,
-                                       },
-                                   })],
-                         generated_at=9900.0)
-    result = network_read.read_ap_placement(ap_context(tmp_path, payload, now=10000.0))
-    entry = result["placements"][0]
-    assert entry["level"] == "unresolved"
-    assert entry["reason"] == "exact_evidence_stale"
+@pytest.mark.parametrize(("validated_at", "reason"), [
+    (None, "validated_at_missing"),
+    ("bad", "validated_at_missing"),
+    (True, "validated_at_missing"),
+    (-5.0, "invalid_validated_at"),
+    (9999999999.0, "future_validated_at"),
+])
+def test_ap_placement_invalid_validated_at_downgrades(tmp_path, validated_at, reason):
+    entry = ap_entry()
+    entry["evidence"]["exact_snmp"]["validated_at"] = validated_at
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([entry])))
+    output = result["placements"][0]
+    assert output["level"] == "unresolved"
+    assert output["reason"] == reason
+    assert output["switch_ip"] is None
+
+
+def test_ap_placement_timestamp_conflict_downgrades(tmp_path):
+    entry = ap_entry(evidence_age_seconds=5.0)
+    entry["evidence"]["exact_snmp"]["validated_at"] = 1800.0
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([entry])))
+    output = result["placements"][0]
+    assert output["level"] == "unresolved"
+    assert output["reason"] == "evidence_timestamp_conflict"
+
+
+def test_ap_placement_realistic_p1_snapshot_is_not_degraded(tmp_path):
+    observed = ap_entry(evidence_age_seconds=2.0)
+    observed["evidence"]["exact_snmp"]["validated_at"] = 1993.0
+    confirmed = confirmed_entry(evidence_age_seconds=1.0,
+                                ap_mac="02:00:00:00:00:02", ap_ip="10.1.0.2")
+    confirmed["evidence"]["exact_snmp"]["validated_at"] = 1994.0
+    result = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([observed, confirmed], generated_at=1995.0)))
+    levels = sorted(entry["level"] for entry in result["placements"])
+    assert levels == ["confirmed-direct", "observed-attachment"]
+    assert result["warnings"] == []
+    assert result["counts"]["total"] == 2
+
+
+def test_ap_placement_old_fdb_candidate_with_fresh_exact_stays_observed(tmp_path):
+    entry = ap_entry(evidence_age_seconds=1.0)
+    entry["evidence"]["fdb"]["candidate_age_seconds"] = 10800.0
+    entry["evidence"]["exact_snmp"]["validated_at"] = 1998.0
+    result = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([entry], generated_at=1999.0)))
+    output = result["placements"][0]
+    assert output["level"] == "observed-attachment"
+    assert output["reason"] == "verified_fdb_egress"
+    assert output["evidence"]["fdb"]["candidate_age_seconds"] == 10800.0
+    assert output["evidence_age_seconds"] < 60
+
+
+@pytest.mark.parametrize(("path", "value", "reason"), [
+    ("exact_snmp.status", "failed", "exact_evidence_failed"),
+    ("exact_snmp.status", "not_attempted", "exact_evidence_missing"),
+    ("port.verified", False, "port_evidence_unverified"),
+    ("fdb.status", "no_candidate", "fdb_evidence_missing"),
+])
+def test_ap_placement_current_requires_matching_evidence(tmp_path, path, value, reason):
+    entry = ap_entry()
+    target = entry["evidence"]
+    parts = path.split(".")
+    for part in parts[:-1]:
+        target = target[part]
+    target[parts[-1]] = value
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([entry])))
+    output = result["placements"][0]
+    assert output["level"] == "unresolved"
+    assert output["reason"] == reason
+    assert output["switch_ip"] is None
+    assert output["switch_ifindex"] is None
+    assert result["counts"] == ap_counts(result["placements"])
+    assert result["counts"]["observed_attachment"] == 0
+    assert result["source_counts"]["observed_attachment"] == 1
+
+
+def test_ap_placement_missing_exact_evidence_downgrades(tmp_path):
+    entry = ap_entry()
+    del entry["evidence"]["exact_snmp"]
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([entry])))
+    output = result["placements"][0]
+    assert output["level"] == "unresolved"
+    assert output["reason"] == "exact_evidence_missing"
+    assert output["switch_ip"] is None
 
 
 def test_ap_placement_confirmed_requires_online(tmp_path):
-    confirmed = ap_entry(level="confirmed-direct", online="online")
-    confirmed["evidence"]["manual_confirmation"] = {"status": "confirmed"}
-    kept = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([confirmed])))
+    kept = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([confirmed_entry()])))
     assert kept["placements"][0]["level"] == "confirmed-direct"
 
-    unknown = ap_entry(level="confirmed-direct", online="unknown")
-    unknown["evidence"]["manual_confirmation"] = {"status": "confirmed"}
+    unknown = confirmed_entry(online="unknown")
     downgraded = network_read.read_ap_placement(
         ap_context(tmp_path, ap_payload([unknown])))
     entry = downgraded["placements"][0]
     assert entry["level"] == "unresolved"
     assert entry["reason"] == "online_gate_conflict"
+
+
+def test_ap_placement_confirmed_requires_operator_attested_evidence(tmp_path):
+    missing = ap_entry(level="confirmed-direct", online="online")
+    missing["evidence"]["online"]["status"] = "online"
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([missing])))
+    assert result["placements"][0]["level"] == "unresolved"
+    assert result["placements"][0]["reason"] == "manual_confirmation_missing"
+
+    untrusted = confirmed_entry()
+    untrusted["evidence"]["direct_neighbor"] = {"status": "unknown", "source": "none"}
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([untrusted])))
+    assert result["placements"][0]["reason"] == "direct_neighbor_untrusted"
+
+    wrong_source = confirmed_entry()
+    wrong_source["evidence"]["direct_neighbor"] = {
+        "status": "operator-attested", "source": "somewhere-else"}
+    result = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([wrong_source])))
+    assert result["placements"][0]["reason"] == "direct_neighbor_untrusted"
+
+    conflict = confirmed_entry()
+    conflict["evidence"]["online"]["status"] = "offline"
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([conflict])))
+    assert result["placements"][0]["level"] == "unresolved"
+    assert result["placements"][0]["reason"] == "online_evidence_conflict"
 
 
 def test_ap_placement_observed_is_never_promoted(tmp_path):
@@ -649,11 +758,13 @@ def test_ap_placement_last_observed_does_not_rewrite_current_fields(tmp_path):
 
 
 def test_ap_placement_partial_degradation_keeps_other_entries(tmp_path):
-    good = ap_entry()
+    good = ap_entry(evidence_age_seconds=30.0)
+    good["evidence"]["exact_snmp"]["validated_at"] = 9900.0 - 30.0
     stale = ap_entry(ap_mac="02:00:00:00:00:02", ap_ip="10.1.0.2",
                      evidence_age_seconds=7150.0)
+    stale["evidence"]["exact_snmp"]["validated_at"] = 9900.0 - 7150.0
     result = network_read.read_ap_placement(
-        ap_context(tmp_path, ap_payload([good, stale])))
+        ap_context(tmp_path, ap_payload([good, stale], generated_at=9900.0), now=10000.0))
     levels = {entry["ap_ip"]: entry["level"] for entry in result["placements"]}
     assert levels == {"10.1.0.1": "observed-attachment", "10.1.0.2": "unresolved"}
     assert result["counts"] == ap_counts(result["placements"])
