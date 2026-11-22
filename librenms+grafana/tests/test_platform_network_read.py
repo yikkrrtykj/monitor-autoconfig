@@ -718,6 +718,51 @@ def test_ap_placement_confirmed_requires_operator_attested_evidence(tmp_path):
     assert result["placements"][0]["reason"] == "online_evidence_conflict"
 
 
+def test_ap_placement_confirmed_requires_matching_online_evidence(tmp_path):
+    missing = confirmed_entry()
+    del missing["evidence"]["online"]
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([missing])))
+    entry = result["placements"][0]
+    assert entry["level"] == "unresolved"
+    assert entry["reason"] == "online_evidence_missing"
+    assert entry["switch_ip"] is None
+    assert entry["switch_ifindex"] is None
+    assert entry["switch_port"] is None
+    assert entry["vlan"] is None
+    assert entry["evidence_age_seconds"] is None
+    assert result["counts"] == ap_counts(result["placements"])
+    assert result["counts"]["confirmed_direct"] == 0
+    assert result["counts"]["unresolved"] == 1
+    assert result["source_counts"]["confirmed_direct"] == 1
+    assert result["warnings"]
+
+    empty = confirmed_entry()
+    empty["evidence"]["online"] = {"status": "", "source": "fixture",
+                                   "reason": "fixture"}
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([empty])))
+    assert result["placements"][0]["level"] == "unresolved"
+    assert result["placements"][0]["reason"] == "online_evidence_missing"
+
+    conflict = confirmed_entry()
+    conflict["evidence"]["online"]["status"] = "unknown"
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([conflict])))
+    assert result["placements"][0]["level"] == "unresolved"
+    assert result["placements"][0]["reason"] == "online_evidence_conflict"
+
+    valid = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([confirmed_entry()])))
+    assert valid["placements"][0]["level"] == "confirmed-direct"
+
+
+def test_ap_placement_observed_keeps_matching_online_evidence(tmp_path):
+    entry = ap_entry()
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([entry])))
+    output = result["placements"][0]
+    assert output["level"] == "observed-attachment"
+    assert output["online"] == "unknown"
+    assert output["evidence"]["online"]["status"] == "unknown"
+
+
 def test_ap_placement_observed_is_never_promoted(tmp_path):
     entry = ap_entry()
     entry["evidence"]["manual_confirmation"] = {"status": "confirmed"}

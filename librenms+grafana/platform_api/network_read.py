@@ -538,8 +538,13 @@ def _ap_placement_entry(item, index, now, max_age, file_age, generated_at,
     port = evidence.get("port") or {}
     fdb = evidence.get("fdb") or {}
     online_evidence = evidence.get("online") or {}
-    if online_evidence.get("status") not in (None, "", online):
+    online_evidence_status = online_evidence.get("status")
+    if online_evidence_status not in (None, "", online):
         problems.append("online_evidence_conflict")
+    if level == "confirmed-direct" and online_evidence_status in (None, ""):
+        # P1 producer always emits evidence.online; missing/empty online proof
+        # must not keep a confirmed-direct claim.
+        problems.append("online_evidence_missing")
     if fdb.get("status") != "matched":
         problems.append("fdb_evidence_missing")
     exact_status = exact.get("status")
