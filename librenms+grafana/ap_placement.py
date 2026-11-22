@@ -57,6 +57,23 @@ def _finite_age(value):
     return age if math.isfinite(age) and age >= 0 else None
 
 
+def _validated_at(row):
+    try:
+        validated = float((row or {}).get("validated_at"))
+    except (TypeError, ValueError):
+        return None
+    return validated if math.isfinite(validated) and validated > 0 else None
+
+
+def _exact_validation_age(row, now_ts):
+    """本轮精确 GET 的年龄；与正式 build_ap_artifact 的 now-validated_at 一致。"""
+    validated = _validated_at(row)
+    if validated is None:
+        return None
+    age = float(now_ts) - validated
+    return age if math.isfinite(age) and age >= 0 else None
+
+
 def _online_default(source, reason):
     return {"status": "unknown", "source": source, "reason": reason}
 
@@ -282,7 +299,7 @@ def _placement_rows(ap_mac, validated, shadow):
     return merged
 
 
-def _last_observed(row):
+def _last_observed(row, now_ts):
     if not row:
         return None
     return {
@@ -290,7 +307,10 @@ def _last_observed(row):
         "switch_ifindex": _as_positive_int(row.get("ifindex")),
         "switch_port": str(row.get("port_name") or "") or None,
         "vlan": _as_positive_int(row.get("vlan")),
-        "evidence_age_seconds": _finite_age(row.get("evidence_age_seconds")),
+        # 当前/历史位置统一使用 exact validation 年龄；FDB 候选年龄单列。
+        "evidence_age_seconds": _exact_validation_age(row, now_ts),
+        "validated_at": _validated_at(row),
+        "fdb_candidate_age_seconds": _finite_age(row.get("evidence_age_seconds")),
     }
 
 
@@ -315,7 +335,7 @@ def _unresolved_reason(diagnostics, coverage_status):
     return "port_rejected_after_exact_get"
 
 
-def _evidence(row, manual, diagnostics, online, coverage):
+def _evidence(row, manual, diagnostics, online, coverage, now_ts):
     diagnostics = diagnostics or {}
     fdb_status = "matched" if row else (
         "no_candidate" if int(diagnostics.get("raw_candidates") or 0) <= 0
@@ -336,11 +356,15 @@ def _evidence(row, manual, diagnostics, online, coverage):
             "status": fdb_status,
             "raw_candidates": max(0, int(diagnostics.get("raw_candidates") or 0)),
             "eligible_candidates": max(0, int(diagnostics.get("eligible_candidates") or 0)),
+            # 原始候选年龄，仅用于解释来源，不当作当前精确验证时效。
+            "candidate_age_seconds": _finite_age(row.get("evidence_age_seconds")) if row else None,
         },
         "exact_snmp": {
             "status": exact_status,
             "lookup_attempts": max(0, int(diagnostics.get("lookup_attempts") or 0)),
             "gets": max(0, int(diagnostics.get("snmp_gets") or 0)),
+            "validated_at": _validated_at(row),
+            "validation_age_seconds": _exact_validation_age(row, now_ts),
         },
         "direct_neighbor": {
             "status": "operator-attested" if manual else "unknown",
@@ -376,6 +400,8 @@ def build_placement_artifact(
     expected_switches=None,
     polled_switches=None,
     poll_failed_switches=None,
+    valid=True,
+    invalid_reason=None,
     now=None,
 ):
     """生成影子产物；纯函数，不写文件、不发请求。
@@ -389,6 +415,13 @@ def build_placement_artifact(
         raise ValueError("AP list required")
     if len(aps) > MAX_PLACEMENTS:
         raise ValueError("AP placement limit")
+    generated_at = time.time() if now is None else float(now)
+    if not valid:
+        return build_invalidated_artifact(
+            invalid_reason or "invalid",
+            max_age_seconds=max_age_seconds,
+            now=generated_at,
+        )
     online_evidence = online_evidence or {}
     manual_core_ports = set(manual_core_ports or ())
     core_ips = set(core_ips or ())
@@ -436,7 +469,7 @@ def build_placement_artifact(
             if online["status"] == "offline":
                 level = LEVEL_UNRESOLVED
                 reason = "ap_offline"
-                last_observed = _last_observed(row)
+                last_observed = _last_observed(row, generated_at)
             elif online["status"] == "unknown":
                 # 未知在线状态不能当作 online：保留转发证据但最多 observed。
                 level = LEVEL_OBSERVED_ATTACHMENT
@@ -463,7 +496,8 @@ def build_placement_artifact(
         }[level]] += 1
         counts["total"] += 1
 
-        evidence = _evidence(evidence_row, manual, diagnostics, online, coverage)
+        evidence = _evidence(evidence_row, manual, diagnostics, online, coverage,
+                             generated_at)
         placements.append({
             "ap_ip": str(ap.get("ip") or ""),
             "ap_name": str(ap.get("name") or ""),
@@ -475,7 +509,8 @@ def build_placement_artifact(
             "switch_ifindex": _as_positive_int(current.get("ifindex")) if current else None,
             "switch_port": str(current.get("port_name") or "") if current else None,
             "vlan": _as_positive_int(current.get("vlan")) if current else None,
-            "evidence_age_seconds": _finite_age(current.get("evidence_age_seconds")) if current else None,
+            # 与正式 AP 定位一致：now - validated_at，而不是 FDB 候选年龄。
+            "evidence_age_seconds": _exact_validation_age(current, generated_at) if current else None,
             "last_observed": last_observed,
             "coverage_status": coverage["status"],
             "reason": reason,
@@ -484,10 +519,42 @@ def build_placement_artifact(
 
     return {
         "schema_version": PLACEMENT_SCHEMA_VERSION,
-        "generated_at": time.time() if now is None else float(now),
+        "generated_at": generated_at,
         "source": PLACEMENT_SOURCE,
         "max_age_seconds": max(0, int(max_age_seconds)),
+        "valid": True,
+        "invalid_reason": None,
         "counts": counts,
         "coverage": dict(coverage),
         "placements": placements,
+    }
+
+
+def build_invalidated_artifact(reason, *, max_age_seconds=7200, now=None):
+    """显式失效快照：空 placements + 零计数 + 有效性状态/原因。
+
+    下一轮 AP 身份失败、AP 清单为空或没有拓扑设备时必须覆盖旧文件，
+    避免旧 observed/confirmed 在 max_age 窗口内被后续 UI 当作当前权威。
+    """
+    coverage = placement_coverage(None, False, False)
+    coverage["reasons"] = [str(reason or "invalid")]
+    return {
+        "schema_version": PLACEMENT_SCHEMA_VERSION,
+        "generated_at": time.time() if now is None else float(now),
+        "source": PLACEMENT_SOURCE,
+        "max_age_seconds": max(0, int(max_age_seconds)),
+        "valid": False,
+        "invalid_reason": str(reason or "invalid"),
+        "counts": {
+            "confirmed_direct": 0,
+            "observed_attachment": 0,
+            "ambiguous": 0,
+            "unresolved": 0,
+            "online": 0,
+            "offline": 0,
+            "unknown": 0,
+            "total": 0,
+        },
+        "coverage": coverage,
+        "placements": [],
     }

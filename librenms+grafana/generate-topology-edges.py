@@ -43,7 +43,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidates,
                          ap_max_age, vlan_fk_mapping, validate_ap_candidates)
-from ap_placement import build_placement_artifact, fetch_ap_online_evidence
+from ap_placement import (build_invalidated_artifact, build_placement_artifact,
+                          fetch_ap_online_evidence)
 import json
 import os
 import re
@@ -3217,12 +3218,27 @@ def collect_ap_shadow_candidates(aps, inventory, validated, devices, edges, clie
     return result
 
 
+def write_invalidated_ap_placement_artifact(output_dir, reason):
+    """显式失效影子快照：覆盖旧文件，避免旧位置被当作当前权威。"""
+    try:
+        artifact = build_invalidated_artifact(reason, max_age_seconds=ap_max_age())
+        write_json_atomic(os.path.join(output_dir, "ap-placement.json"),
+                          artifact, sort_keys=True)
+        print(f"[INFO] AP placement invalidated: reason={reason} placements=0",
+              file=sys.stderr)
+    except Exception as exc:
+        print(f"[WARN] AP placement invalidation failed ({type(exc).__name__}); "
+              "wired output unaffected", file=sys.stderr)
+
+
 def write_ap_placement_artifact(output_dir, aps, validated, fdb_inventory, fdb_status,
                                 devices, edges, librenms, community, librenms_ready,
                                 expected_switches=None, polled_switches=None,
-                                poll_failed_switches=None):
+                                poll_failed_switches=None, identity_error=False):
     """P1 影子产物：失败隔离，不影响 ap-attachments.json 与 wired 输出。"""
     if not aps:
+        reason = "ap_identity_unavailable" if identity_error else "no_ap_identity"
+        write_invalidated_ap_placement_artifact(output_dir, reason)
         return
     shadow = {"validated": {}, "diagnostics": {},
               "shadow_lookups": 0, "shadow_snmp_gets": 0, "vlan_api_requests": 0}
@@ -4265,11 +4281,13 @@ def _run_collection():
     community = os.environ.get("TOPOLOGY_SNMP_COMMUNITY", "").strip() or os.environ.get("SNMP_COMMUNITY", "global").strip()
     output_dir = os.environ.get("TOPOLOGY_OUTPUT_DIR", "/etc/prometheus/targets/topology")
 
+    ap_identity_error = False
     try:
         aps = fetch_current_aps()
     except Exception as exc:
         print(f"[WARN] AP inventory unavailable ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
         aps = []
+        ap_identity_error = True
     # 与 attachment 共用本轮身份；失败也发布空清单，不保留旧 AP ping targets。
     try:
         write_json_atomic(os.path.join(output_dir, "ap-ping-targets.json"), [
@@ -4281,6 +4299,7 @@ def _run_collection():
     device_ips = load_device_list()
     if not device_ips:
         write_current_ap_artifact(output_dir, aps, {})
+        write_invalidated_ap_placement_artifact(output_dir, "no_topology_devices")
         print(
             "[INFO] TOPOLOGY_DEVICES empty and no infra ping envs set; "
             "retaining the last confirmed topology",
@@ -4526,6 +4545,7 @@ def _run_collection():
             expected_switches=len(expected_switch_ips),
             polled_switches=len(polled_switch_ips),
             poll_failed_switches=len(poll_failed_switch_ips),
+            identity_error=ap_identity_error,
         )
     except Exception as exc:
         print(f"[WARN] AP placement shadow cycle failed ({type(exc).__name__}); wired output unaffected",

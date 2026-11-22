@@ -55,7 +55,8 @@ def shadow(aps, shared, validated, devices, api, edges=()):
 
 def build(aps, validated, shadow_result, online_evidence=None, *, fdb_status=None,
           librenms_ready=True, manual_core_ports=(), core_ips=("10.0.0.11",),
-          expected_switches=None, polled_switches=None, poll_failed_switches=None):
+          expected_switches=None, polled_switches=None, poll_failed_switches=None,
+          now=1700000000):
     return placement.build_placement_artifact(
         aps, validated, shadow_result, online_evidence or {},
         fdb_status=fdb_status or {"usable_switches": 1, "failed_switches": 0},
@@ -66,7 +67,7 @@ def build(aps, validated, shadow_result, online_evidence=None, *, fdb_status=Non
         expected_switches=expected_switches,
         polled_switches=polled_switches,
         poll_failed_switches=poll_failed_switches,
-        now=1700000000,
+        now=now,
     )
 
 
@@ -217,9 +218,9 @@ def test_ap_move_recomputes_without_sticky_position(monkeypatch):
 
 # ---------- 离线 / unknown 当前定位保护 ----------
 
-def validated_core_row():
+def validated_core_row(validated_at=1699999998):
     return {"switch_ip": "10.0.0.11", "ifindex": 1, "port_name": "Gi1/0/1",
-            "vlan": 200, "evidence_age_seconds": 3.0}
+            "vlan": 200, "evidence_age_seconds": 3.0, "validated_at": validated_at}
 
 
 def test_offline_ap_with_live_exact_get_is_not_current(monkeypatch):
@@ -234,7 +235,10 @@ def test_offline_ap_with_live_exact_get_is_not_current(monkeypatch):
     assert item["reason"] == "ap_offline"
     assert item["switch_ip"] is None and item["switch_port"] is None
     assert item["last_observed"]["switch_port"] == "Gi1/0/1"
-    assert item["last_observed"]["evidence_age_seconds"] == 3.0
+    assert item["last_observed"]["evidence_age_seconds"] == 2.0
+    assert item["last_observed"]["fdb_candidate_age_seconds"] == 3.0
+    assert item["last_observed"]["validated_at"] == 1699999998.0
+    assert item["evidence_age_seconds"] is None
     assert item["evidence"]["fdb"]["status"] == "matched"
     assert item["evidence"]["manual_confirmation"]["status"] == "none"
     assert artifact["counts"]["offline"] == 1
@@ -579,6 +583,8 @@ def test_artifact_schema_contract_and_no_sensitive_fields(monkeypatch):
     assert artifact["schema_version"] == 1
     assert artifact["source"] == "ap-placement-shadow:librenms-fdb+snmp-exact"
     assert artifact["max_age_seconds"] == 7200
+    assert artifact["valid"] is True
+    assert artifact["invalid_reason"] is None
     assert artifact["counts"]["total"] == 1
     assert sum(artifact["counts"][key] for key in
                ("confirmed_direct", "observed_attachment", "ambiguous", "unresolved")) == 1
@@ -591,6 +597,123 @@ def test_artifact_schema_contract_and_no_sensitive_fields(monkeypatch):
     for key in ("fdb", "exact_snmp", "direct_neighbor", "manual_confirmation",
                 "online", "coverage", "port"):
         assert key in item["evidence"], key
+    assert "candidate_age_seconds" in item["evidence"]["fdb"]
+    assert "validation_age_seconds" in item["evidence"]["exact_snmp"]
     encoded = json.dumps(artifact).lower()
     for forbidden in ("password", "client_mac", "community", "uplink_mac"):
         assert forbidden not in encoded
+
+
+# ---------- P1-3: 影子产物失效机制 ----------
+
+def test_invalidated_artifact_contract():
+    artifact = placement.build_invalidated_artifact(
+        "no_topology_devices", max_age_seconds=7200, now=1700000000)
+    assert artifact["schema_version"] == 1
+    assert artifact["valid"] is False
+    assert artifact["invalid_reason"] == "no_topology_devices"
+    assert artifact["generated_at"] == 1700000000
+    assert artifact["placements"] == []
+    assert artifact["counts"]["total"] == 0
+    for key in ("confirmed_direct", "observed_attachment", "ambiguous",
+                "unresolved", "online", "offline", "unknown"):
+        assert artifact["counts"][key] == 0
+    assert artifact["coverage"]["status"] == "unknown"
+    assert artifact["coverage"]["reasons"] == ["no_topology_devices"]
+
+
+def test_previous_valid_snapshot_is_invalidated_by_empty_ap_identity(monkeypatch, tmp_path):
+    aps, mac, devices, api, shared, _status = core_setup(monkeypatch)
+    observe(monkeypatch)
+    valid = build(aps, {}, shadow(aps, shared, {}, devices, api), unknown_online(mac))
+    gte.write_json_atomic(str(tmp_path / "ap-placement.json"), valid, sort_keys=True)
+    assert json.loads((tmp_path / "ap-placement.json").read_text())["valid"] is True
+    gte.write_ap_placement_artifact(str(tmp_path), [], {}, {}, {}, {}, [], None, None,
+                                    "fixture-community", True)
+    after = json.loads((tmp_path / "ap-placement.json").read_text())
+    assert after["valid"] is False
+    assert after["invalid_reason"] == "no_ap_identity"
+    assert after["placements"] == []
+    assert after["counts"]["total"] == 0
+    assert after["generated_at"] > 0
+
+
+def test_ap_identity_error_invalidates_previous_snapshot(tmp_path):
+    (tmp_path / "ap-placement.json").write_text(
+        json.dumps({"valid": True, "placements": [{"old": "observed"}]}))
+    gte.write_ap_placement_artifact(str(tmp_path), [], {}, {}, {}, {}, [], None, None,
+                                    "fixture-community", True, identity_error=True)
+    after = json.loads((tmp_path / "ap-placement.json").read_text())
+    assert after["valid"] is False
+    assert after["invalid_reason"] == "ap_identity_unavailable"
+    assert after["placements"] == []
+
+
+def test_no_topology_devices_invalidates_shadow_artifact(monkeypatch, tmp_path):
+    for key in ("TOPOLOGY_DEVICES", "CORE_SWITCH_PING", "DIST_SWITCH_PING",
+                "FIREWALL_PING", "TOURNAMENT_SWITCHES", "SERVER_PING"):
+        monkeypatch.setenv(key, "")
+    monkeypatch.setenv("TOPOLOGY_OUTPUT_DIR", str(tmp_path))
+    aps = ap.current_ap_identities([identity()])
+    monkeypatch.setattr(gte, "fetch_current_aps", lambda: aps)
+    monkeypatch.setattr(gte, "load_device_list", lambda: [])
+    (tmp_path / "ap-placement.json").write_text(
+        json.dumps({"valid": True, "placements": [{"old": "observed"}]}))
+    assert gte._run_collection() == 0
+    after = json.loads((tmp_path / "ap-placement.json").read_text())
+    assert after["valid"] is False
+    assert after["invalid_reason"] == "no_topology_devices"
+    assert after["placements"] == []
+    assert after["counts"]["total"] == 0
+
+
+# ---------- P2-3: FDB 候选年龄 vs 本轮 exact 验证年龄 ----------
+
+def test_top_level_age_is_exact_validation_not_fdb_candidate_age(monkeypatch):
+    aps, mac, _devices, _api, _shared, _status = core_setup(monkeypatch)
+    row = {"switch_ip": "10.0.0.11", "ifindex": 1, "port_name": "Gi1/0/1",
+           "vlan": 200, "evidence_age_seconds": 10000.0,
+           "validated_at": 1699999998.0}
+    artifact = build(aps, {mac: [row]}, {"validated": {}, "diagnostics": {}},
+                     unknown_online(mac))
+    item = one(artifact)
+    assert item["level"] == "observed-attachment"
+    assert item["evidence_age_seconds"] == 2.0
+    assert item["evidence"]["fdb"]["candidate_age_seconds"] == 10000.0
+    assert item["evidence"]["exact_snmp"]["validation_age_seconds"] == 2.0
+    assert item["evidence"]["exact_snmp"]["validated_at"] == 1699999998.0
+
+
+def test_old_fdb_candidate_with_fresh_exact_get_is_not_stale(monkeypatch):
+    aps, mac, devices, api, shared, _status = core_setup(
+        monkeypatch,
+        rows=[{"port_id": 1, "mac_address": "02:00:00:00:00:01", "vlan_id": 142,
+               "updated_at": time.time() - 10800}],
+    )
+    observe(monkeypatch)
+    result = shadow(aps, shared, {}, devices, api)
+    assert result["validated"][mac]
+    artifact = build(aps, {}, result, unknown_online(mac), now=None)
+    item = one(artifact)
+    assert item["level"] == "observed-attachment"
+    assert "stale" not in item["reason"]
+    assert item["evidence_age_seconds"] is not None
+    assert item["evidence_age_seconds"] < 60
+    assert item["evidence"]["fdb"]["candidate_age_seconds"] >= 10800
+    assert item["evidence"]["exact_snmp"]["validation_age_seconds"] < 60
+
+
+def test_fdb_candidate_beyond_candidate_window_is_unresolved(monkeypatch):
+    aps, mac, devices, api, shared, _status = core_setup(
+        monkeypatch,
+        rows=[{"port_id": 1, "mac_address": "02:00:00:00:00:01", "vlan_id": 142,
+               "updated_at": time.time() - 30000}],
+    )
+    monkeypatch.setattr(gte, "_shadow_exact_lookup",
+                        lambda *args: pytest.fail("stale candidate must not query SNMP"))
+    result = shadow(aps, shared, {}, devices, api)
+    assert result["validated"] == {}
+    item = one(build(aps, {}, result, unknown_online(mac)))
+    assert item["level"] == "unresolved"
+    assert item["reason"] == "no_eligible_fdb_candidate"
+    assert item["evidence_age_seconds"] is None
