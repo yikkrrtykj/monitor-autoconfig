@@ -29,6 +29,7 @@
   const { createEvidenceChartRenderer } = window.BSEvidenceChart;
   const { createEvidencePanel } = window.BSEvidencePanel;
   const { createWirelessPanel } = window.BSWirelessPanel;
+  const { createApPlacementPanel, isPlacementEnabled } = window.BSApPlacement;
   const { createTournamentPanel } = window.BSTournamentPanel;
   const { createIperfController } = window.BSIperfController;
   const { createDeliveryPanel } = window.BSDeliveryPanel;
@@ -46,6 +47,7 @@
     fetchInfraDeviceNames, renameListWithInfraMap, partitionInfraPingItems,
     fetchTopologyTargets, fetchTopologyEdges, fetchApAttachments, fetchRuntimeStatus,
     fetchNetworkOverview, fetchNetworkDevices, fetchNetworkTopology, fetchNodeInspector, fetchNodePorts, fetchPortHistory, fetchPortHistoryFallback, fetchNetworkIsp,
+    fetchApPlacement,
     fetchPlatformAuthStatus, loginPlatformAuth, logoutPlatformAuth,
     fetchPlatformConfig, fetchPlatformVersion, fetchApplyStatus, postPlatform, fetchRetirePending, patchPlatform, fetchIncidents,
     fetchDhcpDashboard, fetchDhcpBindings, testDhcpConnection, fetchDhcpSettings, saveDhcpSettings
@@ -259,6 +261,20 @@
     triggerRescan,
     onDataSuccess: () => { lastDataSuccessAt = Date.now(); }
   });
+  const apPlacementPanel = createApPlacementPanel({
+    document,
+    window,
+    console,
+    escapeHtml,
+    fetchApPlacement,
+    canRead: () => networkSession.canRead(),
+    enabled: isPlacementEnabled(config.apPlacementEnabled),
+    onAuthFailure: () => { networkSession.expired(); }
+  });
+  function stopWirelessPanel() {
+    wirelessPanel.stop();
+    apPlacementPanel.stop();
+  }
   const tournamentPanel = createTournamentPanel({
     document,
     window,
@@ -322,6 +338,7 @@
       networkSession.invalidate();
       invalidateControlRefresh();
       refreshControlPanel();
+      apPlacementPanel.refresh();
     },
     onLoggedOut: () => {
       invalidateTopologyEdges();
@@ -330,6 +347,7 @@
       networkSession.expired();
       invalidateControlRefresh();
       lastControlReport = null;
+      apPlacementPanel.clear();
     }
   });
   const incidentRegistry = createIncidentRegistry({
@@ -824,7 +842,7 @@
     const screen = document.querySelector(".screen");
     infraController.stop();
     tournamentPanel.stop();
-    wirelessPanel.stop();
+    stopWirelessPanel();
     stopControlRefresh();
     dhcpPanel.stop();
     stopTopologyRefresh();
@@ -844,7 +862,7 @@
     const screen = document.querySelector(".screen");
     infraController.stop();
     tournamentPanel.stop();
-    wirelessPanel.stop();
+    stopWirelessPanel();
     dhcpPanel.stop();
     stopTopologyRefresh();
     screen.className = "screen control-mode";
@@ -863,7 +881,7 @@
     const screen = document.querySelector(".screen");
     infraController.stop();
     tournamentPanel.stop();
-    wirelessPanel.stop();
+    stopWirelessPanel();
     stopControlRefresh();
     dhcpPanel.stop();
     stopTopologyRefresh();
@@ -895,7 +913,7 @@
 
   function showTournament(page) {
     const screen = document.querySelector(".screen");
-    wirelessPanel.stop();
+    stopWirelessPanel();
     stopControlRefresh();
     dhcpPanel.stop();
     stopTopologyRefresh();
@@ -918,7 +936,7 @@
     const screen = document.querySelector(".screen");
     infraController.stop();
     tournamentPanel.stop();
-    wirelessPanel.stop();
+    stopWirelessPanel();
     stopControlRefresh();
     dhcpPanel.stop();
     stopTopologyRefresh();
@@ -960,6 +978,7 @@
     setVisible("dhcpPanel", false);
     setVisible("topologyPanel", false);
     wirelessPanel.start(page);
+    apPlacementPanel.start();
   }
 
   // ---- Network topology ----
@@ -1074,7 +1093,7 @@
     const screen = document.querySelector(".screen");
     infraController.stop();
     tournamentPanel.stop();
-    wirelessPanel.stop();
+    stopWirelessPanel();
     stopControlRefresh();
     dhcpPanel.stop();
     screen.className = "screen topology-mode";
@@ -1095,7 +1114,7 @@
     const screen = document.querySelector(".screen");
     infraController.stop();
     tournamentPanel.stop();
-    wirelessPanel.stop();
+    stopWirelessPanel();
     stopControlRefresh();
     stopTopologyRefresh();
     screen.className = "screen dhcp-mode";

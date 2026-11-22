@@ -737,6 +737,10 @@
     return platformApi("/network/topology", { timeoutMs: 10000 });
   }
 
+  function fetchApPlacement() {
+    return platformApi("/network/ap-placement", { timeoutMs: 10000 });
+  }
+
   function fetchNodeInspector(ip) {
     return platformApi(`/network/nodes/${encodeURIComponent(ip)}/inspector`, { timeoutMs: 15000 });
   }
@@ -961,6 +965,7 @@
     fetchNetworkOverview,
     fetchNetworkDevices,
     fetchNetworkTopology,
+    fetchApPlacement,
     fetchNodeInspector,
     fetchNodePorts,
     fetchPortHistory,
