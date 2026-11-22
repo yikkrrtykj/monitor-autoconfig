@@ -50,6 +50,10 @@ function harness(options = {}) {
     addEventListener: (name, fn) => { callbacks[name] = fn; }
   };
   window.BSUtils = new Proxy({}, { get: (_, key) => key === "escapeHtml" ? String : noop });
+  window.BSApPlacement = {
+    createApPlacementPanel: () => ({ start: noop, stop: noop, clear: noop, refresh: noop }),
+    isPlacementEnabled: () => false
+  };
   window.BSNetworkRead = { ...network, createTopologyLifecycle: () => {
     lifecycle = network.createTopologyLifecycle();
     return lifecycle;

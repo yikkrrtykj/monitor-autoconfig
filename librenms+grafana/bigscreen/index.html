@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>网络监控大屏</title>
     <link rel="stylesheet" href="./style.css?v=20261116a" />
-    <link rel="stylesheet" href="./platform.css?v=20261116a" />
+    <link rel="stylesheet" href="./platform.css?v=20261122a" />
     <link rel="stylesheet" href="./ping/ping.css?v=20261119d3" />
     <link rel="stylesheet" href="./infra/overview.css?v=20261116a" />
   </head>
@@ -324,6 +324,32 @@
         <div class="wireless-controls" id="wirelessControls"></div>
         <div class="wireless-summary" id="wirelessSummary"></div>
         <div class="wireless-board" id="wirelessBoard"></div>
+        <section class="ap-placement" id="apPlacementSection" aria-label="AP 定位" hidden>
+          <div class="ap-placement-head">
+            <div>
+              <h2>AP 定位</h2>
+              <p class="ap-placement-hint">P1 影子定位证据，不驱动拓扑连线；ICMP 可达性未接入（#140）。</p>
+            </div>
+            <button type="button" id="apPlacementRefresh" class="ap-placement-refresh">刷新</button>
+          </div>
+          <div class="ap-placement-toolbar">
+            <label>搜索
+              <input type="search" id="apPlacementSearch" placeholder="AP 名称 / IP / 交换机 / 端口" />
+            </label>
+            <label>定位等级
+              <select id="apPlacementLevelFilter">
+                <option value="">全部等级</option>
+                <option value="confirmed-direct">已确认直连</option>
+                <option value="observed-attachment">已验证转发出口</option>
+                <option value="ambiguous">多候选或证据冲突</option>
+                <option value="unresolved">暂无可靠定位</option>
+              </select>
+            </label>
+          </div>
+          <div class="ap-placement-status" id="apPlacementStatus" role="status"></div>
+          <div class="ap-placement-summary" id="apPlacementSummary"></div>
+          <div class="ap-placement-list" id="apPlacementList"></div>
+        </section>
         <aside class="topology-detail wireless-inspector" id="wirelessInspector" hidden></aside>
       </section>
       <section class="control-panel" id="controlPanel" aria-label="赛事控制台" hidden>
@@ -475,7 +501,7 @@
         <aside class="topology-port-panel" id="topologyPortPanel" aria-label="端口面板" hidden></aside>
       </section>
     </main>
-    <script src="./config.js?v=20261116b"></script>
+    <script src="./config.js?v=20261122a"></script>
     <script src="./config/config-model.js?v=20260827a"></script>
     <script src="./config/config-editor.js?v=20260911a"></script>
     <script src="./dhcp/dhcp-model.js?v=20260827a"></script>
@@ -490,7 +516,7 @@
     <script src="./evidence/evidence-panel.js?v=20260911a"></script>
     <script src="./metrics/ping-transform.js?v=20260826b"></script>
     <script src="./isp-carousel.js?v=20260731a"></script>
-    <script src="./api.js?v=20261119minihttp"></script>
+    <script src="./api.js?v=20261122a"></script>
     <script src="./ping/model.js?v=20261117b2"></script>
     <script src="./ping/custom-dns.js?v=20261119d3"></script>
     <script src="./ping/data.js?v=20261119minihttp"></script>
@@ -513,6 +539,7 @@
     <script src="./players.js?v=20260802a"></script>
     <script src="./tournament/tournament-panel.js?v=20260828a"></script>
     <script src="./wireless/wireless-panel.js?v=20261001c"></script>
+    <script src="./ap-placement.js?v=20261122a"></script>
     <script src="./ap-topology.js?v=20261001e"></script>
     <script src="./topology.js?v=20261001e"></script>
     <script src="./charts/port-panel.js?v=20260930a"></script>
@@ -524,6 +551,6 @@
     <script src="./control/auth-controller.js?v=20260908a"></script>
     <script src="./control/incident-registry.js?v=20260828a"></script>
     <script src="./infra/infra-controller.js?v=20260828a"></script>
-    <script src="./app.js?v=20261116b"></script>
+    <script src="./app.js?v=20261122a"></script>
   </body>
 </html>
