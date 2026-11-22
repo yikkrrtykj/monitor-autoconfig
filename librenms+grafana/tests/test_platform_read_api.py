@@ -125,6 +125,7 @@ def test_all_protected_read_routes_still_require_auth(tmp_path):
             "/network/overview",
             "/network/devices",
             "/network/topology",
+            "/network/ap-placement",
             "/network/nodes/192.0.2.7/inspector",
             "/network/isp",
             "/network/dhcp?force=1",
@@ -150,6 +151,7 @@ def test_network_reads_fail_closed_when_global_auth_is_disabled(tmp_path):
             "/network/overview",
             "/network/devices",
             "/network/topology",
+            "/network/ap-placement",
             "/network/nodes/192.0.2.7/inspector",
             "/network/isp",
         ):
@@ -302,5 +304,67 @@ def test_read_failure_keeps_existing_500_json_mapping(monkeypatch, tmp_path):
         status, _, payload = request_json(f"{base_url}/version")
         assert status == 500
         assert payload == {"ok": False, "error": "fixture version read failed"}
+    finally:
+        stop_server(server, thread)
+
+
+# ---------- P2-A: AP placement read-only route ----------
+
+
+def test_ap_placement_route_returns_validated_snapshot(monkeypatch, tmp_path):
+    import time
+
+    from .test_platform_network_read import ap_entry, ap_payload
+
+    now = time.time()
+    entry = ap_entry(evidence_age_seconds=30.0)
+    entry["evidence"]["exact_snmp"]["validated_at"] = now - 30.0
+    api = load_api(tmp_path)
+    path = tmp_path / "ap-placement.json"
+    path.write_text(json.dumps(ap_payload(
+        [entry], generated_at=now)), encoding="utf-8")
+    monkeypatch.setattr(api, "NETWORK_AP_PLACEMENT_PATH", path)
+    monkeypatch.setattr(api, "_require_network_auth", lambda _handler: {})
+    server, thread, base_url = run_server(api)
+    try:
+        status, headers, payload = request_json(f"{base_url}/network/ap-placement")
+        assert status == 200, payload
+        assert headers["Cache-Control"] == "no-store"
+        assert payload["ok"] is True
+        assert payload["counts"]["total"] == 1
+        assert payload["placements"][0]["level"] == "observed-attachment"
+    finally:
+        stop_server(server, thread)
+
+
+def test_ap_placement_route_fails_closed_on_invalidated_snapshot(monkeypatch, tmp_path):
+    from .test_platform_network_read import ap_payload
+
+    api = load_api(tmp_path)
+    path = tmp_path / "ap-placement.json"
+    path.write_text(json.dumps(ap_payload(
+        valid=False, invalid_reason="no_ap_identity")), encoding="utf-8")
+    monkeypatch.setattr(api, "NETWORK_AP_PLACEMENT_PATH", path)
+    monkeypatch.setattr(api, "_require_network_auth", lambda _handler: {})
+    server, thread, base_url = run_server(api)
+    try:
+        status, _, payload = request_json(f"{base_url}/network/ap-placement")
+        assert status == 503
+        assert payload["code"] == "ap_placement_invalidated"
+    finally:
+        stop_server(server, thread)
+
+
+def test_ap_placement_route_fails_closed_on_malformed_snapshot(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    path = tmp_path / "ap-placement.json"
+    path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(api, "NETWORK_AP_PLACEMENT_PATH", path)
+    monkeypatch.setattr(api, "_require_network_auth", lambda _handler: {})
+    server, thread, base_url = run_server(api)
+    try:
+        status, _, payload = request_json(f"{base_url}/network/ap-placement")
+        assert status == 503
+        assert payload["code"] == "ap_placement_malformed"
     finally:
         stop_server(server, thread)
