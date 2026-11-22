@@ -28,6 +28,10 @@ def _browser():
 
 
 def _base_names(api_mac_suffix, level, online, index):
+    confirmed = level == "confirmed-direct"
+    observed = level == "observed-attachment"
+    has_current = confirmed or observed
+    ambiguous = level == "ambiguous"
     return {
         "ap_name": f"AP-{index:02d}",
         "ap_ip": f"10.20.0.{index}",
@@ -35,12 +39,12 @@ def _base_names(api_mac_suffix, level, online, index):
         "site": "fixture",
         "level": level,
         "online": online,
-        "switch_ip": "—" if level == "unresolved" else "10.0.0.11",
-        "switch_ifindex": None if level == "unresolved" else 10101,
-        "switch_port": "—" if level == "unresolved" else "Gi1/0/1",
-        "vlan": None if level == "unresolved" else 40,
-        "evidence_age_seconds": None if level == "unresolved" else 30,
-        "last_observed": None if level != "unresolved" else {
+        "switch_ip": "10.0.0.11" if has_current else None,
+        "switch_ifindex": 10101 if has_current else None,
+        "switch_port": "Gi1/0/1" if has_current else None,
+        "vlan": 40 if has_current else None,
+        "evidence_age_seconds": 30 if has_current else None,
+        "last_observed": None if has_current else {
             "switch_ip": "10.0.0.9",
             "switch_port": "Gi1/0/9",
             "vlan": 44,
@@ -48,40 +52,46 @@ def _base_names(api_mac_suffix, level, online, index):
             "validated_at": 1300,
         },
         "coverage_status": "partial",
-        "reason": "exact_evidence_stale" if level == "unresolved" else "verified_fdb_egress",
+        "reason": "operator_confirmed_core_port" if confirmed
+        else "verified_fdb_egress" if observed
+        else "ambiguous_fdb_candidates" if ambiguous
+        else "offline_no_current_location",
         "evidence": {
             "fdb": {
-                "status": "no_candidate" if level == "unresolved" else "matched",
-                "raw_candidates": 0 if level == "unresolved" else 1,
-                "candidate_age_seconds": None if level == "unresolved" else 10800,
+                "status": "matched" if has_current else "ambiguous" if ambiguous else "no_candidate",
+                "raw_candidates": 1 if has_current else 2 if ambiguous else 0,
+                "candidate_age_seconds": 10800 if has_current or ambiguous else None,
             },
             "exact_snmp": {
-                "status": "not_attempted" if level == "unresolved" else "matched",
-                "gets": 0 if level == "unresolved" else 1,
-                "validated_at": None if level == "unresolved" else 1870,
-                "validation_age_seconds": None if level == "unresolved" else 30,
+                "status": "matched" if has_current else "ambiguous" if ambiguous else "not_attempted",
+                "gets": 1 if has_current else 0,
+                "validated_at": 1870 if has_current else None,
+                "validation_age_seconds": 30 if has_current else None,
             },
-            "manual_confirmation": {"status": "none"},
-            "direct_neighbor": {"status": "unknown", "source": "none"},
+            "manual_confirmation": {"status": "confirmed" if confirmed else "none"},
+            "direct_neighbor": (
+                {"status": "operator-attested", "source": "manual-allowlist"}
+                if confirmed else {"status": "unknown", "source": "none"}
+            ),
             "online": {"status": online, "source": "fixture", "reason": "fixture"},
             "coverage": {"status": "partial", "reasons": ["fdb_missing_switch"]},
-            "port": {"verified": True},
+            "port": {"verified": has_current},
         },
     }
 
 
 def _payload():
+    # P1/#142 contract: confirmed rows are online and carry operator-attested
+    # evidence; formal attachments are a separate source and are not joined by B1.
     placements = []
     index = 1
-    for count in range(8):
-        placements.append(_base_names(
-            index, "confirmed-direct",
-            "online" if count < 5 else "offline" if count < 7 else "unknown", index))
+    for _count in range(8):
+        placements.append(_base_names(index, "confirmed-direct", "online", index))
         index += 1
     for _count in range(2):
         placements.append(_base_names(index, "observed-attachment", "unknown", index))
         index += 1
-    placements.append(_base_names(index, "unresolved", "unknown", index))
+    placements.append(_base_names(index, "unresolved", "offline", index))
     # 第一条 AP 名称带 HTML 标记，验证动态文本转义。
     placements[0]["ap_name"] = "<b>AP-XSS</b>"
     return {
@@ -93,7 +103,7 @@ def _payload():
         "file_age_seconds": 5,
         "counts": {
             "confirmed_direct": 8, "observed_attachment": 2, "ambiguous": 0,
-            "unresolved": 1, "online": 5, "offline": 2, "unknown": 4, "total": 11,
+            "unresolved": 1, "online": 8, "offline": 1, "unknown": 2, "total": 11,
         },
         "coverage": {
             "status": "partial", "expected_switches": 2, "polled_switches": 2,
@@ -175,6 +185,15 @@ setTimeout(() => {
       historyInDetailsOnly: Boolean(lastFacts && lastDetails
         && !lastFacts.textContent.includes('10.0.0.9')
         && lastDetails.textContent.includes('10.0.0.9')),
+      confirmedRowsOnline: Array.from(
+        list.querySelectorAll('.ap-placement-row.level-confirmed-direct'))
+        .every((row) => row.querySelector('.ap-placement-facts')
+          .textContent.includes('在线')),
+      confirmedAttestation: list.textContent.includes('operator-attested'),
+      offlineVisible: list.textContent.includes('离线'),
+      unresolvedNoCurrent: Boolean(lastFacts
+        && !lastFacts.textContent.includes('10.0.0.11')
+        && lastFacts.textContent.includes('—')),
       refreshFocused: document.activeElement === refresh,
       htmlEscaped: list.querySelectorAll('b').length === 0
         && list.textContent.includes('<b>AP-XSS</b>'),
@@ -191,6 +210,106 @@ setTimeout(() => {
 }, 400);
 </script>
 """ % (payload, "true" if enabled else "false", "true" if enabled else "false")
+    return f"""<!doctype html><meta charset="utf-8">
+<link rel="stylesheet" href="{(ROOT / "bigscreen/platform.css").as_uri()}">
+<body><main class="screen wireless-mode"><section class="wireless-panel" id="wirelessPanel">
+<div class="wireless-controls"></div><div class="wireless-summary"></div><div class="wireless-board"></div>
+{section}
+</section></main><pre id="browserResult"></pre>{scripts}{inline}</body>"""
+
+
+def _details_fixture():
+    payload = json.dumps(_payload(), ensure_ascii=False)
+    section = _section_markup()
+    scripts = "".join(
+        f'<script src="{(ROOT / "bigscreen" / name).as_uri()}"></script>'
+        for name in ("utils.js", "ap-placement.js")
+    )
+    inline = """
+<script>
+let current = %s;
+const panel = window.BSApPlacement.createApPlacementPanel({
+  document: document,
+  window: window,
+  escapeHtml: window.BSUtils.escapeHtml,
+  fetchApPlacement: async () => current,
+  canRead: async () => true,
+  enabled: true,
+  intervalMs: 30000,
+  now: () => Date.now()
+});
+panel.start();
+setTimeout(() => {
+  try {
+    const list = document.getElementById('apPlacementList');
+    const rows = list.querySelectorAll('.ap-placement-row');
+    const first = rows[0];
+    const second = rows[1];
+    const firstMac = first.dataset.mac;
+    const secondMac = second.dataset.mac;
+    first.querySelector('.ap-placement-evidence').open = true;
+    second.querySelector('.ap-placement-evidence').open = true;
+    first.querySelector('summary').focus();
+    const rowCountBefore = rows.length;
+    panel.refresh();
+    setTimeout(() => {
+      const afterRows = Array.from(list.querySelectorAll('.ap-placement-row'));
+      const firstAfter = afterRows.find((row) => row.dataset.mac === firstMac);
+      const secondAfter = afterRows.find((row) => row.dataset.mac === secondMac);
+      const expandedAfterRefresh = Boolean(firstAfter
+        && firstAfter.querySelector('.ap-placement-evidence').open);
+      const secondExpanded = Boolean(secondAfter
+        && secondAfter.querySelector('.ap-placement-evidence').open);
+      const focusAfterRefresh = Boolean(firstAfter
+        && document.activeElement === firstAfter.querySelector('summary'));
+      const search = document.getElementById('apPlacementSearch');
+      search.value = 'AP-02';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      const filteredRows = Array.from(list.querySelectorAll('.ap-placement-row'));
+      const filterPreservedSecond = filteredRows.some((row) => row.dataset.mac === secondMac
+        && row.querySelector('.ap-placement-evidence').open);
+      const filterWrongAssociation = filteredRows.some((row) => row.dataset.mac !== secondMac
+        && row.querySelector('.ap-placement-evidence').open);
+      search.value = '';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      current = {
+        ...current,
+        placements: current.placements.slice(1),
+        counts: {
+          confirmed_direct: 7, observed_attachment: 2, ambiguous: 0,
+          unresolved: 1, online: 7, offline: 1, unknown: 2, total: 10
+        }
+      };
+      panel.refresh();
+      setTimeout(() => {
+        const finalRows = Array.from(list.querySelectorAll('.ap-placement-row'));
+        const removedFirst = !finalRows.some((row) => row.dataset.mac === firstMac);
+        const staleOpen = finalRows.some((row) => row.dataset.mac === firstMac
+          && row.querySelector('.ap-placement-evidence').open);
+        panel.clear();
+        const afterClear = list.querySelectorAll('.ap-placement-row').length;
+        document.getElementById('browserResult').textContent = JSON.stringify({
+          pass: true,
+          rowCountBefore: rowCountBefore,
+          rowCountAfterRemoval: finalRows.length,
+          expandedAfterRefresh: expandedAfterRefresh,
+          secondExpanded: secondExpanded,
+          focusAfterRefresh: focusAfterRefresh,
+          filterPreservedSecond: filterPreservedSecond,
+          filterWrongAssociation: filterWrongAssociation,
+          removedFirst: removedFirst,
+          staleOpen: staleOpen,
+          rowsAfterClear: afterClear
+        });
+      }, 350);
+    }, 350);
+  } catch (error) {
+    document.getElementById('browserResult').textContent = JSON.stringify(
+      { pass: false, error: String(error) });
+  }
+}, 350);
+</script>
+""" % payload
     return f"""<!doctype html><meta charset="utf-8">
 <link rel="stylesheet" href="{(ROOT / "bigscreen/platform.css").as_uri()}">
 <body><main class="screen wireless-mode"><section class="wireless-panel" id="wirelessPanel">
@@ -234,6 +353,10 @@ def test_ap_placement_real_browser_layout(tmp_path, width, height):
     assert result["exactAgeVisible"] is True
     assert result["fdbAgeVisible"] is True
     assert result["historyInDetailsOnly"] is True
+    assert result["confirmedRowsOnline"] is True
+    assert result["confirmedAttestation"] is True
+    assert result["offlineVisible"] is True
+    assert result["unresolvedNoCurrent"] is True
     assert result["refreshFocused"] is True
     assert result["htmlEscaped"] is True
     assert result["viewportOverflow"] <= 1
@@ -250,3 +373,20 @@ def test_ap_placement_real_browser_feature_disabled(tmp_path):
     assert result["sectionVisible"] is False
     assert result["fetchCalls"] == 0
     assert result["rowCount"] == 0
+
+
+def test_ap_placement_real_browser_details_survive_refresh(tmp_path):
+    page = tmp_path / "ap-placement-details.html"
+    page.write_text(_details_fixture(), encoding="utf-8")
+    result = _run_browser(1366, 768, page)
+    assert result.get("pass"), result
+    assert result["rowCountBefore"] == 11
+    assert result["expandedAfterRefresh"] is True
+    assert result["secondExpanded"] is True
+    assert result["focusAfterRefresh"] is True
+    assert result["filterPreservedSecond"] is True
+    assert result["filterWrongAssociation"] is False
+    assert result["removedFirst"] is True
+    assert result["staleOpen"] is False
+    assert result["rowsAfterClear"] == 0
+    assert result["rowCountAfterRemoval"] == 10

@@ -32,6 +32,48 @@
   const DEFAULT_STALE_AFTER_MS = 75000;
   const MAX_TEXT_LENGTH = 160;
   const MAX_DETAIL_LINES = 40;
+  const MAX_SNAPSHOT_AGE_SECONDS = 86400;
+  const MAX_PLACEMENT_ENTRIES = 512;
+
+  function invalidSnapshot(code) {
+    const error = new Error('invalid ap placement snapshot');
+    error.payload = { code };
+    return error;
+  }
+
+  function validateSnapshot(payload) {
+    // The API is authoritative for per-AP evidence. The UI still validates the
+    // envelope so a malformed/expired 200 response can never look current.
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw invalidSnapshot('invalid_snapshot');
+    }
+    if (payload.ok !== true || payload.valid !== true) {
+      throw invalidSnapshot('invalid_snapshot');
+    }
+    if (payload.schema_version !== 1) {
+      throw invalidSnapshot('schema_unsupported');
+    }
+    const generatedAt = payload.generated_at;
+    const maxAge = payload.max_age_seconds;
+    const fileAge = payload.file_age_seconds;
+    if (typeof generatedAt !== 'number' || !Number.isFinite(generatedAt) || generatedAt <= 0) {
+      throw invalidSnapshot('invalid_generated_at');
+    }
+    if (!Number.isInteger(maxAge) || maxAge <= 0 || maxAge > MAX_SNAPSHOT_AGE_SECONDS) {
+      throw invalidSnapshot('invalid_max_age');
+    }
+    if (typeof fileAge !== 'number' || !Number.isFinite(fileAge) || fileAge < 0 || fileAge > maxAge) {
+      throw invalidSnapshot('snapshot_stale');
+    }
+    if (!Array.isArray(payload.placements)
+        || payload.placements.length > MAX_PLACEMENT_ENTRIES) {
+      throw invalidSnapshot('invalid_placements');
+    }
+    if (!payload.counts || typeof payload.counts !== 'object' || Array.isArray(payload.counts)) {
+      throw invalidSnapshot('invalid_counts');
+    }
+    return { maxAge, fileAge };
+  }
 
   function isPlacementEnabled(value) {
     return ['1', 'true', 'yes', 'on'].includes(
@@ -95,10 +137,12 @@
 
     let started = false;
     let timer = null;
+    let lifecycle = 0;
     let sequence = 0;
-    let inFlight = false;
+    let inFlight = null;
     let lastSuccessAt = 0;
     let lastPayload = null;
+    let displayExpiresAt = 0;
     let searchText = '';
     let levelFilter = '';
     let bound = false;
@@ -148,11 +192,14 @@
       if (elements.summary) elements.summary.innerHTML = '';
       lastPayload = null;
       lastSuccessAt = 0;
+      displayExpiresAt = 0;
       if (message != null) setStatus(message, tone);
     }
 
     function clear() {
+      lifecycle += 1;
       sequence += 1;
+      inFlight = null;
       clearContent();
       hideSection();
     }
@@ -284,14 +331,49 @@
 </article>`;
     }
 
+    function captureListState(list) {
+      const state = { expanded: [], focusedMac: '' };
+      if (!list || typeof list.querySelectorAll !== 'function') return state;
+      Array.from(list.querySelectorAll('.ap-placement-row')).forEach((row) => {
+        const details = row.querySelector && row.querySelector('.ap-placement-evidence');
+        if (details && details.open && row.dataset && row.dataset.mac) {
+          state.expanded.push(row.dataset.mac);
+        }
+      });
+      const active = doc.activeElement;
+      if (active && typeof active.closest === 'function') {
+        const focusedRow = active.closest('.ap-placement-row');
+        if (focusedRow && focusedRow.dataset && focusedRow.dataset.mac) {
+          state.focusedMac = focusedRow.dataset.mac;
+        }
+      }
+      return state;
+    }
+
+    function restoreListState(list, state) {
+      if (!list || typeof list.querySelectorAll !== 'function') return;
+      const rows = Array.from(list.querySelectorAll('.ap-placement-row'));
+      rows.forEach((row) => {
+        if (!state.expanded.includes(row.dataset.mac)) return;
+        const details = row.querySelector && row.querySelector('.ap-placement-evidence');
+        if (details) details.open = true;
+      });
+      if (!state.focusedMac) return;
+      const focusedRow = rows.find((row) => row.dataset.mac === state.focusedMac);
+      if (!focusedRow) return;
+      const summary = focusedRow.querySelector && focusedRow.querySelector('summary');
+      if (summary && typeof summary.focus === 'function') summary.focus();
+    }
+
     function renderRows() {
       const list = doc.getElementById('apPlacementList');
       if (!list) return;
+      const prior = captureListState(list);
       if (!lastPayload) {
         list.innerHTML = '';
         return;
       }
-      const { rows, duplicates } = buildRows(lastPayload);
+      const { rows } = buildRows(lastPayload);
       const needle = searchText.trim().toLowerCase();
       const filtered = rows.filter((row) => {
         if (levelFilter && row.level !== levelFilter) return false;
@@ -306,6 +388,7 @@
         return;
       }
       list.innerHTML = filtered.map(rowHtml).join('');
+      restoreListState(list, prior);
     }
 
     function renderSummary(payload) {
@@ -330,9 +413,11 @@
           ${warnings.length ? ` · 警告 ${warnings.length} 条` : ''}</p>`;
     }
 
-    function render(payload) {
+    function render(payload, meta) {
       lastPayload = payload;
       lastSuccessAt = now();
+      displayExpiresAt = lastSuccessAt
+        + Math.max(0, (meta.maxAge - meta.fileAge) * 1000);
       showSection();
       const duplicates = buildRows(payload).duplicates;
       renderSummary(payload);
@@ -355,11 +440,17 @@
     }
 
     async function refresh() {
-      if (!enabled || !started || inFlight) return;
+      if (!enabled || !started) return;
+      if (inFlight && inFlight.lifecycle === lifecycle) return;
       const elements = getElements();
       if (!elements.section) return;
+      const requestLifecycle = lifecycle;
+      if (lastPayload && displayExpiresAt && now() > displayExpiresAt) {
+        clearContent('数据已过期，正在重新读取…', 'loading');
+      }
       const token = ++sequence;
-      inFlight = true;
+      inFlight = { lifecycle: requestLifecycle, token };
+      const isCurrent = () => started && lifecycle === requestLifecycle && token === sequence;
       try {
         let authenticated = false;
         try {
@@ -367,7 +458,7 @@
         } catch (error) {
           authenticated = false;
         }
-        if (token !== sequence || !started) return;
+        if (!isCurrent()) return;
         if (!authenticated) {
           clearContent();
           hideSection();
@@ -376,20 +467,20 @@
         showSection();
         if (!lastPayload) setStatus('正在读取 AP 定位…', 'loading');
         const payload = await fetchApPlacement();
-        if (token !== sequence || !started) return;
-        if (!payload || typeof payload !== 'object' || !Array.isArray(payload.placements)) {
-          throw new Error('malformed ap placement payload');
-        }
-        render(payload);
+        if (!isCurrent()) return;
+        const meta = validateSnapshot(payload);
+        render(payload, meta);
       } catch (error) {
-        if (token !== sequence || !started) return;
+        if (!isCurrent()) return;
         clearContent();
         const failure = failureMessage(error);
         showSection();
         setStatus(failure.message, failure.tone);
         if (failure.auth && typeof onAuthFailure === 'function') onAuthFailure();
       } finally {
-        inFlight = false;
+        if (inFlight && inFlight.lifecycle === requestLifecycle && inFlight.token === token) {
+          inFlight = null;
+        }
       }
     }
 
@@ -407,6 +498,8 @@
         return;
       }
       if (lastSuccessAt && now() - lastSuccessAt > staleAfterMs) {
+        clearContent('数据已过期，正在重新读取…', 'loading');
+      } else if (lastPayload && displayExpiresAt && now() > displayExpiresAt) {
         clearContent('数据已过期，正在重新读取…', 'loading');
       }
       refresh();
@@ -456,7 +549,9 @@
 
     function stop() {
       started = false;
+      lifecycle += 1;
       sequence += 1;
+      inFlight = null;
       clearTimer();
       if (visibilityBound) {
         doc.removeEventListener('visibilitychange', onVisibilityChange);
