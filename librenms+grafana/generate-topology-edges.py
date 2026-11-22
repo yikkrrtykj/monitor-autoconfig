@@ -43,7 +43,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidates,
                          ap_max_age, vlan_fk_mapping, validate_ap_candidates)
-from ap_placement import build_placement_artifact, fetch_ap_online_states
+from ap_placement import build_placement_artifact, fetch_ap_online_evidence
 import json
 import os
 import re
@@ -2688,11 +2688,28 @@ def _server_snmpget(ip, community, oid):
         return snmpget(ip, community, oid)
 
 
-def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
-    """Resolve one MAC to a switch ifIndex using exact Q-BRIDGE/BRIDGE GETs."""
+class _FdbGetBudgetExhausted(Exception):
+    """AP shadow 的底层 SNMP GET 预算已耗尽；正式定位路径不会触发。"""
+
+
+def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map, get_budget=None):
+    """Resolve one MAC to a switch ifIndex using exact Q-BRIDGE/BRIDGE GETs.
+
+    get_budget, when provided, is a one-element list used only by the AP shadow
+    path: every real SNMP GET reserves one unit before dispatch and the lookup
+    raises _FdbGetBudgetExhausted instead of issuing more requests.  Formal AP
+    and server paths pass None, so their behavior is unchanged.
+    """
     suffix = mac_oid_suffix(mac)
     if not suffix:
         return None
+
+    def _get(query_community, oid):
+        if get_budget is not None:
+            if get_budget[0] <= 0:
+                raise _FdbGetBudgetExhausted()
+            get_budget[0] -= 1
+        return _server_snmpget(ip, query_community, oid)
 
     lookups = []
     if vlan is not None:
@@ -2703,7 +2720,7 @@ def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
         lookups.append((community, f"{DOT1D_TP_FDB_PORT_OID}.{suffix}"))
 
     for query_community, oid in lookups:
-        bridge_port = _positive_int(_server_snmpget(ip, query_community, oid))
+        bridge_port = _positive_int(_get(query_community, oid))
         if bridge_port is None:
             continue
         # dot1dTpFdbPort/dot1qTpFdbPort returns a BRIDGE-MIB base-port number,
@@ -2711,8 +2728,7 @@ def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map):
         # old direct-number shortcut mapped bridge port 5 to ifIndex 5 on the
         # C9200L, which happens to be VLAN-1002 rather than a physical port.
         for mapping_community in dict.fromkeys((query_community, community)):
-            ifindex = _positive_int(_server_snmpget(
-                ip,
+            ifindex = _positive_int(_get(
                 mapping_community,
                 f"{DOT1D_BASE_PORT_IFINDEX_OID}.{bridge_port}",
             ))
@@ -3041,20 +3057,49 @@ def write_current_ap_artifact(output_dir, aps, inventory):
         print(f"[WARN] AP artifact write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
 
 
-AP_SHADOW_MAX_GETS_DEFAULT = 16
-AP_SHADOW_MAX_GETS_LIMIT = 64
+AP_SHADOW_MAX_LOOKUPS_DEFAULT = 16
+AP_SHADOW_MAX_LOOKUPS_LIMIT = 64
+AP_SHADOW_MAX_GETS_DEFAULT = 32
+AP_SHADOW_MAX_GETS_LIMIT = 256
+
+
+def _bounded_env_int(name, default, limit):
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return min(limit, max(0, value))
+
+
+def ap_shadow_max_lookups():
+    """高层 exact lookup 尝试次数上限（异常也计入）。"""
+    return _bounded_env_int("TOPOLOGY_AP_SHADOW_MAX_LOOKUPS",
+                            AP_SHADOW_MAX_LOOKUPS_DEFAULT,
+                            AP_SHADOW_MAX_LOOKUPS_LIMIT)
 
 
 def ap_shadow_max_gets():
-    try:
-        value = int(os.environ.get("TOPOLOGY_AP_SHADOW_MAX_GETS", str(AP_SHADOW_MAX_GETS_DEFAULT)))
-    except ValueError:
-        return AP_SHADOW_MAX_GETS_DEFAULT
-    return min(AP_SHADOW_MAX_GETS_LIMIT, max(0, value))
+    """底层真实 SNMP GET 上限；由 lookup 内部逐次预留、硬执行。"""
+    return _bounded_env_int("TOPOLOGY_AP_SHADOW_MAX_GETS",
+                            AP_SHADOW_MAX_GETS_DEFAULT,
+                            AP_SHADOW_MAX_GETS_LIMIT)
+
+
+def _shadow_exact_lookup(ip, community, vlan, mac, ifname_map, get_budget):
+    """shadow 专用包装：预算在 underlying lookup 内逐次预留。"""
+    with snmp_phase("ap"):
+        return lookup_fdb_ifindex(
+            ip, community, vlan, mac, ifname_map, get_budget=get_budget)
 
 
 def collect_ap_shadow_candidates(aps, inventory, validated, devices, edges, client, community):
-    """P1 影子：只对未正式验证的 AP 的核心候选做有界 exact GET。"""
+    """P1 影子：只对未正式验证的 AP 的核心候选做有界 exact lookup。
+
+    两层预算：`TOPOLOGY_AP_SHADOW_MAX_LOOKUPS` 限制高层 lookup 尝试次数
+    （在发起前预留，异常也计入）；`TOPOLOGY_AP_SHADOW_MAX_GETS` 限制底层
+    真实 SNMP GET（lookup 内每次 GET 前预留、硬执行）。两者为 0 时不会
+    产生任何 shadow SNMP 请求。
+    """
     core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
     excluded = _env_target_ips("FIREWALL_PING")
     diagnostics = {}
@@ -3065,15 +3110,17 @@ def collect_ap_shadow_candidates(aps, inventory, validated, devices, edges, clie
         diagnostics[mac] = {
             "raw_candidates": len((inventory or {}).get(mac) or []),
             "eligible_candidates": 0,
-            "exact_gets": 0,
-            "exact_errors": 0,
+            "lookup_attempts": 0,
+            "snmp_gets": 0,
+            "lookup_errors": 0,
             "budget_skipped": 0,
+            "budget_exhausted": 0,
             "missing_vlan": 0,
         }
     pending = [ap for ap in aps
                if ap.get("mac") and not (validated or {}).get(ap.get("mac"))]
     result = {"validated": {}, "diagnostics": diagnostics,
-              "shadow_snmp_gets": 0, "vlan_api_requests": 0}
+              "shadow_lookups": 0, "shadow_snmp_gets": 0, "vlan_api_requests": 0}
     if not pending:
         return result
     candidates = ap_candidates(pending, inventory, excluded,
@@ -3094,8 +3141,9 @@ def collect_ap_shadow_candidates(aps, inventory, validated, devices, edges, clie
         return result
     endpoints = {(edge.get(f"{side}_ip"), edge.get(f"{side}_ifindex"))
                  for edge in edges for side in ("from", "to")}
-    budget = ap_shadow_max_gets()
-    used = 0
+    max_lookups = ap_shadow_max_lookups()
+    gets_remaining = ap_shadow_max_gets()
+    lookups_used = 0
     lookup_cache = {}
     validated_shadow = {}
     for ap in pending:
@@ -3115,22 +3163,39 @@ def collect_ap_shadow_candidates(aps, inventory, validated, devices, edges, clie
             cache_key = (row.get("switch_ip"), vlan, mac)
             if cache_key in lookup_cache:
                 ifindex = lookup_cache[cache_key]
-            elif used >= budget:
-                diagnostics[mac]["budget_skipped"] += 1
-                complete = False
-                break
             else:
-                try:
-                    with snmp_phase("ap"):
-                        ifindex = lookup_fdb_ifindex(
-                            row["switch_ip"], community, vlan, mac,
-                            devices.get(row["switch_ip"], {}).get("ifname", {}))
-                except Exception:
-                    diagnostics[mac]["exact_errors"] += 1
+                if lookups_used >= max_lookups or gets_remaining <= 0:
+                    diagnostics[mac]["budget_skipped"] += 1
                     complete = False
                     break
-                used += 1
-                diagnostics[mac]["exact_gets"] += 1
+                # 发起前预留一次高层尝试；异常也计入，避免多 AP 反复重试。
+                lookups_used += 1
+                diagnostics[mac]["lookup_attempts"] += 1
+                start_remaining = gets_remaining
+                get_budget = [start_remaining]
+                ifindex = None
+                exhausted = False
+                failed = False
+                try:
+                    ifindex = _shadow_exact_lookup(
+                        row["switch_ip"], community, vlan, mac,
+                        devices.get(row["switch_ip"], {}).get("ifname", {}),
+                        get_budget)
+                except _FdbGetBudgetExhausted:
+                    exhausted = True
+                except Exception:
+                    failed = True
+                consumed = max(0, start_remaining - max(0, get_budget[0]))
+                gets_remaining = max(0, get_budget[0])
+                diagnostics[mac]["snmp_gets"] += consumed
+                if exhausted:
+                    diagnostics[mac]["budget_exhausted"] += 1
+                    complete = False
+                    break
+                if failed:
+                    diagnostics[mac]["lookup_errors"] += 1
+                    complete = False
+                    break
                 lookup_cache[cache_key] = ifindex
             if ifindex is None:
                 continue
@@ -3146,29 +3211,30 @@ def collect_ap_shadow_candidates(aps, inventory, validated, devices, edges, clie
         elif not complete:
             diagnostics[mac]["incomplete"] = True
     result["validated"] = validated_shadow
-    result["shadow_snmp_gets"] = used
+    result["shadow_lookups"] = lookups_used
+    result["shadow_snmp_gets"] = sum(
+        diag.get("snmp_gets", 0) for diag in diagnostics.values())
     return result
 
 
 def write_ap_placement_artifact(output_dir, aps, validated, fdb_inventory, fdb_status,
-                                devices, edges, librenms, community, librenms_ready):
+                                devices, edges, librenms, community, librenms_ready,
+                                expected_switches=None, polled_switches=None,
+                                poll_failed_switches=None):
     """P1 影子产物：失败隔离，不影响 ap-attachments.json 与 wired 输出。"""
     if not aps:
         return
     shadow = {"validated": {}, "diagnostics": {},
-              "shadow_snmp_gets": 0, "vlan_api_requests": 0}
+              "shadow_lookups": 0, "shadow_snmp_gets": 0, "vlan_api_requests": 0}
     try:
         shadow = collect_ap_shadow_candidates(
             aps, fdb_inventory, validated, devices, edges, librenms, community)
     except Exception as exc:
         print(f"[WARN] AP placement shadow validation failed ({type(exc).__name__}); shadow omitted",
               file=sys.stderr)
-    online = {}
-    try:
-        online = fetch_ap_online_states()
-    except Exception as exc:
-        print(f"[WARN] AP placement online state unavailable ({type(exc).__name__}); online=unknown",
-              file=sys.stderr)
+    # 在线证据：unpoller v2.15.3 只有 uptime、没有可靠心跳；查询失败或缺失
+    # 一律 unknown，不把 uptime 当作 online。
+    online = fetch_ap_online_evidence(aps)
     try:
         core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
         artifact = build_placement_artifact(
@@ -3178,6 +3244,9 @@ def write_ap_placement_artifact(output_dir, aps, validated, fdb_inventory, fdb_s
             max_age_seconds=ap_max_age(),
             manual_core_ports=_confirmed_core_ap_ports(core_ips),
             core_ips=core_ips,
+            expected_switches=expected_switches,
+            polled_switches=polled_switches,
+            poll_failed_switches=poll_failed_switches,
         )
         write_json_atomic(os.path.join(output_dir, "ap-placement.json"), artifact, sort_keys=True)
     except Exception as exc:
@@ -3185,13 +3254,18 @@ def write_ap_placement_artifact(output_dir, aps, validated, fdb_inventory, fdb_s
               file=sys.stderr)
         return
     counts = artifact["counts"]
+    coverage = artifact["coverage"]
     print(f"[INFO] AP placement shadow stats: placements={counts['total']} "
           f"confirmed={counts['confirmed_direct']} observed={counts['observed_attachment']} "
           f"ambiguous={counts['ambiguous']} unresolved={counts['unresolved']} "
           f"online={counts['online']} offline={counts['offline']} unknown={counts['unknown']} "
+          f"shadow_lookups={shadow.get('shadow_lookups', 0)} "
           f"shadow_snmp_gets={shadow.get('shadow_snmp_gets', 0)} "
+          f"lookup_budget={ap_shadow_max_lookups()} get_budget={ap_shadow_max_gets()} "
           f"vlan_api_requests={shadow.get('vlan_api_requests', 0)} "
-          f"coverage={artifact['coverage']['status']} budget={ap_shadow_max_gets()}",
+          f"coverage={coverage.get('status')} "
+          f"coverage_missing={coverage.get('missing_switches', 0)} "
+          f"coverage_reasons={'|'.join(coverage.get('reasons') or []) or 'none'}",
           file=sys.stderr)
 
 
@@ -4214,6 +4288,10 @@ def _run_collection():
         )
         return 0
 
+    firewall_ips = set(_env_target_ips("FIREWALL_PING"))
+    expected_switch_ips = [ip for ip in device_ips if ip not in firewall_ips]
+    poll_failed_switch_ips = set()
+
     servers = parse_named_ipv4_targets(os.environ.get("SERVER_PING", ""))
 
     arp_raw = os.environ.get("TOPOLOGY_ARP_DEVICES", "").strip()
@@ -4270,6 +4348,8 @@ def _run_collection():
             try:
                 result = future.result()
             except Exception as exc:
+                if ip not in firewall_ips:
+                    poll_failed_switch_ips.add(ip)
                 print(
                     f"[WARN] poll {ip} failed ({type(exc).__name__})",
                     file=sys.stderr,
@@ -4438,10 +4518,14 @@ def _run_collection():
         print(f"[WARN] AP validation unavailable ({type(exc).__name__}); AP edges omitted", file=sys.stderr)
         validated_ap = {}
     write_current_ap_artifact(output_dir, aps, validated_ap)
+    polled_switch_ips = [ip for ip in devices if ip not in firewall_ips]
     try:
         write_ap_placement_artifact(
             output_dir, aps, validated_ap, shared_fdb[0], shared_fdb[1],
             devices, network_edges, librenms, community, librenms_ready,
+            expected_switches=len(expected_switch_ips),
+            polled_switches=len(polled_switch_ips),
+            poll_failed_switches=len(poll_failed_switch_ips),
         )
     except Exception as exc:
         print(f"[WARN] AP placement shadow cycle failed ({type(exc).__name__}); wired output unaffected",
