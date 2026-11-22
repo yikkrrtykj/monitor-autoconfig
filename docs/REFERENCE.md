@@ -37,6 +37,8 @@ http://服务器IP:8088/control
 
 已登录的控制台与 `/topology` 只使用统一 Network Read API 读取设备、拓扑边和 ISP 清单；API 不可用时显示异常，不用旧清单补成正常结果。匿名 `/topology` 仍使用兼容读取。仅在数据降级、快照陈旧或不可用时显示简短异常提示；正常和匿名浏览不显示内部数据源状态。拓扑探测暂时失败时保留最近成功的节点结构，旧延迟不会继续显示，未获当前 API 状态覆盖的节点显示为未知；首次探测失败会提示拓扑不可用。已登录拓扑的 API 边读取失败时仅保留此前成功的 API 边并提示不可用，首次失败不会显示为正常的零链路。设备状态未知时不会显示为离线；趋势和 ISP 流量图仍读取 Prometheus。拓扑缓存边只在“对端消失或链路 down”时保留（默认 24 小时，用于故障留证）；同一端口被观测到已改接其它设备时旧边当轮失效，即使新对端端口暂时无法解析、只能画出部分端点，也不再显示为“已省略过期邻接”。失效判断只使用该设备本机的邻居观察：对端通告过来的端口名不当作那台设备自身端口的证据。
 
+已登录的 Network Read API 提供只读 `GET /network/ap-placement`（AP 影子定位，不驱动拓扑连线）：服务端读取 `topology-data` 中的 `ap-placement.json`，校验 schema、`valid`、生成时间、AP 身份唯一性、原始 counts 与 placements 一致性；文件级异常返回 503（`ap_placement_unavailable` / `ap_placement_malformed` / `ap_placement_schema_unsupported` / `ap_placement_invalidated` / `ap_placement_stale` / `ap_placement_oversize`），不返回旧位置。逐 AP 的 exact 证据年龄按 `evidence_age_seconds + max(0, now - generated_at)` 并参考 `validated_at` 保守换算；超过 `max_age_seconds` 或字段异常时仅把该 AP 降级为 `unresolved`、清空当前位置并在 warnings 说明；原始 counts 校验后按最终 placements 重算。响应只包含白名单字段，不返回凭据、客户端 MAC 历史或文件路径；未登录 401、认证关闭 503、成功响应 `Cache-Control: no-store`。匿名 kiosk 不读取该 API。
+
 `/infra` 是独立网络总览，包含基础设施与 ISP 摘要、WAN 卡片、设备故障和网关状态表。网关表分内外网：内网按核心、防火墙 VIP、已有防火墙物理成员探测排列，外网列 ISP 网关。物理成员各有独立状态和 Ping 历史入口。普通分线仍可在设备故障区及 `/ping` 查询。已确认 DOWN 以逐设备长条显示，质量异常和探测未知分开呈现。总览健康判断覆盖基础设施和 ISP，AP 状态通过无线总览查看。`FIREWALL_PING` 配置的每个地址都需要对应的 `infra-fw-ping` 目标。目标即使超出历史清单与到期提示窗口，仍会提示覆盖不足；清单中仍存在但无可信样本的目标显示 UNKNOWN。留空时不要求 FW VIP 覆盖。
 
 目标身份、ICMP 四态与统计复用 `/ping`。总览状态每 5 秒刷新，30 分钟目标清单缓存最多 30 秒，最多 12 个网关的 5 分钟 STDDEV 每 30 秒查询。离开页面时取消请求和定时器。目标超出 30 分钟观察窗口后移出清单，随后约 5 分钟显示覆盖提示；缓存可能使清单变化延后最多 30 秒。`/ping` 保留 AP ICMP 分组及设备历史、P95、Max 和 CSV。选手延迟从比赛座位进入 `/latency`，不参加 `/ping` 和 `/infra` 的统计。旧卡顿分析页 `/incident` 已退役，控制台事故记录继续可用。

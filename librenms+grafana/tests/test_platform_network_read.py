@@ -2,6 +2,8 @@ import hashlib
 import json
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -302,3 +304,420 @@ def test_overview_keeps_failed_domain_null_and_fails_when_all_unavailable(monkey
     with pytest.raises(network_read.NetworkReadError) as raised:
         network_read.read_overview(context)
     assert raised.value.payload["code"] == "network_unavailable"
+
+
+# ---------- P2-A: AP placement read-only snapshot ----------
+
+
+def ap_counts(placements):
+    counts = {key: 0 for key in network_read.AP_PLACEMENT_COUNT_KEYS}
+    for item in placements:
+        counts[network_read.AP_PLACEMENT_LEVEL_COUNT_KEY[item["level"]]] += 1
+        counts[item["online"]] += 1
+        counts["total"] += 1
+    return counts
+
+
+def ap_entry(**overrides):
+    entry = {
+        "ap_ip": "10.1.0.1",
+        "ap_name": "AP-1",
+        "ap_mac": "02:00:00:00:00:01",
+        "site": "default",
+        "online": "unknown",
+        "level": "observed-attachment",
+        "switch_ip": "10.0.0.11",
+        "switch_ifindex": 10101,
+        "switch_port": "Gi1/0/1",
+        "vlan": 40,
+        "evidence_age_seconds": 30.0,
+        "last_observed": None,
+        "coverage_status": "complete",
+        "reason": "verified_fdb_egress",
+        "evidence": {
+            "fdb": {"status": "matched", "raw_candidates": 1, "eligible_candidates": 1,
+                    "candidate_age_seconds": 10000.0},
+            "exact_snmp": {"status": "matched", "gets": 1, "lookup_attempts": 1,
+                           "validated_at": 1970.0, "validation_age_seconds": 30.0},
+            "direct_neighbor": {"status": "unknown", "source": "none"},
+            "manual_confirmation": {"status": "none"},
+            "online": {"status": "unknown", "source": "unpoller-uptime",
+                       "reason": "uptime_not_heartbeat"},
+            "coverage": {"status": "complete", "reasons": []},
+            "port": {"verified": True},
+        },
+    }
+    entry.update(overrides)
+    return entry
+
+
+def ap_payload(placements=None, **overrides):
+    placements = [ap_entry()] if placements is None else placements
+    payload = {
+        "schema_version": network_read.AP_PLACEMENT_SCHEMA_VERSION,
+        "generated_at": 1900.0,
+        "source": "ap-placement-shadow:librenms-fdb+snmp-exact",
+        "max_age_seconds": 7200,
+        "valid": True,
+        "invalid_reason": None,
+        "counts": ap_counts(placements),
+        "coverage": {
+            "status": "complete",
+            "expected_switches": 1,
+            "polled_switches": 1,
+            "missing_switches": 0,
+            "poll_failed_switches": 0,
+            "fdb_switches_usable": 1,
+            "fdb_switches_failed": 0,
+            "reasons": [],
+        },
+        "placements": placements,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def ap_context(tmp_path, payload, now=2000.0):
+    context, _client = make_context(tmp_path, now=now)
+    path = tmp_path / "ap-placement.json"
+    if isinstance(payload, bytes):
+        path.write_bytes(payload)
+    elif isinstance(payload, str):
+        path.write_text(payload, encoding="utf-8")
+    else:
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    return network_read.NetworkReadContext(
+        **{**context.__dict__, "ap_placement_path": path})
+
+
+def ap_error(context):
+    with pytest.raises(network_read.NetworkReadError) as raised:
+        network_read.read_ap_placement(context)
+    return raised.value
+
+
+def test_ap_placement_valid_snapshot_returns_whitelisted_payload(tmp_path):
+    payload = ap_payload()
+    payload["secret"] = "hidden"
+    payload["placements"][0]["secret"] = "hidden"
+    payload["placements"][0]["evidence"]["token"] = "hidden"
+    context = ap_context(tmp_path, payload)
+
+    result = network_read.read_ap_placement(context)
+
+    assert result["ok"] is True
+    assert result["valid"] is True
+    assert result["counts"] == ap_counts(result["placements"])
+    assert "hidden" not in json.dumps(result)
+    entry = result["placements"][0]
+    assert entry["level"] == "observed-attachment"
+    assert entry["switch_ip"] == "10.0.0.11"
+    assert entry["vlan"] == 40
+    # evidence_age 30 + file_age(2000-1900) 100 = 130
+    assert entry["evidence_age_seconds"] == 130.0
+    assert entry["evidence"]["fdb"]["candidate_age_seconds"] == 10000.0
+
+
+def test_ap_placement_missing_file_is_unavailable(tmp_path):
+    context, _client = make_context(tmp_path, now=2000.0)
+    error = ap_error(network_read.NetworkReadContext(
+        **{**context.__dict__, "ap_placement_path": tmp_path / "missing.json"}))
+    assert error.payload["code"] == "ap_placement_unavailable"
+    assert error.status == 503
+
+
+@pytest.mark.parametrize("raw", [
+    b"",
+    b"\xff\xfe",
+    b"{not json",
+    b"[]",
+    b"null",
+])
+def test_ap_placement_invalid_json_and_shape_are_malformed(tmp_path, raw):
+    error = ap_error(ap_context(tmp_path, raw))
+    assert error.payload["code"] == "ap_placement_malformed"
+    assert error.status == 503
+
+
+@pytest.mark.parametrize(("overrides", "code"), [
+    ({"schema_version": 2}, "ap_placement_schema_unsupported"),
+    ({"schema_version": True}, "ap_placement_schema_unsupported"),
+    ({"valid": None}, "ap_placement_malformed"),
+    ({"valid": "true"}, "ap_placement_malformed"),
+    ({"valid": False, "invalid_reason": "no_ap_identity"}, "ap_placement_invalidated"),
+    ({"valid": False, "invalid_reason": "<script>"}, "ap_placement_invalidated"),
+    ({"placements": {}}, "ap_placement_malformed"),
+    ({"max_age_seconds": 0}, "ap_placement_malformed"),
+    ({"max_age_seconds": True}, "ap_placement_malformed"),
+    ({"max_age_seconds": 86401}, "ap_placement_malformed"),
+    ({"generated_at": float("nan")}, "ap_placement_malformed"),
+])
+def test_ap_placement_schema_validity_and_time_contract(tmp_path, overrides, code):
+    error = ap_error(ap_context(tmp_path, ap_payload(**overrides)))
+    assert error.payload["code"] == code
+
+
+def test_ap_placement_invalidated_reason_is_whitelisted(tmp_path):
+    payload = ap_payload(valid=False, invalid_reason="<script>alert(1)</script>")
+    error = ap_error(ap_context(tmp_path, payload))
+    assert error.payload["code"] == "ap_placement_invalidated"
+    assert "<script>" not in error.payload["error"]
+    assert "(invalid)" in error.payload["error"]
+
+
+@pytest.mark.parametrize(("generated_at", "code"), [
+    (5000.0, "ap_placement_stale"),      # future beyond skew
+    (2000.0 - 7201, "ap_placement_stale"),  # expired
+])
+def test_ap_placement_file_time_window(tmp_path, generated_at, code):
+    error = ap_error(ap_context(tmp_path, ap_payload(generated_at=generated_at)))
+    assert error.payload["code"] == code
+
+
+def test_ap_placement_small_future_skew_is_tolerated(tmp_path):
+    result = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload(generated_at=2030.0)))
+    assert result["ok"] is True
+    assert result["file_age_seconds"] == 0.0
+
+
+@pytest.mark.parametrize("counts", [
+    {"confirmed_direct": 0, "observed_attachment": 2, "ambiguous": 0, "unresolved": 0,
+     "online": 0, "offline": 0, "unknown": 2, "total": 2},
+    {"confirmed_direct": 0, "observed_attachment": True, "ambiguous": 0, "unresolved": 0,
+     "online": 0, "offline": 0, "unknown": 1, "total": True},
+    {"confirmed_direct": 0, "observed_attachment": -1, "ambiguous": 0, "unresolved": 0,
+     "online": 0, "offline": 0, "unknown": 1, "total": 1},
+])
+def test_ap_placement_invalid_counts_are_malformed(tmp_path, counts):
+    error = ap_error(ap_context(tmp_path, ap_payload(counts=counts)))
+    assert error.payload["code"] == "ap_placement_malformed"
+
+
+def test_ap_placement_oversize_and_placement_limit(tmp_path):
+    too_large = b"{" + b" " * (network_read.AP_PLACEMENT_BYTE_LIMIT + 1)
+    error = ap_error(ap_context(tmp_path, too_large))
+    assert error.payload["code"] == "ap_placement_oversize"
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        from pathlib import Path as _Path
+        directory = _Path(directory)
+        context, _client = make_context(directory, now=2000.0)
+        payload = ap_payload()
+        payload["placements"] = [{} for _ in range(network_read.AP_PLACEMENT_LIMIT + 1)]
+        payload["counts"] = {key: 0 for key in network_read.AP_PLACEMENT_COUNT_KEYS}
+        path = directory / "ap-placement.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        context = network_read.NetworkReadContext(
+            **{**context.__dict__, "ap_placement_path": path})
+        error = ap_error(context)
+        assert error.payload["code"] == "ap_placement_malformed"
+
+
+@pytest.mark.parametrize(("placements", "message"), [
+    ([ap_entry(), ap_entry(ap_mac="02-00-00-00-00-01", ap_ip="10.1.0.2")],
+     "duplicate AP MAC"),
+    ([ap_entry(), ap_entry(ap_ip="10.1.0.1", ap_mac="02:00:00:00:00:02")],
+     "duplicate AP IP"),
+    ([ap_entry(ap_ip="999.1.1.1")], "invalid AP IPv4"),
+    ([ap_entry(ap_mac="not-a-mac")], "unrecognised AP identity"),
+])
+def test_ap_placement_identity_rejections(tmp_path, placements, message):
+    error = ap_error(ap_context(tmp_path, ap_payload(placements)))
+    assert error.payload["code"] == "ap_placement_malformed"
+    assert message in error.payload["error"]
+
+
+@pytest.mark.parametrize(("overrides", "reason"), [
+    ({"switch_ifindex": 0}, "invalid_switch_ifindex"),
+    ({"switch_ifindex": True}, "invalid_switch_ifindex"),
+    ({"switch_port": ""}, "invalid_switch_port"),
+    ({"vlan": 0}, "invalid_vlan"),
+    ({"vlan": 4095}, "invalid_vlan"),
+    ({"vlan": True}, "invalid_vlan"),
+    ({"evidence_age_seconds": "30"}, "invalid_evidence_age"),
+    ({"evidence_age_seconds": True}, "invalid_evidence_age"),
+    ({"evidence_age_seconds": -1}, "invalid_evidence_age"),
+])
+def test_ap_placement_entry_field_errors_downgrade_only(tmp_path, overrides, reason):
+    result = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([ap_entry(**overrides)])))
+    entry = result["placements"][0]
+    assert entry["level"] == "unresolved"
+    assert entry["reason"] == reason
+    assert entry["switch_ip"] is None
+    assert entry["switch_ifindex"] is None
+    assert entry["switch_port"] is None
+    assert entry["vlan"] is None
+    assert entry["evidence_age_seconds"] is None
+    assert result["counts"] == ap_counts(result["placements"])
+    assert result["source_counts"] == ap_payload([ap_entry(**overrides)])["counts"]
+    assert result["warnings"]
+
+
+def test_ap_placement_exact_evidence_age_includes_file_age(tmp_path):
+    stale = ap_entry(evidence_age_seconds=7150.0)
+    result = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([stale])))
+    entry = result["placements"][0]
+    assert entry["level"] == "unresolved"
+    assert entry["reason"] == "exact_evidence_stale"
+    assert entry["switch_ip"] is None
+    assert result["counts"]["observed_attachment"] == 0
+    assert result["counts"]["unresolved"] == 1
+    assert result["source_counts"]["observed_attachment"] == 1
+    assert result["degraded"] is True
+
+
+def test_ap_placement_stale_even_when_file_is_fresh(tmp_path):
+    payload = ap_payload([ap_entry(evidence_age_seconds=7201.0)],
+                         generated_at=2000.0)
+    entry = network_read.read_ap_placement(ap_context(tmp_path, payload))["placements"][0]
+    assert entry["level"] == "unresolved"
+    assert entry["reason"] == "exact_evidence_stale"
+
+
+def test_ap_placement_validated_at_cross_check_is_conservative(tmp_path):
+    payload = ap_payload([ap_entry(evidence_age_seconds=5.0,
+                                   evidence={
+                                       **ap_entry()["evidence"],
+                                       "exact_snmp": {
+                                           **ap_entry()["evidence"]["exact_snmp"],
+                                           "validated_at": 1000.0,
+                                       },
+                                   })],
+                         generated_at=9900.0)
+    result = network_read.read_ap_placement(ap_context(tmp_path, payload, now=10000.0))
+    entry = result["placements"][0]
+    assert entry["level"] == "unresolved"
+    assert entry["reason"] == "exact_evidence_stale"
+
+
+def test_ap_placement_confirmed_requires_online(tmp_path):
+    confirmed = ap_entry(level="confirmed-direct", online="online")
+    confirmed["evidence"]["manual_confirmation"] = {"status": "confirmed"}
+    kept = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([confirmed])))
+    assert kept["placements"][0]["level"] == "confirmed-direct"
+
+    unknown = ap_entry(level="confirmed-direct", online="unknown")
+    unknown["evidence"]["manual_confirmation"] = {"status": "confirmed"}
+    downgraded = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([unknown])))
+    entry = downgraded["placements"][0]
+    assert entry["level"] == "unresolved"
+    assert entry["reason"] == "online_gate_conflict"
+
+
+def test_ap_placement_observed_is_never_promoted(tmp_path):
+    entry = ap_entry()
+    entry["evidence"]["manual_confirmation"] = {"status": "confirmed"}
+    entry["evidence"]["direct_neighbor"] = {"status": "operator-attested",
+                                            "source": "manual-allowlist"}
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([entry])))
+    assert result["placements"][0]["level"] == "observed-attachment"
+
+
+def test_ap_placement_offline_current_placement_is_downgraded(tmp_path):
+    entry = ap_entry(online="offline")
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([entry])))
+    assert result["placements"][0]["level"] == "unresolved"
+    assert result["placements"][0]["reason"] == "offline_current_placement"
+
+
+def test_ap_placement_last_observed_never_becomes_current(tmp_path):
+    entry = ap_entry(level="unresolved", switch_ip=None, switch_ifindex=None,
+                     switch_port=None, vlan=None, evidence_age_seconds=None,
+                     last_observed={"switch_ip": "10.0.0.11", "switch_ifindex": 10101,
+                                    "switch_port": "Gi1/0/1", "vlan": 40,
+                                    "evidence_age_seconds": 3.0,
+                                    "validated_at": 1990.0,
+                                    "fdb_candidate_age_seconds": 10000.0})
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([entry])))
+    output = result["placements"][0]
+    assert output["switch_ip"] is None
+    assert output["last_observed"]["switch_port"] == "Gi1/0/1"
+    assert output["last_observed"]["fdb_candidate_age_seconds"] == 10000.0
+
+
+def test_ap_placement_last_observed_does_not_rewrite_current_fields(tmp_path):
+    entry = ap_entry(level="unresolved", switch_ip="10.0.0.11")
+    result = network_read.read_ap_placement(ap_context(tmp_path, ap_payload([entry])))
+    output = result["placements"][0]
+    assert output["switch_ip"] is None
+    assert any("cleared" in warning for warning in result["warnings"])
+
+
+def test_ap_placement_partial_degradation_keeps_other_entries(tmp_path):
+    good = ap_entry()
+    stale = ap_entry(ap_mac="02:00:00:00:00:02", ap_ip="10.1.0.2",
+                     evidence_age_seconds=7150.0)
+    result = network_read.read_ap_placement(
+        ap_context(tmp_path, ap_payload([good, stale])))
+    levels = {entry["ap_ip"]: entry["level"] for entry in result["placements"]}
+    assert levels == {"10.1.0.1": "observed-attachment", "10.1.0.2": "unresolved"}
+    assert result["counts"] == ap_counts(result["placements"])
+    assert result["counts"]["observed_attachment"] == 1
+    assert result["counts"]["unresolved"] == 1
+
+
+def test_ap_placement_source_file_is_not_modified(tmp_path):
+    payload = ap_payload([ap_entry()])
+    context = ap_context(tmp_path, payload)
+    before = context.ap_placement_path.read_bytes()
+    network_read.read_ap_placement(context)
+    assert context.ap_placement_path.read_bytes() == before
+
+
+def test_ap_placement_concurrent_atomic_replace(tmp_path):
+    path = tmp_path / "ap-placement.json"
+    payloads = [
+        ap_payload([ap_entry(ap_mac="02:00:00:00:00:01", ap_ip="10.1.0.1")]),
+        ap_payload([ap_entry(ap_mac="02:00:00:00:00:02", ap_ip="10.1.0.2")]),
+    ]
+    context, _client = make_context(tmp_path, now=2000.0)
+    context = network_read.NetworkReadContext(
+        **{**context.__dict__, "ap_placement_path": path})
+    path.write_text(json.dumps(payloads[0]), encoding="utf-8")
+    finished = threading.Event()
+    writer_errors = []
+
+    def writer():
+        try:
+            for index in range(60):
+                temporary = tmp_path / f"tmp-{index}.json"
+                temporary.write_text(json.dumps(payloads[index % 2]), encoding="utf-8")
+                for _attempt in range(40):
+                    try:
+                        os.replace(temporary, path)
+                        break
+                    except PermissionError:
+                        # Windows may briefly lock the destination while the reader
+                        # has it open; retry instead of failing the atomic writer.
+                        time.sleep(0.005)
+                else:
+                    writer_errors.append("atomic replace failed")
+                    return
+                time.sleep(0.001)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=writer, daemon=True)
+    thread.start()
+    try:
+        for _ in range(80):
+            try:
+                result = network_read.read_ap_placement(context)
+            except network_read.NetworkReadError as exc:
+                # A Windows reader can briefly lose the file while the writer
+                # retries the atomic replace; fail-closed is the contract.
+                assert exc.payload["code"] in {
+                    "ap_placement_unavailable", "ap_placement_oversize",
+                }
+                continue
+            assert result["ok"] is True
+            assert result["counts"] == ap_counts(result["placements"])
+    finally:
+        finished.wait(timeout=5)
+        thread.join(timeout=5)
+    assert writer_errors == []

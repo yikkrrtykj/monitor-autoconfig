@@ -66,6 +66,8 @@ def handle_get(handler: Any, request_target: str, context: ReadApiContext) -> No
         _handle_network_read(handler, context, network_read.read_devices)
     elif path == "/network/topology":
         _handle_network_read(handler, context, network_read.read_topology)
+    elif path == "/network/ap-placement":
+        _handle_network_read(handler, context, network_read.read_ap_placement)
     elif path.startswith("/network/nodes/") and path.endswith("/inspector"):
         if context.network_require_auth is None or context.network_context is None:
             raise RuntimeError("network read API is not configured")

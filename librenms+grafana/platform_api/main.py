@@ -107,6 +107,10 @@ NETWORK_ISP_STATE_PATH = Path(os.environ.get(
     "PLATFORM_NETWORK_ISP_STATE_FILE",
     "/etc/prometheus/targets/topology/isp-discovery-state.json",
 ))
+NETWORK_AP_PLACEMENT_PATH = Path(os.environ.get(
+    "PLATFORM_NETWORK_AP_PLACEMENT_FILE",
+    "/etc/prometheus/targets/topology/ap-placement.json",
+))
 NETWORK_HTTP_TIMEOUT = max(
     1.0, min(15.0, float(os.environ.get("PLATFORM_NETWORK_HTTP_TIMEOUT", "5")))
 )
@@ -406,6 +410,7 @@ def _network_read_context() -> platform_network_read.NetworkReadContext:
         topology_path=NETWORK_TOPOLOGY_PATH,
         isp_inventory_path=NETWORK_ISP_INVENTORY_PATH,
         isp_state_path=NETWORK_ISP_STATE_PATH,
+        ap_placement_path=NETWORK_AP_PLACEMENT_PATH,
         env_path=ENV_PATH,
         http_timeout=NETWORK_HTTP_TIMEOUT,
         clock=time.time,
