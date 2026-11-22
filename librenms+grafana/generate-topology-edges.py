@@ -42,7 +42,8 @@ Env vars:
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidates,
-                         vlan_fk_mapping, validate_ap_candidates)
+                         ap_max_age, vlan_fk_mapping, validate_ap_candidates)
+from ap_placement import build_placement_artifact, fetch_ap_online_states
 import json
 import os
 import re
@@ -2976,6 +2977,27 @@ def _confirmed_core_ap_ports(core_ips):
     return allowed
 
 
+def _ap_port_eligible(ip, ifindex, devices, endpoints, *, core_ips=(),
+                      confirmed_ports=None, require_core_confirmation=True):
+    """物理接入端口校验；shadow 允许核心候选参与，但永不提升为直连。"""
+    confirmed_ports = confirmed_ports or set()
+    device = devices.get(ip, {})
+    name = device.get("ifname", {}).get(ifindex, "")
+    if (ifindex is None or not is_physical_interface_name(name)
+            or normalize_port_name(name).startswith("agg")
+            or (ip, ifindex) in endpoints
+            or (require_core_confirmation and ip in core_ips
+                and (ip, str(name or "").strip().casefold()) not in confirmed_ports)
+            or device.get("ifoper", {}).get(ifindex) not in (None, 1, 4)
+            or ap_port_has_aggregate_relationship(device, ifindex)):
+        return None
+    for row in device.get("port_by_id", {}).values():
+        if (_as_positive_int(row.get("ifIndex")) == ifindex
+                and _if_oper_status_value(row.get("ifOperStatus")) not in (None, 1, 4)):
+            return None
+    return name
+
+
 def collect_validated_ap_inventory(aps, inventory, devices, edges, client, community):
     """AP 独立候选窗口、共享 VLAN FK 清单、精确 GET；失败不影响 wired。"""
     core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
@@ -3000,19 +3022,8 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
                  for edge in edges for side in ("from", "to")}
 
     def port_check(ip, ifindex):
-        device = devices.get(ip, {})
-        name = device.get("ifname", {}).get(ifindex, "")
-        if (ifindex is None or not is_physical_interface_name(name)
-                or normalize_port_name(name).startswith("agg")
-                or (ip, ifindex) in endpoints
-                or not core_port_allowed(ip, ifindex)
-                or device.get("ifoper", {}).get(ifindex) not in (None, 1, 4)
-                or ap_port_has_aggregate_relationship(device, ifindex)):
-            return None
-        for row in device.get("port_by_id", {}).values():
-            if _as_positive_int(row.get("ifIndex")) == ifindex and _if_oper_status_value(row.get("ifOperStatus")) not in (None, 1, 4):
-                return None
-        return name
+        return _ap_port_eligible(ip, ifindex, devices, endpoints,
+                                 core_ips=core_ips, confirmed_ports=confirmed)
 
     def exact_lookup(ip, vlan, mac):
         with snmp_phase("ap"):
@@ -3028,6 +3039,160 @@ def write_current_ap_artifact(output_dir, aps, inventory):
         write_json_atomic(os.path.join(output_dir, "ap-attachments.json"), artifact, sort_keys=True)
     except Exception as exc:
         print(f"[WARN] AP artifact write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
+
+
+AP_SHADOW_MAX_GETS_DEFAULT = 16
+AP_SHADOW_MAX_GETS_LIMIT = 64
+
+
+def ap_shadow_max_gets():
+    try:
+        value = int(os.environ.get("TOPOLOGY_AP_SHADOW_MAX_GETS", str(AP_SHADOW_MAX_GETS_DEFAULT)))
+    except ValueError:
+        return AP_SHADOW_MAX_GETS_DEFAULT
+    return min(AP_SHADOW_MAX_GETS_LIMIT, max(0, value))
+
+
+def collect_ap_shadow_candidates(aps, inventory, validated, devices, edges, client, community):
+    """P1 影子：只对未正式验证的 AP 的核心候选做有界 exact GET。"""
+    core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
+    excluded = _env_target_ips("FIREWALL_PING")
+    diagnostics = {}
+    for ap in aps:
+        mac = str(ap.get("mac") or "")
+        if not mac:
+            continue
+        diagnostics[mac] = {
+            "raw_candidates": len((inventory or {}).get(mac) or []),
+            "eligible_candidates": 0,
+            "exact_gets": 0,
+            "exact_errors": 0,
+            "budget_skipped": 0,
+            "missing_vlan": 0,
+        }
+    pending = [ap for ap in aps
+               if ap.get("mac") and not (validated or {}).get(ap.get("mac"))]
+    result = {"validated": {}, "diagnostics": diagnostics,
+              "shadow_snmp_gets": 0, "vlan_api_requests": 0}
+    if not pending:
+        return result
+    candidates = ap_candidates(pending, inventory, excluded,
+                               port_allowed=lambda ip, _ifindex: ip in core_ips)
+    eligible_macs = [mac for mac, rows in candidates.items() if rows]
+    for mac in eligible_macs:
+        diagnostics[mac]["eligible_candidates"] = len(candidates[mac])
+    if not eligible_macs or client is None:
+        return result
+    try:
+        vlan_map = vlan_fk_mapping(client.get_vlan_inventory())
+        result["vlan_api_requests"] = 1
+    except Exception as exc:
+        print(f"[WARN] AP placement shadow VLAN mapping unavailable ({type(exc).__name__}); shadow omitted",
+              file=sys.stderr)
+        for mac in eligible_macs:
+            diagnostics[mac]["missing_vlan"] = len(candidates[mac])
+        return result
+    endpoints = {(edge.get(f"{side}_ip"), edge.get(f"{side}_ifindex"))
+                 for edge in edges for side in ("from", "to")}
+    budget = ap_shadow_max_gets()
+    used = 0
+    lookup_cache = {}
+    validated_shadow = {}
+    for ap in pending:
+        mac = str(ap.get("mac") or "")
+        rows = candidates.get(mac) or []
+        diagnostics[mac]["eligible_candidates"] = len(rows)
+        if not rows:
+            continue
+        current = []
+        complete = True
+        for row in rows:
+            vlan = vlan_map.get((row.get("device_id"), row.get("librenms_vlan_id")))
+            if vlan is None:
+                diagnostics[mac]["missing_vlan"] += 1
+                complete = False
+                break
+            cache_key = (row.get("switch_ip"), vlan, mac)
+            if cache_key in lookup_cache:
+                ifindex = lookup_cache[cache_key]
+            elif used >= budget:
+                diagnostics[mac]["budget_skipped"] += 1
+                complete = False
+                break
+            else:
+                try:
+                    with snmp_phase("ap"):
+                        ifindex = lookup_fdb_ifindex(
+                            row["switch_ip"], community, vlan, mac,
+                            devices.get(row["switch_ip"], {}).get("ifname", {}))
+                except Exception:
+                    diagnostics[mac]["exact_errors"] += 1
+                    complete = False
+                    break
+                used += 1
+                diagnostics[mac]["exact_gets"] += 1
+                lookup_cache[cache_key] = ifindex
+            if ifindex is None:
+                continue
+            port = _ap_port_eligible(
+                row["switch_ip"], ifindex, devices, endpoints,
+                require_core_confirmation=False)
+            if not port:
+                continue
+            current.append({**row, "ifindex": ifindex, "port_name": port,
+                            "vlan": vlan, "validated_at": time.time()})
+        if complete and current:
+            validated_shadow[mac] = current
+        elif not complete:
+            diagnostics[mac]["incomplete"] = True
+    result["validated"] = validated_shadow
+    result["shadow_snmp_gets"] = used
+    return result
+
+
+def write_ap_placement_artifact(output_dir, aps, validated, fdb_inventory, fdb_status,
+                                devices, edges, librenms, community, librenms_ready):
+    """P1 影子产物：失败隔离，不影响 ap-attachments.json 与 wired 输出。"""
+    if not aps:
+        return
+    shadow = {"validated": {}, "diagnostics": {},
+              "shadow_snmp_gets": 0, "vlan_api_requests": 0}
+    try:
+        shadow = collect_ap_shadow_candidates(
+            aps, fdb_inventory, validated, devices, edges, librenms, community)
+    except Exception as exc:
+        print(f"[WARN] AP placement shadow validation failed ({type(exc).__name__}); shadow omitted",
+              file=sys.stderr)
+    online = {}
+    try:
+        online = fetch_ap_online_states()
+    except Exception as exc:
+        print(f"[WARN] AP placement online state unavailable ({type(exc).__name__}); online=unknown",
+              file=sys.stderr)
+    try:
+        core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
+        artifact = build_placement_artifact(
+            aps, validated, shadow, online,
+            fdb_status=fdb_status,
+            librenms_ready=librenms_ready,
+            max_age_seconds=ap_max_age(),
+            manual_core_ports=_confirmed_core_ap_ports(core_ips),
+            core_ips=core_ips,
+        )
+        write_json_atomic(os.path.join(output_dir, "ap-placement.json"), artifact, sort_keys=True)
+    except Exception as exc:
+        print(f"[WARN] AP placement artifact write failed ({type(exc).__name__}); wired output unaffected",
+              file=sys.stderr)
+        return
+    counts = artifact["counts"]
+    print(f"[INFO] AP placement shadow stats: placements={counts['total']} "
+          f"confirmed={counts['confirmed_direct']} observed={counts['observed_attachment']} "
+          f"ambiguous={counts['ambiguous']} unresolved={counts['unresolved']} "
+          f"online={counts['online']} offline={counts['offline']} unknown={counts['unknown']} "
+          f"shadow_snmp_gets={shadow.get('shadow_snmp_gets', 0)} "
+          f"vlan_api_requests={shadow.get('vlan_api_requests', 0)} "
+          f"coverage={artifact['coverage']['status']} budget={ap_shadow_max_gets()}",
+          file=sys.stderr)
 
 
 def discover_server_edges_direct(devices, edges, servers, community, cached_edges=None):
@@ -4273,6 +4438,14 @@ def _run_collection():
         print(f"[WARN] AP validation unavailable ({type(exc).__name__}); AP edges omitted", file=sys.stderr)
         validated_ap = {}
     write_current_ap_artifact(output_dir, aps, validated_ap)
+    try:
+        write_ap_placement_artifact(
+            output_dir, aps, validated_ap, shared_fdb[0], shared_fdb[1],
+            devices, network_edges, librenms, community, librenms_ready,
+        )
+    except Exception as exc:
+        print(f"[WARN] AP placement shadow cycle failed ({type(exc).__name__}); wired output unaffected",
+              file=sys.stderr)
     ap_api_requests = librenms.request_count - ap_api_start if librenms is not None else 0
     try:
         write_topology_diagnostics(
