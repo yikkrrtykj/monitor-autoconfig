@@ -52,8 +52,12 @@ def test_ci_has_isolated_topology_collector_import_smoke():
     assert "run --rm --no-deps" in workflow
     assert "--entrypoint python3 topology-collector" in workflow
     assert 'runpy.run_path("/generate-topology-edges.py", run_name="topology_import_only")' in workflow
+    assert "topology-collector import-only smoke: PASS" in workflow
     assert "down -v --remove-orphans" in workflow
     assert "trap cleanup EXIT" in workflow
+    assert "remaining_containers" in workflow
+    assert "remaining_volumes" in workflow
+    assert "remaining_networks" in workflow
     # Import-only must never start the collector entrypoint or a production stack.
     assert "python3 /generate-topology-edges.py" not in workflow.split(
         "Isolated topology-collector import smoke", 1)[1]

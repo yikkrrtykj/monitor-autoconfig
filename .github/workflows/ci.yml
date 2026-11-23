@@ -105,14 +105,24 @@ jobs:
           cp event-config.example.yml event-config.yml
           project="p0-ap-placement-import-${GITHUB_RUN_ID}-${GITHUB_JOB}"
           cleanup() {
-            docker compose -p "$project" down -v --remove-orphans >/dev/null 2>&1 || true
+            docker compose -p "$project" down -v --remove-orphans
+            cleanup_status=$?
             rm -f .env event-config.yml
+            remaining_containers="$(docker ps -aq --filter "label=com.docker.compose.project=$project")"
+            remaining_volumes="$(docker volume ls -q --filter "label=com.docker.compose.project=$project")"
+            remaining_networks="$(docker network ls -q --filter "label=com.docker.compose.project=$project")"
+            printf 'cleanup exit=%s remaining_containers=%s remaining_volumes=%s remaining_networks=%s\n' \
+              "$cleanup_status" "$remaining_containers" "$remaining_volumes" "$remaining_networks"
+            if [ "$cleanup_status" -ne 0 ] || [ -n "$remaining_containers$remaining_volumes$remaining_networks" ]; then
+              echo "isolated smoke cleanup failed"
+              exit 1
+            fi
           }
           trap cleanup EXIT
           docker compose -p "$project" build topology-collector
           docker compose -p "$project" run --rm --no-deps \
             --entrypoint python3 topology-collector \
-            -c 'import runpy; runpy.run_path("/generate-topology-edges.py", run_name="topology_import_only")'
+            -c 'import runpy; runpy.run_path("/generate-topology-edges.py", run_name="topology_import_only"); print("topology-collector import-only smoke: PASS")'
 
   linux-smoke:
     name: Linux static smoke test
