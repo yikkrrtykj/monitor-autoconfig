@@ -96,6 +96,23 @@ jobs:
           cp event-config.example.yml event-config.yml
           trap 'rm -f .env event-config.yml' EXIT
           docker compose config --quiet
+      - name: Isolated topology-collector import smoke
+        working-directory: librenms+grafana
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          cp event-config.example.yml event-config.yml
+          project="p0-ap-placement-import-${GITHUB_RUN_ID}-${GITHUB_JOB}"
+          cleanup() {
+            docker compose -p "$project" down -v --remove-orphans >/dev/null 2>&1 || true
+            rm -f .env event-config.yml
+          }
+          trap cleanup EXIT
+          docker compose -p "$project" build topology-collector
+          docker compose -p "$project" run --rm --no-deps \
+            --entrypoint python3 topology-collector \
+            -c 'import runpy; runpy.run_path("/generate-topology-edges.py", run_name="topology_import_only")'
 
   linux-smoke:
     name: Linux static smoke test

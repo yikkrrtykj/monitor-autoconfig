@@ -40,7 +40,24 @@ def test_compose_check_uses_temporary_example_configuration_without_starting_ima
     assert "cp .env.example .env" in workflow
     assert "cp event-config.example.yml event-config.yml" in workflow
     assert "rm -f .env event-config.yml" in workflow
-    assert not re.search(r"docker compose (?:build|create|pull|run|start|up)\\b", workflow)
+    assert not re.search(r"docker compose (?:up|start)\b", workflow)
+
+
+def test_ci_has_isolated_topology_collector_import_smoke():
+    workflow = read_workflow()
+
+    assert "Isolated topology-collector import smoke" in workflow
+    assert 'project="p0-ap-placement-import-${GITHUB_RUN_ID}-${GITHUB_JOB}"' in workflow
+    assert 'docker compose -p "$project" build topology-collector' in workflow
+    assert "run --rm --no-deps" in workflow
+    assert "--entrypoint python3 topology-collector" in workflow
+    assert 'runpy.run_path("/generate-topology-edges.py", run_name="topology_import_only")' in workflow
+    assert "down -v --remove-orphans" in workflow
+    assert "trap cleanup EXIT" in workflow
+    # Import-only must never start the collector entrypoint or a production stack.
+    assert "python3 /generate-topology-edges.py" not in workflow.split(
+        "Isolated topology-collector import smoke", 1)[1]
+    assert not re.search(r"docker compose (?:up|start)\b", workflow)
 
 
 def test_existing_javascript_smoke_and_dashboard_checks_are_retained():
