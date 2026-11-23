@@ -2,6 +2,7 @@ import ast
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -2225,3 +2226,80 @@ def test_timestamp_consumers_have_read_only_timezone_database_and_override():
         assert "/usr/share/zoneinfo:/usr/share/zoneinfo:ro" in services[name]
         assert 'LIBRENMS_TIMEZONE: "${LIBRENMS_TIMEZONE:-}"' in services[name]
         assert "TZ: Asia/Shanghai" in services[name]
+
+def _compose_topology_collector_block() -> str:
+    compose = read("docker-compose.yml")
+    return compose.split("\n  topology-collector:\n", 1)[1].split("\n  platform-api:\n", 1)[0]
+
+
+def _collector_python_mounts(block: str) -> dict[str, dict[str, object]]:
+    pattern = re.compile(
+        r"^\s*-\s+\./([A-Za-z0-9_.-]+\.py):(/[A-Za-z0-9_./-]+\.py)(?::(ro|rw))?\s*$",
+        re.MULTILINE,
+    )
+    mounts = {}
+    for match in pattern.finditer(block):
+        mounts[match.group(1)] = {
+            "target": match.group(2),
+            "readonly": match.group(3) == "ro",
+        }
+    return mounts
+
+
+def _direct_local_imports(relative_path: str) -> set[str]:
+    tree = ast.parse(read(relative_path))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                names.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name.split(".")[0])
+    return {name for name in names if (ROOT / f"{name}.py").is_file()}
+
+
+def _transitive_local_imports(start_file: str) -> set[str]:
+    required = set()
+    pending = _direct_local_imports(start_file)
+    while pending:
+        name = pending.pop()
+        if name in required:
+            continue
+        required.add(name)
+        pending |= _direct_local_imports(f"{name}.py")
+    return required
+
+
+def test_topology_collector_mounts_ap_placement_module():
+    compose = read("docker-compose.yml")
+    collector = _compose_topology_collector_block()
+    mounts = _collector_python_mounts(collector)
+
+    assert "ap_placement.py" in mounts
+    assert mounts["ap_placement.py"] == {
+        "target": "/ap_placement.py",
+        "readonly": True,
+    }
+    assert "- ./ap_placement.py:/ap_placement.py:ro" in collector
+    assert compose.count("./ap_placement.py:/ap_placement.py:ro") == 1
+
+
+def test_topology_collector_local_imports_and_config_are_stable():
+    collector = _compose_topology_collector_block()
+    mounts = _collector_python_mounts(collector)
+    required = _transitive_local_imports("generate-topology-edges.py")
+
+    assert "ap_placement" in required
+    for name in sorted(required):
+        mount = mounts.get(f"{name}.py")
+        assert mount is not None, f"topology-collector must mount {name}.py"
+        assert mount == {"target": f"/{name}.py", "readonly": True}
+
+    assert "image: ${PLAYER_TOOLS_IMAGE:-monitor-player-tools:local}" in collector
+    assert "context: ./docker/player-tools" in collector
+    assert "container_name: topology-collector" in collector
+    assert "restart: unless-stopped" in collector
+    assert 'TOPOLOGY_OUTPUT_DIR: "/targets"' in collector
+    assert 'TOPOLOGY_AP_SHADOW_MAX_LOOKUPS: "${TOPOLOGY_AP_SHADOW_MAX_LOOKUPS:-16}"' in collector
+    assert "python3 /generate-topology-edges.py" in collector

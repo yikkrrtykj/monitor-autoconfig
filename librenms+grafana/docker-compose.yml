@@ -743,6 +743,7 @@ services:
       - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
       - topology-data:/targets
       - ./ap_topology.py:/ap_topology.py:ro
+      - ./ap_placement.py:/ap_placement.py:ro
       - ./generate-topology-edges.py:/generate-topology-edges.py:ro
       - ./lag_ownership.py:/lag_ownership.py:ro
       - ./discover-switch-targets.py:/discover-switch-targets.py:ro
