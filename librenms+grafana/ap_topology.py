@@ -71,38 +71,63 @@ def ap_candidates(aps: list[dict], inventory: dict, excluded_ips=(), now=None, *
     return result
 
 
-def validate_ap_candidates(candidates: dict, vlan_map: dict, exact_lookup, port_check,
-                           annotate=None) -> dict:
-    """Validate exact FDB candidates; annotate only after current GET succeeds.
+def validate_ap_candidates_detailed(candidates: dict, vlan_map: dict,
+                                    exact_lookup, port_check, annotate=None) -> dict:
+    """Validate every raw candidate and keep explicit outcome categories.
 
-    The annotate callback may add a formal placement level (core auto observed or
-    manual confirmed-direct). It must never suppress validation failure handling.
+    ``successful`` rows are the only rows that may become attachments.  A missing
+    VLAN, exact lookup exception/budget loss, or port_check exception is
+    ``incomplete`` (fail-closed); an exact miss, down/aggregate/interconnect
+    port is an explicit ``mismatched`` row.  Keeping these categories separate
+    prevents historical downstream rows from pre-empting a valid current core
+    exact lookup and prevents partial hint results from becoming authoritative.
     """
-    validated = {}
+    result = {}
     for mac, rows in candidates.items():
-        current = []
-        complete = True
+        successful = []
+        mismatched = []
+        incomplete = []
         for row in rows:
             vlan = vlan_map.get((row.get("device_id"), row.get("librenms_vlan_id")))
             if vlan is None:
-                complete = False
-                break
+                incomplete.append({**row, "reason": "vlan_mapping_missing"})
+                continue
             try:
                 ifindex = exact_lookup(row["switch_ip"], vlan, mac)
                 checked_at = time.time()
                 port = port_check(row["switch_ip"], ifindex) if ifindex is not None else None
-            except Exception:
-                complete = False
-                break
-            if port:
-                validated_row = {**row, "ifindex": ifindex, "port_name": port,
-                                 "vlan": vlan, "validated_at": checked_at}
-                if annotate is not None:
-                    validated_row.update(annotate(validated_row) or {})
-                current.append(validated_row)
-        if complete:
-            validated[mac] = current
-    return validated
+            except Exception as exc:
+                incomplete.append({**row, "vlan": vlan,
+                                   "reason": type(exc).__name__})
+                continue
+            if ifindex is None:
+                mismatched.append({**row, "vlan": vlan, "reason": "exact_miss"})
+                continue
+            if not port:
+                mismatched.append({**row, "vlan": vlan, "ifindex": ifindex,
+                                   "reason": "port_rejected"})
+                continue
+            validated_row = {**row, "ifindex": ifindex, "port_name": port,
+                             "vlan": vlan, "validated_at": checked_at}
+            if annotate is not None:
+                validated_row.update(annotate(validated_row) or {})
+            successful.append(validated_row)
+        result[mac] = {
+            "raw": len(rows),
+            "successful": successful,
+            "mismatched": mismatched,
+            "incomplete": incomplete,
+        }
+    return result
+
+
+def validate_ap_candidates(candidates: dict, vlan_map: dict, exact_lookup, port_check,
+                           annotate=None) -> dict:
+    """Compatibility wrapper returning only complete successful rows."""
+    detailed = validate_ap_candidates_detailed(
+        candidates, vlan_map, exact_lookup, port_check, annotate=annotate)
+    return {mac: info["successful"] for mac, info in detailed.items()
+            if not info["incomplete"]}
 
 
 def ap_max_age() -> int:
@@ -188,14 +213,13 @@ def build_ap_artifact(aps: list[dict], inventory: dict, excluded_ips=(), now=Non
             return bool(core_ips and row.get("switch_ip") in core_ips) \
                 or row.get("ap_level") in core_levels
 
-        non_core = [row for row in rows if not is_core_row(row)]
-        core_rows = [row for row in rows if is_core_row(row)]
-        # A valid downstream placement must not be overridden by a core FDB hit.
-        selected = non_core if non_core else core_rows
-        if len(selected) != 1:
-            ambiguous += int(len(selected) > 1)
+        # Selection is completed by the collector after current validation.
+        # Never choose between current successful positions here: conflicts are
+        # ambiguous, not array-order or parent-kind preferences.
+        if len(rows) != 1:
+            ambiguous += int(len(rows) > 1)
             continue
-        candidate = selected[0]
+        candidate = rows[0]
         attachment = {
             "ap_ip": ap["ip"], "ap_mac": ap["mac"], "ap_name": ap["name"],
             "switch_ip": candidate["switch_ip"],

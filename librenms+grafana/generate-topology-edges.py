@@ -42,7 +42,8 @@ Env vars:
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidates,
-                         ap_max_age, vlan_fk_mapping, validate_ap_candidates)
+                         ap_max_age, vlan_fk_mapping,
+                         validate_ap_candidates_detailed)
 from ap_placement import (build_invalidated_artifact, build_placement_artifact,
                           fetch_ap_online_evidence)
 import json
@@ -3090,23 +3091,22 @@ def _core_ap_hint_rows(mac, inventory, core_ips, excluded, vlan_map, now):
 
 
 def collect_validated_ap_inventory(aps, inventory, devices, edges, client, community):
-    """AP 独立候选窗口、共享 VLAN FK 清单、精确 GET；失败不影响 wired。
+    """Validate current candidates, then bounded historical hints, fail-closed.
 
-    Core candidates without a manual allowlist are accepted only as
-    observed-attachment after the current exact GET and the same port safety
-    checks.  A validated downstream candidate always wins; manual core
-    allowlist rows remain confirmed-direct.  Old core FDB rows are used only as
-    bounded switch/VLAN hints for a moved core AP.
+    Raw current candidates are all exact-queried before any placement choice.
+    A historical downstream FDB row cannot pre-empt a current core exact lookup.
+    A current successful downstream and a current successful core position are
+    conflicting current evidence and stay ambiguous.  If a downstream candidate
+    is incomplete, the core is not selected blindly.  Historical core rows are
+    switch/VLAN hints only; all legal hints for an AP must finish within the
+    hard lookup/GET budget, otherwise no attachment is emitted.
     """
     core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
     confirmed = _confirmed_core_ap_ports(core_ips)
     excluded = _env_target_ips("FIREWALL_PING")
     now = time.time()
 
-    # Do not let the core gate hide the AP from exact validation.  Downstream
-    # candidates are handled first below so they can never be overridden by a
-    # core forwarding hit.
-    candidates = ap_candidates(aps, inventory, excluded)
+    raw_candidates = ap_candidates(aps, inventory, excluded)
     if not aps or client is None:
         return {}
     try:
@@ -3116,20 +3116,6 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
         return {}
     endpoints = {(edge.get(f"{side}_ip"), edge.get(f"{side}_ifindex"))
                  for edge in edges for side in ("from", "to")}
-
-    non_core_current = {
-        mac for mac, rows in candidates.items()
-        if any(str(row.get("switch_ip") or "") not in core_ips for row in rows)
-    }
-    current_core = {
-        mac for mac, rows in candidates.items()
-        if any(str(row.get("switch_ip") or "") in core_ips for row in rows)
-    }
-    for mac in non_core_current:
-        filtered = [row for row in candidates.get(mac, [])
-                    if str(row.get("switch_ip") or "") not in core_ips]
-        if filtered:
-            candidates[mac] = filtered
 
     def port_check(ip, ifindex):
         return _ap_port_eligible(ip, ifindex, devices, endpoints,
@@ -3148,22 +3134,67 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
             return {"ap_level": "confirmed-direct"}
         return {"ap_level": "observed-attachment"}
 
-    validated = validate_ap_candidates(
-        candidates, vlan_map, exact_lookup, port_check, annotate=annotate)
+    detailed = validate_ap_candidates_detailed(
+        raw_candidates, vlan_map, exact_lookup, port_check, annotate=annotate)
 
-    # A core AP moved to another core port can leave only an old/down FDB row.
-    # Use that row as a bounded switch/VLAN hint; the exact GET above (or here)
-    # remains the only current evidence.  No downstream current candidate and no
-    # current core candidate may be bypassed by a hint.
+    selected = {}
+    hint_eligible = set()
+    for ap in sorted(aps, key=lambda item: str(item.get("ip") or "")):
+        mac = ap.get("mac")
+        if not mac:
+            continue
+        info = detailed.get(mac) or {
+            "raw": 0, "successful": [], "mismatched": [], "incomplete": [],
+        }
+        successful = info["successful"]
+        non_core_success = [row for row in successful
+                            if str(row.get("switch_ip") or "") not in core_ips]
+        core_success = [row for row in successful
+                        if str(row.get("switch_ip") or "") in core_ips]
+        non_core_incomplete = [row for row in info["incomplete"]
+                               if str(row.get("switch_ip") or "") not in core_ips]
+        core_incomplete = [row for row in info["incomplete"]
+                           if str(row.get("switch_ip") or "") in core_ips]
+        if successful:
+            if non_core_success and core_success:
+                # Current successful positions conflict; let build_ap_artifact
+                # report ambiguous rather than choosing a parent kind.
+                selected[mac] = successful
+            elif non_core_success:
+                if non_core_incomplete:
+                    # Another downstream current position was not verified.
+                    continue
+                selected[mac] = non_core_success
+            else:
+                if non_core_incomplete or core_incomplete:
+                    # Do not select core blindly when downstream or another
+                    # current core candidate is incomplete.
+                    continue
+                selected[mac] = core_success
+        elif info["incomplete"]:
+            # A current candidate query failed/timed out; do not fall back to
+            # historical hints for this AP.
+            continue
+        else:
+            # Every current candidate was an explicit miss/rejection (or there
+            # were none). Historical core hints may now be queried.
+            hint_eligible.add(mac)
+
     hint_lookups = 0
     hint_budget = [_core_ap_hint_max_gets()]
     max_lookups = _core_ap_hint_max_lookups()
     for ap in sorted(aps, key=lambda item: str(item.get("ip") or "")):
         mac = ap.get("mac")
-        if not mac or validated.get(mac) or mac in non_core_current or mac in current_core:
+        if not mac or mac not in hint_eligible:
             continue
-        for hint in _core_ap_hint_rows(mac, inventory, core_ips, excluded, vlan_map, now):
+        hints = _core_ap_hint_rows(mac, inventory, core_ips, excluded, vlan_map, now)
+        if not hints:
+            continue
+        successes = []
+        complete = True
+        for hint in hints:
             if hint_lookups >= max_lookups or hint_budget[0] <= 0:
+                complete = False
                 break
             hint_lookups += 1
             ip = hint["switch_ip"]
@@ -3176,20 +3207,42 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
                         get_budget=hint_budget,
                     )
             except _FdbGetBudgetExhausted:
+                complete = False
                 break
             except Exception:
-                continue
+                complete = False
+                break
             if ifindex is None:
                 continue
-            port = port_check(ip, ifindex)
+            try:
+                port = port_check(ip, ifindex)
+            except Exception:
+                complete = False
+                break
             if not port:
                 continue
-            row = {**hint, "ifindex": ifindex, "port_name": port,
-                   "vlan": vlan, "validated_at": time.time(),
-                   "hint_based": True}
-            row.update(annotate(row))
-            validated.setdefault(mac, []).append(row)
-    return validated
+            # Never inherit the historical row's old port/status fields.  The
+            # current ifIndex, port name, VLAN and status were all re-evaluated
+            # above; only the switch/VLAN hint identity survives.
+            current = {
+                "switch_ip": ip,
+                "device_id": hint.get("device_id"),
+                "librenms_vlan_id": hint.get("librenms_vlan_id"),
+                "ifindex": ifindex,
+                "port_name": port,
+                "vlan": vlan,
+                "validated_at": time.time(),
+                "hint_based": True,
+                "hint_age_seconds": hint.get("hint_age_seconds"),
+            }
+            current.update(annotate(current))
+            successes.append(current)
+        if not complete:
+            # Partial historical evidence must never become a unique location.
+            continue
+        if successes:
+            selected[mac] = successes
+    return {mac: rows for mac, rows in selected.items() if rows}
 
 
 def write_current_ap_artifact(output_dir, aps, inventory):
