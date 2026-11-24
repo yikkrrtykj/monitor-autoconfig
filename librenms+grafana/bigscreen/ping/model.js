@@ -70,7 +70,21 @@
       metric.target_ip.split(".").every((octet) => Number(octet) <= 255);
   }
 
-  function targetFromMetric(metric, settings) {
+  const placeholderIp = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+
+  function resolvedName(metric, category, name, names) {
+    // A configured name always wins; only an IP placeholder is replaced by the
+    // SNMP device name. The labels stay untouched so identity() and every
+    // historical series keep their original key.
+    if (!names?.size || category !== "lan" || !placeholderIp.test(name)) return name;
+    for (const key of [metric.target_ip, metric.instance, metric.display_name]) {
+      const mapped = names.get(String(key || "").trim());
+      if (mapped) return mapped;
+    }
+    return name;
+  }
+
+  function targetFromMetric(metric, settings, names) {
     const job = metric.job;
     if (job === "custom-ping") {
       if (!customMetric(metric)) return null;
@@ -81,7 +95,8 @@
     const [category, defaultGroup, intervalGroup] = jobs[job];
     const { team, seat, network } = metric;
     const seatLabel = [team && `队 ${team}`, seat && `座 ${seat}`, network].filter(Boolean).join(" · ");
-    const name = metric.display_name || (category === "player" && seatLabel) || metric.instance;
+    const name = resolvedName(metric, category,
+      metric.display_name || (category === "player" && seatLabel) || metric.instance, names);
     const group = job === "infra-dist-ping" && settings.stageTerms.some((term) => name.toLowerCase().includes(term)) ? "Stage" : defaultGroup;
     return {
       key: identity(metric),
@@ -119,7 +134,7 @@
     return value > 0 && Number.isFinite(ms) ? ms : null;
   }
 
-  function snapshot(result, at, settings) {
+  function snapshot(result, at, settings, names) {
     const fields = new Map();
     for (const { metric, value } of result) {
       const key = identity(metric);
@@ -134,7 +149,7 @@
     for (const record of fields.values()) {
       const inventory = record.get("target");
       if (inventory?.value == null) continue;
-      const target = targetFromMetric(inventory.metric, settings);
+      const target = targetFromMetric(inventory.metric, settings, names);
       if (!target) continue;
       const get = (key) => record.get(key)?.value ?? null;
       const sourceAt = get("source_at");
