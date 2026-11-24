@@ -614,6 +614,38 @@ def test_precheck_flags_missing_wireless_backup_series(monkeypatch):
     assert "50/66" in backup_text
 
 
+def test_precheck_flags_missing_wireless_backup_when_no_series_returned(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}", "wired")
+        for index in range(1, 59)
+    ]
+    result = _run_player_precheck(monkeypatch, players, _target_status(wired=58, wireless=66))
+
+    assert result["verdict"] == "warn"
+    assert result["fail"] == 0
+    seat_level, _ = _line_level(result, "选手机位")
+    assert seat_level == "good"
+    backup_level, backup_text = _line_level(result, "无线备用网")
+    assert backup_level == "warn"
+    assert "0/66" in backup_text
+
+
+def test_precheck_flags_missing_wireless_series_when_only_wired_series_returned(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}", "wired")
+        for index in range(1, 3)
+    ]
+    result = _run_player_precheck(monkeypatch, players, _target_status(wired=0, wireless=66))
+
+    assert result["verdict"] == "warn"
+    seat_level, seat_text = _line_level(result, "选手机位")
+    assert seat_level == "warn"
+    assert "数量异常" in seat_text
+    backup_level, backup_text = _line_level(result, "无线备用网")
+    assert backup_level == "warn"
+    assert "0/66" in backup_text
+
+
 def test_precheck_flags_wireless_backup_series_excess(monkeypatch):
     players = [
         _player_sample(f"192.168.100.{index}", "wired")

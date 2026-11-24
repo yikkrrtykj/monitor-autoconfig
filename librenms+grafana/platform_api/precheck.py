@@ -187,7 +187,7 @@ def _wireless_backup_check(wireless, expected_wireless):
 def _trusted_player_checks(wired, wireless, expected_wired, expected_wireless):
     if expected_wired > 0:
         checks = [_wired_seat_check(wired, expected_wired)]
-        if wireless:
+        if expected_wireless > 0 or wireless:
             checks.append(_wireless_backup_check(wireless, expected_wireless))
         return checks
     if expected_wireless > 0:
@@ -196,7 +196,7 @@ def _trusted_player_checks(wired, wireless, expected_wired, expected_wireless):
                 "warn",
                 f"选手机位数量异常：目标状态声明 0 个有线目标，Prometheus 返回 {len(wired)} 个有线目标",
             )]
-            if wireless:
+            if expected_wireless > 0 or wireless:
                 checks.append(_wireless_backup_check(wireless, expected_wireless))
             return checks
         return [_wireless_seat_check(wireless, expected_wireless)]
