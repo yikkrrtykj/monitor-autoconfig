@@ -15,6 +15,9 @@ from urllib.parse import quote
 TARGETS_STATUS_MAX_AGE_SECONDS = 600
 WIRED_NETWORK = "wired"
 WIRELESS_NETWORK = "wireless"
+STATUS_TRUSTED = "trusted"
+STATUS_LEGACY = "legacy"
+STATUS_UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -51,19 +54,25 @@ def _probe_online(item) -> bool:
     return len(value) > 1 and value[1] == "1"
 
 
-def _target_status_counts(status) -> dict | None:
-    """Return trusted generator-declared target counts, or ``None``.
+def _target_status(status) -> tuple[str, dict | None]:
+    """Classify the target generator status payload.
 
-    Only the target generator can declare which networks the current event is
-    supposed to have, so its ``targets.wired`` count is what separates a real
-    wireless-only event from wired targets that Prometheus failed to return.
-    Missing, errored, malformed or stale payloads are never trusted.
+    A payload with a fresh ``wired``/``wireless``/``other`` breakdown is the
+    authoritative declaration of what the current event should monitor. A
+    payload with only ``total`` is the pre-network-label structure: it cannot
+    declare per-network expectations, so it only enables the legacy merged
+    contract. Errored, malformed or stale payloads are ``unavailable`` and
+    never turn a check into good.
     """
     if not isinstance(status, dict) or status.get("error"):
-        return None
+        return STATUS_UNAVAILABLE, None
     targets = status.get("targets")
     if not isinstance(targets, dict):
-        return None
+        return STATUS_UNAVAILABLE, None
+    if not any(key in targets for key in ("wired", "wireless", "other")):
+        if "total" in targets:
+            return STATUS_LEGACY, None
+        return STATUS_UNAVAILABLE, None
     try:
         counts = {
             "wired": int(targets["wired"]),
@@ -73,95 +82,196 @@ def _target_status_counts(status) -> dict | None:
         reference = float(status["now"])
         updated_at = float(status["updated_at"])
     except (KeyError, TypeError, ValueError):
-        return None
+        return STATUS_UNAVAILABLE, None
     if min(counts.values()) < 0:
-        return None
+        return STATUS_UNAVAILABLE, None
     if reference - updated_at > TARGETS_STATUS_MAX_AGE_SECONDS:
-        return None
-    return counts
+        return STATUS_UNAVAILABLE, None
+    return STATUS_TRUSTED, counts
 
 
-def _player_checks(players: list[dict], status_counts: dict | None) -> list[tuple[str, str]]:
-    """Build readiness checks for wired seats and the wireless backup network.
-
-    Labels are classified explicitly: only ``network="wired"`` series count as
-    seats, unlabeled/unknown targets are reported instead of being promoted to
-    wired. When the generator declares wired targets but Prometheus returns
-    fewer (or none), seats are never reported green: the seats are unverifiable
-    and the check fails closed. Only a fresh, healthy status snapshot with
-    ``targets.wired == 0`` is accepted as a genuine wireless-only event.
-    """
+def _classify_player_targets(players):
+    """Split probe series into explicit, legacy and malformed label groups."""
     wired = [x for x in players if _target_network(x) == WIRED_NETWORK]
     wireless = [x for x in players if _target_network(x) == WIRELESS_NETWORK]
-    ambiguous = [
+    legacy = [x for x in players if not _target_network(x)]
+    unknown = [
         x for x in players
-        if _target_network(x) not in (WIRED_NETWORK, WIRELESS_NETWORK)
+        if _target_network(x) not in (WIRED_NETWORK, WIRELESS_NETWORK, "")
     ]
-    expected_wired = None if status_counts is None else status_counts["wired"]
+    return wired, wireless, legacy, unknown
 
-    if not wired and not wireless:
-        # No explicit labels at all: keep the legacy merged contract.
-        online = sum(1 for x in ambiguous if _probe_online(x))
-        total = len(ambiguous)
-        if total == 0:
-            return [("bad", "选手机位监控目标为 0，不能确认比赛网络状态")]
-        if online != total:
-            return [("bad", f"选手机位仅 {online}/{total} 在线")]
-        return [("good", f"选手机位 {online}/{total} 全部在线")]
 
-    checks: list[tuple[str, str]] = []
-    if wired:
-        wired_online = sum(1 for x in wired if _probe_online(x))
-        if wired_online != len(wired):
-            checks.append(("bad", f"选手机位仅 {wired_online}/{len(wired)} 在线"))
-        elif expected_wired is None:
-            checks.append((
-                "warn",
-                f"选手机位 {wired_online}/{len(wired)} 在线，但目标状态不可用，无法确认完整性",
-            ))
-        elif expected_wired == 0:
-            checks.append((
-                "warn",
-                f"选手机位 {wired_online}/{len(wired)} 在线，但目标状态声明没有有线目标",
-            ))
-        elif len(wired) < expected_wired:
-            checks.append((
-                "bad",
-                f"选手机位数据不完整：Prometheus 仅返回 {len(wired)}/{expected_wired} 个有线目标",
-            ))
-        else:
-            checks.append(("good", f"选手机位 {wired_online}/{len(wired)} 全部在线"))
-    elif expected_wired is None:
-        checks.append((
-            "warn",
-            f"选手机位无法判定：只有 {len(wireless)} 个无线目标，且目标状态不可用",
-        ))
-    elif expected_wired > 0:
-        checks.append((
+def _ambiguous_label_text(legacy, unknown) -> str:
+    parts = []
+    if legacy:
+        parts.append(f"{len(legacy)} 个缺少 network 标签")
+    if unknown:
+        parts.append(f"{len(unknown)} 个未知 network 标签")
+    return "选手目标有 " + "、".join(parts) + "，未计入机位判定"
+
+
+def _wired_seat_check(wired, expected_wired):
+    if not wired:
+        return (
             "bad",
             f"选手机位数据缺失：目标状态声明 {expected_wired} 个有线目标，Prometheus 未返回有线目标",
-        ))
-    else:
-        # Status declares no wired targets: a genuine wireless-only event keeps
-        # the legacy contract of treating wireless targets as the seats.
-        wireless_online = sum(1 for x in wireless if _probe_online(x))
-        if wireless_online != len(wireless):
-            checks.append(("bad", f"选手机位仅 {wireless_online}/{len(wireless)} 在线"))
-        else:
-            checks.append(("good", f"选手机位 {wireless_online}/{len(wireless)} 全部在线"))
-
-    if wireless and (wired or expected_wired != 0):
-        wireless_online = sum(1 for x in wireless if _probe_online(x))
-        # 备用链路的部分掉线属于常态，只有整体不可达才升级为警告。
-        checks.append((
-            "good" if wireless_online else "warn",
-            f"无线备用网 {wireless_online}/{len(wireless)} 在线",
-        ))
-    if ambiguous:
-        checks.append((
+        )
+    online = sum(1 for x in wired if _probe_online(x))
+    if len(wired) < expected_wired:
+        detail = f"（其中 {online} 个在线）" if online != len(wired) else ""
+        return (
+            "bad",
+            f"选手机位数据不完整：Prometheus 仅返回 {len(wired)}/{expected_wired} 个有线目标{detail}",
+        )
+    if len(wired) > expected_wired:
+        if online != len(wired):
+            return (
+                "bad",
+                f"选手机位仅 {online}/{len(wired)} 在线（目标状态声明 {expected_wired} 个有线目标）",
+            )
+        return (
             "warn",
-            f"选手目标有 {len(ambiguous)} 个缺少或未知 network 标签，未计入机位判定",
-        ))
+            f"选手机位数量异常：Prometheus 返回 {len(wired)} 个有线目标，目标状态声明 {expected_wired} 个",
+        )
+    if online != len(wired):
+        return ("bad", f"选手机位仅 {online}/{len(wired)} 在线")
+    return ("good", f"选手机位 {online}/{len(wired)} 全部在线")
+
+
+def _wireless_seat_check(wireless, expected_wireless):
+    if not wireless:
+        return (
+            "bad",
+            f"选手机位数据缺失：目标状态声明 {expected_wireless} 个无线目标，Prometheus 未返回无线目标",
+        )
+    online = sum(1 for x in wireless if _probe_online(x))
+    if len(wireless) < expected_wireless:
+        detail = f"（其中 {online} 个在线）" if online != len(wireless) else ""
+        return (
+            "bad",
+            f"选手机位数据不完整：Prometheus 仅返回 {len(wireless)}/{expected_wireless} 个无线目标{detail}",
+        )
+    if len(wireless) > expected_wireless:
+        if online != len(wireless):
+            return (
+                "bad",
+                f"选手机位仅 {online}/{len(wireless)} 在线（目标状态声明 {expected_wireless} 个无线目标）",
+            )
+        return (
+            "warn",
+            f"选手机位数量异常：Prometheus 返回 {len(wireless)} 个无线目标，目标状态声明 {expected_wireless} 个",
+        )
+    if online != len(wireless):
+        return ("bad", f"选手机位仅 {online}/{len(wireless)} 在线")
+    return ("good", f"选手机位 {online}/{len(wireless)} 全部在线")
+
+
+def _wireless_backup_check(wireless, expected_wireless):
+    online = sum(1 for x in wireless if _probe_online(x))
+    if expected_wireless is not None and len(wireless) < expected_wireless:
+        return (
+            "warn",
+            f"无线备用网目标不完整：Prometheus 返回 {len(wireless)}/{expected_wireless} 个无线目标（{online} 个在线）",
+        )
+    if expected_wireless is not None and len(wireless) > expected_wireless:
+        return (
+            "warn",
+            f"无线备用网目标异常：Prometheus 返回 {len(wireless)} 个无线目标，目标状态声明 {expected_wireless} 个（{online} 个在线）",
+        )
+    if online:
+        return ("good", f"无线备用网 {online}/{len(wireless)} 在线")
+    return ("warn", f"无线备用网 0/{len(wireless)} 在线")
+
+
+def _trusted_player_checks(wired, wireless, expected_wired, expected_wireless):
+    if expected_wired > 0:
+        checks = [_wired_seat_check(wired, expected_wired)]
+        if wireless:
+            checks.append(_wireless_backup_check(wireless, expected_wireless))
+        return checks
+    if expected_wireless > 0:
+        if wired:
+            checks = [(
+                "warn",
+                f"选手机位数量异常：目标状态声明 0 个有线目标，Prometheus 返回 {len(wired)} 个有线目标",
+            )]
+            if wireless:
+                checks.append(_wireless_backup_check(wireless, expected_wireless))
+            return checks
+        return [_wireless_seat_check(wireless, expected_wireless)]
+    observed = len(wired) + len(wireless)
+    if observed:
+        return [(
+            "warn",
+            f"选手机位数量异常：目标状态声明没有选手目标，Prometheus 返回 {observed} 个",
+        )]
+    return [("warn", "选手机位无法判定：目标状态未声明任何选手目标")]
+
+
+def _unverified_player_checks(wired, wireless, status_kind):
+    reason = (
+        "目标状态未声明网络目标"
+        if status_kind == STATUS_LEGACY
+        else "目标状态不可用"
+    )
+    if wired:
+        online = sum(1 for x in wired if _probe_online(x))
+        if online != len(wired):
+            checks = [("bad", f"选手机位仅 {online}/{len(wired)} 在线")]
+        else:
+            checks = [(
+                "warn",
+                f"选手机位 {online}/{len(wired)} 在线，但{reason}，无法确认完整性",
+            )]
+        if wireless:
+            checks.append(_wireless_backup_check(wireless, None))
+        return checks
+    if wireless:
+        return [
+            ("warn", f"选手机位无法判定：只有 {len(wireless)} 个无线目标，且{reason}"),
+            _wireless_backup_check(wireless, None),
+        ]
+    return [("warn", f"选手机位无法判定：{reason}，且没有可识别的 network 标签")]
+
+
+def _player_checks(
+    players: list[dict],
+    status_kind: str,
+    status_counts: dict | None,
+) -> list[tuple[str, str]]:
+    """Build readiness checks for wired seats and the wireless backup network.
+
+    Priority: a fresh generator declaration > verifiable Prometheus labels >
+    the legacy merged contract. Only explicit ``network="wired"`` series count
+    as seats; unlabeled/unknown targets are reported and never promoted to
+    wired. Declared counts are verified against observed series so missing or
+    extra targets cannot be reported green. Only a legacy status structure with
+    entirely unlabeled targets keeps the old merged behaviour.
+    """
+    if not players:
+        return [("bad", "选手机位监控目标为 0，不能确认比赛网络状态")]
+
+    wired, wireless, legacy, unknown = _classify_player_targets(players)
+    expected_wired = status_counts["wired"] if status_counts else None
+    expected_wireless = status_counts["wireless"] if status_counts else None
+
+    if status_kind == STATUS_LEGACY and not wired and not wireless and not unknown:
+        # Genuine legacy deployment: old status shape and no network labels.
+        online = sum(1 for x in legacy if _probe_online(x))
+        if online != len(legacy):
+            return [("bad", f"选手机位仅 {online}/{len(legacy)} 在线")]
+        return [("good", f"选手机位 {online}/{len(legacy)} 全部在线")]
+
+    if status_kind == STATUS_TRUSTED:
+        checks = _trusted_player_checks(
+            wired, wireless, expected_wired, expected_wireless
+        )
+    else:
+        checks = _unverified_player_checks(wired, wireless, status_kind)
+
+    if legacy or unknown:
+        checks.append(("warn", _ambiguous_label_text(legacy, unknown)))
     return checks
 
 
@@ -216,8 +326,9 @@ def run_precheck(context: PrecheckContext) -> dict:
     except Exception as exc:
         target_status_error = exc
     try:
+        status_kind, status_counts = _target_status(target_status)
         players = _prom_query(context, 'probe_success{job="player-ping"}')
-        for level, text in _player_checks(players, _target_status_counts(target_status)):
+        for level, text in _player_checks(players, status_kind, status_counts):
             add(level, text)
     except Exception as exc:
         add("warn", f"无法查询选手目标：{exc}")

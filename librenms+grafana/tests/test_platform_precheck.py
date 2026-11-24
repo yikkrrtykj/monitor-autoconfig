@@ -304,6 +304,25 @@ def _run_player_precheck(monkeypatch, players, status_payload):
     return precheck.run_precheck(_context())
 
 
+def _check_levels(result):
+    icons = {"✓": "good", "⚠": "warn", "✗": "bad"}
+    levels = {}
+    for line in result["output"].splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        icon, _, label = text.partition(" ")
+        levels[label] = icons.get(icon)
+    return levels
+
+
+def _line_level(result, prefix):
+    for text, level in _check_levels(result).items():
+        if text.startswith(prefix):
+            return level, text
+    return None, None
+
+
 def test_precheck_counts_wireless_backup_separately_from_seats(monkeypatch):
     result = _run_player_precheck(monkeypatch, [
         _player_sample("192.168.100.11", "wired"),
@@ -498,7 +517,7 @@ def test_precheck_does_not_count_unknown_network_labels_as_wired(monkeypatch):
     assert result["verdict"] == "warn"
     assert "选手机位 3/3" not in result["output"]
     assert "  ✓ 选手机位 2/2 全部在线" in result["output"]
-    assert "  ⚠ 选手目标有 1 个缺少或未知 network 标签，未计入机位判定" in result["output"]
+    assert "  ⚠ 选手目标有 1 个未知 network 标签，未计入机位判定" in result["output"]
 
 
 def test_precheck_does_not_count_unlabeled_targets_as_wired_when_labels_are_mixed(monkeypatch):
@@ -510,7 +529,154 @@ def test_precheck_does_not_count_unlabeled_targets_as_wired_when_labels_are_mixe
     assert result["verdict"] == "warn"
     assert "选手机位 2/2" not in result["output"]
     assert "  ✓ 选手机位 1/1 全部在线" in result["output"]
-    assert "  ⚠ 选手目标有 1 个缺少或未知 network 标签，未计入机位判定" in result["output"]
+    assert "  ⚠ 选手目标有 1 个缺少 network 标签，未计入机位判定" in result["output"]
+
+
+def test_precheck_rejects_untagged_targets_when_wired_targets_are_declared(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}")
+        for index in range(1, 59)
+    ]
+    result = _run_player_precheck(monkeypatch, players, _target_status(wired=58))
+
+    assert result["verdict"] == "bad"
+    assert result["fail"] == 1
+    seat_level, seat_text = _line_level(result, "选手机位")
+    assert seat_level == "bad"
+    assert "数据缺失" in seat_text
+    assert "全部在线" not in seat_text
+    label_level, label_text = _line_level(result, "选手目标有")
+    assert label_level == "warn"
+    assert "58 个缺少 network 标签" in label_text
+
+
+def test_precheck_rejects_unknown_labels_when_wired_targets_are_declared(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}", "wifi")
+        for index in range(1, 59)
+    ]
+    result = _run_player_precheck(monkeypatch, players, _target_status(wired=58))
+
+    assert result["verdict"] == "bad"
+    assert result["fail"] == 1
+    seat_level, seat_text = _line_level(result, "选手机位")
+    assert seat_level == "bad"
+    assert "全部在线" not in seat_text
+    label_level, label_text = _line_level(result, "选手目标有")
+    assert label_level == "warn"
+    assert "58 个未知 network 标签" in label_text
+
+
+def test_precheck_flags_extra_wired_series(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}", "wired")
+        for index in range(1, 60)
+    ]
+    result = _run_player_precheck(monkeypatch, players, _target_status(wired=58))
+
+    assert result["verdict"] == "warn"
+    assert result["fail"] == 0
+    seat_level, seat_text = _line_level(result, "选手机位")
+    assert seat_level == "warn"
+    assert "数量异常" in seat_text
+    assert "全部在线" not in seat_text
+
+
+def test_precheck_requires_declared_wireless_series_completeness(monkeypatch):
+    result = _run_player_precheck(monkeypatch, [
+        _player_sample("192.168.101.11", "wireless"),
+    ], _target_status(wired=0, wireless=66))
+
+    assert result["verdict"] == "bad"
+    assert result["fail"] == 1
+    seat_level, seat_text = _line_level(result, "选手机位")
+    assert seat_level == "bad"
+    assert "1/66" in seat_text
+    assert "全部在线" not in seat_text
+
+
+def test_precheck_flags_missing_wireless_backup_series(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}", "wired")
+        for index in range(1, 59)
+    ] + [
+        _player_sample(f"192.168.101.{index}", "wireless")
+        for index in range(1, 51)
+    ]
+    result = _run_player_precheck(monkeypatch, players, _target_status(wired=58, wireless=66))
+
+    assert result["verdict"] == "warn"
+    assert result["fail"] == 0
+    seat_level, _ = _line_level(result, "选手机位")
+    assert seat_level == "good"
+    backup_level, backup_text = _line_level(result, "无线备用网")
+    assert backup_level == "warn"
+    assert "50/66" in backup_text
+
+
+def test_precheck_flags_wireless_backup_series_excess(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}", "wired")
+        for index in range(1, 59)
+    ] + [
+        _player_sample(f"192.168.101.{index}", "wireless")
+        for index in range(1, 71)
+    ]
+    result = _run_player_precheck(monkeypatch, players, _target_status(wired=58, wireless=66))
+
+    assert result["verdict"] == "warn"
+    backup_level, backup_text = _line_level(result, "无线备用网")
+    assert backup_level == "warn"
+    assert "70" in backup_text
+    assert "66" in backup_text
+
+
+def test_precheck_keeps_legacy_contract_when_status_shape_is_legacy(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}")
+        for index in range(1, 59)
+    ]
+    result = _run_player_precheck(monkeypatch, players, {"ok": True, "targets": {"total": 58}})
+
+    assert result["verdict"] == "good"
+    seat_level, seat_text = _line_level(result, "选手机位")
+    assert seat_level == "good"
+    assert "58/58" in seat_text
+    assert _line_level(result, "选手目标有") == (None, None)
+
+
+def test_precheck_rejects_unknown_labels_with_legacy_status(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}", "wifi")
+        for index in range(1, 59)
+    ]
+    result = _run_player_precheck(monkeypatch, players, {"ok": True, "targets": {"total": 58}})
+
+    assert result["verdict"] == "warn"
+    seat_level, seat_text = _line_level(result, "选手机位")
+    assert seat_level == "warn"
+    assert "全部在线" not in seat_text
+    label_level, label_text = _line_level(result, "选手目标有")
+    assert label_level == "warn"
+    assert "未知 network 标签" in label_text
+
+
+def test_precheck_flags_wired_series_when_status_declares_none(monkeypatch):
+    players = [
+        _player_sample(f"192.168.100.{index}", "wired")
+        for index in range(1, 3)
+    ] + [
+        _player_sample(f"192.168.101.{index}", "wireless")
+        for index in range(1, 3)
+    ]
+    result = _run_player_precheck(monkeypatch, players, _target_status(wired=0, wireless=2))
+
+    assert result["verdict"] == "warn"
+    seat_level, seat_text = _line_level(result, "选手机位")
+    assert seat_level == "warn"
+    assert "数量异常" in seat_text
+    backup_level, _ = _line_level(result, "无线备用网")
+    assert backup_level == "good"
 
 
 def test_precheck_fails_when_bridge_is_not_ready(monkeypatch):
