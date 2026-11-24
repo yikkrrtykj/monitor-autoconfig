@@ -9,6 +9,14 @@ import urllib.request
 from urllib.parse import quote
 
 
+# The target generator refreshes player_targets.json on a short loop (default
+# 60s). A status snapshot older than this cannot be trusted to describe the
+# current event composition, so it is treated as unavailable instead.
+TARGETS_STATUS_MAX_AGE_SECONDS = 600
+WIRED_NETWORK = "wired"
+WIRELESS_NETWORK = "wireless"
+
+
 @dataclass(frozen=True)
 class PrecheckContext:
     prom_url: str
@@ -41,6 +49,120 @@ def _probe_online(item) -> bool:
     """Return whether an instant ``probe_success`` sample answered."""
     value = (item or {}).get("value") or [None, "0"]
     return len(value) > 1 and value[1] == "1"
+
+
+def _target_status_counts(status) -> dict | None:
+    """Return trusted generator-declared target counts, or ``None``.
+
+    Only the target generator can declare which networks the current event is
+    supposed to have, so its ``targets.wired`` count is what separates a real
+    wireless-only event from wired targets that Prometheus failed to return.
+    Missing, errored, malformed or stale payloads are never trusted.
+    """
+    if not isinstance(status, dict) or status.get("error"):
+        return None
+    targets = status.get("targets")
+    if not isinstance(targets, dict):
+        return None
+    try:
+        counts = {
+            "wired": int(targets["wired"]),
+            "wireless": int(targets["wireless"]),
+            "other": int(targets["other"]),
+        }
+        reference = float(status["now"])
+        updated_at = float(status["updated_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if min(counts.values()) < 0:
+        return None
+    if reference - updated_at > TARGETS_STATUS_MAX_AGE_SECONDS:
+        return None
+    return counts
+
+
+def _player_checks(players: list[dict], status_counts: dict | None) -> list[tuple[str, str]]:
+    """Build readiness checks for wired seats and the wireless backup network.
+
+    Labels are classified explicitly: only ``network="wired"`` series count as
+    seats, unlabeled/unknown targets are reported instead of being promoted to
+    wired. When the generator declares wired targets but Prometheus returns
+    fewer (or none), seats are never reported green: the seats are unverifiable
+    and the check fails closed. Only a fresh, healthy status snapshot with
+    ``targets.wired == 0`` is accepted as a genuine wireless-only event.
+    """
+    wired = [x for x in players if _target_network(x) == WIRED_NETWORK]
+    wireless = [x for x in players if _target_network(x) == WIRELESS_NETWORK]
+    ambiguous = [
+        x for x in players
+        if _target_network(x) not in (WIRED_NETWORK, WIRELESS_NETWORK)
+    ]
+    expected_wired = None if status_counts is None else status_counts["wired"]
+
+    if not wired and not wireless:
+        # No explicit labels at all: keep the legacy merged contract.
+        online = sum(1 for x in ambiguous if _probe_online(x))
+        total = len(ambiguous)
+        if total == 0:
+            return [("bad", "选手机位监控目标为 0，不能确认比赛网络状态")]
+        if online != total:
+            return [("bad", f"选手机位仅 {online}/{total} 在线")]
+        return [("good", f"选手机位 {online}/{total} 全部在线")]
+
+    checks: list[tuple[str, str]] = []
+    if wired:
+        wired_online = sum(1 for x in wired if _probe_online(x))
+        if wired_online != len(wired):
+            checks.append(("bad", f"选手机位仅 {wired_online}/{len(wired)} 在线"))
+        elif expected_wired is None:
+            checks.append((
+                "warn",
+                f"选手机位 {wired_online}/{len(wired)} 在线，但目标状态不可用，无法确认完整性",
+            ))
+        elif expected_wired == 0:
+            checks.append((
+                "warn",
+                f"选手机位 {wired_online}/{len(wired)} 在线，但目标状态声明没有有线目标",
+            ))
+        elif len(wired) < expected_wired:
+            checks.append((
+                "bad",
+                f"选手机位数据不完整：Prometheus 仅返回 {len(wired)}/{expected_wired} 个有线目标",
+            ))
+        else:
+            checks.append(("good", f"选手机位 {wired_online}/{len(wired)} 全部在线"))
+    elif expected_wired is None:
+        checks.append((
+            "warn",
+            f"选手机位无法判定：只有 {len(wireless)} 个无线目标，且目标状态不可用",
+        ))
+    elif expected_wired > 0:
+        checks.append((
+            "bad",
+            f"选手机位数据缺失：目标状态声明 {expected_wired} 个有线目标，Prometheus 未返回有线目标",
+        ))
+    else:
+        # Status declares no wired targets: a genuine wireless-only event keeps
+        # the legacy contract of treating wireless targets as the seats.
+        wireless_online = sum(1 for x in wireless if _probe_online(x))
+        if wireless_online != len(wireless):
+            checks.append(("bad", f"选手机位仅 {wireless_online}/{len(wireless)} 在线"))
+        else:
+            checks.append(("good", f"选手机位 {wireless_online}/{len(wireless)} 全部在线"))
+
+    if wireless and (wired or expected_wired != 0):
+        wireless_online = sum(1 for x in wireless if _probe_online(x))
+        # 备用链路的部分掉线属于常态，只有整体不可达才升级为警告。
+        checks.append((
+            "good" if wireless_online else "warn",
+            f"无线备用网 {wireless_online}/{len(wireless)} 在线",
+        ))
+    if ambiguous:
+        checks.append((
+            "warn",
+            f"选手目标有 {len(ambiguous)} 个缺少或未知 network 标签，未计入机位判定",
+        ))
+    return checks
 
 
 def run_precheck(context: PrecheckContext) -> dict:
@@ -85,28 +207,18 @@ def run_precheck(context: PrecheckContext) -> dict:
         add("warn", f"无法查询设备在线状态：{exc}")
 
     # 3. 选手机位 ping 目标
-    # 有线机位与无线备用网分开统计：备用网手机休眠或漫游时 ICMP 常态不通，
-    # 混进机位分母会让这一行长期判红；大屏赛事页也只统计 network="wired"。
+    # 目标生成器的 /status 只在这里取一次：它声明本场应有哪些网络目标，
+    # 用于区分真正的纯无线赛事和有线目标采集丢失；第 6 项复用同一份数据。
+    target_status = None
+    target_status_error = None
+    try:
+        target_status = _http_json(f"{context.player_targets_url}/status")
+    except Exception as exc:
+        target_status_error = exc
     try:
         players = _prom_query(context, 'probe_success{job="player-ping"}')
-        wireless = [x for x in players if _target_network(x) == "wireless"]
-        wired = [x for x in players if _target_network(x) != "wireless"]
-        seats = wired or wireless
-        if not seats:
-            add("bad", "选手机位监控目标为 0，不能确认比赛网络状态")
-        else:
-            online = sum(1 for x in seats if _probe_online(x))
-            if online != len(seats):
-                add("bad", f"选手机位仅 {online}/{len(seats)} 在线")
-            else:
-                add("good", f"选手机位 {online}/{len(seats)} 全部在线")
-        if wired and wireless:
-            wireless_online = sum(1 for x in wireless if _probe_online(x))
-            # 备用链路的部分掉线属于常态，只有整体不可达才升级为警告。
-            add(
-                "good" if wireless_online else "warn",
-                f"无线备用网 {wireless_online}/{len(wireless)} 在线",
-            )
+        for level, text in _player_checks(players, _target_status_counts(target_status)):
+            add(level, text)
     except Exception as exc:
         add("warn", f"无法查询选手目标：{exc}")
 
@@ -166,17 +278,20 @@ def run_precheck(context: PrecheckContext) -> dict:
     except Exception as exc:
         add("bad", f"赛事大屏不可达：{exc}")
 
-    try:
-        target_status = _http_json(f"{context.player_targets_url}/status")
-        target_count = int((target_status.get("targets") or {}).get("total") or 0)
-        if target_status.get("error"):
-            add("bad", f"选手监控地址更新异常：{target_status.get('error')}")
-        elif target_count <= 0:
-            add("bad", "尚未识别到可监控的选手地址。")
-        else:
-            add("good", f"选手监控地址更新正常，共 {target_count} 个地址。")
-    except Exception as exc:
-        add("bad", f"选手监控地址更新异常：{exc}")
+    # 目标状态已在第 3 项取到，这里不重复请求。
+    if target_status_error is not None:
+        add("bad", f"选手监控地址更新异常：{target_status_error}")
+    else:
+        try:
+            target_count = int((target_status.get("targets") or {}).get("total") or 0)
+            if target_status.get("error"):
+                add("bad", f"选手监控地址更新异常：{target_status.get('error')}")
+            elif target_count <= 0:
+                add("bad", "尚未识别到可监控的选手地址。")
+            else:
+                add("good", f"选手监控地址更新正常，共 {target_count} 个地址。")
+        except Exception as exc:
+            add("bad", f"选手监控地址更新异常：{exc}")
 
     try:
         with urllib.request.urlopen(f"{context.librenms_url}/", timeout=5) as resp:
