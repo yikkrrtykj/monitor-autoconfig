@@ -46,6 +46,7 @@ from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidates,
 from ap_placement import (build_invalidated_artifact, build_placement_artifact,
                           fetch_ap_online_evidence)
 import json
+import math
 import os
 import re
 import subprocess
@@ -3015,20 +3016,98 @@ def _ap_port_eligible(ip, ifindex, devices, endpoints, *, core_ips=(),
     return name
 
 
+CORE_AP_HINT_MAX_AGE_DEFAULT = 7 * 24 * 60 * 60
+CORE_AP_HINT_MAX_AGE_LIMIT = 30 * 24 * 60 * 60
+CORE_AP_HINT_MAX_LOOKUPS_DEFAULT = 8
+CORE_AP_HINT_MAX_LOOKUPS_LIMIT = 32
+CORE_AP_HINT_MAX_GETS_DEFAULT = 24
+CORE_AP_HINT_MAX_GETS_LIMIT = 96
+
+
+def _core_ap_hint_max_age():
+    return _bounded_env_int(
+        "TOPOLOGY_CORE_AP_HINT_MAX_AGE_SECONDS",
+        CORE_AP_HINT_MAX_AGE_DEFAULT,
+        CORE_AP_HINT_MAX_AGE_LIMIT,
+    )
+
+
+def _core_ap_hint_max_lookups():
+    return _bounded_env_int(
+        "TOPOLOGY_CORE_AP_HINT_MAX_LOOKUPS",
+        CORE_AP_HINT_MAX_LOOKUPS_DEFAULT,
+        CORE_AP_HINT_MAX_LOOKUPS_LIMIT,
+    )
+
+
+def _core_ap_hint_max_gets():
+    return _bounded_env_int(
+        "TOPOLOGY_CORE_AP_HINT_MAX_GETS",
+        CORE_AP_HINT_MAX_GETS_DEFAULT,
+        CORE_AP_HINT_MAX_GETS_LIMIT,
+    )
+
+
+def _core_ap_hint_rows(mac, inventory, core_ips, excluded, vlan_map, now):
+    """Old physical core FDB rows are bounded hints, never current evidence.
+
+    A moved AP often leaves a stale/down row for the old port.  The row may tell
+    us which core switch and VLAN to ask, but only the current exact GET result
+    can become a placement.
+    """
+    hints = []
+    max_age = _core_ap_hint_max_age()
+    for row in inventory.get(mac, []):
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("switch_ip") or "").strip()
+        if ip not in core_ips or ip in excluded:
+            continue
+        if row.get("firewall"):
+            continue
+        age = row.get("evidence_age_seconds")
+        observed_at = row.get("evidence_observed_at")
+        try:
+            age = float(age)
+            elapsed = now - float(observed_at) if observed_at is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(age) or age < 0 or elapsed < 0 or age + elapsed > max_age:
+            continue
+        if row.get("ap_aggregate_member", row.get("aggregate_member")):
+            continue
+        vlan = vlan_map.get((row.get("device_id"), row.get("librenms_vlan_id")))
+        if vlan is None:
+            continue
+        hints.append({**row, "vlan": vlan, "hint_age_seconds": age + elapsed})
+    # One hint per switch/VLAN, newest first.
+    unique = {}
+    for row in hints:
+        key = (row["switch_ip"], row["vlan"])
+        if key not in unique or row["hint_age_seconds"] < unique[key]["hint_age_seconds"]:
+            unique[key] = row
+    return sorted(unique.values(), key=lambda item: item["hint_age_seconds"])
+
+
 def collect_validated_ap_inventory(aps, inventory, devices, edges, client, community):
-    """AP 独立候选窗口、共享 VLAN FK 清单、精确 GET；失败不影响 wired。"""
+    """AP 独立候选窗口、共享 VLAN FK 清单、精确 GET；失败不影响 wired。
+
+    Core candidates without a manual allowlist are accepted only as
+    observed-attachment after the current exact GET and the same port safety
+    checks.  A validated downstream candidate always wins; manual core
+    allowlist rows remain confirmed-direct.  Old core FDB rows are used only as
+    bounded switch/VLAN hints for a moved core AP.
+    """
     core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
     confirmed = _confirmed_core_ap_ports(core_ips)
     excluded = _env_target_ips("FIREWALL_PING")
+    now = time.time()
 
-    def core_port_allowed(ip, ifindex):
-        if ip not in core_ips:
-            return True
-        name = devices.get(ip, {}).get("ifname", {}).get(ifindex)
-        return (ip, str(name or "").strip().casefold()) in confirmed
-
-    candidates = ap_candidates(aps, inventory, excluded, port_allowed=core_port_allowed)
-    if not any(candidates.values()) or client is None:
+    # Do not let the core gate hide the AP from exact validation.  Downstream
+    # candidates are handled first below so they can never be overridden by a
+    # core forwarding hit.
+    candidates = ap_candidates(aps, inventory, excluded)
+    if not aps or client is None:
         return {}
     try:
         vlan_map = vlan_fk_mapping(client.get_vlan_inventory())
@@ -3038,21 +3117,86 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
     endpoints = {(edge.get(f"{side}_ip"), edge.get(f"{side}_ifindex"))
                  for edge in edges for side in ("from", "to")}
 
+    non_core_current = {
+        mac for mac, rows in candidates.items()
+        if any(str(row.get("switch_ip") or "") not in core_ips for row in rows)
+    }
+    current_core = {
+        mac for mac, rows in candidates.items()
+        if any(str(row.get("switch_ip") or "") in core_ips for row in rows)
+    }
+    for mac in non_core_current:
+        filtered = [row for row in candidates.get(mac, [])
+                    if str(row.get("switch_ip") or "") not in core_ips]
+        if filtered:
+            candidates[mac] = filtered
+
     def port_check(ip, ifindex):
         return _ap_port_eligible(ip, ifindex, devices, endpoints,
-                                 core_ips=core_ips, confirmed_ports=confirmed)
+                                 core_ips=core_ips, confirmed_ports=confirmed,
+                                 require_core_confirmation=False)
 
     def exact_lookup(ip, vlan, mac):
         with snmp_phase("ap"):
             return lookup_fdb_ifindex(ip, community, vlan, mac, devices[ip].get("ifname", {}))
 
-    return validate_ap_candidates(candidates, vlan_map, exact_lookup, port_check)
+    def annotate(row):
+        if str(row.get("switch_ip") or "") not in core_ips:
+            return {}
+        key = (row["switch_ip"], str(row.get("port_name") or "").strip().casefold())
+        if key in confirmed:
+            return {"ap_level": "confirmed-direct"}
+        return {"ap_level": "observed-attachment"}
+
+    validated = validate_ap_candidates(
+        candidates, vlan_map, exact_lookup, port_check, annotate=annotate)
+
+    # A core AP moved to another core port can leave only an old/down FDB row.
+    # Use that row as a bounded switch/VLAN hint; the exact GET above (or here)
+    # remains the only current evidence.  No downstream current candidate and no
+    # current core candidate may be bypassed by a hint.
+    hint_lookups = 0
+    hint_budget = [_core_ap_hint_max_gets()]
+    max_lookups = _core_ap_hint_max_lookups()
+    for ap in sorted(aps, key=lambda item: str(item.get("ip") or "")):
+        mac = ap.get("mac")
+        if not mac or validated.get(mac) or mac in non_core_current or mac in current_core:
+            continue
+        for hint in _core_ap_hint_rows(mac, inventory, core_ips, excluded, vlan_map, now):
+            if hint_lookups >= max_lookups or hint_budget[0] <= 0:
+                break
+            hint_lookups += 1
+            ip = hint["switch_ip"]
+            vlan = hint["vlan"]
+            try:
+                with snmp_phase("ap"):
+                    ifindex = lookup_fdb_ifindex(
+                        ip, community, vlan, mac,
+                        devices.get(ip, {}).get("ifname", {}),
+                        get_budget=hint_budget,
+                    )
+            except _FdbGetBudgetExhausted:
+                break
+            except Exception:
+                continue
+            if ifindex is None:
+                continue
+            port = port_check(ip, ifindex)
+            if not port:
+                continue
+            row = {**hint, "ifindex": ifindex, "port_name": port,
+                   "vlan": vlan, "validated_at": time.time(),
+                   "hint_based": True}
+            row.update(annotate(row))
+            validated.setdefault(mac, []).append(row)
+    return validated
 
 
 def write_current_ap_artifact(output_dir, aps, inventory):
     try:
         excluded = _env_target_ips("FIREWALL_PING")
-        artifact = build_ap_artifact(aps, inventory, excluded)
+        core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
+        artifact = build_ap_artifact(aps, inventory, excluded, core_ips=core_ips)
         write_json_atomic(os.path.join(output_dir, "ap-attachments.json"), artifact, sort_keys=True)
     except Exception as exc:
         print(f"[WARN] AP artifact write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)

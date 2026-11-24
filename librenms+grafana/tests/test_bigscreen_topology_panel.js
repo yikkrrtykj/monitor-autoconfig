@@ -741,13 +741,22 @@ console.log('bigscreen Topology panel tests passed');
   assert.ok(detail.innerHTML.includes('U6-Pro'));
   assert.ok(detail.innerHTML.includes('<dt>客户端</dt><dd>0</dd>'));
   assert.deepStrictEqual([...detail.innerHTML.matchAll(/<dt>(.*?)<\/dt>/g)].map((m) => m[1]),
-    ['Hostname', '管理 IP', '型号', '状态', '延迟', 'VLAN', '上联端口', '客户端']);
+    ['Hostname', '管理 IP', '型号', '状态', '延迟', 'VLAN', '上联端口', '定位', '客户端']);
   assert.ok(!detail.innerHTML.includes('1 Gbps') && !detail.innerHTML.includes('频道利用率最高 20%'));
   assert.ok(detail.innerHTML.includes('<dt>VLAN</dt><dd>200</dd>'));
   assert.ok(detail.innerHTML.includes('<dt>上联端口</dt><dd>Gi6/0/1</dd>'));
   assert.ok(detail.innerHTML.includes('<dt>延迟</dt><dd>1ms</dd>'), 'AP exact-IP node RTT is Inspector fallback');
+  apPanel.render({ width: 800, layout: { height: 500, nodes: [{ kind: 'ap', ip: '10.1.0.1', name: 'AP-1', vlan: 200,
+    switchPort: 'Gi6/0/1', placementLevel: 'observed-attachment', latency: 0.0012 }] } });
+  canvas.nodes[0].dispatch('click'); await Promise.resolve(); await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('<dt>定位</dt><dd>验证转发位置（物理直连未确认）</dd>'));
+  apPanel.render({ width: 800, layout: { height: 500, nodes: [{ kind: 'ap', ip: '10.1.0.1', name: 'AP-1', vlan: 200,
+    switchPort: 'Gi6/0/1', placementLevel: 'confirmed-direct', latency: 0.0012 }] } });
+  canvas.nodes[0].dispatch('click'); await Promise.resolve(); await Promise.resolve();
+  assert.ok(detail.innerHTML.includes('<dt>定位</dt><dd>人工确认核心直连</dd>'));
+
   assert.ok(!detail.innerHTML.includes('topology-view-ports'));
-  const apRows = ['Hostname', '管理 IP', '型号', '状态', '延迟', 'VLAN', '上联端口', '客户端'];
+  const apRows = ['Hostname', '管理 IP', '型号', '状态', '延迟', 'VLAN', '上联端口', '定位', '客户端'];
   for (const [nodeKind, inspectorKind] of [['ap', 'generic-switch'], ['ap', 'hillstone'], ['ap', 'cisco'], ['device', 'unifi-ap']]) {
     let apPortReads = 0;
     const beforePortEvents = portEvents.length;

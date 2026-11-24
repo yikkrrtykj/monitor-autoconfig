@@ -71,7 +71,13 @@ def ap_candidates(aps: list[dict], inventory: dict, excluded_ips=(), now=None, *
     return result
 
 
-def validate_ap_candidates(candidates: dict, vlan_map: dict, exact_lookup, port_check) -> dict:
+def validate_ap_candidates(candidates: dict, vlan_map: dict, exact_lookup, port_check,
+                           annotate=None) -> dict:
+    """Validate exact FDB candidates; annotate only after current GET succeeds.
+
+    The annotate callback may add a formal placement level (core auto observed or
+    manual confirmed-direct). It must never suppress validation failure handling.
+    """
     validated = {}
     for mac, rows in candidates.items():
         current = []
@@ -89,8 +95,11 @@ def validate_ap_candidates(candidates: dict, vlan_map: dict, exact_lookup, port_
                 complete = False
                 break
             if port:
-                current.append({**row, "ifindex": ifindex, "port_name": port,
-                                "vlan": vlan, "validated_at": checked_at})
+                validated_row = {**row, "ifindex": ifindex, "port_name": port,
+                                 "vlan": vlan, "validated_at": checked_at}
+                if annotate is not None:
+                    validated_row.update(annotate(validated_row) or {})
+                current.append(validated_row)
         if complete:
             validated[mac] = current
     return validated
@@ -144,13 +153,22 @@ def fetch_current_aps() -> list[dict]:
     return current_ap_identities(data["data"].get("result"))
 
 
-def build_ap_artifact(aps: list[dict], inventory: dict, excluded_ips=(), now=None) -> dict:
-    """每次仅使用当前证据；多接入点不选主，不继承旧所有权。"""
+def build_ap_artifact(aps: list[dict], inventory: dict, excluded_ips=(), now=None,
+                      core_ips=()) -> dict:
+    """每次仅使用当前证据；多接入点不选主，不继承旧所有权。
+
+    Core automatic placements are formal `observed-attachment` rows only after a
+    current exact GET.  A validated downstream placement always wins over a core
+    forwarding observation; multiple rows from the chosen scope stay ambiguous.
+    Manual core allowlist rows keep the confirmed-direct level.
+    """
     now = time.time() if now is None else now
     maximum = ap_max_age()
     attachments = []
     ambiguous = 0
     excluded = set(excluded_ips)
+    core_ips = set(core_ips)
+    core_levels = ("observed-attachment", "confirmed-direct")
     for ap in aps:
         candidates = {}
         for candidate in inventory.get(ap["mac"], []):
@@ -164,16 +182,39 @@ def build_ap_artifact(aps: list[dict], inventory: dict, excluded_ips=(), now=Non
             key = (ap["mac"], candidate["switch_ip"], candidate["ifindex"])
             if key not in candidates or age < candidates[key]["evidence_age_seconds"]:
                 candidates[key] = {**candidate, "evidence_age_seconds": age}
-        if len(candidates) != 1:
-            ambiguous += int(len(candidates) > 1)
+        rows = list(candidates.values())
+
+        def is_core_row(row):
+            return bool(core_ips and row.get("switch_ip") in core_ips) \
+                or row.get("ap_level") in core_levels
+
+        non_core = [row for row in rows if not is_core_row(row)]
+        core_rows = [row for row in rows if is_core_row(row)]
+        # A valid downstream placement must not be overridden by a core FDB hit.
+        selected = non_core if non_core else core_rows
+        if len(selected) != 1:
+            ambiguous += int(len(selected) > 1)
             continue
-        candidate = next(iter(candidates.values()))
-        attachments.append({"ap_ip": ap["ip"], "ap_mac": ap["mac"], "ap_name": ap["name"],
-                            "switch_ip": candidate["switch_ip"],
-                            "switch_ifindex": candidate["ifindex"],
-                            "switch_port": candidate["port_name"][:128], "vlan": candidate["vlan"],
-                            "librenms_vlan_id": candidate.get("librenms_vlan_id"),
-                            "evidence_age_seconds": candidate["evidence_age_seconds"]})
+        candidate = selected[0]
+        attachment = {
+            "ap_ip": ap["ip"], "ap_mac": ap["mac"], "ap_name": ap["name"],
+            "switch_ip": candidate["switch_ip"],
+            "switch_ifindex": candidate["ifindex"],
+            "switch_port": candidate["port_name"][:128], "vlan": candidate["vlan"],
+            "librenms_vlan_id": candidate.get("librenms_vlan_id"),
+            "evidence_age_seconds": candidate["evidence_age_seconds"],
+        }
+        if is_core_row(candidate):
+            level = candidate.get("ap_level")
+            if level not in core_levels:
+                level = "observed-attachment"
+            attachment["level"] = level
+            attachment["reason"] = (
+                "manual_core_port_operator_confirmed"
+                if level == "confirmed-direct"
+                else "core_forwarding_egress_observed"
+            )
+        attachments.append(attachment)
     return {"generated_at": now, "source": "librenms-fdb+snmp-exact", "candidate_source": "librenms-fdb", "max_age_seconds": maximum,
             "attachments": attachments, "inventory_count": len(aps),
             "unresolved_count": len(aps) - len(attachments), "ambiguous_count": ambiguous}
