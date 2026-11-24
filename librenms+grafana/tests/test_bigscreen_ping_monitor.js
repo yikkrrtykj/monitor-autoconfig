@@ -235,6 +235,71 @@ test("raw keeps the target, time and sample budgets before any upstream call", a
   await assert.rejects(api.raw([target(core)], at - 3601, at), /超出范围/);
 });
 
+const dist = { job: "infra-dist-ping", instance: "192.0.2.11", target_ip: "192.0.2.11" };
+const sysNameRow = (ip, sysName) => ({
+  metric: { job: "infra-switch-snmp", instance: ip, target_ip: ip, display_name: ip, sysName },
+  value: [at, "1"]
+});
+const namedPingData = (rows, readings) => createPingData({ settings, resolveDeviceNames: true,
+  query: async (expr) => expr.includes("sysName") ? rows : readings });
+
+test("a blank switch name resolves from SNMP sysName and stages by that name, keeping history identity", async () => {
+  const api = namedPingData([sysNameRow(dist.target_ip, "PMGC-stage-1.global.com")],
+    [...vector(dist, healthy), ...vector(core, healthy)]);
+  const { targets } = await api.summary(at);
+  const resolved = targets.find(({ ip }) => ip === dist.target_ip);
+  assert.equal(resolved.name, "PMGC-stage-1.global.com");
+  assert.equal(resolved.group, "Stage");
+  assert.equal(resolved.ip, dist.target_ip);
+  // The labels themselves never change: history stays keyed by the raw series.
+  assert.equal(resolved.key, model.identity(dist));
+  assert.equal(targets.find(({ job }) => job === "infra-core-ping").name, "Core-A");
+});
+
+test("a configured switch name wins over the SNMP name", async () => {
+  const named = { ...dist, display_name: "上联-东区" };
+  const api = namedPingData([sysNameRow(dist.target_ip, "PMGC-stage-1.global.com")], vector(named, healthy));
+  const [{ name, group }] = (await api.summary(at)).targets;
+  assert.equal(name, "上联-东区");
+  assert.equal(group, "Dist");
+});
+
+test("a failed name lookup keeps the IP label and never fails the monitoring snapshot", async () => {
+  const api = createPingData({ settings, resolveDeviceNames: true, query: async (expr) => {
+    if (expr.includes("sysName")) throw new DOMException("", "TimeoutError");
+    return vector(dist, healthy);
+  } });
+  const [{ name, status }] = (await api.summary(at)).targets;
+  assert.equal(name, dist.target_ip);
+  assert.equal(status, "UP");
+});
+
+test("IP-shaped and factory generic sysName values are not substituted for the label", async () => {
+  const second = { ...dist, instance: "192.0.2.12", target_ip: "192.0.2.12" };
+  const api = namedPingData([sysNameRow(dist.target_ip, dist.target_ip), sysNameRow(second.target_ip, "Switch")],
+    [...vector(dist, healthy), ...vector(second, healthy)]);
+  const names = (await api.summary(at)).targets.map(({ name }) => name);
+  assert.deepEqual(names, ["192.0.2.11", "192.0.2.12"]);
+});
+
+test("device names are cached for a minute and AP labels are never replaced", async () => {
+  const signal = new AbortController().signal;
+  const calls = [];
+  const apOnSwitch = { ...ap, instance: "192.0.2.11", target_ip: "192.0.2.11" };
+  const api = createPingData({ settings, resolveDeviceNames: true, query: async (expr) => {
+    if (!expr.includes("sysName")) return [...vector(dist, healthy), ...vector(apOnSwitch, healthy)];
+    calls.push(expr);
+    return [sysNameRow(dist.target_ip, "PMGC-stage-1.global.com")];
+  } });
+  const first = await api.summary(at, signal);
+  await api.summary(at + 30, signal);
+  assert.equal(calls.length, 1);
+  await api.summary(at + 61, signal);
+  assert.equal(calls.length, 2);
+  assert.equal(first.targets.find(({ job }) => job === "infra-ap-ping").name, "192.0.2.11");
+});
+
+
 function trendFixture() {
   const calls = [];
   const updates = [];

@@ -952,7 +952,7 @@
     if (page.id === "ping") {
       if (!pingPanel) {
         const settings = window.BSPingModel.policy(config);
-        const data = window.BSPingData.createPingData({ query: window.BSApi.prometheusSamples, settings });
+        const data = window.BSPingData.createPingData({ query: window.BSApi.prometheusSamples, settings, resolveDeviceNames: true });
         pingPanel = window.BSPingPanel.createPingPanel(document.getElementById("pingWorkspace"), data, settings);
       }
       pingPanel.start(new URLSearchParams(window.location.search));
