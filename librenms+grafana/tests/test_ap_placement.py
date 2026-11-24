@@ -145,6 +145,36 @@ def test_nonmanaged_downstream_switch_cannot_be_confirmed_direct(monkeypatch):
     assert one(artifact)["level"] == "observed-attachment"
 
 
+@pytest.mark.parametrize("status,formal_level,placement_level", [
+    ("online", "confirmed-direct", "confirmed-direct"),
+    ("unknown", "observed-attachment", "observed-attachment"),
+    ("offline", None, "unresolved"),
+])
+def test_formal_attachment_and_placement_share_online_level_semantics(
+        monkeypatch, status, formal_level, placement_level):
+    aps, mac, _devices, _api, _shared, _status = core_setup(monkeypatch)
+    row = {"switch_ip": "10.0.0.11", "ifindex": 1,
+           "port_name": "Gi1/0/1", "vlan": 200,
+           "validated_at": time.time(), "ap_level": "confirmed-direct"}
+    evidence = {mac: {"status": status, "source": "fixture-online", "reason": "fixture"}}
+    formal = gte.build_ap_artifact(
+        aps, {mac: [row]}, core_ips={"10.0.0.11"}, online_evidence=evidence)
+    placement_artifact = build(
+        aps, {mac: [row]}, {"validated": {}, "diagnostics": {}}, evidence,
+        manual_core_ports={("10.0.0.11", "gi1/0/1")}, now=time.time())
+    if formal_level is None:
+        assert formal["attachments"] == []
+    else:
+        assert len(formal["attachments"]) == 1
+        assert formal["attachments"][0]["level"] == formal_level
+        assert formal["attachments"][0]["online"] == status
+    assert one(placement_artifact)["level"] == placement_level
+    if formal_level and placement_level == "observed-attachment":
+        assert formal["attachments"][0]["level"] == placement_level
+    if status == "offline":
+        assert one(placement_artifact)["switch_ip"] is None
+
+
 def test_multiple_valid_candidates_are_ambiguous(monkeypatch):
     aps, mac, devices, api, shared, _status = core_setup(
         monkeypatch,

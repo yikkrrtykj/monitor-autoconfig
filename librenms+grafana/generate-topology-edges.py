@@ -41,11 +41,14 @@ Env vars:
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidates,
-                         ap_max_age, vlan_fk_mapping, validate_ap_candidates)
+from ap_topology import (ApExactResult, fetch_current_aps, build_ap_artifact,
+                         ap_candidate_cap, ap_candidates,
+                         ap_candidates_with_status, ap_max_age, vlan_fk_mapping,
+                         validate_ap_candidates_detailed)
 from ap_placement import (build_invalidated_artifact, build_placement_artifact,
                           fetch_ap_online_evidence)
 import json
+import math
 import os
 import re
 import subprocess
@@ -2745,6 +2748,126 @@ def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map, get_budget=None):
     return None
 
 
+
+_ORIGINAL_LOOKUP_FDB_IFINDEX = lookup_fdb_ifindex
+
+
+def _ap_snmpget(host, community, oid, timeout=None, retries=None):
+    """AP-only exact GET with a three-state result.
+
+    This deliberately does not change ``snmpget()`` or the server FDB caller
+    contract.  A communication failure is ``incomplete``; only an explicit
+    noSuchInstance/noSuchObject answer is ``definitive_miss``.
+    """
+    _record_snmp_call("gets")
+    timeout, retries = _snmp_limits(timeout, retries)
+    cmd = [
+        "snmpget", "-v2c", "-c", community, "-O", "qv",
+        "-t", str(timeout), "-r", str(retries), host, oid,
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=timeout * (retries + 1) + 2,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[WARN] AP snmpget {host} {oid} failed (TimeoutExpired)", file=sys.stderr)
+        return "incomplete", "timeout"
+    except Exception as exc:
+        print("[WARN] AP snmpget %s %s failed (%s)" % (host, oid, type(exc).__name__),
+              file=sys.stderr)
+        return "incomplete", type(exc).__name__
+    finally:
+        _snmp_request_delay()
+    combined = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    lowered = combined.lower()
+    if result.returncode != 0:
+        # A timeout/network error with a stale diagnostic must not become a
+        # definitive MAC miss.
+        return "incomplete", "returncode_%s" % result.returncode
+    # Communication failure markers take priority over a stale stdout noSuch
+    # diagnostic.  Only a response with no timeout/network evidence may become
+    # a definitive miss.
+    if "timeout" in lowered or "no response" in lowered:
+        return "incomplete", "snmp_timeout"
+    if "no such instance" in lowered or "no such object" in lowered:
+        return "definitive_miss", ""
+    value = (result.stdout or "").strip().strip('"')
+    if not value:
+        return "incomplete", "empty_response"
+    return "successful", value
+
+
+def lookup_fdb_ifindex_result(ip, community, vlan, mac, ifname_map, get_budget=None):
+    """Resolve an AP MAC with explicit successful/miss/incomplete status.
+
+    Q-BRIDGE is tried first; an explicit noSuch result falls back to Cisco
+    community@vlan BRIDGE-MIB.  Communication failures do not fall through to a
+    "miss".  A successful bridge-port answer is never converted into a guessed
+    physical ifIndex: bridgePort->ifIndex must resolve to a physical ifName.
+    """
+    # Preserve legacy direct callers that replace lookup_fdb_ifindex.
+    if lookup_fdb_ifindex is not _ORIGINAL_LOOKUP_FDB_IFINDEX:
+        value = lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map)
+        if value is None:
+            return ApExactResult("definitive_miss")
+        return ApExactResult("successful", value)
+
+    suffix = mac_oid_suffix(mac)
+    if not suffix:
+        return ApExactResult("incomplete", reason="invalid_mac")
+
+    def _get(query_community, oid):
+        if get_budget is not None:
+            if get_budget[0] <= 0:
+                raise _FdbGetBudgetExhausted()
+            get_budget[0] -= 1
+        return _ap_snmpget(ip, query_community, oid)
+
+    lookups = []
+    if vlan is not None:
+        lookups.append((community, "%s.%s.%s" % (DOT1Q_TP_FDB_PORT_OID, vlan, suffix)))
+        lookups.append((community + "@" + str(vlan),
+                        "%s.%s" % (DOT1D_TP_FDB_PORT_OID, suffix)))
+    else:
+        lookups.append((community, "%s.%s" % (DOT1D_TP_FDB_PORT_OID, suffix)))
+
+    bridge_port = None
+    bridge_community = None
+    for query_community, oid in lookups:
+        status, value = _get(query_community, oid)
+        if status == "incomplete":
+            return ApExactResult("incomplete", reason=value)
+        if status == "definitive_miss":
+            continue
+        parsed = _positive_int(value)
+        if parsed is None:
+            return ApExactResult("incomplete", reason="malformed_bridge_port")
+        bridge_port = parsed
+        bridge_community = query_community
+        break
+    if bridge_port is None:
+        return ApExactResult("definitive_miss")
+
+    for mapping_community in dict.fromkeys((bridge_community, community)):
+        status, value = _get(
+            mapping_community,
+            "%s.%s" % (DOT1D_BASE_PORT_IFINDEX_OID, bridge_port),
+        )
+        if status == "incomplete":
+            return ApExactResult("incomplete", reason=value)
+        if status == "definitive_miss":
+            continue
+        ifindex = _positive_int(value)
+        if ifindex is None:
+            return ApExactResult("incomplete", reason="malformed_ifindex")
+        if is_physical_interface_name(ifname_map.get(ifindex)):
+            return ApExactResult("successful", ifindex)
+    # Do not guess that bridgePort equals ifIndex.  AP placement requires the
+    # explicit BRIDGE-MIB mapping to a physical interface; otherwise fail closed.
+    return ApExactResult("incomplete", reason="bridge_port_mapping_incomplete")
+
+
 def _first_row_timestamp(record, metadata, metadata_field):
     """Prefer row evidence time, falling back to the owning device cycle."""
     for key in ("updated_at", "last_seen", "last_updated", "timestamp"):
@@ -3015,20 +3138,99 @@ def _ap_port_eligible(ip, ifindex, devices, endpoints, *, core_ips=(),
     return name
 
 
+CORE_AP_HINT_MAX_AGE_DEFAULT = 7 * 24 * 60 * 60
+CORE_AP_HINT_MAX_AGE_LIMIT = 30 * 24 * 60 * 60
+CORE_AP_HINT_MAX_LOOKUPS_DEFAULT = 8
+CORE_AP_HINT_MAX_LOOKUPS_LIMIT = 32
+CORE_AP_HINT_MAX_GETS_DEFAULT = 24
+CORE_AP_HINT_MAX_GETS_LIMIT = 96
+
+
+def _core_ap_hint_max_age():
+    return _bounded_env_int(
+        "TOPOLOGY_CORE_AP_HINT_MAX_AGE_SECONDS",
+        CORE_AP_HINT_MAX_AGE_DEFAULT,
+        CORE_AP_HINT_MAX_AGE_LIMIT,
+    )
+
+
+def _core_ap_hint_max_lookups():
+    return _bounded_env_int(
+        "TOPOLOGY_CORE_AP_HINT_MAX_LOOKUPS",
+        CORE_AP_HINT_MAX_LOOKUPS_DEFAULT,
+        CORE_AP_HINT_MAX_LOOKUPS_LIMIT,
+    )
+
+
+def _core_ap_hint_max_gets():
+    return _bounded_env_int(
+        "TOPOLOGY_CORE_AP_HINT_MAX_GETS",
+        CORE_AP_HINT_MAX_GETS_DEFAULT,
+        CORE_AP_HINT_MAX_GETS_LIMIT,
+    )
+
+
+def _core_ap_hint_rows(mac, inventory, core_ips, excluded, vlan_map, now):
+    """Old physical core FDB rows are bounded hints, never current evidence.
+
+    A moved AP often leaves a stale/down row for the old port.  The row may tell
+    us which core switch and VLAN to ask, but only the current exact GET result
+    can become a placement.
+    """
+    hints = []
+    max_age = _core_ap_hint_max_age()
+    for row in inventory.get(mac, []):
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("switch_ip") or "").strip()
+        if ip not in core_ips or ip in excluded:
+            continue
+        if row.get("firewall"):
+            continue
+        age = row.get("evidence_age_seconds")
+        observed_at = row.get("evidence_observed_at")
+        try:
+            age = float(age)
+            elapsed = now - float(observed_at) if observed_at is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(age) or age < 0 or elapsed < 0 or age + elapsed > max_age:
+            continue
+        if row.get("ap_aggregate_member", row.get("aggregate_member")):
+            continue
+        vlan = vlan_map.get((row.get("device_id"), row.get("librenms_vlan_id")))
+        if vlan is None:
+            continue
+        hints.append({**row, "vlan": vlan, "hint_age_seconds": age + elapsed})
+    # One hint per switch/VLAN, newest first.
+    unique = {}
+    for row in hints:
+        key = (row["switch_ip"], row["vlan"])
+        if key not in unique or row["hint_age_seconds"] < unique[key]["hint_age_seconds"]:
+            unique[key] = row
+    return sorted(unique.values(), key=lambda item: item["hint_age_seconds"])
+
+
 def collect_validated_ap_inventory(aps, inventory, devices, edges, client, community):
-    """AP 独立候选窗口、共享 VLAN FK 清单、精确 GET；失败不影响 wired。"""
+    """Validate current candidates, then bounded historical hints, fail-closed.
+
+    Raw current candidates are all exact-queried before any placement choice.
+    A historical downstream FDB row cannot pre-empt a current core exact lookup.
+    A current successful downstream and a current successful core position are
+    conflicting current evidence and stay ambiguous.  If a downstream candidate
+    is incomplete, the core is not selected blindly.  Historical core rows are
+    switch/VLAN hints only; all legal hints for an AP must finish within the
+    hard lookup/GET budget, otherwise no attachment is emitted.
+    """
     core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
     confirmed = _confirmed_core_ap_ports(core_ips)
     excluded = _env_target_ips("FIREWALL_PING")
+    now = time.time()
 
-    def core_port_allowed(ip, ifindex):
-        if ip not in core_ips:
-            return True
-        name = devices.get(ip, {}).get("ifname", {}).get(ifindex)
-        return (ip, str(name or "").strip().casefold()) in confirmed
-
-    candidates = ap_candidates(aps, inventory, excluded, port_allowed=core_port_allowed)
-    if not any(candidates.values()) or client is None:
+    raw_candidates, candidate_status = ap_candidates_with_status(
+        aps, inventory, excluded)
+    cap_exceeded = candidate_status["candidate_cap_exceeded"]
+    if not aps or client is None:
         return {}
     try:
         vlan_map = vlan_fk_mapping(client.get_vlan_inventory())
@@ -3040,19 +3242,151 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
 
     def port_check(ip, ifindex):
         return _ap_port_eligible(ip, ifindex, devices, endpoints,
-                                 core_ips=core_ips, confirmed_ports=confirmed)
+                                 core_ips=core_ips, confirmed_ports=confirmed,
+                                 require_core_confirmation=False)
 
     def exact_lookup(ip, vlan, mac):
         with snmp_phase("ap"):
-            return lookup_fdb_ifindex(ip, community, vlan, mac, devices[ip].get("ifname", {}))
+            return lookup_fdb_ifindex_result(
+                ip, community, vlan, mac, devices[ip].get("ifname", {}))
 
-    return validate_ap_candidates(candidates, vlan_map, exact_lookup, port_check)
+    def annotate(row):
+        if str(row.get("switch_ip") or "") not in core_ips:
+            return {}
+        key = (row["switch_ip"], str(row.get("port_name") or "").strip().casefold())
+        if key in confirmed:
+            return {"ap_level": "confirmed-direct"}
+        return {"ap_level": "observed-attachment"}
+
+    detailed = validate_ap_candidates_detailed(
+        raw_candidates, vlan_map, exact_lookup, port_check, annotate=annotate)
+
+    selected = {}
+    hint_eligible = set()
+    for ap in sorted(aps, key=lambda item: str(item.get("ip") or "")):
+        mac = ap.get("mac")
+        if not mac or mac in cap_exceeded:
+            continue
+        info = detailed.get(mac) or {
+            "raw": 0, "successful": [], "mismatched": [], "incomplete": [],
+        }
+        successful = info["successful"]
+        non_core_success = [row for row in successful
+                            if str(row.get("switch_ip") or "") not in core_ips]
+        core_success = [row for row in successful
+                        if str(row.get("switch_ip") or "") in core_ips]
+        non_core_incomplete = [row for row in info["incomplete"]
+                               if str(row.get("switch_ip") or "") not in core_ips]
+        core_incomplete = [row for row in info["incomplete"]
+                           if str(row.get("switch_ip") or "") in core_ips]
+        if successful:
+            if non_core_success and core_success:
+                # Current successful positions conflict; let build_ap_artifact
+                # report ambiguous rather than choosing a parent kind.
+                selected[mac] = successful
+            elif non_core_success:
+                if non_core_incomplete:
+                    # Another downstream current position was not verified.
+                    continue
+                selected[mac] = non_core_success
+            else:
+                if non_core_incomplete or core_incomplete:
+                    # Do not select core blindly when downstream or another
+                    # current core candidate is incomplete.
+                    continue
+                selected[mac] = core_success
+        elif info["incomplete"]:
+            # A current candidate query failed/timed out; do not fall back to
+            # historical hints for this AP.
+            continue
+        else:
+            # Every current candidate was an explicit miss/rejection (or there
+            # were none). Historical core hints may now be queried.
+            hint_eligible.add(mac)
+
+    hint_lookups = 0
+    hint_budget = [_core_ap_hint_max_gets()]
+    max_lookups = _core_ap_hint_max_lookups()
+    # Explicit cap=0 disables the entire AP placement path, including hints.
+    hint_enabled = ap_candidate_cap() > 0
+    for ap in sorted(aps, key=lambda item: str(item.get("ip") or "")):
+        mac = ap.get("mac")
+        if not mac or mac in cap_exceeded or not hint_enabled or mac not in hint_eligible:
+            continue
+        hints = _core_ap_hint_rows(mac, inventory, core_ips, excluded, vlan_map, now)
+        if not hints:
+            continue
+        successes = []
+        complete = True
+        for hint in hints:
+            if hint_lookups >= max_lookups or hint_budget[0] <= 0:
+                complete = False
+                break
+            hint_lookups += 1
+            ip = hint["switch_ip"]
+            vlan = hint["vlan"]
+            try:
+                with snmp_phase("ap"):
+                    outcome = lookup_fdb_ifindex_result(
+                        ip, community, vlan, mac,
+                        devices.get(ip, {}).get("ifname", {}),
+                        get_budget=hint_budget,
+                    )
+            except _FdbGetBudgetExhausted:
+                complete = False
+                break
+            except Exception:
+                complete = False
+                break
+            if isinstance(outcome, ApExactResult):
+                if outcome.status == "incomplete":
+                    complete = False
+                    break
+                if outcome.status == "definitive_miss":
+                    continue
+                ifindex = outcome.ifindex
+            else:
+                ifindex = outcome
+            if ifindex is None:
+                complete = False
+                break
+            try:
+                port = port_check(ip, ifindex)
+            except Exception:
+                complete = False
+                break
+            if not port:
+                continue
+            # Never inherit the historical row's old port/status fields.  The
+            # current ifIndex, port name, VLAN and status were all re-evaluated
+            # above; only the switch/VLAN hint identity survives.
+            current = {
+                "switch_ip": ip,
+                "device_id": hint.get("device_id"),
+                "librenms_vlan_id": hint.get("librenms_vlan_id"),
+                "ifindex": ifindex,
+                "port_name": port,
+                "vlan": vlan,
+                "validated_at": time.time(),
+                "hint_based": True,
+                "hint_age_seconds": hint.get("hint_age_seconds"),
+            }
+            current.update(annotate(current))
+            successes.append(current)
+        if not complete:
+            # Partial historical evidence must never become a unique location.
+            continue
+        if successes:
+            selected[mac] = successes
+    return {mac: rows for mac, rows in selected.items() if rows}
 
 
-def write_current_ap_artifact(output_dir, aps, inventory):
+def write_current_ap_artifact(output_dir, aps, inventory, online_evidence=None):
     try:
         excluded = _env_target_ips("FIREWALL_PING")
-        artifact = build_ap_artifact(aps, inventory, excluded)
+        core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
+        artifact = build_ap_artifact(aps, inventory, excluded, core_ips=core_ips,
+                                     online_evidence=online_evidence or {})
         write_json_atomic(os.path.join(output_dir, "ap-attachments.json"), artifact, sort_keys=True)
     except Exception as exc:
         print(f"[WARN] AP artifact write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
@@ -3234,7 +3568,8 @@ def write_invalidated_ap_placement_artifact(output_dir, reason):
 def write_ap_placement_artifact(output_dir, aps, validated, fdb_inventory, fdb_status,
                                 devices, edges, librenms, community, librenms_ready,
                                 expected_switches=None, polled_switches=None,
-                                poll_failed_switches=None, identity_error=False):
+                                poll_failed_switches=None, identity_error=False,
+                                online_evidence=None):
     """P1 影子产物：失败隔离，不影响 ap-attachments.json 与 wired 输出。"""
     if not aps:
         reason = "ap_identity_unavailable" if identity_error else "no_ap_identity"
@@ -3250,7 +3585,7 @@ def write_ap_placement_artifact(output_dir, aps, validated, fdb_inventory, fdb_s
               file=sys.stderr)
     # 在线证据：unpoller v2.15.3 只有 uptime、没有可靠心跳；查询失败或缺失
     # 一律 unknown，不把 uptime 当作 online。
-    online = fetch_ap_online_evidence(aps)
+    online = online_evidence if online_evidence is not None else fetch_ap_online_evidence(aps)
     try:
         core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
         artifact = build_placement_artifact(
@@ -4536,7 +4871,13 @@ def _run_collection():
     except Exception as exc:
         print(f"[WARN] AP validation unavailable ({type(exc).__name__}); AP edges omitted", file=sys.stderr)
         validated_ap = {}
-    write_current_ap_artifact(output_dir, aps, validated_ap)
+    try:
+        ap_online = fetch_ap_online_evidence(aps)
+    except Exception as exc:
+        print(f"[WARN] AP online evidence unavailable ({type(exc).__name__}); "
+              "formal/placement levels use unknown", file=sys.stderr)
+        ap_online = {}
+    write_current_ap_artifact(output_dir, aps, validated_ap, online_evidence=ap_online)
     polled_switch_ips = [ip for ip in devices if ip not in firewall_ips]
     try:
         write_ap_placement_artifact(
@@ -4546,6 +4887,7 @@ def _run_collection():
             polled_switches=len(polled_switch_ips),
             poll_failed_switches=len(poll_failed_switch_ips),
             identity_error=ap_identity_error,
+            online_evidence=ap_online,
         )
     except Exception as exc:
         print(f"[WARN] AP placement shadow cycle failed ({type(exc).__name__}); wired output unaffected",

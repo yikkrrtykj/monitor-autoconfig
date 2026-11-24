@@ -2302,4 +2302,11 @@ def test_topology_collector_local_imports_and_config_are_stable():
     assert "restart: unless-stopped" in collector
     assert 'TOPOLOGY_OUTPUT_DIR: "/targets"' in collector
     assert 'TOPOLOGY_AP_SHADOW_MAX_LOOKUPS: "${TOPOLOGY_AP_SHADOW_MAX_LOOKUPS:-16}"' in collector
+    for name, default in (
+            ("TOPOLOGY_CORE_AP_HINT_MAX_AGE_SECONDS", "604800"),
+            ("TOPOLOGY_CORE_AP_HINT_MAX_LOOKUPS", "8"),
+            ("TOPOLOGY_CORE_AP_HINT_MAX_GETS", "24")):
+        assert f'{name}: "${{{name}:-{default}}}"' in collector
+        assert f"{name}={default}" in read(".env.example")
+    assert "留空不画核心 AP" not in read(".env.example")
     assert "python3 /generate-topology-edges.py" in collector
