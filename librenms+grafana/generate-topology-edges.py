@@ -2860,10 +2860,8 @@ def lookup_fdb_ifindex_result(ip, community, vlan, mac, ifname_map, get_budget=N
             return ApExactResult("incomplete", reason="malformed_ifindex")
         if is_physical_interface_name(ifname_map.get(ifindex)):
             return ApExactResult("successful", ifindex)
-    # Some agents expose ifIndex directly for the bridge port, but only accept
-    # it when the local IF-MIB mapping proves it is a physical interface.
-    if is_physical_interface_name(ifname_map.get(bridge_port)):
-        return ApExactResult("successful", bridge_port)
+    # Do not guess that bridgePort equals ifIndex.  AP placement requires the
+    # explicit BRIDGE-MIB mapping to a physical interface; otherwise fail closed.
     return ApExactResult("incomplete", reason="bridge_port_mapping_incomplete")
 
 

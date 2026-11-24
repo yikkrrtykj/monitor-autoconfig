@@ -800,6 +800,22 @@ def test_bridge_port_mapping_failure_is_incomplete_not_guessed(monkeypatch):
     assert result.ifindex is None
 
 
+def test_bridge_port_mapping_missing_never_guesses_physical_ifindex(monkeypatch):
+    def run(command, **kwargs):
+        _host, oid, _community = _ap_result_command(command)
+        if oid.startswith(gte.DOT1D_BASE_PORT_IFINDEX_OID):
+            return SimpleNamespace(returncode=0, stdout="",
+                                   stderr="No Such Object available on this agent at this OID")
+        return SimpleNamespace(returncode=0, stdout="45", stderr="")
+
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    result = gte.lookup_fdb_ifindex_result(
+        "10.0.0.11", "fixture", 200, "02:00:00:00:00:01",
+        {45: "Gi2/0/45"})
+    assert result.status == "incomplete"
+    assert result.ifindex is None
+
+
 def test_partial_historical_hint_snmp_failure_emits_no_attachment(monkeypatch):
     aps, inventory, devices, api = setup_inventory(
         rows=[seed(age=86400, index=45, port_name="Gi2/0/45")],
