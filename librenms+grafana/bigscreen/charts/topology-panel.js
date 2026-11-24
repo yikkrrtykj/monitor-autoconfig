@@ -107,6 +107,12 @@
               ${syslogUrl ? `<a class="detail-link" href="${escapeHtml(syslogUrl)}">Syslog</a>` : ""}
             </div>`;
           const header = (name) => `<header><strong>${escapeHtml(name)}</strong><button class="topology-detail-close" type="button" aria-label="关闭详情">×</button></header>`;
+          const apLevelText = node.kind === "ap"
+            ? (node.placementLevel === "observed-attachment"
+              ? "验证转发位置（物理直连未确认）"
+              : node.placementLevel === "confirmed-direct" ? "人工确认核心直连" : "—")
+            : "";
+          const apLevelRow = node.kind === "ap" ? `<dt>定位</dt><dd>${escapeHtml(apLevelText)}</dd>` : "";
           const legacyCard = `${header(node.name)}
             <dl>
               ${node.kind === "ap" ? `<dt>Hostname</dt><dd>${escapeHtml(node.hostname || "—")}</dd>
@@ -116,6 +122,7 @@
               <dt>延迟</dt><dd>${Number.isFinite(node.latency) ? formatPingText(node.latency) : "—"}</dd>
               <dt>VLAN</dt><dd>${node.vlan || "—"}</dd>
               <dt>上联端口</dt><dd>${escapeHtml(node.switchPort || "—")}</dd>
+              ${apLevelRow}
               <dt>客户端</dt><dd>${Number.isFinite(node.clients) ? node.clients : "—"}</dd>` : `<dt>类型</dt><dd>${escapeHtml(topologyNodeKindLabel(node.kind))}</dd>
               <dt>IP</dt><dd>${escapeHtml(node.ip || "—")}</dd>
               <dt>状态</dt><dd>${node.success === null ? "状态未知" : (node.success === undefined ? "无数据" : (node.success ? "在线" : "离线"))}</dd>
@@ -150,7 +157,7 @@
               <dl>
                 ${row("Hostname", inspector.hostname)}${row("管理 IP", inspector.ip)}${row("型号", inspector.model)}
                 ${row("状态", state)}${row("延迟", Number.isFinite(inspector.latencySeconds) ? formatPingText(inspector.latencySeconds) : isAp && Number.isFinite(node.latency) ? formatPingText(node.latency) : null)}
-                ${isAp ? row("VLAN", node.vlan) + row("上联端口", node.switchPort) + row("客户端", inspector.clients)
+                ${isAp ? row("VLAN", node.vlan) + row("上联端口", node.switchPort) + row("定位", apLevelText) + row("客户端", inspector.clients)
                   : row("端口", ports ? `在线 ${ports.up} / 离线 ${ports.down} / 未知 ${ports.unknown}` : null) + row("连接摘要", connectionSummary)}
                 ${!isAp && inspector.kind === "hillstone" ? haRows(inspector).map(([label, value]) => row(label, value, true)).join('') : !isAp && node.kind === "firewall" ? row("HA 角色", "未知（暂无可信数据源）") : ""}
               </dl>

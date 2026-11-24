@@ -165,11 +165,13 @@
       // A group's complete label/body/metadata area is reserved before routing.
       while (reserved.some((r) => intersects(box, { x: r.x - 16, y: r.y - 16, w: r.w + 32, h: r.h + 32 }))) box.y += 32;
       const nodes = items.map(({ ap, row }, idx) => {
+        const observed = row.level === 'observed-attachment';
         const node = { kind: 'ap', ip: ap.ip, name: ap.name || ap.ip, model: ap.model, clients: ap.clients,
           parentIp: row.switch_ip, parentIfindex: row.switch_ifindex, switchPort: row.switch_port,
           vlan: Number.isInteger(row.vlan) && row.vlan >= 1 && row.vlan <= 4094 ? row.vlan : null,
           latency: Number.isFinite(ap.latency) && ap.latency >= 0 ? ap.latency : null,
           success: ap.online, level: ap.online === true ? 'good' : ap.online === false ? 'bad' : 'none',
+          placementLevel: typeof row.level === 'string' ? row.level : null, apObserved: observed,
           x: x + (idx % cols) * 160 + 54, y: box.y + Math.floor(idx / cols) * 144 + 28, w: 52, h: 52 };
         return node;
       });
@@ -182,7 +184,8 @@
         const points = route([center, parent.y + parent.h], [node.x + 26, node.y], obstacles, frame.width, true);
         if (!points) return;
         const apPoints = compactPath(points);
-        result.layout.links.push({ from: parent, to: node, severity: node.level, apLink: true, apPoints });
+        result.layout.links.push({ from: parent, to: node, severity: node.level, apLink: true, apPoints,
+          apObserved: node.apObserved });
         result.layout.nodes.push(node);
         reserved.push(box);
         apPoints.slice(1).forEach((point, idx) => {
@@ -210,10 +213,12 @@
         // Trunk ends inside the participating span, never at an empty slot.
         // A partial row has only its real children, and a single AP has no bus.
         const bus = { points: compactPath(points), severity: 'good', y: busY,
+          observed: children.every((node) => node.apObserved),
           childXs, junctionX, childRoutes: children.map((node) => ({ apIp: node.ip,
             points: compactPath([...points, [node.x + node.w / 2, busY], [node.x + node.w / 2, node.y]]) })) };
         buses.push(bus);
-        children.forEach((node) => links.push({ from: parent, to: node, severity: node.level, apLink: true, apBusY: busY }));
+        children.forEach((node) => links.push({ from: parent, to: node, severity: node.level, apLink: true,
+          apBusY: busY, apObserved: node.apObserved }));
       }
       result.layout.apBuses.push(...buses);
       result.layout.links.push(...links);
