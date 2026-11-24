@@ -372,6 +372,75 @@ def test_core_move_uses_current_exact_and_never_auto_confirms(monkeypatch, block
     assert row["level"] != "confirmed-direct"
 
 
+def test_candidate_status_distinguishes_empty_cap_and_normal():
+    aps = ap.current_ap_identities([identity()])
+    mac = aps[0]["mac"]
+    normal = {mac: [seed(index=1)]}
+    candidates, status = ap.ap_candidates_with_status(aps, normal)
+    assert mac in candidates and mac in status["normal_candidates"]
+    assert mac not in status["candidate_cap_exceeded"] and mac not in status["no_candidate"]
+
+    empty, status = ap.ap_candidates_with_status(aps, {})
+    assert empty == {} and mac in status["no_candidate"]
+
+    too_many = {mac: [seed(index=n) for n in range(1, 10)]}
+    candidates, status = ap.ap_candidates_with_status(aps, too_many)
+    assert candidates == {} and mac in status["candidate_cap_exceeded"]
+
+
+def test_candidate_cap_exceeded_never_falls_back_to_hint(monkeypatch):
+    aps, inventory, devices, api = setup_inventory(
+        rows=[seed(index=n) for n in range(1, 10)],
+        ports=[(n, n, f"Gi1/0/{n}", 1) for n in range(1, 10)],
+    )
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+    calls = []
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex",
+                        lambda *args, **kwargs: calls.append(args) or 1)
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api),
+                                    core_ips={"10.0.0.11"})
+    assert calls == []
+    assert artifact["attachments"] == []
+    assert artifact["ambiguous_count"] == 0
+
+
+def test_candidate_cap_zero_never_falls_back_to_hint(monkeypatch):
+    aps, inventory, devices, api = setup_inventory(
+        rows=[seed(index=45, port_name="Gi2/0/45")],
+        ports=[(45, 45, "Gi2/0/45", 1)],
+    )
+    old = seed(age=86400, index=46)
+    old["evidence_observed_at"] = time.time()
+    inventory[aps[0]["mac"]].append(old)
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+    monkeypatch.setenv("TOPOLOGY_AP_FDB_CANDIDATE_CAP", "0")
+    calls = []
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex",
+                        lambda *args, **kwargs: calls.append(args) or 45)
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api),
+                                    core_ips={"10.0.0.11"})
+    assert calls == []
+    assert artifact["attachments"] == []
+
+
+def test_no_current_candidate_one_legal_hint_still_attaches(monkeypatch):
+    aps, inventory, devices, api = setup_inventory(
+        rows=[seed(age=86400, index=46)],
+        ports=[(45, 45, "Gi2/0/45", 1), (46, 46, "Gi2/0/46", 1)],
+    )
+    inventory[aps[0]["mac"]][0]["evidence_observed_at"] = time.time()
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+    calls = []
+    monkeypatch.setattr(gte, "lookup_fdb_ifindex",
+                        lambda *args, **kwargs: calls.append(args) or 45)
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api),
+                                    core_ips={"10.0.0.11"})
+    assert len(calls) == 1
+    assert len(artifact["attachments"]) == 1
+    assert artifact["attachments"][0]["switch_port"] == "Gi2/0/45"
+    assert artifact["attachments"][0]["level"] == "observed-attachment"
+
+
 def test_hint_old_down_row_does_not_taint_current_up_port(monkeypatch):
     aps, inventory, devices, api = setup_inventory(
         rows=[seed(age=86400, index=46, port_name="Gi2/0/46", confirmed_down=True)],
@@ -491,16 +560,33 @@ def test_multiple_core_candidates_remain_ambiguous(monkeypatch):
     assert artifact["ambiguous_count"] == 1
 
 
-def test_core_manual_allowlist_confirms_current_port(monkeypatch):
+def _online(mac, status):
+    return {mac: {"status": status, "source": "fixture-online", "reason": "fixture"}}
+
+
+def test_core_manual_allowlist_confirms_current_port_only_when_online(monkeypatch):
     aps, inventory, devices, api = setup_inventory(ports=[(1, 1, "Gi1/0/1", 1)])
     monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
     monkeypatch.setenv("TOPOLOGY_CORE_AP_PORTS", "10.0.0.11:Gi1/0/1")
     monkeypatch.setattr(gte, "lookup_fdb_ifindex", lambda *args: 1)
-    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api),
-                                    core_ips={"10.0.0.11"})
-    assert len(artifact["attachments"]) == 1
-    assert artifact["attachments"][0]["level"] == "confirmed-direct"
-    assert artifact["attachments"][0]["reason"] == "manual_core_port_operator_confirmed"
+    validated = validate(aps, inventory, devices, api)
+    mac = aps[0]["mac"]
+    online = ap.build_ap_artifact(
+        aps, validated, core_ips={"10.0.0.11"}, online_evidence=_online(mac, "online"))
+    assert len(online["attachments"]) == 1
+    assert online["attachments"][0]["level"] == "confirmed-direct"
+    assert online["attachments"][0]["reason"] == "manual_core_port_operator_confirmed"
+    assert online["attachments"][0]["online"] == "online"
+
+    unknown = ap.build_ap_artifact(
+        aps, validated, core_ips={"10.0.0.11"}, online_evidence=_online(mac, "unknown"))
+    assert len(unknown["attachments"]) == 1
+    assert unknown["attachments"][0]["level"] == "observed-attachment"
+    assert unknown["attachments"][0]["online"] == "unknown"
+
+    offline = ap.build_ap_artifact(
+        aps, validated, core_ips={"10.0.0.11"}, online_evidence=_online(mac, "offline"))
+    assert offline["attachments"] == []
 
 
 @pytest.mark.parametrize("old_age,hint_limit,expected_calls,expected_attachment", [

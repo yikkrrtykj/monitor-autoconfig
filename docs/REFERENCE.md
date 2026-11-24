@@ -92,7 +92,7 @@ DNS 错误与 ICMP 状态分别返回。列表含 dnsStatus、resolvedIp、aCoun
 
 ### 核心交换机直连 AP
 
-拓扑不会仅凭核心 FDB 命中把下游 AP 挂到核心：存在有效下游定位时始终保留下游父节点；核心候选必须唯一、当前 exact GET 命中、物理端口当前可用，并排除互联口、Port-channel、聚合成员和异常端口。满足条件但未人工确认时，核心转发出口以 `observed-attachment` 虚线显示，文案为“验证转发位置（物理直连未确认）”，不得升级为 `confirmed-direct`；有有效下游定位或核心候选冲突时保持原父节点或 ambiguous。`TOPOLOGY_CORE_AP_PORTS` 仍用于人工确认核心直连：填写当前核心口后可显示 `confirmed-direct` 实线，例如 `192.0.2.1:Gi1/0/37`；多项用逗号分隔，最多 128 项、8192 字符，IP 必须是已配置核心地址，接口名填写采集到的 `ifName`（忽略大小写）。不要填写接交换机的互联口或聚合成员；核心 AP 换口后，旧口的人工确认不会继承到新端口，当前端口仍需重新验证。
+拓扑不会仅凭核心 FDB 命中把下游 AP 挂到核心：存在有效下游定位时始终保留下游父节点；核心候选必须唯一、当前 exact GET 命中、物理端口当前可用，并排除互联口、Port-channel、聚合成员和异常端口。满足条件但未人工确认时，核心转发出口以 `observed-attachment` 虚线显示，文案为“验证转发位置（物理直连未确认）”，不得升级为 `confirmed-direct`；有有效下游定位或核心候选冲突时保持原父节点或 ambiguous。`TOPOLOGY_CORE_AP_PORTS` 仍用于人工确认核心直连：填写当前核心口后，仅在现有在线证据为 `online` 时显示 `confirmed-direct` 实线，例如 `192.0.2.1:Gi1/0/37`；`online=unknown` 降级为 `observed-attachment`，`online=offline` 不生成当前核心 attachment（`ap-placement.json` 记录 `unresolved` 与 `last_observed`）。两套产物复用同一在线证据来源；正式 `ap-attachments.json` 只保存当前 attachment，影子 `ap-placement.json` 还保留离线历史证据，这是两者在 offline 时的唯一预期差异。多项用逗号分隔，最多 128 项、8192 字符，IP 必须是已配置核心地址，接口名填写采集到的 `ifName`（忽略大小写）。不要填写接交换机的互联口或聚合成员；核心 AP 换口后，旧口的人工确认不会继承到新端口，当前端口仍需重新验证。
 
 留空或配置无效时，仅禁用人工 `confirmed-direct`，不会阻断已验证的 `observed-attachment` 自动显示。名单里的端口仍需通过当前 MAC/VLAN 查询；命中其它口、已发现的互联口、聚合成员、异常口，或存在多个接入位置时，不会误画为核心直连。普通接入交换机的 AP 定位不受这项配置影响。修改或删除此项后，重建 `topology-collector` 容器才会生效。
 

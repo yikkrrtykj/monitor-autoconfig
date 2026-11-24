@@ -41,9 +41,9 @@ Env vars:
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidates,
-                         ap_max_age, vlan_fk_mapping,
-                         validate_ap_candidates_detailed)
+from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidate_cap,
+                         ap_candidates, ap_candidates_with_status, ap_max_age,
+                         vlan_fk_mapping, validate_ap_candidates_detailed)
 from ap_placement import (build_invalidated_artifact, build_placement_artifact,
                           fetch_ap_online_evidence)
 import json
@@ -3106,7 +3106,9 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
     excluded = _env_target_ips("FIREWALL_PING")
     now = time.time()
 
-    raw_candidates = ap_candidates(aps, inventory, excluded)
+    raw_candidates, candidate_status = ap_candidates_with_status(
+        aps, inventory, excluded)
+    cap_exceeded = candidate_status["candidate_cap_exceeded"]
     if not aps or client is None:
         return {}
     try:
@@ -3141,7 +3143,7 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
     hint_eligible = set()
     for ap in sorted(aps, key=lambda item: str(item.get("ip") or "")):
         mac = ap.get("mac")
-        if not mac:
+        if not mac or mac in cap_exceeded:
             continue
         info = detailed.get(mac) or {
             "raw": 0, "successful": [], "mismatched": [], "incomplete": [],
@@ -3183,9 +3185,11 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
     hint_lookups = 0
     hint_budget = [_core_ap_hint_max_gets()]
     max_lookups = _core_ap_hint_max_lookups()
+    # Explicit cap=0 disables the entire AP placement path, including hints.
+    hint_enabled = ap_candidate_cap() > 0
     for ap in sorted(aps, key=lambda item: str(item.get("ip") or "")):
         mac = ap.get("mac")
-        if not mac or mac not in hint_eligible:
+        if not mac or mac in cap_exceeded or not hint_enabled or mac not in hint_eligible:
             continue
         hints = _core_ap_hint_rows(mac, inventory, core_ips, excluded, vlan_map, now)
         if not hints:
@@ -3245,11 +3249,12 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
     return {mac: rows for mac, rows in selected.items() if rows}
 
 
-def write_current_ap_artifact(output_dir, aps, inventory):
+def write_current_ap_artifact(output_dir, aps, inventory, online_evidence=None):
     try:
         excluded = _env_target_ips("FIREWALL_PING")
         core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
-        artifact = build_ap_artifact(aps, inventory, excluded, core_ips=core_ips)
+        artifact = build_ap_artifact(aps, inventory, excluded, core_ips=core_ips,
+                                     online_evidence=online_evidence or {})
         write_json_atomic(os.path.join(output_dir, "ap-attachments.json"), artifact, sort_keys=True)
     except Exception as exc:
         print(f"[WARN] AP artifact write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
@@ -3431,7 +3436,8 @@ def write_invalidated_ap_placement_artifact(output_dir, reason):
 def write_ap_placement_artifact(output_dir, aps, validated, fdb_inventory, fdb_status,
                                 devices, edges, librenms, community, librenms_ready,
                                 expected_switches=None, polled_switches=None,
-                                poll_failed_switches=None, identity_error=False):
+                                poll_failed_switches=None, identity_error=False,
+                                online_evidence=None):
     """P1 影子产物：失败隔离，不影响 ap-attachments.json 与 wired 输出。"""
     if not aps:
         reason = "ap_identity_unavailable" if identity_error else "no_ap_identity"
@@ -3447,7 +3453,7 @@ def write_ap_placement_artifact(output_dir, aps, validated, fdb_inventory, fdb_s
               file=sys.stderr)
     # 在线证据：unpoller v2.15.3 只有 uptime、没有可靠心跳；查询失败或缺失
     # 一律 unknown，不把 uptime 当作 online。
-    online = fetch_ap_online_evidence(aps)
+    online = online_evidence if online_evidence is not None else fetch_ap_online_evidence(aps)
     try:
         core_ips = set(_env_target_ips("CORE_SWITCH_PING"))
         artifact = build_placement_artifact(
@@ -4733,7 +4739,13 @@ def _run_collection():
     except Exception as exc:
         print(f"[WARN] AP validation unavailable ({type(exc).__name__}); AP edges omitted", file=sys.stderr)
         validated_ap = {}
-    write_current_ap_artifact(output_dir, aps, validated_ap)
+    try:
+        ap_online = fetch_ap_online_evidence(aps)
+    except Exception as exc:
+        print(f"[WARN] AP online evidence unavailable ({type(exc).__name__}); "
+              "formal/placement levels use unknown", file=sys.stderr)
+        ap_online = {}
+    write_current_ap_artifact(output_dir, aps, validated_ap, online_evidence=ap_online)
     polled_switch_ips = [ip for ip in devices if ip not in firewall_ips]
     try:
         write_ap_placement_artifact(
@@ -4743,6 +4755,7 @@ def _run_collection():
             polled_switches=len(polled_switch_ips),
             poll_failed_switches=len(poll_failed_switch_ips),
             identity_error=ap_identity_error,
+            online_evidence=ap_online,
         )
     except Exception as exc:
         print(f"[WARN] AP placement shadow cycle failed ({type(exc).__name__}); wired output unaffected",

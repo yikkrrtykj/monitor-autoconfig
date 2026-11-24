@@ -48,12 +48,24 @@ def vlan_fk_mapping(rows: list[dict]) -> dict:
     return {key: value for key, value in mapping.items() if key not in conflicts}
 
 
-def ap_candidates(aps: list[dict], inventory: dict, excluded_ips=(), now=None, *, port_allowed=None) -> dict:
+def ap_candidates_with_status(aps: list[dict], inventory: dict, excluded_ips=(), now=None,
+                              *, port_allowed=None) -> tuple[dict, dict]:
+    """Return candidates and an explicit per-AP candidate status.
+
+    The status sets distinguish a genuinely empty AP, an AP whose raw candidate
+    count exceeded the hard cap, and an AP with normal candidates.  The caller
+    must use `candidate_cap_exceeded` to suppress historical hint fallback; a
+    missing key is not evidence that the AP simply has no candidates.
+    """
     now = time.time() if now is None else now
     result = {}
+    no_candidate = set()
+    cap_exceeded = set()
+    normal_candidates = set()
     for ap in aps:
+        mac = ap["mac"]
         unique = {}
-        for row in inventory.get(ap["mac"], []):
+        for row in inventory.get(mac, []):
             elapsed = now - row.get("evidence_observed_at", now)
             age = row.get("evidence_age_seconds")
             if (age is None or not math.isfinite(age) or elapsed < 0 or age + elapsed < 0
@@ -65,9 +77,26 @@ def ap_candidates(aps: list[dict], inventory: dict, excluded_ips=(), now=None, *
             key = (row["switch_ip"], row["ifindex"], row.get("librenms_vlan_id"))
             # shared inventory 的旧 vlan 字段属于服务器契约，不能作为 AP VLAN。
             unique.setdefault(key, {field: value for field, value in row.items() if field != "vlan"})
-        # 超限整台 AP 关闭，绝不截断后验证一个子集。
-        if len(unique) <= ap_candidate_cap():
-            result[ap["mac"]] = list(unique.values())
+        if not unique:
+            no_candidate.add(mac)
+        elif len(unique) > ap_candidate_cap():
+            # Never truncate to the cap and never fall back to historical hints.
+            cap_exceeded.add(mac)
+        else:
+            result[mac] = list(unique.values())
+            normal_candidates.add(mac)
+    return result, {
+        "no_candidate": no_candidate,
+        "candidate_cap_exceeded": cap_exceeded,
+        "normal_candidates": normal_candidates,
+    }
+
+
+def ap_candidates(aps: list[dict], inventory: dict, excluded_ips=(), now=None, *,
+                  port_allowed=None) -> dict:
+    """Compatibility wrapper returning only candidates under the hard cap."""
+    result, _status = ap_candidates_with_status(
+        aps, inventory, excluded_ips, now, port_allowed=port_allowed)
     return result
 
 
@@ -179,13 +208,15 @@ def fetch_current_aps() -> list[dict]:
 
 
 def build_ap_artifact(aps: list[dict], inventory: dict, excluded_ips=(), now=None,
-                      core_ips=()) -> dict:
+                      core_ips=(), online_evidence=None) -> dict:
     """每次仅使用当前证据；多接入点不选主，不继承旧所有权。
 
     Core automatic placements are formal `observed-attachment` rows only after a
-    current exact GET.  A validated downstream placement always wins over a core
-    forwarding observation; multiple rows from the chosen scope stay ambiguous.
-    Manual core allowlist rows keep the confirmed-direct level.
+    current exact GET.  Manual core allowlist rows become `confirmed-direct` only
+    when the existing online evidence says online; unknown stays observed and
+    offline does not emit a current core attachment.  Downstream rows keep their
+    existing formal behavior.  A validated downstream placement is never replaced
+    here: the collector has already resolved current conflicts.
     """
     now = time.time() if now is None else now
     maximum = ap_max_age()
@@ -194,6 +225,13 @@ def build_ap_artifact(aps: list[dict], inventory: dict, excluded_ips=(), now=Non
     excluded = set(excluded_ips)
     core_ips = set(core_ips)
     core_levels = ("observed-attachment", "confirmed-direct")
+    online_evidence = online_evidence or {}
+
+    def online_status(mac):
+        raw = online_evidence.get(mac)
+        status = raw.get("status") if isinstance(raw, dict) else raw
+        return status if status in ("online", "offline", "unknown") else "unknown"
+
     for ap in aps:
         candidates = {}
         for candidate in inventory.get(ap["mac"], []):
@@ -220,6 +258,11 @@ def build_ap_artifact(aps: list[dict], inventory: dict, excluded_ips=(), now=Non
             ambiguous += int(len(rows) > 1)
             continue
         candidate = rows[0]
+        status = online_status(ap["mac"])
+        if is_core_row(candidate) and status == "offline":
+            # ap-attachments.json carries current placements only; offline core
+            # APs stay in last_observed in ap-placement.json.
+            continue
         attachment = {
             "ap_ip": ap["ip"], "ap_mac": ap["mac"], "ap_name": ap["name"],
             "switch_ip": candidate["switch_ip"],
@@ -229,10 +272,10 @@ def build_ap_artifact(aps: list[dict], inventory: dict, excluded_ips=(), now=Non
             "evidence_age_seconds": candidate["evidence_age_seconds"],
         }
         if is_core_row(candidate):
-            level = candidate.get("ap_level")
-            if level not in core_levels:
-                level = "observed-attachment"
+            manual = candidate.get("ap_level") == "confirmed-direct"
+            level = "confirmed-direct" if manual and status == "online" else "observed-attachment"
             attachment["level"] = level
+            attachment["online"] = status
             attachment["reason"] = (
                 "manual_core_port_operator_confirmed"
                 if level == "confirmed-direct"
