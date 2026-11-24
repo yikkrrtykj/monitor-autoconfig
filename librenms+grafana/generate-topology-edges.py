@@ -41,9 +41,10 @@ Env vars:
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from ap_topology import (fetch_current_aps, build_ap_artifact, ap_candidate_cap,
-                         ap_candidates, ap_candidates_with_status, ap_max_age,
-                         vlan_fk_mapping, validate_ap_candidates_detailed)
+from ap_topology import (ApExactResult, fetch_current_aps, build_ap_artifact,
+                         ap_candidate_cap, ap_candidates,
+                         ap_candidates_with_status, ap_max_age, vlan_fk_mapping,
+                         validate_ap_candidates_detailed)
 from ap_placement import (build_invalidated_artifact, build_placement_artifact,
                           fetch_ap_online_evidence)
 import json
@@ -2747,6 +2748,125 @@ def lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map, get_budget=None):
     return None
 
 
+
+_ORIGINAL_LOOKUP_FDB_IFINDEX = lookup_fdb_ifindex
+
+
+def _ap_snmpget(host, community, oid, timeout=None, retries=None):
+    """AP-only exact GET with a three-state result.
+
+    This deliberately does not change ``snmpget()`` or the server FDB caller
+    contract.  A communication failure is ``incomplete``; only an explicit
+    noSuchInstance/noSuchObject answer is ``definitive_miss``.
+    """
+    _record_snmp_call("gets")
+    timeout, retries = _snmp_limits(timeout, retries)
+    cmd = [
+        "snmpget", "-v2c", "-c", community, "-O", "qv",
+        "-t", str(timeout), "-r", str(retries), host, oid,
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=timeout * (retries + 1) + 2,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[WARN] AP snmpget {host} {oid} failed (TimeoutExpired)", file=sys.stderr)
+        return "incomplete", "timeout"
+    except Exception as exc:
+        print("[WARN] AP snmpget %s %s failed (%s)" % (host, oid, type(exc).__name__),
+              file=sys.stderr)
+        return "incomplete", type(exc).__name__
+    finally:
+        _snmp_request_delay()
+    combined = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    lowered = combined.lower()
+    if result.returncode != 0:
+        # A timeout/network error with a stale diagnostic must not become a
+        # definitive MAC miss.
+        return "incomplete", "returncode_%s" % result.returncode
+    if "no such instance" in lowered or "no such object" in lowered:
+        return "definitive_miss", ""
+    if "timeout" in lowered or "no response" in lowered:
+        return "incomplete", "snmp_timeout"
+    value = (result.stdout or "").strip().strip('"')
+    if not value:
+        return "incomplete", "empty_response"
+    return "successful", value
+
+
+def lookup_fdb_ifindex_result(ip, community, vlan, mac, ifname_map, get_budget=None):
+    """Resolve an AP MAC with explicit successful/miss/incomplete status.
+
+    Q-BRIDGE is tried first; an explicit noSuch result falls back to Cisco
+    community@vlan BRIDGE-MIB.  Communication failures do not fall through to a
+    "miss".  A successful bridge-port answer is never converted into a guessed
+    physical ifIndex: bridgePort->ifIndex must resolve to a physical ifName.
+    """
+    # Preserve legacy direct callers that replace lookup_fdb_ifindex.
+    if lookup_fdb_ifindex is not _ORIGINAL_LOOKUP_FDB_IFINDEX:
+        value = lookup_fdb_ifindex(ip, community, vlan, mac, ifname_map)
+        if value is None:
+            return ApExactResult("definitive_miss")
+        return ApExactResult("successful", value)
+
+    suffix = mac_oid_suffix(mac)
+    if not suffix:
+        return ApExactResult("incomplete", reason="invalid_mac")
+
+    def _get(query_community, oid):
+        if get_budget is not None:
+            if get_budget[0] <= 0:
+                raise _FdbGetBudgetExhausted()
+            get_budget[0] -= 1
+        return _ap_snmpget(ip, query_community, oid)
+
+    lookups = []
+    if vlan is not None:
+        lookups.append((community, "%s.%s.%s" % (DOT1Q_TP_FDB_PORT_OID, vlan, suffix)))
+        lookups.append((community + "@" + str(vlan),
+                        "%s.%s" % (DOT1D_TP_FDB_PORT_OID, suffix)))
+    else:
+        lookups.append((community, "%s.%s" % (DOT1D_TP_FDB_PORT_OID, suffix)))
+
+    bridge_port = None
+    bridge_community = None
+    for query_community, oid in lookups:
+        status, value = _get(query_community, oid)
+        if status == "incomplete":
+            return ApExactResult("incomplete", reason=value)
+        if status == "definitive_miss":
+            continue
+        parsed = _positive_int(value)
+        if parsed is None:
+            return ApExactResult("incomplete", reason="malformed_bridge_port")
+        bridge_port = parsed
+        bridge_community = query_community
+        break
+    if bridge_port is None:
+        return ApExactResult("definitive_miss")
+
+    for mapping_community in dict.fromkeys((bridge_community, community)):
+        status, value = _get(
+            mapping_community,
+            "%s.%s" % (DOT1D_BASE_PORT_IFINDEX_OID, bridge_port),
+        )
+        if status == "incomplete":
+            return ApExactResult("incomplete", reason=value)
+        if status == "definitive_miss":
+            continue
+        ifindex = _positive_int(value)
+        if ifindex is None:
+            return ApExactResult("incomplete", reason="malformed_ifindex")
+        if is_physical_interface_name(ifname_map.get(ifindex)):
+            return ApExactResult("successful", ifindex)
+    # Some agents expose ifIndex directly for the bridge port, but only accept
+    # it when the local IF-MIB mapping proves it is a physical interface.
+    if is_physical_interface_name(ifname_map.get(bridge_port)):
+        return ApExactResult("successful", bridge_port)
+    return ApExactResult("incomplete", reason="bridge_port_mapping_incomplete")
+
+
 def _first_row_timestamp(record, metadata, metadata_field):
     """Prefer row evidence time, falling back to the owning device cycle."""
     for key in ("updated_at", "last_seen", "last_updated", "timestamp"):
@@ -3126,7 +3246,8 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
 
     def exact_lookup(ip, vlan, mac):
         with snmp_phase("ap"):
-            return lookup_fdb_ifindex(ip, community, vlan, mac, devices[ip].get("ifname", {}))
+            return lookup_fdb_ifindex_result(
+                ip, community, vlan, mac, devices[ip].get("ifname", {}))
 
     def annotate(row):
         if str(row.get("switch_ip") or "") not in core_ips:
@@ -3205,7 +3326,7 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
             vlan = hint["vlan"]
             try:
                 with snmp_phase("ap"):
-                    ifindex = lookup_fdb_ifindex(
+                    outcome = lookup_fdb_ifindex_result(
                         ip, community, vlan, mac,
                         devices.get(ip, {}).get("ifname", {}),
                         get_budget=hint_budget,
@@ -3216,8 +3337,18 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
             except Exception:
                 complete = False
                 break
+            if isinstance(outcome, ApExactResult):
+                if outcome.status == "incomplete":
+                    complete = False
+                    break
+                if outcome.status == "definitive_miss":
+                    continue
+                ifindex = outcome.ifindex
+            else:
+                ifindex = outcome
             if ifindex is None:
-                continue
+                complete = False
+                break
             try:
                 port = port_check(ip, ifindex)
             except Exception:

@@ -147,8 +147,10 @@ def test_current_candidates_keep_exact_get_budget_and_share_vlan_inventory(monke
         assert command[0] == "snmpget", "AP never walks"
         assert "@142" not in command and not command[-1].startswith(gte.DOT1Q_TP_FDB_PORT_OID + ".142.")
         oid = command[-1]
-        value = "" if oid.startswith(gte.DOT1Q_TP_FDB_PORT_OID) else oid.split(".")[-1]
-        return SimpleNamespace(stdout=value)
+        if oid.startswith(gte.DOT1Q_TP_FDB_PORT_OID):
+            return SimpleNamespace(returncode=0, stdout="",
+                                   stderr="No Such Object available on this agent at this OID")
+        return SimpleNamespace(returncode=0, stdout=oid.split(".")[-1], stderr="")
     monkeypatch.setattr(gte.subprocess, "run", run)
     artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api))
     assert [(row["ap_mac"], row["switch_port"], row["vlan"]) for row in artifact["attachments"]] == [
@@ -694,6 +696,144 @@ def test_hard_candidate_cap_never_truncates(monkeypatch, count, gets):
     assert len(calls) == gets
     assert len(artifact["attachments"]) == int(gets > 0)
 
+def _ap_result_command(command):
+    assert command[0] == "snmpget"
+    return command[-2], command[-1], command[3]
+
+
+def _ap_snmp_success(command):
+    _host, oid, _community = _ap_result_command(command)
+    if oid.startswith(gte.DOT1Q_TP_FDB_PORT_OID):
+        return SimpleNamespace(returncode=0, stdout="5", stderr="")
+    if oid.startswith(gte.DOT1D_BASE_PORT_IFINDEX_OID):
+        return SimpleNamespace(returncode=0, stdout="1", stderr="")
+    return SimpleNamespace(returncode=0, stdout="1", stderr="")
+
+
+def test_downstream_snmp_nonzero_timeout_is_incomplete_core_not_attached(monkeypatch):
+    aps, _, devices, api = setup_inventory(ports=[(1, 1, "Gi1/0/1", 1)])
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+    _mac, inventory = _downstream_core_inventory(aps, devices, api)
+
+    def run(command, **kwargs):
+        host, _oid, _community = _ap_result_command(command)
+        if host == "10.0.0.12":
+            return SimpleNamespace(returncode=2, stdout="",
+                                   stderr="Timeout: No Response from 10.0.0.12")
+        return _ap_snmp_success(command)
+
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api),
+                                    core_ips={"10.0.0.11"})
+    assert artifact["attachments"] == []
+
+
+def test_downstream_subprocess_timeout_is_incomplete_core_not_attached(monkeypatch):
+    aps, _, devices, api = setup_inventory(ports=[(1, 1, "Gi1/0/1", 1)])
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+    _mac, inventory = _downstream_core_inventory(aps, devices, api)
+
+    def run(command, **kwargs):
+        host, _oid, _community = _ap_result_command(command)
+        if host == "10.0.0.12":
+            raise gte.subprocess.TimeoutExpired(command, 5)
+        return _ap_snmp_success(command)
+
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api),
+                                    core_ips={"10.0.0.11"})
+    assert artifact["attachments"] == []
+
+
+def test_downstream_snmp_no_such_is_definitive_miss_and_core_can_attach(monkeypatch):
+    aps, _, devices, api = setup_inventory(ports=[(1, 1, "Gi1/0/1", 1)])
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+    _mac, inventory = _downstream_core_inventory(aps, devices, api)
+
+    def run(command, **kwargs):
+        host, _oid, _community = _ap_result_command(command)
+        if host == "10.0.0.12":
+            return SimpleNamespace(returncode=0, stdout="",
+                                   stderr="No Such Instance currently exists at this OID")
+        return _ap_snmp_success(command)
+
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api),
+                                    core_ips={"10.0.0.11"})
+    assert len(artifact["attachments"]) == 1
+    assert artifact["attachments"][0]["switch_ip"] == "10.0.0.11"
+    assert artifact["attachments"][0]["level"] == "observed-attachment"
+
+
+def test_qbridge_no_such_falls_back_to_cisco_bridge_mib(monkeypatch):
+    def run(command, **kwargs):
+        _host, oid, community = _ap_result_command(command)
+        if oid.startswith(gte.DOT1Q_TP_FDB_PORT_OID):
+            return SimpleNamespace(returncode=0, stdout="",
+                                   stderr="No Such Object available on this agent at this OID")
+        if oid.startswith(gte.DOT1D_BASE_PORT_IFINDEX_OID):
+            assert "@200" in community
+            return SimpleNamespace(returncode=0, stdout="45", stderr="")
+        return SimpleNamespace(returncode=0, stdout="5", stderr="")
+
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    result = gte.lookup_fdb_ifindex_result(
+        "10.0.0.11", "fixture", 200, "02:00:00:00:00:01",
+        {45: "Gi2/0/45"})
+    assert result.status == "successful"
+    assert result.ifindex == 45
+
+
+def test_bridge_port_mapping_failure_is_incomplete_not_guessed(monkeypatch):
+    def run(command, **kwargs):
+        _host, oid, _community = _ap_result_command(command)
+        if oid.startswith(gte.DOT1D_BASE_PORT_IFINDEX_OID):
+            return SimpleNamespace(returncode=2, stdout="",
+                                   stderr="Timeout: No Response")
+        return SimpleNamespace(returncode=0, stdout="5", stderr="")
+
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    result = gte.lookup_fdb_ifindex_result(
+        "10.0.0.11", "fixture", 200, "02:00:00:00:00:01",
+        {45: "Gi2/0/45"})
+    assert result.status == "incomplete"
+    assert result.ifindex is None
+
+
+def test_partial_historical_hint_snmp_failure_emits_no_attachment(monkeypatch):
+    aps, inventory, devices, api = setup_inventory(
+        rows=[seed(age=86400, index=45, port_name="Gi2/0/45")],
+        ports=[(45, 45, "Gi2/0/45", 1)],
+    )
+    mac = aps[0]["mac"]
+    first = inventory[mac][0]
+    first.update({"device_id": 10, "librenms_vlan_id": 142,
+                  "evidence_observed_at": time.time()})
+    second = seed(age=86400, index=46)
+    second.update({"device_id": 10, "librenms_vlan_id": 143,
+                   "port_name": "Gi2/0/46", "evidence_observed_at": time.time()})
+    inventory[mac].append(second)
+    api.get_vlan_inventory = lambda: [
+        {"device_id": 10, "vlan_id": 142, "vlan_vlan": 200},
+        {"device_id": 10, "vlan_id": 143, "vlan_vlan": 201},
+    ]
+    monkeypatch.setenv("CORE_SWITCH_PING", "10.0.0.11")
+
+    def run(command, **kwargs):
+        _host, oid, _community = _ap_result_command(command)
+        if ".201." in oid:
+            return SimpleNamespace(returncode=2, stdout="",
+                                   stderr="Timeout: No Response")
+        if oid.startswith(gte.DOT1D_BASE_PORT_IFINDEX_OID):
+            return SimpleNamespace(returncode=0, stdout="45", stderr="")
+        return SimpleNamespace(returncode=0, stdout="5", stderr="")
+
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    artifact = ap.build_ap_artifact(aps, validate(aps, inventory, devices, api),
+                                    core_ips={"10.0.0.11"})
+    assert artifact["attachments"] == []
+
+
 @pytest.mark.parametrize("higher_names,expected", [
     (("Vlan60",), True),
     (("VLAN-1002",), True),
@@ -743,7 +883,7 @@ def test_ifstack_vlan_aliases_keep_exact_ap_attachment_without_changing_server_f
     def run(command, **kwargs):
         assert command[0] == "snmpget"
         calls.append(command[-1])
-        return SimpleNamespace(stdout=replies[command[-1]])
+        return SimpleNamespace(returncode=0, stdout=replies[command[-1]], stderr="")
 
     monkeypatch.setattr(gte.subprocess, "run", run)
     artifact = ap.build_ap_artifact(aps, validate(aps, shared, devices, api))

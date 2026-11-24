@@ -5,6 +5,7 @@ import os
 import re
 import time
 from collections import Counter
+from typing import NamedTuple
 from ipaddress import IPv4Address
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -14,6 +15,14 @@ from target_utils import normalize_mac
 MAX_APS = 512
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 AP_QUERY = 'unpoller_device_info{type="uap"}'
+
+
+class ApExactResult(NamedTuple):
+    """AP-only exact lookup result; never conflates errors with a MAC miss."""
+
+    status: str  # successful | definitive_miss | incomplete
+    ifindex: int | None = None
+    reason: str | None = None
 
 
 def _bounded_setting(name, default, maximum):
@@ -122,15 +131,32 @@ def validate_ap_candidates_detailed(candidates: dict, vlan_map: dict,
                 incomplete.append({**row, "reason": "vlan_mapping_missing"})
                 continue
             try:
-                ifindex = exact_lookup(row["switch_ip"], vlan, mac)
+                outcome = exact_lookup(row["switch_ip"], vlan, mac)
+                if isinstance(outcome, ApExactResult):
+                    if outcome.status == "incomplete":
+                        incomplete.append({**row, "vlan": vlan,
+                                           "reason": outcome.reason or "exact_incomplete"})
+                        continue
+                    if outcome.status == "definitive_miss":
+                        mismatched.append({**row, "vlan": vlan,
+                                           "reason": "exact_miss"})
+                        continue
+                    ifindex = outcome.ifindex
+                    if ifindex is None:
+                        incomplete.append({**row, "vlan": vlan,
+                                           "reason": "successful_without_ifindex"})
+                        continue
+                else:
+                    # Legacy lookup callers/tests return int or None.
+                    ifindex = outcome
+                    if ifindex is None:
+                        mismatched.append({**row, "vlan": vlan, "reason": "exact_miss"})
+                        continue
                 checked_at = time.time()
-                port = port_check(row["switch_ip"], ifindex) if ifindex is not None else None
+                port = port_check(row["switch_ip"], ifindex)
             except Exception as exc:
                 incomplete.append({**row, "vlan": vlan,
                                    "reason": type(exc).__name__})
-                continue
-            if ifindex is None:
-                mismatched.append({**row, "vlan": vlan, "reason": "exact_miss"})
                 continue
             if not port:
                 mismatched.append({**row, "vlan": vlan, "ifindex": ifindex,
