@@ -31,6 +31,18 @@ def _prom_query(context: PrecheckContext, expr: str):
     ).get("data", {}).get("result", [])
 
 
+def _target_network(item) -> str:
+    """Return the file_sd ``network`` label of a probe result."""
+    metric = (item or {}).get("metric") or {}
+    return str(metric.get("network") or "").strip().lower()
+
+
+def _probe_online(item) -> bool:
+    """Return whether an instant ``probe_success`` sample answered."""
+    value = (item or {}).get("value") or [None, "0"]
+    return len(value) > 1 and value[1] == "1"
+
+
 def run_precheck(context: PrecheckContext) -> dict:
     """Run the console readiness check against services on the stack network."""
     checks: list[dict] = []
@@ -73,15 +85,28 @@ def run_precheck(context: PrecheckContext) -> dict:
         add("warn", f"无法查询设备在线状态：{exc}")
 
     # 3. 选手机位 ping 目标
+    # 有线机位与无线备用网分开统计：备用网手机休眠或漫游时 ICMP 常态不通，
+    # 混进机位分母会让这一行长期判红；大屏赛事页也只统计 network="wired"。
     try:
         players = _prom_query(context, 'probe_success{job="player-ping"}')
-        online = sum(1 for x in players if (x.get("value") or [None, "0"])[1] == "1")
-        if not players:
+        wireless = [x for x in players if _target_network(x) == "wireless"]
+        wired = [x for x in players if _target_network(x) != "wireless"]
+        seats = wired or wireless
+        if not seats:
             add("bad", "选手机位监控目标为 0，不能确认比赛网络状态")
-        elif online != len(players):
-            add("bad", f"选手机位仅 {online}/{len(players)} 在线")
         else:
-            add("good", f"选手机位 {online}/{len(players)} 全部在线")
+            online = sum(1 for x in seats if _probe_online(x))
+            if online != len(seats):
+                add("bad", f"选手机位仅 {online}/{len(seats)} 在线")
+            else:
+                add("good", f"选手机位 {online}/{len(seats)} 全部在线")
+        if wired and wireless:
+            wireless_online = sum(1 for x in wireless if _probe_online(x))
+            # 备用链路的部分掉线属于常态，只有整体不可达才升级为警告。
+            add(
+                "good" if wireless_online else "warn",
+                f"无线备用网 {wireless_online}/{len(wireless)} 在线",
+            )
     except Exception as exc:
         add("warn", f"无法查询选手目标：{exc}")
 

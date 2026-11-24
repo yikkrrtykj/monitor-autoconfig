@@ -258,6 +258,102 @@ def test_precheck_fails_when_no_player_targets(monkeypatch):
     assert "尚未识别到可监控的选手地址。" in result["output"]
 
 
+def _player_sample(instance, network=None, value="1"):
+    metric = {"job": "player-ping", "instance": instance}
+    if network:
+        metric["network"] = network
+    return {"metric": metric, "value": [0, value]}
+
+
+def _players_prom_query(samples):
+    def query(_context, expr):
+        if expr == 'probe_success{job="player-ping"}':
+            return samples
+        return _healthy_prom_query(_context, expr)
+
+    return query
+
+
+def test_precheck_counts_wireless_backup_separately_from_seats(monkeypatch):
+    _mock_external_services(monkeypatch)
+    monkeypatch.setattr(precheck, "_prom_query", _players_prom_query([
+        _player_sample("192.168.100.11", "wired"),
+        _player_sample("192.168.100.12", "wired"),
+        _player_sample("192.168.101.11", "wireless"),
+        _player_sample("192.168.101.12", "wireless", "0"),
+    ]))
+
+    result = precheck.run_precheck(_context())
+
+    assert result["verdict"] == "good"
+    assert result["fail"] == 0
+    assert result["warn"] == 0
+    assert "  ✓ 选手机位 2/2 全部在线" in result["output"]
+    assert "  ✓ 无线备用网 1/2 在线" in result["output"]
+
+
+def test_precheck_warns_only_when_wireless_backup_is_fully_offline(monkeypatch):
+    _mock_external_services(monkeypatch)
+    monkeypatch.setattr(precheck, "_prom_query", _players_prom_query([
+        _player_sample("192.168.100.11", "wired"),
+        _player_sample("192.168.101.11", "wireless", "0"),
+        _player_sample("192.168.101.12", "wireless", "0"),
+    ]))
+
+    result = precheck.run_precheck(_context())
+
+    assert result["verdict"] == "warn"
+    assert result["fail"] == 0
+    assert result["warn"] == 1
+    assert "  ⚠ 无线备用网 0/2 在线" in result["output"]
+
+
+def test_precheck_keeps_wired_seat_failure_when_wireless_is_online(monkeypatch):
+    _mock_external_services(monkeypatch)
+    monkeypatch.setattr(precheck, "_prom_query", _players_prom_query([
+        _player_sample("192.168.100.11", "wired"),
+        _player_sample("192.168.100.12", "wired", "0"),
+        _player_sample("192.168.101.11", "wireless"),
+    ]))
+
+    result = precheck.run_precheck(_context())
+
+    assert result["verdict"] == "bad"
+    assert result["fail"] == 1
+    assert "  ✗ 选手机位仅 1/2 在线" in result["output"]
+    assert "  ✓ 无线备用网 1/1 在线" in result["output"]
+
+
+def test_precheck_keeps_merged_count_for_targets_without_network_label(monkeypatch):
+    _mock_external_services(monkeypatch)
+    monkeypatch.setattr(precheck, "_prom_query", _players_prom_query([
+        _player_sample("192.168.100.11"),
+        _player_sample("192.168.100.12", value="0"),
+    ]))
+
+    result = precheck.run_precheck(_context())
+
+    assert result["verdict"] == "bad"
+    assert result["fail"] == 1
+    assert "  ✗ 选手机位仅 1/2 在线" in result["output"]
+    assert "无线备用网" not in result["output"]
+
+
+def test_precheck_uses_wireless_targets_as_seats_on_wireless_only_events(monkeypatch):
+    _mock_external_services(monkeypatch)
+    monkeypatch.setattr(precheck, "_prom_query", _players_prom_query([
+        _player_sample("192.168.101.11", "wireless"),
+        _player_sample("192.168.101.12", "wireless", "0"),
+    ]))
+
+    result = precheck.run_precheck(_context())
+
+    assert result["verdict"] == "bad"
+    assert result["fail"] == 1
+    assert "  ✗ 选手机位仅 1/2 在线" in result["output"]
+    assert "无线备用网" not in result["output"]
+
+
 def test_precheck_fails_when_bridge_is_not_ready(monkeypatch):
     _mock_external_services(monkeypatch, bridge_ready=False)
     monkeypatch.setattr(precheck, "_prom_query", _healthy_prom_query)
