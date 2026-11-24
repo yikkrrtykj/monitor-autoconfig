@@ -800,6 +800,25 @@ def test_bridge_port_mapping_failure_is_incomplete_not_guessed(monkeypatch):
     assert result.ifindex is None
 
 
+def test_no_such_stdout_with_timeout_stderr_is_incomplete(monkeypatch):
+    def run(command, **kwargs):
+        _host, oid, _community = _ap_result_command(command)
+        if oid.startswith(gte.DOT1Q_TP_FDB_PORT_OID):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="No Such Instance currently exists at this OID",
+                stderr="Timeout: No Response from 10.0.0.11",
+            )
+        return SimpleNamespace(returncode=0, stdout="5", stderr="")
+
+    monkeypatch.setattr(gte.subprocess, "run", run)
+    result = gte.lookup_fdb_ifindex_result(
+        "10.0.0.11", "fixture", 200, "02:00:00:00:00:01",
+        {45: "Gi2/0/45"})
+    assert result.status == "incomplete"
+    assert result.ifindex is None
+
+
 def test_bridge_port_mapping_missing_never_guesses_physical_ifindex(monkeypatch):
     def run(command, **kwargs):
         _host, oid, _community = _ap_result_command(command)

@@ -2785,10 +2785,13 @@ def _ap_snmpget(host, community, oid, timeout=None, retries=None):
         # A timeout/network error with a stale diagnostic must not become a
         # definitive MAC miss.
         return "incomplete", "returncode_%s" % result.returncode
-    if "no such instance" in lowered or "no such object" in lowered:
-        return "definitive_miss", ""
+    # Communication failure markers take priority over a stale stdout noSuch
+    # diagnostic.  Only a response with no timeout/network evidence may become
+    # a definitive miss.
     if "timeout" in lowered or "no response" in lowered:
         return "incomplete", "snmp_timeout"
+    if "no such instance" in lowered or "no such object" in lowered:
+        return "definitive_miss", ""
     value = (result.stdout or "").strip().strip('"')
     if not value:
         return "incomplete", "empty_response"
