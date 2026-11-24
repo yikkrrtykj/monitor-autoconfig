@@ -168,6 +168,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -199,6 +201,17 @@ jobs:
           export PING_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/domains"
           mkdir -p "$PING_BROWSER_OUTPUT"
           node librenms+grafana/tests/chromium_ping_domains.js | tee "$PING_BROWSER_OUTPUT/layout-run.log"
+      - name: Compare infrastructure overview layouts in Chromium
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PLAYWRIGHT_MODULE="$RUNNER_TEMP/ping-browser/node_modules/playwright"
+          export CHROMIUM_PATH="$(command -v google-chrome)"
+          export INFRA_BASE_REF=HEAD^1
+          export INFRA_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/infra"
+          mkdir -p "$INFRA_BROWSER_OUTPUT"
+          node librenms+grafana/tests/chromium_infra_overview.js | tee "$INFRA_BROWSER_OUTPUT/run.log"
       - name: Exercise browser with Platform API, DNS, Prometheus and Blackbox
         if: ${{ !cancelled() }}
         shell: bash
