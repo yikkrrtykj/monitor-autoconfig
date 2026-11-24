@@ -5,6 +5,30 @@
   const model = common ? require("./model.js") : window.BSPingModel;
   const { escapeRegex } = common ? require("../utils.js") : window.BSUtils;
   const deviceJobs = Object.keys(model.jobs).filter((job) => job !== "player-ping" && job !== "infra-ap-ping");
+  // Device names are display metadata resolved from the same SNMP sysName
+  // series the network overview uses. A configured name always wins; this only
+  // fills targets whose Prometheus label is still an IP placeholder.
+  const nameLookback = 12 * 3600;
+  const nameTtl = 60;
+  const nameTimeout = 2000;
+  const nameQuery = `max_over_time(sysName{job=~"infra-switch-snmp|infra-fw-snmp|infra-fw-unit-snmp"}[${nameLookback}s])`;
+  const placeholderIp = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+  const genericSysName = /^(?:switch|router|firewall|amnesiac)$/i;
+
+  function sysNameMap(rows) {
+    const map = new Map();
+    for (const { metric } of rows) {
+      const name = String(metric?.sysName || "").trim();
+      // An IP-shaped or factory-generic sysName is not a usable display name;
+      // keep the target's configured label rather than a worse placeholder.
+      if (!name || placeholderIp.test(name) || genericSysName.test(name)) continue;
+      for (const key of [metric.target_ip, metric.instance, metric.display_name]) {
+        const text = String(key || "").trim();
+        if (text) map.set(text, name);
+      }
+    }
+    return map;
+  }
 
   function matcher(label, values) {
     const terms = [...new Set(values)];
@@ -45,7 +69,7 @@
     ];
   }
 
-  function createPingData({ query, settings, inventoryMaxAge = 0, includeAp = true }) {
+  function createPingData({ query, settings, inventoryMaxAge = 0, includeAp = true, resolveDeviceNames = false }) {
     const allowedJobs = new Set(includeAp ? [...deviceJobs, "infra-ap-ping"] : deviceJobs);
     const all = matcher("job", allowedJobs);
     const { inventorySeconds } = model;
@@ -63,10 +87,38 @@
     const liveQuery = liveFields.join(" or ");
     const summaryQuery = [...inventoryFields, ...liveFields].join(" or ");
     let inventory = null;
+    let names = { at: -Infinity, map: new Map() };
+
+    // One bounded query per minute at most. Names are display-only, so a slow
+    // or failed lookup returns the previous map instead of delaying or failing
+    // the monitoring snapshot.
+    async function deviceNames(at, signal) {
+      if (at >= names.at && at - names.at < nameTtl) return names.map;
+      const timeout = new AbortController();
+      const timer = setTimeout(() => timeout.abort(), nameTimeout);
+      let map = names.map;
+      try {
+        const rows = await query(nameQuery, { time: at },
+          signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal);
+        map = sysNameMap(rows);
+      } catch (error) {
+        // A slow or failed lookup keeps the previous names and still records
+        // the attempt, so a display-only query is retried at most once a minute
+        // and never stalls or fails the monitoring snapshot.
+        if (signal?.aborted) throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+      if (at >= names.at) names = { at, map };
+      return names.map;
+    }
 
     async function summary(at, signal) {
       const cached = inventory && at >= inventory.at && at - inventory.at < inventoryMaxAge ? inventory : null;
-      const response = await query(cached ? liveQuery : summaryQuery, { time: at }, signal);
+      const [response, nameMap] = await Promise.all([
+        query(cached ? liveQuery : summaryQuery, { time: at }, signal),
+        resolveDeviceNames ? deviceNames(at, signal) : null
+      ]);
       if (response.length > 10 * 3000) throw new Error("监控目标超出列表上限");
       const result = response.filter(({ metric }) => allowedJobs.has(metric.job));
       // The overview can reuse membership briefly, but always classifies
@@ -89,7 +141,7 @@
           }
         }
       }
-      const targets = model.snapshot(snapshotRows, at, settings);
+      const targets = model.snapshot(snapshotRows, at, settings, nameMap);
       const keys = new Set(targets.map(({ key }) => key));
       const agedOut = new Set();
       for (const { metric } of inventoryRows) {
