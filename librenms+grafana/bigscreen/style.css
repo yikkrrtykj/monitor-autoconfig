@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   color-scheme: dark;
   --bg: #000;
   --panel: #000;
@@ -1015,6 +1015,9 @@ body {
   stroke-dasharray: 3 5;
   opacity: 0.72;
 }
+.topology-ap-node.ap-observed circle {
+  stroke-dasharray: 4 3;
+}
 .topology-backbone {
   stroke-width: 4.5;
   stroke-linecap: round;
@@ -1026,6 +1029,10 @@ body {
 .topology-link.link-warn { stroke: #fbbf24; opacity: 0.75; }
 .topology-link.link-bad  { stroke: #f87171; opacity: 0.92; stroke-dasharray: 5 4; animation: link-pulse 1.4s ease-in-out infinite; }
 .topology-link.link-none { stroke: #475569; opacity: 0.35; stroke-dasharray: 3 3; }
+/* Core automatic placements are verified forwarding egress, not physical
+   direct attachments.  This rule comes after link-none so unknown/observed
+   keeps a distinct pattern. */
+.topology-link.link-observed { stroke-dasharray: 7 5; opacity: 0.68; }
 
 @keyframes link-pulse {
   0%, 100% { opacity: 0.55; }

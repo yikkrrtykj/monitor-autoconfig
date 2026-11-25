@@ -96,6 +96,41 @@ jobs:
           cp event-config.example.yml event-config.yml
           trap 'rm -f .env event-config.yml' EXIT
           docker compose config --quiet
+      - name: Verify Bigscreen host port publication
+        working-directory: librenms+grafana
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          cp event-config.example.yml event-config.yml
+          project="bigscreen-bind-${GITHUB_RUN_ID}"
+          cleanup() {
+            docker compose -p "$project" down -v
+            rm -f .env event-config.yml
+          }
+          trap cleanup EXIT
+          export BIGSCREEN_PORT=18088
+          for ip in "" 127.0.0.2; do
+            BIGSCREEN_BIND_IP="$ip" docker compose -p "$project" config --format json |
+              python3 -c 'import json, sys
+          ports = json.load(sys.stdin)["services"]["bigscreen"]["ports"]
+          assert len(ports) == 1, ports
+          port = ports[0]
+          assert (port.get("host_ip", ""), str(port["published"]), port["target"]) == (sys.argv[1], "18088", 80), ports
+          ' "$ip"
+          done
+          if BIGSCREEN_BIND_IP=999.42.0.1 docker compose -p "$project" config --quiet >/dev/null 2>&1; then
+            echo "Compose accepted an invalid Bigscreen host IP" >&2
+            exit 1
+          fi
+          export BIGSCREEN_BIND_IP=127.0.0.2
+          docker compose -p "$project" up -d --no-deps bigscreen
+          test "$(docker compose -p "$project" port bigscreen 80)" = "127.0.0.2:18088"
+          curl -fsS --noproxy '*' --retry 10 --retry-connrefused --max-time 2 --retry-max-time 15 http://127.0.0.2:18088/ >/dev/null
+          if curl -fsS --noproxy '*' --max-time 2 http://127.0.0.1:18088/ >/dev/null 2>&1; then
+            echo "Bigscreen also answered on the unconfigured IPv4 address" >&2
+            exit 1
+          fi
       - name: Isolated topology-collector import smoke
         working-directory: librenms+grafana
         shell: bash
@@ -168,6 +203,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -199,6 +236,17 @@ jobs:
           export PING_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/domains"
           mkdir -p "$PING_BROWSER_OUTPUT"
           node librenms+grafana/tests/chromium_ping_domains.js | tee "$PING_BROWSER_OUTPUT/layout-run.log"
+      - name: Compare infrastructure overview layouts in Chromium
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PLAYWRIGHT_MODULE="$RUNNER_TEMP/ping-browser/node_modules/playwright"
+          export CHROMIUM_PATH="$(command -v google-chrome)"
+          export INFRA_BASE_REF=HEAD^1
+          export INFRA_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/infra"
+          mkdir -p "$INFRA_BROWSER_OUTPUT"
+          node librenms+grafana/tests/chromium_infra_overview.js | tee "$INFRA_BROWSER_OUTPUT/run.log"
       - name: Exercise browser with Platform API, DNS, Prometheus and Blackbox
         if: ${{ !cancelled() }}
         shell: bash
