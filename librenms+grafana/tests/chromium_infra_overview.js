@@ -641,6 +641,11 @@ async function verifyLiveTraffic(browser, report) {
     assert.equal(missing.domains.remote_ob.items[0].rx.points.at(-1).bps, null);
     await check(b, "Remote OB 2", "unknown", "N/A");
     await check(c, "Production 20", "valid", "0.00 Mbps");
+    const tunnelReset = await config("tunnel-reset");
+    assert.equal(tunnelReset.domains.remote_ob.items[0].rx.bps, null);
+    assert.equal(tunnelReset.domains.remote_ob.items[0].tx.bps, 2_000_000);
+    await check(b, "Remote OB 3", "unknown", "N/A");
+    await check(c, "Production 20", "valid", "0.00 Mbps");
     await config("reset");
     await check(b, "Remote OB 1", "valid", "1.00 Mbps");
     await check(c, "Production 22", "unknown", "N/A");
@@ -658,12 +663,12 @@ async function verifyLiveTraffic(browser, report) {
       await page.locator(".overview-bc-grid").screenshot({ path: path.join(output, `bc-real-cards-${width}x${height}.png`) });
     }
     const before = requests.filter(({ path }) => path === traffic).length;
-    assert.equal(before, 7);
+    assert.equal(before, 8);
     await page.goto(origin + "/ping");
     await tick(65);
     assert.equal(requests.filter(({ path }) => path === traffic).length, before);
     assert.deepEqual(errors, []);
-    report.traffic = { scenarios: ["unconfigured", "normal", "missing", "reset", "ambiguous", "recovery", "maximum"],
+    report.traffic = { scenarios: ["unconfigured", "normal", "missing", "tunnel-reset", "reset", "ambiguous", "recovery", "maximum"],
       requestCount: before, stopsOnNavigation: true, viewports: dims };
     console.log("B/C Chromium with isolated Prometheus and Platform API", JSON.stringify(report.traffic));
   } finally { await context.close(); }

@@ -109,7 +109,17 @@ def build_query(mapping):
             raw = [metric + selector for selector in selectors]
             # PromQL timestamps computed vectors at the evaluation step. Apply
             # timestamp() directly to each selector to retain the scrape time.
-            values = " or ".join(raw)
+            values = raw
+            if field in ("in", "out"):
+                # Cover both raw samples plus intermediate scrapes even if a
+                # counter recovers above its previous 30-second endpoint.
+                values = [f'({s} and (resets({s}[66s]) == 0))' for s in raw]
+                if domain == "remote_ob":
+                    # firewall-snmp samples every 10s. Require the three
+                    # observations expected in each 30-second display step.
+                    values = [f'({checked} and (count_over_time({s}[30s]) >= 3))'
+                              for s, checked in zip(raw, values)]
+            values = " or ".join(values)
             timestamps = " or ".join(f"timestamp({selector})" for selector in raw)
             for suffix, source in ((field, values), (field + "_at", timestamps)):
                 chunks.append(f'label_replace(({source}),"bc_field","{suffix}","job",".+")')
@@ -209,10 +219,15 @@ def _timeseries(series, field):
 
 def _direction(counter, counter_at, oper, oper_at, up, up_at,
                disc, disc_at, now, end, max_age, require_disc):
-    times = sorted(set(counter or {}) & set(counter_at or {}))
+    counter, counter_at = counter or {}, counter_at or {}
+    times = sorted(counter.keys() | counter_at.keys())
     points = []
     previous = None
     for t in times:
+        if t not in counter or t not in counter_at:
+            points.append({"t": int(t), "bps": None})
+            previous = None
+            continue
         sample_at = counter_at[t]
         active = (oper or {}).get(t) == 1 and (up or {}).get(t) == 1
         active = active and (oper_at or {}).get(t) == (up_at or {}).get(t) == sample_at

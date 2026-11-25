@@ -30,14 +30,17 @@ def fixture_series(end):
         ):
             source = f'job="{job}",{target}'
             iface = f'{source},ifName="{name}",ifIndex="{index}"'
-            for sample in range(4):
-                scrape_at = end - 93 + sample * 30
-                # OB 2 has its last scrape missing, SVI 22 rolls over and
-                # SVI 23 has two ifIndexes with the same name.
-                if name == "tunnel2" and sample == 3:
+            interval = 10 if job == "firewall-snmp" else 30
+            for sample in range(90 // interval + 1):
+                scrape_at = end - 93 + sample * interval
+                # Remove one interior B sample while both display endpoints
+                # remain present. The adjacent tunnel has a hidden RX reset.
+                if name == "tunnel2" and sample == 8:
                     continue
-                received = 5_000_000 + sample * 3_750_000
-                sent = 8_000_000 + sample * 7_500_000
+                received = 5_000_000 + sample * interval * 125_000
+                sent = 8_000_000 + sample * interval * 250_000
+                if name == "tunnel3" and sample == 8:
+                    received = 5
                 if name == "Vl20":
                     received, sent = 510_000_000_000, 11_000_000_000
                 if name == "Vl22" and sample == 3:
@@ -55,6 +58,7 @@ def fixture_series(end):
         "unconfigured": config([], []),
         "normal": config(tunnel_rows[:1], svi_rows[:1]),
         "missing": config(tunnel_rows[1:2], svi_rows[:1]),
+        "tunnel-reset": config(tunnel_rows[2:3], svi_rows[:1]),
         "reset": config(tunnel_rows[:1], svi_rows[2:3]),
         "ambiguous": config(tunnel_rows[:1], svi_rows[3:4]),
         "maximum": config(tunnel_rows, svi_rows),
@@ -130,7 +134,7 @@ def test_live_traffic_bc_browser(tmp_path, monkeypatch):
             finally:
                 server.shutdown()
                 thread.join(3)
-        assert len(calls) == 6, calls
+        assert len(calls) == 7, calls
         print(f"B/C live Prometheus queries: {calls}")
     finally:
         docker("rm", "-fv", name, check=False)

@@ -32,4 +32,43 @@ assert.match(render({ state: "ready", items: [row("VLAN20")] }, "ready", "busine
 assert.match(render({ state: "unconfigured", items: [] }, "ready", "business_vlan"), /未配置接口/);
 assert.match(render(null, "error", "remote_ob"), /UNKNOWN/);
 assert.match(render(null, "loading", "remote_ob"), /正在读取/);
-console.log("B/C read-only UI presentation: PASS");
+
+async function testTrafficCancellation() {
+  const { createOverviewController } = require("../bigscreen/infra/overview-controller.js");
+  const pending = [];
+  const observed = [];
+  let timer;
+  const suspend = () => new Promise(() => {});
+  const controller = createOverviewController({
+    data: {
+      summary: suspend, bandwidth: suspend,
+      businessTraffic: (signal) => new Promise((resolve) => pending.push({ signal, resolve }))
+    },
+    render: (_, meta) => observed.push(meta.bcData),
+    clock: () => 100,
+    schedule: (callback) => { timer = callback; return callback; },
+    cancel: (callback) => { assert.equal(timer, callback); timer = null; }
+  });
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  controller.start();
+  assert.equal(pending.length, 1);
+  controller.stop();
+  assert.equal(timer, null);
+  assert.equal(pending[0].signal.aborted, true);
+
+  controller.start();
+  const obsolete = { remote_ob: { state: "old" } };
+  pending[0].resolve({ domains: obsolete });
+  await flush();
+  assert.equal(observed.includes(obsolete), false);
+
+  const current = { remote_ob: { state: "ready", items: [] } };
+  pending[1].resolve({ domains: current });
+  await flush();
+  assert.equal(observed.at(-1), current);
+  controller.stop();
+}
+
+testTrafficCancellation().then(() => {
+  console.log("B/C read-only UI presentation and request cancellation: PASS");
+}).catch((error) => { console.error(error); process.exitCode = 1; });
