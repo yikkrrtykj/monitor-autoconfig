@@ -1252,7 +1252,7 @@ services:
       - ./bigscreen:/app:ro
       - topology-data:/srv/topology:ro
     ports:
-      - "${BIGSCREEN_PORT:-8088}:80"
+      - "${BIGSCREEN_BIND_IP:-}:${BIGSCREEN_PORT:-8088}:80"
     depends_on:
       prometheus:
         condition: service_healthy
@@ -1387,10 +1387,25 @@ services:
             return 404;
           }
 
-          location /topology/ {
-            alias /srv/topology/;
-            add_header Cache-Control "no-store, no-cache, must-revalidate" always;
-            try_files $$uri =404;
+          # Keep the existing page routes and publish only the files used by the UI.
+          location = /topology/edges.json {
+            alias /srv/topology/edges-public.json;
+            disable_symlinks on from=/srv/topology/;
+          }
+          location = /topology/ap-attachments.json {
+            alias /srv/topology/ap-attachments-public.json;
+            disable_symlinks on from=/srv/topology/;
+          }
+          location = /topology/isp_targets.json {
+            alias /srv/topology/isp_targets.json;
+            disable_symlinks on from=/srv/topology/;
+          }
+          location = /topology/isp-discovery-state.json {
+            alias /srv/topology/isp-discovery-state.json;
+            disable_symlinks on from=/srv/topology/;
+          }
+          location ~* ^/topology/ {
+            return 404;
           }
 
           location /player-targets/ {

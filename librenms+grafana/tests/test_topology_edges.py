@@ -1245,6 +1245,8 @@ def test_empty_discovery_cycle_does_not_erase_confirmed_topology(tmp_path, monke
         "from_port": "Gi6/0/43",
         "to_ip": "192.168.42.203",
         "source": "fdb",
+        "last_seen": 123.0,
+        "server_mac": "fixture-internal",
     }]
     edges_path = topology_dir / "edges.json"
     attachments_path = topology_dir / "server-attachments.json"
@@ -1263,6 +1265,11 @@ def test_empty_discovery_cycle_does_not_erase_confirmed_topology(tmp_path, monke
     assert gte.main() == 0
     assert _json.loads(edges_path.read_text(encoding="utf-8")) == previous_edges
     assert _json.loads(attachments_path.read_text(encoding="utf-8")) == previous_edges
+    public = _json.loads((topology_dir / "edges-public.json").read_text(encoding="utf-8"))
+    assert public == [{
+        "from_ip": "192.168.10.11", "from_port": "Gi6/0/43",
+        "to_ip": "192.168.42.203", "source": "fdb",
+    }]
 
 
 def test_missing_network_edge_is_marked_stale_then_expires():

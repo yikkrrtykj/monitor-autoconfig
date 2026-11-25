@@ -203,6 +203,15 @@ def test_core_direct_ap_survives_validation_and_artifact_output(tmp_path, monkey
     assert len(artifact["attachments"]) == 1
     assert artifact["attachments"][0]["switch_ip"] == "10.0.0.11"
     assert artifact["attachments"][0]["switch_port"] == "Gi1/0/1"
+    public = json.loads((tmp_path / "ap-attachments-public.json").read_text())
+    assert set(public) == {"generated_at", "source", "candidate_source", "max_age_seconds", "attachments"}
+    assert public["attachments"] == [{
+        key: artifact["attachments"][0][key] for key in (
+            "ap_ip", "ap_mac", "switch_ip", "switch_ifindex", "switch_port", "vlan",
+            "evidence_age_seconds", "level",
+        )
+    }]
+    assert {"ap_name", "librenms_vlan_id", "online", "reason"} <= artifact["attachments"][0].keys()
 
 
 @pytest.mark.parametrize("core_result,expected", [(2, "downstream"), (1, "ambiguous")])
