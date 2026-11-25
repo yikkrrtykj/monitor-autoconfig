@@ -219,3 +219,14 @@ def test_prometheus_endpoint_strict_origin_rejects_host_prefix_trick():
         bc.fetch_range("http://name:secret@prometheus:9090", "up", 120)
     with pytest.raises(bc.TrafficError):
         bc.fetch_range("http://prometheus:9090@evil.example", "up", 120)
+
+
+
+@pytest.mark.parametrize("domain", ["remote_ob", "business_vlan"])
+def test_history_missing_scheduled_step_has_unknown_gap(domain):
+    # A missing 30s query-range step cannot be bridged by a 60s delta:
+    # C SVI scrape freshness may be 95s, but continuity is stricter.
+    rows = fake(domain, timestamps=(30, 60, 120))
+    row = bc.project(mapping(), rows, 120)["domains"][domain]["items"][0]
+    assert row["rx"]["bps"] is None
+    assert row["rx"]["points"][-1]["bps"] is None
