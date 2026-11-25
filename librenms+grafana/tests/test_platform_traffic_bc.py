@@ -230,3 +230,14 @@ def test_history_missing_scheduled_step_has_unknown_gap(domain):
     row = bc.project(mapping(), rows, 120)["domains"][domain]["items"][0]
     assert row["rx"]["bps"] is None
     assert row["rx"]["points"][-1]["bps"] is None
+
+
+
+def test_interface_up_requires_temporally_consistent_oper_and_up_samples():
+    rows = fake("remote_ob")
+    for row in rows:
+        if row["metric"].get("bc_field") == "up_at":
+            row["values"][-1][1] = "100"  # stale relative to oper at t=120
+    card_value = card("remote_ob", rows)
+    assert card_value["interface_status"] == "UNKNOWN"
+    assert card_value["traffic_validity"] == "UNKNOWN"
