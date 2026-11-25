@@ -739,8 +739,8 @@ def test_bigscreen_config_model_is_loaded_before_app_and_owns_only_pure_helpers(
     assert "postPlatform" not in config_model
     assert "dirty" not in config_model
     assert "applyInProgress" not in config_model
-    assert "config/config-model.js?v=20260827a" in index
-    assert index.index("config/config-model.js?v=20260827a") < index.index("config/config-editor.js?v=20260911a")
+    assert "config/config-model.js?v=20261125bc" in index
+    assert index.index("config/config-model.js?v=20261125bc") < index.index("config/config-editor.js?v=20261125bc")
 
 
 def test_bigscreen_config_editor_is_loaded_before_app_and_owns_editor_state_and_dom():
@@ -765,9 +765,9 @@ def test_bigscreen_config_editor_is_loaded_before_app_and_owns_editor_state_and_
     ):
         assert token in config_editor
         assert token not in app
-    assert "config/config-editor.js?v=20260911a" in index
-    assert index.index("config/config-model.js?v=20260827a") < index.index("config/config-editor.js?v=20260911a")
-    assert index.index("config/config-editor.js?v=20260911a") < index.index("app.js?v=20261124a")
+    assert "config/config-editor.js?v=20261125bc" in index
+    assert index.index("config/config-model.js?v=20261125bc") < index.index("config/config-editor.js?v=20261125bc")
+    assert index.index("config/config-editor.js?v=20261125bc") < index.index("app.js?v=20261124a")
 
 
 def test_bigscreen_dhcp_model_is_loaded_before_app_and_owns_only_pure_helpers():
