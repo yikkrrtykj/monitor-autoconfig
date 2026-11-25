@@ -49,6 +49,10 @@ if [ -n "${DEPLOY_CHECK_DEADLINE:-}" ]; then
   case "$DEPLOY_CHECK_DEADLINE" in *[!0-9]*) echo "Invalid deployment deadline" >&2; exit 1 ;; esac
   [ "$DEADLINE" -le "$DEPLOY_CHECK_DEADLINE" ] || DEADLINE=$DEPLOY_CHECK_DEADLINE
 fi
+# Report the time this run can actually spend, not the configured ceiling: a
+# caller that already consumed part of the shared budget must stay diagnosable.
+EFFECTIVE_TIMEOUT=$((DEADLINE - STARTED_AT))
+[ "$EFFECTIVE_TIMEOUT" -ge 0 ] || EFFECTIVE_TIMEOUT=0
 RESULTS_FILE=$(mktemp)
 HTTP_BODY=$(mktemp)
 HTTP_ERROR=$(mktemp)
@@ -216,7 +220,7 @@ wait_for_service() {
         ;;
     esac
     if deadline_reached; then
-      record FAIL "$check_id" "$label timed out after ${DEPLOY_CHECK_TIMEOUT}s (last state: $last_state)"
+      record FAIL "$check_id" "$label timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)"
       return 1
     fi
     wait_interval
@@ -236,7 +240,7 @@ wait_for_http() {
     last_error=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
     [ -n "$last_error" ] || last_error="temporarily unreachable"
     if deadline_reached; then
-      record FAIL "$check_id" "$label timed out after ${DEPLOY_CHECK_TIMEOUT}s (last error: $last_error)"
+      record FAIL "$check_id" "$label timed out after ${EFFECTIVE_TIMEOUT}s (last error: $last_error)"
       return 1
     fi
     wait_interval
@@ -269,7 +273,7 @@ with urllib.request.urlopen(
     last_error=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
     [ -n "$last_error" ] || last_error="container health endpoint temporarily unreachable"
     if deadline_reached; then
-      record FAIL platform_api_http "Platform API container /health timed out after ${DEPLOY_CHECK_TIMEOUT}s (last error: $last_error)"
+      record FAIL platform_api_http "Platform API container /health timed out after ${EFFECTIVE_TIMEOUT}s (last error: $last_error)"
       return 1
     fi
     wait_interval
@@ -323,7 +327,7 @@ wait_for_prometheus_reload() {
       [ -n "$last_state" ] || last_state="Prometheus metrics unreachable"
     fi
     if deadline_reached; then
-      record FAIL "$check_id" "Prometheus reload check timed out after ${DEPLOY_CHECK_TIMEOUT}s (last state: $last_state)"
+      record FAIL "$check_id" "Prometheus reload check timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)"
       return 1
     fi
     wait_interval
@@ -377,7 +381,7 @@ wait_for_prometheus_targets() {
       [ -n "$last_state" ] || last_state="Prometheus targets API unreachable"
     fi
     if deadline_reached; then
-      record FAIL "$check_id" "$label timed out after ${DEPLOY_CHECK_TIMEOUT}s (last state: $last_state)"
+      record FAIL "$check_id" "$label timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)"
       return 1
     fi
     wait_interval
@@ -399,7 +403,7 @@ wait_for_player_generator() {
       [ -n "$last_state" ] || last_state="player target status unreachable"
     fi
     if deadline_reached; then
-      record FAIL "$check_id" "Player target generator timed out after ${DEPLOY_CHECK_TIMEOUT}s (last state: $last_state)"
+      record FAIL "$check_id" "Player target generator timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)"
       return 1
     fi
     wait_interval
