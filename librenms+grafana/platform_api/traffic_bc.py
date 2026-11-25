@@ -168,7 +168,9 @@ def _matching(metric, row, domain):
         choices = {"vl" + number, "vlan" + number}
     else:
         choices = {expected}
-    return name.casefold() in choices or descr.casefold() in choices
+    # When ifName is available, it is authoritative: an old matching ifDescr
+    # cannot silently keep a renamed/deleted Tunnel or SVI identity alive.
+    return name.casefold() in choices if name else descr.casefold() in choices
 
 
 def _timeseries(series, field):
