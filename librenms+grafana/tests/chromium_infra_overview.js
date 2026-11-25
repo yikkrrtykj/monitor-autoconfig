@@ -162,6 +162,28 @@ async function open(browser, viewport, data, assets, routeName = "/infra") {
       return route.fulfill({ contentType: "application/json", body: data.inventoryBody });
     }
     if (url.pathname === "/topology/isp-discovery-state.json") return json(data.discovery);
+    if (url.pathname === "/platform-api/network/traffic-bc") {
+      const points = [fixedAt - 90, fixedAt - 60, fixedAt - 30, fixedAt]
+        .map((t, i) => ({ t, bps: i === 1 ? null : 200000 + i * 150000 }));
+      const mk = (name, iface, rate, kind) => ({
+        name, interface: iface, interface_status: "UP",
+        sa_status: kind === "remote_ob" ? "UNKNOWN" : null,
+        egress_isp: kind === "remote_ob" ? "UNKNOWN" : null,
+        configured_isp: kind === "remote_ob" ? "Configured only" : null,
+        traffic_validity: "VALID", unit: kind === "remote_ob" ? "Tunnel 接口" : "SVI 三层网关接口",
+        rx: { bps: rate, sample_at: fixedAt, points },
+        tx: { bps: rate * 0.3, sample_at: fixedAt,
+          points: points.map(({ t, bps }) => ({ t, bps: bps === null ? null : bps * 0.3 })) }
+      });
+      return json({ ok: true, generated_at: fixedAt, interval_seconds: 30,
+        domains: {
+          remote_ob: { state: "ready", items: [mk("Fixture OB", "tunnel1", 1020000, "remote_ob")] },
+          business_vlan: { state: "ready", items: [
+            mk("Fixture VLAN20", "Vlan20", 54660000, "business_vlan"),
+            mk("Fixture VLAN21", "Vl21", 45970000, "business_vlan")
+          ] }
+        } });
+    }
     if (/\/api\/v1\/query(?:_range)?$/.test(url.pathname)) {
       const [status, resultType, result] = data.prometheus(url, routeName);
       return json({ status: status === 200 ? "success" : "error", data: { resultType, result } }, status);
@@ -349,7 +371,17 @@ async function verifyScenarios(browser, report) {
         assert.deepEqual(await part(page, "fault-summary").locator("[data-count]").evaluateAll(
           (nodes) => nodes.map((node) => Number(node.dataset.count))), faultCounts, name);
         assert.equal(await page.locator(".overview-wan").count(), options.count ?? 6);
-        assert.equal(await page.locator(".overview-vlan").getAttribute("open"), null);
+        assert.equal(await page.locator(".overview-vlan").count(), 0);
+        assert.equal(await part(page, "bc-ob").locator(".overview-bc-item").count(), 1);
+        assert.equal(await part(page, "bc-vlan").locator(".overview-bc-item").count(), 2);
+        assert.match(await part(page, "bc-ob").textContent(), /SA: UNKNOWN/);
+        assert.match(await part(page, "bc-vlan").textContent(), /不是 VLAN 互联网/);
+        if (name === "normal") {
+          await page.locator(".overview-bc-grid").screenshot({
+            path: path.join(output, "bc-synthetic-" + width + "x" + height + ".png"),
+            animations: "disabled", timeout: 15000
+          });
+        }
         assert.doesNotMatch(await part(page, "faults").textContent(), /AP noise|203\.0\.113\.1/);
         const coverage = await part(page, "coverage").textContent();
         const measured = await geometry(page);
