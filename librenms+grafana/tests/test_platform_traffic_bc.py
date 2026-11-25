@@ -173,6 +173,9 @@ def test_single_query_shared_cache_and_configuration_invalidation():
         return fake("remote_ob")
     sampler = bc.SharedSampler(clock=lambda: 120., monotonic=lambda: t[0], fetch=fetch)
     config = {"traffic": {"tunnels": [TUNNEL]}}
+    # Assert the fixture itself is valid before diagnosing sampler/cache failures.
+    expected = bc.project(bc.configuration(config), fake("remote_ob"), 120.)
+    assert expected["ok"], expected
     first = sampler.snapshot(config)
     assert first["ok"] and len(calls) == 1, first
     assert all(sampler.snapshot(config) == first for _ in range(20))
