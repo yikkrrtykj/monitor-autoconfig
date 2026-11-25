@@ -58,7 +58,7 @@
           });
         }
       });
-      poll(bcState, 30, at, (signal) => data.businessTraffic(signal), (result) => {
+      if (typeof data.businessTraffic === "function") poll(bcState, 30, at, (signal) => data.businessTraffic(signal), (result) => {
         bcState.data = result.domains;
         bcState.state = "ready";
       });
