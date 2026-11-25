@@ -377,12 +377,6 @@ async function verifyScenarios(browser, report) {
         assert.equal(await part(page, "bc-vlan").locator(".overview-bc-item").count(), 2);
         assert.match(await part(page, "bc-ob").textContent(), /SA: UNKNOWN/);
         assert.match(await part(page, "bc-vlan").textContent(), /不是 VLAN 互联网/);
-        if (name === "normal") {
-          await page.locator(".overview-bc-grid").screenshot({
-            path: path.join(output, "bc-synthetic-" + width + "x" + height + ".png"),
-            animations: "disabled", timeout: 15000
-          });
-        }
         assert.doesNotMatch(await part(page, "faults").textContent(), /AP noise|203\.0\.113\.1/);
         const coverage = await part(page, "coverage").textContent();
         const measured = await geometry(page);
@@ -444,6 +438,12 @@ async function verifyScenarios(browser, report) {
           await screen(page, `after-wan-alignment-${width}x${height}`);
         }
         assert.deepEqual(errors, []);
+        if (name === "normal") {
+          await page.locator(".overview-bc-grid").screenshot({
+            path: path.join(output, "bc-synthetic-" + width + "x" + height + ".png"),
+            animations: "disabled", timeout: 15000
+          });
+        }
         report.scenarios[`${name}-${width}`] = measured;
         if (baseline.size && name === "mixed") {
           const before = await open(browser, { width, height }, fixture(options), baseline);
