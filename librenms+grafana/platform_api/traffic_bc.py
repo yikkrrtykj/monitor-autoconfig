@@ -205,7 +205,7 @@ def _direction(counter, counter_at, oper, oper_at, up, up_at,
         if active and previous is not None:
             old_at, old_value, old_disc = previous
             elapsed = sample_at - old_at
-            if (elapsed > 0 and elapsed <= max_age and counter[t] >= old_value
+            if (elapsed > 0 and elapsed <= min(max_age, STEP * 1.5) and counter[t] >= old_value
                     and (disc is None or disc[t] == old_disc)
                     and counter[t] == counter[t].to_integral_value()
                     and old_value == old_value.to_integral_value()):
