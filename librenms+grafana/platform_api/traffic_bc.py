@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 MAX_ITEMS = 8
@@ -113,8 +113,11 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def fetch_range(url, query, end, timeout=7):
-    if not url.startswith("http://") or not url.startswith("http://prometheus:9090"):
-        # Only configured internal Prometheus service is supported.
+    parsed = urlsplit(url)
+    if (parsed.scheme != "http" or parsed.hostname != "prometheus" or
+            parsed.port != 9090 or parsed.path not in ("", "/") or
+            parsed.username or parsed.password or parsed.query or parsed.fragment):
+        # No userinfo, external hosts, redirect targets, arbitrary paths or proxy.
         raise TrafficError("invalid internal Prometheus URL")
     params = urlencode({"query": query, "start": end - WINDOW, "end": end,
                         "step": STEP, "timeout": "5s"})
