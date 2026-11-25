@@ -3,6 +3,7 @@
 
   const { escapeHtml: esc } = window.BSUtils;
   const { pingHref } = window.BSOverviewModel;
+  const business = window.BSBusinessTraffic;
   const maxFaults = 8;
   const healthLabels = { healthy: "All Good", fault: "检测到网络异常", partial: "监控部分不可用", unavailable: "监控不可用" };
   const faultLabels = { DOWN: "已确认离线", DEGRADED: "质量异常", UNKNOWN: "探测未知" };
@@ -170,6 +171,8 @@
         state.wanUnavailable ? "WAN 采集缺失或部分不可用" : "IF-MIB · 近 15 分钟";
       html("bandwidth", state.wans.length ? state.wans.map(bandwidthCard).join("") :
         `<p class="overview-empty">${meta.wanState === "loading" ? "正在读取已发现 WAN 接口…" : "WAN 清单为空或暂不可用。"}</p>`);
+      html("bc-ob", business.render(meta.bcData?.remote_ob, meta.bcState, "remote_ob"));
+      html("bc-vlan", business.render(meta.bcData?.business_vlan, meta.bcState, "business_vlan"));
       html("fault-summary", Object.entries(faultLabels).map(([status, label]) =>
         `<span class="overview-badge" data-status="${status}" data-count="${state.total[status]}">${label} ${state.total[status]}</span>`).join(""));
       html("faults", faultsMarkup(state));
