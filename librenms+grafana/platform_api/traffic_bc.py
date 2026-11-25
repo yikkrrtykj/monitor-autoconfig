@@ -95,6 +95,17 @@ def _scrape_interval_ms(interval: str) -> int:
     raise TrafficError("invalid firewall scrape interval")
 
 
+def _scrapes_are_continuous(selector: str, interval_ms: int) -> str:
+    previous = f"timestamp({selector} offset {STEP}s)"
+    aligned = f"({previous} == time() - {STEP})"
+    # Prometheus 2 includes the left edge and Prometheus 3 excludes it.
+    # Only shorten the range when the previous scrape sits on that edge.
+    full = f"(count_over_time({selector}[{STEP}s]) unless {aligned})"
+    shifted = f"(count_over_time({selector}[{STEP * 1000 - 1}ms]) and {aligned})"
+    expected = f"round((timestamp({selector}) - {previous}) * 1000 / {interval_ms})"
+    return f"(({full} or {shifted}) == {expected})"
+
+
 def build_query(mapping, firewall_scrape_interval: str = DEFAULT_FIREWALL_SCRAPE_INTERVAL):
     """PromQL query_range: two jobs, one HTTP request, no rate() reset healing."""
     chunks = []
@@ -133,8 +144,7 @@ def build_query(mapping, firewall_scrape_interval: str = DEFAULT_FIREWALL_SCRAPE
                     # latest scrapes at its endpoints. Their actual timestamps
                     # determine the expected count even when cadence and step differ.
                     values = [
-                        f'({checked} and (count_over_time({s}[{STEP}s]) == round('
-                        f'(timestamp({s}) - timestamp({s} offset {STEP}s)) * 1000 / {interval_ms})))'
+                        f"({checked} and {_scrapes_are_continuous(s, interval_ms)})"
                         for s, checked in zip(raw, values)
                     ]
             values = " or ".join(values)
