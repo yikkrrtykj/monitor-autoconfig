@@ -314,7 +314,9 @@
         access_switches: "普通接入交换机",
         switches: "交换机",
         servers: "服务器",
-        isp: "ISP"
+        isp: "ISP",
+        tunnels: "Remote OB Tunnel",
+        business_vlans: "业务 VLAN SVI"
       };
       const supportsRange = name === "stage_switches" || name === "access_switches";
       return `
@@ -336,7 +338,7 @@
               <button type="button" data-config-remove="${escapeHtml(name)}" data-index="${index}">删除</button>
             </div>
           `).join("")}
-          <button class="config-add-row" type="button" data-config-add="${escapeHtml(name)}">添加${escapeHtml(addLabels[name] || "条目")}</button>
+          <button class="config-add-row" type="button" data-config-add="${escapeHtml(name)}"${(name === "tunnels" || name === "business_vlans") && rows.length >= 8 ? " disabled" : ""}>添加${escapeHtml(addLabels[name] || "条目")}</button>
         </div>
       `;
     }
@@ -464,6 +466,23 @@
           ])}
         </section>
         <section class="config-section">
+          <h3>业务接口流量（B/C · 可选）</h3>
+          <p class="config-section-note">每类最多8条，使用现有 Prometheus 接口计数。RX/TX 为设备视角；Tunnel 接口 Up 不代表 SA 已建立，配置 ISP 不代表实时出口。业务 VLAN 只展示三层网关接口流量，不代表互联网或全部二层流量。未配置时不查询。</p>
+          <h4>Remote OB · IPsec Tunnel</h4>
+          ${configListRows("tunnels", lastEditableConfig.traffic.tunnels, [
+            { key: "name", label: "远端站点名称", placeholder: "例如上海 OB" },
+            { key: "instance", label: "防火墙 SNMP VIP", placeholder: "IPv4，需与 firewall-snmp 一致" },
+            { key: "if_name", label: "接口名称", placeholder: "例如 tunnel1" },
+            { key: "egress_isp", label: "配置 ISP（非实时）", placeholder: "可留空；不作为实际出口证据" }
+          ])}
+          <h4>业务 VLAN · 三层网关 SVI</h4>
+          ${configListRows("business_vlans", lastEditableConfig.traffic.business_vlans, [
+            { key: "name", label: "业务名称", placeholder: "例如视频制作" },
+            { key: "target_ip", label: "三层网关管理地址", placeholder: "IPv4，需与 infra-switch-ifmib 一致" },
+            { key: "vlan", label: "业务 VLAN ID", placeholder: "例如 20", number: true }
+          ])}
+        </section>
+        <section class="config-section">
           <h3>UniFi</h3>
           <div class="config-fields">
             ${configInput("unifi.enabled", "启用 UniFi", { type: "checkbox" })}
@@ -542,7 +561,9 @@
         stage_switches: ["devices", "stage_switches"],
         access_switches: ["devices", "access_switches"],
         servers: ["devices", "servers"],
-        isp: ["isp", "links"]
+        isp: ["isp", "links"],
+        tunnels: ["traffic", "tunnels"],
+        business_vlans: ["traffic", "business_vlans"]
       };
       Object.entries(listMappings).forEach(([name, path]) => {
         const list = form.querySelector(`[data-config-list="${name}"]`);
@@ -801,6 +822,8 @@
             if (listName === "access_switches") next.devices.access_switches.push({ ip: "" });
             if (listName === "servers") next.devices.servers.push({ name: "", ip: "" });
             if (listName === "isp") next.isp.links.push({ name: "", ping: "", ip: "", bandwidth_mbps: "" });
+            if (listName === "tunnels" && next.traffic.tunnels.length < 8) next.traffic.tunnels.push({ name: "", instance: "", if_name: "", egress_isp: "" });
+            if (listName === "business_vlans" && next.traffic.business_vlans.length < 8) next.traffic.business_vlans.push({ name: "", target_ip: "", vlan: "" });
           }
           if (rangeButton) {
             const listName = rangeButton.dataset.configAddRange;
@@ -822,6 +845,8 @@
             if (listName === "access_switches") next.devices.access_switches.splice(index, 1);
             if (listName === "servers") next.devices.servers.splice(index, 1);
             if (listName === "isp") next.isp.links.splice(index, 1);
+            if (listName === "tunnels") next.traffic.tunnels.splice(index, 1);
+            if (listName === "business_vlans") next.traffic.business_vlans.splice(index, 1);
           }
           renderControlConfigForm(next);
           configForm.dataset.dirty = "1";

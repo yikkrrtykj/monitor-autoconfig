@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="./style.css?v=20261116a" />
     <link rel="stylesheet" href="./platform.css?v=20261122a" />
     <link rel="stylesheet" href="./ping/ping.css?v=20261119d3" />
-    <link rel="stylesheet" href="./infra/overview.css?v=20261120b" />
+    <link rel="stylesheet" href="./infra/overview.css?v=20261125bc" />
   </head>
   <body>
     <main class="screen">
@@ -62,10 +62,19 @@
             <span data-overview="wan-source"></span></div>
           <p class="overview-capacity-note">利用率按配置容量计算。</p>
           <div class="overview-wan-grid" data-overview="bandwidth"></div>
-          <details class="overview-vlan"><summary>业务 VLAN · 流量来源待核实</summary>
-            <p>确认 VLAN 与可信计数接口的映射及计量范围后再接入。</p>
-          </details>
         </section>
+        <div class="overview-bc-grid">
+          <section class="overview-panel" aria-labelledby="overviewObTitle">
+            <div class="overview-section-title"><h3 id="overviewObTitle">Remote OB · Tunnel RX/TX</h3>
+              <span class="overview-note">接口 ≠ SA</span></div>
+            <div class="overview-bc-items" data-overview="bc-ob"></div>
+          </section>
+          <section class="overview-panel" aria-labelledby="overviewVlanTitle">
+            <div class="overview-section-title"><h3 id="overviewVlanTitle">业务 VLAN · 三层网关接口</h3>
+              <span class="overview-note">SVI RX/TX</span></div>
+            <div class="overview-bc-items" data-overview="bc-vlan"></div>
+          </section>
+        </div>
       </section>
       <section class="panel-grid" id="panelGrid" aria-label="监控面板">
         <section class="panel custom-panel ping-panel" aria-labelledby="pingTitle">
@@ -504,8 +513,8 @@
       </section>
     </main>
     <script src="./config.js?v=20261122a"></script>
-    <script src="./config/config-model.js?v=20260827a"></script>
-    <script src="./config/config-editor.js?v=20260911a"></script>
+    <script src="./config/config-model.js?v=20261125bc"></script>
+    <script src="./config/config-editor.js?v=20261125bc"></script>
     <script src="./dhcp/dhcp-model.js?v=20260827a"></script>
     <script src="./dhcp/dhcp-panel.js?v=20260911a"></script>
     <script src="./pages.js?v=20261116a"></script>
@@ -534,9 +543,10 @@
     <script src="./ping/custom-manager.js?v=20261119d3"></script>
     <script src="./ping/panel.js?v=20261119minihttp"></script>
     <script src="./infra/overview-model.js?v=20261116c"></script>
-    <script src="./infra/overview-data.js?v=20261107a"></script>
-    <script src="./infra/overview-controller.js?v=20261116b"></script>
-    <script src="./infra/overview-view.js?v=20261120b"></script>
+    <script src="./infra/overview-data.js?v=20261125b"></script>
+    <script src="./infra/overview-controller.js?v=20261125bc2"></script>
+    <script src="./infra/traffic-bc.js?v=20261125bc2"></script>
+    <script src="./infra/overview-view.js?v=20261125bc2"></script>
     <script src="./network-read.js?v=20260929a"></script>
     <script src="./players.js?v=20260802a"></script>
     <script src="./tournament/tournament-panel.js?v=20260828a"></script>

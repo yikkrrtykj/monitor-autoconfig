@@ -50,6 +50,7 @@ def test_read_context_is_explicit_and_does_not_accept_entrypoint_globals():
         "stamp",
         "network_context",
         "network_require_auth",
+        "traffic_snapshot",
     }
 
 

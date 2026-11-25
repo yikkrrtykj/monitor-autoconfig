@@ -72,7 +72,8 @@ assert.deepStrictEqual(emptyDefaults, {
     cpu_alert_percent: 70,
     memory_alert_percent: 80
   },
-  security: { grafana_anonymous: true }
+  security: { grafana_anonymous: true },
+  traffic: { tunnels: [], business_vlans: [] }
 }, 'empty input receives the complete existing editor defaults');
 
 const eventConfig = controlConfigDefaults({

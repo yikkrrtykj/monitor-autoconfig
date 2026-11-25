@@ -126,7 +126,34 @@
       ]));
     }
 
-    return { summary: pingData.summary, bandwidth, gatewayStats };
+    async function businessTraffic(routeSignal) {
+      const signal = AbortSignal.any([routeSignal, AbortSignal.timeout(9000)]);
+      const response = await fetch("/platform-api/network/traffic-bc", {
+        method: "GET", cache: "no-store", redirect: "error", signal
+      });
+      if (!response.ok) throw new Error("B/C API 不可用");
+      const reader = response.body.getReader();
+      const chunks = [];
+      let length = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        length += value.length;
+        if (length > 256 * 1024) {
+          await reader.cancel();
+          throw new Error("B/C response limit");
+        }
+        chunks.push(value);
+      }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+      const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      if (!payload.ok || !payload.domains) throw new Error("B/C data unavailable");
+      return payload;
+    }
+
+    return { summary: pingData.summary, bandwidth, gatewayStats, businessTraffic };
   }
 
   if (common) module.exports = { createOverviewData };

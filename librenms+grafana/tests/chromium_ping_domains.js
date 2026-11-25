@@ -755,7 +755,11 @@ async function isolated(browser, host) {
   page.on("response", (response) => {
     const req = response.request();
     if (new URL(response.url()).pathname.startsWith(api)) {
-      requestLog.push({ method: req.method(), path: new URL(response.url()).pathname, status: response.status() });
+      const entry = { method: req.method(), path: new URL(response.url()).pathname, status: response.status() };
+      requestLog.push(entry);
+      if (entry.status >= 400 && entry.path.endsWith("/resolutions")) {
+        response.json().then(({ error }) => { entry.error = error; }, () => {});
+      }
     }
   });
   const openAdd = () => el(page, "CustomAdd").click();
@@ -864,6 +868,12 @@ async function isolated(browser, host) {
     assert.match(deletedCsv, /172\.31\.248\.22/);
     fs.writeFileSync(path.join(output, "isolated-history-after-delete.csv"), deletedCsv);
     assert.deepEqual(errors, []);
+  } catch (error) {
+    const resolutionErrors = requestLog.filter(({ path, status }) => path.endsWith("/resolutions") && status >= 400);
+    console.error("DNS history diagnostics", JSON.stringify({
+      resolutionErrors, title: await el(page, "HistoryTitle").allTextContents(), errors
+    }));
+    throw error;
   } finally {
     record("isolated-operations", { operations, requests: requestLog, errors });
     await context.close();

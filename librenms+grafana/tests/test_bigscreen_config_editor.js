@@ -750,6 +750,27 @@ async function testDynamicListsAndTeamOrder() {
   await lists.form.dispatch('click', { target: listRows(lists, 'servers')[0].querySelector('[data-config-remove="servers"]') });
   assert.strictEqual(listRows(lists, 'servers').length, 0, 'empty appended rows are cropped while removing the populated row');
 
+  const bc = createHarness();
+  bc.editor.bind();
+  bc.editor.render(platformPayload(configFixture({ traffic: {
+    tunnels: [{ name: "Remote A", instance: "203.0.113.10", if_name: "tunnel1", egress_isp: "Configured WAN" }],
+    business_vlans: [{ name: "Live Production", target_ip: "203.0.113.20", vlan: 20 }]
+  } })), dhcpPayload());
+  assert.equal(listRows(bc, "tunnels").length, 1, "Tunnel mapping visible in existing control editor");
+  assert.equal(listRows(bc, "business_vlans").length, 1, "SVI mapping visible in control editor");
+  await clickAction(bc, "controlConfigSave");
+  const savedBc = parsedPayload(configPosts(bc, "/config/save")[0]);
+  assert.deepStrictEqual(savedBc.traffic.tunnels, [
+    { name: "Remote A", instance: "203.0.113.10", if_name: "tunnel1", egress_isp: "Configured WAN" }
+  ]);
+  assert.deepStrictEqual(savedBc.traffic.business_vlans, [
+    { name: "Live Production", target_ip: "203.0.113.20", vlan: 20 }
+  ]);
+  await bc.form.dispatch("click", { target: bc.form.querySelector('[data-config-add="tunnels"]') });
+  assert.equal(listRows(bc, "tunnels").length, 2);
+  await bc.form.dispatch("click", { target: listRows(bc, "tunnels")[0].querySelector('[data-config-remove="tunnels"]') });
+  assert.equal(listRows(bc, "tunnels").length, 0, "empty appended mapping cropped after removing populated mapping");
+
   const range = createHarness();
   range.editor.bind();
   range.editor.render(platformPayload(), dhcpPayload());

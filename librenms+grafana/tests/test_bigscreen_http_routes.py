@@ -96,7 +96,8 @@ def test_functional_pages_do_not_redirect_to_internal_port(tmp_path):
             assert (status, location, body) == (200, None, expected), route
             status, location, _ = request(route + "/?fixture=1")
             assert (status, location) == (302, route + "?fixture=1"), route
-        for asset in ("control/auth-controller.js", "control/incident-registry.js", "dhcp/dhcp-panel.js"):
+        for asset in ("control/auth-controller.js", "control/incident-registry.js", "dhcp/dhcp-panel.js",
+                      "infra/traffic-bc.js"):
             status, location, body = request("/" + asset)
             assert (status, location, body) == (200, None, (app / asset).read_bytes())
         for retired in ("/incident?at=fixture", "/incident/", "/incident.js", "/incident/incident-panel.js"):
