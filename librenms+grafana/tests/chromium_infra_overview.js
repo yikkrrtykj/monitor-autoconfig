@@ -615,7 +615,11 @@ async function main() {
     const after = await verifyBudget(browser, new Map());
     if (baseline.size) {
       const before = await verifyBudget(browser, baseline);
-      assert.deepEqual(after.startupRequests, before.startupRequests, "layout changed browser startup requests");
+      const addedBcScript = "GET script /infra/traffic-bc.js";
+      assert.equal(after.startupRequests.filter((x) => x === addedBcScript).length, 1,
+        "exactly one B/C presentation module must be loaded");
+      assert.deepEqual(after.startupRequests.filter((x) => x !== addedBcScript), before.startupRequests,
+        "A-stage startup assets unexpectedly changed");
       assert.deepEqual(after.requests, before.requests, "layout changed HTTP requests or Prometheus expressions");
       report.http = { before: before.requests.length, after: after.requests.length, added: 0, rounds: after.rounds };
     } else {
