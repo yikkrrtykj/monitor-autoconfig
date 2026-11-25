@@ -25,8 +25,8 @@ assert.match(output, /SA: UNKNOWN/);
 assert.match(output, /实际 ISP: UNKNOWN/);
 assert.match(output, /N\/A/);
 assert.match(output, /0.00 Mbps/);
-assert.match(output, /M1.0 2/);
-assert.match(output, /M199.0 2/); // gap in RX must create another M, never an L across UNKNOWN.
+assert.match(output, /M1.0 13.5/);
+assert.match(output, /M199.0 2.0/); // gap in RX must create another M, never an L across UNKNOWN.
 assert.ok(trace(row().rx.points).includes(" M199.0 "));
 assert.match(render({ state: "ready", items: [row("VLAN20")] }, "ready", "business_vlan"), /不是 VLAN 互联网/);
 assert.match(render({ state: "unconfigured", items: [] }, "ready", "business_vlan"), /未配置接口/);
