@@ -483,7 +483,7 @@ async function verifyBudget(browser, assets) {
     for (let at = 0; at <= 60; at += 5) {
       const expected = [at % 30 === 0 ? "Ping inventory + summary" : "Ping summary"];
       if (at % 15 === 0) expected.push("WAN range");
-      if (at % 30 === 0) expected.push("Gateway STDDEV", "isp_targets.json", "isp-discovery-state.json");
+      if (at % 30 === 0) expected.push("Gateway STDDEV", "isp_targets.json", "isp-discovery-state.json", "/platform-api/network/traffic-bc");
       if (at) await tick(5);
       await until(() => requests.filter((request) => request.elapsed === at).length >= expected.length && !pending.size,
         `HTTP batch at ${at}s did not finish`);
