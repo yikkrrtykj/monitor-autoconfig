@@ -146,8 +146,8 @@ def test_multi_core_target_and_separate_tunnels():
         "business_vlans": [SVI, {"name": "Backup", "target_ip": "203.0.113.21", "vlan": 21}]}}
     mapping = bc.configuration(config)
     assert len(mapping["remote_ob"]) == len(mapping["business_vlan"]) == 2
-    assert "203.0.113.10" in bc.build_query(mapping)
-    assert "203.0.113.21" in bc.build_query(mapping)
+    assert "203\\\\.0\\\\.113\\\\.10" in bc.build_query(mapping)
+    assert "203\\\\.0\\\\.113\\\\.21" in bc.build_query(mapping)
     assert "192.168.9.4" not in bc.build_query(mapping)
 
 
@@ -174,7 +174,7 @@ def test_single_query_shared_cache_and_configuration_invalidation():
     sampler = bc.SharedSampler(clock=lambda: 120., monotonic=lambda: t[0], fetch=fetch)
     config = {"traffic": {"tunnels": [TUNNEL]}}
     first = sampler.snapshot(config)
-    assert first["ok"] and len(calls) == 1
+    assert first["ok"] and len(calls) == 1, first
     assert all(sampler.snapshot(config) == first for _ in range(20))
     assert len(calls) == 1
     t[0] += 30
