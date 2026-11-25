@@ -128,3 +128,44 @@
 @media (max-width: 480px) {
   .overview-table-hint { display: block; margin: 0 0 4px; }
 }
+
+
+/* #104 B/C. Keep the A-stage status-first layout and never sum WAN/SVI/Tunnel. */
+.infra-overview .overview-bc-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+.infra-overview .overview-bc-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 8px;
+}
+.infra-overview .overview-bc-item {
+  min-width: 0;
+  border: 1px solid var(--panel-border, #334155);
+  border-radius: 7px;
+  padding: 9px;
+}
+.infra-overview .overview-bc-title,
+.infra-overview .overview-bc-rates {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.infra-overview .overview-bc-title strong { overflow-wrap: anywhere; }
+.infra-overview .overview-bc-title small,
+.infra-overview .overview-bc-note { display: block; opacity: .8; font-size: 11px; }
+.infra-overview .overview-bc-rates { margin-top: 8px; font-size: 13px; }
+.infra-overview .overview-bc-rates b { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.infra-overview .overview-bc-trends { margin: 6px 0; }
+.infra-overview .overview-bc-trends svg { width: 100%; height: 28px; display: block; }
+.infra-overview .overview-bc-item[data-validity="unknown"] {
+  border-style: dashed;
+}
+@media (max-width: 780px) {
+  .infra-overview .overview-bc-grid { grid-template-columns: minmax(0, 1fr); }
+}
