@@ -39,6 +39,7 @@ from platform_api import incidents as platform_incidents
 from platform_api import iperf_runtime as platform_iperf_runtime
 from platform_api import network_read as platform_network_read
 from platform_api import precheck as platform_precheck
+from platform_api import traffic_bc as platform_traffic_bc
 from platform_api import read_api as platform_read_api
 from platform_api import storage as platform_storage
 from platform_api import write_api as platform_write_api
@@ -114,6 +115,21 @@ NETWORK_AP_PLACEMENT_PATH = Path(os.environ.get(
 NETWORK_HTTP_TIMEOUT = max(
     1.0, min(15.0, float(os.environ.get("PLATFORM_NETWORK_HTTP_TIMEOUT", "5")))
 )
+# #104 B/C shares one 30s cache and one in-flight query across all clients.
+BC_SAMPLER = platform_traffic_bc.SharedSampler(url=NETWORK_PROMETHEUS_URL)
+
+
+def _traffic_bc_snapshot():
+    try:
+        config = platform_event_config.parse_config_text(
+            platform_event_config.read_config_text(_event_config_context())
+        )
+        return BC_SAMPLER.snapshot(config)
+    except (OSError, ValueError, TypeError):
+        return {"ok": False, "state": "invalid_configuration",
+                "error": "B/C 业务流量配置不可用"}
+
+
 TRANSACTION_RETENTION = CORE_SETTINGS.transaction_retention
 APPLY_STATUS_RETENTION = CORE_SETTINGS.apply_status_retention
 AUTH_CONTEXT = platform_auth.AuthContext(
@@ -379,6 +395,7 @@ def _read_api_context() -> platform_read_api.ReadApiContext:
         stamp=stamp,
         network_context=_network_read_context(),
         network_require_auth=_require_network_auth,
+        traffic_snapshot=_traffic_bc_snapshot,
     )
 
 
