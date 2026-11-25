@@ -694,7 +694,11 @@ else
   PROMETHEUS_URL="http://127.0.0.1:$PROMETHEUS_PORT"
   GRAFANA_URL="http://127.0.0.1:$GRAFANA_PORT"
   LIBRENMS_URL="http://127.0.0.1:$LIBRENMS_PORT"
-  BIGSCREEN_URL="http://127.0.0.1:$BIGSCREEN_PORT"
+  bigscreen_host=${BIGSCREEN_BIND_IP-$(env_value BIGSCREEN_BIND_IP 2>/dev/null || true)}
+  case "$bigscreen_host" in
+    ""|0.0.0.0) bigscreen_host=127.0.0.1 ;;
+  esac
+  BIGSCREEN_URL="http://$bigscreen_host:$BIGSCREEN_PORT"
   BLACKBOX_EXPORTER_URL="http://127.0.0.1:$BLACKBOX_EXPORTER_PORT"
   SNMP_EXPORTER_URL="http://127.0.0.1:$SNMP_EXPORTER_PORT"
 fi

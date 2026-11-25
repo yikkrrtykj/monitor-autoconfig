@@ -3381,6 +3381,30 @@ def collect_validated_ap_inventory(aps, inventory, devices, edges, client, commu
     return {mac: rows for mac, rows in selected.items() if rows}
 
 
+PUBLIC_AP_ARTIFACT_FIELDS = ("generated_at", "source", "candidate_source", "max_age_seconds")
+PUBLIC_AP_ATTACHMENT_FIELDS = (
+    "ap_ip", "ap_mac", "switch_ip", "switch_ifindex", "switch_port", "vlan",
+    "evidence_age_seconds", "level",
+)
+PUBLIC_EDGE_FIELDS = (
+    "from_ip", "from_port", "from_member_ports", "from_aggregate_port",
+    "to_ip", "to_port", "to_member_ports", "to_aggregate_port",
+    "edge_type", "source", "stale",
+)
+
+
+def _public_fields(record, keys):
+    return {key: record[key] for key in keys if key in record}
+
+
+def _write_public_edges(output_dir, edges):
+    try:
+        public_edges = [_public_fields(edge, PUBLIC_EDGE_FIELDS) for edge in edges]
+        write_json_atomic(os.path.join(output_dir, "edges-public.json"), public_edges, sort_keys=True)
+    except OSError as exc:
+        print(f"[WARN] Public topology artifact write failed ({type(exc).__name__})", file=sys.stderr)
+
+
 def write_current_ap_artifact(output_dir, aps, inventory, online_evidence=None):
     try:
         excluded = _env_target_ips("FIREWALL_PING")
@@ -3388,6 +3412,11 @@ def write_current_ap_artifact(output_dir, aps, inventory, online_evidence=None):
         artifact = build_ap_artifact(aps, inventory, excluded, core_ips=core_ips,
                                      online_evidence=online_evidence or {})
         write_json_atomic(os.path.join(output_dir, "ap-attachments.json"), artifact, sort_keys=True)
+        public_artifact = _public_fields(artifact, PUBLIC_AP_ARTIFACT_FIELDS)
+        public_artifact["attachments"] = [
+            _public_fields(row, PUBLIC_AP_ATTACHMENT_FIELDS) for row in artifact["attachments"]
+        ]
+        write_json_atomic(os.path.join(output_dir, "ap-attachments-public.json"), public_artifact, sort_keys=True)
     except Exception as exc:
         print(f"[WARN] AP artifact write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
 
@@ -4632,7 +4661,10 @@ def _run_collection():
     except Exception as exc:
         print(f"[WARN] AP ping targets write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
     device_ips = load_device_list()
+    edges_path = os.path.join(output_dir, "edges.json")
     if not device_ips:
+        if os.path.isfile(edges_path):
+            _write_public_edges(output_dir, load_cached_edges(edges_path))
         write_current_ap_artifact(output_dir, aps, {})
         write_invalidated_ap_placement_artifact(output_dir, "no_topology_devices")
         print(
@@ -4770,7 +4802,6 @@ def _run_collection():
         file=sys.stderr,
     )
 
-    edges_path = os.path.join(output_dir, "edges.json")
     attachments_path = os.path.join(output_dir, "server-attachments.json")
     diagnostics_path = os.path.join(output_dir, "topology-diagnostics.json")
     cached_edges = load_cached_edges(edges_path)
@@ -4865,6 +4896,7 @@ def _run_collection():
     ) + server_edges
     write_json_atomic(edges_path, edges, sort_keys=True)
     write_json_atomic(attachments_path, confirmed_server_edges, sort_keys=True)
+    _write_public_edges(output_dir, edges)
     ap_api_start = librenms.request_count if librenms is not None else 0
     try:
         validated_ap = collect_validated_ap_inventory(aps, shared_fdb[0], devices, network_edges, librenms, community)
