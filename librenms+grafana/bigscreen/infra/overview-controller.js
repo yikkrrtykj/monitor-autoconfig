@@ -14,7 +14,8 @@
 
     function draw() {
       render(model.overviewState(domains, clock(), expectedFirewall), {
-        lastProbe, pingState: domains.pingState.state, wanState: domains.wanState.state
+        lastProbe, pingState: domains.pingState.state, wanState: domains.wanState.state,
+        bcState: domains.bcState.state, bcData: domains.bcState.data
       });
     }
 
@@ -40,7 +41,7 @@
 
     function tick() {
       const at = clock();
-      const { pingState, wanState, statsState } = domains;
+      const { pingState, wanState, statsState, bcState } = domains;
       draw();
       poll(pingState, 5, at, (signal) => data.summary(at, signal), (result) => {
         pingState.data = result;
@@ -56,6 +57,10 @@
             statsState.state = "ready";
           });
         }
+      });
+      poll(bcState, 30, at, (signal) => data.businessTraffic(signal), (result) => {
+        bcState.data = result.domains;
+        bcState.state = "ready";
       });
       poll(wanState, 15, at, (signal) => data.bandwidth(at, signal), ({ cards, failed }) => {
         wanState.data = cards;
@@ -74,7 +79,7 @@
       stop();
       active = new AbortController();
       const initial = () => ({ state: "loading", data: null, at: null, due: 0, busy: false });
-      domains = { pingState: initial(), wanState: initial(), statsState: initial() };
+      domains = { pingState: initial(), wanState: initial(), statsState: initial(), bcState: initial() };
       lastProbe = null;
       tick();
       timer = schedule(tick, 5000);
