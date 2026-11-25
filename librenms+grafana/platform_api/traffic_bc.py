@@ -308,11 +308,18 @@ class SharedSampler:
             if self.cache_key == key and self.cached is not None and now - self.at < TTL:
                 return self.cached
             at = int(self.clock() // STEP) * STEP
+            stage = "query"
             try:
-                series = self.fetch(self.url, build_query(mapping), at)
+                query = build_query(mapping)
+                stage = "fetch"
+                series = self.fetch(self.url, query, at)
+                stage = "project"
                 payload = project(mapping, series, self.clock())
-            except (OSError, ValueError, TimeoutError, TypeError, KeyError) as exc:
+            except (OSError, ValueError, TimeoutError, TypeError, KeyError, OverflowError) as exc:
+                # Report safe failure classification only; never include credentials,
+                # device IPs, raw PromQL or exception text in public responses.
                 payload = {"ok": False, "state": "error", "error": "Prometheus B/C 数据不可用",
+                           "stage": stage, "error_kind": type(exc).__name__,
                            "generated_at": int(self.clock())}
             self.cache_key, self.cached, self.at = key, payload, now
             return payload
