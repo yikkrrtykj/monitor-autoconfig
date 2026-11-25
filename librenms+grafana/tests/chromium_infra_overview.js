@@ -372,6 +372,7 @@ async function verifyScenarios(browser, report) {
           (nodes) => nodes.map((node) => Number(node.dataset.count))), faultCounts, name);
         assert.equal(await page.locator(".overview-wan").count(), options.count ?? 6);
         assert.equal(await page.locator(".overview-vlan").count(), 0);
+        await part(page, "bc-ob").locator(".overview-bc-item").first().waitFor();
         assert.equal(await part(page, "bc-ob").locator(".overview-bc-item").count(), 1);
         assert.equal(await part(page, "bc-vlan").locator(".overview-bc-item").count(), 2);
         assert.match(await part(page, "bc-ob").textContent(), /SA: UNKNOWN/);
