@@ -219,7 +219,7 @@ def _direction(counter, counter_at, oper, oper_at, up, up_at,
     last = points[-1] if points else None
     valid = bool(last and last["bps"] is not None and
                  now - last["t"] <= max_age and
-                 now - counter_at[Decimal(last["t"])] <= max_age)
+                 0 <= now - float(counter_at[Decimal(last["t"])]) <= max_age)
     return {"bps": last["bps"] if valid else None, "points": points,
             "sample_at": float(counter_at[Decimal(last["t"])]) if valid else None,
             "validity": "VALID" if valid else "UNKNOWN"}
