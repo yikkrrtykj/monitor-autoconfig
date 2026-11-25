@@ -252,10 +252,16 @@ def project(mapping, series, now):
             receive, transmit = output("in"), output("out")
             oper = fields["oper"] or {}
             status = "UNKNOWN"
-            if valid_identity and oper and up and up_at:
-                common = sorted(set(oper) & set(up) & set(up_at))
-                if common and now - float(common[-1]) <= max_age:
-                    status = "UP" if oper[common[-1]] == 1 and up[common[-1]] == 1 else "DOWN"
+            oper_at = fields["oper_at"] or {}
+            if valid_identity and oper and oper_at and up and up_at:
+                common = sorted(set(oper) & set(oper_at) & set(up) & set(up_at))
+                if common:
+                    t = common[-1]
+                    sample_at = oper_at[t]
+                    if (0 <= now - float(t) <= max_age and
+                            oper_at[t] == up_at[t] == sample_at and
+                            0 <= t - sample_at <= max_age):
+                        status = "UP" if oper[t] == 1 and up[t] == 1 else "DOWN"
             cards.append({"name": row["name"],
                           "interface": row["interface"],
                           "interface_status": status,
