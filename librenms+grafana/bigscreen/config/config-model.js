@@ -93,6 +93,10 @@
       ...(value.isp || {})
     };
     value.isp.links = asConfigArray(value.isp.links);
+    const traffic = value.traffic && typeof value.traffic === "object" && !Array.isArray(value.traffic)
+      ? value.traffic : {};
+    value.traffic = { ...traffic, tunnels: asConfigArray(traffic.tunnels),
+      business_vlans: asConfigArray(traffic.business_vlans) };
     if (!value.isp.links.length && Number(value.isp.max_bandwidth_mbps) === 1000) {
       value.isp.max_bandwidth_mbps = "";
     }
