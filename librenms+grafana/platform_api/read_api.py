@@ -36,6 +36,7 @@ class ReadApiContext:
     stamp: Callable[[], str]
     network_context: network_read.NetworkReadContext | None = None
     network_require_auth: Callable[[Any], dict] | None = None
+    traffic_snapshot: Callable[[], dict] | None = None
 
 
 def _handle_network_read(
@@ -101,6 +102,12 @@ def handle_get(handler: Any, request_target: str, context: ReadApiContext) -> No
         _handle_network_read(handler, context, network_read.read_isp)
     elif path == "/network/overview":
         _handle_network_read(handler, context, network_read.read_overview)
+    elif path == "/network/traffic-bc":
+        # Public, strictly reduced dashboard projection; no SNMP target or IP is returned.
+        if context.traffic_snapshot is None:
+            handler._send_json({"ok": False, "error": "not configured"}, HTTPStatus.SERVICE_UNAVAILABLE)
+        else:
+            handler._send_json(context.traffic_snapshot())
     elif path == "/config":
         context.require_auth(handler)
         payload = event_config.config_payload(context.event_config_context)
