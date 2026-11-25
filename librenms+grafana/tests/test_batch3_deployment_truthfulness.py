@@ -66,7 +66,8 @@ render_env_value() {
     start = source.index(marker) if marker in source else source.index('SERVICES="')
     deploy._write_executable(project / "apply.sh", prelude + source[start:])
     deploy._write_executable(project / "deploy-check.sh",
-        '#!/bin/sh\necho "CHECK $*" >> "$STUB_LOG"\nexit 0\n')
+        '#!/bin/sh\necho "CHECK $*" >> "$STUB_LOG"\n'
+        'echo "DEADLINE $DEPLOY_CHECK_DEADLINE" >> "$STUB_LOG"\nexit 0\n')
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
     deploy._write_executable(stub_bin / "docker", deploy.DOCKER_STUB)
@@ -151,6 +152,18 @@ def test_expired_parent_budget_prevents_any_recreation(tmp_path):
     assert result.returncode != 0
     assert "compose up" not in log
     assert "CHECK configured" not in log
+
+
+def test_apply_budget_covers_tasks_and_completion_checks(tmp_path):
+    started = int(time.time())
+    result, log = run_apply_tail(
+        tmp_path, LIBRENMS_CONFIG_TIMEOUT="5", DEPLOY_CHECK_TIMEOUT="30")
+    assert result.returncode == 0, result.stderr
+    deadline = int(next(line.split()[1] for line in log.splitlines()
+                        if line.startswith("DEADLINE ")))
+    # 5s task budget + 30s completion budget, not the 30s check budget alone.
+    # Allow one second of clock skew around the child start.
+    assert 34 <= deadline - started <= 37
 
 
 def test_host_project_mapping_is_used_by_task_gates(tmp_path):

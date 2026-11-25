@@ -963,7 +963,7 @@ services:
       PLATFORM_APPLY_STATUS_RETENTION: "${PLATFORM_APPLY_STATUS_RETENTION:-200}"
       PLATFORM_APPLY_ENABLED: "${PLATFORM_APPLY_ENABLED:-true}"
       PLATFORM_APPLY_COMMAND: "${PLATFORM_APPLY_COMMAND:-/bin/sh /workspace/apply-env.sh}"
-      PLATFORM_APPLY_TIMEOUT: "${PLATFORM_APPLY_TIMEOUT:-300}"
+      PLATFORM_APPLY_TIMEOUT: "${PLATFORM_APPLY_TIMEOUT:-600}"
       PLATFORM_APPLY_VERIFY_TIMEOUT: "${PLATFORM_APPLY_VERIFY_TIMEOUT:-90}"
       # Manual pre-match bandwidth test. The client is installed directly in
       # this image, so Windows Docker Desktop does not need a host docker CLI.

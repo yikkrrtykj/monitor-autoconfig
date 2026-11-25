@@ -442,6 +442,20 @@ def test_apply_entrypoint_runs_the_configured_runtime_check():
     assert "配置已经写入，但运行状态验证失败" in apply_env
 
 
+def test_apply_timeout_default_leaves_room_for_startup_and_completion():
+    apply_env = (ROOT / "apply-env.sh").read_text(encoding="utf-8")
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    # Startup/tasks and the final checks each keep their own budget.
+    assert 'deployment_budget_init "$((task_budget + check_budget))"' in apply_env
+    # Existing installs keep 300 in .env; migrate only that old default, and use
+    # 600 for fresh installs so 180s tasks + 180s checks fit under the parent.
+    assert "migrate_env_default PLATFORM_APPLY_TIMEOUT 300 600" in apply_env
+    assert 'PLATFORM_APPLY_TIMEOUT: "${PLATFORM_APPLY_TIMEOUT:-600}"' in compose
+    assert "PLATFORM_APPLY_TIMEOUT=600" in env_example
+
+
 @pytest.mark.parametrize("slow_phase", ["build", "base_pull"])
 def test_r2_image_preparation_does_not_spend_runtime_budget(tmp_path, slow_phase):
     result, log = run_deploy(
@@ -499,8 +513,11 @@ def test_r2_final_health_timeout_after_slow_build_still_fails(tmp_path):
     # double; no real health endpoint or Docker daemon is involved.
     script = '''#!/bin/sh
 DEPLOY_CHECK_INTERVAL=1
-DEADLINE=$(( $(date +%s) + DEPLOY_CHECK_TIMEOUT ))
+STARTED_AT=$(date +%s)
+DEADLINE=$(( STARTED_AT + DEPLOY_CHECK_TIMEOUT ))
 [ "$DEADLINE" -le "$DEPLOY_CHECK_DEADLINE" ] || DEADLINE=$DEPLOY_CHECK_DEADLINE
+EFFECTIVE_TIMEOUT=$(( DEADLINE - STARTED_AT ))
+[ "$EFFECTIVE_TIMEOUT" -ge 0 ] || EFFECTIVE_TIMEOUT=0
 HTTP_ERROR="$STUB_LOG.http-error"
 HTTP_BODY="$STUB_LOG.http-body"
 record() { printf '%s %s %s\n' "$1" "$2" "$3" >> "$STUB_LOG"; }
@@ -514,6 +531,8 @@ http_get() { echo unavailable >&2; return 1; }
                              DEPLOY_CHECK_TIMEOUT="1")
     assert result.returncode != 0
     assert "grafana-setup completed successfully" in result.stdout
+    # The build already consumed most of the shared deadline; the reported
+    # budget is what remains at check start (1s), not the configured ceiling.
     assert "FAIL final_health Final health timed out after 1s" in log
     assert "Platform bootstrap completed successfully" not in result.stdout
     assert (tmp_path / "clock").read_text().strip() == "1004"

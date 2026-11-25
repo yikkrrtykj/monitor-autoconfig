@@ -107,6 +107,11 @@ migrate_legacy_defaults() {
   migrate_env_default PLAYER_SWITCH_PROBE_WORKERS 32 8
   migrate_env_default PLAYER_SWITCH_FULL_SCAN_INTERVAL 1800 21600
   migrate_env_default PLAYER_TARGETS_REFRESH_INTERVAL 300 60
+  # The console apply recreates the whole stack before it verifies the result.
+  # The old 300s parent timeout left too little time for the 180s task budget
+  # plus the 180s completion checks, so a correct apply could time out and roll
+  # back. Keep this in sync with docker-compose.yml and .env.example.
+  migrate_env_default PLATFORM_APPLY_TIMEOUT 300 600
   migrate_env_default TOPOLOGY_POLL_WORKERS 4 1
   migrate_env_default TOPOLOGY_POLL_WORKERS 2 1
   migrate_env_default TOPOLOGY_SNMP_DELAY_MS 100 500
@@ -218,8 +223,17 @@ if ! render_grafana_provisioning; then
 fi
 
 # Deployment completion budget is shared by startup, tasks and final checks.
+# Mirror deploy.sh: startup and required tasks spend the task budget, and the
+# final checks keep their own completion budget. Charging the whole full-stack
+# recreation to the checks alone made slow hosts fail verification and trigger
+# an unnecessary rollback.
 . "$SCRIPT_DIR/deployment-tasks.sh"
-deployment_budget_init "${DEPLOY_CHECK_TIMEOUT:-180}"
+task_budget=${LIBRENMS_CONFIG_TIMEOUT:-180}
+check_budget=${DEPLOY_CHECK_TIMEOUT:-180}
+case "$task_budget:$check_budget" in
+  *[!0-9:]*|:*|*:) echo "[apply-env] Invalid timeout budget." >&2; exit 1 ;;
+esac
+deployment_budget_init "$((task_budget + check_budget))"
 
 SERVICES="
   prometheus
