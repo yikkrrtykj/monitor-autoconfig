@@ -211,6 +211,55 @@ def test_single_query_shared_cache_and_configuration_invalidation():
     assert len(calls) == 2
 
 
+def test_cache_ages_current_rates_and_oper_state_without_refetching_or_erasing_history():
+    wall = [149]
+    monotonic = [0]
+    calls = []
+
+    def fetch(_url, _query, end):
+        calls.append(end)
+        return fake("remote_ob")
+
+    sampler = bc.SharedSampler(clock=lambda: wall[0], monotonic=lambda: monotonic[0], fetch=fetch)
+    config = {"traffic": {"tunnels": [TUNNEL]}}
+    first = sampler.snapshot(config)
+    original = first["domains"]["remote_ob"]["items"][0]
+    assert original["traffic_validity"] == "VALID"
+    assert original["interface_status"] == "UP"
+    assert original["interface_sample_at"] == 120
+
+    wall[0], monotonic[0] = 160, 11
+    boundary = sampler.snapshot(config)["domains"]["remote_ob"]["items"][0]
+    assert boundary["traffic_validity"] == "VALID"
+
+    wall[0], monotonic[0] = 169, 20
+    stale = sampler.snapshot(config)
+    assert stale["served_at"] == 169 and stale["generated_at"] == 149
+    card = stale["domains"]["remote_ob"]["items"][0]
+    assert card["traffic_validity"] == card["interface_status"] == "UNKNOWN"
+    assert card["interface_sample_at"] is None
+    for direction in ("rx", "tx"):
+        assert card[direction] == {
+            **original[direction], "bps": None, "sample_at": None, "validity": "UNKNOWN",
+        }
+    assert original["traffic_validity"] == "VALID"
+    assert calls == [120]
+
+
+@pytest.mark.parametrize(("interval", "expected"), [("5s", 5000), ("15s", 15000), ("1m500ms", 60500)])
+def test_firewall_cadence_duration(interval, expected):
+    assert bc._scrape_interval_ms(interval) == expected
+
+
+def test_invalid_firewall_cadence_fails_closed_before_query():
+    def fetch(*_args):
+        pytest.fail("invalid cadence must not trigger a query")
+    sampler = bc.SharedSampler(firewall_scrape_interval="0s", fetch=fetch)
+    result = sampler.snapshot({"traffic": {"tunnels": [TUNNEL]}})
+    assert result["state"] == "error" and result["stage"] == "query"
+    assert result["error_kind"] == "TrafficError"
+
+
 def test_inflight_budget_fails_fast_for_other_viewers():
     sampler = bc.SharedSampler(clock=lambda: 120., monotonic=lambda: 100.)
     sampler.lock.acquire()

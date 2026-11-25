@@ -4,7 +4,11 @@
   const escape = (text) => String(text ?? "").replace(/[&<>"']/g,
     (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
   const numeric = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
-  const rate = (value) => numeric(value) ? (value / 1e6).toFixed(2) + " Mbps" : "N/A";
+  function rate(value) {
+    if (!numeric(value)) return "N/A";
+    if (value > 0 && value < 10000) return "<0.01 Mbps";
+    return (value / 1e6).toFixed(2) + " Mbps";
+  }
 
   function trace(points) {
     if (!Array.isArray(points) || !points.length) return '<span class="overview-note">趋势无有效样本</span>';
@@ -26,26 +30,33 @@
     return '<svg viewBox="0 0 200 28" preserveAspectRatio="none" role="img" aria-label="15分钟接口流量趋势，有断点的区间无数据"><path class="overview-rx" d="' + commands + '"/></svg>';
   }
 
-  function item(row, domain) {
-    const valid = row.traffic_validity === "VALID";
-    const stamp = (numeric(row.rx?.sample_at) || numeric(row.tx?.sample_at))
-      ? new Date(Math.max(row.rx?.sample_at || 0, row.tx?.sample_at || 0) * 1000)
+  function item(row, domain, now, maxAge) {
+    const expired = (at) => numeric(at) && Number.isFinite(now) && Number.isFinite(maxAge) &&
+      (now < at || now - at > maxAge);
+    const rxAt = expired(row.rx?.sample_at) ? null : row.rx?.sample_at;
+    const txAt = expired(row.tx?.sample_at) ? null : row.tx?.sample_at;
+    const rx = rxAt === null ? null : row.rx?.bps;
+    const tx = txAt === null ? null : row.tx?.bps;
+    const status = expired(row.interface_sample_at) ? "UNKNOWN" : row.interface_status;
+    const valid = row.traffic_validity === "VALID" && numeric(rx) && numeric(tx);
+    const stamp = (numeric(rxAt) || numeric(txAt))
+      ? new Date(Math.max(rxAt || 0, txAt || 0) * 1000)
           .toLocaleTimeString("zh-CN", { hour12: false }) : "未知";
     const hint = domain === "remote_ob"
       ? "SA: UNKNOWN · 实际 ISP: UNKNOWN" + (row.configured_isp ? " · 配置出口: " + escape(row.configured_isp) : "")
       : "仅 SVI 三层网关接口流量；不是 VLAN 互联网/全量二层流量";
     return '<article class="overview-bc-item" data-validity="' + (valid ? 'valid' : 'unknown') + '">' +
       '<div class="overview-bc-title"><strong>' + escape(row.name) + '</strong><small>' +
-        escape(row.interface_status || "UNKNOWN") + ' · ' + escape(row.interface || "") + '</small></div>' +
-      '<div class="overview-bc-rates"><span>RX ↓ <b>' + escape(rate(row.rx?.bps)) +
-      '</b></span><span>TX ↑ <b>' + escape(rate(row.tx?.bps)) + '</b></span></div>' +
+        escape(status || "UNKNOWN") + ' · ' + escape(row.interface || "") + '</small></div>' +
+      '<div class="overview-bc-rates"><span>RX ↓ <b>' + escape(rate(rx)) +
+      '</b></span><span>TX ↑ <b>' + escape(rate(tx)) + '</b></span></div>' +
       '<div class="overview-bc-trends">' + trace(row.rx?.points) + trace(row.tx?.points) + '</div>' +
       '<small class="overview-bc-note">' + (valid ? "计数连续" : "UNKNOWN · 缺样/重置/身份或采集异常") +
       ' · 更新: ' + escape(stamp) + '</small>' +
       '<small class="overview-bc-note">' + hint + '</small></article>';
   }
 
-  function render(domainState, mode, domain) {
+  function render(domainState, mode, domain, now) {
     if (mode === "loading") return '<p class="overview-empty">正在读取业务接口…</p>';
     if (mode === "error") return '<p class="overview-empty">UNKNOWN · 业务流量读取失败</p>';
     if (!domainState || domainState.state === "unconfigured") {
@@ -54,7 +65,7 @@
     if (domainState.state !== "ready" || !Array.isArray(domainState.items)) {
       return '<p class="overview-empty">UNKNOWN · 采集状态不可验证</p>';
     }
-    return domainState.items.map((row) => item(row, domain)).join("");
+    return domainState.items.map((row) => item(row, domain, now, domainState.max_age_seconds)).join("");
   }
 
   const exported = { render, rate, trace, escape };

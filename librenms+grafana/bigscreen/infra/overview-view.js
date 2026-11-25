@@ -172,8 +172,8 @@
       html("bandwidth", state.wans.length ? state.wans.map(bandwidthCard).join("") :
         `<p class="overview-empty">${meta.wanState === "loading" ? "正在读取已发现 WAN 接口…" : "WAN 清单为空或暂不可用。"}</p>`);
       if (business && select("bc-ob") && select("bc-vlan")) {
-        html("bc-ob", business.render(meta.bcData?.remote_ob, meta.bcState, "remote_ob"));
-        html("bc-vlan", business.render(meta.bcData?.business_vlan, meta.bcState, "business_vlan"));
+        html("bc-ob", business.render(meta.bcData?.remote_ob, meta.bcState, "remote_ob", meta.bcNow));
+        html("bc-vlan", business.render(meta.bcData?.business_vlan, meta.bcState, "business_vlan", meta.bcNow));
       }
       html("fault-summary", Object.entries(faultLabels).map(([status, label]) =>
         `<span class="overview-badge" data-status="${status}" data-count="${state.total[status]}">${label} ${state.total[status]}</span>`).join(""));

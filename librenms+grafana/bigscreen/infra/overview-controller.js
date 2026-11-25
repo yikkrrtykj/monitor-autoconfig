@@ -13,9 +13,13 @@
     let lastProbe;
 
     function draw() {
-      render(model.overviewState(domains, clock(), expectedFirewall), {
-        lastProbe, pingState: domains.pingState.state, wanState: domains.wanState.state,
-        bcState: domains.bcState.state, bcData: domains.bcState.data
+      const now = clock();
+      const { pingState, wanState, bcState } = domains;
+      const bcNow = Number.isFinite(bcState.servedAt)
+        ? bcState.servedAt + Math.max(0, now - bcState.at) : null;
+      render(model.overviewState(domains, now, expectedFirewall), {
+        lastProbe, pingState: pingState.state, wanState: wanState.state,
+        bcState: bcState.state, bcData: bcState.data, bcNow
       });
     }
 
@@ -60,6 +64,8 @@
       });
       if (typeof data.businessTraffic === "function") poll(bcState, 30, at, (signal) => data.businessTraffic(signal), (result) => {
         bcState.data = result.domains;
+        bcState.servedAt = result.served_at;
+        bcState.at = clock();
         bcState.state = "ready";
       });
       poll(wanState, 15, at, (signal) => data.bandwidth(at, signal), ({ cards, failed }) => {

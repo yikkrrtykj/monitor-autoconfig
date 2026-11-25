@@ -24,6 +24,10 @@ WINDOW = 900
 TTL = 30
 MAX_NAME = 96
 MAX_EXACT_COUNTER = (1 << 53) - 1
+DEFAULT_FIREWALL_SCRAPE_INTERVAL = "10s"
+_DURATION_UNITS_MS = (("y", 31_536_000_000), ("w", 604_800_000), ("d", 86_400_000),
+                      ("h", 3_600_000), ("m", 60_000), ("s", 1000), ("ms", 1))
+_DURATION_PATTERN = re.compile("".join(f"(?:([0-9]+){suffix})?" for suffix, _ in _DURATION_UNITS_MS))
 JOBS = {"remote_ob": ("firewall-snmp", "instance", 40), "business_vlan": ("infra-switch-ifmib", "target_ip", 95)}
 
 
@@ -82,7 +86,16 @@ def _pattern(values, *, ignore_case=False):
     return json.dumps(f"(?i:{pattern})" if ignore_case else pattern, ensure_ascii=True)
 
 
-def build_query(mapping):
+def _scrape_interval_ms(interval: str) -> int:
+    match = _DURATION_PATTERN.fullmatch(interval) if len(interval) <= 40 else None
+    if match:
+        value = sum(int(part) * scale for part, (_, scale) in zip(match.groups(), _DURATION_UNITS_MS) if part)
+        if 0 < value <= (1 << 63) // 1_000_000:
+            return value
+    raise TrafficError("invalid firewall scrape interval")
+
+
+def build_query(mapping, firewall_scrape_interval: str = DEFAULT_FIREWALL_SCRAPE_INTERVAL):
     """PromQL query_range: two jobs, one HTTP request, no rate() reset healing."""
     chunks = []
     for domain, rows in mapping.items():
@@ -115,10 +128,15 @@ def build_query(mapping):
                 # counter recovers above its previous 30-second endpoint.
                 values = [f'({s} and (resets({s}[66s]) == 0))' for s in raw]
                 if domain == "remote_ob":
-                    # firewall-snmp samples every 10s. Require the three
-                    # observations expected in each 30-second display step.
-                    values = [f'({checked} and (count_over_time({s}[30s]) >= 3))'
-                              for s, checked in zip(raw, values)]
+                    interval_ms = _scrape_interval_ms(firewall_scrape_interval)
+                    # The step window contains the observations between the
+                    # latest scrapes at its endpoints. Their actual timestamps
+                    # determine the expected count even when cadence and step differ.
+                    values = [
+                        f'({checked} and (count_over_time({s}[{STEP}s]) == round('
+                        f'(timestamp({s}) - timestamp({s} offset {STEP}s)) * 1000 / {interval_ms})))'
+                        for s, checked in zip(raw, values)
+                    ]
             values = " or ".join(values)
             timestamps = " or ".join(f"timestamp({selector})" for selector in raw)
             for suffix, source in ((field, values), (field + "_at", timestamps)):
@@ -295,6 +313,7 @@ def project(mapping, series, now, end=None):
             receive, transmit = output("in"), output("out")
             oper = fields["oper"] or {}
             status = "UNKNOWN"
+            interface_sample_at = None
             oper_at = fields["oper_at"] or {}
             if valid_identity and oper and oper_at and up and up_at:
                 common = sorted(set(oper) & set(oper_at) & set(up) & set(up_at))
@@ -308,9 +327,12 @@ def project(mapping, series, now, end=None):
                             status = "UP"
                         elif oper[t] in (2, 6, 7):
                             status = "DOWN"
+                        if status != "UNKNOWN":
+                            interface_sample_at = float(sample_at)
             cards.append({"name": row["name"],
                           "interface": row["interface"],
                           "interface_status": status,
+                          "interface_sample_at": interface_sample_at,
                           "sa_status": "UNKNOWN" if domain == "remote_ob" else None,
                           "egress_isp": "UNKNOWN" if domain == "remote_ob" else None,
                           "configured_isp": row["configured_isp"] if domain == "remote_ob" else None,
@@ -319,10 +341,35 @@ def project(mapping, series, now, end=None):
                           "reason": "" if valid_identity else "接口未找到、同名或 ifIndex 变化/歧义",
                           "unit": "SVI 三层网关接口" if domain == "business_vlan" else "Tunnel 接口",
                           "source": job})
-        domains[domain] = {"state": "ready" if rows else "unconfigured", "items": cards}
-    return {"ok": True, "generated_at": int(now), "interval_seconds": TTL,
+        domains[domain] = {"state": "ready" if rows else "unconfigured",
+                           "max_age_seconds": max_age, "items": cards}
+    return {"ok": True, "generated_at": int(now), "served_at": now, "interval_seconds": TTL,
             "window_seconds": WINDOW, "domains": domains,
             "note": "RX/TX 为设备接口方向；不代表互联网出口或完整二层业务流量"}
+
+
+def _serve_cached(payload, now):
+    if not payload["ok"]:
+        return payload
+
+    domains = {}
+    for domain, snapshot in payload["domains"].items():
+        max_age = snapshot["max_age_seconds"]
+        cards = []
+        for card in snapshot["items"]:
+            card = dict(card)
+            for direction in ("rx", "tx"):
+                sample = card[direction]
+                at = sample["sample_at"]
+                if at is not None and not 0 <= now - at <= max_age:
+                    card[direction] = {**sample, "bps": None, "sample_at": None, "validity": "UNKNOWN"}
+                    card["traffic_validity"] = "UNKNOWN"
+            at = card["interface_sample_at"]
+            if at is not None and not 0 <= now - at <= max_age:
+                card.update(interface_status="UNKNOWN", interface_sample_at=None)
+            cards.append(card)
+        domains[domain] = {**snapshot, "items": cards}
+    return {**payload, "served_at": now, "domains": domains}
 
 
 @dataclass
@@ -332,6 +379,7 @@ class SharedSampler:
     clock: object = time.time
     monotonic: object = time.monotonic
     fetch: object = fetch_range
+    firewall_scrape_interval: str = DEFAULT_FIREWALL_SCRAPE_INTERVAL
 
     def __post_init__(self):
         self.lock = threading.Lock()
@@ -348,7 +396,7 @@ class SharedSampler:
         now = self.monotonic()
         cached = self.cached
         if cached and cached[0] == key and now - cached[1] < TTL:
-            return cached[2]
+            return _serve_cached(cached[2], self.clock())
         if not self.lock.acquire(blocking=False):
             # The previous payload can have expired or belong to another event.
             return {"ok": False, "state": "refreshing", "error": "采集进行中"}
@@ -356,11 +404,11 @@ class SharedSampler:
             now = self.monotonic()
             cached = self.cached
             if cached and cached[0] == key and now - cached[1] < TTL:
-                return cached[2]
+                return _serve_cached(cached[2], self.clock())
             at = int(self.clock() // STEP) * STEP
             stage = "query"
             try:
-                query = build_query(mapping)
+                query = build_query(mapping, self.firewall_scrape_interval)
                 stage = "fetch"
                 series = self.fetch(self.url, query, at)
                 stage = "project"

@@ -52,6 +52,25 @@ def fixture_series(end):
                 indexes = [iface, iface.replace('ifIndex="151"', 'ifIndex="999"')] if name == "Vl23" else [iface]
                 for labels in indexes:
                     lines.extend(f"{metric}{{{labels}}} {value} {scrape_at}" for metric, value in fields.items())
+    cadences = []
+    for i, (interval, offset, missing) in enumerate((
+        (5, 0, False), (5, 0, True), (15, 3, False), (7, 1, False), (7, 1, True),
+    )):
+        instance = f"192.0.2.{40 + i}"
+        source = f'job="firewall-snmp",instance="{instance}"'
+        iface = f'{source},ifName="tunnel1",ifIndex="59"'
+        cadences.append((interval, missing, {"name": "Cadence", "instance": instance, "if_name": "tunnel1"}))
+        for age in range(offset, 121, interval):
+            if missing and age == offset + 3 * interval:
+                continue
+            ts = end - age
+            lines.extend((
+                f"up{{{source}}} 1 {ts}",
+                f"ifOperStatus{{{iface}}} 1 {ts}",
+                f"ifHCInOctets{{{iface}}} {(121 - age) * 125_000} {ts}",
+                f"ifHCOutOctets{{{iface}}} {(121 - age) * 250_000} {ts}",
+            ))
+
     def config(tunnels, vlans):
         return {"traffic": {"tunnels": tunnels, "business_vlans": vlans}}
     scenarios = {
@@ -64,13 +83,13 @@ def fixture_series(end):
         "maximum": config(tunnel_rows, svi_rows),
     }
     return "\n".join([*sorted(lines, key=lambda line: (line.split()[0], int(line.rsplit(" ", 1)[1]))),
-                     "# EOF", ""]), scenarios
+                     "# EOF", ""]), scenarios, cadences
 
 
 @pytest.mark.skipif(os.environ.get("RUN_TRAFFIC_BC_BROWSER") != "1", reason="isolated Linux Chromium job")
 def test_live_traffic_bc_browser(tmp_path, monkeypatch):
     end = int(time.time() // bc.STEP) * bc.STEP
-    metrics, scenarios = fixture_series(end)
+    metrics, scenarios, cadences = fixture_series(end)
     work = tmp_path / "fixture"
     work.mkdir()
     (work / "metrics.om").write_text(metrics, encoding="ascii")
@@ -113,9 +132,21 @@ def test_live_traffic_bc_browser(tmp_path, monkeypatch):
                  lambda body: "Ready" in body)
         port = int(docker("port", name, "9090/tcp").stdout.strip().removeprefix("127.0.0.1:"))
 
+        origin = f"http://127.0.0.1:{port}"
+        for interval, missing, tunnel in cadences:
+            mapping = bc.configuration({"traffic": {"tunnels": [tunnel]}})
+            series = bc._query_range(origin, bc.build_query(mapping, f"{interval}s"), end, 7)
+            card = bc.project(mapping, series, end)["domains"]["remote_ob"]["items"][0]
+            assert card["interface_status"] == "UP", (interval, missing, card)
+            if missing:
+                assert card["rx"]["bps"] is None and card["tx"]["bps"] is None, (interval, card)
+            else:
+                assert card["rx"]["bps"] == 1_000_000 and card["tx"]["bps"] == 2_000_000, (interval, card)
+        print("B/C live Prometheus cadence checks: 5 passed (5s, 7s, 15s with offsets and gaps)")
+
         def fetch(_url, query, at):
             started = time.monotonic()
-            result = bc._query_range(f"http://127.0.0.1:{port}", query, at, 7)
+            result = bc._query_range(origin, query, at, 7)
             calls.append({"series": len(result), "elapsed_ms": round((time.monotonic() - started) * 1000, 1)})
             return result
 

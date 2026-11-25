@@ -116,7 +116,11 @@ NETWORK_HTTP_TIMEOUT = max(
     1.0, min(15.0, float(os.environ.get("PLATFORM_NETWORK_HTTP_TIMEOUT", "5")))
 )
 # #104 B/C shares one 30s cache and one in-flight query across all clients.
-BC_SAMPLER = platform_traffic_bc.SharedSampler(url=NETWORK_PROMETHEUS_URL)
+BC_SAMPLER = platform_traffic_bc.SharedSampler(
+    url=NETWORK_PROMETHEUS_URL,
+    firewall_scrape_interval=os.environ.get("PROMETHEUS_SCRAPE_INTERVAL",
+                                            platform_traffic_bc.DEFAULT_FIREWALL_SCRAPE_INTERVAL),
+)
 
 
 def _traffic_bc_snapshot():
