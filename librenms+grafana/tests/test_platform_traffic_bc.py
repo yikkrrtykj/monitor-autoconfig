@@ -241,3 +241,15 @@ def test_interface_up_requires_temporally_consistent_oper_and_up_samples():
     card_value = card("remote_ob", rows)
     assert card_value["interface_status"] == "UNKNOWN"
     assert card_value["traffic_validity"] == "UNKNOWN"
+
+
+
+@pytest.mark.parametrize("domain", ["remote_ob", "business_vlan"])
+def test_stale_ifdescr_does_not_override_mismatched_current_ifname(domain):
+    rows = fake(domain)
+    for row in rows:
+        if row["metric"].get("ifIndex"):
+            row["metric"]["ifName"] = "different-current-interface"
+    result = card(domain, rows)
+    assert result["traffic_validity"] == "UNKNOWN"
+    assert result["interface_status"] == "UNKNOWN"
