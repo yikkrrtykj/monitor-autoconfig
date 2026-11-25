@@ -113,9 +113,13 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def fetch_range(url, query, end, timeout=7):
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise TrafficError("invalid internal Prometheus URL") from exc
     if (parsed.scheme != "http" or parsed.hostname != "prometheus" or
-            parsed.port != 9090 or parsed.path not in ("", "/") or
+            port != 9090 or parsed.path not in ("", "/") or
             parsed.username or parsed.password or parsed.query or parsed.fragment):
         # No userinfo, external hosts, redirect targets, arbitrary paths or proxy.
         raise TrafficError("invalid internal Prometheus URL")
