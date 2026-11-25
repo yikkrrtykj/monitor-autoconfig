@@ -10,7 +10,8 @@ const { maxWans } = require("../bigscreen/infra/overview-model.js");
 
 const root = path.resolve(__dirname, "../bigscreen");
 const output = process.env.INFRA_BROWSER_OUTPUT || path.join(os.tmpdir(), "infra-browser-evidence");
-const origin = "http://infra-fixture.invalid";
+const liveOrigin = process.env.BC_LIVE_ORIGIN;
+const origin = liveOrigin || "http://infra-fixture.invalid";
 const fixedAt = 1760000000;
 const dims = [[1920, 1080], [1366, 768], [390, 844]];
 const modifiedAssets = ["index.html", "infra/overview.css", "infra/overview-view.js"];
@@ -163,6 +164,7 @@ async function open(browser, viewport, data, assets, routeName = "/infra") {
     }
     if (url.pathname === "/topology/isp-discovery-state.json") return json(data.discovery);
     if (url.pathname === "/platform-api/network/traffic-bc") {
+      if (liveOrigin) return route.continue();
       const points = [fixedAt - 90, fixedAt - 60, fixedAt - 30, fixedAt]
         .map((t, i) => ({ t, bps: i === 1 ? null : 200000 + i * 150000 }));
       const mk = (name, iface, rate, kind) => ({
@@ -602,12 +604,81 @@ async function verifyOtherRoutes(browser, report) {
   }
 }
 
+async function verifyLiveTraffic(browser, report) {
+  const data = fixture({ count: 5, down: true });
+  const view = await open(browser, { width: 1920, height: 1080 }, data, new Map());
+  const { page, context, requests, tick, errors } = view;
+  const traffic = "/platform-api/network/traffic-bc";
+  const b = part(page, "bc-ob");
+  const c = part(page, "bc-vlan");
+  const check = (panel, name, validity, rates) => {
+    const card = panel.locator(`.overview-bc-item[data-validity="${validity}"]`).filter({ hasText: name });
+    return card.getByText(rates, { exact: true }).first().waitFor();
+  };
+  const config = async (name) => {
+    const saved = await context.request.post(origin + "/fixture/traffic/" + name);
+    assert.ok(saved.ok(), name);
+    const observed = page.waitForResponse((response) => new URL(response.url()).pathname === traffic);
+    await tick(30);
+    const snapshot = await (await observed).json();
+    assert.equal(snapshot.ok, true, JSON.stringify(snapshot));
+    assert.doesNotMatch(JSON.stringify(snapshot), /192\.0\.2\./);
+    return snapshot;
+  };
+  try {
+    await ready(page);
+    await b.getByText(/未配置接口/).waitFor();
+    await c.getByText(/未配置接口/).waitFor();
+    const normal = await config("normal");
+    assert.equal(normal.domains.remote_ob.items[0].rx.sample_at, normal.generated_at - 3);
+    assert.equal(normal.domains.remote_ob.items[0].tx.bps, 2_000_000);
+    assert.equal(normal.domains.business_vlan.items[0].rx.bps, 0);
+    await check(b, "Remote OB 1", "valid", "1.00 Mbps");
+    await check(b, "Remote OB 1", "valid", "2.00 Mbps");
+    await check(c, "Production 20", "valid", "0.00 Mbps");
+    await b.getByText(/SA: UNKNOWN.*ISP: UNKNOWN/).waitFor();
+    const missing = await config("missing");
+    assert.equal(missing.domains.remote_ob.items[0].rx.points.at(-1).bps, null);
+    await check(b, "Remote OB 2", "unknown", "N/A");
+    await check(c, "Production 20", "valid", "0.00 Mbps");
+    await config("reset");
+    await check(b, "Remote OB 1", "valid", "1.00 Mbps");
+    await check(c, "Production 22", "unknown", "N/A");
+    await config("ambiguous");
+    await check(c, "Production 23", "unknown", "N/A");
+    await config("normal");
+    await check(c, "Production 20", "valid", "0.00 Mbps");
+    await config("maximum");
+    await until(async () => await b.locator("article").count() === 8 && await c.locator("article").count() === 8,
+      "B/C maximum rows did not render");
+    for (const [width, height] of dims) {
+      await page.setViewportSize({ width, height });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await screen(page, `bc-real-prometheus-${width}x${height}`);
+      await page.locator(".overview-bc-grid").screenshot({ path: path.join(output, `bc-real-cards-${width}x${height}.png`) });
+    }
+    const before = requests.filter(({ path }) => path === traffic).length;
+    assert.equal(before, 7);
+    await page.goto(origin + "/ping");
+    await tick(65);
+    assert.equal(requests.filter(({ path }) => path === traffic).length, before);
+    assert.deepEqual(errors, []);
+    report.traffic = { scenarios: ["unconfigured", "normal", "missing", "reset", "ambiguous", "recovery", "maximum"],
+      requestCount: before, stopsOnNavigation: true, viewports: dims };
+    console.log("B/C Chromium with isolated Prometheus and Platform API", JSON.stringify(report.traffic));
+  } finally { await context.close(); }
+}
+
 async function main() {
   fs.mkdirSync(output, { recursive: true });
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
   const report = { chromium: browser.version(), baseline: process.env.INFRA_BASE_REF || null,
     scenarios: {}, before: {}, routes: {} };
   try {
+    if (liveOrigin) {
+      await verifyLiveTraffic(browser, report);
+      return;
+    }
     await verifyScenarios(browser, report);
     console.log(`Geometry and status checked in ${Object.keys(report.scenarios).length} Chromium scenarios`);
     await verifyOverviewNavigation(browser, report);

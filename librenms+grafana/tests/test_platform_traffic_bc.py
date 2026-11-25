@@ -116,12 +116,37 @@ def test_duplicate_series_fail_closed():
 def test_unreachable_scrape_and_oper_down_do_not_infer_sa():
     rows = fake("remote_ob", up=(1, 1, 0), status=(1, 1, 1))
     row = card("remote_ob", rows)
-    assert row["interface_status"] == "DOWN"
+    assert row["interface_status"] == "UNKNOWN"
     assert row["traffic_validity"] == "UNKNOWN"
     assert row["sa_status"] == "UNKNOWN"
     rows = fake("remote_ob", status=(1, 1, 2))
     row = card("remote_ob", rows)
     assert row["interface_status"] == "DOWN"
+    assert card("remote_ob", fake("remote_ob", status=(1, 1, 4)))["interface_status"] == "UNKNOWN"
+
+
+def test_freshness_comes_from_scrape_time_and_not_the_query_grid():
+    rows = fake("business_vlan", timestamps=(0, 30, 60, 90, 120),
+                values=(100, 200, 200, 400, 500), out=(100, 200, 200, 400, 500),
+                disc=(0,) * 5, status=(1,) * 5, up=(1,) * 5)
+    for row in rows:
+        if row["metric"]["bc_field"].endswith("_at"):
+            for point, at in zip(row["values"], (-3, 27, 27, 87, 117)):
+                point[1] = str(at)
+    result = card("business_vlan", rows)
+    assert [point["bps"] is not None for point in result["rx"]["points"]] == [False, True, False, False, True]
+    assert result["rx"]["sample_at"] == 117
+    assert result["rx"]["bps"] == pytest.approx(800 / 30)
+    assert bc.project(mapping(), rows, 150)["domains"]["business_vlan"]["items"][0]["rx"]["bps"] is None
+
+
+def test_counter64_float_precision_and_modulo_wrap_fail_closed():
+    base = 1 << 53
+    lossy = card("business_vlan", fake("business_vlan", (base, base, base)))
+    assert lossy["rx"]["bps"] is None
+    wrapped = card("business_vlan", fake("business_vlan", (base - 1, 1, 1)))
+    assert wrapped["rx"]["points"][-2]["bps"] is None
+    assert wrapped["rx"]["bps"] == 0
 
 
 def test_missing_and_stale_rows_unknown_not_zero():

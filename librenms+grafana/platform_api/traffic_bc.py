@@ -23,6 +23,7 @@ STEP = 30
 WINDOW = 900
 TTL = 30
 MAX_NAME = 96
+MAX_EXACT_COUNTER = (1 << 53) - 1
 JOBS = {"remote_ob": ("firewall-snmp", "instance", 40), "business_vlan": ("infra-switch-ifmib", "target_ip", 95)}
 
 
@@ -31,12 +32,12 @@ class TrafficError(ValueError):
 
 
 def configuration(config):
-    section = config.get("traffic") or {}
+    section = config.get("traffic", {})
     if not isinstance(section, dict):
         raise TrafficError("traffic must be an object")
     output = {}
     for domain, key in (("remote_ob", "tunnels"), ("business_vlan", "business_vlans")):
-        items = section.get(key) or []
+        items = section.get(key, [])
         if not isinstance(items, list) or len(items) > MAX_ITEMS:
             raise TrafficError(key + " must be a list of at most 8")
         parsed = []
@@ -63,7 +64,7 @@ def configuration(config):
                     label = None
             else:
                 vlan = item.get("vlan")
-                if isinstance(vlan, bool) or not str(vlan).isdigit() or not 1 <= int(vlan) <= 4094:
+                if not re.fullmatch(r"[0-9]{1,4}", str(vlan)) or not 1 <= int(vlan) <= 4094:
                     raise TrafficError("invalid business VLAN ID")
                 interface = "Vlan" + str(int(vlan))
                 label = None
@@ -76,8 +77,9 @@ def configuration(config):
     return output
 
 
-def _pattern(values):
-    return json.dumps("|".join(re.escape(x) for x in sorted(set(values))), ensure_ascii=True)
+def _pattern(values, *, ignore_case=False):
+    pattern = "|".join(re.escape(x) for x in sorted(set(values)))
+    return json.dumps(f"(?i:{pattern})" if ignore_case else pattern, ensure_ascii=True)
 
 
 def build_query(mapping):
@@ -87,22 +89,32 @@ def build_query(mapping):
         if not rows:
             continue
         job, label, _ = JOBS[domain]
-        instances = _pattern(r["target"] for r in rows)
-        ifnames = []
+        by_target = {}
         for row in rows:
+            ifnames = by_target.setdefault(row["target"], [])
             if domain == "business_vlan":
                 number = row["interface"][4:]
                 ifnames.extend(("Vl" + number, "Vlan" + number))
             else:
                 ifnames.append(row["interface"])
-        names = _pattern(ifnames)
-        base = f'job="{job}",{label}=~{instances}'
+        base = f'job="{job}"'
+        selectors = []
+        for target, ifnames in sorted(by_target.items()):
+            names = _pattern(ifnames, ignore_case=True)
+            target_scope = f'{base},{label}="{target}"'
+            selectors.extend((f'{{{target_scope},ifName=~{names}}}',
+                              f'{{{target_scope},ifName="",ifDescr=~{names}}}'))
         for field, metric in (("in", "ifHCInOctets"), ("out", "ifHCOutOctets"),
                               ("oper", "ifOperStatus"), ("disc", "ifCounterDiscontinuityTime")):
-            expr = f'({metric}{{{base},ifName=~{names}}} or {metric}{{{base},ifDescr=~{names}}})'
-            for suffix, source in ((field, expr), (field + "_at", f"timestamp({expr})")):
-                chunks.append(f'label_replace({source},"bc_field","{suffix}","job",".+")')
-        for suffix, source in (("up", f"up{{{base}}}"), ("up_at", f"timestamp(up{{{base}}})")):
+            raw = [metric + selector for selector in selectors]
+            # PromQL timestamps computed vectors at the evaluation step. Apply
+            # timestamp() directly to each selector to retain the scrape time.
+            values = " or ".join(raw)
+            timestamps = " or ".join(f"timestamp({selector})" for selector in raw)
+            for suffix, source in ((field, values), (field + "_at", timestamps)):
+                chunks.append(f'label_replace(({source}),"bc_field","{suffix}","job",".+")')
+        up = f'up{{{base},{label}=~{_pattern(by_target)}}}'
+        for suffix, source in (("up", up), ("up_at", f"timestamp({up})")):
             chunks.append(f'label_replace({source},"bc_field","{suffix}","job",".+")')
     return " or ".join(chunks)
 
@@ -123,8 +135,12 @@ def fetch_range(url, query, end, timeout=7):
             parsed.username or parsed.password or parsed.query or parsed.fragment):
         # No userinfo, external hosts, redirect targets, arbitrary paths or proxy.
         raise TrafficError("invalid internal Prometheus URL")
+    return _query_range(url, query, end, timeout)
+
+
+def _query_range(url, query, end, timeout):
     params = urlencode({"query": query, "start": end - WINDOW, "end": end,
-                        "step": STEP, "timeout": "5s"})
+                        "step": STEP, "lookback_delta": "35s", "timeout": "5s"})
     req = Request(url.rstrip("/") + "/api/v1/query_range?" + params,
                   headers={"Accept": "application/json"}, method="GET")
     opener = build_opener(ProxyHandler({}), _NoRedirect())
@@ -135,9 +151,11 @@ def fetch_range(url, query, end, timeout=7):
     if len(raw) > MAX_BYTES:
         raise TrafficError("Prometheus response too large")
     payload = json.loads(raw)
-    if payload.get("status") != "success" or payload.get("warnings"):
+    if not isinstance(payload, dict) or payload.get("status") != "success" or payload.get("warnings"):
         raise TrafficError("Prometheus query not complete")
-    data = payload.get("data") or {}
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise TrafficError("Prometheus response data malformed")
     rows = data.get("result")
     if data.get("resultType") != "matrix" or not isinstance(rows, list) or len(rows) > MAX_SERIES:
         raise TrafficError("Prometheus series malformed or excessive")
@@ -190,7 +208,7 @@ def _timeseries(series, field):
 
 
 def _direction(counter, counter_at, oper, oper_at, up, up_at,
-               disc, disc_at, now, max_age, require_disc):
+               disc, disc_at, now, end, max_age, require_disc):
     times = sorted(set(counter or {}) & set(counter_at or {}))
     points = []
     previous = None
@@ -198,26 +216,31 @@ def _direction(counter, counter_at, oper, oper_at, up, up_at,
         sample_at = counter_at[t]
         active = (oper or {}).get(t) == 1 and (up or {}).get(t) == 1
         active = active and (oper_at or {}).get(t) == (up_at or {}).get(t) == sample_at
-        active = active and 0 <= t - sample_at <= max_age
+        value = counter[t]
+        active = active and 0 <= t - sample_at <= min(STEP + 5, max_age)
+        # Prometheus stores float64. Above 2^53 - 1 a one-byte change can
+        # disappear before JSON encoding, so it cannot establish a true zero.
+        active = active and 0 <= value <= MAX_EXACT_COUNTER and value == value.to_integral_value()
         if require_disc and (disc is None or disc_at is None):
             active = False
         if disc is not None:
             active = active and t in disc and (disc_at or {}).get(t) == sample_at
         rate = None
         if active and previous is not None:
-            old_at, old_value, old_disc = previous
+            old_step, old_at, old_value, old_disc = previous
             elapsed = sample_at - old_at
-            if (elapsed > 0 and elapsed <= min(max_age, STEP * 1.5) and counter[t] >= old_value
-                    and (disc is None or disc[t] == old_disc)
-                    and counter[t] == counter[t].to_integral_value()
-                    and old_value == old_value.to_integral_value()):
-                rate = float((counter[t] - old_value) * 8 / elapsed)
+            if (t - old_step == STEP and 0 < elapsed <= min(max_age, STEP * 1.5)
+                    and value >= old_value and (disc is None or disc[t] == old_disc)):
+                rate = float((value - old_value) * 8 / elapsed)
                 if not (rate >= 0 and rate < 1e13):
                     rate = None
         points.append({"t": int(t), "bps": rate})
-        previous = (sample_at, counter[t], disc[t] if disc is not None and t in disc else None) if active else None
+        if active:
+            previous = (t, sample_at, value, disc[t] if disc is not None else None)
+        else:
+            previous = None
     last = points[-1] if points else None
-    valid = bool(last and last["bps"] is not None and
+    valid = bool(last and last["t"] == end and last["bps"] is not None and
                  now - last["t"] <= max_age and
                  0 <= now - float(counter_at[Decimal(last["t"])]) <= max_age)
     return {"bps": last["bps"] if valid else None, "points": points,
@@ -225,7 +248,9 @@ def _direction(counter, counter_at, oper, oper_at, up, up_at,
             "validity": "VALID" if valid else "UNKNOWN"}
 
 
-def project(mapping, series, now):
+def project(mapping, series, now, end=None):
+    if end is None:
+        end = int(now // STEP) * STEP
     domains = {}
     for domain, rows in mapping.items():
         job, label, max_age = JOBS[domain]
@@ -236,12 +261,13 @@ def project(mapping, series, now):
             ports = [s for s in matches if (s.get("metric") or {}).get("bc_field") not in ("up", "up_at")
                      and _matching(s.get("metric") or {}, row, domain)]
             indexes = {str((s.get("metric") or {}).get("ifIndex") or "") for s in ports}
-            indexes.discard("")
             valid_identity = len(indexes) == 1 and all(
-                re.fullmatch(r"[1-9][0-9]*", i) for i in indexes)
+                re.fullmatch(r"[1-9][0-9]{0,9}", i) and int(i) <= 2**31 - 1 for i in indexes)
             port = [s for s in ports if s["metric"].get("ifIndex") in indexes] if valid_identity else []
             fields = {k: _timeseries(port, k) for k in
                       ("in", "in_at", "out", "out_at", "oper", "oper_at", "disc", "disc_at")}
+            check_disc = domain == "business_vlan" or any(
+                s["metric"].get("bc_field") in ("disc", "disc_at") for s in port)
             up = _timeseries(up_rows, "up")
             up_at = _timeseries(up_rows, "up_at")
             def output(direction):
@@ -249,8 +275,8 @@ def project(mapping, series, now):
                     return {"bps": None, "points": [], "sample_at": None, "validity": "UNKNOWN"}
                 return _direction(fields[direction], fields[direction + "_at"],
                                   fields["oper"], fields["oper_at"], up, up_at,
-                                  fields["disc"], fields["disc_at"], now, max_age,
-                                  domain == "business_vlan")
+                                  fields["disc"], fields["disc_at"], now, end, max_age,
+                                  check_disc)
             receive, transmit = output("in"), output("out")
             oper = fields["oper"] or {}
             status = "UNKNOWN"
@@ -260,10 +286,13 @@ def project(mapping, series, now):
                 if common:
                     t = common[-1]
                     sample_at = oper_at[t]
-                    if (0 <= now - float(t) <= max_age and
+                    if (t == end and 0 <= now - float(t) <= max_age and
                             oper_at[t] == up_at[t] == sample_at and
-                            0 <= t - sample_at <= max_age):
-                        status = "UP" if oper[t] == 1 and up[t] == 1 else "DOWN"
+                            0 <= now - float(sample_at) <= max_age and up[t] == 1):
+                        if oper[t] == 1:
+                            status = "UP"
+                        elif oper[t] in (2, 6, 7):
+                            status = "DOWN"
             cards.append({"name": row["name"],
                           "interface": row["interface"],
                           "interface_status": status,
@@ -292,8 +321,6 @@ class SharedSampler:
     def __post_init__(self):
         self.lock = threading.Lock()
         self.cached = None
-        self.cache_key = None
-        self.at = float("-inf")
 
     def snapshot(self, config):
         try:
@@ -304,17 +331,17 @@ class SharedSampler:
         if not any(mapping.values()):
             return project(mapping, [], self.clock())
         now = self.monotonic()
-        if self.cache_key == key and self.cached is not None and now - self.at < TTL:
-            return self.cached
+        cached = self.cached
+        if cached and cached[0] == key and now - cached[1] < TTL:
+            return cached[2]
         if not self.lock.acquire(blocking=False):
-            # Never queue a request storm; don't leak a former event's cache.
-            if self.cache_key == key and self.cached is not None:
-                return {**self.cached, "state": "refreshing"}
+            # The previous payload can have expired or belong to another event.
             return {"ok": False, "state": "refreshing", "error": "采集进行中"}
         try:
             now = self.monotonic()
-            if self.cache_key == key and self.cached is not None and now - self.at < TTL:
-                return self.cached
+            cached = self.cached
+            if cached and cached[0] == key and now - cached[1] < TTL:
+                return cached[2]
             at = int(self.clock() // STEP) * STEP
             stage = "query"
             try:
@@ -322,14 +349,14 @@ class SharedSampler:
                 stage = "fetch"
                 series = self.fetch(self.url, query, at)
                 stage = "project"
-                payload = project(mapping, series, self.clock())
+                payload = project(mapping, series, self.clock(), end=at)
             except (OSError, ValueError, TimeoutError, TypeError, KeyError, OverflowError) as exc:
                 # Report safe failure classification only; never include credentials,
                 # device IPs, raw PromQL or exception text in public responses.
                 payload = {"ok": False, "state": "error", "error": "Prometheus B/C 数据不可用",
                            "stage": stage, "error_kind": type(exc).__name__,
                            "generated_at": int(self.clock())}
-            self.cache_key, self.cached, self.at = key, payload, now
+            self.cached = (key, now, payload)
             return payload
         finally:
             self.lock.release()

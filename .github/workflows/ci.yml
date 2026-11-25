@@ -247,6 +247,17 @@ jobs:
           export INFRA_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/infra"
           mkdir -p "$INFRA_BROWSER_OUTPUT"
           node librenms+grafana/tests/chromium_infra_overview.js | tee "$INFRA_BROWSER_OUTPUT/run.log"
+      - name: Exercise B/C browser with Platform API and real Prometheus
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PLAYWRIGHT_MODULE="$RUNNER_TEMP/ping-browser/node_modules/playwright"
+          export CHROMIUM_PATH="$(command -v google-chrome)"
+          export INFRA_BROWSER_OUTPUT="$RUNNER_TEMP/ping-browser-evidence/traffic-bc"
+          export RUN_TRAFFIC_BC_BROWSER=1
+          mkdir -p "$INFRA_BROWSER_OUTPUT"
+          pytest -q -s librenms+grafana/tests/test_traffic_bc_browser.py | tee "$INFRA_BROWSER_OUTPUT/run.log"
       - name: Exercise browser with Platform API, DNS, Prometheus and Blackbox
         if: ${{ !cancelled() }}
         shell: bash
