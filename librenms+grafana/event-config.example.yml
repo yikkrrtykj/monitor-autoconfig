@@ -75,3 +75,21 @@ alerts:
 
 security:
   grafana_anonymous: true
+
+
+# #104 B/C: optional per-event business traffic only, independent of WAN.
+# Addresses below are deliberately documentation-only. Add entries via /control
+# before enabling B/C. Do not treat SVI traffic as Internet/VLAN L2 traffic.
+# traffic:
+#   tunnels:
+#     - name: Shanghai OB
+#       instance: 192.0.2.10
+#       if_name: tunnel1
+#       egress_isp: Configured ISP (not observed)
+#   business_vlans:
+#     - name: Production
+#       target_ip: 192.0.2.20
+#       vlan: 20
+traffic:
+  tunnels: []
+  business_vlans: []
