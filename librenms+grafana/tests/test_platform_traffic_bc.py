@@ -197,3 +197,22 @@ def test_transport_rejects_non_internal_url_and_no_proxy(monkeypatch):
         bc.fetch_range("https://external.example", "up", 120)
     with pytest.raises(bc.TrafficError):
         bc.configuration({"traffic": {"tunnels": [{"name": "x", "instance": "not-an-ip", "if_name": "tunnel1"}]}})
+
+
+
+def test_event_config_rejects_invalid_traffic_mappings_before_save():
+    from platform_config import validate_config
+    invalid = {"traffic": {"tunnels": [TUNNEL, TUNNEL]}}
+    issues = validate_config(invalid)
+    assert any(x["level"] == "bad" and x["path"] == "traffic" for x in issues)
+    valid = {"traffic": {"tunnels": [TUNNEL], "business_vlans": [SVI]}}
+    assert not any(x["path"] == "traffic" for x in validate_config(valid))
+
+
+def test_prometheus_endpoint_strict_origin_rejects_host_prefix_trick():
+    with pytest.raises(bc.TrafficError):
+        bc.fetch_range("http://prometheus:9090.evil.example", "up", 120)
+    with pytest.raises(bc.TrafficError):
+        bc.fetch_range("http://name:secret@prometheus:9090", "up", 120)
+    with pytest.raises(bc.TrafficError):
+        bc.fetch_range("http://prometheus:9090@evil.example", "up", 120)
