@@ -475,6 +475,14 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     raw_isp = config.get("isp") if isinstance(config.get("isp"), dict) else {}
     if "links" in raw_isp and not isinstance(raw_isp.get("links"), list):
         add("bad", "isp.links", "isp.links 必须是列表")
+    # #104 B/C keeps optional interface mappings in the existing event config.
+    # Reject invalid targets at configuration save/apply, not only at dashboard read.
+    if "traffic" in config:
+        from platform_api.traffic_bc import TrafficError, configuration as traffic_configuration
+        try:
+            traffic_configuration(config)
+        except TrafficError as exc:
+            add("bad", "traffic", str(exc))
     raw_topology = config.get("topology") if isinstance(config.get("topology"), dict) else {}
     topology_source = str(raw_topology.get("data_source") or "hybrid").strip().lower()
     if topology_source not in ("hybrid", "librenms", "direct-snmp"):
