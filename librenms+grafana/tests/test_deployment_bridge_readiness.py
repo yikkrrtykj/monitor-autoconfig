@@ -198,7 +198,10 @@ sys.stderr.write(result.stderr)
 raise SystemExit(result.returncode)
 ''')
     source = (check.ROOT / "deploy-check.sh").read_text(encoding="utf-8")
-    function = _extract_shell_function(source, "wait_for_bridge")
+    function = "\n".join(
+        _extract_shell_function(source, name)
+        for name in ("record_verification_timeout", "record_probe_wait_failure", "wait_for_bridge")
+    )
     if omit_workdir:
         function = function.replace(" -w /app", "")
     python = shlex.quote(sys.executable.replace("\\", "/"))
@@ -210,6 +213,7 @@ HTTP_BODY=health-body
 HTTP_ERROR=health-error
 RESULTS_FILE=checks
 DEPLOY_CHECK_HTTP_TIMEOUT=3
+verification_timeouts=0
 deadline_reached() { return 0; }
 record() { printf '%s %s %s\n' "$1" "$2" "$3"; }
 '''

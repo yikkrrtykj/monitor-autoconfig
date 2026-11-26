@@ -170,6 +170,7 @@ def apply_config(
                 "transactionId": snapshot["id"],
                 "applied": bool(apply_result.get("applied")),
                 "needsRedeploy": bool(apply_result.get("needsRedeploy")),
+                "verificationPending": bool(apply_result.get("verificationPending")),
                 "error": apply_result.get("error", ""),
                 "rolledBack": bool(restored),
                 "runtimeRestored": bool(
@@ -210,6 +211,7 @@ def apply_config(
             action="apply",
             applied=bool(apply_result.get("applied")),
             needsRedeploy=bool(apply_result.get("needsRedeploy")),
+            verificationPending=bool(apply_result.get("verificationPending")),
             applyOutput=apply_result.get("applyOutput", ""),
         )
         return {
@@ -366,6 +368,7 @@ def rollback_config(
             action="rollback",
             applied=bool(apply_result.get("applied")),
             needsRedeploy=bool(apply_result.get("needsRedeploy")),
+            verificationPending=bool(apply_result.get("verificationPending")),
             restored=restored,
             applyOutput=apply_result.get("applyOutput", ""),
         )

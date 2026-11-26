@@ -186,6 +186,12 @@
             <strong>🚀 应用完成</strong>
             <span>配置已应用，相关服务已恢复。</span>
           </div>`;
+      } else if (payload.verificationPending) {
+        headline = `
+          <div class="control-apply-next warn">
+            <strong>服务已更新，等待验证</strong>
+            <span>配置已保存。请联系管理员复查部署状态。</span>
+          </div>`;
       } else if (payload.needsRedeploy) {
         headline = `
           <div class="control-apply-next warn">

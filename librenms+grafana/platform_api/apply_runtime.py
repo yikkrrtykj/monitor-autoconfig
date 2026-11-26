@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import time
 import urllib.request
+from urllib.error import URLError
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from .deployment_health import BRIDGE_HEALTH_MAX_BYTES, notification_requirement
 
 APPLY_CHILD_TIMEOUT_MARGIN_SECONDS = 30
 APPLY_OPERATION_GRACE_SECONDS = 30
+APPLY_VERIFICATION_PENDING = 75
 
 
 @dataclass(frozen=True)
@@ -83,14 +85,14 @@ def verify_runtime_after_apply(context: ApplyRuntimeContext) -> dict:
         requirements = notification_requirements(read_env(context.workdir / ".env"))
     except (ValueError, OSError):
         return {"ok": False, "errors": {"告警服务": "Cannot read notification requirements"}}
-    last_errors: dict[str, str] = {}
+    last_errors: dict[str, tuple[str, bool]] = {}
     while time.monotonic() < deadline:
-        last_errors = {}
         for name, url in checks.items():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                last_errors.setdefault(name, ("Verification budget exhausted", True))
+                continue
             try:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError("Verification budget exhausted")
                 with urllib.request.urlopen(url, timeout=min(5, remaining)) as response:
                     body = response.read(BRIDGE_HEALTH_MAX_BYTES + 1 if name == "告警服务" else 4096)
                     if not 200 <= response.status < 400:
@@ -100,15 +102,26 @@ def verify_runtime_after_apply(context: ApplyRuntimeContext) -> dict:
                             raise ValueError("Bridge health payload is too large")
                         validate_bridge_health(json.loads(body), requirements)
             except Exception as exc:
-                last_errors[name] = str(exc)
+                is_timeout = isinstance(exc, TimeoutError) or (
+                    isinstance(exc, URLError) and isinstance(exc.reason, TimeoutError)
+                )
+                last_errors[name] = (str(exc), is_timeout)
+            else:
+                last_errors.pop(name, None)
         if not last_errors and time.monotonic() <= deadline:
             return {"ok": True, "services": sorted(checks)}
         if not last_errors:
-            last_errors["运行验证"] = "Verification budget exhausted"
+            last_errors["运行验证"] = ("Verification budget exhausted", True)
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(min(2, remaining))
-    return {"ok": False, "errors": last_errors}
+    result = {
+        "ok": False,
+        "errors": {name: message for name, (message, _) in last_errors.items()},
+    }
+    if last_errors and all(is_timeout for _, is_timeout in last_errors.values()):
+        result["verificationPending"] = True
+    return result
 
 
 def _process_output_text(value) -> str:
@@ -132,6 +145,16 @@ def apply_operation_timeout_seconds(context: ApplyRuntimeContext) -> int:
     )
 
 
+def _pending_verification(output: str) -> dict:
+    return {
+        "applied": False,
+        "needsRedeploy": False,
+        "verificationPending": True,
+        "nextStep": "cd librenms+grafana && ./deploy-check.sh configured",
+        "applyOutput": output[-4000:],
+    }
+
+
 def run_apply_command(context: ApplyRuntimeContext) -> dict:
     if not context.apply_enabled:
         return {
@@ -141,10 +164,11 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
         }
 
     env = host_exec_env(context)
+    command = shlex.split(context.apply_command)
 
     try:
         completed = subprocess.run(
-            shlex.split(context.apply_command),
+            command,
             cwd=str(context.workdir),
             env=env,
             stdin=subprocess.DEVNULL,
@@ -172,6 +196,12 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
         }
 
     output = _combined_process_output(completed.stdout, completed.stderr)
+    if completed.returncode == APPLY_VERIFICATION_PENDING and command in (
+        ["/bin/sh", "/workspace/apply-env.sh"],
+        ["/bin/sh", "apply-env.sh"],
+        ["./apply-env.sh"],
+    ):
+        return _pending_verification(output)
     if completed.returncode != 0:
         return {
             "ok": False,
@@ -186,6 +216,8 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
             f"{name}: {message}"
             for name, message in verification.get("errors", {}).items()
         )
+        if verification.get("verificationPending"):
+            return _pending_verification(output + "\n运行验证超时：" + errors)
         return {
             "ok": False,
             "error": "服务更新已执行，但关键服务尚未恢复，应用未完成。",

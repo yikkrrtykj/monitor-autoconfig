@@ -12,9 +12,12 @@ MODE=bootstrap
 QUIET=false
 JSON=false
 MODE_SET=false
+APPLY_VERIFICATION=false
+APPLY_VERIFICATION_FIRST_PASS=false
+verification_timeouts=0
 
 usage() {
-  echo "usage: $0 [bootstrap|configured] [--quiet] [--json]" >&2
+  echo "usage: $0 [bootstrap|configured] [--quiet] [--json] [--apply-verification|--apply-verification-first-pass]" >&2
 }
 
 for arg in "$@"; do
@@ -29,6 +32,11 @@ for arg in "$@"; do
       ;;
     --quiet) QUIET=true ;;
     --json) JSON=true ;;
+    --apply-verification) APPLY_VERIFICATION=true ;;
+    --apply-verification-first-pass)
+      APPLY_VERIFICATION=true
+      APPLY_VERIFICATION_FIRST_PASS=true
+      ;;
     *)
       usage
       exit 1
@@ -67,6 +75,21 @@ record() {
   printf '%s\t%s\t%s\n' "$status" "$check_id" "$message" >> "$RESULTS_FILE"
 }
 
+record_verification_timeout() {
+  record FAIL "$1" "$2"
+  verification_timeouts=$((verification_timeouts + 1))
+}
+
+record_probe_wait_failure() {
+  # An early readiness observation can change before the real deadline.
+  # Explicit failures outside readiness waits remain hard failures.
+  if [ "$3" = true ] && [ "${APPLY_VERIFICATION_FIRST_PASS:-false}" != true ]; then
+    record FAIL "$1" "$2"
+  else
+    record_verification_timeout "$1" "$2"
+  fi
+}
+
 now_seconds() {
   date +%s
 }
@@ -97,7 +120,7 @@ probe_timeout() {
 }
 
 probe_command() {
-  seconds=$(probe_timeout) || return 1
+  seconds=$(probe_timeout) || return 124
   timeout --signal=TERM --kill-after=1 "$seconds" "$@" </dev/null
 }
 
@@ -188,12 +211,30 @@ wait_for_service() {
   label=$3
   last_state=unknown
   while :; do
-    container_id=$(compose ps -a -q "$service" 2>/dev/null | sed -n '1p')
+    if container_ids=$(compose ps -a -q "$service" 2>/dev/null); then
+      container_id=$(printf '%s\n' "$container_ids" | sed -n '1p')
+    else
+      probe_status=$?
+      case "$probe_status" in
+        124|137) record_verification_timeout "$check_id" "$label container lookup timed out" ;;
+        *) record FAIL "$check_id" "$label container lookup failed" ;;
+      esac
+      return 1
+    fi
     if [ -z "$container_id" ]; then
       record FAIL "$check_id" "$label container does not exist"
       return 1
     fi
-    state=$(probe_command docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)
+    if state=$(probe_command docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null); then
+      :
+    else
+      probe_status=$?
+      case "$probe_status" in
+        124|137) record_verification_timeout "$check_id" "$label container inspection timed out" ;;
+        *) record FAIL "$check_id" "$label state could not be inspected" ;;
+      esac
+      return 1
+    fi
     health=$(probe_command docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || true)
     last_state=${state:-inspect-failed}
     [ -n "$health" ] && [ "$health" != none ] && last_state="$last_state/$health"
@@ -220,7 +261,7 @@ wait_for_service() {
         ;;
     esac
     if deadline_reached; then
-      record FAIL "$check_id" "$label timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)"
+      record_verification_timeout "$check_id" "$label timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)"
       return 1
     fi
     wait_interval
@@ -240,7 +281,7 @@ wait_for_http() {
     last_error=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
     [ -n "$last_error" ] || last_error="temporarily unreachable"
     if deadline_reached; then
-      record FAIL "$check_id" "$label timed out after ${EFFECTIVE_TIMEOUT}s (last error: $last_error)"
+      record_verification_timeout "$check_id" "$label timed out after ${EFFECTIVE_TIMEOUT}s (last error: $last_error)"
       return 1
     fi
     wait_interval
@@ -273,7 +314,7 @@ with urllib.request.urlopen(
     last_error=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
     [ -n "$last_error" ] || last_error="container health endpoint temporarily unreachable"
     if deadline_reached; then
-      record FAIL platform_api_http "Platform API container /health timed out after ${EFFECTIVE_TIMEOUT}s (last error: $last_error)"
+      record_verification_timeout platform_api_http "Platform API container /health timed out after ${EFFECTIVE_TIMEOUT}s (last error: $last_error)"
       return 1
     fi
     wait_interval
@@ -281,31 +322,47 @@ with urllib.request.urlopen(
 }
 
 wait_for_bridge() {
+  negative_evidence=false
   while :; do
     if compose exec -T -w /app alertmanager-feishu-bridge python -c '
 import json, os, sys, urllib.request
+from urllib.error import HTTPError, URLError
 from librenms_client import LibreNMSClient
-with urllib.request.urlopen("http://127.0.0.1:5005/health", timeout=int(sys.argv[1])) as response:
-    if response.status != 200:
-        raise SystemExit(1)
-    body = response.read(65537)
-    if len(body) > 65536:
-        raise SystemExit(1)
-    health = json.loads(body)
+
+try:
+    with urllib.request.urlopen("http://127.0.0.1:5005/health", timeout=int(sys.argv[1])) as response:
+        if response.status != 200:
+            raise SystemExit(1)
+        body = response.read(65537)
+except HTTPError as exc:
+    raise SystemExit(75 if exc.code in (502, 503, 504) else 1) from exc
+except (TimeoutError, URLError) as exc:
+    raise SystemExit(75) from exc
+
+if len(body) > 65536:
+    raise SystemExit(1)
+health = json.loads(body)
 # Constructor only resolves the existing token; it makes no HTTP requests.
 client = LibreNMSClient(
     base_url=os.environ.get("LIBRENMS_URL", "http://librenms:8000"),
     token_file=os.environ.get("LIBRENMS_TOKEN_FILE", "/librenms-data/librenms-api-token"),
 )
 print(json.dumps({"health": health, "librenmsTokenAvailable": bool(client.token)}))
-' "$DEPLOY_CHECK_HTTP_TIMEOUT" </dev/null > "$HTTP_BODY" 2> "$HTTP_ERROR" \
-      && bridge_checks=$(python3 "$SCRIPT_DIR/platform_api/deployment_health.py" "$HTTP_BODY" "$SCRIPT_DIR/.env" 2> "$HTTP_ERROR"); then
-      printf '%s\n' "$bridge_checks" >> "$RESULTS_FILE"
-      record PASS bridge_readiness "Bridge deployment readiness verified (read-only)"
-      return 0
+' "$DEPLOY_CHECK_HTTP_TIMEOUT" </dev/null > "$HTTP_BODY" 2> "$HTTP_ERROR"; then
+      if bridge_checks=$(python3 "$SCRIPT_DIR/platform_api/deployment_health.py" "$HTTP_BODY" "$SCRIPT_DIR/.env" 2> "$HTTP_ERROR"); then
+        printf '%s\n' "$bridge_checks" >> "$RESULTS_FILE"
+        record PASS bridge_readiness "Bridge deployment readiness verified (read-only)"
+        return 0
+      fi
+      negative_evidence=true
+    else
+      case "$?" in
+        75|124|137) : ;;
+        *) negative_evidence=true ;;
+      esac
     fi
     if deadline_reached; then
-      record FAIL bridge_readiness "Bridge health, enabled capabilities or LibreNMS token availability failed"
+      record_probe_wait_failure bridge_readiness "Bridge health, enabled capabilities or LibreNMS token availability failed" "$negative_evidence"
       return 1
     fi
     wait_interval
@@ -315,19 +372,21 @@ print(json.dumps({"health": health, "librenmsTokenAvailable": bool(client.token)
 wait_for_prometheus_reload() {
   check_id=prometheus_reload
   last_state="reload metric unavailable"
+  negative_evidence=false
   while :; do
     if http_get "$PROMETHEUS_URL/metrics" > "$HTTP_BODY" 2> "$HTTP_ERROR"; then
       if grep -Eq '^prometheus_config_last_reload_successful[[:space:]]+1([.]0)?$' "$HTTP_BODY"; then
         record PASS "$check_id" "Prometheus last configuration reload succeeded"
         return 0
       fi
+      negative_evidence=true
       last_state="last reload has not succeeded"
     else
       last_state=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
       [ -n "$last_state" ] || last_state="Prometheus metrics unreachable"
     fi
     if deadline_reached; then
-      record FAIL "$check_id" "Prometheus reload check timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)"
+      record_probe_wait_failure "$check_id" "Prometheus reload check timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)" "$negative_evidence"
       return 1
     fi
     wait_interval
@@ -358,6 +417,7 @@ wait_for_prometheus_targets() {
     return 1
   fi
   last_state="targets not loaded"
+  negative_evidence=false
   while :; do
     if http_get "$PROMETHEUS_URL/api/v1/targets?state=any" > "$HTTP_BODY" 2> "$HTTP_ERROR"; then
       found=true
@@ -376,12 +436,13 @@ wait_for_prometheus_targets() {
         record PASS "$check_id" "$label"
         return 0
       fi
+      negative_evidence=true
     else
       last_state=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
       [ -n "$last_state" ] || last_state="Prometheus targets API unreachable"
     fi
     if deadline_reached; then
-      record FAIL "$check_id" "$label timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)"
+      record_probe_wait_failure "$check_id" "$label timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)" "$negative_evidence"
       return 1
     fi
     wait_interval
@@ -391,19 +452,21 @@ wait_for_prometheus_targets() {
 wait_for_player_generator() {
   check_id=player_generator
   last_state="status unavailable"
+  negative_evidence=false
   while :; do
     if http_get "$BIGSCREEN_URL/player-targets/status" > "$HTTP_BODY" 2> "$HTTP_ERROR"; then
       if grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$HTTP_BODY"; then
         record PASS "$check_id" "Player target generator completed successfully"
         return 0
       fi
+      negative_evidence=true
       last_state="generator reported an error"
     else
       last_state=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
       [ -n "$last_state" ] || last_state="player target status unreachable"
     fi
     if deadline_reached; then
-      record FAIL "$check_id" "Player target generator timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)"
+      record_probe_wait_failure "$check_id" "Player target generator timed out after ${EFFECTIVE_TIMEOUT}s (last state: $last_state)" "$negative_evidence"
       return 1
     fi
     wait_interval
@@ -422,11 +485,12 @@ wait_for_isp_inventory() {
   max_age=$((refresh_seconds * 3 + 60))
   [ "$max_age" -ge 300 ] || max_age=300
   last_state="inventory unavailable"
+  negative_evidence=false
 
   while :; do
     if http_get "$BIGSCREEN_URL/topology/isp_targets.json" > "$HTTP_BODY" 2> "$HTTP_ERROR" \
-      && http_get "$BIGSCREEN_URL/topology/isp-discovery-state.json" > "$ISP_STATE_BODY" 2> "$HTTP_ERROR" \
-      && python3 - "$HTTP_BODY" "$ISP_STATE_BODY" "$names" "$ips" "$bandwidth" "$max_age" \
+      && http_get "$BIGSCREEN_URL/topology/isp-discovery-state.json" > "$ISP_STATE_BODY" 2> "$HTTP_ERROR"; then
+      if python3 - "$HTTP_BODY" "$ISP_STATE_BODY" "$names" "$ips" "$bandwidth" "$max_age" \
         > "$ISP_VALIDATION" 2> "$HTTP_ERROR" <<'PY'
 import hashlib
 import ipaddress
@@ -536,16 +600,18 @@ print(
     f"{probeable_count} availability target(s)"
 )
 PY
-    then
-      validation=$(tr '\r\n' '  ' < "$ISP_VALIDATION" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
-      record PASS "$check_id" "Automatic ISP inventory is valid and fresh${validation:+ ($validation)}"
-      return 0
+      then
+        validation=$(tr '\r\n' '  ' < "$ISP_VALIDATION" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
+        record PASS "$check_id" "Automatic ISP inventory is valid and fresh${validation:+ ($validation)}"
+        return 0
+      fi
+      negative_evidence=true
     fi
 
     last_state=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
     [ -n "$last_state" ] || last_state="inventory or state endpoint unavailable"
     if deadline_reached; then
-      record FAIL "$check_id" "Automatic ISP inventory validation failed (last state: $last_state)"
+      record_probe_wait_failure "$check_id" "Automatic ISP inventory validation failed (last state: $last_state)" "$negative_evidence"
       return 1
     fi
     wait_interval
@@ -594,7 +660,11 @@ PY
     echo "Result: $result ($summary)"
   fi
 
-  [ "$failed" -eq 0 ]
+  [ "$failed" -eq 0 ] && return 0
+  if [ "$APPLY_VERIFICATION" = true ] && [ "$failed" -eq "$verification_timeouts" ]; then
+    return 75
+  fi
+  return 1
 }
 
 if command -v docker >/dev/null 2>&1; then
@@ -614,7 +684,11 @@ fi
 if find_compose_v2; then
   record PASS compose_v2 "Docker Compose v2 available"
 else
-  record FAIL compose_v2 "Docker Compose v2 is not available"
+  if deadline_reached && [ -n "${DEPLOY_CHECK_DEADLINE:-}" ]; then
+    record_verification_timeout compose_v2 "Docker Compose version check timed out"
+  else
+    record FAIL compose_v2 "Docker Compose v2 is not available"
+  fi
   finalize
   exit $?
 fi
@@ -622,8 +696,12 @@ fi
 if compose config --quiet > "$HTTP_BODY" 2> "$HTTP_ERROR"; then
   record PASS compose_config "Compose configuration valid"
 else
+  probe_status=$?
   compose_error=$(tr '\r\n' '  ' < "$HTTP_ERROR" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
-  record FAIL compose_config "Compose configuration invalid${compose_error:+: $compose_error}"
+  case "$probe_status" in
+    124|137) record_verification_timeout compose_config "Compose configuration check timed out" ;;
+    *) record FAIL compose_config "Compose configuration invalid${compose_error:+: $compose_error}" ;;
+  esac
   finalize
   exit $?
 fi

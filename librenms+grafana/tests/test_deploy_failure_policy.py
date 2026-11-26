@@ -442,6 +442,49 @@ def test_apply_entrypoint_runs_the_configured_runtime_check():
     assert "配置已经写入，但运行状态验证失败" in apply_env
 
 
+@pytest.mark.parametrize(
+    ("first_status", "second_status", "expected", "deadlines"),
+    [
+        (0, 0, 0, ["170"]),
+        (1, 0, 1, ["170"]),
+        (75, 0, 0, ["170", "200"]),
+        (75, 1, 1, ["170", "200"]),
+        (75, 75, 75, ["170", "200"]),
+    ],
+)
+def test_apply_verification_retries_inside_original_deadline(
+    tmp_path, first_status, second_status, expected, deadlines,
+):
+    apply_env = (ROOT / "apply-env.sh").read_text(encoding="utf-8")
+    check = tmp_path / "deploy-check.sh"
+    _write_executable(check, """#!/bin/sh
+printf '%s\n' "$DEPLOY_CHECK_DEADLINE" >> "$SCRIPT_DIR/checks"
+if [ "$DEPLOY_CHECK_DEADLINE" = 170 ]; then
+    [ "$2" = --apply-verification-first-pass ] || exit 90
+    exit "$FIRST_STATUS"
+fi
+[ "$2" = --apply-verification ] || exit 91
+exit "$SECOND_STATUS"
+""")
+    script = '''
+set -eu
+SCRIPT_DIR=$1
+check_budget=180
+DEPLOY_CHECK_DEADLINE=200
+export SCRIPT_DIR FIRST_STATUS SECOND_STATUS DEPLOY_CHECK_DEADLINE
+date() { printf '%s\n' 100; }
+'''
+    script += _extract_shell_function(apply_env, "verify_applied_configuration") + "\n"
+    script += "verify_applied_configuration\n"
+    result = subprocess.run(
+        [SH, "-c", script, "verify", str(tmp_path)],
+        env={**os.environ, "FIRST_STATUS": str(first_status), "SECOND_STATUS": str(second_status)},
+        capture_output=True, text=True, check=False, timeout=5,
+    )
+    assert result.returncode == expected, result.stderr
+    assert (tmp_path / "checks").read_text().splitlines() == deadlines
+
+
 def test_apply_timeout_default_leaves_room_for_startup_and_completion():
     apply_env = (ROOT / "apply-env.sh").read_text(encoding="utf-8")
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
@@ -523,7 +566,11 @@ HTTP_BODY="$STUB_LOG.http-body"
 record() { printf '%s %s %s\n' "$1" "$2" "$3" >> "$STUB_LOG"; }
 http_get() { echo unavailable >&2; return 1; }
 '''
-    for name in ("now_seconds", "deadline_reached", "wait_interval", "wait_for_http"):
+    script += "verification_timeouts=0\n"
+    for name in (
+        "record_verification_timeout", "now_seconds", "deadline_reached",
+        "wait_interval", "wait_for_http",
+    ):
         script += _extract_shell_function(source, name) + "\n"
     script += 'wait_for_http final_health "Final health" "http://fixture.invalid"\n'
     result, log = run_deploy(tmp_path, unchanged=False, fake_clock=True, check_script=script,
