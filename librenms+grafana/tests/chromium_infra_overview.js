@@ -694,8 +694,12 @@ async function main() {
       const addedBcScript = "GET script /infra/traffic-bc.js";
       assert.equal(after.startupRequests.filter((x) => x === addedBcScript).length, 1,
         "exactly one B/C presentation module must be loaded");
-      assert.deepEqual(after.startupRequests.filter((x) => x !== addedBcScript), before.startupRequests,
-        "A-stage startup assets unexpectedly changed");
+      // A baseline already running B/C includes this module.
+      const expectedStartup = before.startupRequests.includes(addedBcScript)
+        ? before.startupRequests
+        : [...before.startupRequests, addedBcScript].sort();
+      assert.deepEqual(after.startupRequests, expectedStartup,
+        "Infrastructure startup assets unexpectedly changed");
       assert.deepEqual(after.requests, before.requests, "layout changed HTTP requests or Prometheus expressions");
       report.http = { before: before.requests.length, after: after.requests.length, added: 0, rounds: after.rounds };
     } else {
