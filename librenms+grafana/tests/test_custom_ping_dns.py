@@ -500,7 +500,7 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
     net, prom_name, bb, peer = prefix + "-net", prefix + "-prom", prefix + "-bb", prefix + "-peer"
     a, b = "172.31.248.21", "172.31.248.22"
     dns_config["ips"] = [a]
-    ap_ip = "172.31.248.23"
+    ap_ip = "172.31.248.29"
     ap_target = work / "ap-ping-targets.json"
     ap_target.write_text(json.dumps([{"targets": [ap_ip], "labels": {"display_name": ap_ip}}]), encoding="ascii")
     published_at = time.time()
