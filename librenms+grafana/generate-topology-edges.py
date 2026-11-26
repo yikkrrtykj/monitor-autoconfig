@@ -45,6 +45,7 @@ from ap_topology import (ApExactResult, fetch_current_aps, build_ap_artifact,
                          ap_candidate_cap, ap_candidates,
                          ap_candidates_with_status, ap_max_age, vlan_fk_mapping,
                          validate_ap_candidates_detailed)
+from ap_reachability import write_shadow as write_ap_reachability_shadow
 from ap_placement import (build_invalidated_artifact, build_placement_artifact,
                           fetch_ap_online_evidence)
 import json
@@ -3581,6 +3582,20 @@ def collect_ap_shadow_candidates(aps, inventory, validated, devices, edges, clie
     return result
 
 
+def publish_ap_reachability(output_dir, aps, online_evidence, published_at):
+    enabled = os.environ.get("TOPOLOGY_AP_REACHABILITY_SHADOW_ENABLED", "").strip().lower()
+    if enabled not in ("true", "1", "yes", "on"):
+        return
+    try:
+        write_ap_reachability_shadow(
+            os.path.join(output_dir, "ap-reachability.json"),
+            aps, online_evidence, published_at,
+        )
+    except Exception as exc:
+        print(f"[WARN] AP reachability shadow unavailable ({type(exc).__name__})",
+              file=sys.stderr)
+
+
 def write_invalidated_ap_placement_artifact(output_dir, reason):
     """显式失效影子快照：覆盖旧文件，避免旧位置被当作当前权威。"""
     try:
@@ -4653,11 +4668,13 @@ def _run_collection():
         aps = []
         ap_identity_error = True
     # 与 attachment 共用本轮身份；失败也发布空清单，不保留旧 AP ping targets。
+    ap_ping_published_at = None
     try:
         write_json_atomic(os.path.join(output_dir, "ap-ping-targets.json"), [
             {"targets": [ap["ip"]], "labels": {"display_name": ap["ip"]}}
             for ap in aps
         ], sort_keys=True)
+        ap_ping_published_at = time.time()
     except Exception as exc:
         print(f"[WARN] AP ping targets write failed ({type(exc).__name__}); wired output unaffected", file=sys.stderr)
     device_ips = load_device_list()
@@ -4667,6 +4684,7 @@ def _run_collection():
             _write_public_edges(output_dir, load_cached_edges(edges_path))
         write_current_ap_artifact(output_dir, aps, {})
         write_invalidated_ap_placement_artifact(output_dir, "no_topology_devices")
+        publish_ap_reachability(output_dir, aps, {}, ap_ping_published_at)
         print(
             "[INFO] TOPOLOGY_DEVICES empty and no infra ping envs set; "
             "retaining the last confirmed topology",
@@ -4924,6 +4942,7 @@ def _run_collection():
     except Exception as exc:
         print(f"[WARN] AP placement shadow cycle failed ({type(exc).__name__}); wired output unaffected",
               file=sys.stderr)
+    publish_ap_reachability(output_dir, aps, ap_online, ap_ping_published_at)
     ap_api_requests = librenms.request_count - ap_api_start if librenms is not None else 0
     try:
         write_topology_diagnostics(
