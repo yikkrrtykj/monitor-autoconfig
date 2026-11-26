@@ -45,7 +45,7 @@ def test_functional_pages_do_not_redirect_to_internal_port(tmp_path):
     for disk_name in public_files.values():
         (topology / disk_name).write_text(f'{{"fixture":"{disk_name}"}}', encoding="utf-8")
     internal_files = (
-        "ap-placement.json", "switch-discovery-state.json", "switch_targets.json",
+        "ap-placement.json", "ap-reachability.json", "switch-discovery-state.json", "switch_targets.json",
         "stackwise_targets.json", "ap-ping-targets.json", "server-attachments.json",
         "topology-diagnostics.json", ".collector.lock", "fixture.json",
     )
