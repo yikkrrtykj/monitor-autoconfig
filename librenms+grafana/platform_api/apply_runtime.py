@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import time
 import urllib.request
+from urllib.error import URLError
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,6 +86,7 @@ def verify_runtime_after_apply(context: ApplyRuntimeContext) -> dict:
     except (ValueError, OSError):
         return {"ok": False, "errors": {"告警服务": "Cannot read notification requirements"}}
     last_errors: dict[str, str] = {}
+    negative_evidence = False
     while time.monotonic() < deadline:
         last_errors = {}
         for name, url in checks.items():
@@ -102,6 +104,10 @@ def verify_runtime_after_apply(context: ApplyRuntimeContext) -> dict:
                         validate_bridge_health(json.loads(body), requirements)
             except Exception as exc:
                 last_errors[name] = str(exc)
+                is_timeout = isinstance(exc, TimeoutError) or (
+                    isinstance(exc, URLError) and isinstance(exc.reason, TimeoutError)
+                )
+                negative_evidence |= not is_timeout
         if not last_errors and time.monotonic() <= deadline:
             return {"ok": True, "services": sorted(checks)}
         if not last_errors:
@@ -109,7 +115,10 @@ def verify_runtime_after_apply(context: ApplyRuntimeContext) -> dict:
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(min(2, remaining))
-    return {"ok": False, "errors": last_errors}
+    result = {"ok": False, "errors": last_errors}
+    if last_errors and not negative_evidence:
+        result["verificationPending"] = True
+    return result
 
 
 def _process_output_text(value) -> str:
@@ -131,6 +140,16 @@ def apply_operation_timeout_seconds(context: ApplyRuntimeContext) -> int:
     return 2 * (context.apply_timeout + context.verify_timeout) + (
         APPLY_OPERATION_GRACE_SECONDS
     )
+
+
+def _pending_verification(output: str) -> dict:
+    return {
+        "applied": False,
+        "needsRedeploy": False,
+        "verificationPending": True,
+        "nextStep": "cd librenms+grafana && ./deploy-check.sh configured",
+        "applyOutput": output[-4000:],
+    }
 
 
 def run_apply_command(context: ApplyRuntimeContext) -> dict:
@@ -179,13 +198,7 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
         ["/bin/sh", "apply-env.sh"],
         ["./apply-env.sh"],
     ):
-        return {
-            "applied": False,
-            "needsRedeploy": False,
-            "verificationPending": True,
-            "nextStep": "cd librenms+grafana && ./deploy-check.sh configured",
-            "applyOutput": output[-4000:],
-        }
+        return _pending_verification(output)
     if completed.returncode != 0:
         return {
             "ok": False,
@@ -200,6 +213,8 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
             f"{name}: {message}"
             for name, message in verification.get("errors", {}).items()
         )
+        if verification.get("verificationPending"):
+            return _pending_verification(output + "\n运行验证超时：" + errors)
         return {
             "ok": False,
             "error": "服务更新已执行，但关键服务尚未恢复，应用未完成。",

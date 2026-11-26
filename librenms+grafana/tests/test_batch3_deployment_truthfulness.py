@@ -161,9 +161,13 @@ def test_apply_budget_covers_tasks_and_completion_checks(tmp_path):
     assert result.returncode == 0, result.stderr
     deadline = int(next(line.split()[1] for line in log.splitlines()
                         if line.startswith("DEADLINE ")))
-    # 5s task budget + 30s completion budget, not the 30s check budget alone.
-    # Allow one second of clock skew around the child start.
-    assert 34 <= deadline - started <= 37
+    budget_line = next(line for line in result.stdout.splitlines()
+                       if line.startswith("[apply-env] Verification deadline="))
+    verification_deadline = int(budget_line.split()[2].split("=")[1])
+    # The first attempt retains half of the verification budget when the
+    # budget is short. Both attempts finish within the original 35s ceiling.
+    assert 29 <= verification_deadline - started <= 36
+    assert verification_deadline - deadline == 15
 
 
 def test_host_project_mapping_is_used_by_task_gates(tmp_path):

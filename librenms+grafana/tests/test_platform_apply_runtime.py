@@ -330,6 +330,27 @@ def test_verify_failure_preserves_last_errors_sleep_and_return_shape(
     assert sleeps == [2]
 
 
+def test_timed_out_post_apply_probes_leave_verification_pending(monkeypatch, tmp_path):
+    context = make_context(tmp_path, verify_timeout=1)
+    ticks = [0]
+
+    def timeout(*_args, **_kwargs):
+        raise TimeoutError("fixture timed out")
+
+    monkeypatch.setattr(apply_runtime.urllib.request, "urlopen", timeout)
+    monkeypatch.setattr(apply_runtime.time, "monotonic", lambda: ticks[0])
+    monkeypatch.setattr(apply_runtime.time, "sleep", lambda seconds: ticks.__setitem__(0, ticks[0] + seconds))
+    monkeypatch.setattr(
+        apply_runtime.subprocess, "run",
+        lambda args, **_: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    result = apply_runtime.run_apply_command(context)
+
+    assert result["verificationPending"] is True
+    assert result["applied"] is False
+    assert "fixture timed out" in result["applyOutput"]
+
+
 def test_verify_non_success_status_keeps_http_reason(monkeypatch, tmp_path):
     context = make_context(tmp_path, verify_timeout=1)
     ticks = [0]

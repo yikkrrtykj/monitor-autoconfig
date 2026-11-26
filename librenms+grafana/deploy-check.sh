@@ -319,14 +319,22 @@ wait_for_bridge() {
   while :; do
     if compose exec -T -w /app alertmanager-feishu-bridge python -c '
 import json, os, sys, urllib.request
+from urllib.error import HTTPError, URLError
 from librenms_client import LibreNMSClient
-with urllib.request.urlopen("http://127.0.0.1:5005/health", timeout=int(sys.argv[1])) as response:
-    if response.status != 200:
-        raise SystemExit(1)
-    body = response.read(65537)
-    if len(body) > 65536:
-        raise SystemExit(1)
-    health = json.loads(body)
+
+try:
+    with urllib.request.urlopen("http://127.0.0.1:5005/health", timeout=int(sys.argv[1])) as response:
+        if response.status != 200:
+            raise SystemExit(1)
+        body = response.read(65537)
+except HTTPError as exc:
+    raise SystemExit(75 if exc.code in (502, 503, 504) else 1) from exc
+except (TimeoutError, URLError) as exc:
+    raise SystemExit(75) from exc
+
+if len(body) > 65536:
+    raise SystemExit(1)
+health = json.loads(body)
 # Constructor only resolves the existing token; it makes no HTTP requests.
 client = LibreNMSClient(
     base_url=os.environ.get("LIBRENMS_URL", "http://librenms:8000"),
@@ -340,6 +348,11 @@ print(json.dumps({"health": health, "librenmsTokenAvailable": bool(client.token)
         return 0
       fi
       negative_evidence=true
+    else
+      case "$?" in
+        75|124|137) : ;;
+        *) negative_evidence=true ;;
+      esac
     fi
     if deadline_reached; then
       record_probe_wait_failure bridge_readiness "Bridge health, enabled capabilities or LibreNMS token availability failed" "$negative_evidence"
