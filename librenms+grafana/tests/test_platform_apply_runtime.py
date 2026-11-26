@@ -25,6 +25,27 @@ def make_context(tmp_path: Path, **overrides):
     return apply_runtime.ApplyRuntimeContext(**values)
 
 
+@pytest.mark.parametrize(
+    ("command", "pending"),
+    [
+        ("/bin/sh /workspace/apply-env.sh", True),
+        ("./apply-env.sh", True),
+        ("./custom-apply.sh", False),
+    ],
+)
+def test_exit_75_acknowledges_pending_only_for_native_apply(
+    monkeypatch, tmp_path, command, pending,
+):
+    monkeypatch.setattr(
+        apply_runtime.subprocess, "run",
+        lambda args, **_: subprocess.CompletedProcess(args, 75, "verification pending", ""),
+    )
+    result = apply_runtime.run_apply_command(make_context(tmp_path, apply_command=command))
+    assert bool(result.get("verificationPending")) is pending
+    assert not result.get("applied")
+    assert (result.get("ok") is False) is (not pending)
+
+
 class Response:
     def __init__(self, status=200, reads=None):
         self.status = status

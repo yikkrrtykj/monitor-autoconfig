@@ -15,6 +15,7 @@ from .deployment_health import BRIDGE_HEALTH_MAX_BYTES, notification_requirement
 
 APPLY_CHILD_TIMEOUT_MARGIN_SECONDS = 30
 APPLY_OPERATION_GRACE_SECONDS = 30
+APPLY_VERIFICATION_PENDING = 75
 
 
 @dataclass(frozen=True)
@@ -141,10 +142,11 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
         }
 
     env = host_exec_env(context)
+    command = shlex.split(context.apply_command)
 
     try:
         completed = subprocess.run(
-            shlex.split(context.apply_command),
+            command,
             cwd=str(context.workdir),
             env=env,
             stdin=subprocess.DEVNULL,
@@ -172,6 +174,18 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
         }
 
     output = _combined_process_output(completed.stdout, completed.stderr)
+    if completed.returncode == APPLY_VERIFICATION_PENDING and command in (
+        ["/bin/sh", "/workspace/apply-env.sh"],
+        ["/bin/sh", "apply-env.sh"],
+        ["./apply-env.sh"],
+    ):
+        return {
+            "applied": False,
+            "needsRedeploy": False,
+            "verificationPending": True,
+            "nextStep": "cd librenms+grafana && ./deploy-check.sh configured",
+            "applyOutput": output[-4000:],
+        }
     if completed.returncode != 0:
         return {
             "ok": False,

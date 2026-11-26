@@ -188,7 +188,8 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
-def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json", **overrides):
+def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json",
+              *, apply_verification=False, **overrides):
     project = tmp_path / "project"
     project.mkdir()
     shutil.copy2(ROOT / "deploy-check.sh", project / "deploy-check.sh")
@@ -281,6 +282,8 @@ exec /usr/bin/date "$@"
     arguments = [SH, str(project / "deploy-check.sh")]
     if mode is not None:
         arguments.append(mode)
+    if apply_verification:
+        arguments.append("--apply-verification")
     if output == "json":
         arguments.append("--json")
     elif output == "quiet":
@@ -829,6 +832,24 @@ def test_host_bootstrap_fails_when_platform_api_internal_health_fails(tmp_path):
     assert check["status"] == "FAIL"
     assert "Platform API container /health" in check["message"]
     assert "container health request failed" in check["message"]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"STUB_HEALTH_SERVICE": "grafana", "STUB_HEALTH_MODE": "starting"}, 75),
+        ({"STUB_HEALTH_SERVICE": "grafana", "STUB_HEALTH_MODE": "unhealthy"}, 1),
+        ({"STUB_RELOAD_SUCCESS": 0}, 1),
+    ],
+)
+def test_apply_verification_distinguishes_deadline_from_negative_evidence(
+    tmp_path, overrides, expected,
+):
+    result, payload = run_check(tmp_path, mode="configured", apply_verification=True,
+                                **overrides)
+    assert result.returncode == expected
+    assert payload["result"] == "FAIL"
+    assert payload["failed"] > 0
 
 
 def test_deploy_check_never_sources_the_environment_file():

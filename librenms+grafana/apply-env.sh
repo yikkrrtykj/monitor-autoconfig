@@ -316,7 +316,38 @@ fi
 if [ -n "$HOST_PROJECT_DIR" ]; then
   export DEPLOY_CHECK_HOST_PROJECT_DIR="$HOST_PROJECT_DIR"
 fi
-if ! "$SCRIPT_DIR/deploy-check.sh" configured </dev/null; then
+verify_applied_configuration() {
+  verification_start=$(date +%s)
+  verification_deadline=$((verification_start + check_budget))
+  [ "$verification_deadline" -le "$DEPLOY_CHECK_DEADLINE" ] || verification_deadline=$DEPLOY_CHECK_DEADLINE
+  remaining=$((verification_deadline - verification_start))
+  [ "$remaining" -gt 0 ] || return 75
+
+  # Keep up to 30 seconds for a fresh read-only verification. Both passes
+  # share the original absolute deadline and neither pass restarts services.
+  retry_budget=$((remaining / 2))
+  [ "$retry_budget" -le 30 ] || retry_budget=30
+  first_deadline=$((verification_deadline - retry_budget))
+  if DEPLOY_CHECK_DEADLINE="$first_deadline" "$SCRIPT_DIR/deploy-check.sh" configured --apply-verification </dev/null; then
+    return 0
+  else
+    check_status=$?
+  fi
+  if [ "$check_status" -ne 75 ] || [ "$(date +%s)" -ge "$verification_deadline" ]; then
+    return "$check_status"
+  fi
+  echo "[apply-env] Read-only verification timed out; retrying within the remaining budget."
+  DEPLOY_CHECK_DEADLINE="$verification_deadline" "$SCRIPT_DIR/deploy-check.sh" configured --apply-verification </dev/null
+}
+
+if verify_applied_configuration; then
+  :
+else
+  check_status=$?
+  if [ "$check_status" -eq 75 ]; then
+    echo "[apply-env] Services were updated; verification is still pending. Recheck with ./deploy-check.sh configured." >&2
+    exit 75
+  fi
   echo "[apply-env] ERROR: 配置已经写入，但运行状态验证失败。" >&2
   echo "[apply-env] Existing transaction and rollback records were preserved." >&2
   exit 1

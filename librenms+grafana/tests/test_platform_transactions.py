@@ -137,6 +137,32 @@ def test_failed_apply_restores_both_files_and_records_failure(monkeypatch, tmp_p
     assert status["runtimeRestored"] is True
 
 
+def test_unconfirmed_runtime_keeps_new_files_and_records_pending(monkeypatch, tmp_path):
+    api = load_api(tmp_path)
+    seed(api)
+    outcomes = iter([{
+        "applied": False, "needsRedeploy": False, "verificationPending": True,
+        "applyOutput": "verification pending",
+    }])
+    monkeypatch.setattr(
+        api.platform_apply_runtime, "run_apply_command", lambda _context: next(outcomes),
+    )
+
+    result = apply_config(
+        api, config_text("new"), "admin", "apply", "apply-check-pending",
+    )
+
+    assert result["ok"] is True
+    assert result["state"] == "pending"
+    assert result["verificationPending"] is True
+    assert not result.get("rolledBack")
+    assert "EVENT_NAME=new" in api.ENV_PATH.read_text(encoding="utf-8")
+    status = read_apply_status(api, "apply-check-pending")
+    assert status["state"] == "pending"
+    assert status["verificationPending"] is True
+    assert status["applied"] is False
+
+
 def test_successful_apply_has_durable_success_record(monkeypatch, tmp_path):
     api = load_api(tmp_path)
     seed(api)
