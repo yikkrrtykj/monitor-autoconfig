@@ -460,6 +460,8 @@ def test_cname_loop_is_bounded(dns_server):
     reason="real Docker DNS/Prometheus/Blackbox integration runs in Linux CI",
 )
 def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypatch, dns_server, capsys):
+    import ap_reachability
+
     from .test_custom_ping_prometheus import IMAGE, ROOT, SD_DIR, docker, wait_for
     from .test_custom_ping_frontend_integration import BLACKBOX, prometheus_fetch, query
 
@@ -498,6 +500,10 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
     net, prom_name, bb, peer = prefix + "-net", prefix + "-prom", prefix + "-bb", prefix + "-peer"
     a, b = "172.31.248.21", "172.31.248.22"
     dns_config["ips"] = [a]
+    ap_ip = "172.31.248.23"
+    ap_target = work / "ap-ping-targets.json"
+    ap_target.write_text(json.dumps([{"targets": [ap_ip], "labels": {"display_name": ap_ip}}]), encoding="ascii")
+    published_at = time.time()
     query_body = [None]
     def prom_open(url, timeout):
         try:
@@ -509,6 +515,8 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
         except Exception as exc:
             raise OSError("isolated Prometheus unavailable") from exc
     monkeypatch.setattr(custom_ping, "urlopen", prom_open)
+    monkeypatch.setattr(ap_reachability, "urlopen", prom_open)
+    monkeypatch.setenv("PROMETHEUS_URL", "http://prom:9090")
     inventory = custom_ping.TargetInventory("http://prom:9090", "", "", 2)
     def ticket():
         item = json.loads(local.manifest.read_bytes())["targets"][0]
@@ -522,10 +530,28 @@ def test_dns_real_prometheus_blackbox_generation_and_history(tmp_path, monkeypat
                BLACKBOX, "--config.file=/fixture/blackbox.yml", timeout=120)
         docker("run", "-d", "--name", peer, "--user", "0", "--network", net, "--ip", b,
                "--cap-add", "NET_RAW", "-v", fixture + ":ro", BLACKBOX, "--config.file=/fixture/blackbox.yml")
-        docker("run", "-d", "--name", prom_name, "--network", net,
-               "-v", fixture + ":ro", "-v", f"{collector.parent}:{SD_DIR}:ro", IMAGE,
-               "--config.file=/fixture/prometheus.yml", "--storage.tsdb.path=/prometheus")
+        docker("run", "-d", "--name", prom_name, "--network", net, "--ip", ap_ip,
+               "-v", fixture + ":ro", "-v", f"{collector.parent}:{SD_DIR}:ro",
+               "-v", f"{ap_target}:/etc/prometheus/targets/topology/ap-ping-targets.json:ro",
+               IMAGE, "--config.file=/fixture/prometheus.yml", "--storage.tsdb.path=/prometheus")
         wait_for(lambda: prometheus_fetch(prom_name, "/api/v1/scrape_pools"), lambda raw: "custom-ping" in raw)
+
+        aps = [{"ip": ap_ip, "mac": "02:00:00:00:00:15"}]
+
+        def evidence(samples, publication):
+            return ap_reachability.build_artifact(
+                aps, {}, samples, published_at=publication, now=time.time(),
+            )["aps"][0]
+
+        observed = wait_for(
+            ap_reachability.fetch_probe_series,
+            lambda samples: evidence(samples, published_at)["reachability"]["status"] == "reachable",
+        )
+        row = evidence(observed, published_at)
+        assert row["online"]["status"] == "unknown"
+        assert row["reachability"]["rtt_ms"] is not None
+        assert evidence(observed, time.time())["reachability"]["status"] == "unknown"
+
         created = create(local, private=["172.31.248.0/24"])
         assert inventory.observed(local.list_targets(), local)["dnsTargets"][0]["pingStatus"] == "UNKNOWN"
         for address in (a, b, a):
