@@ -13,10 +13,11 @@ QUIET=false
 JSON=false
 MODE_SET=false
 APPLY_VERIFICATION=false
+APPLY_VERIFICATION_FIRST_PASS=false
 verification_timeouts=0
 
 usage() {
-  echo "usage: $0 [bootstrap|configured] [--quiet] [--json] [--apply-verification]" >&2
+  echo "usage: $0 [bootstrap|configured] [--quiet] [--json] [--apply-verification|--apply-verification-first-pass]" >&2
 }
 
 for arg in "$@"; do
@@ -32,6 +33,10 @@ for arg in "$@"; do
     --quiet) QUIET=true ;;
     --json) JSON=true ;;
     --apply-verification) APPLY_VERIFICATION=true ;;
+    --apply-verification-first-pass)
+      APPLY_VERIFICATION=true
+      APPLY_VERIFICATION_FIRST_PASS=true
+      ;;
     *)
       usage
       exit 1
@@ -76,7 +81,9 @@ record_verification_timeout() {
 }
 
 record_probe_wait_failure() {
-  if [ "$3" = true ]; then
+  # An early readiness observation can change before the real deadline.
+  # Explicit failures outside readiness waits remain hard failures.
+  if [ "$3" = true ] && [ "${APPLY_VERIFICATION_FIRST_PASS:-false}" != true ]; then
     record FAIL "$1" "$2"
   else
     record_verification_timeout "$1" "$2"

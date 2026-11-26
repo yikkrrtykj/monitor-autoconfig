@@ -85,15 +85,14 @@ def verify_runtime_after_apply(context: ApplyRuntimeContext) -> dict:
         requirements = notification_requirements(read_env(context.workdir / ".env"))
     except (ValueError, OSError):
         return {"ok": False, "errors": {"告警服务": "Cannot read notification requirements"}}
-    last_errors: dict[str, str] = {}
-    negative_evidence = False
+    last_errors: dict[str, tuple[str, bool]] = {}
     while time.monotonic() < deadline:
-        last_errors = {}
         for name, url in checks.items():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                last_errors.setdefault(name, ("Verification budget exhausted", True))
+                continue
             try:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError("Verification budget exhausted")
                 with urllib.request.urlopen(url, timeout=min(5, remaining)) as response:
                     body = response.read(BRIDGE_HEALTH_MAX_BYTES + 1 if name == "告警服务" else 4096)
                     if not 200 <= response.status < 400:
@@ -103,20 +102,24 @@ def verify_runtime_after_apply(context: ApplyRuntimeContext) -> dict:
                             raise ValueError("Bridge health payload is too large")
                         validate_bridge_health(json.loads(body), requirements)
             except Exception as exc:
-                last_errors[name] = str(exc)
                 is_timeout = isinstance(exc, TimeoutError) or (
                     isinstance(exc, URLError) and isinstance(exc.reason, TimeoutError)
                 )
-                negative_evidence |= not is_timeout
+                last_errors[name] = (str(exc), is_timeout)
+            else:
+                last_errors.pop(name, None)
         if not last_errors and time.monotonic() <= deadline:
             return {"ok": True, "services": sorted(checks)}
         if not last_errors:
-            last_errors["运行验证"] = "Verification budget exhausted"
+            last_errors["运行验证"] = ("Verification budget exhausted", True)
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(min(2, remaining))
-    result = {"ok": False, "errors": last_errors}
-    if last_errors and not negative_evidence:
+    result = {
+        "ok": False,
+        "errors": {name: message for name, (message, _) in last_errors.items()},
+    }
+    if last_errors and all(is_timeout for _, is_timeout in last_errors.values()):
         result["verificationPending"] = True
     return result
 

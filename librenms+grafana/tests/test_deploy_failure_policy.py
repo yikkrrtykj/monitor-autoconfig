@@ -460,8 +460,10 @@ def test_apply_verification_retries_inside_original_deadline(
     _write_executable(check, """#!/bin/sh
 printf '%s\n' "$DEPLOY_CHECK_DEADLINE" >> "$SCRIPT_DIR/checks"
 if [ "$DEPLOY_CHECK_DEADLINE" = 170 ]; then
+    [ "$2" = --apply-verification-first-pass ] || exit 90
     exit "$FIRST_STATUS"
 fi
+[ "$2" = --apply-verification ] || exit 91
 exit "$SECOND_STATUS"
 """)
     script = '''

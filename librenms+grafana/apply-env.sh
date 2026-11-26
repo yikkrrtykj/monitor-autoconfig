@@ -328,8 +328,10 @@ verify_applied_configuration() {
   retry_budget=$((remaining / 2))
   [ "$retry_budget" -le 30 ] || retry_budget=30
   first_deadline=$((verification_deadline - retry_budget))
+  first_verification_mode=--apply-verification
+  [ "$retry_budget" -eq 0 ] || first_verification_mode=--apply-verification-first-pass
   echo "[apply-env] Verification deadline=$verification_deadline first_attempt_deadline=$first_deadline budget=${remaining}s."
-  if DEPLOY_CHECK_DEADLINE="$first_deadline" "$SCRIPT_DIR/deploy-check.sh" configured --apply-verification </dev/null; then
+  if DEPLOY_CHECK_DEADLINE="$first_deadline" "$SCRIPT_DIR/deploy-check.sh" configured "$first_verification_mode" </dev/null; then
     return 0
   else
     check_status=$?

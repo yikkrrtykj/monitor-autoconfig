@@ -189,7 +189,7 @@ def _write_executable(path: Path, text: str) -> None:
 
 
 def run_check(tmp_path: Path, mode="bootstrap", env_text=BASE_ENV, output="json",
-              *, apply_verification=False, **overrides):
+              *, verification_argument=None, **overrides):
     project = tmp_path / "project"
     project.mkdir()
     shutil.copy2(ROOT / "deploy-check.sh", project / "deploy-check.sh")
@@ -282,8 +282,8 @@ exec /usr/bin/date "$@"
     arguments = [SH, str(project / "deploy-check.sh")]
     if mode is not None:
         arguments.append(mode)
-    if apply_verification:
-        arguments.append("--apply-verification")
+    if verification_argument:
+        arguments.append(verification_argument)
     if output == "json":
         arguments.append("--json")
     elif output == "quiet":
@@ -845,11 +845,34 @@ def test_host_bootstrap_fails_when_platform_api_internal_health_fails(tmp_path):
 def test_apply_verification_distinguishes_deadline_from_negative_evidence(
     tmp_path, overrides, expected,
 ):
-    result, payload = run_check(tmp_path, mode="configured", apply_verification=True,
+    result, payload = run_check(tmp_path, mode="configured", verification_argument="--apply-verification",
                                 **overrides)
     assert result.returncode == expected
     assert payload["result"] == "FAIL"
     assert payload["failed"] > 0
+
+
+@pytest.mark.parametrize(("argument", "expected"), [
+    ("--apply-verification-first-pass", 75),
+    ("--apply-verification", 1),
+])
+def test_targets_not_yet_loaded_can_use_the_reserved_retry(tmp_path, argument, expected):
+    env_text = BASE_ENV.replace("CORE_SWITCH_PING=", "CORE_SWITCH_PING=core:192.0.2.10")
+    result, payload = run_check(tmp_path, mode="configured", env_text=env_text,
+                                verification_argument=argument)
+    assert result.returncode == expected
+    core = checks_by_id(payload)["configured_core"]
+    assert core["status"] == "FAIL"
+    assert "target 192.0.2.10 is absent" in core["message"]
+
+
+def test_first_apply_verification_pass_preserves_explicit_unhealthy_state(tmp_path):
+    result, payload = run_check(
+        tmp_path, mode="configured", verification_argument="--apply-verification-first-pass",
+        STUB_HEALTH_SERVICE="grafana", STUB_HEALTH_MODE="unhealthy",
+    )
+    assert result.returncode == 1
+    assert checks_by_id(payload)["grafana"]["status"] == "FAIL"
 
 
 def test_deploy_check_never_sources_the_environment_file():

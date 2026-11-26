@@ -1,6 +1,7 @@
 import subprocess
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from urllib.error import URLError
 
 import pytest
 
@@ -349,6 +350,36 @@ def test_timed_out_post_apply_probes_leave_verification_pending(monkeypatch, tmp
     assert result["verificationPending"] is True
     assert result["applied"] is False
     assert "fixture timed out" in result["applyOutput"]
+
+
+@pytest.mark.parametrize("prometheus_recovers", [True, False])
+def test_post_apply_timeout_uses_latest_failure_per_service(
+    monkeypatch, tmp_path, prometheus_recovers,
+):
+    context = make_context(tmp_path, verify_timeout=4)
+    ticks = [0]
+
+    def probe(url, timeout):
+        if url == f"{context.prom_url}/-/ready" and (ticks[0] == 0 or not prometheus_recovers):
+            raise URLError(ConnectionRefusedError("Prometheus unavailable"))
+        if url == f"{context.bigscreen_url}/":
+            raise TimeoutError("bigscreen probe timed out")
+        return Response()
+
+    monkeypatch.setattr(apply_runtime.urllib.request, "urlopen", probe)
+    monkeypatch.setattr(apply_runtime.time, "monotonic", lambda: ticks[0])
+    monkeypatch.setattr(apply_runtime.time, "sleep", lambda seconds: ticks.__setitem__(0, ticks[0] + seconds))
+    monkeypatch.setattr(
+        apply_runtime.subprocess, "run",
+        lambda args, **_: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+
+    result = apply_runtime.run_apply_command(context)
+
+    assert bool(result.get("verificationPending")) is prometheus_recovers
+    assert (result.get("ok") is False) is (not prometheus_recovers)
+    assert "bigscreen probe timed out" in result["applyOutput"]
+    assert ("Prometheus unavailable" in result["applyOutput"]) is (not prometheus_recovers)
 
 
 def test_verify_non_success_status_keeps_http_reason(monkeypatch, tmp_path):
