@@ -3,6 +3,13 @@
 
 set -eu
 
+RECOVER_APPLY=false
+case "$#:$*" in
+  0:) ;;
+  1:--recover) RECOVER_APPLY=true ;;
+  *) echo "Usage: $0 [--recover]" >&2; exit 1 ;;
+esac
+
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
@@ -210,10 +217,13 @@ if [ -n "$HOST_PROJECT_DIR" ]; then
   echo "[apply-env] Using host project directory: $HOST_PROJECT_DIR"
 fi
 
-if ! sync_env_from_config; then
+if [ "$RECOVER_APPLY" = false ]; then
+  sync_env_from_config || exit 1
+  migrate_legacy_defaults
+elif [ ! -f "$SCRIPT_DIR/.env" ]; then
+  echo "[apply-env] ERROR: restored .env is missing; recovery cannot reconcile the stack." >&2
   exit 1
 fi
-migrate_legacy_defaults
 # Never restart Grafana against stale or partially rendered provisioning. A
 # render failure makes the whole apply fail so platform-api can restore the
 # paired config/.env snapshot instead of reporting a false success.
@@ -238,7 +248,6 @@ deployment_budget_init "$((task_budget + check_budget))"
 SERVICES="
   prometheus
   snmp-exporter
-  player-targets
   blackbox-exporter
   rsyslog
   librenms
@@ -271,12 +280,15 @@ if [ -n "$FEISHU_APP_ID_VALUE" ]; then
   esac
   export COMPOSE_PROFILES="$COMPOSE_PROFILES_VALUE"
 fi
+if [ "$RECOVER_APPLY" = true ]; then
+  export COMPOSE_PROFILES="$COMPOSE_PROFILES_VALUE"
+fi
 REMOVE_UNPOLLER=false
 case ",${COMPOSE_PROFILES_VALUE}," in
   *,unifi,*) SERVICES="${SERVICES}  unpoller
 " ;;
   *)
-    if docker inspect unpoller >/dev/null 2>&1; then
+    if [ "$RECOVER_APPLY" = false ] && docker inspect unpoller >/dev/null 2>&1; then
       REMOVE_UNPOLLER=true
     fi
     ;;
@@ -290,18 +302,55 @@ compose_up() {
   # This is an existing stack. In particular Bigscreen depends on platform-api
   # and feishu-ws depends on Bridge: implicit dependency recreation would kill
   # self-apply or refresh a token consumer before the configuration task.
-  deployment_compose up -d --force-recreate --no-deps $SERVICES
+  if [ "$RECOVER_APPLY" = true ]; then
+    deployment_compose up -d --no-deps --no-build --pull never "$@"
+  else
+    deployment_compose up -d --force-recreate --no-deps "$@"
+  fi
 }
 
-echo "[apply-env] Recreating services that read .env..."
-if ! compose_up; then
-  echo "[apply-env] ERROR: service recreation failed; containers were left intact for diagnosis/rollback." >&2
-  exit 1
-fi
+recover_env_reader() (
+  # An atomic .env restore changes the host inode without updating a
+  # running container's file bind. Compare bytes without logging their digest.
+  service=$1
+  restored=$(sha256sum <"$SCRIPT_DIR/.env") || exit 1
+  id=$(deployment_compose ps -a -q "$service") || exit 1
+  case "$id" in *[!a-zA-Z0-9_-]*) echo "Ambiguous $service container." >&2; exit 1 ;; esac
+  if [ -z "$id" ]; then
+    compose_up "$service"
+  elif bound=$(deployment_command docker exec "$id" sh -c 'sha256sum </config/.env' 2>/dev/null) &&
+       [ "$bound" = "$restored" ]; then
+    compose_up "$service"
+  else
+    echo "[apply-env] Refreshing the restored .env bind for $service."
+    deployment_compose up -d --no-deps --no-build --pull never --force-recreate "$service"
+  fi
+)
 
-run_required_tasks || exit 1
-# Refresh token consumers only after both required tasks completed this run.
-deployment_compose up -d --force-recreate --no-deps topology-collector alertmanager-feishu-bridge || exit 1
+if [ "$RECOVER_APPLY" = true ]; then
+  echo "[apply-env] Reconciling services with the restored configuration..."
+  # The fixed service names are intentionally word-split for Compose.
+  # shellcheck disable=SC2086
+  compose_up $SERVICES || exit 1
+  recover_env_reader player-targets || exit 1
+  recover_required_tasks || exit 1
+  recover_env_reader topology-collector || exit 1
+  compose_up alertmanager-feishu-bridge || exit 1
+  case ",${COMPOSE_PROFILES_VALUE}," in
+    *,unifi,*) : ;;
+    *) cleanup_disabled_profile unifi unpoller UniFi || exit 1 ;;
+  esac
+else
+  echo "[apply-env] Recreating services that read .env..."
+  # shellcheck disable=SC2086
+  if ! compose_up $SERVICES player-targets; then
+    echo "[apply-env] ERROR: service recreation failed; containers were left intact for diagnosis/rollback." >&2
+    exit 1
+  fi
+  run_required_tasks || exit 1
+  # Refresh token consumers only after both required tasks completed this run.
+  compose_up topology-collector alertmanager-feishu-bridge || exit 1
+fi
 
 case ",${COMPOSE_PROFILES_VALUE}," in
   *,feishu,*) : ;;
@@ -357,4 +406,8 @@ else
 fi
 
 echo "[apply-env] Configuration applied and runtime verification passed."
-echo "[apply-env] Required LibreNMS and Grafana setup tasks completed successfully."
+if [ "$RECOVER_APPLY" = true ]; then
+  echo "[apply-env] Required LibreNMS and Grafana setup tasks verified."
+else
+  echo "[apply-env] Required LibreNMS and Grafana setup tasks completed successfully."
+fi

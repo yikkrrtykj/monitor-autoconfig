@@ -43,6 +43,7 @@ required_task_id() {
 }
 
 run_required_tasks() (
+  [ "$#" -gt 0 ] || set -- librenms-config grafana-setup
   task_timeout=${LIBRENMS_CONFIG_TIMEOUT:-180}
   task_interval=${LIBRENMS_CONFIG_INTERVAL:-2}
   case "$task_timeout:$task_interval" in
@@ -52,20 +53,36 @@ run_required_tasks() (
   [ "$task_deadline" -le "$DEPLOY_CHECK_DEADLINE" ] || task_deadline=$DEPLOY_CHECK_DEADLINE
   # timeout=0 retains a single immediate observation, without retrying waits.
   if [ "$task_timeout" -gt 0 ]; then DEPLOY_CHECK_DEADLINE=$task_deadline; fi
-  old_config=$(deployment_compose ps -a -q librenms-config) || exit 1
-  old_grafana=$(deployment_compose ps -a -q grafana-setup) || exit 1
-  deployment_compose up -d --force-recreate --no-deps librenms-config grafana-setup || exit 1
-  new_config=$(required_task_id librenms-config) || {
-    echo "Required librenms-config container missing or ambiguous." >&2; exit 1;
-  }
-  new_grafana=$(required_task_id grafana-setup) || {
-    echo "Required grafana-setup container missing or ambiguous." >&2; exit 1;
-  }
-  if [ "$new_config" = "$old_config" ] || [ "$new_grafana" = "$old_grafana" ]; then
-    echo "Required task was not recreated for this operation." >&2
-    exit 1
+  for task do
+    old_id=$(deployment_compose ps -a -q "$task") || exit 1
+    case "$task" in
+      librenms-config) old_config=$old_id ;;
+      grafana-setup) old_grafana=$old_id ;;
+      *) echo "Invalid required task." >&2; exit 1 ;;
+    esac
+  done
+  if [ "${RECOVER_APPLY:-false}" = true ]; then
+    deployment_compose up -d --force-recreate --no-deps --no-build --pull never "$@" || exit 1
+  else
+    deployment_compose up -d --force-recreate --no-deps "$@" || exit 1
   fi
-  for task in librenms-config grafana-setup; do
+  for task do
+    id=$(required_task_id "$task") || {
+      echo "Required $task container missing or ambiguous." >&2; exit 1;
+    }
+    if [ "$task" = librenms-config ]; then
+      old_id=$old_config
+      new_config=$id
+    else
+      old_id=$old_grafana
+      new_grafana=$id
+    fi
+    if [ "$id" = "$old_id" ]; then
+      echo "Required task was not recreated for this operation ($task)." >&2
+      exit 1
+    fi
+  done
+  for task do
     if [ "$task" = librenms-config ]; then id=$new_config; else id=$new_grafana; fi
     while :; do
       # Inspect the captured id, never a later container with the same name.
@@ -95,26 +112,57 @@ run_required_tasks() (
   done
 )
 
-cleanup_disabled_feishu() (
+recover_required_tasks() (
+  hashes=$(deployment_compose config --hash '*') || exit 1
+  set --
+  for task in librenms-config grafana-setup; do
+    expected=$(printf '%s\n' "$hashes" | awk -v task="$task" '$1 == task {print $2}')
+    case "$expected" in
+      ''|*[!a-f0-9]*) echo "Missing or invalid Compose hash for $task." >&2; exit 1 ;;
+    esac
+    [ "${#expected}" -eq 64 ] || { echo "Invalid Compose hash for $task." >&2; exit 1; }
+    id=$(deployment_compose ps -a -q "$task") || exit 1
+    case "$id" in *[!a-zA-Z0-9_-]*) echo "Ambiguous $task container." >&2; exit 1 ;; esac
+    observed=
+    if [ -n "$id" ]; then
+      observed=$(deployment_command docker inspect --format \
+        '{{.State.Status}} {{.State.ExitCode}} {{index .Config.Labels "com.docker.compose.config-hash"}}' "$id") || exit 1
+    fi
+    if [ "$observed" != "exited 0 $expected" ]; then
+      set -- "$@" "$task"
+    fi
+  done
+  # A successful task for exactly the restored spec has no state to undo.
+  [ "$#" -eq 0 ] || run_required_tasks "$@"
+)
+
+cleanup_disabled_profile() (
+  profile=$1
+  service_name=$2
+  label=$3
   # Explicit profile discovers stopped/disabled services within this project.
-  sidecar=$(deployment_compose --profile feishu ps -a -q feishu-ws) || exit 1
+  sidecar=$(deployment_compose --profile "$profile" ps -a -q "$service_name") || exit 1
   if [ -z "$sidecar" ]; then
-    echo "SKIP: Feishu disabled; no project sidecar exists."
+    echo "SKIP: $label disabled; no project sidecar exists."
     exit 0
   fi
-  case "$sidecar" in *[!a-zA-Z0-9_-]*) echo "Ambiguous Feishu sidecar." >&2; exit 1 ;; esac
+  case "$sidecar" in *[!a-zA-Z0-9_-]*) echo "Ambiguous $label sidecar." >&2; exit 1 ;; esac
   reference=$(required_task_id prometheus) || exit 1
   project=$(deployment_command docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$reference") || exit 1
   owner=$(deployment_command docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$sidecar") || exit 1
   service=$(deployment_command docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$sidecar") || exit 1
-  if [ -z "$project" ] || [ "$project" = '<no value>' ] || [ "$project" != "$owner" ] || [ "$service" != feishu-ws ]; then
-    echo "Feishu sidecar ownership mismatch; no container removed." >&2
+  if [ -z "$project" ] || [ "$project" = '<no value>' ] || [ "$project" != "$owner" ] || [ "$service" != "$service_name" ]; then
+    echo "$label sidecar ownership mismatch; no container removed." >&2
     exit 1
   fi
   deployment_command docker rm -f "$sidecar" >/dev/null || {
-    echo "Feishu sidecar removal failed." >&2; exit 1;
+    echo "$label sidecar removal failed." >&2; exit 1;
   }
-  remaining_sidecar=$(deployment_compose --profile feishu ps -a -q feishu-ws) || exit 1
-  [ -z "$remaining_sidecar" ] || { echo "Feishu sidecar still exists." >&2; exit 1; }
-  echo "Feishu disabled; project sidecar stopped and removed."
+  remaining_sidecar=$(deployment_compose --profile "$profile" ps -a -q "$service_name") || exit 1
+  [ -z "$remaining_sidecar" ] || { echo "$label sidecar still exists." >&2; exit 1; }
+  echo "$label disabled; project sidecar stopped and removed."
 )
+
+cleanup_disabled_feishu() {
+  cleanup_disabled_profile feishu feishu-ws Feishu
+}
