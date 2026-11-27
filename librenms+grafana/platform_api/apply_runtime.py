@@ -8,7 +8,7 @@ import subprocess
 import time
 import urllib.request
 from urllib.error import URLError
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .deployment_health import BRIDGE_HEALTH_MAX_BYTES, notification_requirements, validate_bridge_health
@@ -17,6 +17,11 @@ from .deployment_health import BRIDGE_HEALTH_MAX_BYTES, notification_requirement
 APPLY_CHILD_TIMEOUT_MARGIN_SECONDS = 30
 APPLY_OPERATION_GRACE_SECONDS = 30
 APPLY_VERIFICATION_PENDING = 75
+NATIVE_APPLY_COMMANDS = (
+    ("/bin/sh", "/workspace/apply-env.sh"),
+    ("/bin/sh", "apply-env.sh"),
+    ("./apply-env.sh",),
+)
 
 
 @dataclass(frozen=True)
@@ -155,6 +160,15 @@ def _pending_verification(output: str) -> dict:
     }
 
 
+def recover_apply_command(context: ApplyRuntimeContext) -> dict:
+    """Reconcile a restored snapshot through the native, scoped recovery path."""
+    if context.apply_enabled:
+        command = shlex.split(context.apply_command)
+        if tuple(command) in NATIVE_APPLY_COMMANDS:
+            context = replace(context, apply_command=shlex.join([*command, "--recover"]))
+    return run_apply_command(context)
+
+
 def run_apply_command(context: ApplyRuntimeContext) -> dict:
     if not context.apply_enabled:
         return {
@@ -196,11 +210,8 @@ def run_apply_command(context: ApplyRuntimeContext) -> dict:
         }
 
     output = _combined_process_output(completed.stdout, completed.stderr)
-    if completed.returncode == APPLY_VERIFICATION_PENDING and command in (
-        ["/bin/sh", "/workspace/apply-env.sh"],
-        ["/bin/sh", "apply-env.sh"],
-        ["./apply-env.sh"],
-    ):
+    native_command = command[:-1] if command[-1:] == ["--recover"] else command
+    if completed.returncode == APPLY_VERIFICATION_PENDING and tuple(native_command) in NATIVE_APPLY_COMMANDS:
         return _pending_verification(output)
     if completed.returncode != 0:
         return {

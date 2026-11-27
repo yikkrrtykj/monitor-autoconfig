@@ -196,6 +196,9 @@ def test_apply_failure_restores_pair_and_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(
         config_write.apply_runtime, "run_apply_command", fail_then_restore,
     )
+    monkeypatch.setattr(
+        config_write.apply_runtime, "recover_apply_command", fail_then_restore,
+    )
 
     result = config_write.apply_config(
         api._config_write_context(),

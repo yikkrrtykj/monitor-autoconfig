@@ -157,7 +157,7 @@ def apply_config(
             restored = config_transaction.restore_config_snapshot(
                 context.transaction_context, Path(snapshot["path"]),
             )
-            rollback_result = apply_runtime.run_apply_command(
+            rollback_result = apply_runtime.recover_apply_command(
                 context.apply_runtime_context,
             )
         config_transaction.append_history(
@@ -229,7 +229,7 @@ def apply_config(
                 restored = config_transaction.restore_config_snapshot(
                     context.transaction_context, Path(snapshot["path"]),
                 )
-                rollback_result = apply_runtime.run_apply_command(
+                rollback_result = apply_runtime.recover_apply_command(
                     context.apply_runtime_context,
                 )
             except Exception as rollback_exc:
@@ -311,7 +311,7 @@ def rollback_config(
             config_transaction.restore_config_snapshot(
                 context.transaction_context, Path(guard["path"]),
             )
-            recovery_result = apply_runtime.run_apply_command(
+            recovery_result = apply_runtime.recover_apply_command(
                 context.apply_runtime_context,
             )
             error_message = apply_result.get("error", "回滚后的服务应用失败")

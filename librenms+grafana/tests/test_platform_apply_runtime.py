@@ -47,6 +47,29 @@ def test_exit_75_acknowledges_pending_only_for_native_apply(
     assert (result.get("ok") is False) is (not pending)
 
 
+@pytest.mark.parametrize(
+    ("command", "argv", "pending"),
+    [
+        ("/bin/sh /workspace/apply-env.sh", ["/bin/sh", "/workspace/apply-env.sh", "--recover"], True),
+        ('./custom-apply.sh "two words"', ["./custom-apply.sh", "two words"], False),
+    ],
+)
+def test_recovery_scopes_only_the_native_command(monkeypatch, tmp_path, command, argv, pending):
+    observed = []
+
+    def execute(args, **_):
+        observed.append(args)
+        return subprocess.CompletedProcess(args, 75, "verification pending", "")
+
+    monkeypatch.setattr(apply_runtime.subprocess, "run", execute)
+    context = make_context(tmp_path, apply_command=command)
+    result = apply_runtime.recover_apply_command(context)
+
+    assert observed == [argv]
+    assert (result.get("verificationPending") is True) == pending
+    assert (result.get("ok") is False) == (not pending)
+
+
 class Response:
     def __init__(self, status=200, reads=None):
         self.status = status
@@ -458,20 +481,27 @@ def test_entrypoint_context_maps_current_composition_dependencies(tmp_path):
     )
 
 
-def test_entrypoint_calls_runtime_directly_and_keeps_one_context(
+def test_failed_apply_restores_snapshot_before_scoped_recovery(
     monkeypatch, tmp_path,
 ):
     api = load_api(tmp_path)
     seed(api)
     contexts = []
 
-    def fail_then_recover(context):
+    original_env = api.ENV_PATH.read_bytes()
+
+    def fail(context):
         contexts.append(context)
-        if len(contexts) == 1:
-            return {"ok": False, "error": "fixture failure", "applyOutput": "bad"}
+        api.ENV_PATH.write_text("EVENT_NAME=attempted\n", encoding="utf-8")
+        return {"ok": False, "error": "fixture failure", "applyOutput": "bad"}
+
+    def recover(context):
+        contexts.append(context)
+        assert api.ENV_PATH.read_bytes() == original_env
         return {"applied": True, "needsRedeploy": False, "applyOutput": "restored"}
 
-    monkeypatch.setattr(apply_runtime, "run_apply_command", fail_then_recover)
+    monkeypatch.setattr(apply_runtime, "run_apply_command", fail)
+    monkeypatch.setattr(apply_runtime, "recover_apply_command", recover)
 
     result = apply_config(
         api, None, operation_id="apply-runtime-direct",
