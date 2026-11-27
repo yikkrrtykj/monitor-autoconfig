@@ -24,9 +24,11 @@ jobs:
         run: pip install --disable-pip-version-check -r librenms+grafana/requirements-dev.txt
       - name: Install Nginx for HTTP routing regression
         run: sudo apt-get update && sudo apt-get install -y nginx-light
-      - name: Run pytest
+      - name: Verify scoped configuration recovery in Docker
         env:
           MONITOR_TEST_SCOPED_RECOVERY: "1"
+        run: pytest -v librenms+grafana/tests/test_scoped_apply_recovery.py
+      - name: Run pytest
         run: pytest -q
 
   python-syntax:

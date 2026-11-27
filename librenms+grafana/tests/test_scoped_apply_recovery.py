@@ -67,7 +67,7 @@ def test_recovery_restores_effective_config_without_recreating_unaffected_contai
     }
     services["grafana-setup"] = {"image": IMAGE, "command": ["true"]}
     (project / "docker-compose.yml").write_text(json.dumps({"services": services}), encoding="utf-8")
-    for file in ("apply-env.sh", "deployment-tasks.sh", "platform_config.py"):
+    for file in ("apply-env.sh", "deployment-tasks.sh", "platform_config.py", "version_info.py"):
         shutil.copy2(ROOT / file, project / file)
     (project / "render-grafana-provisioning.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     check_script = project / "deploy-check.sh"
@@ -96,6 +96,18 @@ def test_recovery_restores_effective_config_without_recreating_unaffected_contai
         assert run("docker", "exec", before["player-targets"], "cat", "/config/.env").stdout == attempted
 
         replace_env(restored)
+        # Unreadable profile configuration must not be interpreted as disabled.
+        parser = project / "platform_config.py"
+        parser_source = parser.read_bytes()
+        parser.write_text("raise RuntimeError('fixture parser failure')\n", encoding="utf-8")
+        try:
+            failed = run("/bin/sh", str(project / "apply-env.sh"), "--recover", check=False)
+            assert failed.returncode != 0
+            assert "could not read the restored profile configuration" in failed.stderr
+            assert {name: container(name) for name in services} == before
+        finally:
+            parser.write_bytes(parser_source)
+
         run("/bin/sh", str(project / "apply-env.sh"), "--recover")
         after = {name: container(name) for name in services}
 

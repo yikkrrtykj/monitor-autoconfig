@@ -50,6 +50,7 @@ def run_apply_tail(tmp_path, **overrides):
         shutil.copy2(helper, project / helper.name)
     prelude = '''#!/bin/sh
 set -eu
+RECOVER_APPLY=false
 SCRIPT_DIR=$(pwd)
 HOST_PROJECT_DIR=${PLATFORM_HOST_WORKDIR:-}
 COMPOSE_CMD="docker compose"
@@ -79,7 +80,9 @@ render_env_value() {
     env.update({key: str(value) for key, value in overrides.items()})
     completed = subprocess.run([deploy.SH, "apply.sh"], cwd=project, env=env,
                                capture_output=True, text=True, timeout=15)
-    return completed, (tmp_path / "docker.log").read_text()
+    log = tmp_path / "docker.log"
+    assert log.exists(), completed.stdout + completed.stderr
+    return completed, log.read_text()
 
 
 @pytest.mark.parametrize("entry", ["deploy", "host", "self"])

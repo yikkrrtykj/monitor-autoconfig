@@ -223,6 +223,11 @@ if [ "$RECOVER_APPLY" = false ]; then
 elif [ ! -f "$SCRIPT_DIR/.env" ]; then
   echo "[apply-env] ERROR: restored .env is missing; recovery cannot reconcile the stack." >&2
   exit 1
+elif ! COMPOSE_PROFILES_VALUE=$(env_value COMPOSE_PROFILES 2>/dev/null) ||
+     ! FEISHU_APP_ID_VALUE=$(env_value FEISHU_APP_ID 2>/dev/null); then
+  # A parser error is not evidence that a restored profile is disabled.
+  echo "[apply-env] ERROR: could not read the restored profile configuration." >&2
+  exit 1
 fi
 # Never restart Grafana against stale or partially rendered provisioning. A
 # render failure makes the whole apply fail so platform-api can restore the
@@ -268,11 +273,13 @@ fi
 # unpoller reads the controller URL and credentials only when its container is
 # created. A plain restart leaves the old values in the container, so include
 # it in the recreate set whenever the UniFi compose profile is enabled.
-COMPOSE_PROFILES_VALUE=$(render_env_value COMPOSE_PROFILES)
 # The Feishu long-connection sidecar only runs when a self-built app is
 # configured. Activating the "feishu" profile from the app id keeps operators
 # from having to hand-edit COMPOSE_PROFILES after pasting the app secret.
-FEISHU_APP_ID_VALUE=$(render_env_value FEISHU_APP_ID)
+if [ "$RECOVER_APPLY" = false ]; then
+  COMPOSE_PROFILES_VALUE=$(render_env_value COMPOSE_PROFILES)
+  FEISHU_APP_ID_VALUE=$(render_env_value FEISHU_APP_ID)
+fi
 if [ -n "$FEISHU_APP_ID_VALUE" ]; then
   case ",${COMPOSE_PROFILES_VALUE}," in
     *,feishu,*) : ;;
