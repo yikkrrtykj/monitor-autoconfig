@@ -86,6 +86,20 @@ render_env_value() {
   env_value "$1" 2>/dev/null || true
 }
 
+read_recovery_profile_settings() {
+  python3 - <<'PY'
+from pathlib import Path
+from platform_config import read_env
+
+env = read_env(Path(".env"))
+profiles = env.get("COMPOSE_PROFILES", "")
+if "\n" in profiles or "\r" in profiles:
+    raise SystemExit("Invalid profile list")
+print(profiles)
+print("configured" if env.get("FEISHU_APP_ID") else "")
+PY
+}
+
 migrate_env_default() {
   key=$1
   old=$2
@@ -223,11 +237,14 @@ if [ "$RECOVER_APPLY" = false ]; then
 elif [ ! -f "$SCRIPT_DIR/.env" ]; then
   echo "[apply-env] ERROR: restored .env is missing; recovery cannot reconcile the stack." >&2
   exit 1
-elif ! COMPOSE_PROFILES_VALUE=$(env_value COMPOSE_PROFILES 2>/dev/null) ||
-     ! FEISHU_APP_ID_VALUE=$(env_value FEISHU_APP_ID 2>/dev/null); then
-  # A parser error is not evidence that a restored profile is disabled.
-  echo "[apply-env] ERROR: could not read the restored profile configuration." >&2
-  exit 1
+else
+  # Empty optional keys select no add-on. A parser error must stop recovery.
+  if ! recovery_profiles=$(read_recovery_profile_settings 2>/dev/null); then
+    echo "[apply-env] ERROR: could not read the restored profile configuration." >&2
+    exit 1
+  fi
+  COMPOSE_PROFILES_VALUE=$(printf '%s\n' "$recovery_profiles" | sed -n '1p')
+  FEISHU_APP_ID_VALUE=$(printf '%s\n' "$recovery_profiles" | sed -n '2p')
 fi
 # Never restart Grafana against stale or partially rendered provisioning. A
 # render failure makes the whole apply fail so platform-api can restore the
