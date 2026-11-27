@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
@@ -49,12 +50,30 @@ def test_recovery_restores_effective_config_without_recreating_unaffected_contai
     def container(service):
         return compose("--profile", "*", "ps", "-a", "-q", service)
 
+    def health(container_id):
+        return run("docker", "inspect", "--format", "{{.State.Health.Status}}", container_id).stdout.strip()
+
+    def wait_health(container_id, expected):
+        deadline = monotonic() + 15
+        while monotonic() < deadline:
+            observed = health(container_id)
+            if observed == expected:
+                return
+            sleep(0.2)
+        pytest.fail(f"Expected {expected} for {container_id}, observed {observed}")
+
     def replace_env(text):
         path = project / ".replacement"
         path.write_text(text, encoding="utf-8")
         path.replace(project / ".env")
 
     services = {name: {"image": IMAGE, "command": ["sleep", "600"]} for name in RESIDENTS}
+    for name in ("prometheus", "grafana"):
+        services[name]["command"] = ["sh", "-ec", "touch /tmp/ready; exec sleep 600"]
+        services[name]["healthcheck"] = {
+            "test": ["CMD", "test", "-f", "/tmp/ready"],
+            "interval": "1s", "timeout": "1s", "retries": 1,
+        }
     for name in ("player-targets", "topology-collector"):
         services[name]["volumes"] = ["./.env:/config/.env:ro"]
     services["bigscreen"]["environment"] = {"EVENT_NAME": "${EVENT_NAME}"}
@@ -83,19 +102,29 @@ def test_recovery_restores_effective_config_without_recreating_unaffected_contai
                 *RESIDENTS, "librenms-config", "grafana-setup", "feishu-ws")
         for task in ("librenms-config", "grafana-setup"):
             assert run("docker", "wait", container(task)).stdout.strip() == "0"
+        wait_health(container("prometheus"), "healthy")
+        wait_health(container("grafana"), "healthy")
 
         # Model a partial forward apply. The stopped task has a failed
         # execution and player-targets holds a bind to the attempted .env inode.
         replace_env(attempted)
         compose("up", "-d", "--no-deps", "--pull", "never", "--force-recreate",
-                "bigscreen", "player-targets", "librenms-config", "unpoller")
+                "bigscreen", "player-targets", "librenms-config", "unpoller", "prometheus")
         compose("--profile", "feishu", "rm", "-sf", "feishu-ws")
         assert run("docker", "wait", container("librenms-config")).stdout.strip() == "1"
         before = {name: container(name) for name in services}
         assert before["unpoller"] and not before["feishu-ws"]
         assert run("docker", "exec", before["player-targets"], "cat", "/config/.env").stdout == attempted
+        run("docker", "exec", before["prometheus"], "rm", "/tmp/ready")
+        wait_health(before["prometheus"], "unhealthy")
 
         replace_env(restored)
+        # Reproduce ordinary reconciliation preserving an unhealthy container
+        # whose resolved configuration matches the restored configuration.
+        compose("up", "-d", "--no-deps", "--no-build", "--pull", "never", "prometheus")
+        assert container("prometheus") == before["prometheus"]
+        assert health(before["prometheus"]) == "unhealthy"
+
         # Unreadable profile configuration must not be interpreted as disabled.
         parser = project / "platform_config.py"
         parser_source = parser.read_bytes()
@@ -111,10 +140,12 @@ def test_recovery_restores_effective_config_without_recreating_unaffected_contai
         run("/bin/sh", str(project / "apply-env.sh"), "--recover")
         after = {name: container(name) for name in services}
 
-        changed = {"bigscreen", "player-targets", "librenms-config", "unpoller", "feishu-ws"}
+        changed = {"bigscreen", "player-targets", "librenms-config", "unpoller", "feishu-ws", "prometheus"}
         for name in services:
             assert (after[name] != before[name]) == (name in changed), name
         assert not after["unpoller"] and after["feishu-ws"]
+        wait_health(after["prometheus"], "healthy")
+        assert health(after["grafana"]) == "healthy"
         assert run("docker", "exec", after["bigscreen"], "printenv", "EVENT_NAME").stdout.strip() == "old"
         assert (project / ".env").read_text(encoding="utf-8") == restored
         for name in ("player-targets", "topology-collector"):

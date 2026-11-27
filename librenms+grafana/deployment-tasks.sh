@@ -42,6 +42,36 @@ required_task_id() {
   printf '%s' "$task_id"
 }
 
+recover_services() (
+  reconcile=
+  recreate=
+  for service do
+    id=$(deployment_compose ps --status running -q "$service") || exit 1
+    case "$id" in *[!a-zA-Z0-9_-]*) echo "Ambiguous $service container." >&2; exit 1 ;; esac
+    health=
+    if [ -n "$id" ]; then
+      health=$(deployment_command docker inspect --format \
+        '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id") || exit 1
+    fi
+    if [ "$health" = running:unhealthy ]; then
+      recreate="$recreate $service"
+    else
+      reconcile="$reconcile $service"
+    fi
+  done
+  # Compose preserves running containers whose configuration matches, even
+  # if their health checks failed. Recreate only the known unhealthy subset.
+  if [ -n "$recreate" ]; then
+    echo "[apply-env] Recreating unhealthy services:$recreate"
+    # shellcheck disable=SC2086
+    deployment_compose up -d --no-deps --no-build --pull never --force-recreate $recreate || exit 1
+  fi
+  if [ -n "$reconcile" ]; then
+    # shellcheck disable=SC2086
+    deployment_compose up -d --no-deps --no-build --pull never $reconcile
+  fi
+)
+
 run_required_tasks() (
   [ "$#" -gt 0 ] || set -- librenms-config grafana-setup
   task_timeout=${LIBRENMS_CONFIG_TIMEOUT:-180}

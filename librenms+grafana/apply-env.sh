@@ -327,7 +327,7 @@ compose_up() {
   # and feishu-ws depends on Bridge: implicit dependency recreation would kill
   # self-apply or refresh a token consumer before the configuration task.
   if [ "$RECOVER_APPLY" = true ]; then
-    deployment_compose up -d --no-deps --no-build --pull never "$@"
+    recover_services "$@"
   else
     deployment_compose up -d --force-recreate --no-deps "$@"
   fi
